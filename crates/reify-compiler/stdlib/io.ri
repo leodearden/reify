@@ -1,4 +1,5 @@
-// Stdlib: I/O — Source, Sink, Input, Buy, Output, Discard, Provenance
+// Stdlib: I/O — Source, Sink, Input, Buy, Output, Discard, Provenance,
+//              STEPVersion, DisplayStyle, and concrete output/input occurrences.
 // Provides core traits and types for representing where design geometry comes
 // from (sources) and where it goes to (sinks).
 //
@@ -8,10 +9,11 @@
 //   1. `Scalar<Money>` → bare `Money`.  The type resolver only parameterises
 //      List/Set/Map/Option; writing `Scalar<Money>` degrades to Length-dimension.
 //      Bare `Money` resolves correctly to DimensionVector::MONEY.
-//   2. `= undef` defaults dropped.  The Reify grammar has no `undef` keyword;
-//      no `= undef` appears in any existing stdlib .ri file.  Params without
-//      defaults are required at conformance time, matching the convention in
-//      materials_mechanical.ri and tolerancing.ri.
+//   2. Occurrence and structure-def params use concrete defaults rather than
+//      `= undef`.  `undef` is a trait-only keyword (landed in task #3918) and
+//      does not resolve on occurrence/structure-def param kinds — see the
+//      materials_mechanical.ri / tolerancing.ri convention.  Required params
+//      remain un-defaulted (enforced at conformance time).
 //   3. Provenance is declared before all trait blocks so that `Input.provenance :
 //      Provenance` resolves through the structure-name set built in the pre-pass.
 
@@ -38,8 +40,9 @@ enum OutputFormat { STEP, STL, ThreeMF, Display }
 //   bound.  Faithful transcription of §9 spec field
 //   `tolerance_guarantee : Length = undef`.
 //
-// No defaults are provided because no `undef` keyword exists — see header
-// comment deviation 2.  Consumers must supply all four fields.
+// No concrete default is provided for Provenance fields — consumers must supply
+// all four fields, matching the required-param convention from
+// materials_mechanical.ri and tolerancing.ri (see header deviation 2).
 structure def Provenance {
     param source_tool : String
     param source_version : String
@@ -108,4 +111,58 @@ trait Discard : Sink {
 trait Costed : Buy {
     param quantity_produced : Real // dimensionless
     let line_cost : Money = unit_cost * quantity_produced
+}
+
+// ── std.io.formats — concrete output/input occurrences ───────────────────────
+
+// STEP protocol version selector.
+enum STEPVersion { AP203, AP214, AP242 }
+
+// Visual presentation parameters for a display output occurrence.
+structure def DisplayStyle {
+    param opacity : Real = 1.0
+    param wireframe : Bool = false
+}
+
+// Export geometry to a STEP file.
+occurrence def STEPOutput : Output {
+    param subject : Solid
+    param path : String
+    param version : STEPVersion = STEPVersion.AP214
+    param format : OutputFormat = OutputFormat.STEP
+    constraint determined(subject)
+}
+
+// Export geometry to an STL mesh file.
+occurrence def STLOutput : Output {
+    param subject : Solid
+    param path : String
+    param resolution : Length = 0.1mm
+    param format : OutputFormat = OutputFormat.STL
+    constraint determined(subject)
+}
+
+// Export geometry to a 3MF file (materials + color metadata included by default).
+occurrence def ThreeMFOutput : Output {
+    param subject : Solid
+    param path : String
+    param include_materials : Bool = true
+    param include_colors : Bool = true
+    param format : OutputFormat = OutputFormat.ThreeMF
+    constraint determined(subject)
+}
+
+// Send geometry to a viewport pane for display (no file path).
+occurrence def DisplayOutput : Output {
+    param subject : Solid
+    param pane : Int = 0
+    param style : DisplayStyle = DisplayStyle()
+    param format : OutputFormat = OutputFormat.Display
+}
+
+// Import geometry from a STEP file.
+occurrence def STEPInput : Input {
+    param source : String = ""
+    param provenance : Provenance = Provenance(source_tool: "step-import", source_version: "", timestamp: "", tolerance_guarantee: 0.001mm)
+    param version : STEPVersion = STEPVersion.AP214
 }
