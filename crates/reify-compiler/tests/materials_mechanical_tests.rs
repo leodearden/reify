@@ -501,7 +501,9 @@ fn remaining_five_traits_exist() {
         "reduction_of_area is now optional and should NOT be a required member"
     );
 
-    // ImpactResistant: 1 member (impact_energy)
+    // ImpactResistant: 0 required members (both new params are optional = undef).
+    // task β #4240: drop single impact_energy (required); add charpy_impact and
+    // izod_impact (Real = undef) — both optional.
     let impact = module
         .trait_defs
         .iter()
@@ -509,15 +511,34 @@ fn remaining_five_traits_exist() {
         .expect("expected 'ImpactResistant' trait");
     assert_eq!(
         impact.required_members.len(),
-        1,
-        "ImpactResistant should have 1 required member"
-    );
-    assert!(
+        0,
+        "ImpactResistant should have 0 required members (all params optional = undef), got: {:?}",
         impact
             .required_members
             .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !impact
+            .required_members
+            .iter()
             .any(|r| r.name == "impact_energy"),
-        "ImpactResistant should have 'impact_energy' member"
+        "impact_energy must no longer exist as a required member (dropped in β #4240)"
+    );
+    assert!(
+        impact
+            .defaults
+            .iter()
+            .any(|d| d.name.as_deref() == Some("charpy_impact")),
+        "ImpactResistant should have 'charpy_impact' in defaults"
+    );
+    assert!(
+        impact
+            .defaults
+            .iter()
+            .any(|d| d.name.as_deref() == Some("izod_impact")),
+        "ImpactResistant should have 'izod_impact' in defaults"
     );
 
     // Damping: 2 members (damping_ratio, loss_factor)

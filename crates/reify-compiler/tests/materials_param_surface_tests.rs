@@ -625,3 +625,112 @@ fn fatigue_rated_optional_params_in_defaults() {
         other => panic!("expected DefaultKind::Param for fatigue_cycles, got {:?}", other),
     }
 }
+
+// ── §6.2 ImpactResistant — impact_energy → optional params (β task #4240) ───────
+
+/// ImpactResistant conformer supplying only inherited MaterialSpec params (density + name)
+/// with neither impact param compiles cleanly (both new params optional).
+///
+/// RED: stdlib ImpactResistant still has required `impact_energy` → MissingRequiredMember.
+#[test]
+fn impact_resistant_no_impact_params_is_clean() {
+    let source = r#"
+        structure def ImpactNone : ImpactResistant {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics when supplying no optional impact params \
+         (both charpy_impact and izod_impact are optional), got: {:?}",
+        errors
+    );
+}
+
+/// ImpactResistant conformer supplying both optional params compiles cleanly.
+///
+/// RED: stdlib ImpactResistant still has required `impact_energy` — charpy_impact/izod_impact unknown.
+#[test]
+fn impact_resistant_both_impact_params_is_clean() {
+    let source = r#"
+        structure def ImpactBoth : ImpactResistant {
+            param density : Real = 7850.0
+            param name : String = "steel"
+            param charpy_impact : Real = 80.0
+            param izod_impact : Real = 60.0
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics when supplying both charpy_impact and izod_impact, \
+         got: {:?}",
+        errors
+    );
+}
+
+/// ImpactResistant trait shape: charpy_impact and izod_impact must live in defaults
+/// with type Real; neither in required_members; impact_energy absent.
+///
+/// RED: stdlib ImpactResistant still has required `impact_energy` — new params absent.
+#[test]
+fn impact_resistant_optional_params_in_defaults() {
+    let module = load_stdlib_module();
+    let impact = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "ImpactResistant")
+        .expect("expected 'ImpactResistant' trait in compiled module");
+
+    for param_name in &["charpy_impact", "izod_impact"] {
+        assert!(
+            !impact.required_members.iter().any(|r| r.name == *param_name),
+            "'{}' must NOT be a required member of ImpactResistant (optional = undef)",
+            param_name
+        );
+    }
+
+    // charpy_impact must be in defaults with Type::Real.
+    let ci = impact
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("charpy_impact"))
+        .expect("expected 'charpy_impact' in ImpactResistant.defaults");
+    match &ci.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Real,
+            "charpy_impact should have type Real, got {:?}",
+            cell_type
+        ),
+        other => panic!("expected DefaultKind::Param for charpy_impact, got {:?}", other),
+    }
+
+    // izod_impact must be in defaults with Type::Real.
+    let ii = impact
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("izod_impact"))
+        .expect("expected 'izod_impact' in ImpactResistant.defaults");
+    match &ii.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Real,
+            "izod_impact should have type Real, got {:?}",
+            cell_type
+        ),
+        other => panic!("expected DefaultKind::Param for izod_impact, got {:?}", other),
+    }
+}
