@@ -244,6 +244,43 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
             }
         }),
 
+        "complex_eigenvalues" => unary(args, |v| {
+            let (n, ncols, data, dim) = match matrix_components_f64(v) {
+                Some(c) => c,
+                None => return Value::Undef,
+            };
+            if n != ncols {
+                return Value::Undef;
+            }
+            let m = DMatrix::from_row_slice(n, n, &data);
+            let mut items: Vec<Value> = m
+                .complex_eigenvalues()
+                .iter()
+                .map(|c| {
+                    sanitize_value(Value::Complex {
+                        re: c.re,
+                        im: c.im,
+                        dimension: dim,
+                    })
+                })
+                .collect();
+            // Canonical sort (re asc, then im asc) for deterministic output.
+            items.sort_by(|a, b| {
+                let (ar, ai) = match a {
+                    Value::Complex { re, im, .. } => (*re, *im),
+                    _ => (f64::INFINITY, f64::INFINITY),
+                };
+                let (br, bi) = match b {
+                    Value::Complex { re, im, .. } => (*re, *im),
+                    _ => (f64::INFINITY, f64::INFINITY),
+                };
+                ar.partial_cmp(&br)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(ai.partial_cmp(&bi).unwrap_or(std::cmp::Ordering::Equal))
+            });
+            Value::List(items)
+        }),
+
         _ => return None,
     })
 }
