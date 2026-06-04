@@ -7,7 +7,7 @@ use reify_core::{ModulePath, SourceSpan, Type, ValueCellId};
 use reify_ir::Value;
 use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, Url};
 
-use crate::convert::{offset_to_position, span_to_range};
+use crate::convert::{is_ident_byte, offset_to_position, span_to_range};
 
 /// Extract a module name from a file URI.
 ///
@@ -701,16 +701,6 @@ pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> Sou
     }
 
     SourceSpan::empty(member_span.start)
-}
-
-/// Whether `b` is an identifier byte (ASCII alphanumeric or underscore).
-///
-/// Local to this module — mirrors `convert::is_ident_byte` (which is private).
-/// Used both by the document-symbol name search
-/// ([`name_selection_range`] / [`find_name_offset_in_span`]) and by
-/// [`name_token_span`] for whole-word boundary checks.
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 #[cfg(test)]
