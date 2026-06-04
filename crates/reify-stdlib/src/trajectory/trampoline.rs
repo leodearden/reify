@@ -692,4 +692,79 @@ mod tests {
             "quintic without vels/accels → None"
         );
     }
+
+    // ── steps 7/8: value_to_modal_model ─────────────────────────────────────────
+
+    use super::super::simulate::{ModalModel, ModeDesc};
+    use super::value_to_modal_model;
+
+    /// A per-node `Vector3` `Value::Vector([Real, Real, Real])` — the modal
+    /// `Mode.shape` element shape, per `modal_ops::mode_shape_value`.
+    fn vec3(c: [f64; 3]) -> Value {
+        Value::Vector(c.iter().map(|&x| Value::Real(x)).collect())
+    }
+
+    /// A `Mode` `Value::StructureInstance` (frequency Hz; damping_ratio ζ;
+    /// shape List<Vector3>) as the modal eval path emits it.
+    fn mode(freq_hz: f64, zeta: f64, shape: &[[f64; 3]]) -> Value {
+        instance(
+            "Mode",
+            vec![
+                ("frequency".to_string(), Value::Real(freq_hz)),
+                ("damping_ratio".to_string(), Value::Real(zeta)),
+                (
+                    "shape".to_string(),
+                    Value::List(shape.iter().map(|&c| vec3(c)).collect()),
+                ),
+            ],
+        )
+    }
+
+    /// A `ModalResult` `Value::StructureInstance` wrapping a `modes` list.
+    fn modal_result(modes: Vec<Value>) -> Value {
+        instance("ModalResult", vec![("modes".to_string(), Value::List(modes))])
+    }
+
+    /// (a) A one-mode `ModalResult` marshals to a one-mode `ModalModel` whose
+    /// `freq_hz` / `zeta` come straight from the `Mode` and whose
+    /// `force_projection` is the flattened mode shape.
+    #[test]
+    fn value_to_modal_one_mode_maps_fields_and_flattens_shape() {
+        let modal = modal_result(vec![mode(10.0, 0.05, &[[1.0, 0.0, 0.0], [0.0, 2.0, 0.0]])]);
+        let mm: ModalModel = value_to_modal_model(&modal);
+        assert_eq!(mm.modes.len(), 1, "one input Mode → one ModeDesc");
+        let md: &ModeDesc = &mm.modes[0];
+        assert!(
+            (md.freq_hz - 10.0).abs() < SPLINE_TOL,
+            "frequency → freq_hz (Hz), got {}",
+            md.freq_hz
+        );
+        assert!(
+            (md.zeta - 0.05).abs() < SPLINE_TOL,
+            "damping_ratio → zeta, got {}",
+            md.zeta
+        );
+        assert_eq!(
+            md.force_projection,
+            vec![1.0, 0.0, 0.0, 0.0, 2.0, 0.0],
+            "shape List<Vector3> flattens to force_projection"
+        );
+    }
+
+    /// (b) An empty `modes` list → an empty `ModalModel` (no panic).
+    #[test]
+    fn value_to_modal_empty_modes_is_empty_model() {
+        let mm = value_to_modal_model(&modal_result(vec![]));
+        assert!(mm.modes.is_empty(), "empty modes → empty ModalModel");
+    }
+
+    /// (c) A non-`StructureInstance` modal `Value` → an empty `ModalModel`.
+    #[test]
+    fn value_to_modal_non_instance_is_empty_model() {
+        let mm = value_to_modal_model(&Value::Real(3.0));
+        assert!(
+            mm.modes.is_empty(),
+            "non-StructureInstance modal → empty ModalModel"
+        );
+    }
 }
