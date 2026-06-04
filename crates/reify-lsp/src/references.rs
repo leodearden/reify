@@ -27,7 +27,9 @@ use reify_ast::{
     MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, StringPart, SubDecl, WhereClause,
 };
 use reify_core::SourceSpan;
-use tower_lsp::lsp_types::{Position, Range, TextEdit, Url, WorkspaceEdit};
+use tower_lsp::lsp_types::{
+    DocumentHighlight, DocumentHighlightKind, Position, Range, TextEdit, Url, WorkspaceEdit,
+};
 
 use crate::analysis::{enclosing_decl_at, name_token_span};
 use crate::completion::{BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS};
@@ -889,6 +891,39 @@ pub fn compute_rename(
         changes: Some(changes),
         ..Default::default()
     })
+}
+
+/// Compute the occurrence-highlight set for the symbol under the cursor.
+///
+/// Delegates to [`collect_references`] with `include_declaration = true` and maps
+/// each name-token [`SourceSpan`] through [`span_to_range`] into a
+/// [`DocumentHighlight`] tagged [`DocumentHighlightKind::TEXT`] (read/write-agnostic
+/// — this foundation phase does not distinguish read from write occurrences).
+/// Returns `None` when the cursor does not resolve to a local value-member binding
+/// (keywords, literals, builtins, type/structure names, imported symbols),
+/// mirroring the [`compute_rename`] producer split so the boundary invariant has a
+/// pure unit-test home.
+///
+/// The PRD's "highlight set == references set restricted to the active document"
+/// (boundary row 7) holds for free with no extra filtering: [`collect_references`]
+/// walks a single [`ParsedModule`] scoped to one entity body, so every span it
+/// returns is inherently in-document.
+pub fn compute_document_highlights(
+    source: &str,
+    parsed: &ParsedModule,
+    pos: Position,
+) -> Option<Vec<DocumentHighlight>> {
+    let refset = collect_references(source, parsed, pos, /* include_declaration = */ true)?;
+    Some(
+        refset
+            .references
+            .iter()
+            .map(|&span| DocumentHighlight {
+                range: span_to_range(source, span),
+                kind: Some(DocumentHighlightKind::TEXT),
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
