@@ -9,6 +9,7 @@ import { createSelection } from './selection';
 import { FeaModeToolbar } from './FeaModeToolbar';
 import { bakeColours } from './colormap';
 import { computeScalarRange } from './scalarRange';
+import { pickDefaultScalarChannel } from './defaultScalarChannel';
 import type { ViewportStore, CameraState, FeaModeStore } from '../stores';
 
 export interface ViewportProps {
@@ -263,19 +264,16 @@ export function Viewport(props: ViewportProps) {
     // Auto-enable FEA mode on first mesh arrival with non-empty scalar_channels.
     // Guarded by feaModeStore presence; tryAutoEnable enforces one-shot semantics
     // so the effect can fire on every mesh update safely.
+    //
+    // pickDefaultScalarChannel selects a deterministic channel regardless of
+    // HashMap / serde_json insertion order: PREFERRED_FEA_CHANNELS is checked
+    // first ('vonMises' for solids, 'vonMises_top' for shells), with a
+    // lexicographic fallback for any other channel set.
     if (props.feaModeStore) {
       const feaStore = props.feaModeStore;
       createEffect(() => {
-        const meshes = props.meshes;
-        for (const mesh of Object.values(meshes)) {
-          if (!mesh.scalar_channels) continue;
-          for (const [channel, scalars] of Object.entries(mesh.scalar_channels)) {
-            if (scalars.length > 0) {
-              feaStore.tryAutoEnable(channel);
-              return; // only need the first non-empty channel
-            }
-          }
-        }
+        const channel = pickDefaultScalarChannel(props.meshes);
+        if (channel !== undefined) feaStore.tryAutoEnable(channel);
       });
     }
 
