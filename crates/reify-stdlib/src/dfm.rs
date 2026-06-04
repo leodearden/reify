@@ -387,4 +387,23 @@ mod tests {
             Some(Value::Bool(true))
         );
     }
+
+    // ─── step-5: anti-orphan — fits_build_volume routes through eval_builtin ─
+
+    #[test]
+    fn eval_builtin_routes_fits_build_volume_true() {
+        // Routes through the PUBLIC `crate::eval_builtin` (not `eval_dfm`): proves
+        // the `dfm::eval_dfm` arm is wired into the dispatch chain at runtime —
+        // stronger than a grep. A fitting pair must resolve to `Bool(true)`.
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(crate::eval_builtin("fits_build_volume", &[part, env]), Value::Bool(true));
+    }
+
+    #[test]
+    fn eval_builtin_routes_fits_build_volume_false() {
+        let part = bbox([0.0, 0.0, 0.0], [0.030, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(crate::eval_builtin("fits_build_volume", &[part, env]), Value::Bool(false));
+    }
 }
