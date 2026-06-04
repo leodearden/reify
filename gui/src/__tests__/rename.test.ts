@@ -125,6 +125,32 @@ describe('applyWorkspaceEdit', () => {
     });
   });
 
+  it('clamps an out-of-range edit character to the line end (defense-in-depth)', () => {
+    // Mock line 0 → { from: 0, to: 15 } (length 15). A character of 30/40 exceeds
+    // the line; the mapped offset must clamp to .to (15), never overflow past it.
+    const edit: WorkspaceEdit = {
+      changes: {
+        [URI]: [
+          {
+            range: { start: { line: 0, character: 30 }, end: { line: 0, character: 40 } },
+            newText: 'girth',
+          },
+        ],
+      },
+    };
+    const dispatch = vi.fn();
+    const view = makeMockView({ dispatch });
+
+    const result = applyWorkspaceEdit(view, edit, URI);
+
+    expect(result).toBe(true);
+    // from = min(0 + 30, 15) = 15 ; to = min(0 + 40, 15) = 15.
+    expect(dispatch).toHaveBeenCalledWith({
+      changes: [{ from: 15, to: 15, insert: 'girth' }],
+      userEvent: 'rename',
+    });
+  });
+
   it('returns false and does NOT dispatch when the edit has no changes for the uri', () => {
     const edit: WorkspaceEdit = {
       changes: {

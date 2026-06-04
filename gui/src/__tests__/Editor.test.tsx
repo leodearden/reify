@@ -1882,6 +1882,70 @@ describe('Editor F2 inline rename', () => {
     expect(field!.value).toBe('width');
   });
 
+  it('renameable position: accepting a new name mutates the buffer in one undo-able transaction', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+
+    const uri = 'file:///project/src/bracket.ri';
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+      if (method === 'textDocument/prepareRename') {
+        // file1 line 2 `  param width = 80mm` — `width` spans 0-based chars 8..13.
+        return JSON.stringify({
+          range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } },
+          placeholder: 'width',
+        });
+      }
+      if (method === 'textDocument/rename') {
+        // compute_rename's WorkspaceEdit renaming the `width` param → `girth`.
+        return JSON.stringify({
+          changes: {
+            [uri]: [
+              {
+                range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } },
+                newText: 'girth',
+              },
+            ],
+          },
+        });
+      }
+      return undefined as any;
+    });
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+    const docBefore = view.state.doc.toString();
+    expect(docBefore).toContain('param width');
+
+    // Place the cursor on `width`, then F2 to open the inline field.
+    const line2 = view.state.doc.line(2);
+    view.dispatch({ selection: { anchor: line2.from + 8 } });
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F2', code: 'F2', bubbles: true }),
+    );
+    await flushRenameChain();
+
+    const field = container.querySelector('[data-testid="rename-field"]') as HTMLInputElement | null;
+    expect(field).not.toBeNull();
+
+    // Type the new name and submit with Enter → rename → applyWorkspaceEdit.
+    field!.value = 'girth';
+    field!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }),
+    );
+    await flushRenameChain();
+
+    // The active buffer reflects the rename.
+    expect(view.state.doc.toString()).toContain('param girth');
+    expect(view.state.doc.toString()).not.toContain('param width');
+
+    // It applied as a SINGLE undo-able transaction: one undo restores the original.
+    undo(view);
+    expect(view.state.doc.toString()).toBe(docBefore);
+  });
+
   it('non-renameable position: F2 shows the refusal message and makes NO document change', async () => {
     const store = setupStore([file1]);
     store.setActiveFile(file1.path);
