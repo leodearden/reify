@@ -10,16 +10,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
-use tauri::Emitter;
+use tauri::{AppHandle, Emitter, Runtime, Wry};
 
-pub struct DebugBridge {
+pub struct DebugBridge<R: Runtime = Wry> {
     pending: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<String>>>,
     next_id: AtomicU64,
-    app: tauri::AppHandle,
+    app: AppHandle<R>,
 }
 
-impl DebugBridge {
-    pub fn new(app: tauri::AppHandle) -> Self {
+impl<R: Runtime> DebugBridge<R> {
+    pub fn new(app: AppHandle<R>) -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
