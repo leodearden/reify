@@ -1777,7 +1777,7 @@ mod tests {
     fn union_walk_correlates_surviving_facets_to_source_features() {
         use crate::test_fixtures::unit_cube_manifold;
         use crate::provenance::correlate_facets;
-        use reify_ir::{FeatureId, Role, TopologyAttribute, TopologyAttributeTable};
+        use reify_ir::{FeatureId, Role, TopologyAttribute};
         use std::collections::{HashMap, HashSet};
 
         // Call as_original() to assign a stable non-negative tracking ID that
