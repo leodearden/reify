@@ -552,27 +552,57 @@ trait Physical {
     param material : Material
     let mass = volume(geometry) * material.density
     let centroid = centroid(geometry)
+    constraint material.density > 0
 }
 
 trait Rigid : Physical {
-    let moment_of_inertia = moment_of_inertia(geometry, material.density)
+    param moment_of_inertia : MomentOfInertia
+    constraint moment_of_inertia > 0.0 * 1kg * 1m * 1m
 }
 
-trait Flexible : Physical {
-    param stiffness_model : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+trait Flexible {
+    param stiffness : Stiffness
+    param max_deflection : Length
+    constraint stiffness > 0.0 * 1N / 1m
+    constraint max_deflection > 0.0 * 1m
 }
 
-trait ElasticallyDeformable : Flexible
+trait ElasticallyDeformable : Flexible {
+    param max_elastic_strain : Real
+    constraint max_elastic_strain > 0
+}
+
 trait Plastic : Flexible {
-    param yield_point : Pressure
+    param plastic_strain : Real
+    param hardening_modulus : Pressure
+    constraint hardening_modulus > 0.0 * 1Pa
+    constraint plastic_strain >= 0
 }
 
-trait ThermallyConductive : Physical
-trait ElectricallyConductive : Physical
+trait ThermallyConductive : Physical {
+    param thermal_conductivity : ThermalConductivity
+    param max_service_temp : Temperature
+    constraint thermal_conductivity > 0W/(m*K)
+    constraint max_service_temp > 0.0 * 1K
+}
+
+trait ElectricallyConductive : Physical {
+    param electrical_conductivity : ElectricalConductivity
+    param resistivity : ElectricResistivity
+    constraint electrical_conductivity > 0.0 * 1S / 1m
+}
+
 trait Sealed {
-    param seal_rating : Pressure
+    param seal_pressure_rating : Pressure
+    constraint seal_pressure_rating > 0.0 * 1Pa
 }
 ```
+
+`Flexible` ships the lumped `stiffness` + `max_deflection` contract. A continuum spatially-varying stiffness field — `Field<Point3<Length>, Tensor<2,3,Pressure>>` — is deferred future work (PRD γ); no consumer today.
+
+Geometry-derived moment of inertia via the `moment_of_inertia(solid, density)` query builtin is a separate facility (returns a Tensor; auto-binding it into a `let` on `Rigid` is deferred — PRD δ).
+
+Yield strength is a material property, not a body member — see `materials_mechanical.Strong.yield_strength` / `Analysis.yield_strength`; that is why `Plastic` carries `plastic_strain` + `hardening_modulus` and `yield_point` is gone.
 
 ---
 
