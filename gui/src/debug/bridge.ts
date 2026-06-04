@@ -373,6 +373,21 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { ok: true, open: ctx.menuBar?.openMenu?.() ?? name };
     },
 
+    menu_state: () => {
+      const open = ctx.menuBar?.openMenu?.() ?? null;
+      const items: Array<{ testId: string | null; label: string; enabled: boolean }> = [];
+      document.querySelectorAll('[role="menuitem"]').forEach((el) => {
+        const btn = el as HTMLButtonElement;
+        const label = btn.querySelector('span')?.textContent ?? btn.innerText?.trim() ?? '';
+        items.push({
+          testId: btn.getAttribute('data-testid'),
+          label,
+          enabled: !btn.disabled,
+        });
+      });
+      return { open, items };
+    },
+
     // --- Write commands (frontend-mediated) ---
 
     click_element: (params) => {
