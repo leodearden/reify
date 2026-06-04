@@ -990,4 +990,21 @@ mod tests {
             );
         }
     }
+
+    // ─── task-4157 step-13: Torus IS seedable ────────────────────────────────
+    //
+    // Positive pin — the inverse of the no-op pins above. Unlike Tube (composed
+    // via boolean_cut), the torus is a direct BRepPrimAPI primitive, so its
+    // faces/edges are seeded like the Sphere arm. RED until step-14 adds
+    // `| GeometryOp::Torus { .. }` to the `is_seedable_primitive` matches!.
+    #[test]
+    fn torus_is_seedable_primitive() {
+        assert!(
+            is_seedable_primitive(&GeometryOp::Torus {
+                major_radius: Value::Real(0.02),
+                minor_radius: Value::Real(0.005),
+            }),
+            "GeometryOp::Torus must be a seedable primitive (faces/edges seeded like Sphere)"
+        );
+    }
 }
