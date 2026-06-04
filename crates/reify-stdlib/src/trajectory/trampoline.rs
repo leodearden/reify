@@ -446,16 +446,16 @@ pub(crate) fn value_to_mechanism_model(
             map.get(&Value::String("kind".to_string())),
             Some(Value::String(k)) if k == "mechanism"
         );
-        if is_mechanism {
-            if let Some(Value::List(bodies)) = map.get(&Value::String("bodies".to_string())) {
-                if !bodies.is_empty() {
-                    let links = bodies
-                        .iter()
-                        .map(|b| placeholder_link(body_mass(b).unwrap_or(1.0)))
-                        .collect();
-                    return (MechanismModel { links }, effector);
-                }
-            }
+        let bodies: &[Value] = match map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(bodies)) => bodies,
+            _ => &[],
+        };
+        if is_mechanism && !bodies.is_empty() {
+            let links = bodies
+                .iter()
+                .map(|b| placeholder_link(body_mass(b).unwrap_or(1.0)))
+                .collect();
+            return (MechanismModel { links }, effector);
         }
     }
 
@@ -990,6 +990,102 @@ fn tots_result_to_profile(profile_data: &StructureInstanceData, params: &TotsPar
         version: profile_data.version,
         fields: new_fields,
     }))
+}
+
+// ── EndEffectorTrack accessor intrinsics ─────────────────────────────────────
+//
+// The three η lazy accessors over an `EndEffectorTrack` Value (PRD §6.2), routed
+// from `eval_trajectory` via the `*_at` delegate names the `trajectory.ri` bodies
+// call (`end_effector_track` → `end_effector_track_at`, …). They read the
+// marshalled `[location][time]` matrices `track_data_to_value` emits: the
+// combined-pose Z column at a location, the per-time deviation
+// `|combined − nominal|` (= `|vibration|` under the core's scalar→Z mapping), and
+// the peak of that deviation series. Every malformed / out-of-range input yields
+// an empty list / zero — never a panic (the η-stub fallback contract).
+
+/// Read a `LocationId` argument (a `Real` / `Int` index) into a `usize` location
+/// index. `None` for a non-numeric, negative, or non-finite index — the accessor
+/// then yields an empty / zero result.
+fn read_location_index(location: &Value) -> Option<usize> {
+    let idx = read_scalar_si(location)?;
+    if !idx.is_finite() || idx < 0.0 {
+        return None;
+    }
+    Some(idx.round() as usize)
+}
+
+/// Read the inner `List<Real>` series at `[location]` of a `[location][time]`
+/// matrix field (`combined_pose` / `nominal_pose`) on an `EndEffectorTrack`
+/// Value. `None` for a non-`StructureInstance` track, a missing / non-`List`
+/// field, an out-of-range location, or a non-`List` / non-numeric inner row.
+fn track_location_series(track: &Value, field: &str, location: usize) -> Option<Vec<f64>> {
+    let Value::StructureInstance(data) = track else {
+        return None;
+    };
+    let Some(Value::List(outer)) = data.fields.get(&field.to_string()) else {
+        return None;
+    };
+    let Value::List(inner) = outer.get(location)? else {
+        return None;
+    };
+    inner.iter().map(read_scalar_si).collect()
+}
+
+/// The per-time deviation series `|combined − nominal|` at `location` (one entry
+/// per overlapping time sample). Empty for a bad index / malformed track /
+/// missing series — the shared core of [`deviation_from_nominal_at`] and
+/// [`peak_deviation_at`]. Each pose is a single Z scalar (the core's scalar→Z
+/// mapping), so the per-time Euclidean distance reduces to `|combined − nominal|`.
+fn deviation_series(track: &Value, location: &Value) -> Vec<f64> {
+    let Some(loc) = read_location_index(location) else {
+        return Vec::new();
+    };
+    let (Some(combined), Some(nominal)) = (
+        track_location_series(track, "combined_pose", loc),
+        track_location_series(track, "nominal_pose", loc),
+    ) else {
+        return Vec::new();
+    };
+    combined
+        .iter()
+        .zip(nominal.iter())
+        .map(|(c, n)| (c - n).abs())
+        .collect()
+}
+
+/// `end_effector_track_at(track, location)` — the combined-pose Z time-series at
+/// `location` (one `Real` per `t_samples` instant; the core flattens each pose to
+/// its Z component). An out-of-range location or malformed track → an empty
+/// `List` (never a panic).
+pub(crate) fn end_effector_track_at(track: &Value, location: &Value) -> Value {
+    let series = read_location_index(location)
+        .and_then(|loc| track_location_series(track, "combined_pose", loc))
+        .unwrap_or_default();
+    Value::List(series.into_iter().map(Value::Real).collect())
+}
+
+/// `deviation_from_nominal_at(track, location)` — the per-time Euclidean
+/// deviation `|combined − nominal|` at `location` (one `Real` per `t_samples`
+/// instant). The core maps scalar modal vibration onto the Z axis, so this equals
+/// `|vibration|`. An out-of-range location / malformed track → an empty `List`
+/// (never a panic).
+pub(crate) fn deviation_from_nominal_at(track: &Value, location: &Value) -> Value {
+    Value::List(
+        deviation_series(track, location)
+            .into_iter()
+            .map(Value::Real)
+            .collect(),
+    )
+}
+
+/// `peak_deviation_at(track, location)` — the maximum per-time deviation
+/// `maxₜ |combined − nominal|` at `location` (a single `Real`). An out-of-range
+/// location / malformed track / empty series → `0.0` (never a panic).
+pub(crate) fn peak_deviation_at(track: &Value, location: &Value) -> Value {
+    let peak = deviation_series(track, location)
+        .into_iter()
+        .fold(0.0_f64, f64::max);
+    Value::Real(peak)
 }
 
 #[cfg(test)]
