@@ -185,6 +185,16 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 
         CompiledExprKind::FunctionCall { function, args } => {
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
+            // __interp_render intercept — MUST sit before the strict-Undef
+            // short-circuit below. This placement is load-bearing: the
+            // determinacy decision (PRD §6.3, task 3964) requires that an
+            // Undef interpolation hole renders as the literal string "undef"
+            // rather than poisoning the result with Value::Undef. A stdlib
+            // binding would be reached only AFTER the short-circuit and could
+            // never observe an Undef argument.
+            if function.name == "__interp_render" && evaluated_args.len() == 1 {
+                return Value::String(interp_render(&evaluated_args[0]));
+            }
             // Strict Undef propagation: if any arg is Undef, short-circuit
             if evaluated_args.iter().any(|v| v.is_undef()) {
                 return Value::Undef;
@@ -479,13 +489,6 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // and silent-Undef discipline.
                 "worst_case" if evaluated_args.len() == 2 => {
                     eval_worst_case_dispatch(&evaluated_args, ctx)
-                }
-                // String-interpolation render builtin (task 3964, PRD §3).
-                // NOTE: this arm lives AFTER the strict-Undef short-circuit —
-                // that is intentional for Cycle 1. The Undef determinacy fix
-                // (Cycle 2, step-4) hoists it above the short-circuit.
-                "__interp_render" if evaluated_args.len() == 1 => {
-                    Value::String(interp_render(&evaluated_args[0]))
                 }
                 _ => {
                     // Composed-field call dispatch: a name in a composed lambda
