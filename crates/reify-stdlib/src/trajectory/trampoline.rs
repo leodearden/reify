@@ -2215,4 +2215,129 @@ mod tests {
             "an infeasible TOTSShaper (velocity_limit=0) → Undef (ConstraintInfeasible)"
         );
     }
+
+    // ── steps 19/20: accessor intrinsics (eval_builtin boundary) ─────────────────
+    //
+    // The three EndEffectorTrack accessors are reached through `eval_builtin` on
+    // their *_at intrinsic names (the delegate the trajectory.ri bodies call in
+    // step-22), so these tests exercise the full `eval_builtin` →
+    // `eval_trajectory` → trampoline routing rather than the impls directly.
+
+    use crate::eval_builtin;
+
+    /// Read a `Value::List<Real>` into `Vec<f64>` (the accessor list-return
+    /// shape). Panics on any other variant — in RED the unrouted names return
+    /// `Value::Undef`, so this panics and the test fails (the intended RED
+    /// signal); in GREEN the impls return real `List<Real>` values.
+    fn list_reals(v: &Value) -> Vec<f64> {
+        match v {
+            Value::List(items) => items.iter().map(as_real).collect(),
+            other => panic!("expected a List<Real> from an accessor, got {other:?}"),
+        }
+    }
+
+    /// (a) Over a populated 2-location × 3-time track (combined Z = 10·loc + t,
+    /// nominal Z = 0), the three accessor intrinsics — reached via `eval_builtin`
+    /// on their `*_at` names — read the per-location series:
+    /// - `end_effector_track_at` → the combined-pose Z column (len == t_samples);
+    /// - `deviation_from_nominal_at` → per-time |combined − nominal| (len ==
+    ///   t_samples), which equals the |vibration| marker;
+    /// - `peak_deviation_at` → the max of that deviation series.
+    #[test]
+    fn accessor_intrinsics_read_combined_and_deviation_per_location() {
+        let (n_loc, n_times) = (2, 3);
+        let track = track_data_to_value(&populated_track(n_loc, n_times));
+
+        for loc in 0..n_loc {
+            let loc_v = Value::Real(loc as f64);
+
+            // end_effector_track_at → the combined-pose Z column [10·loc + t].
+            let combined = list_reals(&eval_builtin(
+                "end_effector_track_at",
+                &[track.clone(), loc_v.clone()],
+            ));
+            assert_eq!(
+                combined.len(),
+                n_times,
+                "end_effector_track_at column len == t_samples"
+            );
+            for t in 0..n_times {
+                let want = (10 * loc + t) as f64;
+                assert!(
+                    (combined[t] - want).abs() < SPLINE_TOL,
+                    "end_effector_track_at[{loc}][{t}] = {} want {want}",
+                    combined[t]
+                );
+            }
+
+            // deviation_from_nominal_at → |combined − nominal| = the same marker.
+            let dev = list_reals(&eval_builtin(
+                "deviation_from_nominal_at",
+                &[track.clone(), loc_v.clone()],
+            ));
+            assert_eq!(dev.len(), n_times, "deviation_from_nominal_at len == t_samples");
+            for t in 0..n_times {
+                let want = (10 * loc + t) as f64;
+                assert!(
+                    (dev[t] - want).abs() < SPLINE_TOL,
+                    "deviation_from_nominal_at[{loc}][{t}] = {} want {want}",
+                    dev[t]
+                );
+            }
+
+            // peak_deviation_at → max over time of the deviation series.
+            let peak = as_real(&eval_builtin("peak_deviation_at", &[track.clone(), loc_v]));
+            let want_peak = (10 * loc + (n_times - 1)) as f64;
+            assert!(
+                (peak - want_peak).abs() < SPLINE_TOL,
+                "peak_deviation_at[{loc}] = {peak} want {want_peak}"
+            );
+        }
+    }
+
+    /// (b) An out-of-range location yields an empty series / zero peak — never a
+    /// panic (the index is past the track's location count).
+    #[test]
+    fn accessor_intrinsics_out_of_range_location_is_empty_or_zero() {
+        let track = track_data_to_value(&populated_track(2, 3));
+        let oob = Value::Real(5.0); // only locations 0, 1 exist
+
+        assert!(
+            list_reals(&eval_builtin("end_effector_track_at", &[track.clone(), oob.clone()]))
+                .is_empty(),
+            "out-of-range end_effector_track_at → empty list"
+        );
+        assert!(
+            list_reals(&eval_builtin("deviation_from_nominal_at", &[track.clone(), oob.clone()]))
+                .is_empty(),
+            "out-of-range deviation_from_nominal_at → empty list"
+        );
+        assert!(
+            as_real(&eval_builtin("peak_deviation_at", &[track, oob])).abs() < SPLINE_TOL,
+            "out-of-range peak_deviation_at → 0"
+        );
+    }
+
+    /// (c) A malformed track (not even a StructureInstance) yields an empty
+    /// series / zero peak — never a panic.
+    #[test]
+    fn accessor_intrinsics_malformed_track_is_empty_or_zero() {
+        let bad = Value::Real(0.0);
+        let loc = Value::Real(0.0);
+
+        assert!(
+            list_reals(&eval_builtin("end_effector_track_at", &[bad.clone(), loc.clone()]))
+                .is_empty(),
+            "malformed end_effector_track_at → empty list"
+        );
+        assert!(
+            list_reals(&eval_builtin("deviation_from_nominal_at", &[bad.clone(), loc.clone()]))
+                .is_empty(),
+            "malformed deviation_from_nominal_at → empty list"
+        );
+        assert!(
+            as_real(&eval_builtin("peak_deviation_at", &[bad, loc])).abs() < SPLINE_TOL,
+            "malformed peak_deviation_at → 0"
+        );
+    }
 }
