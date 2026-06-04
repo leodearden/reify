@@ -52,14 +52,16 @@ fn eval_shell_fixture_emits_no_tet_fallback_warning() {
         "reify eval exited non-zero.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
-    // Specific regression guard: documents the exact wording of the diagnostic
-    // this test was written to eliminate.  Uses the full "shell-extract::extract
-    // failed; falling back to tet meshing" prefix (the runtime concatenation of
-    // engine_eval.rs:3197-3198) so the assertion text anchors the full target
-    // name and the full fallback phrase, not just a short token that could
-    // coincidentally appear elsewhere.
+    // Specific regression guard: asserts the tet-fallback phrase is absent from
+    // stderr.  Uses the shorter stable token "falling back to tet meshing"
+    // rather than the full "shell-extract::extract failed; falling back to tet
+    // meshing" prefix: if the target-name prefix in engine_eval.rs:3197 is ever
+    // reworded, the full-string form would silently become vacuous (always true),
+    // whereas the core fallback phrase is less likely to change.  The positive
+    // `stdout.contains("ShellStress")` guard below provides the compensating
+    // check that the shell path actually ran.
     assert!(
-        !stderr.contains("shell-extract::extract failed; falling back to tet meshing"),
+        !stderr.contains("falling back to tet meshing"),
         "Unexpected soft-fallback warning on stderr — shell-extract dispatch \
          should succeed once register_shell_extract_compute_fns is registered \
          in configured_eval_engine.\nstderr:\n{stderr}"
