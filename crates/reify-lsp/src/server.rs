@@ -156,6 +156,9 @@ impl LanguageServer for ReifyLanguageServer {
                 definition_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions::default()),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                // Occurrence highlight (task 4204 δ): the editor requests
+                // textDocument/documentHighlight on cursor-idle.
+                document_highlight_provider: Some(OneOf::Left(true)),
                 // Advertise rename with prepareProvider so the editor issues
                 // prepareRename (the Invariant-4 refusal gate) before rename.
                 rename_provider: Some(OneOf::Right(RenameOptions {
@@ -375,6 +378,36 @@ impl LanguageServer for ReifyLanguageServer {
 
         let symbols = crate::analysis::compute_document_symbols(&text, &uri);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        // Brief read lock: snapshot the document text, then drop it before the
+        // (CPU-only) parse + scope walk — mirrors document_symbol/prepare_rename.
+        let state = self.state.read().await;
+        let text = match state.documents.get(&uri) {
+            Some(doc) => doc.text.clone(),
+            None => return Ok(None),
+        };
+        drop(state);
+
+        // Prelude-aware parse for AST-shape consistency with goto_def/rename.
+        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let parsed =
+            reify_compiler::parse_with_stdlib(&text, reify_core::ModulePath::single(module_name));
+
+        // The δ producer returns None for non-resolvable positions (keywords/
+        // literals/types/declaration names), which the editor renders as "no
+        // occurrences". Its spans are inherently in-document (boundary row 7),
+        // so no active-doc filtering is needed.
+        Ok(crate::references::compute_document_highlights(
+            &text, &parsed, position,
+        ))
     }
 
     async fn prepare_rename(
