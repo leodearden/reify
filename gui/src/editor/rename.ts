@@ -90,6 +90,13 @@ export interface RenameUi {
   ): void;
   /** Show a transient "can't rename here" message (the Invariant-4 refusal). */
   showCannotRename(view: EditorView): void;
+  /**
+   * Show a transient "rename failed" message when the server rejects an accepted
+   * new name (invalid identifier / no-op) and returns no edit. The inline field
+   * has already closed by then, so this is the only feedback the user gets that
+   * their rename did not apply.
+   */
+  showRenameFailed(view: EditorView): void;
 }
 
 /**
@@ -106,9 +113,13 @@ export interface RenameUi {
  *    and its WorkspaceEdit applied via applyWorkspaceEdit (one CM dispatch that
  *    flows through Editor.tsx's updateListener → backend sync + didChange).
  *
- * Always returns true so the F2 key is consumed. The view may be torn down while
- * the async request is in flight, so the apply step guards view.dom.isConnected
- * (mirrors gotoDefinition).
+ * Always returns true so the F2 key is consumed. The async request can outlive
+ * the editor or a file switch (the EditorView is reused across files — its doc is
+ * swapped in place), so both the prompt-open and apply steps re-check that the URI
+ * is still current (and the apply step also checks view.dom.isConnected) before
+ * touching the buffer; a stale apply would corrupt the newly-active file. A
+ * server-rejected name (rename → null) closes the field and surfaces a transient
+ * ui.showRenameFailed message rather than dropping the rename silently.
  */
 export function renameCommand(
   uriGetter: () => string,
@@ -125,6 +136,10 @@ export function renameCommand(
     client
       .prepareRename(uri, lspLine, lspChar)
       .then((target) => {
+        // A file switch can swap the buffer while prepareRename is in flight (the
+        // editor reuses one EditorView across files). Abandon a stale request
+        // rather than prompting/refusing on the now-different document.
+        if (uriGetter() !== uri) return;
         if (!target) {
           // Invariant-4 refusal: show the message, edit nothing.
           ui.showCannotRename(view);
@@ -138,9 +153,17 @@ export function renameCommand(
             client
               .rename(uri, lspLine, lspChar, newName)
               .then((edit) => {
-                if (!edit) return;
-                // The field can outlive the editor — never dispatch to a dead view.
-                if (!view.dom.isConnected) return;
+                // The field can outlive the editor, and the user may switch files
+                // while the rename is in flight — never mutate a dead or
+                // now-different view; a stale apply would corrupt the new file.
+                if (!view.dom.isConnected || uriGetter() !== uri) return;
+                if (!edit) {
+                  // Server rejected the accepted name (invalid identifier /
+                  // no-op): the field already closed, so surface a transient
+                  // message instead of dropping the rename silently.
+                  ui.showRenameFailed(view);
+                  return;
+                }
                 applyWorkspaceEdit(view, edit, uri);
               })
               .catch((err) => console.warn('rename: failed to apply edit', err));

@@ -216,6 +216,23 @@ export function Editor(props: EditorProps) {
       }
     };
 
+    // Show a transient, auto-dismissing message overlay at the cursor — shared by
+    // the refusal (can't-rename-here) and post-submit failure (rename-failed)
+    // paths. Cleared after 2s or when a newer overlay replaces it.
+    const showTransientRenameMessage = (text: string, testid: string): void => {
+      clearRenameOverlay();
+      const msg = document.createElement('div');
+      msg.className = styles.renameMessage;
+      msg.setAttribute('data-testid', testid);
+      msg.textContent = text;
+      renameOverlayEl = msg;
+      containerRef.appendChild(msg);
+      positionRenameOverlay(msg, view!.state.selection.main.head);
+      renameMessageTimer = setTimeout(() => {
+        if (renameOverlayEl === msg) clearRenameOverlay();
+      }, 2000);
+    };
+
     // Editor-owned UI for the F2 inline-rename flow. renameCommand injects these
     // callbacks so its refuse/accept routing stays DOM-free and unit-testable.
     const renameUi: RenameUi = {
@@ -261,18 +278,13 @@ export function Editor(props: EditorProps) {
       },
 
       showCannotRename(_view) {
-        clearRenameOverlay();
-        const msg = document.createElement('div');
-        msg.className = styles.renameMessage;
-        msg.setAttribute('data-testid', 'rename-message');
-        msg.textContent = "Can't rename here";
-        renameOverlayEl = msg;
-        containerRef.appendChild(msg);
-        positionRenameOverlay(msg, view!.state.selection.main.head);
-        // Auto-dismiss the transient message; guard against clobbering a newer overlay.
-        renameMessageTimer = setTimeout(() => {
-          if (renameOverlayEl === msg) clearRenameOverlay();
-        }, 2000);
+        showTransientRenameMessage("Can't rename here", 'rename-message');
+      },
+
+      showRenameFailed(_view) {
+        // The server refused an accepted name (invalid identifier / no-op) after
+        // the inline field already closed — give the user explicit feedback.
+        showTransientRenameMessage('Rename failed', 'rename-failed-message');
       },
     };
 

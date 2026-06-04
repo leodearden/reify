@@ -178,9 +178,18 @@ function makeRenameDeps() {
   const rename = vi.fn();
   const promptNewName = vi.fn();
   const showCannotRename = vi.fn();
+  const showRenameFailed = vi.fn();
   const client = { prepareRename, rename } as unknown as RenameClient;
-  const ui = { promptNewName, showCannotRename } as unknown as RenameUi;
-  return { client, ui, prepareRename, rename, promptNewName, showCannotRename };
+  const ui = { promptNewName, showCannotRename, showRenameFailed } as unknown as RenameUi;
+  return {
+    client,
+    ui,
+    prepareRename,
+    rename,
+    promptNewName,
+    showCannotRename,
+    showRenameFailed,
+  };
 }
 
 describe('renameCommand', () => {
@@ -334,6 +343,109 @@ describe('renameCommand', () => {
     // The rename request still fires, but the destroyed view must NOT be dispatched to.
     expect(rename).toHaveBeenCalledWith(URI, 0, 5, 'girth');
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('post-submit refusal: rename → null shows showRenameFailed and dispatches nothing', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed } = makeRenameDeps();
+    const target = {
+      range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } },
+      placeholder: 'width',
+    };
+    prepareRename.mockResolvedValue(target);
+    // Server rejects the accepted name (e.g. "2x" / "let") → Ok(None) → null.
+    rename.mockResolvedValue(null);
+
+    const dispatch = vi.fn();
+    const view = makeMockView({
+      dispatch,
+      state: {
+        selection: { main: { head: 5 } },
+        doc: {
+          lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+        },
+      },
+    });
+
+    renameCommand(() => URI, client, ui)(view);
+    await flushMacrotasks();
+
+    const onSubmit = promptNewName.mock.calls[0][3] as (newName: string) => void;
+    onSubmit('2x');
+    await flushMacrotasks();
+
+    expect(rename).toHaveBeenCalledWith(URI, 0, 5, '2x');
+    // No edit applied, but the user gets explicit feedback (not a silent drop).
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(showRenameFailed).toHaveBeenCalledTimes(1);
+    expect(showRenameFailed).toHaveBeenCalledWith(view);
+  });
+
+  it('file-switch race: a file change before rename resolves blocks the stale apply', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed } = makeRenameDeps();
+    const target = {
+      range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } },
+      placeholder: 'width',
+    };
+    const edit: WorkspaceEdit = {
+      changes: { [URI]: [{ range: target.range, newText: 'girth' }] },
+    };
+    prepareRename.mockResolvedValue(target);
+    rename.mockResolvedValue(edit);
+
+    let currentUri = URI;
+    const dispatch = vi.fn();
+    const view = makeMockView({
+      dispatch,
+      state: {
+        selection: { main: { head: 5 } },
+        doc: {
+          lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+        },
+      },
+    });
+
+    renameCommand(() => currentUri, client, ui)(view);
+    await flushMacrotasks();
+
+    const onSubmit = promptNewName.mock.calls[0][3] as (newName: string) => void;
+    // User switches files while the inline field is open / rename is in flight.
+    currentUri = 'file:///other.ri';
+    onSubmit('girth');
+    await flushMacrotasks();
+
+    // The rename request still fires for the original file, but its edit must NOT
+    // be applied onto the now-different buffer (and no failure message either).
+    expect(rename).toHaveBeenCalledWith(URI, 0, 5, 'girth');
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('file-switch race: a file change before prepareRename resolves opens no prompt', async () => {
+    const { client, ui, prepareRename, promptNewName, showCannotRename } = makeRenameDeps();
+    const target = {
+      range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } },
+      placeholder: 'width',
+    };
+    prepareRename.mockResolvedValue(target);
+
+    let currentUri = URI;
+    const view = makeMockView({
+      state: {
+        selection: { main: { head: 5 } },
+        doc: { lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }) },
+      },
+    });
+
+    renameCommand(() => currentUri, client, ui)(view);
+    // Switch files before prepareRename resolves.
+    currentUri = 'file:///other.ri';
+    await flushMacrotasks();
+
+    // Stale prepareRename result must neither open the field nor show a refusal.
+    expect(promptNewName).not.toHaveBeenCalled();
+    expect(showCannotRename).not.toHaveBeenCalled();
   });
 
   it('uses the URI from the getter at call time (re-resolves after a file switch)', async () => {
