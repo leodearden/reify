@@ -30,11 +30,13 @@
 //! Populated incrementally across task π's TDD steps (cache keys → marshalling
 //! → composers → accessors).
 
-use reify_core::ContentHash;
-use reify_ir::Value;
+use reify_core::{ContentHash, DimensionVector};
+use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
-use super::simulate::{EffectorLocation, LinkDesc, MechanismModel, ModalModel, ModeDesc};
+use super::simulate::{
+    EffectorLocation, EndEffectorTrackData, LinkDesc, MechanismModel, ModalModel, ModeDesc, Pose3,
+};
 use super::spline::{BoundaryCondition, CubicSpline, KnotData, MultiJointSpline, QuinticSpline};
 
 /// The result-determining inputs of a `simulate_trajectory` forward-pass solve,
@@ -461,6 +463,90 @@ pub(crate) fn value_to_mechanism_model(
         },
         effector,
     )
+}
+
+// ── core→Value marshalling ───────────────────────────────────────────────────
+
+/// Marshal an [`EndEffectorTrackData`] (the pure-Rust forward-pass output) into
+/// an `EndEffectorTrack` `Value::StructureInstance` — the η output boundary
+/// (PRD §6.2). Mirrors `modal_ops`'s `DisplacementTimeHistory` construction (a
+/// registry-free sentinel instance, `StructureTypeId(u32::MAX)`, version 1).
+///
+/// Field mapping (the core's `[location][time]` indexing is preserved — outer =
+/// location, inner = time):
+/// - `t_samples : List<Time>` — each instant a `Value::Scalar` carrying the
+///   `TIME` dimension;
+/// - `nominal_pose` / `combined_pose : List<List<Real>>` — each [`Pose3`]
+///   flattened to its Z position (`position[2]`). The core maps scalar modal
+///   vibration onto the Z axis (`[0, 0, s]`), so Z is the only deviation-bearing
+///   component and the flatten is lossless for the residual-vibration metric;
+/// - `vibration_offset : List<List<Real>>` — each `[dx, dy, dz]` flattened to
+///   `dz`, consistent with the same scalar→Z mapping. This makes
+///   `deviation_from_nominal = |combined − nominal| = |vibration|`.
+///
+/// `mechanism` / `modal_result` are `Real` placeholders (the kinematic-/modal-
+/// completion PRDs are not landed and nothing in η reads them). An empty track
+/// yields well-formed empty `List`s — never panics.
+#[allow(dead_code)]
+pub(crate) fn track_data_to_value(track: &EndEffectorTrackData) -> Value {
+    // t_samples : List<Scalar TIME>.
+    let t_samples = Value::List(
+        track
+            .t_samples
+            .iter()
+            .map(|&t| Value::Scalar {
+                si_value: t,
+                dimension: DimensionVector::TIME,
+            })
+            .collect(),
+    );
+
+    // Flatten a [location][time] Pose3 matrix to List<List<Real>> on the Z
+    // position component (the core's scalar→Z vibration mapping).
+    let poses_to_value = |matrix: &[Vec<Pose3>]| -> Value {
+        Value::List(
+            matrix
+                .iter()
+                .map(|row| Value::List(row.iter().map(|p| Value::Real(p.position[2])).collect()))
+                .collect(),
+        )
+    };
+    // Flatten a [location][time] vibration matrix to List<List<Real>> on dz.
+    let offsets_to_value = |matrix: &[Vec<[f64; 3]>]| -> Value {
+        Value::List(
+            matrix
+                .iter()
+                .map(|row| Value::List(row.iter().map(|o| Value::Real(o[2])).collect()))
+                .collect(),
+        )
+    };
+
+    let fields: PersistentMap<String, Value> = [
+        ("mechanism".to_string(), Value::Real(0.0)),
+        ("modal_result".to_string(), Value::Real(0.0)),
+        ("t_samples".to_string(), t_samples),
+        (
+            "nominal_pose".to_string(),
+            poses_to_value(&track.nominal_pose),
+        ),
+        (
+            "vibration_offset".to_string(),
+            offsets_to_value(&track.vibration_offset),
+        ),
+        (
+            "combined_pose".to_string(),
+            poses_to_value(&track.combined_pose),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "EndEffectorTrack".to_string(),
+        version: 1,
+        fields,
+    }))
 }
 
 #[cfg(test)]
