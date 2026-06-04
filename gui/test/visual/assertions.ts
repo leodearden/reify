@@ -41,6 +41,7 @@ export const FIXTURES = {
   broken_syntax: "gui/test/fixtures/broken_syntax.ri",
   large_assembly: "gui/test/fixtures/large_assembly.ri",
   all_severities: "gui/test/fixtures/all_severities.ri",
+  overflow: "gui/test/fixtures/overflow.ri",
 } as const;
 
 // ─── ValueScenario type + VALUE_SCENARIOS catalogue ──────────────────────────
@@ -75,6 +76,23 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
     tool: "store_state",
     args: {},
     assertions: [{ path: "engine.meshCount", op: "equals", expected: 1 }],
+  },
+  {
+    name: "get_window_state_devicePixelRatio",
+    fixture: "small_cube",
+    tool: "get_window_state",
+    args: {},
+    assertions: [{ path: "devicePixelRatio", op: "exists" }],
+  },
+  {
+    name: "get_layout_metrics_overflow_clipped",
+    fixture: "overflow",
+    tool: "get_layout_metrics",
+    args: { selector: ".cm-scroller" },
+    assertions: [
+      { path: "exists", op: "equals", expected: true },
+      { path: "overflow.horizontal", op: "equals", expected: true },
+    ],
   },
 ];
 
