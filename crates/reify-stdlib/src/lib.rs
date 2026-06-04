@@ -79,6 +79,7 @@ mod test_fixtures;
 mod analysis;
 mod complex;
 mod construct;
+mod dfm;
 mod fea;
 mod flexures;
 mod geometry;
