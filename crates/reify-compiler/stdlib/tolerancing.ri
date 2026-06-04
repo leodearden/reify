@@ -217,10 +217,14 @@ structure def ISOToleranceGrade {
 
 // ── Conforms constraint def ───────────────────────────────────────────────────
 
-// Asserts that a tolerance_value is positive (a meaningful tolerance).
-constraint def Conforms {
-    param tolerance_value : Length
-    tolerance_value > 0
+// GD&T conformance check: asserts that the effective tolerance zone
+// (expanded by feature_departure under MMC/LMC) encompasses the measured_deviation.
+// `pub` is required for cross-module instantiation (registry folds only is_pub prelude defs).
+pub constraint def Conforms {
+    param tolerance : GeometricTolerance
+    param measured_deviation : Length = 0mm
+    param feature_departure : Length = 0mm
+    effective_tolerance_zone(tolerance.tolerance_value, tolerance.material_condition, feature_departure) >= measured_deviation
 }
 
 // ── Constructor Functions ─────────────────────────────────────────────────────

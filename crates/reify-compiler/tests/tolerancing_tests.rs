@@ -681,7 +681,7 @@ structure def TestTolMMC : GeometricTolerance {
 }
 structure def ProbeMMC {
     sub t = TestTolMMC()
-    constraint Conforms(tolerance: t, measured_deviation: 0.15mm, feature_departure: 0.1mm)
+    constraint Conforms(tolerance: self.t, measured_deviation: 0.15mm, feature_departure: 0.1mm)
 }
 "#;
     let result_mmc = check_source_with_stdlib(source_mmc);
@@ -713,7 +713,7 @@ structure def TestTolRFS : GeometricTolerance {
 }
 structure def ProbeRFS {
     sub t = TestTolRFS()
-    constraint Conforms(tolerance: t, measured_deviation: 0.15mm, feature_departure: 0.1mm)
+    constraint Conforms(tolerance: self.t, measured_deviation: 0.15mm, feature_departure: 0.1mm)
 }
 "#;
     let result_rfs = check_source_with_stdlib(source_rfs);
