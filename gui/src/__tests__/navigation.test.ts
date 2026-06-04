@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createRoot } from 'solid-js';
 import type { SourceLocation, ConstraintData, ValueData } from '../types';
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}));
 
 // The module under test (doesn't exist yet)
 import {
@@ -7,6 +12,7 @@ import {
   navigateToEntity,
   navigateFromConstraint,
 } from '../navigation';
+import { createSelectionStore } from '../stores/selectionStore';
 
 describe('navigation', () => {
   beforeEach(() => {
@@ -147,6 +153,59 @@ describe('navigation', () => {
 
       expect(setHighlightedParams).toHaveBeenCalledWith([]);
       expect(selectEntity).toHaveBeenCalledWith(null);
+    });
+
+    it('real-store integration: highlightedParams survive after navigateFromConstraint (order invariant)', () => {
+      // This test pins the surviving-highlight invariant against the real store.
+      // After calling navigateFromConstraint, both state.highlightedParams and
+      // state.selectedEntity must reflect the constraint's params and matched entity.
+      // With the OLD ordering (setHighlightedParams BEFORE selectEntity), the
+      // highlight would be immediately wiped by selectEntity→selectSingle clearing
+      // highlightedParams — so this test is RED until navigation.ts is reordered.
+      createRoot((dispose) => {
+        const store = createSelectionStore();
+
+        const constraint: ConstraintData = {
+          node_id: 'n1',
+          expression: 'width > 10',
+          status: 'violated',
+          label: null,
+          parameter_ids: ['c1', 'c2'],
+        };
+        const values: ValueData[] = [
+          {
+            cell_id: 'c1',
+            name: 'width',
+            value: '5',
+            unit: 'mm',
+            determinacy: 'determined',
+            entity_path: 'Bracket',
+            kind: 'Param',
+            freshness: 'final',
+          },
+          {
+            cell_id: 'c2',
+            name: 'height',
+            value: '20',
+            unit: 'mm',
+            determinacy: 'determined',
+            entity_path: 'Bracket',
+            kind: 'Param',
+            freshness: 'final',
+          },
+        ];
+
+        navigateFromConstraint(constraint, values, {
+          selectEntity: store.selectEntity,
+          setHighlightedParams: store.setHighlightedParams,
+        });
+
+        // Both invariants must hold: selection set AND highlight surviving
+        expect(store.state.selectedEntity).toBe('Bracket');
+        expect(store.state.highlightedParams).toEqual(['c1', 'c2']);
+
+        dispose();
+      });
     });
   });
 });
