@@ -70,11 +70,12 @@ fn fits_build_volume(args: &[Value]) -> Value {
 ///
 /// Returns `None` (→ the caller yields `Value::Undef`) unless `v` is a
 /// `Value::BoundingBox` whose `min` and `max` corners are each a finite,
-/// 3-component LENGTH `Point`/`Vector`/`Tensor`. [`tensor_components_f64`] already
-/// rejects non-container, empty, non-numeric, and internally-mixed-dimension
-/// corners; on top of that we require exactly 3 components, the LENGTH dimension on
-/// BOTH corners (which also rejects a min/max dimension mismatch), and finite
-/// coordinates (so a NaN/inf corner cannot corrupt the extent compare).
+/// 3-component LENGTH `Point`/`Vector`/`Tensor` with `max >= min` on every axis.
+/// [`tensor_components_f64`] already rejects non-container, empty, non-numeric, and
+/// internally-mixed-dimension corners; on top of that we require exactly 3
+/// components, the LENGTH dimension on BOTH corners (which also rejects a min/max
+/// dimension mismatch), finite coordinates (so a NaN/inf corner cannot corrupt the
+/// extent compare), and a non-inverted box (see the `max >= min` guard below).
 fn parse_bbox_extents(v: &Value) -> Option<[f64; 3]> {
     let (min, max) = match v {
         Value::BoundingBox { min, max } => (min, max),
@@ -89,6 +90,16 @@ fn parse_bbox_extents(v: &Value) -> Option<[f64; 3]> {
         return None;
     }
     if !min_vals.iter().all(|x| x.is_finite()) || !max_vals.iter().all(|x| x.is_finite()) {
+        return None;
+    }
+    // Reject an inverted / degenerate box (`max < min` on any axis). Such a box
+    // yields a NEGATIVE extent, which would always satisfy `part <= envelope` and
+    // silently report the part as "fitting" — a false-positive that hides the
+    // malformed input. The upstream `bounding_box(...)` query always emits
+    // `max >= min`, so this only fires on a hand-constructed bbox and surfaces it
+    // as a usage error (→ Undef) rather than a spurious fit. (Values are finite
+    // here, so the comparison is total — no NaN edge case.)
+    if (0..3).any(|i| max_vals[i] < min_vals[i]) {
         return None;
     }
     Some([
@@ -411,6 +422,29 @@ mod tests {
         let part = bbox([0.0, 0.0, 0.0], [f64::INFINITY, 0.010, 0.010]);
         let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
         assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_inverted_bbox_undef() {
+        // An inverted / degenerate bbox (max < min on an axis) yields a NEGATIVE
+        // extent that would always satisfy `part <= envelope` and silently report
+        // the part as "fitting" — a false-positive. Reject it as a usage error
+        // (→ Undef). bounding_box() upstream guarantees max >= min, so this only
+        // guards a malformed, hand-constructed bbox.
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let inverted_part = bbox([0.010, 0.010, 0.010], [0.0, 0.0, 0.0]);
+        assert_eq!(
+            eval_dfm("fits_build_volume", &[inverted_part, env]),
+            Some(Value::Undef)
+        );
+        // Symmetric: an inverted envelope is equally malformed (negative envelope
+        // extent), so it too is a usage error rather than a comparison input.
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let inverted_env = bbox([0.020, 0.020, 0.020], [0.0, 0.0, 0.0]);
+        assert_eq!(
+            eval_dfm("fits_build_volume", &[part, inverted_env]),
+            Some(Value::Undef)
+        );
     }
 
     #[test]
