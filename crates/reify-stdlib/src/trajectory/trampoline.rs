@@ -84,7 +84,7 @@ impl SimulateTrajectoryCacheKey {
 mod tests {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
-    use super::SimulateTrajectoryCacheKey;
+    use super::{InputShapeCacheKey, SimulateTrajectoryCacheKey};
 
     /// A registry-free `Value::StructureInstance` with `type_name` + fields,
     /// mirroring the eval-side `mint_instance` shape (same fixture pattern as
@@ -167,5 +167,47 @@ mod tests {
         let a = SimulateTrajectoryCacheKey::from_inputs(&p, &m, &modal(10.0));
         let b = SimulateTrajectoryCacheKey::from_inputs(&p, &m, &modal(20.0));
         assert!(!a.matches(&b), "a different modal must MISS");
+    }
+
+    /// Minimal `ZVShaper`-shaped fixture distinguished by a single target
+    /// frequency `f`. Any `Shaper` variant works for the key tests — the cache
+    /// key folds the whole shaper `Value` regardless of concrete type.
+    fn shaper(f: f64) -> Value {
+        instance(
+            "ZVShaper",
+            vec![("target_frequency".to_string(), Value::Real(f))],
+        )
+    }
+
+    // ── step-3: InputShapeCacheKey::from_inputs / matches ───────────────────────
+
+    /// (a) Two keys built from identical `(profile, shaper)` match — cache HIT.
+    #[test]
+    fn input_shape_cache_key_matches_identical_inputs() {
+        let p = profile(1.0);
+        let s = shaper(10.0);
+        let a = InputShapeCacheKey::from_inputs(&p, &s);
+        let b = InputShapeCacheKey::from_inputs(&p, &s);
+        assert!(a.matches(&b), "identical (profile, shaper) must match");
+    }
+
+    /// (b) A different profile `Value` must NOT match.
+    #[test]
+    fn input_shape_cache_key_differs_on_profile() {
+        let s = shaper(10.0);
+        let a = InputShapeCacheKey::from_inputs(&profile(1.0), &s);
+        let b = InputShapeCacheKey::from_inputs(&profile(2.0), &s);
+        assert!(!a.matches(&b), "a different profile must MISS");
+    }
+
+    /// (c) A different shaper `Value` must NOT match — and the relation is
+    /// symmetric.
+    #[test]
+    fn input_shape_cache_key_differs_on_shaper() {
+        let p = profile(1.0);
+        let a = InputShapeCacheKey::from_inputs(&p, &shaper(10.0));
+        let b = InputShapeCacheKey::from_inputs(&p, &shaper(20.0));
+        assert!(!a.matches(&b), "a different shaper must MISS");
+        assert!(!b.matches(&a), "matches() must be symmetric");
     }
 }
