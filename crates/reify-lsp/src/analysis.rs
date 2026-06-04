@@ -2358,6 +2358,11 @@ mod tests {
     /// `pub(crate)`.
     #[test]
     fn convert_is_ident_byte_is_crate_visible_and_classifies_bytes() {
+        // Use the fully-qualified path rather than the bare imported name to
+        // explicitly exercise the cross-module `pub(crate)` visibility contract
+        // (a `use`-imported call would succeed even if visibility were narrowed
+        // back inside the module, whereas this call proves the symbol is
+        // reachable from an external module in the same crate).
         // ident bytes
         assert!(crate::convert::is_ident_byte(b'a'));
         assert!(crate::convert::is_ident_byte(b'Z'));
