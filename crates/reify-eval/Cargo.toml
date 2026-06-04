@@ -98,3 +98,9 @@ strum.workspace = true
 # NOT on reify-eval.
 reify-doc.workspace = true
 reify-doc-build.workspace = true
+# Task 3437 (ζ): engine integration test for the Manifold execute arm.
+# Links the REAL Manifold kernel (its unconditional `inventory::submit!` fires
+# in the new test binary) and exposes the `test-fixtures` `unit_cube_manifold`
+# helper for the item-3 probe B non-degeneracy assertion. No dependency cycle:
+# reify-kernel-manifold depends on reify-ir/reify-core, NOT on reify-eval.
+reify-kernel-manifold = { workspace = true, features = ["test-fixtures"] }
