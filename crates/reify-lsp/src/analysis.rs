@@ -2348,29 +2348,4 @@ mod tests {
         assert!(span.is_empty(), "fallback span must be empty");
     }
 
-    // --- convert::is_ident_byte visibility contract ---
-
-    /// Pin the `pub(crate)` cross-module visibility of `convert::is_ident_byte`
-    /// and its byte-classification behaviour.
-    ///
-    /// RED: `convert::is_ident_byte` is currently private — the fully-qualified
-    /// reference below fails to compile (E0603) until impl-1 promotes it to
-    /// `pub(crate)`.
-    #[test]
-    fn convert_is_ident_byte_is_crate_visible_and_classifies_bytes() {
-        // Use the fully-qualified path rather than the bare imported name to
-        // explicitly exercise the cross-module `pub(crate)` visibility contract
-        // (a `use`-imported call would succeed even if visibility were narrowed
-        // back inside the module, whereas this call proves the symbol is
-        // reachable from an external module in the same crate).
-        // ident bytes
-        assert!(crate::convert::is_ident_byte(b'a'));
-        assert!(crate::convert::is_ident_byte(b'Z'));
-        assert!(crate::convert::is_ident_byte(b'0'));
-        assert!(crate::convert::is_ident_byte(b'_'));
-        // non-ident bytes
-        assert!(!crate::convert::is_ident_byte(b' '));
-        assert!(!crate::convert::is_ident_byte(b'>'));
-        assert!(!crate::convert::is_ident_byte(b'.'));
-    }
 }

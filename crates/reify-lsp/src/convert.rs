@@ -801,4 +801,15 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn is_ident_byte_classifies_bytes() {
+        assert!(is_ident_byte(b'a'));
+        assert!(is_ident_byte(b'Z'));
+        assert!(is_ident_byte(b'0'));
+        assert!(is_ident_byte(b'_'));
+        assert!(!is_ident_byte(b' '));
+        assert!(!is_ident_byte(b'>'));
+        assert!(!is_ident_byte(b'.'));
+    }
 }
