@@ -355,3 +355,106 @@ fn ductile_omits_reduction_of_area_is_clean() {
         errors
     );
 }
+
+// ── §6.2 Strong — ultimate_tensile_strength rename (β task #4240) ─────────────
+
+/// Strong conformer declaring ultimate_tensile_strength >= yield_strength compiles clean.
+///
+/// RED: stdlib Strong still declares `uts` (not `ultimate_tensile_strength`), so
+/// `ultimate_tensile_strength` is unknown and `uts` is missing → MissingRequiredMember.
+#[test]
+fn strong_ultimate_tensile_strength_valid_is_clean() {
+    let src = r#"
+        structure def StrongRenameOk : Strong {
+            param yield_strength             : Real = 250.0
+            param ultimate_tensile_strength  : Real = 400.0
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics for Strong with ultimate_tensile_strength \
+         >= yield_strength, got: {:?}",
+        errors
+    );
+}
+
+/// Strong conformer where ultimate_tensile_strength (250) < yield_strength (400)
+/// should produce a Violated constraint result and a ConstraintViolated diagnostic.
+///
+/// RED: stdlib Strong still declares `uts`; the structure misses `uts` → compile error,
+/// not a constraint-Violated, so the assertion for Violated fails.
+#[test]
+fn strong_ultimate_tensile_strength_below_yield_is_violated() {
+    let src = r#"
+        structure def StrongRenameViolated : Strong {
+            param yield_strength             : Real = 400.0
+            param ultimate_tensile_strength  : Real = 250.0
+        }
+    "#;
+    let result: CheckResult = check_source_with_stdlib(src);
+    let has_violated = result
+        .constraint_results
+        .iter()
+        .any(|e| e.satisfaction == Satisfaction::Violated);
+    assert!(
+        has_violated,
+        "expected at least one Violated constraint for ultimate_tensile_strength=250 < \
+         yield_strength=400, got: {:?}",
+        result.constraint_results
+    );
+    let constraint_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::ConstraintViolated)
+        })
+        .collect();
+    assert!(
+        !constraint_errors.is_empty(),
+        "expected at least one Severity::Error with code ConstraintViolated for \
+         ultimate_tensile_strength < yield_strength, got diagnostics: {:?}",
+        result.diagnostics
+    );
+}
+
+/// Strong conformer declaring only the old name `uts` (no ultimate_tensile_strength)
+/// must produce a MissingRequiredMember error for `ultimate_tensile_strength`.
+///
+/// RED: stdlib Strong still declares `uts`, so supplying `uts` succeeds rather than
+/// emitting a MissingRequiredMember error for `ultimate_tensile_strength`.
+#[test]
+fn strong_old_uts_name_is_missing_required_member() {
+    let src = r#"
+        structure def StrongOldName : Strong {
+            param yield_strength : Real = 250.0
+            param uts            : Real = 400.0
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected MissingRequiredMember error for 'ultimate_tensile_strength' when \
+         only old 'uts' is supplied, but got no errors"
+    );
+    assert!(
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::MissingRequiredMember)
+                && d.message.contains("ultimate_tensile_strength")
+        }),
+        "expected MissingRequiredMember error mentioning 'ultimate_tensile_strength', \
+         got errors: {:?}",
+        errors
+    );
+}

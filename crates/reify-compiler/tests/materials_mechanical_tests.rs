@@ -160,7 +160,10 @@ fn strong_trait_has_members_and_constraint_default() {
         member_names.contains(&"yield_strength"),
         "expected 'yield_strength' in Strong"
     );
-    assert!(member_names.contains(&"uts"), "expected 'uts' in Strong");
+    assert!(
+        member_names.contains(&"ultimate_tensile_strength"),
+        "expected 'ultimate_tensile_strength' in Strong (β rename from 'uts')"
+    );
     // compressive_strength is now optional (`= undef`, task α #4239) → it lives
     // in `defaults`, not `required_members`.
     assert!(
@@ -175,7 +178,7 @@ fn strong_trait_has_members_and_constraint_default() {
         .collect();
     assert!(
         !constraint_defaults.is_empty(),
-        "Strong trait should have at least 1 constraint default (uts >= yield_strength)"
+        "Strong trait should have at least 1 constraint default (ultimate_tensile_strength >= yield_strength)"
     );
 }
 
