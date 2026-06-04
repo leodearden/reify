@@ -226,11 +226,13 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                 // General path: real-input Schur → complex eigenvalues.
                 let complex_eigs: Vec<Complex<f64>> =
                     m.complex_eigenvalues().iter().copied().collect();
-                // Per-eigenvalue relative threshold: |im| ≤ 1e-9·|λ|. Using
-                // each eigenvalue's own modulus (not a global max_mag) prevents
-                // a dominant real eigenvalue from inflating the threshold enough
-                // to swallow a genuinely complex pair of much smaller magnitude.
-                if complex_eigs.iter().all(|c| c.im.abs() <= 1e-9 * c.re.hypot(c.im)) {
+                // Per-eigenvalue threshold: |im| ≤ 1e-9·(|λ| + 1). The +1 absolute
+                // floor prevents collapse toward zero for near-zero eigenvalues
+                // (re~1e-16, im~2e-16) that would otherwise be misclassified as
+                // complex. Using each eigenvalue's own modulus (not a global max_mag)
+                // prevents a dominant real eigenvalue from inflating the threshold
+                // enough to swallow a genuinely complex pair of much smaller magnitude.
+                if complex_eigs.iter().all(|c| c.im.abs() <= 1e-9 * (c.re.hypot(c.im) + 1.0)) {
                     // Project to reals: imaginary parts are numerical noise.
                     let mut real_eigs: Vec<f64> = complex_eigs.iter().map(|c| c.re).collect();
                     real_eigs
@@ -822,6 +824,29 @@ mod tests {
         if let Value::List(items) = result {
             assert_eq!(items.len(), 4);
             let expected = [2.0, 3.0, 4.0, 5.0];
+            for (i, (&exp, got)) in expected.iter().zip(items.iter()).enumerate() {
+                let v = got.as_f64().unwrap_or_else(|| panic!("eigenvalue[{i}] not numeric"));
+                assert!(
+                    (v - exp).abs() < 1e-9,
+                    "eigenvalue[{i}]: expected {exp}, got {v}"
+                );
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// Non-symmetric, non-triangular 2×2 with a known all-real spectrum.
+    /// [[3,1],[2,4]] has char poly λ²-7λ+10=0 → eigenvalues 2 and 5 (exact).
+    /// This exercises the general (non-symmetric) → project-to-real branch and
+    /// confirms the noise-tolerance threshold handles small imaginary residuals.
+    #[test]
+    fn eigenvalues_non_symmetric_non_triangular_real_spectrum() {
+        let m = make_matrix(&[&[3.0, 1.0], &[2.0, 4.0]]);
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 2, "expected 2 eigenvalues");
+            let expected = [2.0, 5.0];
             for (i, (&exp, got)) in expected.iter().zip(items.iter()).enumerate() {
                 let v = got.as_f64().unwrap_or_else(|| panic!("eigenvalue[{i}] not numeric"));
                 assert!(
