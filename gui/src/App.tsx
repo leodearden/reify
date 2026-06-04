@@ -1393,7 +1393,11 @@ const App: Component = () => {
       selectionStore.toggleSelect(entityPath);
       return;
     }
-    // Plain click or shift+click: navigate to source and single-select
+    // Plain click or shift+click: selection is applied unconditionally inside
+    // navigateToSource (mirrors the Ctrl+click toggleSelect path). Editor
+    // source-scroll is best-effort — silently skipped for realized/derived
+    // geometry (boolean results, patterns, auto-generated sub-entities) that
+    // has no 1:1 source span.
     navigateToSource(entityPath, {
       getSourceLocation: bridgeGetSourceLocation,
       scrollEditor: (loc) => setScrollToLocation(loc),

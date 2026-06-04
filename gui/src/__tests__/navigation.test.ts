@@ -62,6 +62,27 @@ describe('navigation', () => {
       expect(consoleError).toHaveBeenCalled();
       consoleError.mockRestore();
     });
+
+    it('still calls selectEntity when getSourceLocation rejects (entity lacks a source span)', async () => {
+      const getSourceLocation = vi
+        .fn()
+        .mockRejectedValue(new Error('No source location found for BooleanResult'));
+      const scrollEditor = vi.fn();
+      const selectEntity = vi.fn();
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await navigateToSource('BooleanResult', {
+        getSourceLocation,
+        scrollEditor,
+        selectEntity,
+      });
+
+      // Selection must happen unconditionally — even when no source span exists
+      expect(selectEntity).toHaveBeenCalledWith('BooleanResult');
+      // Editor scroll is best-effort; must be skipped when no span is available
+      expect(scrollEditor).not.toHaveBeenCalled();
+      consoleError.mockRestore();
+    });
   });
 
   describe('navigateToEntity', () => {
