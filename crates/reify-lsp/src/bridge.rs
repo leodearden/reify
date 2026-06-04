@@ -564,4 +564,63 @@ fn area(w : Scalar) -> Scalar { w }
             "every edit writes the new name"
         );
     }
+
+    // --- task 4204 δ: SIGNAL TEST — documentHighlight through the bridge ---
+    //
+    // The GUI reaches the occurrence-highlight provider ONLY through the Tauri
+    // `lsp_request` command -> `InProcessLsp::handle_request`, dispatched strictly
+    // by method name. Without the "textDocument/documentHighlight" arm the GUI
+    // would get Err("unsupported LSP method: …"); this drives the canonical
+    // bracket fixture through that exact path. Positions match the server-handler
+    // tests (width use at line 7 col 17; `structure` keyword at line 0 col 0).
+
+    #[tokio::test]
+    async fn handle_request_document_highlight_returns_text_highlights() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///highlight.ri";
+        open_bracket(&lsp, uri).await;
+
+        let value = lsp
+            .handle_request(
+                "textDocument/documentHighlight",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 7, "character": 17 }
+                }),
+            )
+            .await
+            .expect("documentHighlight request should reach the provider via the bridge");
+
+        let highlights: Vec<DocumentHighlight> = serde_json::from_value(value)
+            .expect("response should deserialize as Vec<DocumentHighlight>");
+        assert_eq!(
+            highlights.len(),
+            4,
+            "bracket fixture: 1 decl + 3 uses of width"
+        );
+        assert!(
+            highlights
+                .iter()
+                .all(|h| h.kind == Some(DocumentHighlightKind::TEXT)),
+            "every occurrence highlight is kind TEXT, got {highlights:?}"
+        );
+
+        // A non-resolvable position (the `structure` keyword at line 0 col 0)
+        // yields Ok(None), which serializes to JSON null (no occurrences).
+        let null_value = lsp
+            .handle_request(
+                "textDocument/documentHighlight",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 0 }
+                }),
+            )
+            .await
+            .expect("documentHighlight on a keyword should succeed with a null payload");
+        assert_eq!(
+            null_value,
+            Value::Null,
+            "a non-resolvable position serializes to null (no occurrences)"
+        );
+    }
 }
