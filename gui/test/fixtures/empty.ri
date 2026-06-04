@@ -1,0 +1,5 @@
+// empty.ri — comment-only fixture, no geometry
+//
+// Zero structures defined, zero product meshes.
+// Used as substrate for diagnostics tests (engine.meshCount === 0).
+// Exact empty-file behavior pinned by downstream diagnostics tool-leaf tasks.

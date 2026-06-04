@@ -1,0 +1,11 @@
+// small_cube.ri — single-box root design
+//
+// Compiles to exactly one product mesh (engine.meshCount === 1).
+// Assertion: store_state -> engine.meshCount equals 1
+// (aux meshes excluded per T6 acceptance criterion)
+
+structure SmallCube {
+    param size: Scalar = 10mm
+
+    let body = box(size, size, size)
+}

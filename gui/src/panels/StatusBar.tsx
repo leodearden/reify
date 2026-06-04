@@ -70,10 +70,8 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
 
   const compileSummary = createMemo(() => summarize(props.compileDiagnostics));
 
-  const totalDiagnostics = createMemo(
-    () =>
-      (props.tessellationDiagnostics?.length ?? 0) +
-      (props.compileDiagnostics?.length ?? 0),
+  const diagnosticsTotal = createMemo(
+    () => (props.tessellationDiagnostics?.length ?? 0) + (props.compileDiagnostics?.length ?? 0),
   );
 
   function claudeStatusText(status: SessionStatus): string {
@@ -144,11 +142,9 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
         <span
           class={`${styles.section} ${styles.diagnosticsTotal}`}
           data-testid="diagnostics-total"
-          aria-label={`${totalDiagnostics()} ${
-            totalDiagnostics() === 1 ? 'diagnostic' : 'diagnostics'
-          } total`}
+          aria-label={`${diagnosticsTotal()} ${diagnosticsTotal() === 1 ? 'diagnostic' : 'diagnostics'} total`}
         >
-          {totalDiagnostics()}
+          {diagnosticsTotal()}
         </span>
       </Show>
       <span class={styles.divider} />
