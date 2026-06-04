@@ -389,6 +389,8 @@ fn rank2_components(rows: Rows<'_>) -> Option<(usize, usize, Vec<f64>, Dimension
                             return None;
                         }
                     }
+                } else {
+                    return None;
                 }
             }
         }
@@ -400,6 +402,8 @@ fn rank2_components(rows: Rows<'_>) -> Option<(usize, usize, Vec<f64>, Dimension
                             return None;
                         }
                     }
+                } else {
+                    return None;
                 }
             }
         }

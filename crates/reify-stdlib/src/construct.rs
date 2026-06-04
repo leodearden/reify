@@ -142,8 +142,6 @@ fn eval_identity(args: &[Value]) -> Value {
     build_tensor_rank2(n, n, &data, DimensionVector::DIMENSIONLESS)
 }
 
-
-
 /// Build a rank-2 nested [`Value::Tensor`] (rows of `Tensor` cells) from flat
 /// row-major `data`. Each cell is built via [`Value::from_real_scalar`] (Real
 /// if dimensionless, else Scalar) and wrapped in [`sanitize_value`].
