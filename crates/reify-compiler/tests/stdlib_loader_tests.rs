@@ -50,6 +50,83 @@ fn all_stdlib_modules_have_no_errors() {
     }
 }
 
+// ─── task-4016 ζ: determinacy_purposes load-order invariant ─────────
+//
+// std.determinacy.purposes MUST be the last entry in the stdlib module list.
+// The sequential prelude build runs merge_prelude_purposes for every compile
+// including each intra-stdlib module compile, but no-ops because
+// std.determinacy.purposes is the only module with pub purposes and it is
+// registered last — no later stdlib module sees it as a prelude during
+// load_stdlib(), keeping stdlib-internal count/hash goldens byte-stable.
+//
+// These two tests make the prose invariant machine-checkable so that a future
+// contributor appending a module after std.determinacy.purposes is caught
+// immediately rather than by a silent golden drift.
+
+/// std.determinacy.purposes must be the last module compiled by load_stdlib().
+///
+/// If this fails it means a new stdlib module was appended AFTER
+/// std.determinacy.purposes in stdlib_loader.rs — move it before the
+/// determinacy module, or the sequential merge will leak standard purposes
+/// into that later module during intra-stdlib compilation.
+#[test]
+fn std_determinacy_purposes_is_last_stdlib_module() {
+    let modules = stdlib_loader::load_stdlib();
+    assert!(
+        !modules.is_empty(),
+        "stdlib should have at least one module"
+    );
+    let last = modules.last().unwrap();
+    let path_str = format!("{}", last.path);
+    assert_eq!(
+        path_str, "std/determinacy/purposes",
+        "std.determinacy.purposes must be the LAST stdlib module compiled \
+         (invariant: no later stdlib module may inherit its pub purposes \
+         via the sequential merge). \
+         Got last module: '{}'. \
+         Full order: {:?}",
+        path_str,
+        modules
+            .iter()
+            .map(|m| format!("{}", m.path))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// No stdlib module other than std.determinacy.purposes may have a compiled
+/// purpose named "simulation_ready" or "design_review" in its compiled_purposes.
+///
+/// If this fails it means a module compiled AFTER std.determinacy.purposes
+/// (or one that somehow directly declares these names) is inheriting/re-declaring
+/// the standard purposes, which would break the 'stdlib-internal counts stay
+/// stable' assumption and could cause golden test churn across the stdlib.
+#[test]
+fn no_stdlib_module_inherits_standard_purposes() {
+    let modules = stdlib_loader::load_stdlib();
+    let standard_purpose_names = ["simulation_ready", "design_review"];
+
+    for module in modules {
+        let path_str = format!("{}", module.path);
+        if path_str == "std/determinacy/purposes" {
+            // The declaring module itself is expected to have them.
+            continue;
+        }
+        for purpose in &module.compiled_purposes {
+            assert!(
+                !standard_purpose_names.contains(&purpose.name.as_str()),
+                "stdlib module '{}' unexpectedly has a purpose named '{}' in \
+                 its compiled_purposes. Standard purposes (simulation_ready, \
+                 design_review) must only appear in std.determinacy.purposes \
+                 and in user modules compiled against the full stdlib. \
+                 Check that std.determinacy.purposes is still the LAST entry \
+                 in stdlib_loader.rs's sources vec.",
+                path_str,
+                purpose.name
+            );
+        }
+    }
+}
+
 /// materials_mechanical.ri traits are present in the stdlib (MaterialSpec, Elastic,
 /// Strong, Hard, FatigueRated, FractureTough, Ductile, ImpactResistant, Damping).
 #[test]

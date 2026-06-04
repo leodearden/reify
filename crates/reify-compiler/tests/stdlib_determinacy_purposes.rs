@@ -190,6 +190,77 @@ structure Part {
     );
 }
 
+// ── amendment: first-wins shadow contract ─────────────────────────────────────
+//
+// Exercises the behavioral contract in merge_prelude_purposes: if a user
+// module declares a purpose with the same name as a stdlib purpose, the user's
+// declaration wins (first-wins shadow) and the stdlib one is NOT appended.
+// The surviving purpose must have a user-source declaration_span (NOT the
+// prelude sentinel SourceSpan::prelude()), proving the user-declared purpose
+// is the one in the merged list.
+//
+// If the guard (!result.iter().any(|up| up.name == p.name)) is changed to
+// last-wins or always-append, this test fails — ensuring the shadow contract
+// cannot silently regress.
+
+/// A user purpose named "simulation_ready" shadows the stdlib one: after
+/// compile_with_stdlib the module has exactly ONE "simulation_ready" purpose,
+/// and its declaration_span is the user's (NOT SourceSpan::prelude()).
+#[test]
+fn user_purpose_shadows_stdlib_simulation_ready() {
+    // User source: declares its own simulation_ready before the stdlib merge.
+    // The purpose body must be syntactically valid; it uses the same reflective
+    // quantifier as the stdlib one but over .params (simpler body, same shape).
+    let source = r#"
+purpose simulation_ready(subject : Structure) {
+    constraint forall p in subject.params: determined(p)
+}
+structure Part {
+    param width : Length = 80mm
+}
+"#;
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test_shadow"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in user source: {:?}",
+        parsed.errors
+    );
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    // Exactly one "simulation_ready" — the stdlib duplicate must be suppressed.
+    let sim_ready_purposes: Vec<_> = compiled
+        .compiled_purposes
+        .iter()
+        .filter(|p| p.name == "simulation_ready")
+        .collect();
+    assert_eq!(
+        sim_ready_purposes.len(),
+        1,
+        "expected exactly 1 'simulation_ready' purpose (user shadows stdlib); \
+         found {}: {:?}",
+        sim_ready_purposes.len(),
+        sim_ready_purposes.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
+
+    // The surviving purpose must be the user's, NOT the prelude-merged one.
+    // SourceSpan::prelude() has start == end == u32::MAX; user spans are smaller.
+    let survivor = sim_ready_purposes[0];
+    assert!(
+        !survivor.declaration_span.is_prelude(),
+        "user-declared 'simulation_ready' should have a user source span, \
+         not SourceSpan::prelude() — the stdlib copy must have been suppressed. \
+         Got declaration_span: {:?}",
+        survivor.declaration_span
+    );
+}
+
 // ── step-5: design_review presence ───────────────────────────────────────────
 //
 // Tests added in step-5. RED until design_review is added to determinacy_purposes.ri.

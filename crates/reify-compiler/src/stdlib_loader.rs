@@ -253,12 +253,14 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             // purposes (simulation_ready + design_review, PRD §5) that are merged
             // into every user module via merge_prelude_purposes (task-4016 ζ).
             //
-            // MUST be LAST in the source list: the sequential prelude build runs
-            // merge_prelude_purposes for each user compile, but NOT during the
-            // intra-stdlib build itself. Placing this module last means no other
-            // stdlib module is compiled after it during load_stdlib(), so none
-            // inadvertently inherit the standard purposes during prelude construction
-            // — stdlib-internal count/hash goldens stay byte-stable.
+            // MUST be LAST in the source list: merge_prelude_purposes runs for
+            // every compile including each intra-stdlib module compile, but
+            // no-ops here because std.determinacy.purposes is the only stdlib
+            // module with pub purposes and it is registered last — no later
+            // stdlib module sees it as a prelude during load_stdlib(), so none
+            // inadvertently inherit simulation_ready/design_review during
+            // prelude construction. Stdlib-internal count/hash goldens stay
+            // byte-stable.
             (
                 "std.determinacy.purposes",
                 include_str!("../stdlib/determinacy_purposes.ri"),
