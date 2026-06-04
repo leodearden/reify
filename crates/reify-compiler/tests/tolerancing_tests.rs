@@ -726,6 +726,180 @@ structure def ProbeRFS {
          (zone = 0.1mm < 0.15mm, bonus irrelevant under RFS), got: {:?}",
         result_rfs.constraint_results
     );
+    assert!(
+        !result_rfs
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Satisfied),
+        "RFS case: no Conforms entry should be Satisfied, got: {:?}",
+        result_rfs.constraint_results
+    );
+}
+
+// ─── amend: Conforms LMC branch ──────────────────────────────────────────────
+
+/// LMC adds the feature_departure bonus just like MMC (effective_tolerance_zone
+/// returns tol + departure for both). This mirrors the MMC case and pins that
+/// the LMC branch of effective_tolerance_zone is exercised through Conforms.
+///
+/// zone = 0.1mm + 0.1mm = 0.2mm >= 0.15mm → Satisfied
+#[test]
+fn conforms_gdt_lmc_satisfied() {
+    let source = r#"
+structure def TestTolLMC : GeometricTolerance {
+    param tolerance_value : Length = 0.1mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.LMC
+}
+structure def ProbeLMC {
+    sub t = TestTolLMC()
+    constraint Conforms(tolerance: self.t, measured_deviation: 0.15mm, feature_departure: 0.1mm)
+}
+"#;
+    let result = check_source_with_stdlib(source);
+    assert!(
+        result
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Satisfied),
+        "LMC case: Conforms should be Satisfied \
+         (zone = 0.1+0.1=0.2mm >= 0.15mm), got: {:?}",
+        result.constraint_results
+    );
+    assert!(
+        !result
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Violated),
+        "LMC case: no Conforms entry should be Violated, got: {:?}",
+        result.constraint_results
+    );
+}
+
+// ─── amend: Conforms Undef propagation ───────────────────────────────────────
+
+/// When effective_tolerance_zone returns Value::Undef (degenerate tolerance_value),
+/// the predicate `Undef >= measured_deviation` evaluates to Value::Undef, which
+/// SimpleConstraintChecker maps to Satisfaction::Indeterminate (never Satisfied).
+///
+/// This pins the constraint's behavior on degenerate inputs so that a future
+/// change does not silently make malformed tolerances pass as Satisfied.
+///
+/// The degenerate case is constructed by giving tolerance_value a zero value
+/// (0mm). effective_tolerance_zone requires a finite positive LENGTH — when
+/// tolerance_value = 0mm and departure = 0mm the zone is 0mm, so the predicate
+/// is 0mm >= 0.15mm → false → Violated, not Undef.
+///
+/// A truly Undef-producing path goes through a negative tolerance_value: the
+/// subtraction 0mm - 0.1mm = -0.1mm for tolerance_value=-0.1mm is a finite
+/// scalar, so effective_tolerance_zone still returns a scalar. Undef only
+/// arises from non-LENGTH or wrong-arity args, which cannot be produced via the
+/// typed .ri param.
+///
+/// Therefore: pin the zero-tolerance edge case (0mm zone < 0.15mm → Violated)
+/// and the strict-negative zone (tolerance_value negative, zone < 0 < measured →
+/// Violated), confirming malformed inputs never silently Satisfy.
+#[test]
+fn conforms_gdt_degenerate_never_satisfied() {
+    // Zero tolerance_value: zone = 0mm, departure = 0mm → 0mm >= 0.15mm → false → Violated
+    let source_zero = r#"
+structure def TestTolZero : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+structure def ProbeZero {
+    sub t = TestTolZero()
+    constraint Conforms(tolerance: self.t, measured_deviation: 0.15mm, feature_departure: 0mm)
+}
+"#;
+    let result_zero = check_source_with_stdlib(source_zero);
+    assert!(
+        !result_zero
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Satisfied),
+        "zero tolerance_value: Conforms must not be Satisfied, got: {:?}",
+        result_zero.constraint_results
+    );
+
+    // Negative tolerance_value (via subtraction): zone negative → still < measured → Violated
+    let source_neg = r#"
+structure def TestTolNeg : GeometricTolerance {
+    param tolerance_value : Length = 0mm - 0.1mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+structure def ProbeNeg {
+    sub t = TestTolNeg()
+    constraint Conforms(tolerance: self.t, measured_deviation: 0.15mm, feature_departure: 0mm)
+}
+"#;
+    let result_neg = check_source_with_stdlib(source_neg);
+    assert!(
+        !result_neg
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Satisfied),
+        "negative tolerance_value: Conforms must not be Satisfied, got: {:?}",
+        result_neg.constraint_results
+    );
+}
+
+// ─── amend: ISOToleranceGrade out-of-envelope Undef ──────────────────────────
+
+/// When ISOToleranceGrade is constructed with an out-of-envelope grade (e.g.
+/// IT4, which is below the supported IT5–IT18 range), iso_it_tolerance returns
+/// Value::Undef and the derived `tolerance_value` let resolves to Undef.
+///
+/// NOTE: tolerancing_diagnose is not yet wired into reify-expr (the sibling β/ε
+/// TODO in reify-stdlib/src/lib.rs), so E_TolerancingOutOfEnvelope does not fire
+/// as an eval diagnostic. The observable behavior is a missing/Undef cell.
+///
+/// This test pins the current Undef behavior and will need updating when
+/// tolerancing_diagnose is wired and the diagnostic fires.
+#[test]
+fn iso_tolerance_grade_out_of_envelope_undef() {
+    // IT4 is below IT5 — iso_it_tolerance returns Undef, so the derived let is Undef.
+    let source = r#"
+structure def TestOutOfEnv {
+    param grade : Int = 4
+    param nominal_min : Length = 30mm
+    param nominal_max : Length = 50mm
+    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)
+}
+structure def Probe {
+    sub g = TestOutOfEnv()
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "out-of-envelope ISOToleranceGrade should compile without Error diagnostics, \
+         got: {:?}",
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // The derived let should resolve to Undef (iso_it_tolerance returns Undef for IT4)
+    let cell_id = ValueCellId::new("Probe.g", "tolerance_value");
+    match result.values.get(&cell_id) {
+        Some(Value::Undef) | None => {
+            // Expected: Undef or absent (both indicate the derived let did not
+            // produce a valid value, consistent with out-of-envelope inputs)
+        }
+        Some(other) => panic!(
+            "out-of-envelope grade 4 should yield Undef tolerance_value, got {:?}",
+            other
+        ),
+    }
 }
 
 // ─── β-3: ISOToleranceGrade.tolerance_value derived let (RED) ───────────────
@@ -733,10 +907,16 @@ structure def ProbeRFS {
 /// β-3 RED: ISOToleranceGrade.tolerance_value is still a plain required `param`
 /// (not a derived let). Asserts that:
 /// (a) `ISOToleranceGrade.tolerance_value` is a Let cell (not Param) in the
-///     compiled template.
-/// (b) Evaluating `Probe { sub g = ISOToleranceGrade(grade:7, nominal_min:30mm,
-///     nominal_max:50mm) }` with stdlib prelude yields a LENGTH Scalar ≈ 24.969µm
-///     (the published ISO 286-1 IT7@Ø30-50 = 25µm, pinned by α's own test).
+///     compiled template (structural, exercises the real stdlib def).
+/// (b) Evaluating `iso_it_tolerance(7, 30mm, 50mm)` as a derived let expression
+///     yields a LENGTH Scalar ≈ 24.969µm (the published ISO 286-1 IT7@Ø30-50 =
+///     25µm, pinned by α's own test).
+///
+/// NOTE: Part (b) uses a locally-defined TestISO struct rather than the stdlib
+/// ISOToleranceGrade, because the eval engine resolves sub-component templates
+/// only from the user module (not the stdlib). Part (b) therefore verifies the
+/// derived let *expression* computes correctly, not the stdlib inheritance path.
+/// Part (a) is the structural proof that the real stdlib def uses a Let cell.
 ///
 /// RED because tolerance_value is currently a plain required param, not a
 /// derived let calling iso_it_tolerance.
@@ -839,10 +1019,16 @@ structure def Probe {
 /// β-1 RED: GeometricTolerance.nominal_zone is not yet a trait-level derived
 /// let. Two assertions:
 /// (a) The compiled std/tolerancing GeometricTolerance trait exposes a
-///     `nominal_zone` entry in its `defaults` list (as DefaultKind::Let).
-/// (b) Evaluating `structure def Probe { sub f = Flatness(tolerance_value: 0.05mm) }`
-///     (material_condition omitted → uses Flatness's existing RFS default) produces
-///     a LENGTH Scalar ≈ 5e-5m at ValueCellId::new("Probe.f", "nominal_zone").
+///     `nominal_zone` entry in its `defaults` list (structural, exercises the
+///     real stdlib trait def).
+/// (b) Evaluating `effective_tolerance_zone(0.05mm, RFS, 0mm)` as a derived let
+///     expression produces a LENGTH Scalar ≈ 5e-5m.
+///
+/// NOTE: Part (b) uses a locally-defined TestFlat struct rather than the stdlib
+/// Flatness, because the eval engine resolves sub-component templates only from
+/// the user module (not the stdlib). Part (b) verifies the derived let
+/// *expression* computes correctly; part (a) is the structural proof that the
+/// real stdlib GeometricTolerance trait carries the nominal_zone Let.
 ///
 /// RED because nominal_zone does not exist on the trait yet.
 #[test]
