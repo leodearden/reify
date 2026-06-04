@@ -32,6 +32,30 @@ fn compile_structure(source: &str) -> CompiledModule {
     compiled
 }
 
+/// Assert that the named trait's named member is `RequirementKind::Param` with
+/// the given `DimensionVector`. Shared by the five task-α dimension-pin tests.
+fn assert_member_dimension(trait_name: &str, member: &str, expected_dim: DimensionVector) {
+    let module = load_stdlib_module();
+    let trait_def = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == trait_name)
+        .unwrap_or_else(|| panic!("expected '{trait_name}' trait in compiled module"));
+    let req = trait_def
+        .required_members
+        .iter()
+        .find(|r| r.name == member)
+        .unwrap_or_else(|| panic!("{trait_name} should have '{member}' member"));
+    match &req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Scalar { dimension: expected_dim },
+            "{member} should be Scalar{{{expected_dim:?}}}, got {ty:?}"
+        ),
+        other => panic!("{member} should be Param, got {other:?}"),
+    }
+}
+
 /// Assert that the constraint referencing `member` in `template` uses `expected`
 /// as its BinOp operator. Panics with a message containing `member` on failure.
 fn assert_constraint_op(template: &TopologyTemplate, member: &str, expected: BinOp) {
@@ -1069,7 +1093,8 @@ structure def Beam : Rigid {
     param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
 
     // Rigid requirement (from structural_physical.ri)
-    param moment_of_inertia : MomentOfInertia = 0.00012 * 1kg * 1m * 1m
+    // 10×20×30 mm steel block, mass ≈ 0.047 kg → I ≈ m(a²+b²)/12 ≈ 2e-6 kg·m²
+    param moment_of_inertia : MomentOfInertia = 0.000002 * 1kg * 1m * 1m
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -1288,169 +1313,32 @@ fn electrically_conductive_resistivity_member_is_electric_resistivity_dimension(
     }
 }
 
-/// Task α (supersedes #3114): `Rigid.moment_of_inertia` must be the
-/// named-dimension alias `MomentOfInertia` (kg·m²), tightened from the prior
-/// `Real` placeholder. Pin the dimension so a future loosening fails loudly.
-/// RED until step-2 tightens the .ri.
+/// Task α (supersedes #3114): five dimension-pin tests — each tightened member
+/// must carry the named-dimension alias, not the prior `Real` placeholder.
+/// Uses the shared `assert_member_dimension` helper above.
 #[test]
 fn rigid_moment_of_inertia_member_is_moment_of_inertia_dimension() {
-    let module = load_stdlib_module();
-
-    let rigid = module
-        .trait_defs
-        .iter()
-        .find(|t| t.name == "Rigid")
-        .expect("expected 'Rigid' trait in compiled module");
-
-    let req = rigid
-        .required_members
-        .iter()
-        .find(|r| r.name == "moment_of_inertia")
-        .expect("Rigid should have 'moment_of_inertia' member");
-
-    match &req.kind {
-        RequirementKind::Param(ty) => assert_eq!(
-            *ty,
-            Type::Scalar {
-                dimension: DimensionVector::MOMENT_OF_INERTIA,
-            },
-            "moment_of_inertia should be Scalar{{MOMENT_OF_INERTIA}}, got {:?}",
-            ty
-        ),
-        other => panic!("moment_of_inertia should be Param, got {:?}", other),
-    }
+    assert_member_dimension("Rigid", "moment_of_inertia", DimensionVector::MOMENT_OF_INERTIA);
 }
 
-/// Task α (supersedes #3114): `Flexible.max_deflection` must be the
-/// named-dimension alias `Length` (m), tightened from the prior `Real`
-/// placeholder. Pin the dimension so a future loosening fails loudly.
-/// RED until step-2 tightens the .ri.
 #[test]
 fn flexible_max_deflection_member_is_length_dimension() {
-    let module = load_stdlib_module();
-
-    let flexible = module
-        .trait_defs
-        .iter()
-        .find(|t| t.name == "Flexible")
-        .expect("expected 'Flexible' trait in compiled module");
-
-    let req = flexible
-        .required_members
-        .iter()
-        .find(|r| r.name == "max_deflection")
-        .expect("Flexible should have 'max_deflection' member");
-
-    match &req.kind {
-        RequirementKind::Param(ty) => assert_eq!(
-            *ty,
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH,
-            },
-            "max_deflection should be Scalar{{LENGTH}}, got {:?}",
-            ty
-        ),
-        other => panic!("max_deflection should be Param, got {:?}", other),
-    }
+    assert_member_dimension("Flexible", "max_deflection", DimensionVector::LENGTH);
 }
 
-/// Task α (supersedes #3114): `Plastic.hardening_modulus` must be the
-/// named-dimension alias `Pressure` (Pa = kg·m⁻¹·s⁻²), tightened from the
-/// prior `Real` placeholder. Pin the dimension so a future loosening fails
-/// loudly. RED until step-2 tightens the .ri.
 #[test]
 fn plastic_hardening_modulus_member_is_pressure_dimension() {
-    let module = load_stdlib_module();
-
-    let plastic = module
-        .trait_defs
-        .iter()
-        .find(|t| t.name == "Plastic")
-        .expect("expected 'Plastic' trait in compiled module");
-
-    let req = plastic
-        .required_members
-        .iter()
-        .find(|r| r.name == "hardening_modulus")
-        .expect("Plastic should have 'hardening_modulus' member");
-
-    match &req.kind {
-        RequirementKind::Param(ty) => assert_eq!(
-            *ty,
-            Type::Scalar {
-                dimension: DimensionVector::PRESSURE,
-            },
-            "hardening_modulus should be Scalar{{PRESSURE}}, got {:?}",
-            ty
-        ),
-        other => panic!("hardening_modulus should be Param, got {:?}", other),
-    }
+    assert_member_dimension("Plastic", "hardening_modulus", DimensionVector::PRESSURE);
 }
 
-/// Task α (supersedes #3114): `ThermallyConductive.max_service_temp` must be
-/// the named-dimension alias `Temperature` (K), tightened from the prior
-/// `Real` placeholder. Pin the dimension so a future loosening fails loudly.
-/// RED until step-2 tightens the .ri.
 #[test]
 fn thermally_conductive_max_service_temp_member_is_temperature_dimension() {
-    let module = load_stdlib_module();
-
-    let tc = module
-        .trait_defs
-        .iter()
-        .find(|t| t.name == "ThermallyConductive")
-        .expect("expected 'ThermallyConductive' trait in compiled module");
-
-    let req = tc
-        .required_members
-        .iter()
-        .find(|r| r.name == "max_service_temp")
-        .expect("ThermallyConductive should have 'max_service_temp' member");
-
-    match &req.kind {
-        RequirementKind::Param(ty) => assert_eq!(
-            *ty,
-            Type::Scalar {
-                dimension: DimensionVector::TEMPERATURE,
-            },
-            "max_service_temp should be Scalar{{TEMPERATURE}}, got {:?}",
-            ty
-        ),
-        other => panic!("max_service_temp should be Param, got {:?}", other),
-    }
+    assert_member_dimension("ThermallyConductive", "max_service_temp", DimensionVector::TEMPERATURE);
 }
 
-/// Task α (supersedes #3114): `Sealed.seal_pressure_rating` must be the
-/// named-dimension alias `Pressure` (Pa = kg·m⁻¹·s⁻²), tightened from the
-/// prior `Real` placeholder. Pin the dimension so a future loosening fails
-/// loudly. RED until step-2 tightens the .ri.
 #[test]
 fn sealed_seal_pressure_rating_member_is_pressure_dimension() {
-    let module = load_stdlib_module();
-
-    let sealed = module
-        .trait_defs
-        .iter()
-        .find(|t| t.name == "Sealed")
-        .expect("expected 'Sealed' trait in compiled module");
-
-    let req = sealed
-        .required_members
-        .iter()
-        .find(|r| r.name == "seal_pressure_rating")
-        .expect("Sealed should have 'seal_pressure_rating' member");
-
-    match &req.kind {
-        RequirementKind::Param(ty) => assert_eq!(
-            *ty,
-            Type::Scalar {
-                dimension: DimensionVector::PRESSURE,
-            },
-            "seal_pressure_rating should be Scalar{{PRESSURE}}, got {:?}",
-            ty
-        ),
-        other => panic!("seal_pressure_rating should be Param, got {:?}", other),
-    }
+    assert_member_dimension("Sealed", "seal_pressure_rating", DimensionVector::PRESSURE);
 }
 
 // ─── task-4226 step-3: example reader + negative dimension guard ──────────────
@@ -1512,10 +1400,9 @@ structure def BadSeal : Sealed {
         errors.iter().any(|d| {
             d.message.contains("seal_pressure_rating")
                 || d.message.contains("type mismatch for trait member")
-                || d.message.to_lowercase().contains("mismatch")
         }),
-        "expected an error message referencing 'seal_pressure_rating', \
-         'type mismatch for trait member', or 'mismatch'; got: {:?}",
+        "expected an error message referencing 'seal_pressure_rating' or \
+         'type mismatch for trait member'; got: {:?}",
         errors
     );
 }
