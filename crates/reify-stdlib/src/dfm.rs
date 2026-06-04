@@ -37,3 +37,57 @@ pub(crate) fn eval_dfm(_name: &str, _args: &[Value]) -> Option<Value> {
 pub fn diagnose(_name: &str, _args: &[Value], _result: &Value) -> Vec<Diagnostic> {
     Vec::new()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_core::DimensionVector;
+
+    /// A LENGTH scalar of `si` metres.
+    fn len(si: f64) -> Value {
+        Value::Scalar { si_value: si, dimension: DimensionVector::LENGTH }
+    }
+
+    /// A `Value::BoundingBox` from two LENGTH Point3 corners (metres).
+    fn bbox(min: [f64; 3], max: [f64; 3]) -> Value {
+        Value::BoundingBox {
+            min: Box::new(Value::Point(vec![len(min[0]), len(min[1]), len(min[2])])),
+            max: Box::new(Value::Point(vec![len(max[0]), len(max[1]), len(max[2])])),
+        }
+    }
+
+    // ─── step-1: fits_build_volume happy path ──────────────────────────────
+
+    #[test]
+    fn fits_build_volume_part_inside_envelope_true() {
+        // 10 mm cube part inside a 20 mm cube envelope → fits.
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Bool(true)));
+    }
+
+    #[test]
+    fn fits_build_volume_part_past_one_axis_false() {
+        // Part extent 30 mm on X exceeds the 20 mm envelope (Y/Z fit) → does not fit.
+        let part = bbox([0.0, 0.0, 0.0], [0.030, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Bool(false)));
+    }
+
+    #[test]
+    fn fits_build_volume_equal_extents_true() {
+        // Inclusive `<=`: equal extents fit (PRD §3 G6, no tolerance).
+        let part = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Bool(true)));
+    }
+
+    #[test]
+    fn fits_build_volume_extent_is_position_invariant_true() {
+        // The compare is over extents (max-min), not absolute position: a 10 mm
+        // part offset far from the origin still fits a 20 mm envelope at the origin.
+        let part = bbox([0.100, 0.100, 0.100], [0.110, 0.110, 0.110]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Bool(true)));
+    }
+}
