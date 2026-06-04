@@ -24,6 +24,22 @@
 /// `box(...)` is a deferred GHR-beta handle and its FEA solve is pure-Rust
 /// (reify-solver-elastic).  Both `status.success()` and the absence of the
 /// warning hold unconditionally — no `cfg(has_occt)` gate is needed.
+///
+/// ## Positive guard — `stdout.contains("ShellStress")`
+///
+/// The shell-classified solve produces an `ElasticResult` whose `shell_channels`
+/// field is a real `ShellStress` struct (not `undef`); `reify eval` prints
+/// this to stdout.  Asserting the substring `"ShellStress"` appears in stdout
+/// gives a positive signal that the shell path ran to completion — and makes
+/// the test fail loudly if the fixture's aspect ratio is later changed so it
+/// no longer auto-classifies as a shell solve (which would regress the entire
+/// shell pipeline silently).
+///
+/// Note: `fea_shell_flexure.ri` carries two pre-existing, unrelated `warning:`
+/// diagnostics on stderr (missing `module` declaration; a topology-attribute
+/// selector tie).  Both are present before and after this task's fix, so the
+/// negative assertion relies on anchoring to the specific target name
+/// (`"shell-extract::extract failed"`) rather than asserting `stderr.is_empty()`.
 mod common;
 
 #[test]
@@ -36,10 +52,28 @@ fn eval_shell_fixture_emits_no_tet_fallback_warning() {
         "reify eval exited non-zero.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
+    // Specific regression guard: documents the exact wording of the diagnostic
+    // this test was written to eliminate.  Uses the full "shell-extract::extract
+    // failed; falling back to tet meshing" prefix (the runtime concatenation of
+    // engine_eval.rs:3197-3198) so the assertion text anchors the full target
+    // name and the full fallback phrase, not just a short token that could
+    // coincidentally appear elsewhere.
     assert!(
-        !stderr.contains("falling back to tet meshing"),
+        !stderr.contains("shell-extract::extract failed; falling back to tet meshing"),
         "Unexpected soft-fallback warning on stderr — shell-extract dispatch \
          should succeed once register_shell_extract_compute_fns is registered \
          in configured_eval_engine.\nstderr:\n{stderr}"
+    );
+
+    // Positive guard: confirms the shell-classified FEA solve ran to completion
+    // and produced a real `ShellStress` result (not `shell_channels: undef`
+    // which the tet path would emit).  Fails loudly if the fixture's aspect
+    // ratio changes so it no longer auto-classifies as a shell solve, catching
+    // silent fixture-classification regressions.
+    assert!(
+        stdout.contains("ShellStress"),
+        "Expected 'ShellStress' in eval stdout — shell-classified solve should \
+         produce a real ShellStress shell_channels field.\nstdout:\n{stdout}\
+         \nstderr:\n{stderr}"
     );
 }
