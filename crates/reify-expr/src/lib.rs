@@ -480,6 +480,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 "worst_case" if evaluated_args.len() == 2 => {
                     eval_worst_case_dispatch(&evaluated_args, ctx)
                 }
+                // String-interpolation render builtin (task 3964, PRD §3).
+                // NOTE: this arm lives AFTER the strict-Undef short-circuit —
+                // that is intentional for Cycle 1. The Undef determinacy fix
+                // (Cycle 2, step-4) hoists it above the short-circuit.
+                "__interp_render" if evaluated_args.len() == 1 => {
+                    Value::String(interp_render(&evaluated_args[0]))
+                }
                 _ => {
                     // Composed-field call dispatch: a name in a composed lambda
                     // body (e.g. `base(p)` inside `composed { |p| base(p) * 30 }`)
@@ -1247,6 +1254,30 @@ fn eval_quantifier(
                 Value::Bool(false)
             }
         }
+    }
+}
+
+/// Render a [`Value`] to its human-display [`String`] for string-interpolation
+/// holes (task 3964, PRD §3).
+///
+/// Uses the `format_display` family — **never** the [`std::fmt::Display`] impl —
+/// to produce bare strings (not quoted), engineering units (5 mm not 0.005 m),
+/// and composite forms.
+///
+/// Render rules:
+/// - `Undef` → `"undef"` (the surface keyword; NOT `format_display`'s `"undefined"`)
+/// - `Scalar | Complex | Option(Some(_))` → `format_display_pair` joined
+///   `"{value} {unit}"` when the unit is non-empty (e.g. `5 mm`); plain value
+///   when the unit is empty
+/// - Everything else → `format_display` verbatim
+fn interp_render(value: &Value) -> String {
+    match value {
+        Value::Undef => "undef".to_string(),
+        Value::Scalar { .. } | Value::Complex { .. } | Value::Option(Some(_)) => {
+            let (v, u) = value.format_display_pair();
+            if u.is_empty() { v } else { format!("{v} {u}") }
+        }
+        _ => value.format_display(),
     }
 }
 
