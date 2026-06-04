@@ -35,6 +35,8 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
         values: {} as any,
         constraints: {} as any,
         evalStatus: { phase: 'idle' },
+        compileDiagnostics: [],
+        tessellationDiagnostics: [],
       },
       initFromState: vi.fn(),
     },

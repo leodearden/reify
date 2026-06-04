@@ -5,7 +5,7 @@ import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { EditorView } from '@codemirror/view';
 import { onMount, onCleanup } from 'solid-js';
 import type { Accessor } from 'solid-js';
-import type { FileData, GuiState } from '../types';
+import type { FileData, GuiState, DiagnosticInfo } from '../types';
 
 /** Store references captured at App init time. */
 export interface DebugStores {
@@ -15,6 +15,8 @@ export interface DebugStores {
       values: Record<string, unknown>;
       constraints: Record<string, unknown>;
       evalStatus: { phase: string; progress?: number | null };
+      compileDiagnostics: DiagnosticInfo[];
+      tessellationDiagnostics: DiagnosticInfo[];
     };
     initFromState: (guiState: GuiState) => void;
   };
