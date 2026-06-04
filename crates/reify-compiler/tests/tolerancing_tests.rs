@@ -933,3 +933,119 @@ structure def Probe {
         ),
     }
 }
+
+// ─── β-7: require_finish Bool free fn (RED) ──────────────────────────────────
+
+/// β-7 RED: `require_finish` does not exist yet; this test should fail with
+/// "unknown function: require_finish" (or similar compile error) until step-8
+/// adds it to tolerancing.ri.
+///
+/// Two sub-tests:
+/// (a) Value path: a structure with `param ok : Bool = require_finish(0.0,
+///     SurfaceFinish(parameter: SurfaceParameter.Ra, value: 1.6um,
+///       direction: SurfaceDirection.Multidirectional, process: ""))` evals
+///     values[ValueCellId::new("Probe","ok")] == Value::Bool(true) (1.6um > 0mm).
+/// (b) Constraint path: check_source_with_stdlib with `constraint
+///     require_finish(0.0, SurfaceFinish(... value: 1.6um ...))` produces no
+///     Violated entry; while `value: 0mm` produces a Violated entry.
+///
+/// NOTE: direction and process are supplied explicitly — their defaults are not
+/// added until step-10 (SurfaceFinish.direction/process default params).
+///
+/// RED because `require_finish` is an unknown function until step-8.
+#[test]
+fn require_finish_bool_free_fn() {
+    // (a) Value path: require_finish returns true when finish.value > 0mm ──────
+    let source_value = r#"
+structure def Probe {
+    param ok : Bool = require_finish(0.0, SurfaceFinish(
+        parameter: SurfaceParameter.Ra,
+        value: 1.6um,
+        direction: SurfaceDirection.Multidirectional,
+        process: ""
+    ))
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source_value);
+
+    // No compile errors expected after step-8 makes require_finish available
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "require_finish(value: 1.6um) should compile without errors, got: {:?}",
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    let cell_id = ValueCellId::new("Probe", "ok");
+    let value = result.values.get(&cell_id).unwrap_or_else(|| {
+        let all_keys: Vec<_> = result.values.iter().map(|(k, _)| k).collect();
+        panic!(
+            "Probe.ok not found in eval result; keys: {:?}",
+            all_keys
+        )
+    });
+    assert_eq!(
+        *value,
+        Value::Bool(true),
+        "require_finish(0.0, SurfaceFinish(value: 1.6um)) should be true (1.6um > 0mm), got {:?}",
+        value
+    );
+
+    // (b) Constraint path: constraint satisfied when value > 0mm ───────────────
+    let source_pass = r#"
+structure def ProbePass {
+    constraint require_finish(0.0, SurfaceFinish(
+        parameter: SurfaceParameter.Ra,
+        value: 1.6um,
+        direction: SurfaceDirection.Multidirectional,
+        process: ""
+    ))
+}
+"#;
+    let result_pass = check_source_with_stdlib(source_pass);
+    let violated_pass: Vec<_> = result_pass
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction == Satisfaction::Violated)
+        .collect();
+    assert!(
+        violated_pass.is_empty(),
+        "require_finish(value: 1.6um) constraint should not be Violated, got: {:?}",
+        violated_pass
+    );
+
+    // (b2) Constraint violated when value == 0mm (0mm > 0mm is false) ──────────
+    let source_fail = r#"
+structure def ProbeFail {
+    constraint require_finish(0.0, SurfaceFinish(
+        parameter: SurfaceParameter.Ra,
+        value: 0mm,
+        direction: SurfaceDirection.Multidirectional,
+        process: ""
+    ))
+}
+"#;
+    let result_fail = check_source_with_stdlib(source_fail);
+    let has_violated = result_fail
+        .constraint_results
+        .iter()
+        .any(|e| e.satisfaction == Satisfaction::Violated);
+    assert!(
+        has_violated,
+        "require_finish(value: 0mm) constraint should be Violated (0mm > 0mm is false), got: {:?}",
+        result_fail.constraint_results
+    );
+}
