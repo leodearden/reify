@@ -1515,4 +1515,175 @@ mod tests {
             "an Undef profile → Undef"
         );
     }
+
+    // ── steps 15/16: input_shape_value (impulse arm) ─────────────────────────────
+
+    use super::super::impulse_shaper::convolve_at;
+    use super::super::input_shape::build_train_for_shaper;
+    use super::input_shape_value;
+
+    /// A 1-joint unit ramp `q(t) = t` over `[0, 1]` as a natural-cubic
+    /// `PiecewisePolynomialProfile` (collinear knots → the natural cubic is the
+    /// exact line, so the marshalled command waveform is `f(τ) = τ`). The
+    /// impulse arm convolves this command against the shaper train.
+    fn ramp_profile() -> Value {
+        pp_profile(
+            vec![
+                waypoint(0.0, &[0.0], None, None),
+                waypoint(0.5, &[0.5], None, None),
+                waypoint(1.0, &[1.0], None, None),
+            ],
+            instance("NaturalSpline", vec![]),
+            spline_kind("CubicSpline"),
+        )
+    }
+
+    /// Read a profile `Value`'s waypoints as `(t, values)` pairs — `t` a `Scalar
+    /// TIME`, `values` a `List<Real>`. Panics on any other shape: the impl must
+    /// emit exactly the eval-path Waypoint encoding `value_to_multijoint_spline`
+    /// reads back (so a shaped profile round-trips through the simulator).
+    fn read_waypoints(v: &Value) -> Vec<(f64, Vec<f64>)> {
+        let Value::StructureInstance(data) = v else {
+            panic!("expected a Profile StructureInstance, got {v:?}");
+        };
+        let Some(Value::List(wps)) = data.fields.get(&"waypoints".to_string()) else {
+            panic!("waypoints must be a List");
+        };
+        wps.iter()
+            .map(|wp| {
+                let Value::StructureInstance(d) = wp else {
+                    panic!("waypoint must be a StructureInstance");
+                };
+                let t = match d.fields.get(&"t".to_string()) {
+                    Some(Value::Scalar { si_value, dimension }) => {
+                        assert_eq!(*dimension, DimensionVector::TIME, "waypoint t carries TIME");
+                        *si_value
+                    }
+                    other => panic!("waypoint t must be a Scalar TIME, got {other:?}"),
+                };
+                let vals = match d.fields.get(&"values".to_string()) {
+                    Some(Value::List(xs)) => xs.iter().map(as_real).collect::<Vec<f64>>(),
+                    other => panic!("waypoint values must be a List, got {other:?}"),
+                };
+                (t, vals)
+            })
+            .collect()
+    }
+
+    /// (impulse arm) A unit ramp shaped by `ZVShaper(10 Hz, ζ=0)` becomes a
+    /// genuinely shaped `PiecewisePolynomialProfile` (NOT an echo of the input):
+    /// - `mechanism` / `boundary` / `spline_kind` are preserved (only `waypoints`
+    ///   change);
+    /// - the total duration is extended by the shaper delay Δ = `trailing_time`;
+    /// - every output waypoint's command equals the convolved reconstruction
+    ///   `convolve_at(train, ramp_command, t_domain, t)` at that waypoint's time;
+    /// - start (`ramp(0)=0`) and final (`ramp(1)=1`) values are preserved
+    ///   (`Σ Aᵢ = 1`);
+    /// - at least one interior command departs from the unshaped ramp.
+    #[test]
+    fn input_shape_value_impulse_arm_shapes_ramp() {
+        let ramp = ramp_profile();
+        let zv = shaper(10.0); // ZVShaper(10 Hz, ζ=0)
+
+        // The impl marshals the profile to this same spline; reconstruct it here
+        // to certify the convolution identity (and the grid mapping) independently.
+        let spline = value_to_multijoint_spline(&ramp).expect("ramp marshals to a spline");
+        let t_domain = spline.duration();
+        let train = build_train_for_shaper(&zv).expect("ZVShaper → train");
+        let delta = train.trailing_time();
+        assert!(delta > 0.0, "ZV has a nonzero shaper delay Δ");
+
+        let shaped = input_shape_value(&ramp, &zv);
+
+        // Type + field preservation: only waypoints change.
+        let Value::StructureInstance(data) = &shaped else {
+            panic!("input_shape_value must yield a Profile StructureInstance, got {shaped:?}");
+        };
+        assert_eq!(
+            data.type_name, "PiecewisePolynomialProfile",
+            "real shaping preserves the Profile type_name"
+        );
+        assert_eq!(
+            data.fields.get(&"mechanism".to_string()),
+            Some(&Value::Real(0.0)),
+            "mechanism preserved"
+        );
+        match data.fields.get(&"boundary".to_string()) {
+            Some(Value::StructureInstance(b)) => {
+                assert_eq!(b.type_name, "NaturalSpline", "boundary preserved")
+            }
+            other => panic!("boundary must be preserved as a StructureInstance, got {other:?}"),
+        }
+        match data.fields.get(&"spline_kind".to_string()) {
+            Some(Value::Enum { variant, .. }) => {
+                assert_eq!(variant, "CubicSpline", "spline_kind preserved")
+            }
+            other => panic!("spline_kind must be preserved as an Enum, got {other:?}"),
+        }
+
+        // Waypoints: genuinely re-sampled over the Δ-extended grid.
+        let out = read_waypoints(&shaped);
+        assert!(out.len() >= 2, "a shaped profile has ≥2 waypoints");
+        let first_t = out.first().unwrap().0;
+        let last_t = out.last().unwrap().0;
+        assert!((first_t - 0.0).abs() < 1e-9, "shaped grid starts at 0");
+        assert!(
+            ((last_t - first_t) - (t_domain + delta)).abs() < 1e-9,
+            "total shaped duration == original ({t_domain}) + trailing_time ({delta}), got {}",
+            last_t - first_t
+        );
+
+        // Convolution identity at every output waypoint time.
+        let mut max_dev_from_ramp = 0.0_f64;
+        for (t, vals) in &out {
+            assert_eq!(vals.len(), 1, "one joint");
+            let want = convolve_at(&train, &|tau: f64| spline.eval(tau)[0], t_domain, *t);
+            assert!(
+                (vals[0] - want).abs() < 1e-9,
+                "shaped command at t={t:.5} must equal the convolve_at reconstruction: \
+                 got {}, want {want}",
+                vals[0]
+            );
+            if *t <= t_domain {
+                max_dev_from_ramp = max_dev_from_ramp.max((vals[0] - spline.eval(*t)[0]).abs());
+            }
+        }
+
+        // Start + final-value preservation (Σ Aᵢ = 1) — independent of the loop above.
+        assert!(
+            out.first().unwrap().1[0].abs() < 1e-9,
+            "shaped start value preserved (ramp(0) = 0)"
+        );
+        assert!(
+            (out.last().unwrap().1[0] - 1.0).abs() < 1e-9,
+            "shaped final value preserved (ramp(1) = 1), got {}",
+            out.last().unwrap().1[0]
+        );
+        // Genuinely shaped: the interior command departs from the raw ramp.
+        assert!(
+            max_dev_from_ramp > 1e-3,
+            "the ZV-shaped command must differ from the unshaped ramp (peak Δ={max_dev_from_ramp:.3e})"
+        );
+    }
+
+    /// An unrecognised shaper — and non-`StructureInstance` args — yield
+    /// `Value::Undef` (the bad-args convention; the impulse arm requires a
+    /// resolvable train).
+    #[test]
+    fn input_shape_value_unknown_shaper_is_undef() {
+        let ramp = ramp_profile();
+        let unknown = instance("FooShaper", vec![]);
+        assert!(
+            matches!(input_shape_value(&ramp, &unknown), Value::Undef),
+            "an unrecognised shaper → Undef"
+        );
+        assert!(
+            matches!(input_shape_value(&Value::Real(0.0), &shaper(10.0)), Value::Undef),
+            "a non-instance profile → Undef"
+        );
+        assert!(
+            matches!(input_shape_value(&ramp, &Value::Real(0.0)), Value::Undef),
+            "a non-instance shaper → Undef"
+        );
+    }
 }
