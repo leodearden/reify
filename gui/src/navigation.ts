@@ -15,16 +15,23 @@ export interface NavigateToSourceDeps {
 
 /**
  * Navigate from viewport selection to editor source location.
- * Calls bridge.getSourceLocation, scrolls editor, and updates selection.
+ *
+ * Selection is updated unconditionally — the entity is always selected
+ * regardless of whether it has a resolvable source span.
+ *
+ * Editor source-scroll is best-effort: it is silently skipped when
+ * getSourceLocation rejects (e.g. realized/derived geometry — boolean
+ * results, patterns, auto-generated sub-entities — that has no 1:1
+ * source span). A console.error is logged for diagnostic purposes.
  */
 export async function navigateToSource(
   entityPath: string,
   deps: NavigateToSourceDeps,
 ): Promise<void> {
+  deps.selectEntity(entityPath);
   try {
     const location = await deps.getSourceLocation(entityPath);
     deps.scrollEditor(location);
-    deps.selectEntity(entityPath);
   } catch (err) {
     console.error('Failed to navigate to source:', err);
   }
