@@ -3116,6 +3116,12 @@ impl Engine {
             }
         }
 
+        // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
+        // Mirrors the eval() call site (above detect_scope_coupling).  eval_cached
+        // is the incremental LSP path; without this call the GUI/LSP would drop the
+        // MechanismDuplicateSolid diagnostic on every incremental re-evaluation.
+        diagnostics.extend(detect_mechanism_errors(&values));
+
         CachedEvalResult {
             eval_result: EvalResult {
                 values,
