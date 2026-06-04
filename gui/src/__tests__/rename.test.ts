@@ -12,8 +12,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
-import { applyWorkspaceEdit } from '../editor/rename';
+import { applyWorkspaceEdit, renameCommand } from '../editor/rename';
+import type { RenameClient, RenameUi } from '../editor/rename';
 import type { WorkspaceEdit } from '../editor/lspClient';
+import { flushMacrotasks } from './test-utils';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -163,5 +165,198 @@ describe('applyWorkspaceEdit', () => {
 
     expect(result).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renameCommand — CodeMirror Command factory (cursor → prepareRename → UI)
+// ---------------------------------------------------------------------------
+
+/** Build a mocked rename client + ui from individually-trackable vi.fns. */
+function makeRenameDeps() {
+  const prepareRename = vi.fn();
+  const rename = vi.fn();
+  const promptNewName = vi.fn();
+  const showCannotRename = vi.fn();
+  const client = { prepareRename, rename } as unknown as RenameClient;
+  const ui = { promptNewName, showCannotRename } as unknown as RenameUi;
+  return { client, ui, prepareRename, rename, promptNewName, showCannotRename };
+}
+
+describe('renameCommand', () => {
+  it('(a) returns a CodeMirror Command (function) that returns true synchronously', () => {
+    const { client, ui, prepareRename } = makeRenameDeps();
+    prepareRename.mockResolvedValue(null);
+
+    const command = renameCommand(() => URI, client, ui);
+    expect(typeof command).toBe('function');
+
+    const view = makeMockView();
+    // Always consume the key — even before the async prepareRename resolves.
+    expect(command(view)).toBe(true);
+  });
+
+  it('(d) derives 0-based line/char from view.state.selection.main.head', async () => {
+    const { client, ui, prepareRename } = makeRenameDeps();
+    prepareRename.mockResolvedValue(null);
+
+    // head = 47; lineAt(47) → line 3 (1-based), from 40
+    // lspLine = 3 - 1 = 2 ; lspChar = 47 - 40 = 7
+    const view = makeMockView({
+      state: {
+        selection: { main: { head: 47 } },
+        doc: { lineAt: (_pos: number) => ({ number: 3, from: 40, to: 55 }) },
+      },
+    });
+
+    renameCommand(() => URI, client, ui)(view);
+    await flushMacrotasks();
+
+    expect(prepareRename).toHaveBeenCalledWith(URI, 2, 7);
+  });
+
+  it('(b) REFUSAL: prepareRename → null calls ui.showCannotRename and performs no edit', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showCannotRename } = makeRenameDeps();
+    prepareRename.mockResolvedValue(null);
+
+    const dispatch = vi.fn();
+    // head = 5 ; lineAt(5) → line 1, from 0 → lspLine 0, lspChar 5
+    const view = makeMockView({
+      dispatch,
+      state: {
+        selection: { main: { head: 5 } },
+        doc: { lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }) },
+      },
+    });
+
+    const result = renameCommand(() => URI, client, ui)(view);
+    expect(result).toBe(true);
+
+    await flushMacrotasks();
+
+    expect(prepareRename).toHaveBeenCalledWith(URI, 0, 5);
+    // Refusal path: show the message, open NO field, request NO rename, edit NOTHING.
+    expect(showCannotRename).toHaveBeenCalledTimes(1);
+    expect(showCannotRename).toHaveBeenCalledWith(view);
+    expect(promptNewName).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('(c) ACCEPT: opens the prompt; onSubmit triggers rename and applies the edit', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showCannotRename } = makeRenameDeps();
+    const target = {
+      range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } },
+      placeholder: 'width',
+    };
+    const edit: WorkspaceEdit = {
+      changes: { [URI]: [{ range: target.range, newText: 'girth' }] },
+    };
+    prepareRename.mockResolvedValue(target);
+    rename.mockResolvedValue(edit);
+
+    const dispatch = vi.fn();
+    // head = 5 → lspLine 0, lspChar 5
+    const view = makeMockView({
+      dispatch,
+      state: {
+        selection: { main: { head: 5 } },
+        doc: {
+          lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+        },
+      },
+    });
+
+    renameCommand(() => URI, client, ui)(view);
+    await flushMacrotasks();
+
+    // Accept path: open the inline field with the target, refuse NOTHING.
+    expect(prepareRename).toHaveBeenCalledWith(URI, 0, 5);
+    expect(showCannotRename).not.toHaveBeenCalled();
+    expect(promptNewName).toHaveBeenCalledTimes(1);
+    const [promptView, promptRange, promptPlaceholder, onSubmit, onCancel] =
+      promptNewName.mock.calls[0];
+    expect(promptView).toBe(view);
+    expect(promptRange).toEqual(target.range);
+    expect(promptPlaceholder).toBe('width');
+    expect(typeof onSubmit).toBe('function');
+    expect(typeof onCancel).toBe('function');
+    // No rename/edit happens until the user actually submits a new name.
+    expect(rename).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+
+    // Submitting "girth" requests the rename and applies the returned edit.
+    onSubmit('girth');
+    await flushMacrotasks();
+
+    expect(rename).toHaveBeenCalledWith(URI, 0, 5, 'girth');
+    // applyWorkspaceEdit mapped line 0 char 5..10 → from 5, to 10.
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith({
+      changes: [{ from: 5, to: 10, insert: 'girth' }],
+      userEvent: 'rename',
+    });
+  });
+
+  it('does NOT apply the edit when the view was destroyed (isConnected=false) before rename resolved', async () => {
+    const { client, ui, prepareRename, rename, promptNewName } = makeRenameDeps();
+    const target = {
+      range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } },
+      placeholder: 'width',
+    };
+    const edit: WorkspaceEdit = {
+      changes: { [URI]: [{ range: target.range, newText: 'girth' }] },
+    };
+    prepareRename.mockResolvedValue(target);
+    rename.mockResolvedValue(edit);
+
+    const dispatch = vi.fn();
+    const view = makeMockView({
+      dispatch,
+      state: {
+        selection: { main: { head: 5 } },
+        doc: {
+          lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+        },
+      },
+      dom: { isConnected: false },
+    });
+
+    renameCommand(() => URI, client, ui)(view);
+    await flushMacrotasks();
+
+    const onSubmit = promptNewName.mock.calls[0][3] as (newName: string) => void;
+    onSubmit('girth');
+    await flushMacrotasks();
+
+    // The rename request still fires, but the destroyed view must NOT be dispatched to.
+    expect(rename).toHaveBeenCalledWith(URI, 0, 5, 'girth');
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('uses the URI from the getter at call time (re-resolves after a file switch)', async () => {
+    const { client, ui, prepareRename } = makeRenameDeps();
+    prepareRename.mockResolvedValue(null);
+
+    let currentUri = 'file:///first.ri';
+    const command = renameCommand(() => currentUri, client, ui);
+
+    const view = makeMockView({
+      state: {
+        selection: { main: { head: 5 } },
+        doc: { lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }) },
+      },
+    });
+
+    command(view);
+    await flushMacrotasks();
+    expect(prepareRename).toHaveBeenLastCalledWith('file:///first.ri', 0, 5);
+
+    currentUri = 'file:///second.ri';
+    command(view);
+    await flushMacrotasks();
+    expect(prepareRename).toHaveBeenLastCalledWith('file:///second.ri', 0, 5);
   });
 });
