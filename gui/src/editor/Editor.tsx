@@ -14,6 +14,7 @@ import { reifyCompletionSource } from './completions';
 import { createDiagnosticsListener, lspDiagnosticToCodeMirror, diagnosticInfoToCmDiagnostic, type CmDiagnostic } from './diagnostics';
 import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition, gotoDefinitionCommand } from './gotoDefinition';
+import { occurrenceHighlightExtension } from './occurrenceHighlight';
 import { renameCommand, type RenameUi } from './rename';
 import { createNavHistory } from '../hooks/useNavHistory';
 import type { NavEntry } from '../hooks/useNavHistory';
@@ -306,6 +307,8 @@ export function Editor(props: EditorProps) {
       reifyHoverTooltip(() => currentUri),
       // LSP-powered go-to-definition (Ctrl+Click) — dynamic URI getter
       reifyGotoDefinition(() => currentUri, onCrossFileNavigate, onRecordJump),
+      // LSP-powered occurrence highlights — appear on cursor-idle, clear on move
+      occurrenceHighlightExtension(() => currentUri, lspClient),
       // Find/replace (Ctrl+F, Ctrl+H)
       search(),
       // Diagnostic linter (diagnostics are pushed from LSP via Tauri events)
