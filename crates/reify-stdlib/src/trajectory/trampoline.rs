@@ -80,6 +80,47 @@ impl SimulateTrajectoryCacheKey {
     }
 }
 
+/// The result-determining inputs of an `input_shape` solve, used to decide
+/// whether a cached shaped-`Profile` result (`reify-eval`'s `trajectory_ops`
+/// warm state) can be reused for a new call.
+///
+/// Two [`ContentHash`]es — one per `input_shape(profile, shaper)` input
+/// ([`Value::content_hash`]). A full per-field match certifies the cached
+/// shaped `Profile` for reuse (a cache HIT); a profile control-point change ⇒
+/// `profile_hash` differs ⇒ MISS. Folding the whole `shaper` `Value` covers
+/// both the cheap impulse arms (ZV/ZVD/EI/Cascaded) and the heavy TOTS arm
+/// uniformly — the cache is high-value only for TOTS, but routing the impulse
+/// arms through the same key is harmless.
+///
+/// Compared via [`matches`](InputShapeCacheKey::matches). `Copy`/`Debug`, NOT
+/// `PartialEq` — the same single-`matches`-path discipline as
+/// [`SimulateTrajectoryCacheKey`] and
+/// `dynamics::trampoline::InverseDynamicsCacheKey`.
+#[derive(Clone, Copy, Debug)]
+pub struct InputShapeCacheKey {
+    /// Content hash of the profile `Value` (`profile.content_hash()`).
+    pub profile_hash: ContentHash,
+    /// Content hash of the shaper `Value` (`shaper.content_hash()`).
+    pub shaper_hash: ContentHash,
+}
+
+impl InputShapeCacheKey {
+    /// Build a key from the two `input_shape` inputs, each hashed via
+    /// [`Value::content_hash`].
+    pub fn from_inputs(profile: &Value, shaper: &Value) -> Self {
+        Self {
+            profile_hash: profile.content_hash(),
+            shaper_hash: shaper.content_hash(),
+        }
+    }
+
+    /// `true` iff every field hash equals `other`'s (a cache HIT). Per-field
+    /// `ContentHash` equality is symmetric and collision-free.
+    pub fn matches(&self, other: &InputShapeCacheKey) -> bool {
+        self.profile_hash == other.profile_hash && self.shaper_hash == other.shaper_hash
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
