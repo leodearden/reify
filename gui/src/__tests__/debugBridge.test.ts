@@ -1351,6 +1351,87 @@ describe('debug bridge dual-viewport binding regression', () => {
 });
 
 // ---------------------------------------------------------------------------
+// debug bridge get_diagnostics (task-4297 step-1 RED → step-2 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge get_diagnostics', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(stores: ReturnType<typeof makeStores>, id: number, command: string, params: Record<string, unknown> = {}) {
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('returns shaped compile and tessellation diagnostics from stores', async () => {
+    const stores = makeStores();
+    stores.engine.state.compileDiagnostics = [
+      { file_path: 'broken.ri', line: 8, column: 5, end_line: 8, end_column: 6,
+        severity: 'Error', message: 'unexpected EOF', code: 'parse-error' },
+    ];
+    stores.engine.state.tessellationDiagnostics = [
+      { file_path: 'broken.ri', line: 12, column: 1, end_line: 12, end_column: 10,
+        severity: 'Warning', message: 'mesh degenerate', code: 'tess-warn' },
+    ];
+
+    const result = await dispatch(stores, 2000, 'get_diagnostics');
+
+    // compile array
+    expect(Array.isArray(result.compile)).toBe(true);
+    expect(result.compile).toHaveLength(1);
+    const c = result.compile[0];
+    expect(c.severity).toBe('Error');
+    expect(c.message).toBe('unexpected EOF');
+    expect(c.code).toBe('parse-error');
+    expect(c.file_path).toBe('broken.ri');
+    expect(c.range).toEqual({ line: 8, column: 5, end_line: 8, end_column: 6 });
+
+    // tessellation array
+    expect(Array.isArray(result.tessellation)).toBe(true);
+    expect(result.tessellation).toHaveLength(1);
+    const t = result.tessellation[0];
+    expect(t.severity).toBe('Warning');
+    expect(t.message).toBe('mesh degenerate');
+    expect(t.code).toBe('tess-warn');
+    expect(t.range).toEqual({ line: 12, column: 1, end_line: 12, end_column: 10 });
+
+    // counts
+    expect(result.compileCount).toBe(1);
+    expect(result.tessellationCount).toBe(1);
+  });
+
+  it('returns empty arrays and zero counts when diagnostics are absent', async () => {
+    const stores = makeStores();
+    // compileDiagnostics/tessellationDiagnostics seeded as [] by makeStores
+
+    const result = await dispatch(stores, 2001, 'get_diagnostics');
+
+    expect(result.compile).toEqual([]);
+    expect(result.tessellation).toEqual([]);
+    expect(result.compileCount).toBe(0);
+    expect(result.tessellationCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Layout ctx exposure (task-4294)
 // ---------------------------------------------------------------------------
 
