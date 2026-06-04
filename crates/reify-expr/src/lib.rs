@@ -3685,6 +3685,74 @@ mod tests {
         }
     }
 
+    // ── task 4272 step-11: fits_build_volume DFM diagnostic via eval_expr ─────
+    //
+    // A `fits_build_volume(part, envelope, DFMSeverity.Warning)` builtin call
+    // whose design VIOLATES the rule (part bbox extent past the envelope →
+    // Bool(false)) must push a W_DFM Warning into the runtime diagnostics sink
+    // when evaluated through eval_expr's FunctionCall arm. Drives the
+    // emit_dfm_diagnostics wiring (step-12); mirrors the flexure diagnostic-sink
+    // emission, which likewise fires on the SUCCESS (non-Undef) path.
+    #[test]
+    fn fits_build_volume_violation_emits_dfm_warning_into_sink() {
+        // LENGTH scalar of `si` metres.
+        fn len(si: f64) -> Value {
+            Value::Scalar {
+                si_value: si,
+                dimension: DimensionVector::LENGTH,
+            }
+        }
+        // BoundingBox from two LENGTH Point3 corners (metres).
+        fn bbox(min: [f64; 3], max: [f64; 3]) -> Value {
+            Value::BoundingBox {
+                min: Box::new(Value::Point(vec![len(min[0]), len(min[1]), len(min[2])])),
+                max: Box::new(Value::Point(vec![len(max[0]), len(max[1]), len(max[2])])),
+            }
+        }
+
+        // Part X-extent 30 mm exceeds the 20 mm envelope → does not fit.
+        let part = bbox([0.0, 0.0, 0.0], [0.030, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let sev = Value::Enum {
+            type_name: "DFMSeverity".into(),
+            variant: "Warning".into(),
+        };
+
+        // The literal args' static Type is not consulted at runtime (eval_expr's
+        // Literal arm clones the value), so Type::Real is a neutral placeholder.
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x4f, 0x44, 0x46, 0x4d]),
+            result_type: Type::Bool,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "fits_build_volume".to_string(),
+                    qualified_name: "std::fits_build_volume".to_string(),
+                },
+                args: vec![
+                    lit(part, Type::Real),
+                    lit(env, Type::Real),
+                    lit(sev, Type::Real),
+                ],
+            },
+        };
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Bool(false), "part does not fit the envelope");
+
+        let diags = sink.borrow();
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Warning
+                    && d.message.contains("W_DFM")),
+            "expected a W_DFM Warning in the runtime sink, got {diags:?}"
+        );
+    }
+
     #[test]
     fn function_call_sin_with_angle() {
         let arg = lit(
