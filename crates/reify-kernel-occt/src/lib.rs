@@ -8803,4 +8803,37 @@ mod tests {
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
         }
     }
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_negative_top_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cone {
+            bottom_radius: Value::Real(0.010),
+            top_radius: Value::Real(-0.001),
+            height: Value::Real(0.020),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for negative top_radius"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_non_positive_height_returns_error() {
+        let mut kernel = OcctKernel::new();
+        // height == 0 is a degenerate flat disk — must be rejected.
+        let result = kernel.execute(&GeometryOp::Cone {
+            bottom_radius: Value::Real(0.010),
+            top_radius: Value::Real(0.005),
+            height: Value::Real(0.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for zero height"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
 }

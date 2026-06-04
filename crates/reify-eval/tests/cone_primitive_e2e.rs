@@ -94,7 +94,7 @@ fn cone_through_mock_kernel_emits_geometry_op_cone() {
 ///
 /// RED until step-6 wires the full compiler+eval pipeline.
 #[test]
-fn cone_frustum_through_full_pipeline_matches_formula() {
+fn cone_frustum_through_full_pipeline_produces_geometry() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!("skipping: OCCT not available");
         return;
@@ -197,7 +197,7 @@ fn cone_frustum_through_full_pipeline_matches_formula() {
 ///
 /// RED until step-6 wires the full compiler+eval pipeline.
 #[test]
-fn cone_pointed_through_full_pipeline_matches_formula() {
+fn cone_pointed_through_full_pipeline_produces_geometry() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!("skipping: OCCT not available");
         return;

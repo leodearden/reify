@@ -255,6 +255,16 @@ pub fn seed_primitive_attributes(
             // The FaceNormal-z classification handles both transparently:
             // nz ≈ +1 → Cap(Top), nz ≈ -1 → Cap(Bottom), |nz| ≈ 0 → Side.
             //
+            // Limitation (Cone only): this assumes the lateral face has a
+            // near-horizontal normal (|nz| well below 1 - 1e-6).  A very
+            // steep frustum — large radius delta over a small height — drives
+            // the slanted-face normal toward the z-axis, risking
+            // misclassification of the Side face as Cap(Top/Bottom).
+            // Steep cones are uncommon in practice and out of scope for this
+            // task; a future improvement should classify by planar-vs-conical
+            // surface type (BRep surface type query) rather than an absolute
+            // nz threshold to handle the degenerate regime correctly.
+            //
             // For the canonical 3-face case each role appears exactly
             // once and `local_index` is 0 for every entry. Per-role
             // counters preserve that invariant while remaining safe
