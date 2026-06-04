@@ -104,13 +104,13 @@ pub fn correlate_facets(
 /// - `run_index` is non-decreasing with `run_index[last] == num_tri * 3`
 /// - `merge_from_vert.len() == merge_to_vert.len()`
 fn correlate_from_vectors(
-    num_tri: usize,
-    run_index: &[u64],
-    run_original_id: &[u32],
-    face_id: &[u64],
-    merge_from_vert: &[u64],
-    merge_to_vert: &[u64],
-    parent: &HashMap<u32, TopologyAttribute>,
+    _num_tri: usize,
+    _run_index: &[u64],
+    _run_original_id: &[u32],
+    _face_id: &[u64],
+    _merge_from_vert: &[u64],
+    _merge_to_vert: &[u64],
+    _parent: &HashMap<u32, TopologyAttribute>,
 ) -> Result<Vec<FacetProvenance>, String> {
     // Placeholder: walk not yet implemented.
     Err("provenance walk unimplemented".into())
@@ -129,5 +129,97 @@ mod tests {
             user_label: None,
             mod_history: vec![],
         }
+    }
+
+    /// Verifies that `correlate_from_vectors` partitions triangles by run and
+    /// resolves source attributes from the parent map (or yields `None` for
+    /// unmapped original ids).
+    ///
+    /// Synthetic well-formed vectors:
+    ///   num_tri = 4
+    ///   run_index = [0, 6, 12]   (flat tri-vert units: ×3 per triangle)
+    ///     → run 0 covers tris 0..2 (run_index[0]/3=0 .. run_index[1]/3=2)
+    ///     → run 1 covers tris 2..4 (run_index[1]/3=2 .. run_index[2]/3=4)
+    ///   run_original_id = [10, 20]
+    ///   face_id = [100, 100, 200, 200]
+    ///   merge_from_vert = [] (empty — structurally valid)
+    ///   merge_to_vert   = [] (empty — structurally valid)
+    ///   parent = {10 → attrA} — id 20 deliberately unmapped
+    ///
+    /// Expected: Ok with 4 FacetProvenance entries.
+    ///   facets[0],[1]: descriptor{run_original_id:10, face_id:100}, source==Some(attrA)
+    ///   facets[2],[3]: descriptor{run_original_id:20, face_id:200}, source==None
+    ///   triangle indices 0, 1, 2, 3 in order
+    #[test]
+    fn correlate_from_vectors_partitions_runs_and_resolves_sources() {
+        let attr_a = make_attr("A");
+        let mut parent: HashMap<u32, TopologyAttribute> = HashMap::new();
+        parent.insert(10u32, attr_a.clone());
+        // id 20 is deliberately NOT inserted
+
+        let num_tri: usize = 4;
+        // run_index in flat tri-vert units: 0, 6 (=2*3), 12 (=4*3)
+        let run_index: &[u64] = &[0, 6, 12];
+        let run_original_id: &[u32] = &[10, 20];
+        let face_id: &[u64] = &[100, 100, 200, 200];
+        let merge_from_vert: &[u64] = &[];
+        let merge_to_vert: &[u64] = &[];
+
+        let result = correlate_from_vectors(
+            num_tri,
+            run_index,
+            run_original_id,
+            face_id,
+            merge_from_vert,
+            merge_to_vert,
+            &parent,
+        );
+
+        let facets = result.expect("well-formed vectors must produce Ok");
+        assert_eq!(facets.len(), 4, "must produce one FacetProvenance per triangle");
+
+        // Facets 0 and 1: run 0 (original_id 10, mapped → Some(attrA))
+        assert_eq!(facets[0].triangle, 0);
+        assert_eq!(
+            facets[0].descriptor,
+            FacetDescriptor { run_original_id: 10, face_id: 100 }
+        );
+        assert_eq!(
+            facets[0].source.as_ref(),
+            Some(&attr_a),
+            "facet 0 source must be Some(attrA) — id 10 is in parent map"
+        );
+
+        assert_eq!(facets[1].triangle, 1);
+        assert_eq!(
+            facets[1].descriptor,
+            FacetDescriptor { run_original_id: 10, face_id: 100 }
+        );
+        assert_eq!(
+            facets[1].source.as_ref(),
+            Some(&attr_a),
+            "facet 1 source must be Some(attrA)"
+        );
+
+        // Facets 2 and 3: run 1 (original_id 20, not in map → None)
+        assert_eq!(facets[2].triangle, 2);
+        assert_eq!(
+            facets[2].descriptor,
+            FacetDescriptor { run_original_id: 20, face_id: 200 }
+        );
+        assert!(
+            facets[2].source.is_none(),
+            "facet 2 source must be None — id 20 is not in parent map"
+        );
+
+        assert_eq!(facets[3].triangle, 3);
+        assert_eq!(
+            facets[3].descriptor,
+            FacetDescriptor { run_original_id: 20, face_id: 200 }
+        );
+        assert!(
+            facets[3].source.is_none(),
+            "facet 3 source must be None — id 20 is not in parent map"
+        );
     }
 }
