@@ -198,6 +198,39 @@ describe("VALUE_SCENARIOS", () => {
       });
     }
   });
+
+  // task-4297 step-7 RED → step-8 GREEN: R2 e2e signal scenarios
+  it("contains get_diagnostics_broken_syntax with correct shape", () => {
+    const scenario: ValueScenario | undefined = VALUE_SCENARIOS.find(
+      (s) => s.name === "get_diagnostics_broken_syntax",
+    );
+    expect(scenario).toBeDefined();
+    if (scenario) {
+      expect(scenario.fixture).toBe("broken_syntax");
+      expect(scenario.tool).toBe("get_diagnostics");
+      expect(scenario.assertions).toContainEqual({
+        path: "compileCount",
+        op: "atLeast",
+        expected: 1,
+      });
+    }
+  });
+
+  it("contains ui_outline_small_cube with correct shape", () => {
+    const scenario: ValueScenario | undefined = VALUE_SCENARIOS.find(
+      (s) => s.name === "ui_outline_small_cube",
+    );
+    expect(scenario).toBeDefined();
+    if (scenario) {
+      expect(scenario.fixture).toBe("small_cube");
+      expect(scenario.tool).toBe("ui_outline");
+      expect(scenario.assertions).toContainEqual({
+        path: "count",
+        op: "atLeast",
+        expected: 1,
+      });
+    }
+  });
 });
 
 describe("runValueScenario", () => {
