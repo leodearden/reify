@@ -147,3 +147,52 @@ inside a tool result.
 | JS bridge handler | `{ "error": "…" }` inside tool-result text | ✗ (not set) |
 | Rust Err(String) | `{ content:[…], isError:true }` | ✓ |
 | Unknown JSON-RPC method | `{ error: { code, message } }` | n/a (protocol layer) |
+
+---
+
+## §3 Coordinate convention
+
+### Pixel frame
+
+Every pixel tool uses **CSS logical pixels measured from the viewport (window) top-left**.
+This is the same frame as `Element.getBoundingClientRect()` and `MouseEvent.clientX/Y`.
+
+```
+(0, 0) ──────────────────────────────► x  (clientX / rect.left / rect.x)
+  │
+  │   viewport origin
+  │
+  ▼
+  y  (clientY / rect.top / rect.y)
+```
+
+- `get_layout_metrics(selector)` returns `bounds: { x, y, width, height }` where
+  `x = rect.left` and `y = rect.top` from `getBoundingClientRect()`.
+- `get_window_state()` returns `devicePixelRatio` (a number) so callers can convert
+  CSS pixels to physical device pixels when needed (e.g. for canvas pixel-level ops).
+
+### Canonical round-trip
+
+```
+bounds = get_layout_metrics(selector).bounds
+center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
+click_at(center)      ← I1 (future tool, wraps synthetic PointerEvent at clientX/clientY)
+  → element's JS click handler fires with event.clientX === center.x
+```
+
+**Guarded by:** `debugContract.test.ts` §coordinate-convention (step-5),
+which stubs `getBoundingClientRect` to `{x:100, y:50, width:80, height:40}`,
+verifies `get_layout_metrics.bounds === {x:100, y:50, width:80, height:40}`,
+then proves the derived center `(140, 70)` fires the element's click handler.
+
+### Notes
+
+- This convention is validated **arithmetically** in the unit tests.  The live
+  `document.elementFromPoint(centerX, centerY)` hit-test (OS layout + compositing)
+  is deferred to `click_at` (I1)'s real-GUI e2e scenario, which depends on H0 and
+  the complete viewport being rendered.
+- The canvas (viewport) coordinate frame is the same CSS-pixel frame: the NDC
+  conversion in `createSelection` uses `rect = canvas.getBoundingClientRect()` as
+  its origin (see §5).
+- Downstream tools that introduce a new pixel frame MUST document the conversion
+  and add a boundary test before landing.
