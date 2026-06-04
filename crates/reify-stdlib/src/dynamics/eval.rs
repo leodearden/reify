@@ -645,12 +645,20 @@ fn joint_compliance(joint: &Value, position: Option<f64>) -> Option<JointComplia
     if spring_rate.is_none() && damping.is_none() {
         return None;
     }
-    // Absent neutral → 0.0 (sensible default); present-but-malformed →
-    // return None (fail-honest: a bad neutral shifts the equilibrium without
-    // any signal, which is worse than ignoring the whole compliance record).
-    let neutral = match map_get(m, "neutral") {
-        None => 0.0,
-        Some(v) => compliance_cell_f64(v)?,
+    // Neutral is only relevant for the spring term (`−k·(q − neutral)`).
+    // Gate its read on `spring_rate` being present so that a malformed or
+    // irrelevant `neutral` key on a damping-only joint never suppresses the
+    // valid damping term.  When spring is active and `neutral` is present-but-
+    // malformed (e.g. NaN): fail-honest — the equilibrium is undefined, return
+    // None rather than silently shifting it to 0.  Absent `neutral` with spring
+    // active → 0.0 (sensible default, matches make_flexure_joint behaviour).
+    let neutral = if spring_rate.is_some() {
+        match map_get(m, "neutral") {
+            None => 0.0,
+            Some(v) => compliance_cell_f64(v)?,
+        }
+    } else {
+        0.0
     };
     Some(JointCompliance {
         spring_rate,
@@ -2130,33 +2138,6 @@ mod tests {
     //  (e) Option-wrapped spring_rate (Value::Option(Some(Scalar{2.0}))) unwraps
     //      the same as bare Scalar.
 
-    /// Build a compliant revolute joint Map mirroring make_flexure_joint's shape:
-    /// kind="revolute" + spring_rate=Scalar{ROTATIONAL_STIFFNESS} +
-    /// damping=Option(None) + neutral=Scalar{ANGLE}.
-    fn compliant_revolute_joint(spring_rate_val: f64, neutral_angle: f64) -> Value {
-        let mut m = BTreeMap::new();
-        m.insert(
-            Value::String("kind".to_string()),
-            Value::String("revolute".to_string()),
-        );
-        m.insert(
-            Value::String("spring_rate".to_string()),
-            Value::Scalar {
-                si_value: spring_rate_val,
-                dimension: DimensionVector::ROTATIONAL_STIFFNESS,
-            },
-        );
-        m.insert(
-            Value::String("damping".to_string()),
-            Value::Option(None),
-        );
-        m.insert(
-            Value::String("neutral".to_string()),
-            Value::angle(neutral_angle),
-        );
-        Value::Map(m)
-    }
-
     /// (a) Plain revolute joint (kind/axis/range only) with position=Some → None.
     #[test]
     fn joint_compliance_plain_joint_returns_none() {
@@ -2180,7 +2161,7 @@ mod tests {
     #[test]
     fn joint_compliance_compliant_joint_with_position_returns_some() {
         use std::f64::consts::PI;
-        let joint = compliant_revolute_joint(2.0, PI / 12.0);
+        let joint = make_compliant_revolute_joint(Some(2.0), None, PI / 12.0);
         let c = joint_compliance(&joint, Some(PI / 6.0))
             .expect("compliant joint with position must return Some");
         assert!(
@@ -2197,7 +2178,7 @@ mod tests {
     #[test]
     fn joint_compliance_compliant_joint_without_position_returns_none() {
         use std::f64::consts::PI;
-        let joint = compliant_revolute_joint(2.0, PI / 12.0);
+        let joint = make_compliant_revolute_joint(Some(2.0), None, PI / 12.0);
         assert!(
             joint_compliance(&joint, None).is_none(),
             "spring-only compliant joint (damping=None) without position must return None"
@@ -2289,6 +2270,41 @@ mod tests {
             joint_compliance(&joint, Some(std::f64::consts::PI / 6.0)).is_none(),
             "malformed (NaN) neutral must make joint_compliance return None"
         );
+    }
+
+    /// Damping-only joint with a present-but-malformed `neutral` key must still
+    /// return `Some` with the valid damping term.  The `neutral` key is only read
+    /// when `spring_rate` is present; an irrelevant malformed `neutral` on a pure
+    /// damping joint must not suppress the valid damping term.
+    #[test]
+    fn joint_compliance_malformed_neutral_damping_only_still_applies() {
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("kind".to_string()),
+            Value::String("revolute".to_string()),
+        );
+        m.insert(
+            Value::String("damping".to_string()),
+            Value::Real(3.5),
+        );
+        // Malformed neutral (NaN) — irrelevant when spring_rate is absent, so
+        // it must NOT suppress the valid damping term.
+        m.insert(
+            Value::String("neutral".to_string()),
+            Value::Scalar {
+                si_value: f64::NAN,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+        let joint = Value::Map(m);
+        let c = joint_compliance(&joint, None)
+            .expect("damping-only joint with malformed neutral must still return Some");
+        assert!(c.spring_rate.is_none(), "spring_rate must be None");
+        assert!(
+            (c.damping.expect("damping must be Some") - 3.5).abs() < 1e-12,
+            "damping must be 3.5"
+        );
+        assert_eq!(c.neutral, 0.0, "neutral defaults to 0.0 when spring_rate absent");
     }
 
     // ── step-3 RED: end-to-end compliance torque tests ────────────────────────
@@ -2510,6 +2526,70 @@ mod tests {
         assert!(
             (delta_got - delta_expected).abs() < 1e-12,
             "damping Δτ: expected {delta_expected:.15} N·m·s/rad, got {delta_got:.15}"
+        );
+    }
+
+    /// Trajectory-path damping: compliant pendulum (c=3.5 N·m·s/rad, no spring)
+    /// driven via `inverse_dynamics_lower` at θ=π/6, q̇=1.7 rad/s.
+    /// Δτ = −c·q̇ = −3.5·1.7 = −5.95 within 1e-12.
+    ///
+    /// This covers the trajectory entry-point forwarding of q̇ + damping together.
+    /// The snapshot-path counterpart (`snapshot_path_damping_torque_delta`) covers
+    /// the snapshot entry point; both are needed because they are different code paths
+    /// through `snapshot_inverse_dynamics`.
+    #[test]
+    fn trajectory_path_damping_torque_delta() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        let theta = PI / 6.0;
+        let omega = 1.7_f64;
+
+        // Compliant mechanism: damping=3.5 N·m·s/rad, no spring.
+        let damping_joint = make_compliant_revolute_joint(None, Some(3.5), 0.0);
+        let damping_mech = {
+            let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+            let mech0 = eval_builtin("mechanism", &[]);
+            eval_builtin("body", &[mech0, mp, damping_joint])
+        };
+
+        // Plain mechanism for baseline (same geometry, no compliant keys).
+        let plain_mech = pendulum_mechanism();
+
+        // One-sample MotionTrajectory at θ=π/6, q̇=omega, accels=0.
+        let make_traj = |q: f64, v: f64| {
+            mint_instance(
+                "MotionTrajectory",
+                vec![
+                    ("mechanism".to_string(), Value::Real(0.0)),
+                    (
+                        "samples".to_string(),
+                        Value::List(vec![trajectory_sample(0.0, q, v, 0.0)]),
+                    ),
+                ],
+            )
+        };
+
+        let r_damp = eval_dynamics(
+            "inverse_dynamics_lower",
+            &[damping_mech, make_traj(theta, omega)],
+        )
+        .expect("inverse_dynamics_lower recognised");
+        let r_plain = eval_dynamics(
+            "inverse_dynamics_lower",
+            &[plain_mech, make_traj(theta, omega)],
+        )
+        .expect("inverse_dynamics_lower recognised");
+
+        let tau_damp = traj_torque(&r_damp, 0, 0);
+        let tau_plain = traj_torque(&r_plain, 0, 0);
+
+        // Oracle: Δτ = −c·q̇ = −3.5·1.7
+        let delta_expected = -3.5 * omega;
+        let delta_got = tau_damp - tau_plain;
+        assert!(
+            (delta_got - delta_expected).abs() < 1e-12,
+            "damping Δτ via trajectory path: expected {delta_expected:.15} N·m, got {delta_got:.15}"
         );
     }
 
