@@ -49,7 +49,7 @@ trait Physical {
 // ── Rigidity ────────────────────────────────────────────────────────────────
 
 // Rigid refines Physical — a body that does not deform under load.
-// moment_of_inertia is the second moment of area (kg·m², MomentOfInertia alias
+// moment_of_inertia is the mass moment of inertia (kg·m², MomentOfInertia alias
 // — tightened from Real by task α; RHS dimensioned so eval_cmp dim-equality
 // succeeds at runtime, per esc-3115-112 rationale).
 trait Rigid : Physical {

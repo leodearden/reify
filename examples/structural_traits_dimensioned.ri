@@ -18,7 +18,7 @@ structure def RigidPost : Rigid {
     param geometry : Solid = box(100mm, 100mm, 300mm)
     param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
 
-    // Rigid.moment_of_inertia — second moment of area (kg·m², MomentOfInertia alias)
+    // Rigid.moment_of_inertia — mass moment of inertia (kg·m², MomentOfInertia alias)
     param moment_of_inertia : MomentOfInertia = 0.00012 * 1kg * 1m * 1m
 }
 

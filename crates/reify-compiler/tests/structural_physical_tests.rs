@@ -1461,6 +1461,10 @@ fn sealed_seal_pressure_rating_member_is_pressure_dimension() {
 ///
 /// RED until step-4 creates the example file (read fails with ENOENT).
 /// GREEN once the file exists and all dimensioned conformers compile clean.
+///
+/// Note: examples_smoke.rs also auto-discovers and compiles this file (as it
+/// does for all examples/**/*.ri). This dedicated test was the RED driver for
+/// step-4; both tests cover the file after it lands.
 #[test]
 fn structural_traits_dimensioned_example_conforms_clean() {
     const EXAMPLE_PATH: &str = concat!(
@@ -1507,11 +1511,11 @@ structure def BadSeal : Sealed {
     assert!(
         errors.iter().any(|d| {
             d.message.contains("seal_pressure_rating")
+                || d.message.contains("type mismatch for trait member")
                 || d.message.to_lowercase().contains("mismatch")
-                || d.message.to_lowercase().contains("type")
         }),
-        "expected an error message referencing 'seal_pressure_rating', 'mismatch', \
-         or 'type'; got: {:?}",
+        "expected an error message referencing 'seal_pressure_rating', \
+         'type mismatch for trait member', or 'mismatch'; got: {:?}",
         errors
     );
 }
