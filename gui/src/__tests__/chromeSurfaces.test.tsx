@@ -44,6 +44,8 @@ function makeStores(): DebugStores {
         values: {} as any,
         constraints: {} as any,
         evalStatus: { phase: 'idle' },
+        compileDiagnostics: [],
+        tessellationDiagnostics: [],
       },
       initFromState: vi.fn(),
     },
