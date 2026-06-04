@@ -23,6 +23,15 @@ export interface DocumentSymbol {
   children?: DocumentSymbol[];
 }
 
+/**
+ * A single occurrence highlight (LSP `DocumentHighlight`). `kind` is the
+ * read/write classification (1 = Text); Reify's δ producer always emits Text.
+ */
+export interface DocumentHighlight {
+  range: Range;
+  kind?: number;
+}
+
 export interface ServerCapabilities {
   completionProvider?: unknown;
   hoverProvider?: boolean | unknown;
@@ -88,6 +97,11 @@ export interface LspClient {
   hover(uri: string, line: number, character: number): Promise<HoverResult | null>;
   gotoDefinition(uri: string, line: number, character: number): Promise<Location | null>;
   documentSymbol(uri: string): Promise<DocumentSymbol[]>;
+  documentHighlight(
+    uri: string,
+    line: number,
+    character: number,
+  ): Promise<DocumentHighlight[]>;
   prepareRename(
     uri: string,
     line: number,
@@ -207,6 +221,22 @@ export function createLspClient(): LspClient {
       const parsed = JSON.parse(response);
       if (!Array.isArray(parsed)) return [];
       return parsed as DocumentSymbol[];
+    },
+
+    async documentHighlight(
+      uri: string,
+      line: number,
+      character: number,
+    ): Promise<DocumentHighlight[]> {
+      // Mirrors documentSymbol: a null payload (no resolvable symbol under the
+      // cursor) or any non-array shape yields [] so the caller clears highlights.
+      const response = await lspRequest('textDocument/documentHighlight', {
+        textDocument: { uri },
+        position: { line, character },
+      });
+      const parsed = JSON.parse(response);
+      if (!Array.isArray(parsed)) return [];
+      return parsed as DocumentHighlight[];
     },
 
     async prepareRename(
