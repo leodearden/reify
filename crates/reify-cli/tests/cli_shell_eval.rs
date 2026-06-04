@@ -67,6 +67,11 @@ fn eval_thin_walled_bracket_exits_zero_with_in_band_max_von_mises() {
     );
 
     // (c) No tet-fallback warning.
+    // NOTE: the generic tet-fallback regression for the shell-extract path is
+    // already covered by cli_eval_shell_no_tet_warning.rs (against
+    // examples/fea_shell_flexure.ri).  The check here is a per-fixture guard
+    // that ensures thin_walled_bracket.ri in particular never silently regresses
+    // to the tet path; the intentional overlap is deliberate.
     assert!(
         !stderr.contains("falling back to tet meshing"),
         "Unexpected soft-fallback warning on stderr.\nstderr:\n{stderr}"
