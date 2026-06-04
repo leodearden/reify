@@ -3,9 +3,19 @@
 //! Tests validate that the .ri file parses and compiles cleanly, that each
 //! enum, trait, and structure def is correctly represented, and that trait
 //! conformance works via the production prelude.
+//!
+//! Steps β-1 through β-10 (below the pre-existing structural tests) add
+//! eval/check conformance tests:
+//!   β-1/β-2  — GeometricTolerance.nominal_zone inherited let
+//!   β-3/β-4  — ISOToleranceGrade.tolerance_value derived let
+//!   β-5/β-6  — Conforms GD&T-aware MMC/RFS flip
+//!   β-7/β-8  — require_finish Bool free fn
+//!   β-9/β-10 — SurfaceFinish direction + process defaults
 
 use reify_compiler::*;
 use reify_core::*;
+use reify_ir::{Satisfaction, Value};
+use reify_test_support::{check_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -625,4 +635,94 @@ fn full_module_integrity() {
         !module.constraint_defs.is_empty(),
         "expected at least 1 constraint def (Conforms), got zero"
     );
+}
+
+// ─── β-1: GeometricTolerance.nominal_zone inherited let (RED) ────────────────
+
+/// β-1 RED: GeometricTolerance.nominal_zone is not yet a trait-level derived
+/// let. Two assertions:
+/// (a) The compiled std/tolerancing GeometricTolerance trait exposes a
+///     `nominal_zone` entry in its `defaults` list (as DefaultKind::Let).
+/// (b) Evaluating `structure def Probe { sub f = Flatness(tolerance_value: 0.05mm) }`
+///     (material_condition omitted → uses Flatness's existing RFS default) produces
+///     a LENGTH Scalar ≈ 5e-5m at ValueCellId::new("Probe.f", "nominal_zone").
+///
+/// RED because nominal_zone does not exist on the trait yet.
+#[test]
+fn geometric_tolerance_nominal_zone_inherited_let() {
+    // (a) Trait-level structure check ────────────────────────────────────────
+    let module = load_stdlib_module();
+    let gt = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "GeometricTolerance")
+        .expect("expected 'GeometricTolerance' trait");
+
+    let has_nominal_zone_default = gt
+        .defaults
+        .iter()
+        .any(|d| d.name.as_deref() == Some("nominal_zone"));
+    assert!(
+        has_nominal_zone_default,
+        "GeometricTolerance trait should have a 'nominal_zone' Let in its defaults, \
+         got defaults: {:?}",
+        gt.defaults
+            .iter()
+            .map(|d| d.name.as_deref())
+            .collect::<Vec<_>>()
+    );
+
+    // (b) Eval: Probe.f.nominal_zone == 0.05mm = 5e-5m (departure=0mm → zone==tol) ──
+    let source = r#"
+structure def Probe {
+    sub f = Flatness(tolerance_value: 0.05mm)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    let cell_id = ValueCellId::new("Probe.f", "nominal_zone");
+    let value = result.values.get(&cell_id).unwrap_or_else(|| {
+        let probe_keys: Vec<_> = result
+            .values
+            .iter()
+            .map(|(k, _)| k)
+            .filter(|k| k.entity.contains("Probe"))
+            .collect();
+        panic!(
+            "Probe.f.nominal_zone not found in eval result; Probe-related keys: {:?}",
+            probe_keys
+        )
+    });
+    match value {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "Probe.f.nominal_zone should have LENGTH dimension, got {:?}",
+                dimension
+            );
+            // nominal_zone = effective_tolerance_zone(0.05mm, RFS, 0mm) = 0.05mm = 5e-5 m
+            assert!(
+                (si_value - 5e-5).abs() < 1e-12,
+                "Probe.f.nominal_zone should be ≈5e-5m (0.05mm), got {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "Probe.f.nominal_zone should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
 }
