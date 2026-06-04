@@ -265,3 +265,115 @@ describe('debug contract — coordinate convention (step-5)', () => {
     expect(receivedY).toBeLessThanOrEqual(BOUNDS.y + BOUNDS.height);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-7: Pick↔raycast agreement (REAL three.js — NOT mocked)
+//
+// Pins the screen→NDC→raycast convention that pick_entity_at (I2) will wrap:
+//   NDC.x = ((clientX - rect.left) / rect.width) * 2 - 1
+//   NDC.y = -((clientY - rect.top)  / rect.height) * 2 + 1
+//
+// Uses the REAL three.js Raycaster (via createSelection, which patches
+// Mesh.prototype.raycast with three-mesh-bvh's acceleratedRaycast). Without a
+// BVH tree, acceleratedRaycast falls back to the original three.js face traversal.
+//
+// jsdom has no layout engine, so the DOM elementFromPoint half is arithmetic-only;
+// the real hit-test is exercised by I1's real-GUI e2e (needs H0).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('debug contract — pick↔raycast agreement (step-7, real three)', () => {
+  // Each test creates its own createSelection instance and disposes it after use.
+  // Camera setup: PerspectiveCamera at (0,0,5) looking down -Z toward origin.
+  // BoxGeometry(1,1,1) centered at origin — front face at z=0.5, visible from camera.
+  // Canvas: 800×600 at (left:0, top:0) — center (400,300) → NDC (0,0) → hits box.
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('pointerdown+pointerup at canvas center (400,300) → NDC (0,0) → hits box mesh', async () => {
+    // Use real three.js imports (no vi.mock('three') in this file)
+    const { Scene, PerspectiveCamera, Mesh, BoxGeometry } = await import('three');
+    const { createSelection } = await import('../viewport/selection');
+
+    const scene = new Scene();
+    const camera = new PerspectiveCamera(75, 800 / 600, 0.1, 100);
+    camera.position.set(0, 0, 5);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+
+    const geometry = new BoxGeometry(1, 1, 1);
+    const mesh = new Mesh(geometry);
+    mesh.name = 'entity/box';
+    scene.add(mesh);
+
+    const domElement = document.createElement('div');
+    document.body.appendChild(domElement);
+    const CANVAS_RECT = { left: 0, top: 0, width: 800, height: 600, x: 0, y: 0, right: 800, bottom: 600 };
+    vi.spyOn(domElement, 'getBoundingClientRect').mockReturnValue(CANVAS_RECT as DOMRect);
+
+    const onHover = vi.fn();
+    const onSelect = vi.fn();
+    const ctx = createSelection({
+      scene,
+      camera,
+      domElement,
+      getMeshes: () => new Map([['entity/box', mesh]]),
+      onHover,
+      onSelect,
+    });
+
+    // Canvas center: clientX=400, clientY=300
+    // NDC: x = (400/800)*2-1 = 0, y = -(300/600)*2+1 = 0 → ray along -Z → hits box
+    // Note: jsdom has no PointerEvent; MouseEvent with pointerdown/pointerup names
+    // works identically — createSelection casts events to MouseEvent internally.
+    domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, clientY: 300, bubbles: true }));
+    domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, clientY: 300, bubbles: true }));
+
+    expect(onSelect).toHaveBeenCalledWith('entity/box', { ctrl: false, shift: false });
+    ctx.dispose();
+    geometry.dispose();
+  });
+
+  it('pointerdown+pointerup at far corner (5,5) → NDC ≈ (-0.988, +0.983) → misses box', async () => {
+    const { Scene, PerspectiveCamera, Mesh, BoxGeometry } = await import('three');
+    const { createSelection } = await import('../viewport/selection');
+
+    const scene = new Scene();
+    const camera = new PerspectiveCamera(75, 800 / 600, 0.1, 100);
+    camera.position.set(0, 0, 5);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+
+    const geometry = new BoxGeometry(1, 1, 1);
+    const mesh = new Mesh(geometry);
+    mesh.name = 'entity/box';
+    scene.add(mesh);
+
+    const domElement = document.createElement('div');
+    document.body.appendChild(domElement);
+    const CANVAS_RECT = { left: 0, top: 0, width: 800, height: 600, x: 0, y: 0, right: 800, bottom: 600 };
+    vi.spyOn(domElement, 'getBoundingClientRect').mockReturnValue(CANVAS_RECT as DOMRect);
+
+    const onHover = vi.fn();
+    const onSelect = vi.fn();
+    const ctx = createSelection({
+      scene,
+      camera,
+      domElement,
+      getMeshes: () => new Map([['entity/box', mesh]]),
+      onHover,
+      onSelect,
+    });
+
+    // Far upper-left corner: NDC ≈ (-0.988, +0.983) → ray toward upper-left → misses box
+    // Note: jsdom has no PointerEvent; MouseEvent works identically here.
+    domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: 5, clientY: 5, bubbles: true }));
+    domElement.dispatchEvent(new MouseEvent('pointerup', { clientX: 5, clientY: 5, bubbles: true }));
+
+    expect(onSelect).toHaveBeenCalledWith(null, { ctrl: false, shift: false });
+    ctx.dispose();
+    geometry.dispose();
+  });
+});
