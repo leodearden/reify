@@ -1,28 +1,25 @@
 use std::sync::Arc;
 
-use serde_json::json;
-use tauri::test::mock_app;
+use crate::debug::DebugTransport;
 
-use crate::debug::DebugBridge;
-
-/// Round-trip: a value emitted via query_frontend and resolved back by the
-/// caller's resolve() arrives intact through the id-keyed oneshot.
+/// Round-trip: a value delivered via resolve() arrives intact through the
+/// id-keyed oneshot — the core transport contract.
 ///
-/// RED until DebugBridge is generic over R: Runtime (step-2): DebugBridge::new
-/// currently pins AppHandle<Wry>, but mock_app().handle() yields
-/// AppHandle<MockRuntime>.
+/// Uses DebugTransport directly so no Tauri runtime (real or mock) is needed.
+/// DebugBridge::query_frontend delegates to this same transport seam; the
+/// emit/receive wiring that wraps it is exercised by the frontend boundary
+/// tests (debugContract.test.ts).
 #[tokio::test]
 async fn round_trip_value_survives_transport() {
-    let app = mock_app();
-    let bridge = Arc::new(DebugBridge::new(app.handle().clone()));
+    let transport = Arc::new(DebugTransport::new());
+    let t = transport.clone();
 
-    let bridge_c = bridge.clone();
     tokio::spawn(async move {
-        // Retry until query_frontend has inserted the pending entry (avoids
-        // the insert/spawn race; id is deterministically 1 on a fresh bridge).
+        // Retry until create_request() has inserted the pending entry
+        // (avoids the spawn/insert race; id is deterministically 1 on a
+        // fresh transport).
         loop {
-            if bridge_c
-                .resolve(1, r#"{"devicePixelRatio":2.0}"#.to_string())
+            if t.resolve(1, r#"{"devicePixelRatio":2.0}"#.to_string())
                 .is_ok()
             {
                 break;
@@ -31,40 +28,44 @@ async fn round_trip_value_survives_transport() {
         }
     });
 
-    let result = bridge
-        .query_frontend("get_window_state", json!({}))
+    let (id, rx) = transport.create_request().unwrap();
+    assert_eq!(id, 1, "first id on a fresh transport should be 1");
+
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
         .await
-        .unwrap();
+        .expect("resolve timed out")
+        .expect("channel dropped");
+
+    let result: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(result["devicePixelRatio"], 2.0_f64);
 }
 
 /// Error-envelope passthrough: an {error:...} JSON payload resolved into the
-/// transport arrives verbatim at the query_frontend caller — the Rust seam
-/// does not unwrap or transform the envelope.
-///
-/// RED until DebugBridge is generic over R: Runtime (step-2).
+/// transport arrives verbatim — the seam does not unwrap or transform the
+/// envelope.
 #[tokio::test]
 async fn error_envelope_passes_through_transport() {
-    let app = mock_app();
-    let bridge = Arc::new(DebugBridge::new(app.handle().clone()));
+    let transport = Arc::new(DebugTransport::new());
+    let t = transport.clone();
 
-    let bridge_c = bridge.clone();
     tokio::spawn(async move {
         loop {
-            if bridge_c
-                .resolve(1, r#"{"error":"boom"}"#.to_string())
-                .is_ok()
-            {
+            if t.resolve(1, r#"{"error":"boom"}"#.to_string()).is_ok() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     });
 
-    let result = bridge
-        .query_frontend("get_window_state", json!({}))
+    let (id, rx) = transport.create_request().unwrap();
+    assert_eq!(id, 1);
+
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
         .await
-        .unwrap();
+        .expect("resolve timed out")
+        .expect("channel dropped");
+
+    let result: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(result["error"], "boom");
 }
 
@@ -72,8 +73,7 @@ async fn error_envelope_passes_through_transport() {
 /// "no pending request".
 #[test]
 fn resolve_unknown_id_returns_err() {
-    let app = mock_app();
-    let bridge = DebugBridge::new(app.handle().clone());
-    let err = bridge.resolve(999, "{}".to_string()).unwrap_err();
+    let transport = DebugTransport::new();
+    let err = transport.resolve(999, "{}".to_string()).unwrap_err();
     assert!(err.contains("no pending request"), "unexpected err: {err}");
 }

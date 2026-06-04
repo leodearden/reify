@@ -11,7 +11,6 @@
 pub mod claude_bridge;
 pub mod commands;
 pub mod path_key;
-#[cfg(any(feature = "gui", test))]
 pub mod debug;
 #[cfg(feature = "gui")]
 pub mod debug_server;
