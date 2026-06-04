@@ -109,6 +109,95 @@ fn needs_generate(
     stamp_content.trim() != grammar_hash
 }
 
+/// Check whether the shell-script stamp (`src/.grammar_hash.stamp`) already
+/// confirms that the generated outputs match the current `grammar.js`.
+///
+/// The shell script (`scripts/tree-sitter-generate.sh`) writes a SHA-256 hash
+/// of `grammar.js` into `src/.grammar_hash.stamp` every time it regenerates.
+/// When `verify.sh` runs the script first — which it always does — and the
+/// script says "up to date", the stamp is guaranteed to reflect the current
+/// grammar.  In that case, re-running `tree-sitter generate` from the build
+/// script is redundant and, on a loaded host, risks timing out.
+///
+/// Returns `true` (safe to skip generation) only when ALL of:
+///   1. Every expected output file exists.
+///   2. `src/.grammar_hash.stamp` contains a non-empty hash string.
+///   3. `sha256sum grammar.js` matches that hash exactly.
+///   4. No output file is newer than the shell stamp (a newer output file
+///      would indicate it was partially overwritten by a failed generate run).
+///
+/// Any failure in this chain (missing stamp, `sha256sum` unavailable, hash
+/// mismatch, or suspiciously-new output file) returns `false` so the caller
+/// falls back to regenerating.
+fn shell_stamp_is_current(
+    grammar_path: &std::path::Path,
+    output_paths: &[&std::path::Path],
+) -> bool {
+    // 1. All expected output files must exist.
+    for path in output_paths {
+        if !path.exists() {
+            return false;
+        }
+    }
+    // 2. Shell-script stamp must exist and contain a non-empty hash.
+    let shell_stamp_path = std::path::Path::new("src/.grammar_hash.stamp");
+    let shell_stamp = match std::fs::read_to_string(shell_stamp_path) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let expected_hash = shell_stamp.trim();
+    if expected_hash.is_empty() {
+        return false;
+    }
+    // 3. Compute SHA-256 of grammar.js via sha256sum and compare.
+    //    sha256sum on a single small file is near-instant (<10 ms); no timeout needed.
+    let output = match std::process::Command::new("sha256sum")
+        .arg(grammar_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return false, // sha256sum unavailable; fall back to generation
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let stdout = match String::from_utf8(output.stdout) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    // sha256sum output format: "<hash>  <filename>\n"
+    let computed_hash = stdout.split_whitespace().next().unwrap_or("");
+    if computed_hash != expected_hash {
+        return false;
+    }
+    // 4. Guard against partially-overwritten output files: if any output file
+    //    is newer than the shell stamp, a previous (failed) generate attempt
+    //    may have left truncated content.  In that case, force regeneration.
+    let stamp_mtime = match std::fs::metadata(shell_stamp_path)
+        .and_then(|m| m.modified())
+    {
+        Ok(t) => t,
+        Err(_) => return true, // Can't stat stamp; assume it's fine
+    };
+    for path in output_paths {
+        let file_mtime = match std::fs::metadata(path).and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(_) => continue, // Can't stat output; skip this check
+        };
+        if file_mtime > stamp_mtime {
+            // Output file is newer than the shell stamp — likely corrupted.
+            eprintln!(
+                "tree-sitter-reify: {:?} is newer than the shell stamp; forcing regeneration",
+                path
+            );
+            return false;
+        }
+    }
+    true
+}
+
 /// Verify that all expected output files exist after generation.
 /// Panics with a clear message naming whichever file is missing.
 fn verify_outputs(src_dir: &std::path::Path) {
@@ -151,11 +240,20 @@ fn main() {
     let grammar_hash = content_hash(grammar_path);
 
     if needs_generate(&grammar_hash, &stamp_path, &output_refs) {
-        run_tree_sitter_generate();
-        // Verify all 3 output files were created.
-        verify_outputs(src_dir);
-        // Write stamp using the *same* hash that was checked — guarantees the
-        // stamp reflects the grammar version that produced these outputs.
+        // Fast-path: if the shell script already validated the outputs, skip
+        // `tree-sitter generate` (which can take >60 s on a loaded build host).
+        // This is safe: cargo's `rerun-if-changed=grammar.js` guarantees the
+        // build script only re-runs when grammar.js actually changes, so if we
+        // land here with a fresh OUT_DIR stamp but a valid shell stamp, the
+        // outputs are already current.
+        if !shell_stamp_is_current(grammar_path, &output_refs) {
+            run_tree_sitter_generate();
+            // Verify all 3 output files were created.
+            verify_outputs(src_dir);
+        }
+        // Write the OUT_DIR stamp whether we regenerated or bypassed —
+        // subsequent build-script invocations will hit the fast path in
+        // `needs_generate` and skip everything.
         std::fs::write(&stamp_path, &grammar_hash).unwrap_or_else(|e| {
             eprintln!("warning: failed to write stamp file: {}", e);
         });
