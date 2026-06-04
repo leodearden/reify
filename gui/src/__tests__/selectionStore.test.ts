@@ -88,6 +88,26 @@ describe('selectionStore', () => {
         dispose();
       });
     });
+
+    it('selectSingle resets highlightedParams when previously seeded', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, selectSingle } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        selectSingle('Bracket');
+        expect(state.highlightedParams).toEqual([]);
+        dispose();
+      });
+    });
+
+    it('selectSingle(null) resets highlightedParams when previously seeded', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, selectSingle } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        selectSingle(null);
+        expect(state.highlightedParams).toEqual([]);
+        dispose();
+      });
+    });
   });
 
   describe('toggleSelect', () => {
@@ -149,6 +169,16 @@ describe('selectionStore', () => {
         dispose();
       });
     });
+
+    it('toggleSelect resets highlightedParams when previously seeded', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, toggleSelect } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        toggleSelect('Bracket');
+        expect(state.highlightedParams).toEqual([]);
+        dispose();
+      });
+    });
   });
 
   describe('rangeSelect', () => {
@@ -190,6 +220,16 @@ describe('selectionStore', () => {
         dispose();
       });
     });
+
+    it('rangeSelect resets highlightedParams when previously seeded', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, rangeSelect } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        rangeSelect(['A', 'B']);
+        expect(state.highlightedParams).toEqual([]);
+        dispose();
+      });
+    });
   });
 
   describe('clearSelection', () => {
@@ -223,12 +263,12 @@ describe('selectionStore', () => {
       });
     });
 
-    it('does NOT clear highlightedParams', () => {
+    it('clears highlightedParams', () => {
       createRoot((dispose) => {
         const { state, setHighlightedParams, clearSelection } = createSelectionStore();
         setHighlightedParams(['c1', 'c2']);
         clearSelection();
-        expect(state.highlightedParams).toEqual(['c1', 'c2']);
+        expect(state.highlightedParams).toEqual([]);
         dispose();
       });
     });
@@ -269,6 +309,16 @@ describe('selectionStore', () => {
         expect(state.anchorEntity).toBe('X');
         selectAll(['A', 'B', 'C']);
         expect(state.anchorEntity).toBe('X');
+        dispose();
+      });
+    });
+
+    it('selectAll resets highlightedParams when previously seeded', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, selectAll } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        selectAll(['A', 'B']);
+        expect(state.highlightedParams).toEqual([]);
         dispose();
       });
     });
