@@ -163,3 +163,105 @@ describe('debug contract — error envelope + wiring (step-3)', () => {
     expect(typeof r2.error).toBe('string');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-5: Coordinate-convention boundary test (characterization)
+//
+// Pins: (a) get_window_state.devicePixelRatio is numeric; (b) get_layout_metrics
+// returns getBoundingClientRect verbatim (CSS-logical-px from window origin);
+// (c) the center derived from bounds is a valid clientX/clientY that fires the
+// element's handler — the get_layout_metrics→click(center) convention I1 wraps.
+//
+// NOTE: jsdom has no layout engine, so document.elementFromPoint() always returns
+// null — the live hit-test is deferred to I1's real-GUI e2e (needs H0).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('debug contract — coordinate convention (step-5)', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+  });
+
+  it('(a) get_window_state reports devicePixelRatio as a number', async () => {
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1.5 });
+    await initDebugBridge(makeStores());
+    expect(capturedHandler).toBeDefined();
+
+    const result = (await dispatchCmd(capturedHandler!, 100, 'get_window_state', {})) as any;
+    expect(typeof result.devicePixelRatio).toBe('number');
+    expect(result.devicePixelRatio).toBe(1.5);
+  });
+
+  it('(b) get_layout_metrics.bounds equals getBoundingClientRect (CSS-logical-px from window origin)', async () => {
+    // Prove get_layout_metrics reports the element's getBoundingClientRect verbatim:
+    // x/y/width/height in CSS logical pixels measured from the window top-left.
+    // This is the same coordinate frame as clientX/clientY on pointer events —
+    // the convention all pixel tools share.
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'coord-target');
+    document.body.appendChild(el);
+
+    // Stub to known bounds (jsdom returns zeros by default)
+    const BOUNDS = { x: 100, y: 50, width: 80, height: 40, left: 100, top: 50, right: 180, bottom: 90 };
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(BOUNDS as DOMRect);
+
+    await initDebugBridge(makeStores());
+
+    const result = (await dispatchCmd(
+      capturedHandler!,
+      101,
+      'get_layout_metrics',
+      { selector: '[data-testid="coord-target"]' },
+    )) as any;
+
+    expect(result.exists).toBe(true);
+    // bounds must reflect getBoundingClientRect verbatim (x, y, width, height)
+    expect(result.bounds).toEqual({ x: 100, y: 50, width: 80, height: 40 });
+  });
+
+  it('(c) center=(x+w/2, y+h/2) derived from bounds fires the element click handler', async () => {
+    // Pins the get_layout_metrics→click(center) convention I1 will wrap.
+    // The center is in the same CSS-logical-px frame as getBoundingClientRect,
+    // so a synthetic MouseEvent at (centerX, centerY) fires the element's handler.
+    // NOTE: elementFromPoint hit-test (OS layout) is deferred to I1's real-GUI e2e.
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'click-target');
+    document.body.appendChild(el);
+
+    const BOUNDS = { x: 100, y: 50, width: 80, height: 40, left: 100, top: 50, right: 180, bottom: 90 };
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(BOUNDS as DOMRect);
+
+    const centerX = BOUNDS.x + BOUNDS.width / 2;   // 140
+    const centerY = BOUNDS.y + BOUNDS.height / 2;  // 70
+
+    let receivedX: number | undefined;
+    let receivedY: number | undefined;
+    let clickFired = false;
+    el.addEventListener('click', (e) => {
+      receivedX = (e as MouseEvent).clientX;
+      receivedY = (e as MouseEvent).clientY;
+      clickFired = true;
+    });
+
+    el.dispatchEvent(new MouseEvent('click', { clientX: centerX, clientY: centerY, bubbles: true }));
+
+    expect(clickFired).toBe(true);
+    expect(receivedX).toBe(140);
+    expect(receivedY).toBe(70);
+    // Center lies within the element's bounds
+    expect(receivedX).toBeGreaterThanOrEqual(BOUNDS.x);
+    expect(receivedX).toBeLessThanOrEqual(BOUNDS.x + BOUNDS.width);
+    expect(receivedY).toBeGreaterThanOrEqual(BOUNDS.y);
+    expect(receivedY).toBeLessThanOrEqual(BOUNDS.y + BOUNDS.height);
+  });
+});
