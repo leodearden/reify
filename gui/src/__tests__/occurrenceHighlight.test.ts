@@ -54,6 +54,22 @@ describe('highlightsToRanges', () => {
     expect(result).toEqual([]);
   });
 
+  it('drops an out-of-range highlight instead of throwing', () => {
+    // doc.line() throws a RangeError for a line past the document (real
+    // CodeMirror Text.line() behavior, mirrored by mockDoc). A stale /
+    // version-skewed response can carry such a line; it must degrade to a
+    // dropped mark, not throw out of the dispatch path.
+    expect(() => highlightsToRanges([hl(50, 0, 50, 3)], mockDoc as any)).not.toThrow();
+    expect(highlightsToRanges([hl(50, 0, 50, 3)], mockDoc as any)).toEqual([]);
+  });
+
+  it('keeps in-range highlights even when another highlight is out of range', () => {
+    // One bad mark must not poison the rest — each highlight is guarded
+    // independently so the in-range occurrence still paints.
+    const result = highlightsToRanges([hl(0, 5, 0, 10), hl(50, 0, 50, 3)], mockDoc as any);
+    expect(result).toEqual([{ from: 5, to: 10 }]);
+  });
+
   it('returns [] for empty input', () => {
     expect(highlightsToRanges([], mockDoc as any)).toEqual([]);
   });

@@ -39,6 +39,14 @@ export interface CmRange {
  * same per-line arithmetic + clamp as diagnostics.ts and rename.ts. Degenerate
  * ranges (zero/negative width or out-of-order endpoints) are dropped defensively
  * so the decoration RangeSet never receives an invalid mark.
+ *
+ * Each highlight is mapped under its own guard: `doc.line()` throws a RangeError
+ * for a line outside the document, and the ranges come from the LSP server's
+ * copy of the document, which can be briefly version-skewed (a didChange in
+ * flight). The token/docChanged stale-guards make this unlikely but don't fully
+ * exclude skew, since the line count is read from the live doc at paint time. A
+ * stale/out-of-range response therefore drops the offending mark rather than
+ * throwing out of the dispatch path — and one bad mark never poisons the rest.
  */
 export function highlightsToRanges(
   highlights: DocumentHighlight[],
@@ -46,13 +54,17 @@ export function highlightsToRanges(
 ): CmRange[] {
   const out: CmRange[] = [];
   for (const h of highlights) {
-    const startLine = doc.line(h.range.start.line + 1);
-    const endLine = doc.line(h.range.end.line + 1);
-    const from = Math.min(startLine.from + h.range.start.character, startLine.to);
-    const to = Math.min(endLine.from + h.range.end.character, endLine.to);
-    // Drop degenerate / inverted ranges so the decoration set stays valid.
-    if (to > from) {
-      out.push({ from, to });
+    try {
+      const startLine = doc.line(h.range.start.line + 1);
+      const endLine = doc.line(h.range.end.line + 1);
+      const from = Math.min(startLine.from + h.range.start.character, startLine.to);
+      const to = Math.min(endLine.from + h.range.end.character, endLine.to);
+      // Drop degenerate / inverted ranges so the decoration set stays valid.
+      if (to > from) {
+        out.push({ from, to });
+      }
+    } catch {
+      // Out-of-range line (stale response vs. the current doc) — skip this mark.
     }
   }
   return out;
