@@ -650,25 +650,16 @@ fn full_module_integrity() {
     );
 }
 
-// ─── β-5: Conforms GD&T-aware MMC/RFS flip (RED) ────────────────────────────
+// ─── β-5: Conforms GD&T-aware MMC/RFS flip ───────────────────────────────────
 
-/// β-5 RED: Conforms is currently non-pub and takes `tolerance_value : Length`
-/// (not `tolerance : GeometricTolerance`), so cross-module instantiation fails
-/// ("unknown constraint definition: Conforms") and the MMC/RFS flip is untestable.
+/// Verifies that `pub constraint def Conforms` produces the correct satisfaction
+/// outcome for different material conditions:
 ///
-/// After step-6 redefines Conforms as:
-///   `pub constraint def Conforms { param tolerance : GeometricTolerance;
-///    param measured_deviation : Length = 0mm; param feature_departure : Length = 0mm;
-///    effective_tolerance_zone(tolerance.tolerance_value, tolerance.material_condition,
-///    feature_departure) >= measured_deviation }`
+///   MMC: zone = tolerance_value + feature_departure = 0.1 + 0.1 = 0.2mm ≥ 0.15mm → Satisfied
+///   RFS: zone = tolerance_value                     = 0.1mm         ≥ 0.15mm → Violated
 ///
-/// The MMC case: zone = 0.1 + 0.1 = 0.2 >= 0.15 → Satisfied
-/// The RFS case: zone = 0.1        >= 0.15 → Violated
-///
-/// RED because cross-module `constraint Conforms(...)` fails with "unknown constraint
-/// definition" (Conforms is non-pub) and the old param signature doesn't match.
-///
-/// NOTE: We define the tolerance structure locally so the eval engine can find it.
+/// NOTE: The tolerance structure is defined locally — the eval engine resolves
+/// sub-component templates from the user module only (not stdlib).
 /// material_condition is supplied explicitly (MMC vs RFS) to drive the flip.
 #[test]
 fn conforms_gdt_mmc_satisfied_rfs_violated() {
@@ -925,24 +916,20 @@ structure def Probe {
     }
 }
 
-// ─── β-3: ISOToleranceGrade.tolerance_value derived let (RED) ───────────────
+// ─── β-3: ISOToleranceGrade.tolerance_value derived let ──────────────────────
 
-/// β-3 RED: ISOToleranceGrade.tolerance_value is still a plain required `param`
-/// (not a derived let). Asserts that:
-/// (a) `ISOToleranceGrade.tolerance_value` is a Let cell (not Param) in the
-///     compiled template (structural, exercises the real stdlib def).
-/// (b) Evaluating `iso_it_tolerance(7, 30mm, 50mm)` as a derived let expression
-///     yields a LENGTH Scalar ≈ 24.969µm (the published ISO 286-1 IT7@Ø30-50 =
-///     25µm, pinned by α's own test).
+/// Verifies that `ISOToleranceGrade.tolerance_value` is a derived Let cell (not
+/// Param) and that iso_it_tolerance(7, 30mm, 50mm) produces the published ISO
+/// 286-1 value:
 ///
-/// NOTE: Part (b) uses a locally-defined TestISO struct rather than the stdlib
-/// ISOToleranceGrade, because the eval engine resolves sub-component templates
-/// only from the user module (not the stdlib). Part (b) therefore verifies the
-/// derived let *expression* computes correctly, not the stdlib inheritance path.
-/// Part (a) is the structural proof that the real stdlib def uses a Let cell.
+/// (a) Structural: `tolerance_value` is a `Let` cell in the compiled stdlib template.
+/// (b) Eval: iso_it_tolerance(7, 30mm, 50mm) yields LENGTH Scalar ≈ 24.969µm
+///     (IT7@Ø30–50 = 25µm per ISO 286-1; α's test pins this to 24.969e-6 m).
 ///
-/// RED because tolerance_value is currently a plain required param, not a
-/// derived let calling iso_it_tolerance.
+/// NOTE: Part (b) uses a locally-defined TestISO struct — the eval engine
+/// resolves sub-component templates from the user module only (not stdlib).
+/// Part (b) verifies the derived-let expression computes correctly;
+/// part (a) verifies the real stdlib def carries a Let cell.
 #[test]
 fn iso_tolerance_grade_tolerance_value_derived_let() {
     // (a) Structural check: tolerance_value should be a Let cell, not Param ──
@@ -1037,23 +1024,21 @@ structure def Probe {
     }
 }
 
-// ─── β-1: GeometricTolerance.nominal_zone inherited let (RED) ────────────────
+// ─── β-1: GeometricTolerance.nominal_zone inherited let ──────────────────────
 
-/// β-1 RED: GeometricTolerance.nominal_zone is not yet a trait-level derived
-/// let. Two assertions:
-/// (a) The compiled std/tolerancing GeometricTolerance trait exposes a
-///     `nominal_zone` entry in its `defaults` list (structural, exercises the
-///     real stdlib trait def).
-/// (b) Evaluating `effective_tolerance_zone(0.05mm, RFS, 0mm)` as a derived let
-///     expression produces a LENGTH Scalar ≈ 5e-5m.
+/// Verifies that `GeometricTolerance` has a trait-level `nominal_zone` derived
+/// Let and that effective_tolerance_zone(tol, RFS, 0mm) computes the nominal
+/// zone value:
 ///
-/// NOTE: Part (b) uses a locally-defined TestFlat struct rather than the stdlib
-/// Flatness, because the eval engine resolves sub-component templates only from
-/// the user module (not the stdlib). Part (b) verifies the derived let
-/// *expression* computes correctly; part (a) is the structural proof that the
-/// real stdlib GeometricTolerance trait carries the nominal_zone Let.
+/// (a) Structural: the compiled `GeometricTolerance` trait exposes `nominal_zone`
+///     in its `defaults` list (exercises the real stdlib trait def).
+/// (b) Eval: effective_tolerance_zone(0.05mm, RFS, 0mm) yields LENGTH Scalar
+///     ≈ 5e-5m (departure = 0mm → nominal_zone == tolerance_value).
 ///
-/// RED because nominal_zone does not exist on the trait yet.
+/// NOTE: Part (b) uses a locally-defined TestFlat struct — the eval engine
+/// resolves sub-component templates from the user module only (not stdlib).
+/// Part (b) verifies the derived-let expression; part (a) verifies the stdlib
+/// trait carries the nominal_zone Let.
 #[test]
 fn geometric_tolerance_nominal_zone_inherited_let() {
     // (a) Trait-level structure check ────────────────────────────────────────
@@ -1143,17 +1128,15 @@ structure def Probe {
     }
 }
 
-// ─── β-9: SurfaceFinish direction + process defaults (RED) ───────────────────
+// ─── β-9: SurfaceFinish direction + process defaults ─────────────────────────
 
-/// β-9 RED: `direction` and `process` are currently required params on
-/// SurfaceFinish, so omitting them yields missing-argument compile errors.
-///
-/// After step-10 adds defaults:
-///   `param direction : SurfaceDirection = SurfaceDirection.Multidirectional`
-///   `param process   : String           = ""`
+/// Verifies that `SurfaceFinish` compiles and evaluates when `direction` and
+/// `process` are omitted (relying on their defaults):
+///   `direction` defaults to `SurfaceDirection.Multidirectional`
+///   `process`   defaults to `""`
 ///
 /// (a) Compile `structure def Probe { sub s = SurfaceFinish(parameter:
-///     SurfaceParameter.Ra, value: 1.6um) }` WITHOUT direction and process;
+///     SurfaceParameter.Ra, value: 1.6um) }` WITHOUT direction/process;
 ///     assert zero Severity::Error diagnostics.
 /// (b) Eval: construct SurfaceFinish inline (without direction/process) and pass
 ///     it to `require_finish`; assert the call evals to `Value::Bool(true)`.
@@ -1162,9 +1145,6 @@ structure def Probe {
 ///     NOTE: sub-component eval of stdlib structure types is not supported by the
 ///     eval engine (it looks up templates only from the user module), so we use
 ///     the inline-construction pattern (same as require_finish_bool_free_fn).
-///
-/// RED because direction and process are required params → omitting them gives
-/// missing-argument errors.
 #[test]
 fn surface_finish_direction_process_defaults() {
     // (a) Compile without direction/process: should have zero Error diagnostics ──
@@ -1240,25 +1220,19 @@ structure def Probe {
     );
 }
 
-// ─── β-7: require_finish Bool free fn (RED) ──────────────────────────────────
+// ─── β-7: require_finish Bool free fn ────────────────────────────────────────
 
-/// β-7 RED: `require_finish` does not exist yet; this test should fail with
-/// "unknown function: require_finish" (or similar compile error) until step-8
-/// adds it to tolerancing.ri.
+/// Verifies the `require_finish(feature, finish)` free function:
+///   Returns `true`  when `finish.value > 0mm` (surface finish specified)
+///   Returns `false` when `finish.value == 0mm` (unspecified / zero finish)
 ///
-/// Two sub-tests:
-/// (a) Value path: a structure with `param ok : Bool = require_finish(0.0,
-///     SurfaceFinish(parameter: SurfaceParameter.Ra, value: 1.6um,
-///       direction: SurfaceDirection.Multidirectional, process: ""))` evals
-///     values[ValueCellId::new("Probe","ok")] == Value::Bool(true) (1.6um > 0mm).
-/// (b) Constraint path: check_source_with_stdlib with `constraint
-///     require_finish(0.0, SurfaceFinish(... value: 1.6um ...))` produces no
-///     Violated entry; while `value: 0mm` produces a Violated entry.
+/// (a) Value path: `param ok : Bool = require_finish(0.0, SurfaceFinish(value: 1.6um, ...))`
+///     evals to `Value::Bool(true)` (1.6µm > 0mm).
+/// (b) Constraint path: `constraint require_finish(0.0, SurfaceFinish(value: 1.6um))`
+///     produces no Violated entry; `value: 0mm` produces a Violated entry.
 ///
-/// NOTE: direction and process are supplied explicitly — their defaults are not
-/// added until step-10 (SurfaceFinish.direction/process default params).
-///
-/// RED because `require_finish` is an unknown function until step-8.
+/// NOTE: direction and process are supplied explicitly in this test — see
+/// `surface_finish_direction_process_defaults` for the defaulted-params variant.
 #[test]
 fn require_finish_bool_free_fn() {
     // (a) Value path: require_finish returns true when finish.value > 0mm ──────
@@ -1274,7 +1248,7 @@ structure def Probe {
 "#;
     let compiled = parse_and_compile_with_stdlib(source_value);
 
-    // No compile errors expected after step-8 makes require_finish available
+    // No compile errors expected
     let compile_errors: Vec<_> = compiled
         .diagnostics
         .iter()
