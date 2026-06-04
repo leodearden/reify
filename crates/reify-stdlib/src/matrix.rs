@@ -424,11 +424,9 @@ pub(crate) fn matrix_components_f64(
 ) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
     let rows = match v {
         Value::Matrix(r) if !r.is_empty() => Rows::Matrix(r),
-        Value::Tensor(items)
-            if !items.is_empty() && items.iter().all(|r| matches!(r, Value::Tensor(_))) =>
-        {
-            Rows::Tensor(items)
-        }
+        // Non-empty guard stays here because rank2_components accesses items[0] directly.
+        // Per-row Tensor validation is handled by rank2_components (Rows::Tensor arm).
+        Value::Tensor(items) if !items.is_empty() => Rows::Tensor(items),
         _ => return None,
     };
     rank2_components(rows)
@@ -444,12 +442,10 @@ pub(crate) fn matrix_components_f64(
 pub(crate) fn list_matrix_components_f64(
     v: &Value,
 ) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
+    // Non-empty guard stays here because rank2_components accesses items[0] directly.
+    // Per-row List validation is handled by rank2_components (Rows::List arm).
     let items = match v {
-        Value::List(items)
-            if !items.is_empty() && items.iter().all(|r| matches!(r, Value::List(_))) =>
-        {
-            items
-        }
+        Value::List(items) if !items.is_empty() => items,
         _ => return None,
     };
     rank2_components(Rows::List(items))

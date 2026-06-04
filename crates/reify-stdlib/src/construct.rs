@@ -555,4 +555,55 @@ mod tests {
             "identity(2, 2) with two args should be Undef"
         );
     }
+
+    // ── Delegation-seam guards ────────────────────────────────────────────────
+    //
+    // These tests explicitly lock the boundary between `eval_vec`/`eval_diag`
+    // → `crate::helpers::list_components_f64` and `eval_matrix`
+    // → `crate::matrix::list_matrix_components_f64`.
+    //
+    // They use `Value::Tensor` inputs — a container that is NOT `Value::List` —
+    // to confirm that the delegation rejects non-List values end-to-end, not
+    // just inside the helpers/matrix modules.  This case is distinct from the
+    // `Value::Real` non-list cases already tested above.
+
+    /// `vec(tensor)` must collapse to `Undef`; the delegation target
+    /// `list_components_f64` rejects anything that is not a `Value::List`.
+    #[test]
+    fn eval_vec_tensor_arg_collapses_to_undef() {
+        let tensor_arg = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert_eq!(
+            eval_builtin("vec", &[tensor_arg]),
+            Value::Undef,
+            "vec(Tensor) should be Undef — delegation rejects non-List"
+        );
+    }
+
+    /// `matrix([[1,2],[Tensor]])` must collapse to `Undef`; the delegation
+    /// target `list_matrix_components_f64` / `rank2_components` rejects a
+    /// `Value::Tensor` row that appears inside an otherwise-valid outer List.
+    #[test]
+    fn eval_matrix_tensor_row_collapses_to_undef() {
+        let input = Value::List(vec![
+            list_row(&[1.0, 2.0]),
+            Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0)]),
+        ]);
+        assert_eq!(
+            eval_builtin("matrix", &[input]),
+            Value::Undef,
+            "matrix([[1,2], Tensor]) should be Undef — delegation rejects Tensor rows"
+        );
+    }
+
+    /// `diag(tensor)` must collapse to `Undef`; the delegation target
+    /// `list_components_f64` rejects anything that is not a `Value::List`.
+    #[test]
+    fn eval_diag_tensor_arg_collapses_to_undef() {
+        let tensor_arg = Value::Tensor(vec![Value::Real(3.0), Value::Real(5.0)]);
+        assert_eq!(
+            eval_builtin("diag", &[tensor_arg]),
+            Value::Undef,
+            "diag(Tensor) should be Undef — delegation rejects non-List"
+        );
+    }
 }
