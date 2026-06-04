@@ -3,6 +3,8 @@
  * Covers: store_state / viewport_state selectedEntities; set_test_mode.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, cleanup } from '@solidjs/testing-library';
+import { MenuBar } from '../panels/MenuBar';
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
@@ -1622,5 +1624,85 @@ describe('debug bridge R1 inspection tools', () => {
       expect(result.devicePixelRatio).toBe(2);
       expect(typeof result.focused).toBe('boolean');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge open_menu (step-1 RED → step-2 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge open_menu', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(async () => {
+    cleanup();
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) open_menu({name:"file"}) returns {ok:true, open:"file"} and openMenu()==="file"', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    const result = await dispatchCmd(3000, 'open_menu', { name: 'file' });
+    expect(result.ok).toBe(true);
+    expect(result.open).toBe('file');
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
+  });
+
+  it('(b) calling open_menu({name:"file"}) again is idempotent — menu stays open, not toggled', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(3001, 'open_menu', { name: 'file' });
+    const result2 = await dispatchCmd(3002, 'open_menu', { name: 'file' });
+    expect(result2.ok).toBe(true);
+    expect(result2.open).toBe('file');
+    // Must still be open — not toggled closed
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
+  });
+
+  it('(c) with file open, open_menu({name:"view"}) switches to view', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(3003, 'open_menu', { name: 'file' });
+    const result = await dispatchCmd(3004, 'open_menu', { name: 'view' });
+    expect(result.ok).toBe(true);
+    expect(result.open).toBe('view');
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('view');
+  });
+
+  it('(d) open_menu({name:"nope"}) returns {error} and does not change open state', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(3005, 'open_menu', { name: 'file' });
+    const result = await dispatchCmd(3006, 'open_menu', { name: 'nope' });
+    expect(result).toHaveProperty('error');
+    // State unchanged — still 'file'
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
   });
 });
