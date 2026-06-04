@@ -8,11 +8,11 @@
 //! Test A `spec_9_5_purpose_example_parses_with_required_constructs` (RED driver):
 //!   - Parses the §9.5 example fence with no ERROR nodes.
 //!   - Asserts >=2 purpose_param + >=1 let_declaration + >=1 guarded_block nodes.
-//!   RED before step-2 (old §9.5 example has 1 param, no let, no guarded block).
+//!     RED before step-2 (old §9.5 example has 1 param, no let, no guarded block).
 //!
 //! Test B `spec_4_4_purpose_example_parses` (regression baseline):
 //!   - Parses the §4.4 example fence (after "Example:" anchor) with no ERROR nodes.
-//!   GREEN now; stays GREEN after step-3 replaces the §4.4 example.
+//!     GREEN now; stays GREEN after step-3 replaces the §4.4 example.
 
 use tree_sitter_reify::language;
 
