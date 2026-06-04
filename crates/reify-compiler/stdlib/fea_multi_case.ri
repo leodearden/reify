@@ -299,6 +299,15 @@ trait Support { }
 // tests in `crates/reify-eval/tests/structure_instance_e2e.rs`); callers may
 // override either field at construction.
 structure def PointLoad : Load {
+    // Applied-force direction unit vector.  Default [0, 0, -1] (−Z, the
+    // canonical bending/gravity direction) preserves backward compatibility —
+    // a bare PointLoad() contributes [0, 0, -force], byte-identical to the
+    // pre-4245 hardcoded -Z path.
+    //
+    // TODO(vec3-type): tighten to `Vec3` once a real 3-vector type exists.
+    // Vec3 is currently a scalar alias (trajectory.ri:96) and is declared in
+    // std.trajectory which loads after std.fea — both make it unusable here.
+    param direction : List<Real> = [0.0, 0.0, -1.0]
     param point : String = ""
     param force : Real = 0.0
 }
