@@ -40,8 +40,8 @@ fn eval_thin_walled_bracket_exits_zero_with_in_band_max_von_mises() {
 
     // Split on '=' and parse the leading numeric token of the RHS.
     let rhs = mvm_line
-        .splitn(2, '=')
-        .nth(1)
+        .split_once('=')
+        .map(|x| x.1)
         .expect("line must contain '='")
         .trim();
     let numeric_token = rhs
