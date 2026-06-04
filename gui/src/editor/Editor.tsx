@@ -14,6 +14,7 @@ import { reifyCompletionSource } from './completions';
 import { createDiagnosticsListener, lspDiagnosticToCodeMirror, diagnosticInfoToCmDiagnostic, type CmDiagnostic } from './diagnostics';
 import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition, gotoDefinitionCommand } from './gotoDefinition';
+import { renameCommand, type RenameUi } from './rename';
 import { createNavHistory } from '../hooks/useNavHistory';
 import type { NavEntry } from '../hooks/useNavHistory';
 import type { createEditorStore } from '../stores/editorStore';
@@ -77,6 +78,18 @@ export function Editor(props: EditorProps) {
   let diagnosticsListenerCancelled = false;
   let fileOpsPromise: Promise<void> = Promise.resolve();
   let destroyed = false;
+
+  // F2 inline-rename overlay: at most one transient element (the input field or
+  // the "can't rename here" message) lives in the editor container at a time.
+  // Tracked at component scope so onCleanup can tear it down.
+  let renameOverlayEl: HTMLElement | undefined;
+  let renameMessageTimer: ReturnType<typeof setTimeout> | undefined;
+  function clearRenameOverlay(): void {
+    clearTimeout(renameMessageTimer);
+    renameMessageTimer = undefined;
+    renameOverlayEl?.remove();
+    renameOverlayEl = undefined;
+  }
 
   // Current URI — updated on file switch, read by LSP extension getters
   let currentUri = 'file:///untitled.ri';
@@ -181,6 +194,88 @@ export function Editor(props: EditorProps) {
       view.dispatch({ selection: { anchor: offset }, scrollIntoView: true });
     };
 
+    // Position a rename overlay element near a document offset. coordsAtPos
+    // returns viewport coords; convert to container-relative. Falls back to the
+    // top-left corner when there is no layout (e.g. coordsAtPos returns null).
+    const positionRenameOverlay = (el: HTMLElement, offset: number): void => {
+      // coordsAtPos can throw when there is no layout (e.g. jsdom); treat any
+      // failure as "no coords" so positioning never breaks the rename flow.
+      let coords: { left: number; bottom: number } | null = null;
+      try {
+        coords = view?.coordsAtPos(offset) ?? null;
+      } catch {
+        coords = null;
+      }
+      const rect = containerRef.getBoundingClientRect();
+      if (coords) {
+        el.style.left = `${coords.left - rect.left}px`;
+        el.style.top = `${coords.bottom - rect.top}px`;
+      } else {
+        el.style.left = '8px';
+        el.style.top = '8px';
+      }
+    };
+
+    // Editor-owned UI for the F2 inline-rename flow. renameCommand injects these
+    // callbacks so its refuse/accept routing stays DOM-free and unit-testable.
+    const renameUi: RenameUi = {
+      promptNewName(_view, range, placeholder, onSubmit, onCancel) {
+        clearRenameOverlay();
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = placeholder;
+        input.spellcheck = false;
+        input.className = styles.renameField;
+        input.setAttribute('data-testid', 'rename-field');
+
+        // Resolve exactly once: Enter submits, Escape/blur cancels. Removing the
+        // focused input fires blur, so the `settled` guard prevents a double call.
+        let settled = false;
+        const settle = (action: () => void): void => {
+          if (settled) return;
+          settled = true;
+          clearRenameOverlay();
+          action();
+        };
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            e.stopPropagation();
+            const value = input.value;
+            settle(() => onSubmit(value));
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            settle(onCancel);
+          }
+        });
+        input.addEventListener('blur', () => settle(onCancel));
+
+        renameOverlayEl = input;
+        containerRef.appendChild(input);
+        const startOffset =
+          view!.state.doc.line(range.start.line + 1).from + range.start.character;
+        positionRenameOverlay(input, startOffset);
+        input.focus();
+        input.select();
+      },
+
+      showCannotRename(_view) {
+        clearRenameOverlay();
+        const msg = document.createElement('div');
+        msg.className = styles.renameMessage;
+        msg.setAttribute('data-testid', 'rename-message');
+        msg.textContent = "Can't rename here";
+        renameOverlayEl = msg;
+        containerRef.appendChild(msg);
+        positionRenameOverlay(msg, view!.state.selection.main.head);
+        // Auto-dismiss the transient message; guard against clobbering a newer overlay.
+        renameMessageTimer = setTimeout(() => {
+          if (renameOverlayEl === msg) clearRenameOverlay();
+        }, 2000);
+      },
+    };
+
     // Extract extensions into a shared variable for reuse when creating
     // fresh EditorState instances for newly opened files
     extensions = [
@@ -209,6 +304,14 @@ export function Editor(props: EditorProps) {
         {
           key: 'F12',
           run: gotoDefinitionCommand(() => currentUri, onCrossFileNavigate, onRecordJump),
+          preventDefault: true,
+        },
+        {
+          // F2 inline rename. prepareRename gates the edit (Invariant-4 refusal),
+          // and applying the WorkspaceEdit dispatches one CM change that flows
+          // through the updateListener below → markDirty + updateSource + didChange.
+          key: 'F2',
+          run: renameCommand(() => currentUri, lspClient, renameUi),
           preventDefault: true,
         },
         {
@@ -585,6 +688,8 @@ export function Editor(props: EditorProps) {
   onCleanup(() => {
     clearTimeout(debounceTimer);
     clearTimeout(lspDebounceTimer);
+    // Tear down any open F2 rename overlay (field/message) + its dismiss timer.
+    clearRenameOverlay();
     // Mark diagnostics listener as cancelled so that if the listen
     // promise hasn't resolved yet, it will call unlisten() immediately
     // when it does resolve (preventing a leaked Tauri event listener).
