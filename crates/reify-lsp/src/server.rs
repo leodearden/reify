@@ -717,6 +717,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initialize_advertises_rename_provider_with_prepare() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let init_result = server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+
+        // rename_provider must be advertised as RenameOptions with
+        // prepareProvider: true so the editor issues prepareRename before rename
+        // (task 4203 γ; PRD §Contract invariants 4-5).
+        match init_result.capabilities.rename_provider {
+            Some(OneOf::Right(RenameOptions {
+                prepare_provider, ..
+            })) => {
+                assert_eq!(
+                    prepare_provider,
+                    Some(true),
+                    "rename_provider should advertise prepareProvider: true"
+                );
+            }
+            other => panic!(
+                "expected rename_provider = Some(OneOf::Right(RenameOptions {{ prepare_provider: Some(true), .. }})), got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
     async fn did_open_stores_document_and_runs_pipeline() {
         let (service, _socket) = test_service();
         let server = service.inner();
