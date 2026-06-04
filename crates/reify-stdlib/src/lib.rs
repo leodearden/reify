@@ -105,8 +105,13 @@ pub use trajectory::input_shape::{build_train_for_shaper, shaper_damping_ratio};
 /// marshals are `pub(crate)`), so these keys reach reify-eval only via this
 /// crate-root re-export — mirroring the `build_train_for_shaper` boundary above.
 /// The `Value`→`Value` composers (`simulate_trajectory_value` /
-/// `input_shape_value`) join this re-export as they land (steps 14 / 18).
-pub use trajectory::trampoline::{InputShapeCacheKey, SimulateTrajectoryCacheKey};
+/// `input_shape_value`) join this re-export as they land (steps 14 / 18):
+/// [`simulate_trajectory_value`] runs the profile/mech/modal → `EndEffectorTrack`
+/// forward-pass pipeline that `reify-eval`'s `simulate_trajectory_trampoline`
+/// wraps (the θ/κ core types it marshals are `pub(crate)`, so it must live here).
+pub use trajectory::trampoline::{
+    simulate_trajectory_value, InputShapeCacheKey, SimulateTrajectoryCacheKey,
+};
 
 #[cfg(test)]
 #[macro_use]

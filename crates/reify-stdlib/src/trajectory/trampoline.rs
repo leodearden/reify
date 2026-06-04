@@ -35,7 +35,8 @@ use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 use super::simulate::{
-    EffectorLocation, EndEffectorTrackData, LinkDesc, MechanismModel, ModalModel, ModeDesc, Pose3,
+    simulate_trajectory_core, EffectorLocation, EndEffectorTrackData, LinkDesc, MechanismModel,
+    ModalModel, ModeDesc, Pose3,
 };
 use super::spline::{BoundaryCondition, CubicSpline, KnotData, MultiJointSpline, QuinticSpline};
 
@@ -547,6 +548,57 @@ pub(crate) fn track_data_to_value(track: &EndEffectorTrackData) -> Value {
         version: 1,
         fields,
     }))
+}
+
+// ── Value→Value composers ────────────────────────────────────────────────────
+
+/// Compose `simulate_trajectory(profile, mech, modal)` at the `Value` layer —
+/// the θ-deferred Value integration (PRD §6.2). `reify-eval`'s
+/// `simulate_trajectory_trampoline` calls this through the crate-root re-export,
+/// mirroring the `build_train_for_shaper` boundary (the θ/κ core types are
+/// `pub(crate)`, so the pipeline must run inside `reify-stdlib`).
+///
+/// Pipeline: marshal `modal`→[`ModalModel`] (`value_to_modal_model`),
+/// `mech`→([`MechanismModel`], effector locations) sized to the mode count
+/// (`value_to_mechanism_model`), `profile`→[`MultiJointSpline`]
+/// (`value_to_multijoint_spline`); run [`simulate_trajectory_core`]; marshal the
+/// [`EndEffectorTrackData`] back with [`track_data_to_value`].
+///
+/// Two graceful non-results (never a panic):
+/// - **bad args** — a `profile` that is not even a `StructureInstance` (a bare
+///   `Real`, `Undef`, …) cannot be a profile → [`Value::Undef`];
+/// - **degenerate profile** — a recognizable `PiecewisePolynomialProfile`
+///   instance that nonetheless cannot yield a spline (`< 2` waypoints,
+///   unfittable knots, an unknown boundary / spline-kind tag) → a well-formed
+///   EMPTY `EndEffectorTrack` (the simulator has nothing to integrate).
+///
+/// The instance check disambiguates the two reasons `value_to_multijoint_spline`
+/// returns `None`: "malformed input" (Undef) stays distinct from
+/// "valid-but-trivial input" (empty track).
+pub fn simulate_trajectory_value(profile: &Value, mech: &Value, modal: &Value) -> Value {
+    // Bad args: a profile must be a (PiecewisePolynomialProfile) StructureInstance.
+    if !matches!(profile, Value::StructureInstance(_)) {
+        return Value::Undef;
+    }
+
+    let modal_model = value_to_modal_model(modal);
+    let (mech_model, effector_locs) = value_to_mechanism_model(mech, modal_model.modes.len());
+
+    let track = match value_to_multijoint_spline(profile) {
+        Some(spline) => {
+            simulate_trajectory_core(&spline, &mech_model, &modal_model, &effector_locs)
+        }
+        // A recognizable but degenerate profile → a well-formed empty track
+        // (this mirrors `simulate.rs::empty_track_data`, which is private there:
+        // `t_samples` empty, one empty inner series per effector location).
+        None => EndEffectorTrackData {
+            t_samples: Vec::new(),
+            nominal_pose: vec![Vec::new(); effector_locs.len()],
+            vibration_offset: vec![Vec::new(); effector_locs.len()],
+            combined_pose: vec![Vec::new(); effector_locs.len()],
+        },
+    };
+    track_data_to_value(&track)
 }
 
 #[cfg(test)]
