@@ -1452,3 +1452,66 @@ fn sealed_seal_pressure_rating_member_is_pressure_dimension() {
         other => panic!("seal_pressure_rating should be Param, got {:?}", other),
     }
 }
+
+// ─── task-4226 step-3: example reader + negative dimension guard ──────────────
+
+/// structural_traits_dimensioned_example_conforms_clean: read, parse, and
+/// compile `examples/structural_traits_dimensioned.ri` against the full stdlib,
+/// then assert zero Severity::Error diagnostics.
+///
+/// RED until step-4 creates the example file (read fails with ENOENT).
+/// GREEN once the file exists and all dimensioned conformers compile clean.
+#[test]
+fn structural_traits_dimensioned_example_conforms_clean() {
+    const EXAMPLE_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/structural_traits_dimensioned.ri"
+    );
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .unwrap_or_else(|e| panic!("examples/structural_traits_dimensioned.ri should exist: {}", e));
+    let compiled = compile_source_with_stdlib(&source);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "examples/structural_traits_dimensioned.ri should compile with zero error \
+         diagnostics, got: {:?}",
+        errors
+    );
+}
+
+/// wrong_dimension_member_rejected: a structure conforming to a tightened trait
+/// but supplying a wrong-dimension value must produce a dimension-mismatch error.
+///
+/// Regression guard: pins that the tightened `Sealed.seal_pressure_rating`
+/// member is dimension-checked by the conformance checker. The rejection path
+/// exists on main (conformance/checker.rs emits "type mismatch for trait member"
+/// as Severity::Error; DiagnosticCode::DimensionMismatch).
+///
+/// (Note: this test passes once step-2 lands — it is a regression guard, not a
+/// fresh RED. The example-reader test above is the RED that drives step-4.)
+#[test]
+fn wrong_dimension_member_rejected() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure def BadSeal : Sealed {
+    param seal_pressure_rating : Length = 5.0 * 1m
+}
+"#,
+    );
+    let errors = errors_only(&compiled);
+    assert!(
+        !errors.is_empty(),
+        "expected a dimension-mismatch error for `seal_pressure_rating : Length` \
+         (trait Sealed requires Pressure), but got zero error diagnostics"
+    );
+    assert!(
+        errors.iter().any(|d| {
+            d.message.contains("seal_pressure_rating")
+                || d.message.to_lowercase().contains("mismatch")
+                || d.message.to_lowercase().contains("type")
+        }),
+        "expected an error message referencing 'seal_pressure_rating', 'mismatch', \
+         or 'type'; got: {:?}",
+        errors
+    );
+}
