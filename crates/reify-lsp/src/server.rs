@@ -156,6 +156,12 @@ impl LanguageServer for ReifyLanguageServer {
                 definition_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions::default()),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                // Advertise rename with prepareProvider so the editor issues
+                // prepareRename (the Invariant-4 refusal gate) before rename.
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 ..Default::default()
             },
             ..Default::default()
@@ -369,6 +375,66 @@ impl LanguageServer for ReifyLanguageServer {
 
         let symbols = crate::analysis::compute_document_symbols(&text, &uri);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let uri = params.text_document.uri;
+        let position = params.position;
+
+        // Brief read lock: snapshot the document text, then drop it before the
+        // (CPU-only) parse + scope walk — mirrors hover/document_symbol.
+        let state = self.state.read().await;
+        let text = match state.documents.get(&uri) {
+            Some(doc) => doc.text.clone(),
+            None => return Ok(None),
+        };
+        drop(state);
+
+        // Prelude-aware parse for AST-shape consistency with the rest of reify-lsp
+        // (goto_def/document_symbol use the same pattern).
+        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let parsed =
+            reify_compiler::parse_with_stdlib(&text, reify_core::ModulePath::single(module_name));
+
+        // Forward to the α producer: it returns None for every non-renameable
+        // position (keywords/literals/builtins/types/declaration names/cross-module
+        // symbols), which is Invariant 4's refusal surface. None passes through so
+        // the editor refuses the rename.
+        Ok(
+            crate::references::prepare_rename(&text, &parsed, position).map(|target| {
+                PrepareRenameResponse::RangeWithPlaceholder {
+                    range: target.range,
+                    placeholder: target.placeholder,
+                }
+            }),
+        )
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let new_name = params.new_name;
+
+        let state = self.state.read().await;
+        let text = match state.documents.get(&uri) {
+            Some(doc) => doc.text.clone(),
+            None => return Ok(None),
+        };
+        drop(state);
+
+        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let parsed =
+            reify_compiler::parse_with_stdlib(&text, reify_core::ModulePath::single(module_name));
+
+        // compute_rename validates new_name and guarantees a re-parse-clean edit
+        // (Invariant 5); it returns None for unknown/non-renameable positions and
+        // invalid names, so the handler is a thin forwarder.
+        Ok(crate::references::compute_rename(
+            &text, &parsed, &uri, position, &new_name,
+        ))
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -964,6 +1030,204 @@ mod tests {
         assert!(
             result.is_none(),
             "document_symbol for an unknown URI should return Ok(None), got {result:?}"
+        );
+    }
+
+    // --- task 4203 γ: prepare_rename handler tests ---
+    //
+    // Positions reference the canonical bracket fixture (0-based):
+    //   line 0: `structure Bracket {`
+    //   line 1: `    param width: Scalar = 80mm`   (Scalar type at col 17)
+    //   line 7: `    let volume = width * height * thickness`  (width use at col 17)
+
+    #[tokio::test]
+    async fn prepare_rename_returns_target_for_width_use() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let result = server
+            .prepare_rename(TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position::new(7, 17), // 'width' use in `let volume = width * ...`
+            })
+            .await
+            .unwrap();
+
+        match result {
+            Some(PrepareRenameResponse::RangeWithPlaceholder { placeholder, range }) => {
+                assert_eq!(placeholder, "width", "placeholder is the current name");
+                // The range covers the 5-char identifier token on line 7.
+                assert_eq!(range.start, Position::new(7, 17));
+                assert_eq!(range.end, Position::new(7, 22));
+            }
+            other => panic!("expected RangeWithPlaceholder for a width use, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_rename_refuses_type_name() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        // 'Scalar' (a type) on line 1 — Invariant 4 refusal.
+        let result = server
+            .prepare_rename(TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position::new(1, 17),
+            })
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "prepare_rename must refuse a type name (Invariant 4), got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_rename_refuses_keyword() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        // 'structure' keyword at line 0, col 0 — Invariant 4 refusal.
+        let result = server
+            .prepare_rename(TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position::new(0, 0),
+            })
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "prepare_rename must refuse a keyword, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_rename_unknown_uri_returns_none() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Never opened — not in the document store.
+        let result = server
+            .prepare_rename(TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse("file:///never_opened.ri").unwrap(),
+                },
+                position: Position::new(1, 10),
+            })
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "prepare_rename for an unknown URI should return Ok(None)"
+        );
+    }
+
+    // --- task 4203 γ: rename handler tests ---
+
+    fn rename_params(uri: Url, line: u32, character: u32, new_name: &str) -> RenameParams {
+        RenameParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position::new(line, character),
+            },
+            new_name: new_name.to_string(),
+            work_done_progress_params: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_width_edits_decl_and_all_uses() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let edit = server
+            .rename(rename_params(uri.clone(), 7, 17, "girth"))
+            .await
+            .unwrap()
+            .expect("renaming a width use returns a WorkspaceEdit");
+
+        let edits = edit
+            .changes
+            .expect("changes present")
+            .get(&uri)
+            .expect("edits keyed by uri")
+            .clone();
+        assert_eq!(edits.len(), 4, "bracket fixture: 1 decl + 3 uses of width");
+        assert!(
+            edits.iter().all(|e| e.new_text == "girth"),
+            "every edit writes the new name"
+        );
+
+        // Invariant 5: applying the edits yields a buffer that re-parses clean.
+        // Apply descending by start offset so earlier offsets are not shifted.
+        let mut buffer = reify_test_support::bracket_source().to_string();
+        let mut ordered = edits.clone();
+        ordered.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+        for e in ordered.iter().rev() {
+            let start = crate::convert::position_to_offset(&buffer, e.range.start);
+            let end = crate::convert::position_to_offset(&buffer, e.range.end);
+            buffer.replace_range(start..end, &e.new_text);
+        }
+        let reparsed = reify_syntax::parse(&buffer, reify_core::ModulePath::single("test"));
+        assert!(
+            reparsed.errors.is_empty(),
+            "renamed buffer must re-parse clean (Invariant 5): {:?}\n{buffer}",
+            reparsed.errors
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_refuses_non_renameable_position() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+        // 'Scalar' type position — not renameable.
+        let result = server.rename(rename_params(uri, 1, 17, "girth")).await.unwrap();
+        assert!(
+            result.is_none(),
+            "rename must refuse a non-renameable position, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_refuses_invalid_new_name() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+        // Renameable position (width use), but invalid identifiers must be refused.
+        for bad in ["let", "2x"] {
+            let result = server
+                .rename(rename_params(uri.clone(), 7, 17, bad))
+                .await
+                .unwrap();
+            assert!(
+                result.is_none(),
+                "rename must refuse invalid new_name {bad:?}, got {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_unknown_uri_returns_none() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let result = server
+            .rename(rename_params(
+                Url::parse("file:///never_opened.ri").unwrap(),
+                7,
+                17,
+                "girth",
+            ))
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "rename for an unknown URI should return Ok(None)"
         );
     }
 
