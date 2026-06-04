@@ -290,26 +290,22 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
     })
 }
 
-/// Extract a square or rectangular matrix from a `Value` into `(nrows, ncols, flat_data, element_dim)`.
+/// Row variants for [`rank2_components`]: shared by [`matrix_components_f64`]
+/// (Matrix / Tensor containers) and [`list_matrix_components_f64`] (List-of-List).
+enum Rows<'a> {
+    Matrix(&'a [Vec<Value>]),
+    Tensor(&'a [Value]),
+    List(&'a [Value]),
+}
+
+/// Shared rank-2 guard/flatten core.
 ///
-/// Handles both `Value::Matrix(rows)` and nested `Value::Tensor` (rank-2 Tensor).
-/// All elements must share the same dimension and be numeric.
-pub(crate) fn matrix_components_f64(
-    v: &Value,
-) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
-    enum Rows<'a> {
-        Matrix(&'a [Vec<Value>]),
-        Tensor(&'a [Value]),
-    }
-    let rows = match v {
-        Value::Matrix(r) if !r.is_empty() => Rows::Matrix(r),
-        Value::Tensor(items)
-            if !items.is_empty() && items.iter().all(|r| matches!(r, Value::Tensor(_))) =>
-        {
-            Rows::Tensor(items)
-        }
-        _ => return None,
-    };
+/// Validates shape (non-empty outer, every row non-empty with the same
+/// column count), checks uniform element dimension, and flattens to a
+/// row-major `Vec<f64>`. Called by both [`matrix_components_f64`] and
+/// [`list_matrix_components_f64`] — shape/dimension/numeric guards live in
+/// one place.
+fn rank2_components(rows: Rows<'_>) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
     let (nrows, ncols) = match &rows {
         Rows::Matrix(r) => {
             let nc = r[0].len();
@@ -333,12 +329,31 @@ pub(crate) fn matrix_components_f64(
             }
             (items.len(), nc)
         }
+        Rows::List(items) => {
+            let nc = match &items[0] {
+                Value::List(elems) => elems.len(),
+                _ => return None,
+            };
+            if nc == 0
+                || items.iter().any(|r| match r {
+                    Value::List(elems) => elems.len() != nc,
+                    _ => true,
+                })
+            {
+                return None;
+            }
+            (items.len(), nc)
+        }
     };
     // Flatten and extract f64 values, checking uniform dimension.
     let first_elem = match &rows {
         Rows::Matrix(r) => &r[0][0],
         Rows::Tensor(items) => match &items[0] {
             Value::Tensor(elems) => &elems[0],
+            _ => return None,
+        },
+        Rows::List(items) => match &items[0] {
+            Value::List(elems) => &elems[0],
             _ => return None,
         },
     };
@@ -377,8 +392,63 @@ pub(crate) fn matrix_components_f64(
                 }
             }
         }
+        Rows::List(items) => {
+            for item in *items {
+                if let Value::List(elems) = item {
+                    for elem in elems {
+                        if !check_and_push(elem, &mut data) {
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
     }
     Some((nrows, ncols, data, first_dim))
+}
+
+/// Extract a square or rectangular matrix from a `Value` into
+/// `(nrows, ncols, flat_data, element_dim)`.
+///
+/// Handles `Value::Matrix(rows)` and nested `Value::Tensor` (rank-2 Tensor).
+/// All elements must share the same dimension and be numeric.
+/// Returns `None` for `Value::List` — use [`list_matrix_components_f64`] for
+/// that container; its 10 callers (matrix builtins, geometry.rs, analysis.rs)
+/// are unaffected.
+pub(crate) fn matrix_components_f64(
+    v: &Value,
+) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
+    let rows = match v {
+        Value::Matrix(r) if !r.is_empty() => Rows::Matrix(r),
+        Value::Tensor(items)
+            if !items.is_empty() && items.iter().all(|r| matches!(r, Value::Tensor(_))) =>
+        {
+            Rows::Tensor(items)
+        }
+        _ => return None,
+    };
+    rank2_components(rows)
+}
+
+/// Extract a depth-2 `Value::List`-of-`Value::List` into
+/// `(nrows, ncols, row_major_data, element_dim)`.
+///
+/// The `Value::List` container analogue of [`matrix_components_f64`]: both
+/// delegate to [`rank2_components`] so the shape/dimension/numeric guards live
+/// in one place. `matrix_components_f64` still rejects `Value::List`
+/// (contract preserved; 10 callers unaffected). Used by `construct::eval_matrix`.
+pub(crate) fn list_matrix_components_f64(
+    v: &Value,
+) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
+    let items = match v {
+        Value::List(items)
+            if !items.is_empty() && items.iter().all(|r| matches!(r, Value::List(_))) =>
+        {
+            items
+        }
+        _ => return None,
+    };
+    rank2_components(Rows::List(items))
 }
 
 /// Build a nested `Value::Tensor` (rank-2) from flat f64 data.
