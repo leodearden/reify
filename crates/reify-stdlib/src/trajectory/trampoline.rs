@@ -1026,4 +1026,195 @@ mod tests {
         );
         assert_eq!(locs2.len(), 1);
     }
+
+    // ── steps 11/12: track_data_to_value ────────────────────────────────────────
+
+    use super::super::simulate::{EndEffectorTrackData, Pose3};
+    use super::track_data_to_value;
+
+    /// A `Pose3` whose Z position carries the per-`(location, time)` marker `z`
+    /// (orientation identity). `track_data_to_value` flattens `position` to its
+    /// Z component — the core maps scalar modal vibration onto the Z axis
+    /// (`[0, 0, s]`, `simulate.rs`), so Z is the only pose component the
+    /// `EndEffectorTrack` `Value` preserves.
+    fn pose_z(z: f64) -> Pose3 {
+        Pose3 {
+            position: [0.0, 0.0, z],
+            quaternion: [1.0, 0.0, 0.0, 0.0],
+        }
+    }
+
+    /// A populated `EndEffectorTrackData` with `n_loc` locations × `n_times`
+    /// times in the core's `[location][time]` convention: nominal Z = 0;
+    /// vibration Z = the scalar marker `10·loc + t`; combined = nominal +
+    /// vibration (so the flattened combined Z equals the marker and
+    /// `combined − nominal` equals the vibration scalar).
+    fn populated_track(n_loc: usize, n_times: usize) -> EndEffectorTrackData {
+        let t_samples: Vec<f64> = (0..n_times).map(|t| t as f64 * 0.5).collect();
+        let nominal_pose: Vec<Vec<Pose3>> = (0..n_loc)
+            .map(|_| (0..n_times).map(|_| pose_z(0.0)).collect())
+            .collect();
+        let vibration_offset: Vec<Vec<[f64; 3]>> = (0..n_loc)
+            .map(|loc| {
+                (0..n_times)
+                    .map(|t| [0.0, 0.0, (10 * loc + t) as f64])
+                    .collect()
+            })
+            .collect();
+        let combined_pose: Vec<Vec<Pose3>> = (0..n_loc)
+            .map(|loc| {
+                (0..n_times)
+                    .map(|t| pose_z((10 * loc + t) as f64))
+                    .collect()
+            })
+            .collect();
+        EndEffectorTrackData {
+            t_samples,
+            nominal_pose,
+            vibration_offset,
+            combined_pose,
+        }
+    }
+
+    /// Read a `Value::Real`, panicking otherwise (the three marshalled matrices
+    /// must be `List<List<Real>>`).
+    fn as_real(v: &Value) -> f64 {
+        match v {
+            Value::Real(r) => *r,
+            other => panic!("expected a Real, got {other:?}"),
+        }
+    }
+
+    /// (a) A populated track marshals to an `EndEffectorTrack`
+    /// `StructureInstance`: `t_samples` is a `List<Scalar TIME>` of length
+    /// `n_times` (SI values round-trip); each of nominal_pose / vibration_offset
+    /// / combined_pose is a `List<List<Real>>` with outer len == `n_locations`
+    /// and inner len == `n_times`.
+    #[test]
+    fn track_data_to_value_shapes_endeffectortrack_instance() {
+        let (n_loc, n_times) = (2, 3);
+        let track = populated_track(n_loc, n_times);
+        let v = track_data_to_value(&track);
+
+        let Value::StructureInstance(data) = &v else {
+            panic!("track_data_to_value must yield a StructureInstance, got {v:?}");
+        };
+        assert_eq!(
+            data.type_name, "EndEffectorTrack",
+            "type_name must be EndEffectorTrack"
+        );
+
+        // t_samples : List<Scalar TIME>, length n_times, SI values round-trip.
+        let Some(Value::List(ts)) = data.fields.get(&"t_samples".to_string()) else {
+            panic!("t_samples must be a List");
+        };
+        assert_eq!(ts.len(), n_times, "t_samples length == n_times");
+        for (i, item) in ts.iter().enumerate() {
+            match item {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::TIME,
+                        "t_samples elements carry the TIME dimension"
+                    );
+                    assert!(
+                        (si_value - i as f64 * 0.5).abs() < SPLINE_TOL,
+                        "t_samples[{i}] SI value must round-trip, got {si_value}"
+                    );
+                }
+                other => panic!("t_samples[{i}] must be a Scalar, got {other:?}"),
+            }
+        }
+
+        // The three pose/offset matrices : List<List<Real>>, [location][time].
+        for field in ["nominal_pose", "vibration_offset", "combined_pose"] {
+            let Some(Value::List(outer)) = data.fields.get(&field.to_string()) else {
+                panic!("{field} must be a List");
+            };
+            assert_eq!(outer.len(), n_loc, "{field} outer len == n_locations");
+            for (loc, inner_v) in outer.iter().enumerate() {
+                let Value::List(inner) = inner_v else {
+                    panic!("{field}[{loc}] must be a List");
+                };
+                assert_eq!(inner.len(), n_times, "{field}[{loc}] inner len == n_times");
+                for (t, cell) in inner.iter().enumerate() {
+                    assert!(
+                        matches!(cell, Value::Real(_)),
+                        "{field}[{loc}][{t}] must be a Real, got {cell:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The Z-flatten is faithful: vibration_offset[loc][t] == the scalar marker;
+    /// combined[loc][t] == nominal[loc][t] + vibration[loc][t]; nominal Z == 0.
+    /// This pins `deviation_from_nominal = |combined − nominal| = |vibration|`
+    /// (the Z-axis vibration mapping the ≥40 dB acceptance relies on).
+    #[test]
+    fn track_data_to_value_flattens_pose_position_to_z() {
+        let (n_loc, n_times) = (2, 3);
+        let v = track_data_to_value(&populated_track(n_loc, n_times));
+        let Value::StructureInstance(data) = &v else {
+            panic!("expected a StructureInstance");
+        };
+        let read = |name: &str| -> Vec<Vec<f64>> {
+            let Some(Value::List(outer)) = data.fields.get(&name.to_string()) else {
+                panic!("{name} must be a List");
+            };
+            outer
+                .iter()
+                .map(|row| match row {
+                    Value::List(inner) => inner.iter().map(as_real).collect(),
+                    other => panic!("{name} row must be a List, got {other:?}"),
+                })
+                .collect()
+        };
+        let nominal = read("nominal_pose");
+        let vibration = read("vibration_offset");
+        let combined = read("combined_pose");
+        for loc in 0..n_loc {
+            for t in 0..n_times {
+                let marker = (10 * loc + t) as f64;
+                assert!(nominal[loc][t].abs() < SPLINE_TOL, "nominal Z is 0");
+                assert!(
+                    (vibration[loc][t] - marker).abs() < SPLINE_TOL,
+                    "vibration_offset Z == the scalar marker"
+                );
+                assert!(
+                    (combined[loc][t] - (nominal[loc][t] + vibration[loc][t])).abs() < SPLINE_TOL,
+                    "combined Z == nominal Z + vibration Z"
+                );
+            }
+        }
+    }
+
+    /// (b) An empty track (no locations, no times) marshals to a well-formed
+    /// `EndEffectorTrack` whose t_samples and three pose matrices are all empty
+    /// `List`s (no panic).
+    #[test]
+    fn track_data_to_value_empty_track_is_well_formed_empty_lists() {
+        let track = EndEffectorTrackData {
+            t_samples: Vec::new(),
+            nominal_pose: Vec::new(),
+            vibration_offset: Vec::new(),
+            combined_pose: Vec::new(),
+        };
+        let v = track_data_to_value(&track);
+        let Value::StructureInstance(data) = &v else {
+            panic!("an empty track must still yield a StructureInstance, got {v:?}");
+        };
+        assert_eq!(data.type_name, "EndEffectorTrack");
+        for field in ["t_samples", "nominal_pose", "vibration_offset", "combined_pose"] {
+            match data.fields.get(&field.to_string()) {
+                Some(Value::List(items)) => {
+                    assert!(items.is_empty(), "{field} must be an empty List")
+                }
+                other => panic!("{field} must be an empty List, got {other:?}"),
+            }
+        }
+    }
 }
