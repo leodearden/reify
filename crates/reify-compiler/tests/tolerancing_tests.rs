@@ -650,6 +650,84 @@ fn full_module_integrity() {
     );
 }
 
+// ─── β-5: Conforms GD&T-aware MMC/RFS flip (RED) ────────────────────────────
+
+/// β-5 RED: Conforms is currently non-pub and takes `tolerance_value : Length`
+/// (not `tolerance : GeometricTolerance`), so cross-module instantiation fails
+/// ("unknown constraint definition: Conforms") and the MMC/RFS flip is untestable.
+///
+/// After step-6 redefines Conforms as:
+///   `pub constraint def Conforms { param tolerance : GeometricTolerance;
+///    param measured_deviation : Length = 0mm; param feature_departure : Length = 0mm;
+///    effective_tolerance_zone(tolerance.tolerance_value, tolerance.material_condition,
+///    feature_departure) >= measured_deviation }`
+///
+/// The MMC case: zone = 0.1 + 0.1 = 0.2 >= 0.15 → Satisfied
+/// The RFS case: zone = 0.1        >= 0.15 → Violated
+///
+/// RED because cross-module `constraint Conforms(...)` fails with "unknown constraint
+/// definition" (Conforms is non-pub) and the old param signature doesn't match.
+///
+/// NOTE: We define the tolerance structure locally so the eval engine can find it.
+/// material_condition is supplied explicitly (MMC vs RFS) to drive the flip.
+#[test]
+fn conforms_gdt_mmc_satisfied_rfs_violated() {
+    // ── MMC case: zone = 0.1mm + 0.1mm = 0.2mm >= 0.15mm → Satisfied ────────
+    let source_mmc = r#"
+structure def TestTolMMC : GeometricTolerance {
+    param tolerance_value : Length = 0.1mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.MMC
+}
+structure def ProbeMMC {
+    sub t = TestTolMMC()
+    constraint Conforms(tolerance: t, measured_deviation: 0.15mm, feature_departure: 0.1mm)
+}
+"#;
+    let result_mmc = check_source_with_stdlib(source_mmc);
+    assert!(
+        result_mmc
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Satisfied),
+        "MMC case: Conforms should be Satisfied \
+         (zone = 0.1+0.1=0.2mm >= 0.15mm), got: {:?}",
+        result_mmc.constraint_results
+    );
+    let mmc_violated = result_mmc
+        .constraint_results
+        .iter()
+        .any(|e| e.satisfaction == Satisfaction::Violated);
+    assert!(
+        !mmc_violated,
+        "MMC case: no Conforms entry should be Violated, got: {:?}",
+        result_mmc.constraint_results
+    );
+
+    // ── RFS case: zone = 0.1mm >= 0.15mm → Violated (bonus ignored under RFS) ──
+    let source_rfs = r#"
+structure def TestTolRFS : GeometricTolerance {
+    param tolerance_value : Length = 0.1mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+structure def ProbeRFS {
+    sub t = TestTolRFS()
+    constraint Conforms(tolerance: t, measured_deviation: 0.15mm, feature_departure: 0.1mm)
+}
+"#;
+    let result_rfs = check_source_with_stdlib(source_rfs);
+    assert!(
+        result_rfs
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Violated),
+        "RFS case: Conforms should be Violated \
+         (zone = 0.1mm < 0.15mm, bonus irrelevant under RFS), got: {:?}",
+        result_rfs.constraint_results
+    );
+}
+
 // ─── β-3: ISOToleranceGrade.tolerance_value derived let (RED) ───────────────
 
 /// β-3 RED: ISOToleranceGrade.tolerance_value is still a plain required `param`
