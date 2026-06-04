@@ -88,6 +88,26 @@ describe('selectionStore', () => {
         dispose();
       });
     });
+
+    it('selectSingle resets highlightedParams when previously seeded', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, selectSingle } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        selectSingle('Bracket');
+        expect(state.highlightedParams).toEqual([]);
+        dispose();
+      });
+    });
+
+    it('selectSingle(null) resets highlightedParams when previously seeded', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, selectSingle } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        selectSingle(null);
+        expect(state.highlightedParams).toEqual([]);
+        dispose();
+      });
+    });
   });
 
   describe('toggleSelect', () => {
@@ -149,6 +169,16 @@ describe('selectionStore', () => {
         dispose();
       });
     });
+
+    it('toggleSelect resets highlightedParams when previously seeded', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, toggleSelect } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        toggleSelect('Bracket');
+        expect(state.highlightedParams).toEqual([]);
+        dispose();
+      });
+    });
   });
 
   describe('rangeSelect', () => {
@@ -190,6 +220,16 @@ describe('selectionStore', () => {
         dispose();
       });
     });
+
+    it('rangeSelect resets highlightedParams when previously seeded', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, rangeSelect } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        rangeSelect(['A', 'B']);
+        expect(state.highlightedParams).toEqual([]);
+        dispose();
+      });
+    });
   });
 
   describe('clearSelection', () => {
@@ -223,12 +263,12 @@ describe('selectionStore', () => {
       });
     });
 
-    it('does NOT clear highlightedParams', () => {
+    it('clears highlightedParams', () => {
       createRoot((dispose) => {
         const { state, setHighlightedParams, clearSelection } = createSelectionStore();
         setHighlightedParams(['c1', 'c2']);
         clearSelection();
-        expect(state.highlightedParams).toEqual(['c1', 'c2']);
+        expect(state.highlightedParams).toEqual([]);
         dispose();
       });
     });
@@ -269,6 +309,16 @@ describe('selectionStore', () => {
         expect(state.anchorEntity).toBe('X');
         selectAll(['A', 'B', 'C']);
         expect(state.anchorEntity).toBe('X');
+        dispose();
+      });
+    });
+
+    it('selectAll resets highlightedParams when previously seeded', () => {
+      createRoot((dispose) => {
+        const { state, setHighlightedParams, selectAll } = createSelectionStore();
+        setHighlightedParams(['c1', 'c2']);
+        selectAll(['A', 'B']);
+        expect(state.highlightedParams).toEqual([]);
         dispose();
       });
     });
@@ -383,21 +433,6 @@ describe('selectionStore', () => {
       const { state, setHighlightedParams } = createSelectionStore();
       setHighlightedParams(['c1', 'c2']);
       setHighlightedParams([]);
-      expect(state.highlightedParams).toEqual([]);
-      dispose();
-    });
-  });
-
-  it('clearHighlights resets selectedEntity and highlightedParams', () => {
-    createRoot((dispose) => {
-      const { state, selectEntity, setHighlightedParams, clearHighlights } = createSelectionStore();
-      selectEntity('Bracket');
-      setHighlightedParams(['c1', 'c2']);
-      expect(state.selectedEntity).toBe('Bracket');
-      expect(state.highlightedParams).toEqual(['c1', 'c2']);
-
-      clearHighlights();
-      expect(state.selectedEntity).toBeNull();
       expect(state.highlightedParams).toEqual([]);
       dispose();
     });
@@ -543,7 +578,6 @@ describe('selectionStore', () => {
     let selectEntity!: (path: string | null) => void;
     let hoverEntity!: (path: string | null) => void;
     let clearIfRemoved!: (path: string) => void;
-    let clearHighlights!: () => void;
 
     beforeEach(() => {
       vi.useFakeTimers();
@@ -555,7 +589,6 @@ describe('selectionStore', () => {
         selectEntity = store.selectEntity;
         hoverEntity = store.hoverEntity;
         clearIfRemoved = store.clearIfRemoved;
-        clearHighlights = store.clearHighlights;
       });
 
     });
@@ -823,29 +856,6 @@ describe('selectionStore', () => {
       expect(mockInvoke).not.toHaveBeenCalled();
     });
 
-    it('clearHighlights dispatches exactly one backend sync for selection→null', () => {
-      // Set up: select an entity (triggers immediate invoke)
-      selectEntity('Bracket');
-      expect(mockInvoke).toHaveBeenCalledTimes(1);
-      mockInvoke.mockClear();
-
-      // Act: clearHighlights uses batch() to set selectedEntity=null and
-      // highlightedParams=[] atomically. The sync effect only tracks
-      // selectedEntity/hoveredEntity, so the invoke count is 1 regardless,
-      // but batch() prevents intermediate state from being visible to other
-      // reactive subscribers.
-      clearHighlights();
-
-      // Advance past any pending debounce
-      vi.advanceTimersByTime(100);
-
-      expect(mockInvoke).toHaveBeenCalledTimes(1);
-      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
-        selectedEntity: null,
-        selectedEntities: [],
-        hoveredEntity: null,
-      });
-    });
   });
 
   // --- Backend sync: selectedEntities forwarded to IPC (step-17) ---

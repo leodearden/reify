@@ -59,6 +59,17 @@ export async function navigateToEntity(
 
 // ── Constraint → Panels navigation ─────────────────────────────────
 
+/**
+ * Dependencies for navigateFromConstraint.
+ *
+ * ORDERING CONTRACT: `selectEntity` MUST be called before `setHighlightedParams`.
+ * `selectEntity` (→ selectSingle / clearSelection) clears `highlightedParams` as
+ * part of every ordinary selection change, so the highlight must be applied AFTER
+ * the entity selection to ensure it survives.  Callers that provide a custom
+ * `selectEntity` implementation should honour the same clearing convention, or the
+ * constraint-highlight feature will silently stop working without a test failure
+ * (the integration test in navigation.test.ts pins the observable invariant).
+ */
 export interface NavigateFromConstraintDeps {
   selectEntity: (entityPath: string | null) => void;
   setHighlightedParams: (ids: string[]) => void;
@@ -74,9 +85,12 @@ export function navigateFromConstraint(
   deps: NavigateFromConstraintDeps,
 ): void {
   const { parameter_ids } = constraint;
-  deps.setHighlightedParams(parameter_ids);
 
-  // Find the entity_path from the first matching value
+  // Select the entity FIRST so that selectEntity (→ selectSingle/clearSelection) clears
+  // highlightedParams before we set the new constraint highlight.  Setting the highlight
+  // LAST ensures it survives the selection-change clearing logic.
   const matchingValue = values.find((v) => parameter_ids.includes(v.cell_id));
   deps.selectEntity(matchingValue?.entity_path ?? null);
+
+  deps.setHighlightedParams(parameter_ids);
 }
