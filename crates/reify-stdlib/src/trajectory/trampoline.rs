@@ -29,3 +29,93 @@
 //!
 //! Populated incrementally across task π's TDD steps (cache keys → marshalling
 //! → composers → accessors).
+
+#[cfg(test)]
+mod tests {
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+
+    use super::SimulateTrajectoryCacheKey;
+
+    /// A registry-free `Value::StructureInstance` with `type_name` + fields,
+    /// mirroring the eval-side `mint_instance` shape (same fixture pattern as
+    /// `dynamics/trampoline.rs` tests). Used to build distinguishable `Value`
+    /// inputs whose `content_hash` folds in every field.
+    fn instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
+        let fields: PersistentMap<String, Value> = fields.into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: type_name.to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Minimal `PiecewisePolynomialProfile`-shaped fixture distinguished by a
+    /// single control value `p` (folded into the content hash). The cache-key
+    /// tests care only that distinct `p` ⇒ distinct hash and identical `p` ⇒
+    /// identical hash, not the full marshalled shape (that is steps 5/6).
+    fn profile(p: f64) -> Value {
+        instance(
+            "PiecewisePolynomialProfile",
+            vec![("control".to_string(), Value::Real(p))],
+        )
+    }
+
+    /// Minimal `mech` fixture — the simulate path takes `mech : Real`
+    /// (trajectory_fns.ri), so the bare `Value::Real` is the canonical input.
+    fn mech(m: f64) -> Value {
+        Value::Real(m)
+    }
+
+    /// Minimal `ModalResult`-shaped fixture distinguished by a single mode
+    /// frequency `f`.
+    fn modal(f: f64) -> Value {
+        instance("ModalResult", vec![("frequency".to_string(), Value::Real(f))])
+    }
+
+    // ── step-1: SimulateTrajectoryCacheKey::from_inputs / matches ───────────────
+
+    /// (a) Two keys built from identical `(profile, mech, modal)` match — the
+    /// cache-HIT condition.
+    #[test]
+    fn simulate_cache_key_matches_identical_inputs() {
+        let p = profile(1.0);
+        let m = mech(1.0);
+        let md = modal(10.0);
+        let a = SimulateTrajectoryCacheKey::from_inputs(&p, &m, &md);
+        let b = SimulateTrajectoryCacheKey::from_inputs(&p, &m, &md);
+        assert!(a.matches(&b), "identical (profile, mech, modal) must match");
+    }
+
+    /// (b) A different profile `Value` must NOT match — and the relation is
+    /// symmetric.
+    #[test]
+    fn simulate_cache_key_differs_on_profile() {
+        let m = mech(1.0);
+        let md = modal(10.0);
+        let a = SimulateTrajectoryCacheKey::from_inputs(&profile(1.0), &m, &md);
+        let b = SimulateTrajectoryCacheKey::from_inputs(&profile(2.0), &m, &md);
+        assert!(!a.matches(&b), "a different profile must MISS");
+        assert!(!b.matches(&a), "matches() must be symmetric");
+    }
+
+    /// (c) A different mech `Value` must NOT match.
+    #[test]
+    fn simulate_cache_key_differs_on_mech() {
+        let p = profile(1.0);
+        let md = modal(10.0);
+        let a = SimulateTrajectoryCacheKey::from_inputs(&p, &mech(1.0), &md);
+        let b = SimulateTrajectoryCacheKey::from_inputs(&p, &mech(2.0), &md);
+        assert!(!a.matches(&b), "a different mech must MISS");
+    }
+
+    /// (d) A different modal `Value` must NOT match.
+    #[test]
+    fn simulate_cache_key_differs_on_modal() {
+        let p = profile(1.0);
+        let m = mech(1.0);
+        let a = SimulateTrajectoryCacheKey::from_inputs(&p, &m, &modal(10.0));
+        let b = SimulateTrajectoryCacheKey::from_inputs(&p, &m, &modal(20.0));
+        assert!(!a.matches(&b), "a different modal must MISS");
+    }
+}
