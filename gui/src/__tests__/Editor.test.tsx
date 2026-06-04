@@ -1839,3 +1839,81 @@ describe('Editor compile diagnostics: stale LSP cleared on file switch', () => {
     expect(diagnosticCount(getEditorView(container).state)).toBe(1);
   });
 });
+
+describe('Editor F2 inline rename', () => {
+  /** Flush the async prepareRename → UI chain (microtasks only; no fake-timer advance). */
+  async function flushRenameChain() {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  }
+
+  it('renameable position: F2 opens the inline rename field pre-filled with the placeholder', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+      if (method === 'textDocument/prepareRename') {
+        // file1 line 2 `  param width = 80mm` — `width` spans 0-based chars 8..13.
+        return JSON.stringify({
+          range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } },
+          placeholder: 'width',
+        });
+      }
+      return undefined as any;
+    });
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Place the cursor on the `width` token before pressing F2.
+    const line2 = view.state.doc.line(2);
+    view.dispatch({ selection: { anchor: line2.from + 8 } });
+
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F2', code: 'F2', bubbles: true }),
+    );
+    await flushRenameChain();
+
+    // The inline field appears, pre-filled with the current name.
+    const field = container.querySelector('[data-testid="rename-field"]') as HTMLInputElement | null;
+    expect(field).not.toBeNull();
+    expect(field!.value).toBe('width');
+  });
+
+  it('non-renameable position: F2 shows the refusal message and makes NO document change', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+      // Invariant-4 refusal: prepareRename returns null for a non-renameable position.
+      if (method === 'textDocument/prepareRename') return JSON.stringify(null);
+      return undefined as any;
+    });
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+    const docBefore = view.state.doc.toString();
+
+    // Cursor at offset 0 (on the `structure` keyword) — refused.
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F2', code: 'F2', bubbles: true }),
+    );
+    await flushRenameChain();
+
+    // The transient "can't rename here" message appears…
+    expect(container.querySelector('[data-testid="rename-message"]')).not.toBeNull();
+    // …no inline field opened, and the document is byte-for-byte unchanged.
+    expect(container.querySelector('[data-testid="rename-field"]')).toBeNull();
+    expect(view.state.doc.toString()).toBe(docBefore);
+
+    // The refusal path performs zero edits → no debounced backend source update.
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS + 100);
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+});
