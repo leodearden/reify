@@ -1400,4 +1400,56 @@ mod tests {
             }
         }
     }
+
+    // step-9 RED → step-10 GREEN: four C1 app-chrome tools registered in tool_defs().
+    #[test]
+    fn tool_defs_registers_chrome_tools() {
+        let defs = tool_defs();
+
+        struct Expectation {
+            name: &'static str,
+            required_name: bool,
+        }
+        let tools = [
+            Expectation { name: "open_menu",  required_name: true  },
+            Expectation { name: "menu_state", required_name: false },
+            Expectation { name: "press_tab",  required_name: false },
+            Expectation { name: "tab_order",  required_name: false },
+        ];
+
+        for t in &tools {
+            let entry = defs
+                .iter()
+                .find(|d| d.name == t.name)
+                .unwrap_or_else(|| panic!("{} must be present in tool_defs()", t.name));
+            let schema = &entry.input_schema;
+            assert!(
+                !entry.description.is_empty(),
+                "{}: description must be non-empty", t.name
+            );
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{}: input_schema.type must be 'object'", t.name
+            );
+            if t.required_name {
+                assert_eq!(
+                    schema["properties"]["name"]["type"].as_str(),
+                    Some("string"),
+                    "{}: properties.name.type must be 'string'", t.name
+                );
+                let required = schema["required"].as_array()
+                    .unwrap_or_else(|| panic!("{}: required must be an array", t.name));
+                assert!(
+                    required.iter().any(|v| v.as_str() == Some("name")),
+                    "{}: 'name' must be listed in required", t.name
+                );
+            } else if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{}: required must be absent or empty; got {:?}", t.name, required
+                );
+            }
+        }
+    }
 }
