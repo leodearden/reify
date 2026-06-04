@@ -2120,6 +2120,15 @@ mod tests {
     }
 
     #[test]
+    fn geometry_resolves_to_geometry() {
+        assert_eq!(
+            resolve_type_name("Geometry"),
+            Some(Type::Geometry),
+            "\"Geometry\" should resolve to Type::Geometry as the canonical surface spelling"
+        );
+    }
+
+    #[test]
     fn resolve_enum_type_returns_some_for_matching_name() {
         let enum_defs = vec![reify_ir::EnumDef {
             name: "Direction".to_string(),
