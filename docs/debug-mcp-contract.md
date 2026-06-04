@@ -119,7 +119,8 @@ JSON parse error).
 The `isError: true` flag tells the MCP client that the tool invocation failed.
 The error text is `"Error: "` + the Rust `String` from the `Err` variant.
 
-**Source lines:** `debug_server.rs:802-811`.
+**Source function/arm:** the `Err(e)` arm of the `dispatch_tool()` call inside
+the `"tools/call"` branch of `handle_mcp()` in `debug_server.rs`.
 
 ### 2c — JSON-RPC method error
 
@@ -138,7 +139,8 @@ This is a JSON-RPC 2.0 protocol error (not a tool-result error).  MCP clients
 treat `response.error` as a transport-level failure, distinct from `isError:true`
 inside a tool result.
 
-**Source lines:** `debug_server.rs:815`.
+**Source function/arm:** the `_ =>` (unknown-method) wildcard arm of
+`match req.method` in `handle_mcp()`, `debug_server.rs`.
 
 ### Summary table
 
