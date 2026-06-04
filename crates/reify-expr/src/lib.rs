@@ -522,6 +522,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // `eval_worst_case_dispatch`; pinned by
                     // `eval_user_fn_recursion_depth_exceeded`).
                     emit_flexure_diagnostics(&function.name, &evaluated_args, &result, ctx);
+                    // DFM build-volume rules (task 4272) surface their severity
+                    // diagnostic on BOTH the success and Undef paths, like the
+                    // flexure hook above (not the post-Undef-only stackup/fea/geometry
+                    // hooks): a `fits_build_volume` evaluating to Bool(false) is a
+                    // build-volume VIOLATION (success path), while a Value::Undef is a
+                    // usage error. Extracted into `emit_dfm_diagnostics` for the same
+                    // stack-shrinking rationale as `emit_flexure_diagnostics`.
+                    emit_dfm_diagnostics(&function.name, &evaluated_args, &result, ctx);
                     result
                 }
             }
@@ -1326,6 +1334,31 @@ fn emit_flexure_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &Ev
                 continue;
             }
         }
+        sink.borrow_mut().push(diag);
+    }
+}
+
+/// Emit DFM (design-for-manufacturing) diagnostics for a builtin call into the
+/// runtime sink (PRD v0_6 process-dfm-completion, task α).
+///
+/// Mirrors [`emit_flexure_diagnostics`]: a no-op when no sink is attached, else it
+/// pushes every `Diagnostic` returned by [`reify_stdlib::dfm_diagnose`] into the
+/// sink. Like the flexure hook — and unlike the post-`Undef`-only
+/// stackup/fea/geometry hooks consolidated in `emit_undef_builtin_diagnostics` —
+/// `dfm_diagnose` fires on BOTH paths: a `fits_build_volume` returning
+/// `Bool(false)` is a build-volume VIOLATION surfaced on the SUCCESS path, while a
+/// `Value::Undef` is a usage error. `dfm_diagnose` returns an empty `Vec` for every
+/// non-DFM name, so this is a cheap no-op for other builtins. Extracted
+/// `#[inline(never)]` for the same stack-shrinking reason as
+/// `emit_flexure_diagnostics` — keeping the per-`diag` owned-`Diagnostic` loop
+/// local off every recursive `eval_expr` frame (pinned by
+/// `eval_user_fn_recursion_depth_exceeded`).
+#[inline(never)]
+fn emit_dfm_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
+    let Some(sink) = ctx.diagnostics else {
+        return;
+    };
+    for diag in reify_stdlib::dfm_diagnose(name, args, result) {
         sink.borrow_mut().push(diag);
     }
 }
