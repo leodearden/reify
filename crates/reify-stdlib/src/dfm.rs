@@ -161,24 +161,42 @@ fn build_volume_violation(severity: Severity) -> Diagnostic {
     }
 }
 
+/// Build the code-less E_DFM_BUILD_VOLUME usage-error diagnostic for a
+/// `fits_build_volume` that evaluated to `Value::Undef`.
+///
+/// Always [`Severity::Error`] (a malformed CALL, not a design violation, so the
+/// rule's declared severity does not apply): the two arguments must be bounding
+/// boxes — a raw Solid is resolved to one with `bounding_box(...)` UPSTREAM before
+/// `fits_build_volume` is called.
+fn build_volume_usage_error() -> Diagnostic {
+    Diagnostic::error(
+        "E_DFM_BUILD_VOLUME: fits_build_volume requires two bounding boxes (a part and \
+         an envelope); resolve a Solid to its bounding box with bounding_box(...) before \
+         calling it. An optional third DFMSeverity / DFMRule argument tags the rule severity",
+    )
+}
+
 /// Pure post-call DFM diagnostic classifier (the `DFMSeverity` bridge).
 ///
 /// Mirrors [`crate::flexures::flexure_diagnose`]: returns a `Vec<Diagnostic>`, fires on
 /// BOTH the success and `Value::Undef` paths, and short-circuits to an empty `Vec` for
-/// any non-DFM `name`.
+/// any non-DFM `name` (the guard dispatches before `result` is inspected).
 ///
-/// Success path: a `fits_build_volume` that constructed fine but evaluated to
-/// `Value::Bool(false)` is a build-volume VIOLATION (the rule holds, the design
-/// breaks it) — one diagnostic at the rule's declared [`dfm_severity`]. A
-/// `Bool(true)` design fits and surfaces nothing. (The `Value::Undef` usage-error
-/// path is added in step-10.)
+/// - Success path — a `fits_build_volume` that constructed fine but evaluated to
+///   `Value::Bool(false)` is a build-volume VIOLATION (the rule holds, the design
+///   breaks it): one diagnostic at the rule's declared [`dfm_severity`]. A
+///   `Bool(true)` design fits and surfaces nothing.
+/// - Usage-error path — `Value::Undef` is a malformed call (non-BoundingBox args):
+///   one [`Severity::Error`] diagnostic, independent of any severity tag.
 pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
     if name != "fits_build_volume" {
         return Vec::new();
     }
     let mut diags = Vec::new();
-    if let Value::Bool(false) = result {
-        diags.push(build_volume_violation(dfm_severity(args)));
+    match result {
+        Value::Bool(false) => diags.push(build_volume_violation(dfm_severity(args))),
+        Value::Undef => diags.push(build_volume_usage_error()),
+        _ => {}
     }
     diags
 }

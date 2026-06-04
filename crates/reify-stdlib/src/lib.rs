@@ -19,6 +19,17 @@ pub use helpers::complex_phase;
 /// stackup builtin returns `Value::Undef`.
 pub use stackup::diagnose as stackup_diagnose;
 
+/// Public re-export of the DFM (design-for-manufacturing) diagnostic classifier
+/// (PRD v0_6 process-dfm-completion, task α).
+///
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to push
+/// DFM diagnostics into the `EvalContext` sink. Like `flexure_diagnose` (and unlike
+/// the post-`Undef`-only `stackup_diagnose` / `fea_diagnose`), it fires on BOTH
+/// paths: a successfully-evaluated `fits_build_volume` returning `Bool(false)` is a
+/// build-volume VIOLATION whose severity comes from the rule argument, while a
+/// `Value::Undef` result is a usage error.
+pub use dfm::diagnose as dfm_diagnose;
+
 /// Public re-export of the multi-load-case FEA error classifier.
 ///
 /// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
