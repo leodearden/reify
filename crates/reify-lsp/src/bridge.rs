@@ -94,7 +94,8 @@ impl InProcessLsp {
     /// - **`Ok(Value)`** — A JSON-serialized response payload for successful *requests*:
     ///   `initialize`, `textDocument/completion`, `textDocument/hover`,
     ///   `textDocument/definition`, `textDocument/documentSymbol`,
-    ///   `textDocument/prepareRename`, `textDocument/rename`.
+    ///   `textDocument/documentHighlight`, `textDocument/prepareRename`,
+    ///   `textDocument/rename`.
     /// - **`Ok(Value::Null)`** — For successfully processed *notifications* and `shutdown`:
     ///   `initialized`, `textDocument/didOpen`, `textDocument/didChange`,
     ///   `textDocument/didClose`, `shutdown`.
@@ -205,6 +206,17 @@ impl InProcessLsp {
                     .map_err(|e| format!("documentSymbol error: {e}"))?;
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
+            "textDocument/documentHighlight" => {
+                let p = parse_params::<DocumentHighlightParams>(
+                    params,
+                    error_prefix::DOCUMENT_HIGHLIGHT_PARAMS,
+                )?;
+                let result = server
+                    .document_highlight(p)
+                    .await
+                    .map_err(|e| format!("documentHighlight error: {e}"))?;
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+            }
             "textDocument/prepareRename" => {
                 let p = parse_params::<TextDocumentPositionParams>(
                     params,
@@ -255,7 +267,7 @@ impl Default for InProcessLsp {
 /// import reflects the change automatically, turning any stale assertion into
 /// a compile error or immediate test failure.
 ///
-/// All nine deserializing arms of `handle_request` thread their error prefix
+/// Every deserializing arm of `handle_request` threads its error prefix
 /// through a constant defined here. There are no remaining hardcoded strings
 /// in the implementation.
 pub mod error_prefix {
@@ -285,6 +297,9 @@ pub mod error_prefix {
 
     /// Prefix for deserialization failures on `textDocument/documentSymbol` params.
     pub const DOCUMENT_SYMBOL_PARAMS: &str = "documentSymbol params error";
+
+    /// Prefix for deserialization failures on `textDocument/documentHighlight` params.
+    pub const DOCUMENT_HIGHLIGHT_PARAMS: &str = "documentHighlight params error";
 
     /// Prefix for deserialization failures on `textDocument/prepareRename` params.
     pub const PREPARE_RENAME_PARAMS: &str = "prepareRename params error";
