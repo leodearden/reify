@@ -117,6 +117,20 @@ fn parse_bbox_extents(v: &Value) -> Option<[f64; 3]> {
 /// Returns `None` if `v` is neither shape, or carries an unrecognized variant. This
 /// both rejects a malformed 3rd arg in [`fits_build_volume`] and is the shape-reader
 /// the [`diagnose`] severity bridge reuses (where absence falls back to a default).
+///
+/// DFMRule `severity` is GUARANTEED populated, so the `None` branch never
+/// false-rejects a valid rule: the stdlib `DFMRule` trait
+/// (`crates/reify-compiler/stdlib/process.ri`) declares `param severity : DFMSeverity`
+/// with NO default, making it a required member every conforming structure must
+/// supply (the same no-default → required-member convention `Process` uses for
+/// `duration`/`cost`). A `DFMRule` built without an explicit severity is therefore
+/// unconstructable — it would fail structure type-checking upstream, never reaching
+/// `fits_build_volume`. Note conformers keep their OWN concrete `type_name` (a
+/// `structure Foo : DFMRule` is `Foo`, not `"DFMRule"`), so this reader duck-types on
+/// the `severity` field rather than on `type_name == "DFMRule"`; a `StructureInstance`
+/// lacking a `DFMSeverity` `severity` field is consequently not a conforming rule and
+/// is correctly treated as a malformed 3rd arg, rather than silently defaulting (which
+/// would weaken the validation `fits_build_volume`'s tests rely on).
 fn parse_dfm_severity(v: &Value) -> Option<Severity> {
     let variant = match v {
         Value::Enum { type_name, variant } if type_name == "DFMSeverity" => variant.as_str(),
@@ -176,15 +190,36 @@ fn build_volume_violation(severity: Severity) -> Diagnostic {
 /// `fits_build_volume` that evaluated to `Value::Undef`.
 ///
 /// Always [`Severity::Error`] (a malformed CALL, not a design violation, so the
-/// rule's declared severity does not apply): the two arguments must be bounding
-/// boxes — a raw Solid is resolved to one with `bounding_box(...)` UPSTREAM before
-/// `fits_build_volume` is called.
-fn build_volume_usage_error() -> Diagnostic {
-    Diagnostic::error(
-        "E_DFM_BUILD_VOLUME: fits_build_volume requires two bounding boxes (a part and \
-         an envelope); resolve a Solid to its bounding box with bounding_box(...) before \
-         calling it. An optional third DFMSeverity / DFMRule argument tags the rule severity",
-    )
+/// rule's declared severity does not apply). The detail is PINPOINTED to the
+/// argument that actually failed: `fits_build_volume` yields `Undef` on three
+/// distinct misuses — wrong arity, a non-BoundingBox part/envelope, or a malformed
+/// optional severity/rule tag — so a single fixed "pass two bounding boxes" message
+/// would MISDIRECT the wrong-arity and bad-3rd-arg cases (where both bboxes are
+/// well-formed and only the count or the tag is at fault). The branches below mirror
+/// the guards in [`fits_build_volume`] in the same order, so the reported culprit
+/// matches the guard that actually rejected the call.
+fn build_volume_usage_error(args: &[Value]) -> Diagnostic {
+    let detail = if !matches!(args.len(), 2 | 3) {
+        format!(
+            "expected 2 or 3 arguments — a part bounding box, an envelope bounding box, \
+             and an optional DFMSeverity/DFMRule severity tag — but got {}",
+            args.len()
+        )
+    } else if parse_bbox_extents(&args[0]).is_none() || parse_bbox_extents(&args[1]).is_none() {
+        "the part and envelope must both be bounding boxes with finite, 3-component \
+         LENGTH corners and max >= min on every axis; resolve a Solid to its bounding \
+         box with bounding_box(...) before calling fits_build_volume"
+            .to_string()
+    } else {
+        // 2..=3 args with both bboxes well-formed → the only remaining Undef cause is
+        // a malformed optional 3rd arg (a non-DFMSeverity / non-DFMRule tag).
+        "the optional third argument must be a DFMSeverity enum value or a DFMRule \
+         carrying a `severity` field"
+            .to_string()
+    };
+    Diagnostic::error(format!(
+        "E_DFM_BUILD_VOLUME: invalid fits_build_volume call — {detail}"
+    ))
 }
 
 /// Pure post-call DFM diagnostic classifier (the `DFMSeverity` bridge).
@@ -197,8 +232,10 @@ fn build_volume_usage_error() -> Diagnostic {
 ///   `Value::Bool(false)` is a build-volume VIOLATION (the rule holds, the design
 ///   breaks it): one diagnostic at the rule's declared [`dfm_severity`]. A
 ///   `Bool(true)` design fits and surfaces nothing.
-/// - Usage-error path — `Value::Undef` is a malformed call (non-BoundingBox args):
-///   one [`Severity::Error`] diagnostic, independent of any severity tag.
+/// - Usage-error path — `Value::Undef` is a malformed call (wrong arity, a
+///   non-BoundingBox part/envelope, or a malformed optional severity/rule tag): one
+///   [`Severity::Error`] diagnostic whose detail is pinpointed to the offending
+///   argument (see [`build_volume_usage_error`]), independent of any severity tag.
 ///
 /// DUPLICATE EMISSION: this classifier is stateless and re-runs on every
 /// evaluation, so a persistently-violating `fits_build_volume` (re-evaluated each
@@ -216,7 +253,7 @@ pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     match result {
         Value::Bool(false) => diags.push(build_volume_violation(dfm_severity(args))),
-        Value::Undef => diags.push(build_volume_usage_error()),
+        Value::Undef => diags.push(build_volume_usage_error(args)),
         _ => {}
     }
     diags
@@ -643,6 +680,67 @@ mod tests {
     fn diagnose_non_dfm_name_undef_is_empty() {
         // A non-DFM builtin name short-circuits to empty even on Undef.
         assert!(diagnose("box", &[], &Value::Undef).is_empty());
+    }
+
+    // ─── amend: usage-error message is pinpointed to the failing argument ───
+    // `fits_build_volume` returns Undef on three distinct misuses; the single
+    // usage-error diagnostic must name the argument actually at fault rather than
+    // always blaming the bbox case. Every branch keeps the E_DFM / Error contract.
+
+    #[test]
+    fn diagnose_undef_bad_bbox_reports_bounding_box() {
+        // A non-BoundingBox part → the message points at the bbox arguments.
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let diags = diagnose("fits_build_volume", &[Value::Real(1.0), env], &Value::Undef);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        let m = &diags[0].message;
+        assert!(m.contains("E_DFM"), "carries E_DFM prefix: {m}");
+        assert!(m.contains("bounding box"), "points at the bbox args: {m}");
+    }
+
+    #[test]
+    fn diagnose_undef_wrong_arity_reports_argument_count() {
+        // A 4-arg call (valid bboxes) → the message points at the argument COUNT,
+        // NOT at the bounding boxes (which are well-formed here).
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let diags = diagnose(
+            "fits_build_volume",
+            &[part, env, dfm_sev("Warning"), Value::Int(1)],
+            &Value::Undef,
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        let m = &diags[0].message;
+        assert!(m.contains("E_DFM"), "carries E_DFM prefix: {m}");
+        assert!(m.contains("got 4"), "reports the actual argument count: {m}");
+        assert!(
+            !m.contains("bounding_box(...)"),
+            "does NOT misdirect to the Solid-resolution fix when bboxes are fine: {m}"
+        );
+    }
+
+    #[test]
+    fn diagnose_undef_bad_severity_tag_reports_third_arg() {
+        // Two valid bboxes + a malformed 3rd arg → the message points at the
+        // optional severity/rule tag, NOT at the bounding boxes.
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let diags = diagnose(
+            "fits_build_volume",
+            &[part, env, Value::Real(1.0)],
+            &Value::Undef,
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        let m = &diags[0].message;
+        assert!(m.contains("E_DFM"), "carries E_DFM prefix: {m}");
+        assert!(m.contains("third argument"), "points at the severity/rule tag: {m}");
+        assert!(
+            !m.contains("bounding_box(...)"),
+            "does NOT misdirect to the Solid-resolution fix when bboxes are fine: {m}"
+        );
     }
 
     #[test]
