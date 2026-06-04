@@ -494,3 +494,134 @@ fn strong_old_uts_name_is_missing_required_member() {
         errors
     );
 }
+
+// ── §6.2 FatigueRated — endurance_limit → optional params (β task #4240) ───────
+
+/// FatigueRated conformer supplying only inherited MaterialSpec params (density + name)
+/// with no fatigue-specific params at all should compile cleanly (all new params optional).
+///
+/// RED: stdlib FatigueRated still has required `endurance_limit` → MissingRequiredMember.
+#[test]
+fn fatigue_rated_no_fatigue_params_is_clean() {
+    let src = r#"
+        structure def FatigueNone : FatigueRated {
+            param density : Real = 7850.0
+            param name    : String = "steel"
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics when supplying no optional fatigue params \
+         (all should default to undef), got: {:?}",
+        errors
+    );
+}
+
+/// FatigueRated conformer supplying a subset of the optional params (only fatigue_limit)
+/// should compile cleanly.
+///
+/// RED: stdlib FatigueRated still has required `endurance_limit` → MissingRequiredMember.
+#[test]
+fn fatigue_rated_subset_fatigue_limit_only_is_clean() {
+    let src = r#"
+        structure def FatigueSubset : FatigueRated {
+            param density      : Real   = 7850.0
+            param name         : String = "steel"
+            param fatigue_limit : Real  = 300.0
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics when supplying only fatigue_limit \
+         (subset of optional params), got: {:?}",
+        errors
+    );
+}
+
+/// FatigueRated trait shape: fatigue_limit and fatigue_strength_at must live in
+/// defaults with type Real; fatigue_cycles must live in defaults with type Int;
+/// none of the three appear in required_members.
+///
+/// RED: stdlib FatigueRated still has required `endurance_limit` — new params absent.
+#[test]
+fn fatigue_rated_optional_params_in_defaults() {
+    let module = load_stdlib_module();
+
+    let fatigue = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "FatigueRated")
+        .expect("expected 'FatigueRated' trait in compiled module");
+
+    // None of the three new params should be required.
+    for param_name in &["fatigue_limit", "fatigue_strength_at", "fatigue_cycles"] {
+        assert!(
+            !fatigue.required_members.iter().any(|r| r.name == *param_name),
+            "'{}' should be optional (= undef), not a required member",
+            param_name
+        );
+    }
+
+    // fatigue_limit must be in defaults with Type::Real.
+    let fl = fatigue
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("fatigue_limit"))
+        .expect("expected 'fatigue_limit' in FatigueRated.defaults");
+    match &fl.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Real,
+            "fatigue_limit should have type Real, got {:?}",
+            cell_type
+        ),
+        other => panic!("expected DefaultKind::Param for fatigue_limit, got {:?}", other),
+    }
+
+    // fatigue_strength_at must be in defaults with Type::Real.
+    let fsa = fatigue
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("fatigue_strength_at"))
+        .expect("expected 'fatigue_strength_at' in FatigueRated.defaults");
+    match &fsa.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Real,
+            "fatigue_strength_at should have type Real, got {:?}",
+            cell_type
+        ),
+        other => panic!(
+            "expected DefaultKind::Param for fatigue_strength_at, got {:?}",
+            other
+        ),
+    }
+
+    // fatigue_cycles must be in defaults with Type::Int.
+    let fc = fatigue
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("fatigue_cycles"))
+        .expect("expected 'fatigue_cycles' in FatigueRated.defaults");
+    match &fc.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Int,
+            "fatigue_cycles should have type Int, got {:?}",
+            cell_type
+        ),
+        other => panic!("expected DefaultKind::Param for fatigue_cycles, got {:?}", other),
+    }
+}

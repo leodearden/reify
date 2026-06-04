@@ -406,7 +406,9 @@ structure def S {
 fn remaining_five_traits_exist() {
     let module = load_stdlib_module();
 
-    // FatigueRated: 1 member (endurance_limit)
+    // FatigueRated: 0 required members (all three new params are optional = undef).
+    // task β #4240: drop single endurance_limit (required); add fatigue_limit,
+    // fatigue_strength_at (Real = undef) and fatigue_cycles (Int = undef) — all optional.
     let fatigue = module
         .trait_defs
         .iter()
@@ -414,15 +416,42 @@ fn remaining_five_traits_exist() {
         .expect("expected 'FatigueRated' trait");
     assert_eq!(
         fatigue.required_members.len(),
-        1,
-        "FatigueRated should have 1 required member"
-    );
-    assert!(
+        0,
+        "FatigueRated should have 0 required members (all params optional = undef), got: {:?}",
         fatigue
             .required_members
             .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !fatigue
+            .required_members
+            .iter()
             .any(|r| r.name == "endurance_limit"),
-        "FatigueRated should have 'endurance_limit' member"
+        "endurance_limit must no longer exist as a required member (dropped in β #4240)"
+    );
+    // All three new params must appear in defaults.
+    assert!(
+        fatigue
+            .defaults
+            .iter()
+            .any(|d| d.name.as_deref() == Some("fatigue_limit")),
+        "FatigueRated should have 'fatigue_limit' in defaults"
+    );
+    assert!(
+        fatigue
+            .defaults
+            .iter()
+            .any(|d| d.name.as_deref() == Some("fatigue_strength_at")),
+        "FatigueRated should have 'fatigue_strength_at' in defaults"
+    );
+    assert!(
+        fatigue
+            .defaults
+            .iter()
+            .any(|d| d.name.as_deref() == Some("fatigue_cycles")),
+        "FatigueRated should have 'fatigue_cycles' in defaults"
     );
 
     // FractureTough: 1 member (fracture_toughness)
