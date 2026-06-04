@@ -1231,6 +1231,102 @@ mod tests {
         );
     }
 
+    // --- task 4204 δ: document_highlight handler tests ---
+    //
+    // Positions reference the canonical bracket fixture (0-based); line 7 is
+    // `    let volume = width * height * thickness` with the `width` use at col 17.
+
+    fn document_highlight_params(uri: Url, line: u32, character: u32) -> DocumentHighlightParams {
+        DocumentHighlightParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position::new(line, character),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn document_highlight_handler_returns_text_highlights_for_width() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let result = server
+            .document_highlight(document_highlight_params(uri, 7, 17))
+            .await
+            .unwrap();
+
+        let highlights = result.expect("a width use should produce document highlights");
+        assert_eq!(
+            highlights.len(),
+            4,
+            "bracket fixture: 1 decl + 3 uses of width"
+        );
+        assert!(
+            highlights
+                .iter()
+                .all(|h| h.kind == Some(DocumentHighlightKind::TEXT)),
+            "every occurrence highlight is kind TEXT, got {highlights:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn document_highlight_on_keyword_returns_none() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        // 'structure' keyword at line 0, col 0 — not a resolvable value symbol.
+        let result = server
+            .document_highlight(document_highlight_params(uri, 0, 0))
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "document_highlight on a keyword should return Ok(None), got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn document_highlight_unknown_uri_returns_none() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Never opened — not in the document store.
+        let result = server
+            .document_highlight(document_highlight_params(
+                Url::parse("file:///never_opened.ri").unwrap(),
+                7,
+                17,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "document_highlight for an unknown URI should return Ok(None)"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_document_highlight_provider() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let init_result = server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+
+        assert!(
+            init_result
+                .capabilities
+                .document_highlight_provider
+                .is_some(),
+            "should advertise document_highlight_provider (task 4204 δ)"
+        );
+    }
+
     #[tokio::test]
     async fn server_captures_published_diagnostics() {
         let (service, _socket) = test_service();
