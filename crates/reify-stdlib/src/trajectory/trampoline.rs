@@ -251,4 +251,262 @@ mod tests {
         assert!(!a.matches(&b), "a different shaper must MISS");
         assert!(!b.matches(&a), "matches() must be symmetric");
     }
+
+    // ── steps 5/6: value_to_multijoint_spline ───────────────────────────────────
+
+    use reify_core::DimensionVector;
+
+    use super::super::spline::MultiJointSpline;
+    use super::value_to_multijoint_spline;
+
+    /// Loose tolerance for marshalled-spline knot-interpolation assertions
+    /// (the spline math itself is tested to 1e-12 in `spline.rs`; here we only
+    /// confirm the `Value`→core marshalling wired the right knots/values).
+    const SPLINE_TOL: f64 = 1e-9;
+
+    /// A `Time` scalar `Value` (SI seconds), the shape a `Waypoint.t` field
+    /// carries on the eval path.
+    fn time(s: f64) -> Value {
+        Value::Scalar {
+            si_value: s,
+            dimension: DimensionVector::TIME,
+        }
+    }
+
+    /// A per-joint `List<Real>` `Value` (a `Waypoint.values` or velocity list).
+    fn reals(vs: &[f64]) -> Value {
+        Value::List(vs.iter().map(|&v| Value::Real(v)).collect())
+    }
+
+    /// An `Option<List<JointValue>>` field — `Value::Option(Some(List))` when
+    /// supplied, `Value::Option(None)` otherwise (the eval-layer encoding of a
+    /// Reify `Option`, per `reify_ir::Value::Option`).
+    fn opt_reals(o: Option<&[f64]>) -> Value {
+        match o {
+            Some(vs) => Value::Option(Some(Box::new(reals(vs)))),
+            None => Value::Option(None),
+        }
+    }
+
+    /// A `Waypoint` `Value::StructureInstance` (t scalar SI; values List<Real>;
+    /// vels/accels Option<List<Real>>) as `value_to_multijoint_spline` reads it.
+    fn waypoint(t: f64, values: &[f64], vels: Option<&[f64]>, accels: Option<&[f64]>) -> Value {
+        instance(
+            "Waypoint",
+            vec![
+                ("t".to_string(), time(t)),
+                ("values".to_string(), reals(values)),
+                ("vels".to_string(), opt_reals(vels)),
+                ("accels".to_string(), opt_reals(accels)),
+            ],
+        )
+    }
+
+    /// A `SplineKind` enum `Value` (`variant` ∈ {`CubicSpline`, `QuinticSpline`}).
+    fn spline_kind(variant: &str) -> Value {
+        Value::Enum {
+            type_name: "SplineKind".to_string(),
+            variant: variant.to_string(),
+        }
+    }
+
+    /// A `PiecewisePolynomialProfile` `Value::StructureInstance` with the four
+    /// eval-path fields (mechanism / waypoints / boundary / spline_kind).
+    fn pp_profile(waypoints: Vec<Value>, boundary: Value, kind: Value) -> Value {
+        instance(
+            "PiecewisePolynomialProfile",
+            vec![
+                ("mechanism".to_string(), Value::Real(0.0)),
+                ("waypoints".to_string(), Value::List(waypoints)),
+                ("boundary".to_string(), boundary),
+                ("spline_kind".to_string(), kind),
+            ],
+        )
+    }
+
+    /// (a) A well-formed 2-joint, 2-waypoint natural-cubic profile marshals to a
+    /// `MultiJointSpline::Cubic` whose duration is the knot span and whose
+    /// sampled `q` at each knot equals that waypoint's `values`.
+    #[test]
+    fn value_to_spline_natural_cubic_interpolates_at_knots() {
+        let profile = pp_profile(
+            vec![
+                waypoint(0.0, &[1.0, 5.0], None, None),
+                waypoint(2.0, &[3.0, 9.0], None, None),
+            ],
+            instance("NaturalSpline", vec![]),
+            spline_kind("CubicSpline"),
+        );
+        let spline = value_to_multijoint_spline(&profile)
+            .expect("a well-formed natural-cubic profile must marshal to Some");
+        assert!(
+            matches!(spline, MultiJointSpline::Cubic(_)),
+            "SplineKind::CubicSpline must select a cubic spline"
+        );
+        assert!(
+            (spline.duration() - 2.0).abs() < SPLINE_TOL,
+            "duration must equal last-first knot t (2.0), got {}",
+            spline.duration()
+        );
+        let q0 = spline.eval(0.0);
+        assert_eq!(q0.len(), 2, "two joints");
+        assert!(
+            (q0[0] - 1.0).abs() < SPLINE_TOL && (q0[1] - 5.0).abs() < SPLINE_TOL,
+            "q at the first knot must equal waypoint[0].values, got {q0:?}"
+        );
+        let q1 = spline.eval(2.0);
+        assert!(
+            (q1[0] - 3.0).abs() < SPLINE_TOL && (q1[1] - 9.0).abs() < SPLINE_TOL,
+            "q at the last knot must equal waypoint[1].values, got {q1:?}"
+        );
+    }
+
+    /// Boundary dispatch: a `ClampedSpline` (per-joint start/end velocity lists)
+    /// is read into `BoundaryCondition::Clamped`, so the marshalled spline
+    /// reproduces the prescribed zero endpoint tangents (which a `NaturalSpline`
+    /// over the same data — a slope-1 line — would NOT).
+    #[test]
+    fn value_to_spline_clamped_cubic_dispatches_boundary() {
+        let profile = pp_profile(
+            vec![
+                waypoint(0.0, &[0.0], None, None),
+                waypoint(1.0, &[1.0], None, None),
+            ],
+            instance(
+                "ClampedSpline",
+                vec![
+                    ("start_velocity".to_string(), reals(&[0.0])),
+                    ("end_velocity".to_string(), reals(&[0.0])),
+                ],
+            ),
+            spline_kind("CubicSpline"),
+        );
+        let spline = value_to_multijoint_spline(&profile)
+            .expect("a well-formed clamped-cubic profile must marshal to Some");
+        assert!(matches!(spline, MultiJointSpline::Cubic(_)));
+        assert!(
+            spline.eval_dot(0.0)[0].abs() < SPLINE_TOL,
+            "clamped start tangent must be the prescribed 0"
+        );
+        assert!(
+            spline.eval_dot(1.0)[0].abs() < SPLINE_TOL,
+            "clamped end tangent must be the prescribed 0"
+        );
+    }
+
+    /// Boundary dispatch: a `PeriodicSpline` (needs ≥3 waypoints with matching
+    /// endpoint values) is read into `BoundaryCondition::Periodic` and marshals.
+    #[test]
+    fn value_to_spline_periodic_cubic_dispatches_boundary() {
+        let profile = pp_profile(
+            vec![
+                waypoint(0.0, &[0.0], None, None),
+                waypoint(1.0, &[1.0], None, None),
+                waypoint(2.0, &[0.0], None, None),
+            ],
+            instance("PeriodicSpline", vec![]),
+            spline_kind("CubicSpline"),
+        );
+        let spline = value_to_multijoint_spline(&profile)
+            .expect("a well-formed periodic-cubic profile must marshal to Some");
+        assert!(matches!(spline, MultiJointSpline::Cubic(_)));
+        assert!((spline.duration() - 2.0).abs() < SPLINE_TOL);
+    }
+
+    /// cubic-vs-quintic selection: `SplineKind::QuinticSpline` + per-waypoint
+    /// `vels` AND `accels` marshals to a `MultiJointSpline::Quintic` that
+    /// reproduces the prescribed endpoint value/velocity exactly.
+    #[test]
+    fn value_to_spline_quintic_selects_quintic_and_reproduces_knots() {
+        let profile = pp_profile(
+            vec![
+                waypoint(0.0, &[0.0], Some(&[0.0]), Some(&[0.0])),
+                waypoint(1.0, &[1.0], Some(&[0.0]), Some(&[0.0])),
+            ],
+            instance("NaturalSpline", vec![]),
+            spline_kind("QuinticSpline"),
+        );
+        let spline = value_to_multijoint_spline(&profile)
+            .expect("a well-formed quintic profile with vels+accels must marshal to Some");
+        assert!(
+            matches!(spline, MultiJointSpline::Quintic(_)),
+            "SplineKind::QuinticSpline must select a quintic spline"
+        );
+        assert!((spline.eval(0.0)[0] - 0.0).abs() < SPLINE_TOL);
+        assert!((spline.eval(1.0)[0] - 1.0).abs() < SPLINE_TOL);
+        assert!(
+            spline.eval_dot(0.0)[0].abs() < SPLINE_TOL,
+            "quintic start vel must equal the prescribed 0"
+        );
+        assert!(
+            spline.eval_dot(1.0)[0].abs() < SPLINE_TOL,
+            "quintic end vel must equal the prescribed 0"
+        );
+    }
+
+    /// (b) Degenerate / malformed inputs all return `None` (no panic): empty or
+    /// `<2` waypoints, a non-`StructureInstance`, an unrecognised boundary tag,
+    /// an unrecognised `spline_kind`, and a quintic profile missing vels/accels.
+    #[test]
+    fn value_to_spline_rejects_degenerate_inputs() {
+        let nat = || instance("NaturalSpline", vec![]);
+        let cubic = || spline_kind("CubicSpline");
+        let two_wp = || {
+            vec![
+                waypoint(0.0, &[0.0], None, None),
+                waypoint(1.0, &[1.0], None, None),
+            ]
+        };
+
+        // Empty waypoint list.
+        assert!(
+            value_to_multijoint_spline(&pp_profile(vec![], nat(), cubic())).is_none(),
+            "empty waypoints → None"
+        );
+        // Fewer than 2 waypoints.
+        assert!(
+            value_to_multijoint_spline(&pp_profile(
+                vec![waypoint(0.0, &[0.0], None, None)],
+                nat(),
+                cubic()
+            ))
+            .is_none(),
+            "<2 waypoints → None"
+        );
+        // Non-StructureInstance profile.
+        assert!(
+            value_to_multijoint_spline(&Value::Real(1.0)).is_none(),
+            "a bare scalar is not a profile → None"
+        );
+        // Unrecognised boundary type-tag (the cubic path validates the boundary).
+        assert!(
+            value_to_multijoint_spline(&pp_profile(
+                two_wp(),
+                instance("FooSpline", vec![]),
+                cubic()
+            ))
+            .is_none(),
+            "unrecognised boundary → None"
+        );
+        // Unrecognised spline_kind variant.
+        assert!(
+            value_to_multijoint_spline(&pp_profile(
+                two_wp(),
+                nat(),
+                spline_kind("SepticSpline")
+            ))
+            .is_none(),
+            "unrecognised spline_kind → None"
+        );
+        // Quintic without per-waypoint vels/accels (cannot build KnotData).
+        assert!(
+            value_to_multijoint_spline(&pp_profile(
+                two_wp(),
+                nat(),
+                spline_kind("QuinticSpline")
+            ))
+            .is_none(),
+            "quintic without vels/accels → None"
+        );
+    }
 }
