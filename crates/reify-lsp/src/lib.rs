@@ -12,6 +12,7 @@ pub mod diagnostics;
 pub mod document;
 pub mod goto_def;
 pub mod hover;
+pub mod references;
 pub mod server;
 
 /// Re-export test support types for cross-crate test use.
