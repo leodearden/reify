@@ -352,6 +352,27 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       focused: document.hasFocus(),
     }),
 
+    // --- App-chrome commands (frontend-mediated, C1) ---
+
+    open_menu: (params) => {
+      const name = params.name as string;
+      if (!name) return { error: 'name is required' };
+
+      // Menu names are simple lowercase identifiers — no CSS-escaping needed,
+      // and CSS.escape is absent in jsdom (unit-test environment).
+      const el = document.querySelector(`[data-testid="menu-trigger-${name}"]`);
+      if (!el) return { error: `menu trigger not found: ${name}` };
+
+      // Idempotency: if the requested menu is already open, skip the click.
+      // toggleMenu would close it on a second click — we must not do that.
+      const current = ctx.menuBar?.openMenu?.() ?? null;
+      if (current !== name) {
+        (el as HTMLElement).click();
+      }
+
+      return { ok: true, open: ctx.menuBar?.openMenu?.() ?? name };
+    },
+
     // --- Write commands (frontend-mediated) ---
 
     click_element: (params) => {
