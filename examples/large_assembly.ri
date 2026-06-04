@@ -1,5 +1,8 @@
 // Large assembly stress test fixture (post-GHR-α / task 3603)
 //
+// Task α §4 note: this file conforms to Physical ONLY (geometry : Solid, material :
+// Material). Physical has no tightened members — no value changes needed here.
+//
 // Exercises stdlib Physical trait conformance, port declarations, sub-component
 // instantiation at scale (54 subs), and mass aggregation across the assembly.
 //

@@ -250,7 +250,7 @@ const BOLTFLANGE_MIRROR_SOURCE: &str = r#"
 
             // Rigid trait requirement (Rigid's own param; Physical's geometry +
             // material slots are below)
-            param moment_of_inertia : Real = 0.000001
+            param moment_of_inertia : MomentOfInertia = 0.000001 * 1kg * 1m * 1m
 
             // Canonical Material struct default — the task-1876 payoff this
             // test pins (recorded StructureInstanceCtor with 3 bound args).

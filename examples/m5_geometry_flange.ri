@@ -9,7 +9,7 @@ structure def BoltFlange : Rigid {
 
     // Rigid trait requirement (Rigid's own param; Physical's geometry +
     // material slots are below)
-    param moment_of_inertia : Real = 0.000001
+    param moment_of_inertia : MomentOfInertia = 0.000001 * 1kg * 1m * 1m
 
     // Canonical Material struct — concrete default supplied here, callers may
     // override at instantiation by passing a different `Material(...)` value.

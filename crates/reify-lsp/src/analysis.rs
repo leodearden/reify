@@ -733,7 +733,7 @@ mod tests {
     const STDLIB_PROBE_SRC: &str = r#"structure S : Rigid {
     param geometry: Solid = box(10mm, 20mm, 30mm)
     param material: Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
-    param moment_of_inertia: Real = 1.0
+    param moment_of_inertia: MomentOfInertia = 1.0 * 1kg * 1m * 1m
 }"#;
 
     // --- module_name_from_uri tests ---

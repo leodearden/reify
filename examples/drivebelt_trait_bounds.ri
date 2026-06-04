@@ -52,7 +52,7 @@ structure def DriveBelt : ElasticallyDeformable + ImpactResistant + Damping {
 
     // Flexible (via ElasticallyDeformable) — stiffness > 0, max_deflection > 0
     param stiffness : Stiffness = 2000.0 * 1N / 1m   // moderate belt stiffness
-    param max_deflection : Real = 0.02     // m — 20mm rated deflection
+    param max_deflection : Length = 0.02 * 1m   // 20mm rated deflection (task α: Real→Length)
 
     // ElasticallyDeformable — max_elastic_strain > 0
     param max_elastic_strain : Real = 0.1  // 10% recoverable strain limit

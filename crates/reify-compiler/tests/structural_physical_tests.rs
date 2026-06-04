@@ -122,9 +122,9 @@ fn assert_density_positive_constraint_present(template: &TopologyTemplate) {
 const PLASTIC_BODY_SRC: &str = r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.0
-    param hardening_modulus : Real = 500.0
+    param hardening_modulus : Pressure = 500.0 * 1Pa
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
 }
 "#;
 
@@ -410,7 +410,8 @@ fn rigid_refines_physical_with_moment_of_inertia() {
         member_names
     );
 
-    // moment_of_inertia should be Real
+    // moment_of_inertia should be MomentOfInertia (Scalar{MOMENT_OF_INERTIA})
+    // after task α tightening (was Type::Real on main before step-2).
     let moi = rigid
         .required_members
         .iter()
@@ -420,8 +421,10 @@ fn rigid_refines_physical_with_moment_of_inertia() {
         RequirementKind::Param(ty) => {
             assert_eq!(
                 *ty,
-                Type::Real,
-                "moment_of_inertia should be Real, got {:?}",
+                Type::Scalar {
+                    dimension: DimensionVector::MOMENT_OF_INERTIA,
+                },
+                "moment_of_inertia should be Scalar{{MOMENT_OF_INERTIA}} after task-α tightening, got {:?}",
                 ty
             );
         }
@@ -535,7 +538,7 @@ structure def HeatSink : ThermallyConductive {
     param geometry : Solid = box(10mm, 20mm, 30mm)
     param material : Material = Material(name: "aluminum", density: 2700.0, youngs_modulus: 70000000000.0)
     param thermal_conductivity : ThermalConductivity = 205.0 * 1W / (1m * 1K)
-    param max_service_temp : Real = 573.0
+    param max_service_temp : Temperature = 573.0 * 1K
 }
 "#,
     );
@@ -553,8 +556,10 @@ structure def HeatSink : ThermallyConductive {
         template.trait_bounds
     );
 
-    // ThermallyConductive's own `thermal_conductivity > 0`.
+    // ThermallyConductive's own constraints: thermal_conductivity > 0 and
+    // max_service_temp > 0 (added by task α tightening).
     assert_constraint_op(template, "thermal_conductivity", BinOp::Gt);
+    assert_constraint_op(template, "max_service_temp", BinOp::Gt);
     // Physical's `material.density > 0` (post-GHR-α) is injected via inheritance —
     // its left side is a member access through `material` (IndexAccess
     // lowering), so it isn't reachable via `assert_constraint_op`'s ValueRef-
@@ -564,10 +569,11 @@ structure def HeatSink : ThermallyConductive {
     assert_density_positive_constraint_present(template);
     assert_eq!(
         template.constraints.len(),
-        2,
-        "expected exactly 2 constraints from chain ThermallyConductive→Physical \
+        3,
+        "expected exactly 3 constraints from chain ThermallyConductive→Physical \
          (material.density > 0 inherited from Physical, thermal_conductivity > 0 \
-         from ThermallyConductive), got {}: {:?}",
+         and max_service_temp > 0 from ThermallyConductive — task α added the \
+         max_service_temp constraint), got {}: {:?}",
         template.constraints.len(),
         template
             .constraints
@@ -639,7 +645,7 @@ fn structure_conforms_to_elastically_deformable_with_inherited_flexible_members(
     let source = r#"
 structure def Rubber : ElasticallyDeformable {
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
     param max_elastic_strain : Real = 5.0
 }
 "#;
@@ -803,9 +809,9 @@ fn plastic_conforming_structure_has_constraints_injected() {
         r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
-    param hardening_modulus : Real = 1000.0
+    param hardening_modulus : Pressure = 1000.0 * 1Pa
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
 }
 "#,
     );
@@ -841,9 +847,9 @@ fn plastic_constraint_expressions_use_correct_operators() {
         r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
-    param hardening_modulus : Real = 1000.0
+    param hardening_modulus : Pressure = 1000.0 * 1Pa
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
 }
 "#,
     );
@@ -860,8 +866,10 @@ structure def PlasticBody : Plastic {
         template.constraints.len()
     );
 
-    // Find constraint for hardening_modulus (should use Gt, RHS=0) and
-    // plastic_strain (should use Ge, RHS=0).
+    // Find constraint for hardening_modulus (should use Gt — after task α
+    // tightening the RHS is `0.0 * 1Pa`, a dimensioned expression, not a bare
+    // Literal; so we pin only the operator, not the RHS shape) and
+    // plastic_strain (should use Ge, RHS=0 — dimensionless, stays Real).
     let mut found_hm_gt = false;
     let mut found_ps_ge = false;
     // Collect (member, op) pairs for diagnostic messages if assertions fail.
@@ -884,7 +892,10 @@ structure def PlasticBody : Plastic {
                     _ => false,
                 };
                 match (member, op) {
-                    ("hardening_modulus", BinOp::Gt) if rhs_is_zero => found_hm_gt = true,
+                    // hardening_modulus: operator pinned to Gt; RHS is now a
+                    // dimensioned expression (`0.0 * 1Pa`) after task α
+                    // tightening — do not gate on rhs_is_zero.
+                    ("hardening_modulus", BinOp::Gt) => found_hm_gt = true,
                     ("plastic_strain", BinOp::Ge) if rhs_is_zero => found_ps_ge = true,
                     _ => {}
                 }
@@ -933,9 +944,9 @@ fn plastic_strain_zero_boundary_compiles() {
         r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.0
-    param hardening_modulus : Real = 500.0
+    param hardening_modulus : Pressure = 500.0 * 1Pa
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
 }
 "#,
     );
@@ -964,9 +975,9 @@ fn hardening_modulus_zero_boundary_compiles() {
         r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
-    param hardening_modulus : Real = 0.0
+    param hardening_modulus : Pressure = 0.0 * 1Pa
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
 }
 "#,
     );
@@ -1058,7 +1069,7 @@ structure def Beam : Rigid {
     param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
 
     // Rigid requirement (from structural_physical.ri)
-    param moment_of_inertia : Real = 0.00012
+    param moment_of_inertia : MomentOfInertia = 0.00012 * 1kg * 1m * 1m
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
