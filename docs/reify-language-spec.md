@@ -1904,10 +1904,14 @@ These compose with `forall`, `exists`, `and`, `or`, participate in `where` guard
 A purpose is a named determinacy predicate -- requirements specifying which parameters must be determined for a particular downstream use to be viable. Purposes are activatable -- when active, their constraints and outputs are present; when deactivated, absent.
 
 ```
-purpose manufacturing_ready(subject : Structure) {
-    constraint forall p in subject.geometric_params: determined(p)
-    constraint forall p in subject.material_params: determined(p)
-    minimize subject.cost
+purpose fits_within(part : Structure, envelope : Structure) {
+    let clearance = envelope.min_wall - part.max_extent
+    constraint clearance > 0mm
+    constraint forall p in part.geometric_params: determined(p)
+    where exists p in part.material_params: constrained(p) {
+        constraint forall p in part.material_params: determined(p)
+    }
+    minimize part.mass
 }
 ```
 
