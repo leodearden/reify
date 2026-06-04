@@ -125,13 +125,62 @@ fn parse_dfm_severity(v: &Value) -> Option<Severity> {
     }
 }
 
+/// Resolve the `DFMSeverity` carried by a `fits_build_volume` call for the
+/// success-path violation diagnostic.
+///
+/// Scans the optional 3rd argument via [`parse_dfm_severity`] (a bare
+/// `DFMSeverity` enum or a DFMRule structure-instance), DEFAULTING to
+/// [`Severity::Warning`] when the tag is absent or unrecognized — a build-volume
+/// violation is a Warning unless the rule declares otherwise.
+fn dfm_severity(args: &[Value]) -> Severity {
+    args.get(2)
+        .and_then(parse_dfm_severity)
+        .unwrap_or(Severity::Warning)
+}
+
+/// Build the code-less build-volume VIOLATION diagnostic at `severity`.
+///
+/// Mirrors [`crate::geometry::diagnose`]'s code-less convention (no
+/// `DiagnosticCode` — adding one would touch reify-core, out of this task's
+/// scope); the `{I,W,E}_DFM_BUILD_VOLUME` message prefix preserves the PRD's
+/// diagnostic-code naming. The severity-specific constructor
+/// (`Diagnostic::info` / `warning` / `error`) sets `Diagnostic.severity`, which is
+/// the asserted contract.
+fn build_volume_violation(severity: Severity) -> Diagnostic {
+    let msg = |prefix: char| {
+        format!(
+            "{prefix}_DFM_BUILD_VOLUME: part does not fit the build volume — its \
+             bounding-box extent exceeds the envelope on at least one axis; shrink or \
+             reorient the part, or select a larger build envelope"
+        )
+    };
+    match severity {
+        Severity::Info => Diagnostic::info(msg('I')),
+        Severity::Warning => Diagnostic::warning(msg('W')),
+        Severity::Error => Diagnostic::error(msg('E')),
+    }
+}
+
 /// Pure post-call DFM diagnostic classifier (the `DFMSeverity` bridge).
 ///
 /// Mirrors [`crate::flexures::flexure_diagnose`]: returns a `Vec<Diagnostic>`, fires on
 /// BOTH the success and `Value::Undef` paths, and short-circuits to an empty `Vec` for
 /// any non-DFM `name`.
-pub fn diagnose(_name: &str, _args: &[Value], _result: &Value) -> Vec<Diagnostic> {
-    Vec::new()
+///
+/// Success path: a `fits_build_volume` that constructed fine but evaluated to
+/// `Value::Bool(false)` is a build-volume VIOLATION (the rule holds, the design
+/// breaks it) — one diagnostic at the rule's declared [`dfm_severity`]. A
+/// `Bool(true)` design fits and surfaces nothing. (The `Value::Undef` usage-error
+/// path is added in step-10.)
+pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
+    if name != "fits_build_volume" {
+        return Vec::new();
+    }
+    let mut diags = Vec::new();
+    if let Value::Bool(false) = result {
+        diags.push(build_volume_violation(dfm_severity(args)));
+    }
+    diags
 }
 
 #[cfg(test)]
