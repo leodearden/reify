@@ -532,6 +532,114 @@ structure def NonPsdFixture {
     );
 }
 
+// ── task 4245 — PointLoad.direction field ────────────────────────────────────
+
+/// task 4245 step-1 RED — `PointLoad.direction` field default and round-trip.
+///
+/// Compiles two `PointLoad` instances:
+///   (a) default constructor — `direction` must carry the default `[0.0, 0.0, -1.0]`.
+///   (b) explicit override  — `direction: [0.0, -1.0, 0.0]` must round-trip.
+///
+/// RED: the `direction` field does not exist yet in `fea_multi_case.ri`, so
+/// `field(..., "direction")` is `None` and the assertions fail.
+#[test]
+fn point_load_direction_field_default_and_override() {
+    const SOURCE: &str = r#"
+structure def DirectionFixture {
+    let a = PointLoad()
+    let b = PointLoad(direction: [0.0, -1.0, 0.0])
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // ── (a) default: direction = [0.0, 0.0, -1.0] ────────────────────────────
+    let a = result
+        .values
+        .get(&ValueCellId::new("DirectionFixture", "a"))
+        .unwrap_or_else(|| panic!("DirectionFixture.a cell missing from eval result"));
+    match a {
+        Value::StructureInstance(data) => {
+            match field(&data.fields, "direction") {
+                Some(Value::List(items)) => {
+                    assert_eq!(
+                        items.len(),
+                        3,
+                        "PointLoad().direction must have 3 elements; got {:?}",
+                        items
+                    );
+                    assert_eq!(
+                        items[0],
+                        Value::Real(0.0),
+                        "PointLoad().direction[0] must be 0.0 (default -Z)"
+                    );
+                    assert_eq!(
+                        items[1],
+                        Value::Real(0.0),
+                        "PointLoad().direction[1] must be 0.0 (default -Z)"
+                    );
+                    assert_eq!(
+                        items[2],
+                        Value::Real(-1.0),
+                        "PointLoad().direction[2] must be -1.0 (default -Z)"
+                    );
+                }
+                other => panic!(
+                    "expected Value::List for PointLoad().direction, got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!(
+            "expected Value::StructureInstance for DirectionFixture.a, got {other:?}"
+        ),
+    }
+
+    // ── (b) override: direction = [0.0, -1.0, 0.0] ───────────────────────────
+    let b = result
+        .values
+        .get(&ValueCellId::new("DirectionFixture", "b"))
+        .unwrap_or_else(|| panic!("DirectionFixture.b cell missing from eval result"));
+    match b {
+        Value::StructureInstance(data) => {
+            match field(&data.fields, "direction") {
+                Some(Value::List(items)) => {
+                    assert_eq!(
+                        items.len(),
+                        3,
+                        "PointLoad(direction:[0,-1,0]).direction must have 3 elements; got {:?}",
+                        items
+                    );
+                    assert_eq!(
+                        items[0],
+                        Value::Real(0.0),
+                        "PointLoad(direction:[0,-1,0]).direction[0] must be 0.0"
+                    );
+                    assert_eq!(
+                        items[1],
+                        Value::Real(-1.0),
+                        "PointLoad(direction:[0,-1,0]).direction[1] must be -1.0"
+                    );
+                    assert_eq!(
+                        items[2],
+                        Value::Real(0.0),
+                        "PointLoad(direction:[0,-1,0]).direction[2] must be 0.0"
+                    );
+                }
+                other => panic!(
+                    "expected Value::List for PointLoad(direction:[0,-1,0]).direction, got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!(
+            "expected Value::StructureInstance for DirectionFixture.b, got {other:?}"
+        ),
+    }
+}
+
 /// Scenario: PSD inertia tensor → `Value::StructureInstance` + no PSD diagnostic.
 ///
 /// `inertia: [[1,0,0],[0,1,0],[0,0,1]]` (identity) has all eigenvalues = 1.
