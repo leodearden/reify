@@ -244,4 +244,99 @@ mod tests {
             "facet 3 source must be None — id 20 is not in parent map"
         );
     }
+
+    /// Verifies that `correlate_from_vectors` returns `Err` for each structural
+    /// contract violation.  One sub-case per constraint — all checked before
+    /// the walk runs.
+    #[test]
+    fn correlate_from_vectors_rejects_malformed_provenance_vectors() {
+        let parent: HashMap<u32, TopologyAttribute> = HashMap::new();
+
+        // (a) run_index.len() != run_original_id.len() + 1
+        {
+            let result = correlate_from_vectors(
+                2,
+                &[0u64, 6, 12, 18], // 4 entries → implies 3 runs, but run_original_id has 2
+                &[10u32, 20],
+                &[100u64, 100, 200, 200],
+                &[],
+                &[],
+                &parent,
+            );
+            assert!(
+                result.is_err(),
+                "(a) mismatched run_index/run_original_id lengths must return Err"
+            );
+            assert!(!result.unwrap_err().is_empty());
+        }
+
+        // (b) face_id.len() != num_tri
+        {
+            let result = correlate_from_vectors(
+                4,
+                &[0u64, 6, 12],
+                &[10u32, 20],
+                &[100u64, 100, 200], // only 3 entries for 4 triangles
+                &[],
+                &[],
+                &parent,
+            );
+            assert!(result.is_err(), "(b) face_id shorter than num_tri must return Err");
+            assert!(!result.unwrap_err().is_empty());
+        }
+
+        // (c) run_index final entry != num_tri * 3
+        {
+            let result = correlate_from_vectors(
+                4,
+                &[0u64, 6, 9], // last entry 9 != 4*3=12
+                &[10u32, 20],
+                &[100u64, 100, 200, 200],
+                &[],
+                &[],
+                &parent,
+            );
+            assert!(
+                result.is_err(),
+                "(c) run_index last entry != num_tri*3 must return Err"
+            );
+            assert!(!result.unwrap_err().is_empty());
+        }
+
+        // (d) a run_index entry not divisible by 3
+        {
+            let result = correlate_from_vectors(
+                4,
+                &[0u64, 7, 12], // 7 is not divisible by 3
+                &[10u32, 20],
+                &[100u64, 100, 200, 200],
+                &[],
+                &[],
+                &parent,
+            );
+            assert!(
+                result.is_err(),
+                "(d) run_index entry not divisible by 3 must return Err"
+            );
+            assert!(!result.unwrap_err().is_empty());
+        }
+
+        // (e) merge_from_vert.len() != merge_to_vert.len()
+        {
+            let result = correlate_from_vectors(
+                4,
+                &[0u64, 6, 12],
+                &[10u32, 20],
+                &[100u64, 100, 200, 200],
+                &[1u64, 2], // 2 entries
+                &[3u64],    // 1 entry — mismatch
+                &parent,
+            );
+            assert!(
+                result.is_err(),
+                "(e) merge_from_vert/merge_to_vert length mismatch must return Err"
+            );
+            assert!(!result.unwrap_err().is_empty());
+        }
+    }
 }
