@@ -255,8 +255,10 @@ impl InferredTraits {
 
 /// Look up the inferred traits for a primitive geometry kind.
 ///
-/// All five current variants (`Box`, `Cylinder`, `Sphere`, `Tube`, `Cone`) are
-/// fully Bounded+Connected+Convex.
+/// `Box`, `Cylinder`, `Sphere`, `Tube`, `Cone`, and `Wedge` are fully
+/// Bounded+Connected+Convex (`InferredTraits::all()`). `Torus` is
+/// Bounded+Connected but **non-convex** (`InferredTraits::bounded_connected()`)
+/// — the first primitive that breaks the convex group, so it gets its own arm.
 ///
 /// # Future variants
 ///
@@ -273,6 +275,8 @@ pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
         | PrimitiveKind::Tube
         | PrimitiveKind::Cone
         | PrimitiveKind::Wedge => InferredTraits::all(),
+        // Torus is bounded + connected but NOT convex (a ring has a hole).
+        PrimitiveKind::Torus => InferredTraits::bounded_connected(),
     }
 }
 

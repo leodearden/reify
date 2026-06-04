@@ -2087,6 +2087,25 @@ impl OcctKernel {
                 ffi::ffi::make_wedge(w, d, h, ltx)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::Torus {
+                major_radius,
+                minor_radius,
+            } => {
+                let major = extract_f64(major_radius)?;
+                let minor = extract_f64(minor_radius)?;
+                validate_positive_finite(major, "torus major radius")?;
+                validate_positive_finite(minor, "torus minor radius")?;
+                // Both values are already validated finite+positive above,
+                // so `>=` is unambiguous here (no NaN possible). A minor radius
+                // at or beyond the major radius is a self-intersecting torus.
+                if minor >= major {
+                    return Err(GeometryError::OperationFailed(
+                        "torus minor radius must be strictly less than major radius".into(),
+                    ));
+                }
+                ffi::ffi::make_torus(major, minor)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;

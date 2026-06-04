@@ -1171,6 +1171,9 @@ pub enum PrimitiveKind {
     /// Bbox corner at origin; top_width=0 degenerates to a triangular prism.
     /// Implemented via `BRepPrimAPI_MakeWedge(dx=width, dy=depth, dz=height, ltx=top_width)`.
     Wedge,
+    /// Torus (ring): `torus(major_radius, minor_radius)`. Built at the kernel
+    /// layer via `BRepPrimAPI_MakeTorus`. The first non-convex primitive.
+    Torus,
 }
 
 impl std::fmt::Display for PrimitiveKind {
@@ -1182,6 +1185,7 @@ impl std::fmt::Display for PrimitiveKind {
             PrimitiveKind::Tube => f.write_str("tube"),
             PrimitiveKind::Cone => f.write_str("cone"),
             PrimitiveKind::Wedge => f.write_str("wedge"),
+            PrimitiveKind::Torus => f.write_str("torus"),
         }
     }
 }
@@ -1558,6 +1562,7 @@ mod kind_display_tests {
             (PrimitiveKind::Tube, "tube"),
             (PrimitiveKind::Cone, "cone"),
             (PrimitiveKind::Wedge, "wedge"),
+            (PrimitiveKind::Torus, "torus"),
         ]);
     }
 
