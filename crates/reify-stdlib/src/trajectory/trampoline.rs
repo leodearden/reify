@@ -834,4 +834,99 @@ mod tests {
             "non-StructureInstance modal → empty ModalModel"
         );
     }
+
+    // ── steps 9/10: value_to_mechanism_model ────────────────────────────────────
+
+    use std::collections::BTreeMap;
+
+    use super::super::simulate::{EffectorLocation, MechanismModel};
+    use super::value_to_mechanism_model;
+
+    /// A structured mechanism `Value::Map(kind="mechanism")` carrying a `bodies`
+    /// list — one `Body` `StructureInstance` per supplied mass. The schema is the
+    /// forward-looking shape the kinematic-completion PRD will emit; until it
+    /// lands `mechanism` stays a `Real` placeholder, so this exercises the
+    /// structured arm in isolation.
+    fn mechanism_map(masses: &[f64]) -> Value {
+        let bodies: Vec<Value> = masses
+            .iter()
+            .map(|&m| instance("Body", vec![("mass".to_string(), Value::Real(m))]))
+            .collect();
+        let mut map = BTreeMap::new();
+        map.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        map.insert(Value::String("bodies".to_string()), Value::List(bodies));
+        Value::Map(map)
+    }
+
+    /// (a) The `mechanism : Real` placeholder (the only mechanism `Value` that
+    /// flows today) marshals to a single-link, unit-mass, prismatic-X mechanism
+    /// plus one `EffectorLocation` whose per-mode coefficients default to unit
+    /// participation, sized to the modal model (`n_modes`).
+    #[test]
+    fn value_to_mechanism_real_placeholder_single_link_unit_mass() {
+        let (mech, locs): (MechanismModel, Vec<EffectorLocation>) =
+            value_to_mechanism_model(&Value::Real(1.0), 3);
+
+        assert_eq!(
+            mech.links.len(),
+            1,
+            "the Real placeholder → single-link fallback"
+        );
+        let link = &mech.links[0];
+        assert_eq!(link.mass, 1.0, "unit-mass placeholder link");
+        assert_eq!(link.subspace.len(), 1, "one DOF (prismatic)");
+        assert_eq!(
+            link.subspace[0].as_array(),
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            "prismatic-X motion subspace"
+        );
+
+        assert_eq!(locs.len(), 1, "one end-effector location");
+        assert_eq!(
+            locs[0].mode_coeffs,
+            vec![1.0; 3],
+            "unit per-mode coeffs sized to the modal model (n_modes = 3)"
+        );
+    }
+
+    /// (b) A structured `Value::Map(kind="mechanism")` with a `bodies` list
+    /// marshals to one `LinkDesc` per body, reading each body's `mass` field
+    /// (point-mass placeholder inertia, unit mass when absent). The effector
+    /// location is still single, sized to `n_modes`.
+    #[test]
+    fn value_to_mechanism_structured_one_link_per_body() {
+        let (mech, locs) = value_to_mechanism_model(&mechanism_map(&[2.0, 3.0]), 2);
+
+        assert_eq!(mech.links.len(), 2, "one LinkDesc per body");
+        assert_eq!(mech.links[0].mass, 2.0, "body 0 mass read from the Value");
+        assert_eq!(mech.links[1].mass, 3.0, "body 1 mass read from the Value");
+
+        assert_eq!(locs.len(), 1, "one end-effector location");
+        assert_eq!(locs[0].mode_coeffs, vec![1.0; 2], "coeffs sized to n_modes");
+    }
+
+    /// (c) Degenerate inputs fall back to the single-link unit-mass mechanism
+    /// (never panics): an unrecognised `Value` variant, and a structured
+    /// mechanism whose `bodies` list is empty.
+    #[test]
+    fn value_to_mechanism_degenerate_single_link_fallback() {
+        // An unrecognised Value variant → single-link fallback.
+        let (mech, locs) = value_to_mechanism_model(&Value::Undef, 1);
+        assert_eq!(mech.links.len(), 1, "Undef → single-link fallback");
+        assert_eq!(mech.links[0].mass, 1.0);
+        assert_eq!(locs.len(), 1);
+        assert_eq!(locs[0].mode_coeffs, vec![1.0; 1]);
+
+        // A structured mechanism with no bodies → single-link fallback.
+        let (mech2, locs2) = value_to_mechanism_model(&mechanism_map(&[]), 1);
+        assert_eq!(
+            mech2.links.len(),
+            1,
+            "empty bodies → single-link fallback (no panic)"
+        );
+        assert_eq!(locs2.len(), 1);
+    }
 }
