@@ -153,6 +153,11 @@ occurrence def ThreeMFOutput : Output {
 }
 
 // Send geometry to a viewport pane for display (no file path).
+// Note: no `constraint determined(subject)` — a viewport may legitimately
+// display in-progress or partially-determined geometry (live preview).
+// The other Output occurrences (STEPOutput, STLOutput, ThreeMFOutput) target
+// file export where undetermined geometry would produce a silent/corrupt output,
+// so they carry the guard.  DisplayOutput intentionally omits it.
 occurrence def DisplayOutput : Output {
     param subject : Solid
     param pane : Int = 0
