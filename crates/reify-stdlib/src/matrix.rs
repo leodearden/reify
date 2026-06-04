@@ -1388,4 +1388,143 @@ mod tests {
             }
         }
     }
+
+    // --- complex_eigenvalues tests (step-3 RED / step-4 GREEN) ---
+
+    /// (a) 2×2 rotation [[0,-1],[1,0]] → {0+1i, 0-1i} (set-membership, ±1e-9).
+    /// Today the name is unknown → returns Undef. After fix: two Complex values.
+    #[test]
+    fn complex_eigenvalues_rotation_2x2() {
+        let m = make_matrix(&[&[0.0, -1.0], &[1.0, 0.0]]);
+        let result = eval_builtin("complex_eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 2, "expected 2 eigenvalues, got {:?}", items);
+            let has_pos_i = items.iter().any(|v| {
+                if let Value::Complex { re, im, dimension } = v {
+                    re.abs() < 1e-9
+                        && (im - 1.0).abs() < 1e-9
+                        && *dimension == DimensionVector::DIMENSIONLESS
+                } else {
+                    false
+                }
+            });
+            let has_neg_i = items.iter().any(|v| {
+                if let Value::Complex { re, im, dimension } = v {
+                    re.abs() < 1e-9
+                        && (im + 1.0).abs() < 1e-9
+                        && *dimension == DimensionVector::DIMENSIONLESS
+                } else {
+                    false
+                }
+            });
+            assert!(has_pos_i, "expected 0+1i in {:?}", items);
+            assert!(has_neg_i, "expected 0-1i in {:?}", items);
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (b) Real-spectrum diagonal [[3,0],[0,5]] → {3+0i, 5+0i}.
+    #[test]
+    fn complex_eigenvalues_real_spectrum_diagonal() {
+        let m = make_matrix(&[&[3.0, 0.0], &[0.0, 5.0]]);
+        let result = eval_builtin("complex_eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 2, "expected 2 eigenvalues");
+            // Both must be Complex with |im| < 1e-9
+            for item in &items {
+                if let Value::Complex { im, .. } = item {
+                    assert!(im.abs() < 1e-9, "imaginary part should be ~0, got {im}");
+                } else {
+                    panic!("expected Complex, got {:?}", item);
+                }
+            }
+            // Values should cover 3 and 5 (set-membership)
+            let has_3 = items.iter().any(|v| {
+                if let Value::Complex { re, .. } = v {
+                    (re - 3.0).abs() < 1e-9
+                } else {
+                    false
+                }
+            });
+            let has_5 = items.iter().any(|v| {
+                if let Value::Complex { re, .. } = v {
+                    (re - 5.0).abs() < 1e-9
+                } else {
+                    false
+                }
+            });
+            assert!(has_3, "expected 3+0i in {:?}", items);
+            assert!(has_5, "expected 5+0i in {:?}", items);
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (c) Block-diagonal 3×3 [[0,-1,0],[1,0,0],[0,0,2]] → {i,-i,2+0i} all present.
+    #[test]
+    fn complex_eigenvalues_block_diagonal_3x3() {
+        let m = make_matrix(&[&[0.0, -1.0, 0.0], &[1.0, 0.0, 0.0], &[0.0, 0.0, 2.0]]);
+        let result = eval_builtin("complex_eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 3, "expected 3 eigenvalues, got {:?}", items);
+            let has = |exp_re: f64, exp_im: f64| -> bool {
+                items.iter().any(|v| {
+                    if let Value::Complex { re, im, .. } = v {
+                        (re - exp_re).abs() < 1e-9 && (im - exp_im).abs() < 1e-9
+                    } else {
+                        false
+                    }
+                })
+            };
+            assert!(has(0.0, 1.0), "expected 0+1i in {:?}", items);
+            assert!(has(0.0, -1.0), "expected 0-1i in {:?}", items);
+            assert!(has(2.0, 0.0), "expected 2+0i in {:?}", items);
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (d) Dimensioned 2×2 of LENGTH scalars → Value::Complex{.., LENGTH}.
+    #[test]
+    fn complex_eigenvalues_dimensioned_2x2() {
+        let length_dim = DimensionVector::LENGTH;
+        let m = make_dimensioned_matrix(&[&[3.0, 0.0], &[0.0, 5.0]], length_dim);
+        let result = eval_builtin("complex_eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 2, "expected 2 eigenvalues");
+            for item in &items {
+                if let Value::Complex { dimension, .. } = item {
+                    assert_eq!(
+                        *dimension,
+                        length_dim,
+                        "complex eigenvalue dimension should be LENGTH"
+                    );
+                } else {
+                    panic!("expected Complex, got {:?}", item);
+                }
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (e) Guard: zero args → Undef.
+    #[test]
+    fn complex_eigenvalues_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("complex_eigenvalues", &[]).is_undef());
+    }
+
+    /// (e) Guard: non-square 2×3 → Undef.
+    #[test]
+    fn complex_eigenvalues_non_square_returns_undef() {
+        let m = make_matrix(&[&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]]);
+        assert!(eval_builtin("complex_eigenvalues", &[m]).is_undef());
+    }
+
+    /// (e) Guard: non-matrix Value::Real → Undef.
+    #[test]
+    fn complex_eigenvalues_non_matrix_returns_undef() {
+        assert!(eval_builtin("complex_eigenvalues", &[Value::Real(5.0)]).is_undef());
+    }
 }
