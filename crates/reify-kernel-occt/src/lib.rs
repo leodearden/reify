@@ -7236,6 +7236,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn torus_execute_volume() {
+        // OcctKernel::execute(&GeometryOp::Torus{..}) → exact analytic torus.
+        // V = 2π²·R·r² for R=20, r=5.
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Torus {
+                major_radius: Value::Real(20.0),
+                minor_radius: Value::Real(5.0),
+            })
+            .expect("Torus execute should succeed");
+        let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
+        assert_volume_near(&mut kernel, handle.id, expected, 0.02, "torus");
+    }
+
+    #[test]
+    fn torus_minor_ge_major_returns_error() {
+        // minor_radius >= major_radius is a self-intersecting torus → rejected
+        // with a message naming the strict-inequality contract.
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Torus {
+            major_radius: Value::Real(5.0),
+            minor_radius: Value::Real(20.0),
+        });
+        assert_operation_fails_with(result, "minor radius must be strictly less than major");
+    }
+
+    #[test]
+    fn torus_nonfinite_or_zero_radius_returns_error() {
+        // Zero and NaN radii are each rejected by validate_positive_finite,
+        // before the FFI is reached.
+        let cases: &[(f64, f64, &str)] = &[
+            (0.0, 5.0, "major=0"),
+            (20.0, 0.0, "minor=0"),
+            (f64::NAN, 5.0, "major=NaN"),
+            (20.0, f64::NAN, "minor=NaN"),
+        ];
+        for (major, minor, label) in cases {
+            let mut kernel = OcctKernel::new();
+            let result = kernel.execute(&GeometryOp::Torus {
+                major_radius: Value::Real(*major),
+                minor_radius: Value::Real(*minor),
+            });
+            match result {
+                Err(GeometryError::OperationFailed(_)) => {}
+                Ok(_) => panic!("expected error for {label}, got Ok"),
+                Err(other) => panic!("expected OperationFailed for {label}, got {:?}", other),
+            }
+        }
+    }
+
     // --- Pipe tests (task-324) ---
 
     #[test]
