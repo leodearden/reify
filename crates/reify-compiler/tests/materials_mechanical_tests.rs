@@ -657,7 +657,7 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
             "FractureTough",
             "    param fracture_toughness : FractureToughness = 50.0 * 1Pa * sqrt(1m)",
         ),
-        ("ImpactResistant", "    param impact_energy : Real = 30.0"),
+        ("ImpactResistant", "    param charpy_impact : Real = 30.0"),
         (
             "Damping",
             "    param damping_ratio : Real = 0.05\n    param loss_factor : Real = 0.1",
@@ -715,7 +715,7 @@ fn four_refining_traits_with_all_material_members_conform_cleanly() {
             "FractureTough",
             "    param fracture_toughness : FractureToughness = 50.0 * 1Pa * sqrt(1m)",
         ),
-        ("ImpactResistant", "    param impact_energy : Real = 30.0"),
+        ("ImpactResistant", "    param charpy_impact : Real = 30.0"),
         (
             "Damping",
             "    param damping_ratio : Real = 0.05\n    param loss_factor : Real = 0.1",

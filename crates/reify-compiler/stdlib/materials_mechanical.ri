@@ -5,7 +5,7 @@
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // Dimensioned params (density, youngs_modulus, shear_modulus, yield_strength,
 // ultimate_tensile_strength, compressive_strength, fatigue_limit, fatigue_strength_at,
-// charpy_impact, izod_impact, impact_energy) are tightenable-now
+// charpy_impact, izod_impact) are tightenable-now
 // (task #3111). fracture_toughness was previously blocked-composite and is
 // now tightened to the `FractureToughness` (Pa·√m) alias by task #3115.
 //
@@ -149,9 +149,12 @@ trait Ductile {
 
 // ── Impact resistance ─────────────────────────────────────────────────────────
 
-// Energy absorbed in a Charpy or Izod impact test (J, using Real).
+// Charpy and Izod impact energy (J, using Real). Both optional (= undef): many
+// datasheets report only one test method; conformers may omit either or both.
+// task β #4240: replaced single required impact_energy with these two optionals.
 trait ImpactResistant : MaterialSpec {
-    param impact_energy : Real
+    param charpy_impact : Real = undef  // optional — energy absorbed in Charpy test (J)
+    param izod_impact : Real = undef    // optional — energy absorbed in Izod test (J)
 }
 
 // ── Damping ───────────────────────────────────────────────────────────────────
