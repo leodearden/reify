@@ -29,6 +29,11 @@ pub use stackup::diagnose as stackup_diagnose;
 /// Wiring this into `reify-expr`'s diagnostic sink (like `stackup_diagnose`
 /// at `reify-expr/src/lib.rs:1271`) is a deferred consumer hookup outside α's
 /// two-file scope; α ships the classifier + re-export, unit-tested in isolation.
+///
+/// TODO(sibling β/ε): add `tolerancing_diagnose` to the builtin fallthrough
+/// arm in `reify-expr/src/lib.rs` (mirror the `stackup_diagnose` call at
+/// `:1271`) so out-of-envelope `iso_it_tolerance` calls surface as user-visible
+/// `Severity::Error` diagnostics rather than silent `Value::Undef` returns.
 pub use tolerancing::diagnose as tolerancing_diagnose;
 
 /// Public re-export of the multi-load-case FEA error classifier.

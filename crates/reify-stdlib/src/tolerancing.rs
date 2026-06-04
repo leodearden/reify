@@ -109,9 +109,12 @@ fn iso_it_tolerance(args: &[Value]) -> Value {
 /// - `RFS`       → zone = tolerance_value (`bonus_departure` is truly ignored;
 ///   `args[2]` need not be a valid LENGTH scalar for `RFS`)
 /// - `MMC`/`LMC` → zone = tolerance_value + bonus_departure.  `bonus_departure`
-///   must be a finite LENGTH scalar; a computed zone that is negative (e.g.
-///   tol=1e-4, departure=−2e-4) is physically meaningless and returns `Undef`.
+///   must be a finite LENGTH scalar.
 /// - Any other variant / non-enum / wrong type_name → `Value::Undef`
+///
+/// A negative zone (e.g. a negative `tolerance_value` under RFS, or
+/// `tol + departure < 0` under MMC/LMC) is physically meaningless and returns
+/// `Value::Undef` regardless of the material condition.
 fn effective_tolerance_zone(args: &[Value]) -> Value {
     if args.len() != 3 {
         return Value::Undef;
@@ -125,24 +128,24 @@ fn effective_tolerance_zone(args: &[Value]) -> Value {
             match variant.as_str() {
                 // RFS: bonus departure is semantically irrelevant; skip validation.
                 "RFS" => tol,
-                // MMC / LMC: validate departure and guard the sum.
+                // MMC / LMC: validate departure and sum.
                 "MMC" | "LMC" => {
                     let departure =
                         match validate_dimensioned_scalar(&args[2], DimensionVector::LENGTH) {
                             Some(v) => v,
                             None => return Value::Undef,
                         };
-                    let zone = tol + departure;
-                    if zone < 0.0 {
-                        return Value::Undef;
-                    }
-                    zone
+                    tol + departure
                 }
                 _ => return Value::Undef,
             }
         }
         _ => return Value::Undef,
     };
+    // Negative tolerance zone is physically meaningless under any material condition.
+    if zone < 0.0 {
+        return Value::Undef;
+    }
     sanitize_value(Value::Scalar { si_value: zone, dimension: DimensionVector::LENGTH })
 }
 
@@ -504,6 +507,26 @@ mod tests {
         );
     }
 
+    /// Suggestion 3: document sub-3mm behavior as an explicit, tested decision.
+    ///
+    /// The `iso_size_in_envelope` predicate accepts any `min_mm > 0`, but the
+    /// ISO 286-1 cube-root formula is only validated against published cells for
+    /// the 3–500 mm step ranges.  Sizes in (0, 3) mm pass the gate and yield a
+    /// computed (extrapolated) result — this is an accepted gap, not a hard error.
+    #[test]
+    fn iso_it_tolerance_sub_3mm_accepted_but_unvalidated() {
+        // IT6 @ Ø1–3 mm: passes the envelope gate; result is extrapolated.
+        let r = crate::eval_builtin(
+            "iso_it_tolerance",
+            &[Value::Int(6), len(0.001), len(0.003)],
+        );
+        assert!(
+            is_finite_length_scalar(&r),
+            "sub-3mm sizes (0 < max ≤ 3mm) should return a finite LENGTH scalar \
+             (accepted-but-unvalidated region — formula extrapolates beyond ISO 286-1 tables)"
+        );
+    }
+
     // ─── step-7: RED tests for diagnose classifier ────────────────────────────
 
     #[test]
@@ -578,6 +601,21 @@ mod tests {
             )
             .is_undef(),
             "negative zone (tol + departure < 0) for MMC should return Undef"
+        );
+    }
+
+    /// Suggestion 1: RFS with a negative tolerance_value returns Undef — the
+    /// zone < 0 guard applies uniformly to all material conditions.
+    #[test]
+    fn efz_rfs_negative_tol_is_undef() {
+        // tol = -1e-4 < 0 → zone = -1e-4 < 0 → Undef even under RFS
+        assert!(
+            crate::eval_builtin(
+                "effective_tolerance_zone",
+                &[len(-1e-4), mc("RFS"), len(2e-5)]
+            )
+            .is_undef(),
+            "negative tolerance_value should return Undef under RFS"
         );
     }
 
