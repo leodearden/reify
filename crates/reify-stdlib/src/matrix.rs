@@ -731,6 +731,142 @@ mod tests {
         }
     }
 
+    // --- N≥4 eigenvalues tests (step-1 RED / step-2 GREEN) ---
+
+    fn make_4x4_diag_dimensionless() -> Value {
+        eval_builtin(
+            "diag",
+            &[Value::List(vec![
+                Value::Real(3.0),
+                Value::Real(5.0),
+                Value::Real(7.0),
+                Value::Real(9.0),
+            ])],
+        )
+    }
+
+    fn make_4x4_diag_length() -> Value {
+        let l = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        eval_builtin(
+            "diag",
+            &[Value::List(vec![l(3.0), l(5.0), l(7.0), l(9.0)])],
+        )
+    }
+
+    /// (a) 4×4 symmetric diagonal via `diag()` → [3,5,7,9] sorted ascending.
+    /// Today returns Undef (N≥4 gap). After fix: nalgebra symmetric_eigenvalues.
+    #[test]
+    fn eigenvalues_4x4_symmetric_diag() {
+        let m = make_4x4_diag_dimensionless();
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 4);
+            let expected = [3.0, 5.0, 7.0, 9.0];
+            for (i, (&exp, got)) in expected.iter().zip(items.iter()).enumerate() {
+                let v = got.as_f64().unwrap_or_else(|| panic!("eigenvalue[{i}] not numeric"));
+                assert!(
+                    (v - exp).abs() < 1e-9,
+                    "eigenvalue[{i}]: expected {exp}, got {v}"
+                );
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (b) 4×4 non-symmetric upper-triangular via `matrix()` → [2,3,4,5].
+    /// Today returns Undef (N≥4 gap). After fix: project-to-real path.
+    #[test]
+    fn eigenvalues_4x4_upper_triangular_real_spectrum() {
+        let m = eval_builtin(
+            "matrix",
+            &[Value::List(vec![
+                Value::List(vec![
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(3.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(4.0),
+                    Value::Real(1.0),
+                ]),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(5.0),
+                ]),
+            ])],
+        );
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 4);
+            let expected = [2.0, 3.0, 4.0, 5.0];
+            for (i, (&exp, got)) in expected.iter().zip(items.iter()).enumerate() {
+                let v = got.as_f64().unwrap_or_else(|| panic!("eigenvalue[{i}] not numeric"));
+                assert!(
+                    (v - exp).abs() < 1e-9,
+                    "eigenvalue[{i}]: expected {exp}, got {v}"
+                );
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// (c) 2×2 rotation matrix → Undef (complex spectrum ±i; documented, not silent).
+    /// Regression lock: behavior must be Undef both before and after the rewrite.
+    #[test]
+    fn eigenvalues_rotation_2x2_complex_spectrum_returns_undef() {
+        let m = make_matrix(&[&[0.0, -1.0], &[1.0, 0.0]]);
+        assert!(
+            eval_builtin("eigenvalues", &[m]).is_undef(),
+            "eigenvalues of rotation matrix (complex spectrum ±i) must return Undef"
+        );
+    }
+
+    /// (d) 4×4 LENGTH-dimensioned diagonal via `diag()` → List<Scalar<LENGTH>>.
+    /// Today returns Undef (N≥4 gap). After fix: List with Scalar dimension rule.
+    #[test]
+    fn eigenvalues_4x4_dimensioned_length_diag() {
+        let m = make_4x4_diag_length();
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 4);
+            let expected_vals = [3.0, 5.0, 7.0, 9.0];
+            for (i, (&exp, got)) in expected_vals.iter().zip(items.iter()).enumerate() {
+                match got {
+                    Value::Scalar { si_value, dimension } => {
+                        assert!(
+                            (si_value - exp).abs() < 1e-9,
+                            "eigenvalue[{i}] si_value: expected {exp}, got {si_value}"
+                        );
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::LENGTH,
+                            "eigenvalue[{i}] dimension should be LENGTH"
+                        );
+                    }
+                    other => panic!("expected Scalar at [{i}], got {:?}", other),
+                }
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
     #[test]
     fn inverse_non_square_returns_undef() {
         let m = make_matrix(&[&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]]);
