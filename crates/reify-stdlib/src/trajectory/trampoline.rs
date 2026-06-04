@@ -1832,4 +1832,142 @@ mod tests {
             "a non-instance shaper → Undef"
         );
     }
+
+    // ── steps 17/18: input_shape_value (TOTS arm) ────────────────────────────────
+
+    /// A `TOTSShaper` `Value::StructureInstance` carrying the readable scalar
+    /// limit/solver fields plus a `modes : List<Mode>` modal model. The TOTS arm
+    /// of `input_shape_value` marshals the input profile's waypoints into the
+    /// per-joint P2P spec, these limits into the per-joint vel/acc constraints +
+    /// `vib_tol`, and `max_iters`/`tol` into the `SqpConfig`. `actuator_limits` is
+    /// deliberately omitted here — this exercises the scalar
+    /// `velocity_limit`/`acceleration_limit` fallback path.
+    fn tots_shaper(
+        velocity_limit: f64,
+        acceleration_limit: f64,
+        vibration_tolerance: f64,
+        modes: Vec<Value>,
+    ) -> Value {
+        instance(
+            "TOTSShaper",
+            vec![
+                ("velocity_limit".to_string(), Value::Real(velocity_limit)),
+                (
+                    "acceleration_limit".to_string(),
+                    Value::Real(acceleration_limit),
+                ),
+                (
+                    "vibration_tolerance".to_string(),
+                    Value::Real(vibration_tolerance),
+                ),
+                ("max_iters".to_string(), Value::Int(100)),
+                ("tol".to_string(), Value::Real(1e-6)),
+                ("modes".to_string(), Value::List(modes)),
+            ],
+        )
+    }
+
+    /// A single-joint point-to-point ramp `q : start → end` over `[0, duration]`
+    /// as a natural-cubic `PiecewisePolynomialProfile` with a midpoint interior
+    /// waypoint (so the marshalled `JointWaypoints` has exactly one optimisable
+    /// interior). `duration` is the un-optimised baseline the time-optimal solve
+    /// improves on.
+    fn p2p_profile(duration: f64, start: f64, end: f64) -> Value {
+        let mid = 0.5 * (start + end);
+        pp_profile(
+            vec![
+                waypoint(0.0, &[start], None, None),
+                waypoint(duration / 2.0, &[mid], None, None),
+                waypoint(duration, &[end], None, None),
+            ],
+            instance("NaturalSpline", vec![]),
+            spline_kind("CubicSpline"),
+        )
+    }
+
+    /// (TOTS arm) A slow (baseline `T = 5 s`) unit P2P ramp shaped by a feasible
+    /// `TOTSShaper` (slack vel/acc/vib limits) becomes a genuinely re-timed,
+    /// time-optimal `PiecewisePolynomialProfile`:
+    /// - `type_name` / `mechanism` / `boundary` / `spline_kind` preserved (only
+    ///   `waypoints` change, mirroring the impulse arm);
+    /// - the move endpoints are fixed (start = 0, end = 1);
+    /// - the shaped duration is strictly faster than the slow baseline
+    ///   (`T_opt < T_base`) — time-optimal shaping never returns a slower move,
+    ///   and the constraint-limited optimum sits far below the baseline so the
+    ///   improvement is real (not an echo).
+    #[test]
+    fn input_shape_value_tots_arm_shapes_profile() {
+        let t_base = 5.0_f64;
+        let base_profile = p2p_profile(t_base, 0.0, 1.0);
+        let tots = tots_shaper(5.0, 50.0, 1.0, vec![mode(10.0, 0.05, &[[1.0, 0.0, 0.0]])]);
+
+        let shaped = input_shape_value(&base_profile, &tots);
+
+        // Real shaping → a Profile StructureInstance (NOT Undef), type preserved.
+        let Value::StructureInstance(data) = &shaped else {
+            panic!("a feasible TOTSShaper must yield a Profile StructureInstance, got {shaped:?}");
+        };
+        assert_eq!(
+            data.type_name, "PiecewisePolynomialProfile",
+            "TOTS shaping preserves the Profile type_name"
+        );
+        assert_eq!(
+            data.fields.get(&"mechanism".to_string()),
+            Some(&Value::Real(0.0)),
+            "mechanism preserved"
+        );
+        match data.fields.get(&"boundary".to_string()) {
+            Some(Value::StructureInstance(b)) => {
+                assert_eq!(b.type_name, "NaturalSpline", "boundary preserved")
+            }
+            other => panic!("boundary must be preserved as a StructureInstance, got {other:?}"),
+        }
+        match data.fields.get(&"spline_kind".to_string()) {
+            Some(Value::Enum { variant, .. }) => {
+                assert_eq!(variant, "CubicSpline", "spline_kind preserved")
+            }
+            other => panic!("spline_kind must be preserved as an Enum, got {other:?}"),
+        }
+
+        // Endpoints fixed; duration strictly faster than the slow baseline.
+        let out = read_waypoints(&shaped);
+        assert!(out.len() >= 2, "a shaped profile has ≥2 waypoints");
+        let first = out.first().unwrap();
+        let last = out.last().unwrap();
+        assert!((first.0 - 0.0).abs() < 1e-9, "shaped grid starts at t=0");
+        assert!(
+            first.1[0].abs() < 1e-6,
+            "start position fixed at 0, got {}",
+            first.1[0]
+        );
+        assert!(
+            (last.1[0] - 1.0).abs() < 1e-6,
+            "end position fixed at 1, got {}",
+            last.1[0]
+        );
+        let t_opt = last.0 - first.0;
+        assert!(
+            t_opt.is_finite() && t_opt > 0.0,
+            "shaped duration must be finite & positive, got {t_opt}"
+        );
+        assert!(
+            t_opt < t_base,
+            "time-optimal shaped duration {t_opt:.4} must be faster than the baseline {t_base}"
+        );
+    }
+
+    /// (TOTS arm) An infeasible `TOTSShaper` — `velocity_limit = 0` on a nonzero
+    /// move — makes `solve_tots` early-exit `ConstraintInfeasible`; the TOTS arm
+    /// maps that to `Value::Undef` (no feasible shaped profile exists), never a
+    /// panic. (`velocity_limit = 0` is constructible directly as a
+    /// `StructureInstance`, bypassing the `.ri` `velocity_limit > 0` ctor guard.)
+    #[test]
+    fn input_shape_value_tots_arm_infeasible_is_undef() {
+        let base_profile = p2p_profile(5.0, 0.0, 1.0);
+        let infeasible = tots_shaper(0.0, 50.0, 1.0, vec![mode(10.0, 0.05, &[[1.0, 0.0, 0.0]])]);
+        assert!(
+            matches!(input_shape_value(&base_profile, &infeasible), Value::Undef),
+            "an infeasible TOTSShaper (velocity_limit=0) → Undef (ConstraintInfeasible)"
+        );
+    }
 }
