@@ -1824,4 +1824,101 @@ mod tests {
             );
         }
     }
+
+    /// Step-7 RED: `propagate_attributes` must return `Ok(Propagated)` when
+    /// both parent manifolds were ingested with `as_original()` (via the
+    /// production `ingest_mesh` path) and have corresponding entries in the
+    /// `TopologyAttributeTable`.
+    ///
+    /// # Two assertions in one test
+    ///
+    /// (a) **Happy path** — two ingested cubes unioned, both parents annotated:
+    ///     call must return `Ok(Propagated)`.
+    ///
+    /// (b) **Degenerate path** — empty kernel, synthetic parent/result handle
+    ///     ids that don't exist in `shapes`, empty table: must still return
+    ///     `Ok(Discarded)` (the existing contract from the empty-kernel tests).
+    ///
+    /// # Fails until step-8
+    ///
+    /// The current stub returns `Ok(Discarded)` unconditionally, so assertion
+    /// (a) panics on the `Propagated` variant match.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn propagate_attributes_returns_propagated_when_parent_provenance_present() {
+        use crate::test_fixtures::unit_cube_mesh;
+        use reify_ir::{
+            FeatureId, GeometryOp, KernelAttributeOutcome, Role, TopologyAttribute,
+            TopologyAttributeTable,
+        };
+
+        fn make_attr(name: &str) -> TopologyAttribute {
+            TopologyAttribute {
+                feature_id: FeatureId::new(name),
+                role: Role::Side,
+                local_index: 0,
+                user_label: None,
+                mod_history: vec![],
+            }
+        }
+
+        // (a) Happy path: two ingested overlapping cubes, both annotated.
+        let mut kernel = ManifoldKernel::new();
+        let mesh_a = unit_cube_mesh([0.0, 0.0, 0.0]);
+        let mesh_b = unit_cube_mesh([0.5, 0.0, 0.0]);
+
+        let handle_a = kernel.ingest_mesh(&mesh_a)
+            .expect("ingest_mesh must accept a valid unit cube");
+        let handle_b = kernel.ingest_mesh(&mesh_b)
+            .expect("ingest_mesh must accept a valid unit cube");
+
+        let mut table = TopologyAttributeTable::default();
+        table.record(handle_a.id, make_attr("A"));
+        table.record(handle_b.id, make_attr("B"));
+
+        let result_handle = kernel
+            .execute(&GeometryOp::Union { left: handle_a.id, right: handle_b.id })
+            .expect("union of two valid cubes must succeed");
+
+        let feature_id = FeatureId::new("t#realization[0]");
+        let op = GeometryOp::Union { left: handle_a.id, right: handle_b.id };
+        let outcome = kernel.propagate_attributes(
+            &mut table,
+            &op,
+            &[handle_a.id, handle_b.id],
+            result_handle.id,
+            &feature_id,
+        );
+
+        match outcome {
+            Ok(KernelAttributeOutcome::Propagated) => {}
+            other => panic!(
+                "propagate_attributes must return Ok(Propagated) when both parents are annotated \
+                 and the result mesh is non-empty; got {other:?}"
+            ),
+        }
+
+        // (b) Degenerate path: empty kernel, synthetic handles not in shapes,
+        //     empty table — must still return Ok(Discarded).
+        let empty_kernel = ManifoldKernel::new();
+        let mut empty_table = TopologyAttributeTable::default();
+        let synthetic_op = GeometryOp::Union {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        };
+        let degenerate_outcome = empty_kernel.propagate_attributes(
+            &mut empty_table,
+            &synthetic_op,
+            &[GeometryHandleId(1), GeometryHandleId(2)],
+            GeometryHandleId(3),
+            &FeatureId::new("t#realization[0]"),
+        );
+        match degenerate_outcome {
+            Ok(KernelAttributeOutcome::Discarded) => {}
+            other => panic!(
+                "propagate_attributes must return Ok(Discarded) for an empty kernel \
+                 (no shapes, no table entries); got {other:?}"
+            ),
+        }
+    }
 }
