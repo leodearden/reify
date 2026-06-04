@@ -20,6 +20,7 @@ import { parseRpcResponse, type RpcResult } from "./rpc.js";
 import { decideOutcome } from "./diff.js";
 import type { ImageData } from "./diff.js";
 import { resolveRepoRoot, assertRepoRootStructure } from "./paths.js";
+import { FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -317,6 +318,58 @@ async function main(): Promise<HarnessExitCode> {
   return anyFailed ? 1 : 0;
 }
 
+// ─── Value-assertion mode ─────────────────────────────────────────────────────
+
+/**
+ * Run all VALUE_SCENARIOS against the live reify-gui debug server.
+ *
+ * Boots the GUI with the small_cube fixture (same spawnGui/waitForDebugServer/
+ * reapGui lifecycle as visual mode, no new boot/teardown code). For each
+ * scenario, openFixture resolves the repo-relative path to absolute, calls
+ * open_file + wait_for_idle, then callTool calls the named tool. Results are
+ * logged per-scenario; exit code 0 = all passed, 1 = any failed, 2 = fatal.
+ */
+async function runValueScenarios(): Promise<HarnessExitCode> {
+  let anyFailed = false;
+
+  try {
+    spawnGui(FIXTURES.small_cube);
+    await waitForDebugServer();
+
+    async function openFixture(repoRelPath: string): Promise<RpcResult<unknown>> {
+      const absPath = path.join(REPO_ROOT, repoRelPath);
+      const openResult = await rpc<unknown>("open_file", { path: absPath });
+      if (!openResult.ok) return openResult;
+      const idleResult = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
+      if (!idleResult.ok) return idleResult;
+      return { ok: true, value: idleResult.value };
+    }
+
+    async function callTool(tool: string, args: Record<string, unknown>): Promise<RpcResult<unknown>> {
+      return rpc<unknown>(tool, args);
+    }
+
+    for (const scenario of VALUE_SCENARIOS) {
+      console.log(`\n[harness:value] scenario: ${scenario.name}`);
+      const result = await runValueScenario({ openFixture, callTool }, scenario);
+      if (result.passed) {
+        console.log(`  PASS ${result.name}`);
+      } else {
+        anyFailed = true;
+        console.error(`  FAIL ${result.name}`);
+        for (const msg of result.failures) {
+          console.error(`       ${msg}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[harness:value] FATAL: ${String(err)}`);
+    return 2;
+  }
+
+  return anyFailed ? 1 : 0;
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 function shutdown(exitCode: number): void {
@@ -330,7 +383,10 @@ function shutdown(exitCode: number): void {
 process.on("SIGINT", () => shutdown(130));
 process.on("SIGTERM", () => shutdown(143));
 
-main()
+const MODE = process.argv[2] === "value" ? "value" : "visual";
+const harness = MODE === "value" ? runValueScenarios() : main();
+
+harness
   .then((code) => {
     reapGui().finally(() => {
       process.exit(code);

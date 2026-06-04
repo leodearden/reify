@@ -72,4 +72,48 @@ assert "type_check_command is the passing no-op 'true' (redundant cargo check dr
 assert "orchestrator.yaml still defines verify_env" \
     bash -c "grep -q '^verify_env:' '$ORCH'"
 
+# -- Fix 2 (main-gate-hardening): exec -> '|| exit $?' + post-success mark -------
+# The pre-commit / pre-merge-commit gates used to `exec` their verifier, which
+# replaces the shell and can never run code afterwards. Fix 2 changes them to a
+# foreground call followed by `|| exit $?`, then marks the main-gate sentinel —
+# so hooks/reference-transaction can tell a verified (sanctioned) refs/heads/main
+# move from an unsanctioned one. The verifier args must be UNCHANGED (the
+# existing assertions above still pin them); these assertions pin the restructure.
+echo ""
+echo "--- pre-commit / pre-merge-commit: exec->'|| exit \$?' restructure + sentinel mark ---"
+
+PRE_COMMIT="$REPO_ROOT/hooks/pre-commit"
+GATE_LIB="$REPO_ROOT/hooks/main-gate-lib.sh"
+REF_TXN="$REPO_ROOT/hooks/reference-transaction"
+
+# The new tripwire + shared lib must exist (lib is sourced, not executed).
+assert "hooks/main-gate-lib.sh exists" test -f "$GATE_LIB"
+assert "hooks/reference-transaction exists" test -f "$REF_TXN"
+assert "hooks/reference-transaction is executable" test -x "$REF_TXN"
+
+# pre-commit must still exist + be executable.
+assert "hooks/pre-commit exists" test -f "$PRE_COMMIT"
+assert "hooks/pre-commit is executable" test -x "$PRE_COMMIT"
+
+# pre-commit calls project-checks in the FOREGROUND with '|| exit $?' (not exec),
+# so the post-success mark is reachable.
+assert "pre-commit calls project-checks then '|| exit \$?'" \
+    bash -c "grep -F 'hooks/project-checks' '$PRE_COMMIT' | grep -qF '|| exit \$?'"
+assert "pre-commit has no top-level 'exec' command (post-mark must be reachable)" \
+    bash -c "! grep -qE '^[[:space:]]*exec[[:space:]]' '$PRE_COMMIT'"
+assert "pre-commit sources hooks/main-gate-lib.sh" \
+    bash -c "grep -q 'main-gate-lib.sh' '$PRE_COMMIT'"
+assert "pre-commit marks the sentinel on success (main_gate_mark)" \
+    bash -c "grep -q 'main_gate_mark' '$PRE_COMMIT'"
+
+# pre-merge-commit: same restructure — run verify, '|| exit $?', then mark.
+assert "pre-merge-commit runs verify.sh then '|| exit \$?'" \
+    bash -c "grep -F 'scripts/verify.sh' '$PRE_MERGE' | grep -qF '|| exit \$?'"
+assert "pre-merge-commit has no top-level 'exec' command (post-mark must be reachable)" \
+    bash -c "! grep -qE '^[[:space:]]*exec[[:space:]]' '$PRE_MERGE'"
+assert "pre-merge-commit sources hooks/main-gate-lib.sh" \
+    bash -c "grep -q 'main-gate-lib.sh' '$PRE_MERGE'"
+assert "pre-merge-commit marks the sentinel on success (main_gate_mark)" \
+    bash -c "grep -q 'main_gate_mark' '$PRE_MERGE'"
+
 test_summary

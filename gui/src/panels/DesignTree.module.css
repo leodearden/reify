@@ -54,11 +54,13 @@
 }
 
 .selected {
-  background: var(--reify-accent-subtle, #1a3a5c);
+  background: var(--reify-surface-hover, #2a2a3a);
+  border-left: 3px solid var(--reify-selection, #ff9500);
+  padding-left: 1px; /* compensate for the 3px border so content doesn't jump */
 }
 
 .selected:hover {
-  background: var(--reify-accent-subtle-hover, #1f4570);
+  background: var(--reify-surface0, #313244);
 }
 
 .chevron {

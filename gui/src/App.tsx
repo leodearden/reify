@@ -1585,10 +1585,6 @@ const App: Component = () => {
               <Show when={(bucklingStore.state.base !== null) || bucklingStore.modes().length > 0}>
                 <BucklingPanel store={bucklingStore} />
               </Show>
-              {/* WarmPoolDebugPanel: REIFY_DEBUG=1 only — PRD §11 Q6 resolution */}
-              <Show when={debugEnabled()}>
-                <WarmPoolDebugPanel />
-              </Show>
               <Show when={mechanismStore.state.descriptors.length > 0}>
                 <MechanismPanel
                   descriptors={mechanismStore.state.descriptors}
@@ -1637,6 +1633,12 @@ const App: Component = () => {
             store={viewStateStore}
             onClose={() => setViewManageOpen(false)}
           />
+          {/* WarmPoolDebugPanel: REIFY_DEBUG=1 only — floating overlay, task 4279 */}
+          <Show when={debugEnabled()}>
+            <div class={styles.warmPoolDebugOverlay} data-testid="warm-pool-debug-overlay">
+              <WarmPoolDebugPanel />
+            </div>
+          </Show>
           <div class={styles.toastContainer}>
             <For each={toasts()}>
               {(t) => (

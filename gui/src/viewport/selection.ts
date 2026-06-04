@@ -55,9 +55,17 @@ export interface SelectionContext {
 /**
  * Creates a selection system for pointer-based hover/click detection
  * on meshes managed by meshManager.
+ *
+ * Color semantics:
+ *   HIGHLIGHT_COLOR (accent blue)  — hover emissive, applied via setHovered.
+ *   SELECTION_COLOR (orange)       — selection wireframe outline, applied via addWireframeFor.
+ * Keeping them distinct ensures a selected mesh and a hovered mesh are never
+ * visually identical (the original "subtle color changes" complaint).
  */
-/** Emissive highlight color derived from theme accent. */
+/** Emissive highlight color derived from theme accent (used for hover). */
 const HIGHLIGHT_COLOR = THEME_TOKENS.accent;
+/** High-contrast wireframe color for the selection overlay — distinct from hover. */
+const SELECTION_COLOR = THEME_TOKENS.selection;
 
 export function createSelection(options: SelectionOptions): SelectionContext {
   const { scene, camera, domElement, getMeshes, onHover, onSelect, controls } = options;
@@ -189,7 +197,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     const mesh = getMeshes().get(path);
     if (!mesh) return;
     const wireGeom = new EdgesGeometry(mesh.geometry);
-    const wireMat = new LineBasicMaterial({ color: HIGHLIGHT_COLOR });
+    const wireMat = new LineBasicMaterial({ color: SELECTION_COLOR });
     const wf = new LineSegments(wireGeom, wireMat);
     scene.add(wf);
     wireframes.set(path, wf);

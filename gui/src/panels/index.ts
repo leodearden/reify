@@ -1,4 +1,6 @@
 export { PropertyEditor } from './PropertyEditor';
+export { SelectionBreadcrumb } from './SelectionBreadcrumb';
+export type { SelectionBreadcrumbProps } from './SelectionBreadcrumb';
 export { ConstraintPanel } from './ConstraintPanel';
 export { Toolbar } from './Toolbar';
 export { StatusBar } from './StatusBar';

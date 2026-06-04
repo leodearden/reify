@@ -1,0 +1,24 @@
+// all_severities.ri — fixture intended to emit diagnostics at multiple severity levels
+//
+// Parses cleanly; the compiler/evaluator emits a mix of diagnostic severities.
+// Exact severity taxonomy (info/warn/error per diagnostic class) pinned by
+// downstream diagnostics tool-leaf tasks.
+//
+// Constraint states modelled:
+//   - width > 10mm  with width=100mm  → satisfied (ok / info-level)
+//   - height > 10mm with height=200mm → satisfied (ok / info-level)
+//   - thickness > 5mm with thickness=1mm → VIOLATED → error-level diagnostic
+//   - area == width * height (computed binding, no constraint)
+
+structure AllSeverities {
+    param width:     Scalar = 100mm
+    param height:    Scalar = 200mm
+    param thickness: Scalar = 1mm
+
+    constraint width > 10mm
+    constraint height > 10mm
+    constraint thickness > 5mm
+
+    let area = width * height
+    let body = box(width, height, thickness)
+}

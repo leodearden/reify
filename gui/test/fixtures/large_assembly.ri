@@ -1,0 +1,58 @@
+// large_assembly.ri — compact multi-sub assembly fixture
+//
+// Exercises Physical trait conformance and sub-component instantiation.
+// Produces multiple product meshes (engine.meshCount > 1).
+// Exact mesh count and diagnostic behavior pinned by downstream tool-leaf tasks.
+//
+// Structure types (each : Physical):
+//   BoxPart   — steel,    box(80mm, 60mm, 40mm)
+//   TubePin   — steel,    cylinder(8mm, 50mm)
+//   BasePlate — aluminum, box(200mm, 150mm, 10mm)
+//
+// Assembly: 7 sub-components = 3 BoxParts + 2 TubePins + 2 BasePlates
+
+structure def BoxPart : Physical {
+    param geometry : Solid = box(80mm, 60mm, 40mm)
+    param material : Material = Material(
+        name: "Steel Structural",
+        density: 7850.0,
+        youngs_modulus: 200000000000.0
+    )
+}
+
+structure def TubePin : Physical {
+    param geometry : Solid = cylinder(8mm, 50mm)
+    param material : Material = Material(
+        name: "Steel Pin",
+        density: 7850.0,
+        youngs_modulus: 200000000000.0
+    )
+}
+
+structure def BasePlate : Physical {
+    param geometry : Solid = box(200mm, 150mm, 10mm)
+    param material : Material = Material(
+        name: "Aluminum Plate 6061",
+        density: 2700.0,
+        youngs_modulus: 69000000000.0
+    )
+}
+
+structure def CompactAssembly {
+    sub bp1 = BoxPart()
+    sub bp2 = BoxPart()
+    sub bp3 = BoxPart()
+
+    sub tp1 = TubePin()
+    sub tp2 = TubePin()
+
+    sub pl1 = BasePlate()
+    sub pl2 = BasePlate()
+
+    let all_masses = [
+        self.bp1.mass, self.bp2.mass, self.bp3.mass,
+        self.tp1.mass, self.tp2.mass,
+        self.pl1.mass, self.pl2.mass
+    ]
+    let total_mass = all_masses.sum
+}

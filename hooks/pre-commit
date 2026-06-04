@@ -47,9 +47,22 @@ if [ "$branch" != "main" ]; then
 fi
 
 # ── Project-specific checks ────────────────────────────────────────────
+#
+# On success, mark the main-gate sentinel so hooks/reference-transaction records
+# the ensuing refs/heads/main update as SANCTIONED (verified). The old `exec` is
+# replaced by a foreground call followed by `|| exit $?` so this post-success
+# mark can run — an `exec` would replace this shell and never reach the mark.
+# Exit codes are preserved exactly: a non-zero from project-checks aborts the
+# commit before any mark.
+
+# shellcheck source=hooks/main-gate-lib.sh
+. "$ROOT/hooks/main-gate-lib.sh"
 
 if [ -x "$ROOT/hooks/project-checks" ]; then
-    exec "$ROOT/hooks/project-checks" "$ROOT"
+    "$ROOT/hooks/project-checks" "$ROOT" || exit $?
+    main_gate_mark
+    exit 0
 fi
 
 echo "pre-commit: all checks passed."
+main_gate_mark

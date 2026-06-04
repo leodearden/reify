@@ -250,11 +250,11 @@ assert "Test 17: no outer 'timeout --kill-after=N Nm ./scripts/cargo-test-occt-g
 assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= appears exactly twice in the plan (once per gated invocation)" \
     bash -c "[ \"\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -oF 'REIFY_OCCT_TEST_TIMEOUT=' | wc -l | tr -d ' ')\" -eq 2 ]"
 
-assert "Test 17: debug invocation sets REIFY_OCCT_TEST_TIMEOUT=2700" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'REIFY_OCCT_TEST_TIMEOUT=2700 ./scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt'"
+assert "Test 17: debug invocation sets REIFY_OCCT_TEST_TIMEOUT=3600" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt'"
 
-assert "Test 17: release invocation sets REIFY_OCCT_TEST_TIMEOUT=3600" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release'"
+assert "Test 17: release invocation sets REIFY_OCCT_TEST_TIMEOUT=4800" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'REIFY_OCCT_TEST_TIMEOUT=4800 ./scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config --release'"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
