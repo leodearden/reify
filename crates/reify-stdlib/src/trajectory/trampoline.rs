@@ -1303,4 +1303,164 @@ mod tests {
             }
         }
     }
+
+    // ── steps 13/14: simulate_trajectory_value ──────────────────────────────────
+
+    use std::f64::consts::PI;
+
+    use super::simulate_trajectory_value;
+
+    /// The analytic SDOF unit-step response (zero IC), copied from
+    /// `simulate.rs`'s test module (a private test helper there). Used to
+    /// independently certify the composer's vibration_offset against the same
+    /// closed form θ validates the core against to 1e-9.
+    fn analytic_step_response(p0: f64, omega: f64, zeta: f64, t: f64) -> f64 {
+        let omega_d = omega * (1.0 - zeta * zeta).sqrt();
+        let decay = (-zeta * omega * t).exp();
+        (p0 / (omega * omega))
+            * (1.0 - decay * ((omega_d * t).cos() + (zeta * omega / omega_d) * (omega_d * t).sin()))
+    }
+
+    /// A single-mode `ModalResult` `Value` (5 Hz, ζ = 0.05, unit modal shape) —
+    /// `value_to_modal_model` reads it to a one-mode `ModalModel` with unit
+    /// `force_projection`.
+    fn single_mode_modal() -> Value {
+        modal_result(vec![mode(5.0, 0.05, &[[1.0, 0.0, 0.0]])])
+    }
+
+    /// A constant-acceleration `PiecewisePolynomialProfile` `Value` reproducing
+    /// `simulate.rs::constant_accel_spline(duration, accel)`: 3 knots
+    /// `[0, d/2, d]` of `q = ½·a·t²` with a clamped boundary (start vel 0, end
+    /// vel `a·d`), so the marshalled cubic has `q̈ = a` exactly.
+    fn constant_accel_profile(duration: f64, accel: f64) -> Value {
+        let t1 = duration / 2.0;
+        let t2 = duration;
+        pp_profile(
+            vec![
+                waypoint(0.0, &[0.0], None, None),
+                waypoint(t1, &[0.5 * accel * t1 * t1], None, None),
+                waypoint(t2, &[0.5 * accel * t2 * t2], None, None),
+            ],
+            instance(
+                "ClampedSpline",
+                vec![
+                    ("start_velocity".to_string(), reals(&[0.0])),
+                    ("end_velocity".to_string(), reals(&[accel * duration])),
+                ],
+            ),
+            spline_kind("CubicSpline"),
+        )
+    }
+
+    /// (a) A constant-accel ramp profile + single-mode modal + the `mech : Real`
+    /// placeholder (→ unit-mass prismatic link) marshals through the composer to
+    /// an `EndEffectorTrack` whose `vibration_offset` Z series matches the
+    /// analytic single-mode step response. The marshalled link is the unit-mass
+    /// twin of θ's fixture, so the step magnitude is `p0 = mass·accel = accel`.
+    #[test]
+    fn simulate_trajectory_value_matches_analytic_single_mode_step() {
+        let accel = 3.0_f64;
+        let duration = 0.4_f64;
+        let freq_hz = 5.0_f64;
+        let zeta = 0.05_f64;
+        let omega = 2.0 * PI * freq_hz;
+        let p0 = accel; // unit marshalled mass
+
+        let v = simulate_trajectory_value(
+            &constant_accel_profile(duration, accel),
+            &Value::Real(1.0),
+            &single_mode_modal(),
+        );
+        let Value::StructureInstance(data) = &v else {
+            panic!("composer must yield an EndEffectorTrack StructureInstance, got {v:?}");
+        };
+        assert_eq!(data.type_name, "EndEffectorTrack");
+
+        let Some(Value::List(ts)) = data.fields.get(&"t_samples".to_string()) else {
+            panic!("t_samples must be a List");
+        };
+        assert!(ts.len() >= 2, "a valid profile produces ≥2 samples");
+        let Some(Value::List(outer)) = data.fields.get(&"vibration_offset".to_string()) else {
+            panic!("vibration_offset must be a List");
+        };
+        assert_eq!(outer.len(), 1, "one effector location");
+        let Value::List(series) = &outer[0] else {
+            panic!("vibration_offset[0] must be a List");
+        };
+        assert_eq!(series.len(), ts.len(), "one vibration sample per time");
+
+        let mut peak = 0.0_f64;
+        for (cell, t_cell) in series.iter().zip(ts.iter()) {
+            let dz = as_real(cell);
+            let t = match t_cell {
+                Value::Scalar { si_value, .. } => *si_value,
+                other => panic!("t_samples element must be a Scalar, got {other:?}"),
+            };
+            let want = analytic_step_response(p0, omega, zeta, t);
+            assert!(
+                (dz - want).abs() < 1e-6,
+                "vibration_offset Z must match the analytic step response at t={t:.4}: \
+                 got {dz:.6e}, want {want:.6e}"
+            );
+            peak = peak.max(dz.abs());
+        }
+        assert!(
+            peak > 1e-4,
+            "the single-mode response must be a genuine (non-zero) vibration, peak={peak:.3e}"
+        );
+    }
+
+    /// (b) A recognizable-but-degenerate profile (a `PiecewisePolynomialProfile`
+    /// instance with `<2` waypoints — nothing to fit) yields a well-formed EMPTY
+    /// `EndEffectorTrack` (empty `t_samples` / per-location series), NOT `Undef`
+    /// and never a panic: the simulator simply has nothing to integrate.
+    #[test]
+    fn simulate_trajectory_value_degenerate_profile_is_empty_track() {
+        let degenerate = pp_profile(
+            vec![waypoint(0.0, &[0.0], None, None)], // a single waypoint cannot fit a spline
+            instance("NaturalSpline", vec![]),
+            spline_kind("CubicSpline"),
+        );
+        let v = simulate_trajectory_value(&degenerate, &Value::Real(1.0), &single_mode_modal());
+        let Value::StructureInstance(data) = &v else {
+            panic!("a degenerate profile must still yield an EndEffectorTrack, got {v:?}");
+        };
+        assert_eq!(data.type_name, "EndEffectorTrack");
+        match data.fields.get(&"t_samples".to_string()) {
+            Some(Value::List(items)) => {
+                assert!(items.is_empty(), "degenerate profile → empty t_samples")
+            }
+            other => panic!("t_samples must be an empty List, got {other:?}"),
+        }
+        // The single per-location vibration series is empty (no time samples).
+        if let Some(Value::List(outer)) = data.fields.get(&"vibration_offset".to_string()) {
+            for row in outer {
+                match row {
+                    Value::List(inner) => assert!(inner.is_empty(), "empty per-location series"),
+                    other => panic!("vibration_offset row must be a List, got {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// (c) Bad args — a non-`StructureInstance` profile (a bare `Real`, `Undef`)
+    /// cannot be a profile at all → `Value::Undef` (distinct from the degenerate
+    /// case, which still yields a track).
+    #[test]
+    fn simulate_trajectory_value_bad_args_is_undef() {
+        assert!(
+            matches!(
+                simulate_trajectory_value(&Value::Real(0.0), &Value::Real(1.0), &single_mode_modal()),
+                Value::Undef
+            ),
+            "a bare Real profile → Undef"
+        );
+        assert!(
+            matches!(
+                simulate_trajectory_value(&Value::Undef, &Value::Real(1.0), &single_mode_modal()),
+                Value::Undef
+            ),
+            "an Undef profile → Undef"
+        );
+    }
 }
