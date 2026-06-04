@@ -419,6 +419,8 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { active_element: describeActive(document.activeElement as HTMLElement) };
     },
 
+    tab_order: () => ({ order: collectTabbables().map(describeActive) }),
+
     // --- Write commands (frontend-mediated) ---
 
     click_element: (params) => {
