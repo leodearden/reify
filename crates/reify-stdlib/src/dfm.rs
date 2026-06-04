@@ -96,8 +96,13 @@ pub fn diagnose(_name: &str, _args: &[Value], _result: &Value) -> Vec<Diagnostic
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use reify_core::DimensionVector;
+    use reify_core::identity::RealizationNodeId;
+    use reify_ir::geometry::GeometryHandleId;
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
     /// A LENGTH scalar of `si` metres.
     fn len(si: f64) -> Value {
@@ -145,5 +150,201 @@ mod tests {
         let part = bbox([0.100, 0.100, 0.100], [0.110, 0.110, 0.110]);
         let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
         assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Bool(true)));
+    }
+
+    // ─── step-3 helpers: malformed-input builders ──────────────────────────
+
+    /// A scalar of `si` in the given dimension.
+    fn scalar(si: f64, dim: DimensionVector) -> Value {
+        Value::Scalar { si_value: si, dimension: dim }
+    }
+
+    /// A `Value::BoundingBox` whose min/max corners are Point3s of `dim`.
+    fn bbox_dim(min: [f64; 3], max: [f64; 3], dim: DimensionVector) -> Value {
+        Value::BoundingBox {
+            min: Box::new(Value::Point(vec![scalar(min[0], dim), scalar(min[1], dim), scalar(min[2], dim)])),
+            max: Box::new(Value::Point(vec![scalar(max[0], dim), scalar(max[1], dim), scalar(max[2], dim)])),
+        }
+    }
+
+    /// A `Value::BoundingBox` from explicit min/max corner values (malformed corners).
+    fn bbox_pts(min: Value, max: Value) -> Value {
+        Value::BoundingBox { min: Box::new(min), max: Box::new(max) }
+    }
+
+    /// A raw kernel "Solid" handle value — NOT a `Value::BoundingBox`.
+    fn solid_handle() -> Value {
+        Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Part", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        }
+    }
+
+    /// A bare `DFMSeverity` enum value.
+    fn dfm_sev(variant: &str) -> Value {
+        Value::Enum { type_name: "DFMSeverity".into(), variant: variant.into() }
+    }
+
+    /// A `DFMRule` structure-instance carrying a `severity` field.
+    fn dfm_rule(sev_variant: &str) -> Value {
+        let mut fields = PersistentMap::new();
+        fields.insert("severity".to_string(), dfm_sev(sev_variant));
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "DFMRule".into(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    // ─── step-3: fits_build_volume validation → Undef ──────────────────────
+
+    #[test]
+    fn fits_build_volume_arity_zero_undef() {
+        assert_eq!(eval_dfm("fits_build_volume", &[]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_arity_one_undef() {
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_arity_four_undef() {
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(
+            eval_dfm("fits_build_volume", &[part, env, dfm_sev("Warning"), Value::Int(1)]),
+            Some(Value::Undef)
+        );
+    }
+
+    #[test]
+    fn fits_build_volume_non_bbox_real_undef() {
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[Value::Real(1.0), env]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_non_bbox_map_undef() {
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let m = Value::Map(BTreeMap::new());
+        assert_eq!(eval_dfm("fits_build_volume", &[part, m]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_non_bbox_solid_handle_undef() {
+        // A raw Solid (ephemeral kernel handle) is NOT a BoundingBox; it must be
+        // resolved via bounding_box(...) UPSTREAM. Passing one directly is a usage error.
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[solid_handle(), env]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_non_bbox_undef_arg_undef() {
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part, Value::Undef]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_dimensionless_corners_undef() {
+        // Corners must be LENGTH; a DIMENSIONLESS bbox is rejected (drives step-4).
+        let part = bbox_dim([0.0, 0.0, 0.0], [1.0, 1.0, 1.0], DimensionVector::DIMENSIONLESS);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_mass_corners_undef() {
+        // A MASS-dimensioned bbox is not a spatial extent (drives step-4).
+        let part = bbox_dim([0.0, 0.0, 0.0], [1.0, 1.0, 1.0], DimensionVector::MASS);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_mismatched_min_max_dim_undef() {
+        // min LENGTH, max MASS — inconsistent corner dimensions (drives step-4).
+        let part = bbox_pts(
+            Value::Point(vec![len(0.0), len(0.0), len(0.0)]),
+            Value::Point(vec![
+                scalar(1.0, DimensionVector::MASS),
+                scalar(1.0, DimensionVector::MASS),
+                scalar(1.0, DimensionVector::MASS),
+            ]),
+        );
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_two_components_undef() {
+        // A 2-component corner is not a 3D extent.
+        let part = bbox_pts(
+            Value::Point(vec![len(0.0), len(0.0)]),
+            Value::Point(vec![len(0.010), len(0.010)]),
+        );
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_nan_corner_undef() {
+        // A NaN corner must not silently produce a bogus comparison (drives step-4).
+        let part = bbox([0.0, 0.0, 0.0], [f64::NAN, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_inf_corner_undef() {
+        // An infinite corner is not a valid finite extent (drives step-4).
+        let part = bbox([0.0, 0.0, 0.0], [f64::INFINITY, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(eval_dfm("fits_build_volume", &[part, env]), Some(Value::Undef));
+    }
+
+    #[test]
+    fn fits_build_volume_invalid_third_arg_real_undef() {
+        // 3rd arg must be a DFMSeverity enum or a DFMRule structure-instance (drives step-4).
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(
+            eval_dfm("fits_build_volume", &[part, env, Value::Real(1.0)]),
+            Some(Value::Undef)
+        );
+    }
+
+    #[test]
+    fn fits_build_volume_invalid_third_arg_wrong_enum_undef() {
+        // An enum of the wrong type is not a DFMSeverity (drives step-4).
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let wrong = Value::Enum { type_name: "Distribution".into(), variant: "Normal".into() };
+        assert_eq!(eval_dfm("fits_build_volume", &[part, env, wrong]), Some(Value::Undef));
+    }
+
+    // Guard: a VALID 3rd-arg severity tag must NOT cause Undef — it is ignored by
+    // the boolean compute, so step-4 must not over-reject it.
+    #[test]
+    fn fits_build_volume_valid_severity_enum_third_arg_computes() {
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(
+            eval_dfm("fits_build_volume", &[part, env, dfm_sev("Warning")]),
+            Some(Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn fits_build_volume_valid_rule_third_arg_computes() {
+        let part = bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        assert_eq!(
+            eval_dfm("fits_build_volume", &[part, env, dfm_rule("Error")]),
+            Some(Value::Bool(true))
+        );
     }
 }
