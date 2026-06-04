@@ -74,9 +74,12 @@ export function navigateFromConstraint(
   deps: NavigateFromConstraintDeps,
 ): void {
   const { parameter_ids } = constraint;
-  deps.setHighlightedParams(parameter_ids);
 
-  // Find the entity_path from the first matching value
+  // Select the entity FIRST so that selectEntity (→ selectSingle/clearSelection) clears
+  // highlightedParams before we set the new constraint highlight.  Setting the highlight
+  // LAST ensures it survives the selection-change clearing logic.
   const matchingValue = values.find((v) => parameter_ids.includes(v.cell_id));
   deps.selectEntity(matchingValue?.entity_path ?? null);
+
+  deps.setHighlightedParams(parameter_ids);
 }
