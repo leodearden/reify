@@ -3786,6 +3786,103 @@ mod tests {
         );
     }
 
+    // ── amend: fits_build_volume DFM diagnostics — fitting + usage-error paths ─
+    //
+    // The step-11 test above covers only the Bool(false) VIOLATION path through
+    // eval_expr. These two mirror it for the other two outcomes so the
+    // emit_dfm_diagnostics wiring itself (not just dfm.rs's unit-level diagnose) is
+    // exercised end-to-end: a regression dropping the Undef branch or always pushing
+    // a diagnostic would be caught here.
+
+    /// LENGTH scalar of `si` metres (shared shape with the step-11 test helpers).
+    fn dfm_len(si: f64) -> Value {
+        Value::Scalar {
+            si_value: si,
+            dimension: DimensionVector::LENGTH,
+        }
+    }
+
+    /// BoundingBox from two LENGTH Point3 corners (metres).
+    fn dfm_bbox(min: [f64; 3], max: [f64; 3]) -> Value {
+        Value::BoundingBox {
+            min: Box::new(Value::Point(vec![
+                dfm_len(min[0]),
+                dfm_len(min[1]),
+                dfm_len(min[2]),
+            ])),
+            max: Box::new(Value::Point(vec![
+                dfm_len(max[0]),
+                dfm_len(max[1]),
+                dfm_len(max[2]),
+            ])),
+        }
+    }
+
+    /// Build a `fits_build_volume(...)` FunctionCall expr over the given args.
+    fn dfm_call_expr(args: Vec<Value>) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x44, 0x46, 0x4d, 0x32]),
+            result_type: Type::Bool,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "fits_build_volume".to_string(),
+                    qualified_name: "std::fits_build_volume".to_string(),
+                },
+                // Literal args' static Type is not consulted at runtime; Type::Real
+                // is a neutral placeholder (matches the step-11 test).
+                args: args.into_iter().map(|v| lit(v, Type::Real)).collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn fits_build_volume_fitting_emits_no_dfm_diagnostic_into_sink() {
+        // A fitting design (Bool(true)) is NOT a violation → the sink stays empty.
+        let part = dfm_bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = dfm_bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let sev = Value::Enum {
+            type_name: "DFMSeverity".into(),
+            variant: "Warning".into(),
+        };
+        let expr = dfm_call_expr(vec![part, env, sev]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Bool(true), "part fits the envelope");
+        assert!(
+            sink.borrow().is_empty(),
+            "a fitting design emits no diagnostic, got {:?}",
+            sink.borrow()
+        );
+    }
+
+    #[test]
+    fn fits_build_volume_usage_error_emits_dfm_error_into_sink() {
+        // A non-BoundingBox part (a raw Real) makes fits_build_volume return Undef;
+        // emit_dfm_diagnostics must push exactly one Error E_DFM usage diagnostic.
+        let env = dfm_bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let expr = dfm_call_expr(vec![Value::Real(1.0), env]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Undef, "a non-bbox arg yields Undef");
+
+        let diags = sink.borrow();
+        assert_eq!(diags.len(), 1, "exactly one usage-error diagnostic, got {diags:?}");
+        assert_eq!(diags[0].severity, reify_core::Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM"),
+            "usage error carries the E_DFM prefix: {}",
+            diags[0].message
+        );
+    }
+
     #[test]
     fn function_call_sin_with_angle() {
         let arg = lit(
