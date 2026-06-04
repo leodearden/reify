@@ -379,6 +379,36 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       focused: document.hasFocus(),
     }),
 
+    // --- R2: ui_outline (frontend-mediated, reads live DOM) ---
+    // Returns a flat ordered list of visible semantic elements (tagName, role,
+    // data-testid, text, enabled-state). This is a pragmatic DOM APPROXIMATION —
+    // NOT a true accessibility tree (deferred to tracker AX-1).
+    // Visibility is determined by computed display/visibility (NOT getBoundingClientRect
+    // geometry, which is all-zero under jsdom) — the correct render-tree criterion.
+    ui_outline: () => {
+      const MAX = 500;
+      const nodes = document.querySelectorAll(
+        '[data-testid], [role], button, a[href], input, select, textarea, [tabindex]',
+      );
+      const all = Array.from(nodes);
+      const outline: Array<Record<string, unknown>> = [];
+      for (const el of all) {
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const h = el as HTMLElement & { disabled?: boolean };
+        outline.push({
+          tagName: el.tagName.toLowerCase(),
+          role: el.getAttribute('role'),
+          testId: el.getAttribute('data-testid'),
+          text: ((h.innerText ?? el.textContent ?? '').slice(0, 200)),
+          enabled: !h.disabled && el.getAttribute('aria-disabled') !== 'true',
+        });
+      }
+      const truncated = outline.length > MAX;
+      const sliced = outline.slice(0, MAX);
+      return { outline: sliced, count: outline.length, truncated };
+    },
+
     // --- Write commands (frontend-mediated) ---
 
     click_element: (params) => {
