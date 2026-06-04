@@ -959,6 +959,13 @@ mod tests {
         assert!(is_geometry_function("pipe"));
     }
 
+    // --- Torus primitive (task-4157 step-5) ---
+
+    #[test]
+    fn is_geometry_function_torus_recognized() {
+        assert!(is_geometry_function("torus"));
+    }
+
     // --- Centred primitives (task-4159) ---
 
     #[test]
