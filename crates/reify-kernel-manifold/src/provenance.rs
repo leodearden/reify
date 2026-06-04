@@ -104,16 +104,38 @@ pub fn correlate_facets(
 /// - `run_index` is non-decreasing with `run_index[last] == num_tri * 3`
 /// - `merge_from_vert.len() == merge_to_vert.len()`
 fn correlate_from_vectors(
-    _num_tri: usize,
-    _run_index: &[u64],
-    _run_original_id: &[u32],
-    _face_id: &[u64],
-    _merge_from_vert: &[u64],
-    _merge_to_vert: &[u64],
-    _parent: &HashMap<u32, TopologyAttribute>,
+    num_tri: usize,
+    run_index: &[u64],
+    run_original_id: &[u32],
+    face_id: &[u64],
+    merge_from_vert: &[u64],
+    merge_to_vert: &[u64],
+    parent: &HashMap<u32, TopologyAttribute>,
 ) -> Result<Vec<FacetProvenance>, String> {
-    // Placeholder: walk not yet implemented.
-    Err("provenance walk unimplemented".into())
+    let num_run = run_original_id.len();
+
+    // Walk each run and emit one FacetProvenance per triangle.
+    let mut out = Vec::with_capacity(num_tri);
+    for r in 0..num_run {
+        let orig = run_original_id[r];
+        // run_index entries are in flat tri-vert units (3 indices per triangle).
+        let start = run_index[r] as usize / 3;
+        let end = run_index[r + 1] as usize / 3;
+        let source = parent.get(&orig).cloned();
+        for tri in start..end {
+            out.push(FacetProvenance {
+                triangle: tri,
+                descriptor: FacetDescriptor {
+                    run_original_id: orig,
+                    face_id: face_id[tri],
+                },
+                source: source.clone(),
+            });
+        }
+    }
+    // Suppress unused-variable warnings for merge vectors (used in step-4 validation).
+    let _ = (merge_from_vert, merge_to_vert);
+    Ok(out)
 }
 
 #[cfg(test)]
