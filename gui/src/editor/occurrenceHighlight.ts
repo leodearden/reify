@@ -7,6 +7,8 @@
  * grammar) so the semantic occurrence decoration stays distinct from syntactic
  * token coloring.
  */
+import { StateEffect, StateField } from '@codemirror/state';
+import { Decoration, EditorView, type DecorationSet } from '@codemirror/view';
 import type { DocumentHighlight } from './lspClient';
 
 /**
@@ -49,3 +51,51 @@ export function highlightsToRanges(
   }
   return out;
 }
+
+/** The single mark spec applied to every occurrence; `class` is a stable signal. */
+const OCCURRENCE_MARK = Decoration.mark({ class: 'cm-occurrenceHighlight' });
+
+/**
+ * Replace the current occurrence-highlight set with the given CM ranges. An
+ * empty array clears all highlights (dispatched synchronously on cursor-move).
+ */
+export const setOccurrencesEffect = StateEffect.define<CmRange[]>();
+
+/**
+ * Holds the occurrence-highlight DecorationSet. On document changes the existing
+ * marks are mapped forward so positions stay valid; a `setOccurrencesEffect`
+ * rebuilds the set from the effect's ranges (sorted, since RangeSet requires
+ * ascending order). Provided to the view as decorations.
+ */
+export const occurrenceHighlightField = StateField.define<DecorationSet>({
+  create() {
+    return Decoration.none;
+  },
+  update(decos, tr) {
+    decos = decos.map(tr.changes);
+    for (const effect of tr.effects) {
+      if (effect.is(setOccurrencesEffect)) {
+        const marks = effect.value
+          .slice()
+          .sort((a, b) => a.from - b.from || a.to - b.to)
+          .map((r) => OCCURRENCE_MARK.range(r.from, r.to));
+        decos = Decoration.set(marks, true);
+      }
+    }
+    return decos;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+/**
+ * Subtle occurrence-highlight style, co-located with the extension via
+ * baseTheme so the stable `cm-occurrenceHighlight` class ships with it (no
+ * CSS-module edit) and gives the reify-debug dom_query signal a deterministic
+ * target.
+ */
+export const occurrenceHighlightTheme = EditorView.baseTheme({
+  '.cm-occurrenceHighlight': {
+    backgroundColor: 'rgba(120, 160, 255, 0.18)',
+    borderRadius: '2px',
+  },
+});
