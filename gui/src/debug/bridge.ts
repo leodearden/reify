@@ -105,6 +105,23 @@ function resolveElement(params: Record<string, unknown>): { error: string } | { 
   }
 }
 
+// Returns focusable elements in document order, excluding disabled/tabindex=-1
+// and elements hidden via computed display:none or visibility:hidden.
+// Does NOT use offsetParent/getBoundingClientRect — unavailable in jsdom.
+function collectTabbables(): HTMLElement[] {
+  const candidates = document.querySelectorAll<HTMLElement>(
+    'a[href]:not([tabindex="-1"]), button:not([disabled]):not([tabindex="-1"]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])',
+  );
+  return Array.from(candidates).filter((el) => {
+    const style = window.getComputedStyle(el);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  });
+}
+
+function describeActive(el: HTMLElement) {
+  return { testId: el.getAttribute('data-testid'), tagName: el.tagName.toLowerCase() };
+}
+
 function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
   return {
     // --- Read commands (frontend-mediated) ---
@@ -386,6 +403,20 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         });
       });
       return { open, items };
+    },
+
+    // Advance focus to the next focusable element in document order.
+    // Synthetic Tab keydown is untrusted (isTrusted=false) and never moves
+    // focus in a WebView or jsdom; focus is driven programmatically instead.
+    // Positive-tabindex WHATWG priority ordering is not replicated (document
+    // order only) — an accepted, documented limitation for app-chrome use.
+    press_tab: () => {
+      const list = collectTabbables();
+      if (list.length === 0) return { active_element: null };
+      const idx = list.indexOf(document.activeElement as HTMLElement);
+      const next = list[(idx + 1) % list.length];
+      next.focus();
+      return { active_element: describeActive(document.activeElement as HTMLElement) };
     },
 
     // --- Write commands (frontend-mediated) ---
