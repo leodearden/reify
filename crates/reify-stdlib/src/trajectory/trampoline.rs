@@ -33,6 +33,7 @@
 use reify_core::ContentHash;
 use reify_ir::Value;
 
+use super::simulate::{ModalModel, ModeDesc};
 use super::spline::{BoundaryCondition, CubicSpline, KnotData, MultiJointSpline, QuinticSpline};
 
 /// The result-determining inputs of a `simulate_trajectory` forward-pass solve,
@@ -297,6 +298,72 @@ pub(crate) fn value_to_multijoint_spline(profile: &Value) -> Option<MultiJointSp
         }
         _ => None, // unrecognised spline_kind variant
     }
+}
+
+/// Flatten a `Mode.shape` (`List<Vector3<Dimensionless>>`) into a flat
+/// `Vec<f64>` of length `3·n_nodes` — each per-node `Value::Vector` / `List`'s
+/// three components read via [`read_scalar_si`]. A non-`List` / malformed shape
+/// yields an empty vector; non-numeric components are skipped.
+#[allow(dead_code)]
+fn flatten_shape(shape: &Value) -> Vec<f64> {
+    let Value::List(nodes) = shape else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(nodes.len() * 3);
+    for node in nodes {
+        let comps = match node {
+            Value::Vector(c) | Value::List(c) => c,
+            _ => continue,
+        };
+        out.extend(comps.iter().filter_map(read_scalar_si));
+    }
+    out
+}
+
+/// Marshal a `ModalResult` `Value` into a [`ModalModel`] (PRD §6.2): map each
+/// `Mode` (`frequency` → `freq_hz` (Hz), `damping_ratio` → `zeta`, flattened
+/// `shape` → `force_projection`) to a [`ModeDesc`].
+///
+/// Degenerate inputs yield an EMPTY [`ModalModel`] (never panics): a
+/// non-`StructureInstance`, a missing / non-`List` `modes` field, or an empty
+/// `modes` list. Individual non-`StructureInstance` mode entries are skipped.
+/// The θ core handles an empty modal model gracefully (zero vibration), so an
+/// empty result is the right "no modal data" signal rather than a hard error.
+#[allow(dead_code)]
+pub(crate) fn value_to_modal_model(modal: &Value) -> ModalModel {
+    let Value::StructureInstance(data) = modal else {
+        return ModalModel { modes: Vec::new() };
+    };
+    let Some(Value::List(modes)) = data.fields.get(&"modes".to_string()) else {
+        return ModalModel { modes: Vec::new() };
+    };
+    let mut out = Vec::with_capacity(modes.len());
+    for m in modes {
+        let Value::StructureInstance(mode) = m else {
+            continue;
+        };
+        let freq_hz = mode
+            .fields
+            .get(&"frequency".to_string())
+            .and_then(read_scalar_si)
+            .unwrap_or(0.0);
+        let zeta = mode
+            .fields
+            .get(&"damping_ratio".to_string())
+            .and_then(read_scalar_si)
+            .unwrap_or(0.0);
+        let force_projection = mode
+            .fields
+            .get(&"shape".to_string())
+            .map(flatten_shape)
+            .unwrap_or_default();
+        out.push(ModeDesc {
+            freq_hz,
+            zeta,
+            force_projection,
+        });
+    }
+    ModalModel { modes: out }
 }
 
 #[cfg(test)]
