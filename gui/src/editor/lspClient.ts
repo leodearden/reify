@@ -221,7 +221,8 @@ export function createLspClient(): LspClient {
         position: { line, character },
       });
       const parsed = JSON.parse(response);
-      if (!parsed || parsed === 'null') return null;
+      // A null payload (the Invariant-4 refusal) parses to JS null → !parsed.
+      if (!parsed) return null;
       return parsed as PrepareRenameResult;
     },
 
@@ -237,7 +238,8 @@ export function createLspClient(): LspClient {
         newName,
       });
       const parsed = JSON.parse(response);
-      if (!parsed || parsed === 'null') return null;
+      // A null payload (non-renameable / invalid name) parses to JS null → !parsed.
+      if (!parsed) return null;
       return parsed as WorkspaceEdit;
     },
   };
