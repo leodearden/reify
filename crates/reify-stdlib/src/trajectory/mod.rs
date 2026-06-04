@@ -18,6 +18,11 @@ mod sampling;
 mod simulate;
 mod spline;
 mod tots;
+// `pub(crate)` so the crate-root re-exports in `lib.rs` can name the
+// `trampoline` path segment for the cache keys + `*_value` composers that
+// `reify-eval/src/trajectory_ops.rs` consumes (task π, prereq-1). Mirrors the
+// `input_shape` visibility above and `dynamics::trampoline`.
+pub(crate) mod trampoline;
 
 /// Evaluate a trajectory stdlib function by name.
 ///
