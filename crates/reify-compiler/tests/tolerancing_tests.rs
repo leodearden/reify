@@ -650,6 +650,112 @@ fn full_module_integrity() {
     );
 }
 
+// ─── β-3: ISOToleranceGrade.tolerance_value derived let (RED) ───────────────
+
+/// β-3 RED: ISOToleranceGrade.tolerance_value is still a plain required `param`
+/// (not a derived let). Asserts that:
+/// (a) `ISOToleranceGrade.tolerance_value` is a Let cell (not Param) in the
+///     compiled template.
+/// (b) Evaluating `Probe { sub g = ISOToleranceGrade(grade:7, nominal_min:30mm,
+///     nominal_max:50mm) }` with stdlib prelude yields a LENGTH Scalar ≈ 24.969µm
+///     (the published ISO 286-1 IT7@Ø30-50 = 25µm, pinned by α's own test).
+///
+/// RED because tolerance_value is currently a plain required param, not a
+/// derived let calling iso_it_tolerance.
+#[test]
+fn iso_tolerance_grade_tolerance_value_derived_let() {
+    // (a) Structural check: tolerance_value should be a Let cell, not Param ──
+    let module = load_stdlib_module();
+    let iso = module
+        .templates
+        .iter()
+        .find(|t| t.name == "ISOToleranceGrade")
+        .expect("expected 'ISOToleranceGrade' template");
+
+    let tol_cell = iso
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "tolerance_value")
+        .expect("ISOToleranceGrade should have 'tolerance_value' value cell");
+    assert_eq!(
+        tol_cell.kind,
+        ValueCellKind::Let,
+        "ISOToleranceGrade.tolerance_value should be a Let cell (derived from iso_it_tolerance), \
+         got {:?}",
+        tol_cell.kind
+    );
+
+    // (b) Eval: tolerance_value = iso_it_tolerance(7, 30mm, 50mm) ≈ 24.969µm ──
+    //
+    // NOTE: ISOToleranceGrade is a stdlib structure; the eval engine looks up templates
+    // from the user's module only. Define a locally-accessible wrapper that embeds the
+    // grade, nominal_min, nominal_max as params so the eval sees them.
+    //
+    // After step-4 makes tolerance_value a derived Let, a conforming structure that
+    // uses ISOToleranceGrade via sub-component still needs ISOToleranceGrade in the
+    // user module. We use a locally-defined passthrough structure instead.
+    let source = r#"
+structure def TestISO {
+    param grade : Int = 7
+    param nominal_min : Length = 30mm
+    param nominal_max : Length = 50mm
+    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)
+}
+structure def Probe {
+    sub g = TestISO(grade: 7, nominal_min: 30mm, nominal_max: 50mm)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    let cell_id = ValueCellId::new("Probe.g", "tolerance_value");
+    let value = result.values.get(&cell_id).unwrap_or_else(|| {
+        let probe_keys: Vec<_> = result
+            .values
+            .iter()
+            .map(|(k, _)| k)
+            .filter(|k| k.entity.contains("Probe"))
+            .collect();
+        panic!(
+            "Probe.g.tolerance_value not found in eval result; Probe-related keys: {:?}",
+            probe_keys
+        )
+    });
+    match value {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "Probe.g.tolerance_value should have LENGTH dimension, got {:?}",
+                dimension
+            );
+            // iso_it_tolerance(7, 30mm, 50mm) = 24.969µm = 24.969e-6 m
+            // α's test pins this to 24.969e-6; assert within 0.5% (< 0.125µm)
+            let expected_si = 24.969e-6_f64;
+            assert!(
+                (si_value - expected_si).abs() / expected_si < 0.005,
+                "Probe.g.tolerance_value should be ≈24.969µm (IT7@Ø30-50), got {} m",
+                si_value
+            );
+        }
+        other => panic!(
+            "Probe.g.tolerance_value should be Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
+
 // ─── β-1: GeometricTolerance.nominal_zone inherited let (RED) ────────────────
 
 /// β-1 RED: GeometricTolerance.nominal_zone is not yet a trait-level derived
