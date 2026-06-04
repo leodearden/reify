@@ -195,15 +195,6 @@ export function createSelectionStore() {
     setState('highlightedParams', ids);
   }
 
-  function clearHighlights() {
-    batch(() => {
-      setState('selectedEntity', null);
-      setState('selectedEntities', []);
-      setState('anchorEntity', null);
-      setState('highlightedParams', []);
-    });
-  }
-
   function clearIfRemoved(entityPath: string) {
     batch(() => {
       // Remove from multi-selection list and recompute primary
@@ -224,5 +215,5 @@ export function createSelectionStore() {
     });
   }
 
-  return { state, selectSingle, toggleSelect, rangeSelect, selectAll, clearSelection, selectEntity, hoverEntity, setHighlightedParams, clearHighlights, clearIfRemoved };
+  return { state, selectSingle, toggleSelect, rangeSelect, selectAll, clearSelection, selectEntity, hoverEntity, setHighlightedParams, clearIfRemoved };
 }

@@ -438,21 +438,6 @@ describe('selectionStore', () => {
     });
   });
 
-  it('clearHighlights resets selectedEntity and highlightedParams', () => {
-    createRoot((dispose) => {
-      const { state, selectEntity, setHighlightedParams, clearHighlights } = createSelectionStore();
-      selectEntity('Bracket');
-      setHighlightedParams(['c1', 'c2']);
-      expect(state.selectedEntity).toBe('Bracket');
-      expect(state.highlightedParams).toEqual(['c1', 'c2']);
-
-      clearHighlights();
-      expect(state.selectedEntity).toBeNull();
-      expect(state.highlightedParams).toEqual([]);
-      dispose();
-    });
-  });
-
   // --- clearIfRemoved multi-selection (step-15) ---
   describe('clearIfRemoved — multi-selection', () => {
     it('removes only the matching path from selectedEntities, leaving others intact', () => {
@@ -593,7 +578,6 @@ describe('selectionStore', () => {
     let selectEntity!: (path: string | null) => void;
     let hoverEntity!: (path: string | null) => void;
     let clearIfRemoved!: (path: string) => void;
-    let clearHighlights!: () => void;
 
     beforeEach(() => {
       vi.useFakeTimers();
@@ -605,7 +589,6 @@ describe('selectionStore', () => {
         selectEntity = store.selectEntity;
         hoverEntity = store.hoverEntity;
         clearIfRemoved = store.clearIfRemoved;
-        clearHighlights = store.clearHighlights;
       });
 
     });
@@ -873,29 +856,6 @@ describe('selectionStore', () => {
       expect(mockInvoke).not.toHaveBeenCalled();
     });
 
-    it('clearHighlights dispatches exactly one backend sync for selection→null', () => {
-      // Set up: select an entity (triggers immediate invoke)
-      selectEntity('Bracket');
-      expect(mockInvoke).toHaveBeenCalledTimes(1);
-      mockInvoke.mockClear();
-
-      // Act: clearHighlights uses batch() to set selectedEntity=null and
-      // highlightedParams=[] atomically. The sync effect only tracks
-      // selectedEntity/hoveredEntity, so the invoke count is 1 regardless,
-      // but batch() prevents intermediate state from being visible to other
-      // reactive subscribers.
-      clearHighlights();
-
-      // Advance past any pending debounce
-      vi.advanceTimersByTime(100);
-
-      expect(mockInvoke).toHaveBeenCalledTimes(1);
-      expect(mockInvoke).toHaveBeenCalledWith('update_selection', {
-        selectedEntity: null,
-        selectedEntities: [],
-        hoveredEntity: null,
-      });
-    });
   });
 
   // --- Backend sync: selectedEntities forwarded to IPC (step-17) ---
