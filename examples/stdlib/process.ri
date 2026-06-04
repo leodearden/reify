@@ -10,11 +10,15 @@
 import std.process
 
 // A milled part provides the duration and cost required by Process (via
-// Subtracting : Process). Matches the io.ri Steel_AISI_1045 : ElasticMaterial
-// pattern: a concrete structure supplies defaults for the required trait params.
+// Subtracting : Process), plus the three capability params added in β.
+// Matches the io.ri Steel_AISI_1045 : ElasticMaterial pattern: a concrete
+// structure supplies defaults for the required trait params.
 structure def MilledPart : Subtracting {
     param duration : Time = 30min
     param cost : Money = 50USD
+    param tool_access : Solid = box(200mm, 150mm, 100mm)
+    param min_feature_size : Length = 0.5mm
+    param achievable_finish : Length = 0.0016mm
 }
 
 // A DFM rule that checks minimum wall thickness for milled parts.

@@ -189,20 +189,84 @@ fn process_base_trait_requires_duration_time_and_cost_money() {
 // ─── step-5: process-category traits ─────────────────────────────────────────
 
 /// Each of the seven process-category traits must refine exactly [Process] and
-/// have an empty own required_members (requirements are inherited via refinement).
+/// expose exactly the §8 capability params as own required_members, in declaration order.
+/// (`CompiledTrait.required_members` holds only a trait's OWN declared members;
+/// inherited `duration`/`cost` from Process are NOT listed there.)
 #[test]
 fn process_category_traits_each_refine_process() {
-    let categories = [
-        "Subtracting",
-        "Adding",
-        "Forming",
-        "Joining",
-        "Parting",
-        "SurfaceTreating",
-        "HeatTreating",
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let angle = Type::Scalar {
+        dimension: DimensionVector::ANGLE,
+    };
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let temperature = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
+    let time_t = Type::Scalar {
+        dimension: DimensionVector::TIME,
+    };
+
+    // (trait_name, [(member_name, expected_type)])
+    let categories: Vec<(&str, Vec<(&str, Type)>)> = vec![
+        (
+            "Subtracting",
+            vec![
+                ("tool_access", Type::Geometry),
+                ("min_feature_size", length.clone()),
+                ("achievable_finish", length.clone()),
+            ],
+        ),
+        (
+            "Adding",
+            vec![
+                ("layer_thickness", length.clone()),
+                ("min_feature_size", length.clone()),
+                ("build_volume", Type::Geometry),
+            ],
+        ),
+        (
+            "Forming",
+            vec![
+                ("min_bend_radius", length.clone()),
+                ("max_draw_depth", length.clone()),
+                ("draft_angle", angle.clone()),
+            ],
+        ),
+        (
+            "Joining",
+            vec![
+                ("joint_strength", pressure.clone()),
+                ("reversible", Type::Bool),
+            ],
+        ),
+        (
+            "Parting",
+            vec![
+                ("kerf_width", length.clone()),
+                ("min_feature_size", length.clone()),
+            ],
+        ),
+        (
+            "SurfaceTreating",
+            vec![
+                ("coating_thickness", length.clone()),
+                ("achievable_finish", length.clone()),
+            ],
+        ),
+        (
+            "HeatTreating",
+            vec![
+                ("treatment_temperature", temperature.clone()),
+                ("hold_duration", time_t.clone()),
+            ],
+        ),
     ];
 
-    for name in &categories {
+    for (name, expected_members) in &categories {
         let t = find_trait(name);
 
         assert_eq!(
@@ -213,16 +277,32 @@ fn process_category_traits_each_refine_process() {
             t.refinements
         );
 
-        assert!(
-            t.required_members.is_empty(),
-            "trait '{}' should have no own required_members (inherited via refinement), \
-             got: {:?}",
+        assert_eq!(
+            t.required_members.len(),
+            expected_members.len(),
+            "trait '{}' should have exactly {} own required_members; got: {:?}",
             name,
+            expected_members.len(),
             t.required_members
                 .iter()
                 .map(|r| &r.name)
                 .collect::<Vec<_>>()
         );
+
+        // Declaration order is a compiler contract: required_members preserves source order.
+        for (i, (member_name, expected_type)) in expected_members.iter().enumerate() {
+            assert_eq!(
+                t.required_members[i].name, *member_name,
+                "trait '{}' required_members[{}] should be '{}', got '{}'",
+                name, i, member_name, t.required_members[i].name
+            );
+            assert_eq!(
+                param_type(name, member_name),
+                *expected_type,
+                "trait '{}' member '{}' should have type {:?}",
+                name, member_name, expected_type
+            );
+        }
     }
 }
 
@@ -399,5 +479,112 @@ fn example_process_ri_compiles_clean() {
             .iter()
             .map(|t| (&t.name, &t.trait_bounds))
             .collect::<Vec<_>>()
+    );
+}
+
+// ─── step-3 (task-4273): β conformance signal ─────────────────────────────────
+
+/// β conformance lock — part (a): a complete Subtracting conformer compiles clean
+/// and its `min_feature_size` value cell is readable with the correct type.
+///
+/// Uses `compile_source_with_stdlib` at the same altitude as
+/// `example_process_ri_compiles_clean`. Numeric evaluation of capability
+/// members is exercised downstream by γ/δ via `reify check`/`eval` on examples.
+#[test]
+fn subtracting_conformer_with_all_params_compiles_clean_and_exposes_min_feature_size() {
+    let source = r#"
+import std.process
+
+structure def MilledBracket : Subtracting {
+    param duration : Time = 30min
+    param cost : Money = 50USD
+    param tool_access : Solid = box(10mm, 20mm, 30mm)
+    param min_feature_size : Length = 1mm
+    param achievable_finish : Length = 0.01mm
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (a-1) Zero error-severity diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "MilledBracket with all Subtracting params should compile clean; errors: {:?}",
+        errors
+    );
+
+    // (a-2) The compiled MilledBracket template exposes a `min_feature_size` value cell
+    //       with the correct type (Type::Scalar{LENGTH}).
+    let bracket = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "MilledBracket")
+        .expect("MilledBracket template should be present after clean compile");
+
+    let mfs_cell = bracket
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "min_feature_size")
+        .unwrap_or_else(|| {
+            panic!(
+                "MilledBracket should have a 'min_feature_size' value cell; found: {:?}",
+                bracket
+                    .value_cells
+                    .iter()
+                    .map(|vc| &vc.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        mfs_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
+        "MilledBracket.min_feature_size cell_type should be Type::Scalar{{LENGTH}}"
+    );
+}
+
+/// β conformance lock — part (b): a Subtracting conformer OMITTING `min_feature_size`
+/// emits a `missing required member 'min_feature_size'` error diagnostic.
+///
+/// This is the durable lock for the conformance contract consumed by γ.
+#[test]
+fn subtracting_conformer_missing_min_feature_size_emits_missing_member_error() {
+    let source = r#"
+import std.process
+
+structure def IncompleteMilled : Subtracting {
+    param duration : Time = 30min
+    param cost : Money = 50USD
+    param tool_access : Solid = box(10mm, 20mm, 30mm)
+    param achievable_finish : Length = 0.01mm
+}
+"#;
+    // Note: `min_feature_size` is intentionally omitted.
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "IncompleteMilled omitting 'min_feature_size' should emit an error diagnostic"
+    );
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("missing required member") && error_msg.contains("min_feature_size"),
+        "error should mention 'missing required member' and 'min_feature_size', got: {}",
+        error_msg
     );
 }
