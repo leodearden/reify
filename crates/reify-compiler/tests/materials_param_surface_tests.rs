@@ -356,6 +356,42 @@ fn ductile_omits_reduction_of_area_is_clean() {
     );
 }
 
+// ── §6.2 Ductile — elongation_at_break rename (β task #4240) ─────────────────
+
+/// Ductile conformer declaring only old name `elongation` (no elongation_at_break)
+/// must produce a MissingRequiredMember error for `elongation_at_break`.
+///
+/// RED: stdlib Ductile still declares `elongation`, so supplying `elongation` succeeds
+/// rather than emitting a MissingRequiredMember error for `elongation_at_break`.
+#[test]
+fn ductile_old_elongation_name_is_missing_required_member() {
+    let src = r#"
+        structure def DuctileOldName : Ductile {
+            param elongation : Real = 0.2
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected MissingRequiredMember error for 'elongation_at_break' when \
+         only old 'elongation' is supplied, but got no errors"
+    );
+    assert!(
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::MissingRequiredMember)
+                && d.message.contains("elongation_at_break")
+        }),
+        "expected MissingRequiredMember error mentioning 'elongation_at_break', \
+         got errors: {:?}",
+        errors
+    );
+}
+
 // ── §6.2 Strong — ultimate_tensile_strength rename (β task #4240) ─────────────
 
 /// Strong conformer declaring ultimate_tensile_strength >= yield_strength compiles clean.

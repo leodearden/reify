@@ -444,8 +444,9 @@ fn remaining_five_traits_exist() {
         "FractureTough should have 'fracture_toughness' member"
     );
 
-    // Ductile: 1 required member (elongation). (task α #4239:
-    // reduction_of_area is now `= undef` optional → in `defaults`.)
+    // Ductile: 1 required member (elongation_at_break). (task α #4239:
+    // reduction_of_area is now `= undef` optional → in `defaults`.
+    // task β #4240: elongation renamed → elongation_at_break.)
     let ductile = module
         .trait_defs
         .iter()
@@ -460,8 +461,8 @@ fn remaining_five_traits_exist() {
         ductile
             .required_members
             .iter()
-            .any(|r| r.name == "elongation"),
-        "Ductile should have 'elongation' member"
+            .any(|r| r.name == "elongation_at_break"),
+        "Ductile should have 'elongation_at_break' member (β #4240 renamed from 'elongation')"
     );
     assert!(
         !ductile
