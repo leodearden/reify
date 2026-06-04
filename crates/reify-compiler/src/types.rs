@@ -275,6 +275,13 @@ pub struct CompiledPurpose {
     pub annotations: Vec<reify_ir::Annotation>,
     /// Block-level pragmas from the parsed declaration (e.g., `#solver(method="gradient")`).
     pub pragmas: Vec<reify_ast::Pragma>,
+    /// Byte span of the `purpose` keyword / declaration in the *declaring* module's source.
+    ///
+    /// Set to `SourceSpan::prelude()` (sentinel: start == end == u32::MAX) for purposes that
+    /// were merged from the prelude via `merge_prelude_purposes` (task-4016 ζ) — i.e., they
+    /// were not declared in the current module's source.  Doc-model builders use this to
+    /// distinguish user-declared purposes from globally-available stdlib purposes.
+    pub declaration_span: reify_core::SourceSpan,
 }
 
 /// Resolved `auto:` type-parameter substitutions for a compiled module, in

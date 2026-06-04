@@ -68,9 +68,14 @@ pub fn build_doc_model(compiled: &CompiledModule, source: &str) -> DocModel {
         items.push(lower_field(field));
     }
 
-    // 5. Purposes.
+    // 5. Purposes — skip those merged from the prelude (declaration_span is the
+    // prelude sentinel, start == end == u32::MAX).  Prelude-merged purposes are
+    // globally available for activation but were not declared in this module's
+    // source, so they must not appear in the module's doc.
     for p in &compiled.compiled_purposes {
-        items.push(lower_purpose(p, source));
+        if !p.declaration_span.is_prelude() {
+            items.push(lower_purpose(p, source));
+        }
     }
 
     // 6. Enums.
