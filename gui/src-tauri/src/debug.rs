@@ -14,8 +14,6 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde_json::Value;
-
 /// Core transport state: id-keyed oneshot channels used to match a
 /// `debug-request` emission with its `debug_response` reply.
 ///
@@ -39,7 +37,7 @@ impl DebugTransport {
     /// Allocate a new request id and insert the sender into `pending`.
     /// Returns `(id, receiver)` — the caller awaits the receiver to get the
     /// response, and the id is what the resolver passes back via resolve().
-    pub(crate) fn create_request(
+    pub fn create_request(
         &self,
     ) -> Result<(u64, tokio::sync::oneshot::Receiver<String>), String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -66,8 +64,14 @@ impl DebugTransport {
 
     /// Remove a pending entry on request timeout or emit failure (best-effort;
     /// ignores lock poisoning).
-    pub(crate) fn remove_pending(&self, id: u64) {
+    pub fn remove_pending(&self, id: u64) {
         self.pending.lock().ok().map(|mut m| m.remove(&id));
+    }
+}
+
+impl Default for DebugTransport {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -77,6 +81,8 @@ impl DebugTransport {
 
 #[cfg(feature = "gui")]
 use std::time::Duration;
+#[cfg(feature = "gui")]
+use serde_json::Value;
 #[cfg(feature = "gui")]
 use tauri::{AppHandle, Emitter, Runtime, Wry};
 
