@@ -100,6 +100,40 @@ fn render_list_of_ints_returns_format_display_string() {
     assert_eq!(render(list), Value::String("[1, 2]".to_string()));
 }
 
+/// Dimensionless scalar: `format_display_pair` returns an empty unit, so the
+/// `u.is_empty()` branch fires and no unit suffix is appended.
+/// Exercises the true-branch of `if u.is_empty() { v }` inside `interp_render`.
+#[test]
+fn render_dimensionless_scalar_returns_bare_number() {
+    let scalar = Value::Scalar {
+        si_value: 3.0,
+        dimension: DimensionVector::DIMENSIONLESS,
+    };
+    assert_eq!(
+        render(scalar),
+        Value::String("3".to_string()),
+        "__interp_render(dimensionless Scalar 3.0) must return \"3\" with no unit suffix"
+    );
+}
+
+/// Complex with a LENGTH dimension: `format_display_pair` yields a non-empty
+/// unit, so the pair arm joins `"{value} {unit}"`.
+/// Exercises the Complex branch of `interp_render`'s pair arm.
+#[test]
+fn render_complex_length_returns_unit_joined_form() {
+    // 0.003 m real + 0.004 m imaginary → display in mm: "3 + 4i mm"
+    let complex = Value::Complex {
+        re: 0.003,
+        im: 0.004,
+        dimension: DimensionVector::LENGTH,
+    };
+    assert_eq!(
+        render(complex),
+        Value::String("3 + 4i mm".to_string()),
+        "__interp_render(Complex 3+4i mm) must render via format_display_pair as \"3 + 4i mm\""
+    );
+}
+
 // ── Cycle 2: Undef determinacy pin ───────────────────────────────────────────
 
 /// Undef must render as the literal string "undef" (NOT "undefined") and must

@@ -1271,8 +1271,19 @@ fn eval_quantifier(
 /// - `Undef` → `"undef"` (the surface keyword; NOT `format_display`'s `"undefined"`)
 /// - `Scalar | Complex | Option(Some(_))` → `format_display_pair` joined
 ///   `"{value} {unit}"` when the unit is non-empty (e.g. `5 mm`); plain value
-///   when the unit is empty
+///   when the unit is empty (dimensionless scalars)
 /// - Everything else → `format_display` verbatim
+///
+/// # Nested Undef in composites
+///
+/// When `value` is a composite (e.g. `List`, `Map`, `Point`) whose *elements*
+/// contain `Undef`, those inner undefs are rendered by `format_display`, which
+/// emits `"undefined"` — **not** `"undef"`.  This divergence from the top-level
+/// case is intentional: PRD §3 specifies the `Undef → "undef"` rule only for
+/// the interpolation hole value itself, and `format_display` is the
+/// authoritative renderer for composite interiors.  A future revision could
+/// normalise the two spellings inside `format_display` if consistency becomes a
+/// requirement.
 fn interp_render(value: &Value) -> String {
     match value {
         Value::Undef => "undef".to_string(),
