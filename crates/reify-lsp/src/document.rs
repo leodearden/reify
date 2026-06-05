@@ -199,4 +199,91 @@ mod tests {
         assert_eq!(items.get(&uri_b).unwrap(), "bbb");
         assert_eq!(items.get(&uri_c).unwrap(), "ccc");
     }
+
+    // --- step-01: per-document parse cache ---
+
+    /// Two `parsed_module` calls on the same `DocumentState` return the SAME
+    /// `Arc` allocation — proving the parse is memoized (no re-parse) within a
+    /// single document version. `Arc::ptr_eq` is a deterministic stand-in for
+    /// "the parse ran only once".
+    #[test]
+    fn parsed_module_caches_parse() {
+        let mut store = DocumentStore::new();
+        let uri = test_uri("cache");
+        let source = "structure A {\n    param x: Scalar = 1mm\n}";
+        store.open(uri.clone(), source.to_string(), 1);
+        let doc = store.get(&uri).expect("document should exist");
+        let mp = reify_core::ModulePath::single("test");
+        let a = doc.parsed_module(mp.clone());
+        let b = doc.parsed_module(mp.clone());
+        assert!(
+            std::sync::Arc::ptr_eq(&a, &b),
+            "second parsed_module call should return the same cached Arc (cache hit)"
+        );
+        assert!(
+            !a.declarations.is_empty(),
+            "parsed module should have declarations for valid source"
+        );
+    }
+
+    /// The cached `ParsedModule` reflects the document text: a two-declaration
+    /// source yields two top-level declarations.
+    #[test]
+    fn parsed_module_reflects_text() {
+        let mut store = DocumentStore::new();
+        let uri = test_uri("reflect");
+        let source = "structure A {\n    param x: Scalar = 1mm\n}\nstructure B {\n    param y: Scalar = 2mm\n}";
+        store.open(uri.clone(), source.to_string(), 1);
+        let doc = store.get(&uri).expect("document should exist");
+        let parsed = doc.parsed_module(reify_core::ModulePath::single("test"));
+        assert_eq!(
+            parsed.declarations.len(),
+            2,
+            "cached parse should reflect the two top-level declarations in the text"
+        );
+    }
+
+    /// A version bump replaces the whole `DocumentState` (and its empty cache),
+    /// so the post-update parse is a DIFFERENT `Arc` allocation that reflects the
+    /// new text — the cache is keyed by document version by construction.
+    #[test]
+    fn update_invalidates_parse_cache() {
+        let mut store = DocumentStore::new();
+        let uri = test_uri("invalidate");
+        let mp = reify_core::ModulePath::single("test");
+
+        // v1: a single declaration.
+        store.open(
+            uri.clone(),
+            "structure A {\n    param x: Scalar = 1mm\n}".to_string(),
+            1,
+        );
+        let a = {
+            let doc = store.get(&uri).expect("document should exist at v1");
+            doc.parsed_module(mp.clone())
+        };
+        assert_eq!(a.declarations.len(), 1, "v1 has one declaration");
+
+        // v2: two declarations — fresh DocumentState with an empty cache.
+        store.update(
+            &uri,
+            "structure A {\n    param x: Scalar = 1mm\n}\nstructure B {\n    param y: Scalar = 2mm\n}"
+                .to_string(),
+            2,
+        );
+        let c = {
+            let doc = store.get(&uri).expect("document should exist at v2");
+            doc.parsed_module(mp.clone())
+        };
+
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &c),
+            "version bump must invalidate the cache (different Arc allocation)"
+        );
+        assert_eq!(
+            c.declarations.len(),
+            2,
+            "post-update cached parse should reflect the new text (two declarations)"
+        );
+    }
 }
