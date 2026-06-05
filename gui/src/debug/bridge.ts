@@ -658,6 +658,58 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { ok: true, path };
     },
 
+    wait_for: async (params) => {
+      const predicate = params.predicate;
+      if (predicate === null || typeof predicate !== 'object' || Array.isArray(predicate)) {
+        return { error: 'predicate {kind} required' };
+      }
+      const pred = predicate as Record<string, unknown>;
+      const kind = pred.kind;
+      const timeoutMs =
+        typeof params.timeout_ms === 'number' && params.timeout_ms > 0
+          ? params.timeout_ms
+          : 5000;
+
+      if (kind === 'selector') {
+        const testId = pred.testId;
+        if (typeof testId !== 'string' || testId === '') {
+          return { error: 'predicate.testId is required for selector kind' };
+        }
+        const state = (pred.state ?? 'visible') as 'visible' | 'gone';
+        const text = typeof pred.text === 'string' ? pred.text : undefined;
+        return pollUntil(buildSelectorPredicate({ testId, state, text }), timeoutMs);
+      }
+
+      if (kind === 'store') {
+        const path = pred.path;
+        const equals = pred.equals;
+        if (typeof path !== 'string' || path === '') {
+          return { error: 'predicate.path is required for store kind' };
+        }
+        // Build a snapshot object {engine, editor, selection, claude} and walk a
+        // dotted path against it. Snapshot is re-evaluated each poll tick via closure.
+        const getByPath = (root: Record<string, unknown>, dotted: string): unknown => {
+          return dotted.split('.').reduce<unknown>((acc, key) => {
+            if (acc !== null && typeof acc === 'object') {
+              return (acc as Record<string, unknown>)[key];
+            }
+            return undefined;
+          }, root);
+        };
+        return pollUntil(() => {
+          const snapshot: Record<string, unknown> = {
+            engine: ctx.stores.engine.state,
+            editor: ctx.stores.editor.state,
+            selection: ctx.stores.selection.state,
+            claude: ctx.stores.claude.state,
+          };
+          return Object.is(getByPath(snapshot, path), equals);
+        }, timeoutMs);
+      }
+
+      return { error: `unknown predicate kind: ${String(kind)}` };
+    },
+
     wait_for_selector: async (params) => {
       const testId = params.testId;
       if (typeof testId !== 'string' || testId === '') {
