@@ -11283,3 +11283,198 @@ fn staleness_api_cleared_after_successful_reload() {
         "no 'hot-reload-error' diagnostic must appear after a successful reload"
     );
 }
+
+// ── Task 4258: content/diagnostics one-snapshot invariant ──────────────────────
+
+/// (step-1 RED) After a failed live edit, `build_gui_state` must surface the
+/// FAILING buffer as `files[].content` so it is consistent with the
+/// `compile_diagnostics` line/col (which are computed against that buffer).
+///
+/// Today this fails because `source_map` is never updated on a failed edit, so
+/// `files[0].content` contains the last-good source rather than the edited buffer.
+#[test]
+fn build_gui_state_live_edit_failure_content_matches_diagnostics() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // (1) Load valid bracket source successfully.
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+
+    // (2) Produce a failing live edit: replace `thickness` in the box() call with an
+    //     unresolved name `bogus_thk` — this triggers a compile-phase
+    //     UnresolvedName error with line/col pointing into the edited buffer.
+    let edited = bracket_source().replace("box(width, height, thickness)", "box(width, height, bogus_thk)");
+    let result = session.update_source("bracket.ri", &edited);
+    assert!(result.is_err(), "edited source with unresolved name must return Err");
+
+    // (3) compile_failure should record a LiveEdit failure (compiled was Some before).
+    let failure = session
+        .compile_failure_for_test()
+        .expect("compile_failure must be set after failed update_source");
+    assert_eq!(
+        failure.kind,
+        CompileFailureKind::LiveEdit,
+        "failure kind must be LiveEdit when a prior good compile existed"
+    );
+
+    // (4) build_gui_state must return Ok (failure is surfaced via compile_diagnostics,
+    //     not as an Err return).
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must return Ok even after a failed live edit");
+
+    // (5) files must contain exactly one entry whose content == the edited (failing)
+    //     buffer — NOT the last-good source.
+    assert_eq!(
+        state.files.len(),
+        1,
+        "files must have exactly one entry after a failed live edit"
+    );
+    assert!(
+        state.files[0].content.contains("bogus_thk"),
+        "files[0].content must contain the failing buffer text 'bogus_thk' (was last-good); \
+         got first 100 chars: {:?}",
+        &state.files[0].content.chars().take(100).collect::<String>()
+    );
+    assert_eq!(
+        state.files[0].content, edited,
+        "files[0].content must equal the exact failing buffer"
+    );
+
+    // (6) compile_diagnostics must carry an Error mentioning 'bogus_thk'.
+    let error_diags: Vec<&_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "compile_diagnostics must have at least one Error; got: {:?}",
+        state.compile_diagnostics
+    );
+    let bogus_diag = error_diags
+        .iter()
+        .find(|d| d.message.contains("bogus_thk"))
+        .expect("at least one Error diagnostic must reference 'bogus_thk'");
+
+    // (7) The diagnostic's line (1-based) must index into files[0].content at a
+    //     line containing 'bogus_thk' — proving content and diagnostics are one
+    //     consistent snapshot.
+    let diag_line = bogus_diag.line as usize;
+    assert!(diag_line >= 1, "diagnostic line must be >= 1 (1-based)");
+    let source_lines: Vec<&str> = state.files[0].content.lines().collect();
+    assert!(
+        diag_line <= source_lines.len(),
+        "diagnostic line {} must be within files[0].content ({} lines)",
+        diag_line,
+        source_lines.len()
+    );
+    assert!(
+        source_lines[diag_line - 1].contains("bogus_thk"),
+        "line {} of files[0].content must contain 'bogus_thk'; got: {:?}",
+        diag_line,
+        source_lines[diag_line - 1]
+    );
+
+    // (8) meshes must be non-empty — last-good viewport is preserved.
+    assert!(
+        !state.meshes.is_empty(),
+        "meshes must remain non-empty after a failed live edit (last-good retained)"
+    );
+}
+
+/// (step-3 RED) After a cold-start failure (no prior successful compile),
+/// `build_gui_state` must surface the failing buffer as `files[].content` so it
+/// is consistent with `compile_diagnostics`.
+///
+/// Today this fails because the ColdStart early-return branch returns
+/// `files: Vec::new()` — an agent sees diagnostics it cannot index into any source.
+#[test]
+fn build_gui_state_cold_start_failure_surfaces_failing_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    // Fresh session — no prior successful load, so compiled is None.
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // (1) Attempt a cold-start load with a failing source: replace `thickness` in the
+    //     box() call with an unresolved name `bogus_thk`.
+    let bad = bracket_source().replace("box(width, height, thickness)", "box(width, height, bogus_thk)");
+    let result = session.load_from_source(&bad, "bracket");
+    assert!(result.is_err(), "bad source must return Err from load_from_source");
+
+    // (2) compile_failure should record a ColdStart failure (compiled was None).
+    let failure = session
+        .compile_failure_for_test()
+        .expect("compile_failure must be set after failed load_from_source");
+    assert_eq!(
+        failure.kind,
+        CompileFailureKind::ColdStart,
+        "failure kind must be ColdStart when no prior good compile existed"
+    );
+
+    // (3) build_gui_state must return Ok.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must return Ok even after a cold-start failure");
+
+    // (4) files must be NON-empty and carry the failing buffer — NOT empty.
+    assert!(
+        !state.files.is_empty(),
+        "files must be non-empty after a cold-start failure so diagnostics can be indexed \
+         (currently returns Vec::new())"
+    );
+    assert_eq!(
+        state.files[0].path, "bracket.ri",
+        "files[0].path must equal the module key 'bracket.ri'"
+    );
+    assert_eq!(
+        state.files[0].content, bad,
+        "files[0].content must equal the exact failing buffer"
+    );
+    assert!(
+        state.files[0].content.contains("bogus_thk"),
+        "files[0].content must contain the failing buffer text 'bogus_thk'"
+    );
+
+    // (5) compile_diagnostics must carry an Error referencing 'bogus_thk'.
+    let error_diags: Vec<&_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "compile_diagnostics must have at least one Error on cold-start failure; got: {:?}",
+        state.compile_diagnostics
+    );
+    let bogus_diag = error_diags
+        .iter()
+        .find(|d| d.message.contains("bogus_thk"))
+        .expect("at least one Error diagnostic must reference 'bogus_thk'");
+
+    // (6) The diagnostic's line must index into files[0].content at a line with 'bogus_thk'.
+    let diag_line = bogus_diag.line as usize;
+    assert!(diag_line >= 1, "diagnostic line must be >= 1 (1-based)");
+    let source_lines: Vec<&str> = state.files[0].content.lines().collect();
+    assert!(
+        diag_line <= source_lines.len(),
+        "diagnostic line {} must be within files[0].content ({} lines)",
+        diag_line,
+        source_lines.len()
+    );
+    assert!(
+        source_lines[diag_line - 1].contains("bogus_thk"),
+        "line {} of files[0].content must contain 'bogus_thk'; got: {:?}",
+        diag_line,
+        source_lines[diag_line - 1]
+    );
+
+    // (7) meshes must be empty — no last-good module on cold start.
+    assert!(
+        state.meshes.is_empty(),
+        "meshes must be empty after a cold-start failure (no last-good module)"
+    );
+}

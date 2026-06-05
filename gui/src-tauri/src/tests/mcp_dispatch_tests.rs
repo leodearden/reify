@@ -459,3 +459,164 @@ fn capstone_engine_state_json_after_failing_reload_shows_stale_with_last_good_me
         "mesh count after failing reload must equal pre-failure count (last-good retained)"
     );
 }
+
+// ── Task 4258: content/diagnostics one-snapshot invariant (capstone) ──────────
+
+/// (step-5 RED→capstone) After a sequence of failing edits, `engine_state_json`
+/// must:
+///   (a) After editA: return `files[0].content` containing `bogus_thk` and
+///       `compile_diagnostics` referencing `bogus_thk`.
+///   (b) After editB: return `files[0].content` containing `mystery_vol`
+///       (NOT `bogus_thk`), and `compile_diagnostics` referencing `mystery_vol`
+///       but NOT `bogus_thk` — proving diagnostics are fully replaced across
+///       failed re-evals (Observation 2 regression guard).
+///   (c) After a successful fix: `compile_diagnostics` empty, `stale` == false,
+///       `files[0].content` == original bracket source, meshes non-empty.
+///
+/// RED before step-2 (content lags last-good on failing edits).
+/// GREEN after step-2 + step-4.
+#[test]
+fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics() {
+    let engine = make_engine();
+
+    // editA: replace `box(...)` call to introduce unresolved name `bogus_thk`
+    let edit_a = bracket_source().replace(
+        "box(width, height, thickness)",
+        "box(width, height, bogus_thk)",
+    );
+    // editB: replace volume computation to introduce unresolved name `mystery_vol`
+    let edit_b = bracket_source().replace(
+        "width * height * thickness",
+        "width * height * mystery_vol",
+    );
+
+    // ── (a) Apply failing editA ────────────────────────────────────────────────
+    let result_a = crate::commands::update_source_impl(&engine, "bracket.ri", &edit_a);
+    assert!(result_a.is_err(), "editA must fail (unresolved name bogus_thk)");
+
+    let state_a = {
+        let mut session = engine.lock().unwrap();
+        engine_state_json(&mut session).expect("engine_state_json must succeed after editA")
+    };
+
+    // stale must be true, files must carry editA's buffer.
+    assert_eq!(
+        state_a["stale"],
+        serde_json::Value::Bool(true),
+        "stale must be true after editA"
+    );
+    let files_a = state_a["files"].as_array().expect("files must be an array after editA");
+    assert_eq!(files_a.len(), 1, "files must have exactly one entry after editA");
+    let content_a = files_a[0]["content"].as_str().expect("files[0].content must be a string after editA");
+    assert!(
+        content_a.contains("bogus_thk"),
+        "files[0].content after editA must contain 'bogus_thk'; got: {:?}",
+        &content_a.chars().take(120).collect::<String>()
+    );
+
+    // compile_diagnostics must reference bogus_thk.
+    let diags_a = state_a["compile_diagnostics"]
+        .as_array()
+        .expect("compile_diagnostics must be an array after editA");
+    assert!(
+        !diags_a.is_empty(),
+        "compile_diagnostics must be non-empty after editA"
+    );
+    assert!(
+        diags_a.iter().any(|d| d["message"].as_str().map_or(false, |m| m.contains("bogus_thk"))),
+        "compile_diagnostics after editA must reference 'bogus_thk'; got: {:?}", diags_a
+    );
+
+    // ── (b) Apply failing editB ────────────────────────────────────────────────
+    let result_b = crate::commands::update_source_impl(&engine, "bracket.ri", &edit_b);
+    assert!(result_b.is_err(), "editB must fail (unresolved name mystery_vol)");
+
+    let state_b = {
+        let mut session = engine.lock().unwrap();
+        engine_state_json(&mut session).expect("engine_state_json must succeed after editB")
+    };
+
+    // stale must still be true.
+    assert_eq!(
+        state_b["stale"],
+        serde_json::Value::Bool(true),
+        "stale must be true after editB"
+    );
+
+    // files must now carry editB's buffer (NOT editA's).
+    let files_b = state_b["files"].as_array().expect("files must be an array after editB");
+    assert_eq!(files_b.len(), 1, "files must have exactly one entry after editB");
+    let content_b = files_b[0]["content"].as_str().expect("files[0].content must be a string after editB");
+    assert!(
+        content_b.contains("mystery_vol"),
+        "files[0].content after editB must contain 'mystery_vol'; got: {:?}",
+        &content_b.chars().take(120).collect::<String>()
+    );
+    assert!(
+        !content_b.contains("bogus_thk"),
+        "files[0].content after editB must NOT contain 'bogus_thk' (editA content must be gone)"
+    );
+
+    // compile_diagnostics must reference mystery_vol but NOT bogus_thk
+    // (Observation 2: no stale diagnostic survives a later failed re-eval).
+    let diags_b = state_b["compile_diagnostics"]
+        .as_array()
+        .expect("compile_diagnostics must be an array after editB");
+    assert!(
+        !diags_b.is_empty(),
+        "compile_diagnostics must be non-empty after editB"
+    );
+    assert!(
+        diags_b.iter().any(|d| d["message"].as_str().map_or(false, |m| m.contains("mystery_vol"))),
+        "compile_diagnostics after editB must reference 'mystery_vol'; got: {:?}", diags_b
+    );
+    assert!(
+        !diags_b.iter().any(|d| d["message"].as_str().map_or(false, |m| m.contains("bogus_thk"))),
+        "compile_diagnostics after editB must NOT reference 'bogus_thk' (stale diag must be gone)"
+    );
+
+    // ── (c) Apply a successful fix (original bracket_source) ──────────────────
+    let result_c = crate::commands::update_source_impl(&engine, "bracket.ri", bracket_source());
+    assert!(result_c.is_ok(), "successful fix must return Ok");
+
+    let state_c = {
+        let mut session = engine.lock().unwrap();
+        engine_state_json(&mut session).expect("engine_state_json must succeed after fix")
+    };
+
+    // stale must be false, reload_error must be null.
+    assert_eq!(
+        state_c["stale"],
+        serde_json::Value::Bool(false),
+        "stale must be false after successful fix"
+    );
+    assert!(
+        state_c["reload_error"].is_null(),
+        "reload_error must be null after successful fix"
+    );
+
+    // compile_diagnostics must be empty (prior failure diagnostics fully cleared).
+    let diags_c = state_c["compile_diagnostics"]
+        .as_array()
+        .expect("compile_diagnostics must be an array after fix");
+    assert!(
+        diags_c.is_empty(),
+        "compile_diagnostics must be empty after successful fix; got: {:?}", diags_c
+    );
+
+    // files[0].content must equal the original bracket source.
+    let files_c = state_c["files"].as_array().expect("files must be an array after fix");
+    assert_eq!(files_c.len(), 1, "files must have exactly one entry after fix");
+    let content_c = files_c[0]["content"].as_str().expect("files[0].content must be a string after fix");
+    assert_eq!(
+        content_c, bracket_source(),
+        "files[0].content after fix must equal the original bracket source"
+    );
+
+    // meshes must be non-empty (successfully re-compiled).
+    let meshes_c = state_c["meshes"].as_array().expect("meshes must be an array after fix");
+    assert!(
+        !meshes_c.is_empty(),
+        "meshes must be non-empty after successful fix"
+    );
+}
