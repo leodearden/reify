@@ -17,6 +17,7 @@
 use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_test_support::collect_value_ref_members;
 
 /// Look up a structure template by name within the `std/solver/elastic` module.
 ///
@@ -492,21 +493,6 @@ fn elastic_options_shell_param_defaults_match_spec() {
 
 // ─── step-9: ElasticOptions positivity constraints ───────────────────────────
 
-/// Recursively collect ValueRef member names from a compiled expression tree.
-/// Mirrors `collect_value_ref_members` in `stdlib_loader_tests.rs:14-23`.
-fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
-    match &expr.kind {
-        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
-        CompiledExprKind::BinOp { left, right, .. } => {
-            let mut refs = collect_value_ref_members(left);
-            refs.extend(collect_value_ref_members(right));
-            refs
-        }
-        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
-        _ => vec![],
-    }
-}
-
 /// `ElasticOptions` enforces strict-positivity invariants on four params via
 /// structure-level constraint declarations:
 ///
@@ -570,7 +556,7 @@ fn elastic_options_constrains_positivity_invariants() {
             // emit `Real(0.0)` here.
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt || !collect_value_ref_members(left).contains(required) {
+                    if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
                         return false;
                     }
                     match &right.kind {
@@ -632,7 +618,7 @@ fn elastic_options_caps_cg_tolerance_below_one() {
         // but the name + op check still passes.
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Lt || !collect_value_ref_members(left).contains(&"cg_tolerance") {
+                if *op != BinOp::Lt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "cg_tolerance") {
                     return false;
                 }
                 match &right.kind {
@@ -675,7 +661,7 @@ fn elastic_options_constrains_shell_threshold_below_one() {
         // future numeric-promotion change could legitimately emit Real(1.0).
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Lt || !collect_value_ref_members(left).contains(&"shell_threshold")
+                if *op != BinOp::Lt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "shell_threshold")
                 {
                     return false;
                 }
@@ -819,7 +805,7 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
             // changed to a negative value but the name + op check still passes.
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Ge || !collect_value_ref_members(left).contains(required) {
+                    if *op != BinOp::Ge || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
                         return false;
                     }
                     match &right.kind {
