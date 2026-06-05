@@ -122,6 +122,11 @@ structure def ThreadSpec {
     param pitch : Length
     param thread_class : ThreadClass
     param tightening : ThreadTighteningDirection = ThreadTighteningDirection.Clockwise
+
+    let minor_diameter = nominal_diameter - pitch * 1.0825
+    let pitch_diameter = nominal_diameter - pitch * 0.6495
+    let tap_drill = nominal_diameter - pitch
+    let clearance_hole = nominal_diameter + pitch * 0.5
 }
 
 structure def Holder {
