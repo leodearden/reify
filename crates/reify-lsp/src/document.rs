@@ -74,6 +74,21 @@ impl DocumentState {
         *cache = Some(Arc::clone(&parsed));
         parsed
     }
+
+    /// Test-only peek at the parse cache WITHOUT forcing a parse.
+    ///
+    /// Returns the currently-cached parse, or `None` if the cache is still cold
+    /// for this document version. Unlike [`DocumentState::parsed_module`] this
+    /// never fills the cache, so a test can observe whether *something else*
+    /// (e.g. a provider handler) populated it as a side effect — proving the
+    /// provider consumed the shared cache rather than re-parsing internally.
+    #[cfg(test)]
+    pub(crate) fn peek_cached_parse(&self) -> Option<Arc<ParsedModule>> {
+        self.parsed_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
 }
 
 /// Stores open document contents, keyed by URI.

@@ -1171,6 +1171,67 @@ mod tests {
         );
     }
 
+    /// A provider handler must CONSUME the per-document parse cache — i.e. fill
+    /// it as a side effect — rather than re-parsing the document internally.
+    ///
+    /// The big integration test above proves the cache mechanism and that the
+    /// providers return correct results, but those are independent: a provider
+    /// that ignored the cache and re-parsed via `AnalysisContext::new` would
+    /// still pass every assertion there. This test ties the wiring to the cache:
+    /// on a freshly-opened document whose cache is cold, running hover must leave
+    /// the cache populated. A regression that reverted hover to internal parsing
+    /// would leave the cache cold here and fail — guarding the refactor's core
+    /// performance goal (one parse per edit shared across providers).
+    #[tokio::test]
+    async fn hover_handler_consumes_per_document_parse_cache() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        // After did_open the per-document cache is cold: diagnostics parse via a
+        // separate path and the cache fills lazily on the first provider request.
+        // `doc` is an Arc clone of the same DocumentState the handler will fetch,
+        // so it observes the interior-mutable cache the handler fills.
+        let doc = {
+            let state = server.state().read().await;
+            state
+                .documents
+                .get(&uri)
+                .expect("doc present after did_open")
+        };
+        assert!(
+            doc.peek_cached_parse().is_none(),
+            "cache must be cold before any provider runs"
+        );
+
+        // Exercise a provider through the real handler.
+        server
+            .hover(HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: Position::new(1, 10), // 'width'
+                },
+                work_done_progress_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // The handler must have populated the cache (consumed it) — not re-parsed
+        // internally and discarded the result.
+        let filled = doc.peek_cached_parse();
+        assert!(
+            filled.is_some(),
+            "the hover handler must populate the per-document parse cache, not re-parse internally"
+        );
+
+        // And the parse the handler cached is exactly what later reads reuse —
+        // a single shared allocation per edit.
+        assert!(
+            Arc::ptr_eq(filled.as_ref().unwrap(), &doc.parsed_module()),
+            "subsequent parsed_module() must reuse the handler-populated cache (one parse per edit)"
+        );
+    }
+
     // --- task 4207 η: document_symbol handler tests ---
 
     #[tokio::test]
