@@ -98,6 +98,24 @@ pub struct ManifoldKernel {
     /// Monotonic id counter; first allocated handle is `1` (matches OCCT).
     /// `0` and `u64::MAX` are reserved (the latter is `GeometryHandleId::INVALID`).
     next_id: u64,
+    /// Per-parent-handle memoization cache for `extract_faces` results.
+    ///
+    /// Mirrors `OcctKernel`'s `extracted_faces` field
+    /// (`crates/reify-kernel-occt/src/lib.rs:460-461` + the cache-first /
+    /// mint-then-insert pattern at `:677-710`).  Maps parent handle id →
+    /// the `Vec<GeometryHandleId>` returned by the first `extract_faces` call
+    /// for that parent; subsequent calls return `cached.clone()` so ids are
+    /// stable across calls (required for `resolve_unique_by_attribute` to
+    /// match seeded attributes to candidate handles).
+    ///
+    /// # No invalidation needed
+    ///
+    /// Unlike OCCT (which invalidates on `with_warm_state` when its shape table
+    /// is swapped), `ManifoldKernel` has no warm-state/reset path and mints
+    /// handle ids monotonically over an **append-only** `shapes` store.  A
+    /// given parent handle's mesh is immutable for the kernel's lifetime, so
+    /// its coalesced faces never change — caching once is always correct.
+    extracted_faces: HashMap<u64, Vec<GeometryHandleId>>,
 }
 
 impl ManifoldKernel {
@@ -107,6 +125,7 @@ impl ManifoldKernel {
             shapes: HashMap::new(),
             sub_shapes: HashMap::new(),
             next_id: 1,
+            extracted_faces: HashMap::new(),
         }
     }
 
@@ -644,7 +663,7 @@ impl GeometryKernel for ManifoldKernel {
         })
     }
     /// Extract the mesh faces of the stored Manifold as coalesced planar-face
-    /// sub-handles (task-4262 step-2).
+    /// sub-handles (task-4262 steps 2 + 4).
     ///
     /// # Coplanar-triangle coalescing
     ///
@@ -658,15 +677,31 @@ impl GeometryKernel for ManifoldKernel {
     /// this yields **6** sub-handles — matching OCCT's BRep box face count and
     /// resolving PRD Open Question §10.5 (`12 ≠ 6` semantic gap).
     ///
-    /// Note: IDs are still freshly minted on every call at this step.
-    /// Step-4 adds a per-parent-handle memoization cache so repeated calls
-    /// return the same IDs (required for `resolve_unique_by_attribute`).
+    /// # Per-parent memoization (idempotency contract)
+    ///
+    /// The first call for a given `handle` mints fresh ids for the coalesced
+    /// faces and caches them in [`Self::extracted_faces`].  Subsequent calls
+    /// with the same `handle` return `cached.clone()` immediately — the ids
+    /// and their order are **identical** across calls (same contract as OCCT's
+    /// `extracted_faces` cache, `crates/reify-kernel-occt/src/lib.rs:677-710`).
+    /// This stability is required for `resolve_unique_by_attribute` to match
+    /// seeded attributes (recorded against the first-call ids) to the candidate
+    /// ids produced at selector-eval time.
+    ///
+    /// No cache invalidation is needed: `ManifoldKernel` has no warm-state
+    /// swap and mints ids monotonically over an append-only `shapes` store, so
+    /// a parent handle's coalesced faces never change.
     ///
     /// An empty or degenerate mesh yields `Ok(empty vec)`.
     fn extract_faces(
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        // Cache-first: return the previously-minted ids if available.
+        if let Some(cached) = self.extracted_faces.get(&handle.0) {
+            return Ok(cached.clone());
+        }
+
         // Read the parent mesh, dropping the immutable borrow before the
         // mutable store_sub_shape calls below.
         let (verts, tris) = {
@@ -683,6 +718,8 @@ impl GeometryKernel for ManifoldKernel {
         for group in groups {
             faces.push(self.store_sub_shape(SubShape::Face(group)));
         }
+        // Memoize: subsequent calls return the cached ids unchanged.
+        self.extracted_faces.insert(handle.0, faces.clone());
         Ok(faces)
     }
 
