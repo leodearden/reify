@@ -312,3 +312,78 @@ fn skeleton_pass_produces_no_spurious_parametric_alias_info_diagnostics() {
         spurious
     );
 }
+
+// ─── task-4342 step-3b: fn-returned struct carries lets in skeleton ────────────
+
+const TOL_SRC: &str = r#"
+module test.tol
+
+structure def Tol {
+    param nominal      : Real = 0.0
+    param upper_dev    : Real = 0.001
+    let upper_limit    = nominal + upper_dev
+}
+
+pub fn make_tol() -> Tol { Tol(5.0, 0.02) }
+"#;
+
+/// step_3b RED: a same-module fn-returned struct with a sibling-referencing
+/// derived let must produce a StructureInstanceCtor that carries `lets` AND
+/// whose let expr is NOT poison (result_type != Type::Error).
+///
+/// RED on current base: `lets` is Vec::new() (build_structure_def_skeleton does
+/// not yet attach Let cells — step_4 will fix this).
+#[test]
+fn fn_returned_struct_ctor_carries_non_poison_lets() {
+    let module = reify_test_support::helpers::compile_source_with_stdlib(TOL_SRC);
+
+    // The module must compile without errors.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "Tol module should compile without errors; got: {:#?}",
+        errors
+    );
+
+    // find make_tol in compiled functions
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_tol")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `make_tol` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    // The fn body must be a StructureInstanceCtor.
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, lets, .. } => {
+            assert_eq!(type_name, "Tol", "fn body ctor type_name must be Tol");
+            // RED: currently lets is Vec::new() because step_4 skeleton doesn't attach lets.
+            assert_eq!(
+                lets.len(), 1,
+                "fn-returned Tol ctor must carry 1 let (upper_limit); got {} lets: {:?}",
+                lets.len(),
+                lets.iter().map(|(n, _)| n).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                lets[0].0, "upper_limit",
+                "let member name must be upper_limit"
+            );
+            // The let expr must not be poison — the skeleton must register sibling
+            // params before compiling let exprs so the sibling refs resolve.
+            assert_ne!(
+                lets[0].1.result_type,
+                Type::Error,
+                "let expr result_type must not be Error (sibling refs must resolve in skeleton)"
+            );
+        }
+        other => panic!("make_tol body should be StructureInstanceCtor; got: {:?}", other),
+    }
+}

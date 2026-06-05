@@ -4658,4 +4658,135 @@ pub structure Rack {
             compiled_arms[1].patterns,
         );
     }
+
+    // ── task-4342 step-3a: StructureInstanceCtor.lets collected at lowering ───
+
+    /// Build a `TopologyTemplate` with both Param and Let value_cells.
+    /// Params: nominal (Real), upper_deviation (Real), lower_deviation (Real).
+    /// Lets:   upper_limit = ValueRef("nominal") + ValueRef("upper_deviation")
+    ///         lower_limit = ValueRef("nominal") - ValueRef("lower_deviation")
+    fn sct_template_with_lets(
+        name: &str,
+        params: &[(&str, Option<CompiledExpr>)],
+        lets: &[(&str, CompiledExpr)],
+    ) -> crate::types::TopologyTemplate {
+        let mut value_cells: Vec<crate::types::ValueCellDecl> = params
+            .iter()
+            .map(|(pname, default)| crate::types::ValueCellDecl {
+                id: ValueCellId::new(name, *pname),
+                kind: crate::types::ValueCellKind::Param,
+                visibility: crate::types::Visibility::Public,
+                is_aux: false,
+                cell_type: Type::Real,
+                default_expr: default.clone(),
+                solver_hints: vec![],
+                span: SourceSpan::prelude(),
+            })
+            .collect();
+        for (lname, let_expr) in lets {
+            value_cells.push(crate::types::ValueCellDecl {
+                id: ValueCellId::new(name, *lname),
+                kind: crate::types::ValueCellKind::Let,
+                visibility: crate::types::Visibility::Public,
+                is_aux: false,
+                cell_type: let_expr.result_type.clone(),
+                default_expr: Some(let_expr.clone()),
+                solver_hints: vec![],
+                span: SourceSpan::prelude(),
+            });
+        }
+        crate::types::TopologyTemplate {
+            name: name.to_string(),
+            doc: None,
+            entity_kind: crate::types::EntityKind::Structure,
+            visibility: crate::types::Visibility::Public,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells,
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: std::collections::HashSet::new(),
+            objective: None,
+            meta: std::collections::HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+            assoc_fns: vec![],
+            assoc_types: vec![],
+        }
+    }
+
+    /// step_3a RED: compiling a FunctionCall to a template with Let cells must
+    /// produce a StructureInstanceCtor whose `lets` list the Let members in
+    /// declaration order with non-empty compiled exprs.
+    ///
+    /// RED on current base: `lets` is Vec::new() (step_4 will populate it).
+    #[test]
+    fn structure_def_with_let_cells_lowering_emits_lets_in_ctor() {
+        // Build a DimensionalTolerance-shaped template:
+        //   param nominal, param upper_deviation
+        //   let upper_limit = ValueRef(nominal) + ValueRef(upper_deviation)
+        let ref_nominal =
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "nominal"), Type::Real);
+        let ref_upper_dev =
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "upper_deviation"), Type::Real);
+        let upper_limit_expr =
+            CompiledExpr::binop(BinOp::Add, ref_nominal.clone(), ref_upper_dev.clone(), Type::Real);
+
+        let tmpl = sct_template_with_lets(
+            "DimTol",
+            &[
+                ("nominal", None),
+                ("upper_deviation", None),
+            ],
+            &[("upper_limit", upper_limit_expr.clone())],
+        );
+
+        let mut registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        registry.insert("DimTol".to_string(), &tmpl);
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        // Call DimTol(5.0, 0.02) — both params supplied as positional args.
+        let result = compile_expr(
+            &call_expr("DimTol", vec![num_expr(5.0), num_expr(0.02)]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        // Must lower to StructureInstanceCtor.
+        match &result.kind {
+            CompiledExprKind::StructureInstanceCtor { ordered_args, defaults, lets, .. } => {
+                assert_eq!(ordered_args.len(), 2, "both params supplied as ordered_args");
+                assert!(defaults.is_empty(), "no uncovered defaults");
+                // RED: currently lets is Vec::new() because step_4 is not yet done.
+                assert_eq!(
+                    lets.len(), 1,
+                    "one Let cell (upper_limit) must be present in the ctor; got {} lets: {:?}",
+                    lets.len(),
+                    lets.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                );
+                assert_eq!(lets[0].0, "upper_limit", "Let member name must be upper_limit");
+                // The let expr must be non-trivial (not just Undef or Error).
+                assert_ne!(
+                    lets[0].1.result_type,
+                    Type::Error,
+                    "let expr result_type must not be Error (should be Real)"
+                );
+            }
+            other => panic!("expected StructureInstanceCtor, got {:?}", other),
+        }
+    }
 }
