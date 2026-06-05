@@ -97,7 +97,7 @@ structure S {
     );
 
     // Hermetic eval: constant-hole case must return Value::String("x=2").
-    let result = eval_expr(&expr, &EvalContext::simple(&ValueMap::new()));
+    let result = eval_expr(expr, &EvalContext::simple(&ValueMap::new()));
     assert_eq!(
         result,
         Value::String("x=2".into()),
