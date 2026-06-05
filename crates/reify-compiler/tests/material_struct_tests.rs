@@ -2,7 +2,7 @@
 //! `stdlib/materials_mechanical.ri` — task 1876.
 //!
 //! The task promotes `Material` from a trait to a concrete structure carrying
-//! fields `name : String`, `density : Real`, and `youngs_modulus : Real`. The
+//! fields `name : String`, `density : Density`, and `youngs_modulus : Pressure`. The
 //! original trait-level contract has been renamed to `MaterialSpec` so that
 //! the name `Material` is free to bind the new struct. These tests exercise
 //! the struct's surface: presence in the stdlib, type-resolution behaviour
@@ -13,14 +13,14 @@
 
 use reify_compiler::{EntityKind, stdlib_loader};
 use reify_test_support::compile_source_with_stdlib;
-use reify_core::{Severity, Type};
+use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::CompiledExprKind;
 
 // ─── step-3: canonical Material struct is present in the stdlib ─────────────
 
 /// The canonical `Material` struct must appear as a Structure template in the
-/// stdlib with exactly three params — `name : String`, `density : Real`, and
-/// `youngs_modulus : Real` — and none of the params may declare a default.
+/// stdlib with exactly three params — `name : String`, `density : Density`, and
+/// `youngs_modulus : Pressure` — and none of the params may declare a default.
 /// Callers are expected to supply values at construction.
 #[test]
 fn material_struct_present_in_stdlib() {
@@ -58,10 +58,22 @@ fn material_struct_present_in_stdlib() {
     );
 
     // Check each expected (name, type) pair is present.
-    let expected: &[(&str, reify_core::Type)] = &[
-        ("name", reify_core::Type::String),
-        ("density", reify_core::Type::Real),
-        ("youngs_modulus", reify_core::Type::Real),
+    // density → Density (DimensionVector::MASS_DENSITY), youngs_modulus → Pressure
+    // (DimensionVector::PRESSURE), per task #3111 tightening.
+    let expected: &[(&str, Type)] = &[
+        ("name", Type::String),
+        (
+            "density",
+            Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        ),
+        (
+            "youngs_modulus",
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
     ];
     for (expected_name, expected_type) in expected {
         let cell = param_cells

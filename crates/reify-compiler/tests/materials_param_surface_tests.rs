@@ -551,8 +551,9 @@ fn fatigue_rated_subset_fatigue_limit_only_is_clean() {
 }
 
 /// FatigueRated trait shape: fatigue_limit and fatigue_strength_at must live in
-/// defaults with type Real; fatigue_cycles must live in defaults with type Int;
+/// defaults with type Pressure; fatigue_cycles must live in defaults with type Int;
 /// none of the three appear in required_members.
+/// (task #3111: fatigue_limit and fatigue_strength_at tightened from Real to Pressure.)
 ///
 /// RED: stdlib FatigueRated still has required `endurance_limit` — new params absent.
 #[test]
@@ -574,7 +575,7 @@ fn fatigue_rated_optional_params_in_defaults() {
         );
     }
 
-    // fatigue_limit must be in defaults with Type::Real.
+    // fatigue_limit must be in defaults with Pressure type (task #3111).
     let fl = fatigue
         .defaults
         .iter()
@@ -583,14 +584,16 @@ fn fatigue_rated_optional_params_in_defaults() {
     match &fl.kind {
         DefaultKind::Param { cell_type, .. } => assert_eq!(
             *cell_type,
-            Type::Real,
-            "fatigue_limit should have type Real, got {:?}",
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+            "fatigue_limit should have Pressure type, got {:?}",
             cell_type
         ),
         other => panic!("expected DefaultKind::Param for fatigue_limit, got {:?}", other),
     }
 
-    // fatigue_strength_at must be in defaults with Type::Real.
+    // fatigue_strength_at must be in defaults with Pressure type (task #3111).
     let fsa = fatigue
         .defaults
         .iter()
@@ -599,8 +602,10 @@ fn fatigue_rated_optional_params_in_defaults() {
     match &fsa.kind {
         DefaultKind::Param { cell_type, .. } => assert_eq!(
             *cell_type,
-            Type::Real,
-            "fatigue_strength_at should have type Real, got {:?}",
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+            "fatigue_strength_at should have Pressure type, got {:?}",
             cell_type
         ),
         other => panic!(
@@ -609,7 +614,7 @@ fn fatigue_rated_optional_params_in_defaults() {
         ),
     }
 
-    // fatigue_cycles must be in defaults with Type::Int.
+    // fatigue_cycles must remain in defaults with Type::Int (not a Real placeholder).
     let fc = fatigue
         .defaults
         .iter()
@@ -682,7 +687,8 @@ fn impact_resistant_both_impact_params_is_clean() {
 }
 
 /// ImpactResistant trait shape: charpy_impact and izod_impact must live in defaults
-/// with type Real; neither in required_members; impact_energy absent.
+/// with type Energy; neither in required_members; impact_energy absent.
+/// (task #3111: charpy_impact and izod_impact tightened from Real to Energy.)
 ///
 /// RED: stdlib ImpactResistant still has required `impact_energy` — new params absent.
 #[test]
@@ -702,7 +708,7 @@ fn impact_resistant_optional_params_in_defaults() {
         );
     }
 
-    // charpy_impact must be in defaults with Type::Real.
+    // charpy_impact must be in defaults with Energy type (task #3111).
     let ci = impact
         .defaults
         .iter()
@@ -711,14 +717,16 @@ fn impact_resistant_optional_params_in_defaults() {
     match &ci.kind {
         DefaultKind::Param { cell_type, .. } => assert_eq!(
             *cell_type,
-            Type::Real,
-            "charpy_impact should have type Real, got {:?}",
+            Type::Scalar {
+                dimension: DimensionVector::ENERGY,
+            },
+            "charpy_impact should have Energy type, got {:?}",
             cell_type
         ),
         other => panic!("expected DefaultKind::Param for charpy_impact, got {:?}", other),
     }
 
-    // izod_impact must be in defaults with Type::Real.
+    // izod_impact must be in defaults with Energy type (task #3111).
     let ii = impact
         .defaults
         .iter()
@@ -727,10 +735,104 @@ fn impact_resistant_optional_params_in_defaults() {
     match &ii.kind {
         DefaultKind::Param { cell_type, .. } => assert_eq!(
             *cell_type,
-            Type::Real,
-            "izod_impact should have type Real, got {:?}",
+            Type::Scalar {
+                dimension: DimensionVector::ENERGY,
+            },
+            "izod_impact should have Energy type, got {:?}",
             cell_type
         ),
         other => panic!("expected DefaultKind::Param for izod_impact, got {:?}", other),
+    }
+}
+
+// ── §6.2 Optional param type pins — Elastic.shear_modulus and Strong.compressive_strength ──
+
+/// Pin that Elastic.shear_modulus optional default has Pressure type after task #3111.
+/// Mirrors the temperature_dependent_has_reference_temperature_default_with_temperature_type
+/// pattern (Type::Scalar{DimensionVector::TEMPERATURE}).
+///
+/// RED: stdlib Elastic still has shear_modulus : Real → cell_type is Real, not PRESSURE.
+#[test]
+fn elastic_shear_modulus_default_is_pressure_type() {
+    let module = load_stdlib_module();
+
+    let elastic = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Elastic")
+        .expect("expected 'Elastic' trait in compiled module");
+
+    // shear_modulus must be in defaults (optional = undef), not required_members.
+    assert!(
+        !elastic
+            .required_members
+            .iter()
+            .any(|r| r.name == "shear_modulus"),
+        "shear_modulus should be optional (= undef), not a required member"
+    );
+
+    let shear = elastic
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("shear_modulus"))
+        .expect("expected 'shear_modulus' in Elastic.defaults");
+    match &shear.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+            "shear_modulus should have Pressure type (task #3111), got {:?}",
+            cell_type
+        ),
+        other => panic!(
+            "expected DefaultKind::Param for shear_modulus, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Pin that Strong.compressive_strength optional default has Pressure type after task #3111.
+/// Mirrors the temperature_dependent_has_reference_temperature_default_with_temperature_type
+/// pattern (Type::Scalar{DimensionVector::TEMPERATURE}).
+///
+/// RED: stdlib Strong still has compressive_strength : Real → cell_type is Real, not PRESSURE.
+#[test]
+fn strong_compressive_strength_default_is_pressure_type() {
+    let module = load_stdlib_module();
+
+    let strong = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Strong")
+        .expect("expected 'Strong' trait in compiled module");
+
+    // compressive_strength must be in defaults (optional = undef), not required_members.
+    assert!(
+        !strong
+            .required_members
+            .iter()
+            .any(|r| r.name == "compressive_strength"),
+        "compressive_strength should be optional (= undef), not a required member"
+    );
+
+    let compr = strong
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("compressive_strength"))
+        .expect("expected 'compressive_strength' in Strong.defaults");
+    match &compr.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+            "compressive_strength should have Pressure type (task #3111), got {:?}",
+            cell_type
+        ),
+        other => panic!(
+            "expected DefaultKind::Param for compressive_strength, got {:?}",
+            other
+        ),
     }
 }
