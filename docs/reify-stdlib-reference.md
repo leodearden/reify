@@ -812,15 +812,15 @@ trait TemperatureDependent {
 // design drift #3487. Conformers carry density/name via a separate `material : MaterialSpec`
 // slot rather than inheriting from the base trait directly.
 trait Elastic {
-    param youngs_modulus : Pressure
+    param youngs_modulus : Pressure  // shipped: Real (aspiration pending #3111)
     param poissons_ratio : Real
-    param shear_modulus : Pressure = undef
+    param shear_modulus : Pressure = undef  // shipped: Real (aspiration pending #3111)
     constraint 0 < poissons_ratio < 0.5
 }
 trait Strong {
-    param yield_strength : Pressure
-    param ultimate_tensile_strength : Pressure
-    param compressive_strength : Pressure = undef
+    param yield_strength : Pressure  // shipped: Real (aspiration pending #3111)
+    param ultimate_tensile_strength : Pressure  // shipped: Real (aspiration pending #3111)
+    param compressive_strength : Pressure = undef  // shipped: Real (aspiration pending #3111)
     constraint ultimate_tensile_strength >= yield_strength
 }
 trait Hard {
@@ -829,8 +829,8 @@ trait Hard {
 }
 enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }
 trait FatigueRated : MaterialSpec {
-    param fatigue_limit : Pressure = undef
-    param fatigue_strength_at : Pressure = undef
+    param fatigue_limit : Pressure = undef  // shipped: Real (aspiration pending #3111)
+    param fatigue_strength_at : Pressure = undef  // shipped: Real (aspiration pending #3111)
     param fatigue_cycles : Int = undef
 }
 trait FractureTough : MaterialSpec {
@@ -841,8 +841,8 @@ trait Ductile {
     param reduction_of_area : Real = undef
 }
 trait ImpactResistant : MaterialSpec {
-    param charpy_impact : Energy = undef
-    param izod_impact : Energy = undef
+    param charpy_impact : Energy = undef  // shipped: Real (aspiration pending #3111)
+    param izod_impact : Energy = undef  // shipped: Real (aspiration pending #3111)
 }
 trait Damping : MaterialSpec {
     param damping_ratio : Real  // fraction of critical damping (dimensionless)
@@ -861,8 +861,11 @@ trait ThermallyCharacterized : MaterialSpec {
     param max_service_temperature : Temperature = undef
     param glass_transition : Temperature = undef
 }
-// Refractory threshold is 1500.0 K (≈ 1226.85 °C) — tightened from the former
-// `>= 1500degC` aspiration to K-typed form tracking task #3112.
+// Refractory threshold: 1500.0 K (≈ 1226.85 °C). This is a substantive threshold
+// lowering from the former `>= 1500degC` aspiration — 1500 K is approximately 273 K
+// (≈ 273 °C) below 1500 °C, a significant relaxation of the physical refractory
+// criterion. The threshold was intentionally redefined at 1500 K in task #3112 (not a
+// neutral K-typed re-expression of 1500 °C; 1500 °C ≈ 1773 K).
 trait Refractory : ThermallyCharacterized {
     constraint max_service_temperature >= 1500.0K
 }
