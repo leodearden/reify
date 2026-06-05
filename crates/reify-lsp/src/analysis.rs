@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
@@ -54,19 +56,34 @@ pub struct EntitySummary<'a> {
 /// Shared analysis context that runs the parse → compile → check pipeline once
 /// and provides structured accessors for hover, goto-def, and completions.
 pub struct AnalysisContext {
-    pub parsed: ParsedModule,
+    pub parsed: Arc<ParsedModule>,
     pub compiled: CompiledModule,
     pub check_result: CheckResult,
 }
 
 impl AnalysisContext {
-    /// Build a new analysis context by running the full pipeline.
+    /// Build a new analysis context by parsing `source` and running the full
+    /// compile + check pipeline.
     pub fn new(source: &str, uri: &Url) -> Self {
         let module_name = module_name_from_uri(uri);
         // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
-        // disambiguate to `EnumAccess`; pairs with `compile_with_stdlib` below.
-        // See task 2525.
+        // disambiguate to `EnumAccess`; pairs with `compile_with_stdlib` in
+        // `from_parsed`. See task 2525.
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+        Self::from_parsed(Arc::new(parsed))
+    }
+
+    /// Build an analysis context from an already-parsed module, running only the
+    /// compile + constraint-check stages.
+    ///
+    /// This is the shared entry point for the LSP providers: the per-document
+    /// parse cache (see [`crate::document::DocumentState::parsed_module`]) hands
+    /// the same `Arc<ParsedModule>` to every request for a given document
+    /// version, so hover and completion compile + check the cached parse instead
+    /// of re-parsing. [`AnalysisContext::new`] delegates here after parsing.
+    pub fn from_parsed(parsed: Arc<ParsedModule>) -> Self {
+        // `&parsed` (`&Arc<ParsedModule>`) deref-coerces to the `&ParsedModule`
+        // the compiler expects.
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -367,7 +384,20 @@ pub fn format_value(value: &Value) -> String {
 pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> {
     let module_name = module_name_from_uri(uri);
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+    compute_document_symbols_from_parsed(&parsed, source)
+}
 
+/// Compute the [`DocumentSymbol`] tree from a pre-built [`ParsedModule`].
+///
+/// Injectable core shared by the per-request wrapper [`compute_document_symbols`]
+/// (which parses internally) and the server's cache-fed path (which supplies the
+/// per-document cached parse — one parse per edit). Walks `parsed.declarations`
+/// WITHOUT compiling or constraint-checking; see [`compute_document_symbols`] for
+/// the declaration→symbol mapping.
+pub fn compute_document_symbols_from_parsed(
+    parsed: &ParsedModule,
+    source: &str,
+) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
     for decl in &parsed.declarations {
         match decl {
@@ -762,6 +792,51 @@ mod tests {
         let ctx = AnalysisContext::new("", &test_uri());
         assert!(ctx.parsed.declarations.is_empty());
         assert!(ctx.compiled.templates.is_empty());
+    }
+
+    /// `from_parsed` must produce an `AnalysisContext` observably equivalent to
+    /// `new` when fed the same parse — it just skips the parse step and reuses a
+    /// shared `Arc<ParsedModule>`. Equivalence is asserted on the public
+    /// accessors hover/completion/goto-def actually rely on (compiled templates,
+    /// `find_member_decl`, `entity_names`), not on private fields.
+    #[test]
+    fn analysis_context_from_parsed_matches_new() {
+        let source = reify_test_support::bracket_source();
+        let uri = test_uri();
+        let parsed = std::sync::Arc::new(reify_compiler::parse_with_stdlib(
+            source,
+            ModulePath::single("test"),
+        ));
+
+        let ctx_fp = AnalysisContext::from_parsed(parsed.clone());
+        let ctx_new = AnalysisContext::new(source, &uri);
+
+        // compile ran: templates are present.
+        assert!(
+            !ctx_fp.compiled.templates.is_empty(),
+            "from_parsed should compile templates"
+        );
+
+        // find_member_decl("width", None): kind + type + span agree with `new`.
+        let m_fp = ctx_fp
+            .find_member_decl("width", None)
+            .expect("width via from_parsed");
+        let m_new = ctx_new
+            .find_member_decl("width", None)
+            .expect("width via new");
+        assert_eq!(m_fp.name, m_new.name);
+        assert_eq!(m_fp.kind, m_new.kind);
+        assert_eq!(*m_fp.cell_type, *m_new.cell_type);
+        assert_eq!(m_fp.span, m_new.span);
+
+        // entity_names(): names + member counts agree with `new`.
+        let summarize = |ctx: &AnalysisContext| -> Vec<(String, usize, usize, usize)> {
+            ctx.entity_names()
+                .into_iter()
+                .map(|e| (e.name.to_string(), e.params, e.lets, e.constraints))
+                .collect()
+        };
+        assert_eq!(summarize(&ctx_fp), summarize(&ctx_new));
     }
 
     // --- find_member_decl tests ---
@@ -2277,6 +2352,49 @@ mod tests {
         let guarded = find("guarded_x").expect("guarded_x should be flattened as a direct child");
         assert_eq!(guarded.kind, SymbolKind::FIELD);
         assert_selection_on_name(source, guarded);
+    }
+
+    // --- step-11: injectable document-symbol core over a shared ParsedModule ---
+
+    /// `compute_document_symbols_from_parsed`, fed a `ParsedModule` built once
+    /// by the caller, must yield the same symbol tree as the
+    /// `compute_document_symbols` wrapper (which parses internally) — proving
+    /// the cache-fed core is output-equivalent to the per-request path.
+    #[test]
+    fn compute_document_symbols_from_parsed_matches_wrapper() {
+        // Multi-declaration source spanning every navigable symbol kind plus
+        // members, so the equivalence covers names, kinds, ranges, and the
+        // nested children tree — not just the top-level list.
+        let source = r#"structure Bracket {
+    param width : Scalar = 80mm
+    sub motor = Motor()
+}
+occurrence def Joint {
+    param diameter : Scalar = 10mm
+}
+trait Rigid {
+    param mass : Scalar = 5mm
+}
+enum Shape { Circle, Square }
+fn area(w: Scalar) -> Scalar { w }"#;
+        let uri = test_uri();
+
+        let parsed = reify_compiler::parse_with_stdlib(
+            source,
+            ModulePath::single(module_name_from_uri(&uri)),
+        );
+
+        let via_parsed = compute_document_symbols_from_parsed(&parsed, source);
+        let via_wrapper = compute_document_symbols(source, &uri);
+
+        assert!(
+            !via_parsed.is_empty(),
+            "multi-declaration source should yield symbols"
+        );
+        assert_eq!(
+            via_parsed, via_wrapper,
+            "from-parsed document symbols must match the wrapper (names/kinds/ranges/children)"
+        );
     }
 
     // --- name_token_span tests (step-1) ---
