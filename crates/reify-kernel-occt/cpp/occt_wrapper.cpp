@@ -4422,12 +4422,19 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 result.vertices.push_back(static_cast<float>(p.Z()));
             }
 
-            // Extract normals — use stored normals if available, else compute from triangles
+            // Extract normals — use stored normals if available, else compute from triangles.
+            // In both branches, flip the normal for REVERSED faces so that supplied normals
+            // remain consistent with the outward winding emitted above.
+            // Idiom mirrors `if (face.Orientation() == TopAbs_REVERSED) { n.Reverse(); }`
+            // used elsewhere in this file (L270 surface_normal, L2990 curvature_at).
             if (tri->HasNormals()) {
                 for (int i = 1; i <= nb_nodes; ++i) {
                     gp_Dir n = tri->Normal(i);
                     if (!loc.IsIdentity()) {
                         n.Transform(loc.Transformation());
+                    }
+                    if (reversed) {
+                        n.Reverse();
                     }
                     result.normals.push_back(static_cast<float>(n.X()));
                     result.normals.push_back(static_cast<float>(n.Y()));
@@ -4451,6 +4458,9 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 }
                 for (int i = 0; i < nb_nodes; ++i) {
                     gp_Vec n = vertex_normals[i];
+                    if (reversed) {
+                        n.Reverse();
+                    }
                     double mag = n.Magnitude();
                     if (mag > CPP_DIR_MAG_MIN) {
                         n /= mag;
