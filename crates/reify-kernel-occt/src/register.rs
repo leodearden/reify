@@ -93,12 +93,13 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (BooleanUnion, ReprKind::BRep),
         (BooleanDifference, ReprKind::BRep),
         (BooleanIntersection, ReprKind::BRep),
-        // Primitives ×5
+        // Primitives ×6
         (PrimitiveBox, ReprKind::BRep),
         (PrimitiveCylinder, ReprKind::BRep),
         (PrimitiveSphere, ReprKind::BRep),
         (PrimitiveTube, ReprKind::BRep),
         (PrimitiveCone, ReprKind::BRep),
+        (PrimitiveWedge, ReprKind::BRep),
         // Modify ×5
         (ModifyFillet, ReprKind::BRep),
         (ModifyChamfer, ReprKind::BRep),
