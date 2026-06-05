@@ -769,8 +769,9 @@ pub enum DiagnosticCode {
     /// in the same Mechanism (detected by structural `Value::Eq`; the docs spec says
     /// referential identity — gap documented in mechanism.rs and tracked in task 2538).
     ///
-    /// Canonical message form (sourced verbatim from the Map's `error_message` field):
-    /// `"<solid> is already attached to a body in this mechanism"`.
+    /// Canonical message form (sourced verbatim from the Map's `error_message` field,
+    /// as produced by `make_duplicate_solid_error` in `mechanism.rs`):
+    /// `"duplicate solid: solid value already attached to a body in this mechanism"`.
     ///
     /// The PRD-prose mnemonic for this code is `E_MECHANISM_DUPLICATE_SOLID`
     /// (see `docs/prds/kinematic-constraints.md` task 3 and
