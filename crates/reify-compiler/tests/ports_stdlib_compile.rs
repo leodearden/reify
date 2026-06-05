@@ -14,6 +14,7 @@ use reify_compiler::{
     CompiledTrait, DefaultKind, EntityKind, RequirementKind, ValueCellDecl, ValueCellKind,
     stdlib_loader,
 };
+use reify_ast::ExprKind;
 use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, EnumDef, Value};
 use reify_test_support::compile_source_with_stdlib;
@@ -729,6 +730,177 @@ fn linear_port_trait_surface() {
     );
 }
 
+// ─── step-11 (task β): GuidePort / LinearGuidePort / RotaryGuidePort ──────────
+
+/// Assert that `trait_name` in std/ports/mechanical carries exactly one
+/// trait-level constraint and that it is the unnamed single-DOF invariant
+/// `degrees_of_freedom == 1`.
+///
+/// An unlabeled trait-body `constraint <expr>` compiles to a
+/// `TraitDefault { name: None, kind: DefaultKind::Constraint(decl) }`
+/// (traits.rs:252-257) with the parsed predicate preserved verbatim, so the
+/// AST is `BinOp { op: "==", left: Ident("degrees_of_freedom"),
+/// right: NumberLiteral { value: 1.0, is_real: false } }`. Pinning the RHS
+/// literal here is what distinguishes the prismatic/revolute `== 1` invariant
+/// from any other DOF count.
+fn assert_dof_eq_one_constraint(trait_name: &str) {
+    let t = find_trait("std/ports/mechanical", trait_name);
+    let constraint_count = t
+        .defaults
+        .iter()
+        .filter(|d| matches!(d.kind, DefaultKind::Constraint(_)))
+        .count();
+    assert_eq!(
+        constraint_count, 1,
+        "{} should carry exactly one trait-level constraint; got {} total defaults",
+        trait_name,
+        t.defaults.len()
+    );
+    let c = t
+        .defaults
+        .iter()
+        .find(|d| matches!(d.kind, DefaultKind::Constraint(_)))
+        .unwrap();
+    assert!(
+        c.name.is_none(),
+        "{}'s degrees_of_freedom constraint should be unlabeled (name: None), got: {:?}",
+        trait_name, c.name
+    );
+    let decl = match &c.kind {
+        DefaultKind::Constraint(decl) => decl,
+        _ => unreachable!("filtered to Constraint above"),
+    };
+    match &decl.expr.kind {
+        ExprKind::BinOp { op, left, right } => {
+            assert_eq!(op, "==", "{} constraint op should be '=='", trait_name);
+            assert!(
+                matches!(&left.kind, ExprKind::Ident(name) if name == "degrees_of_freedom"),
+                "{} constraint LHS should be Ident(degrees_of_freedom), got: {:?}",
+                trait_name, left.kind
+            );
+            assert!(
+                matches!(&right.kind, ExprKind::NumberLiteral { value, .. } if *value == 1.0),
+                "{} constraint RHS should be NumberLiteral(1), got: {:?}",
+                trait_name, right.kind
+            );
+        }
+        other => panic!(
+            "{} constraint should be a BinOp `degrees_of_freedom == 1`, got: {:?}",
+            trait_name, other
+        ),
+    }
+}
+
+/// GuidePort is the kinematic-guide base: it refines exactly [MechanicalPort]
+/// with a single required member `degrees_of_freedom : Int` (the count of
+/// permitted relative DOFs along/about the guide).
+///
+/// RED: GuidePort is absent → find_trait panics.
+#[test]
+fn guide_port_trait_surface() {
+    let t = find_trait("std/ports/mechanical", "GuidePort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["MechanicalPort".to_string()].as_slice(),
+        "GuidePort should refine exactly [MechanicalPort], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        1,
+        "GuidePort should have exactly 1 required member (degrees_of_freedom); got: {:?}",
+        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name, "degrees_of_freedom",
+        "GuidePort required_members[0] should be 'degrees_of_freedom'"
+    );
+    assert_eq!(
+        param_type("std/ports/mechanical", "GuidePort", "degrees_of_freedom"),
+        Type::Int,
+        "GuidePort.degrees_of_freedom must be Type::Int"
+    );
+}
+
+/// LinearGuidePort refines exactly [GuidePort], adds no own required params, and
+/// pins the single-DOF invariant as a trait-level constraint
+/// `degrees_of_freedom == 1` (a prismatic guide permits exactly one
+/// translational DOF). A conformer with degrees_of_freedom != 1 is a constraint
+/// violation (exercised behaviourally in ports_mechanical_thread_eval.rs).
+///
+/// RED: LinearGuidePort is absent → find_trait panics.
+#[test]
+fn linear_guide_port_trait_surface() {
+    let t = find_trait("std/ports/mechanical", "LinearGuidePort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["GuidePort".to_string()].as_slice(),
+        "LinearGuidePort should refine exactly [GuidePort], got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.required_members.is_empty(),
+        "LinearGuidePort should add no own required members (dof inherited from \
+         GuidePort), got: {:?}",
+        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+
+    assert_dof_eq_one_constraint("LinearGuidePort");
+}
+
+/// RotaryGuidePort refines exactly [GuidePort], pins the same single-DOF
+/// invariant `degrees_of_freedom == 1` (a revolute guide permits exactly one
+/// rotational DOF), and adds two required load ratings:
+///   max_radial_load : Scalar<FORCE>
+///   max_axial_load  : Scalar<FORCE>
+///
+/// RED: RotaryGuidePort is absent → find_trait panics.
+#[test]
+fn rotary_guide_port_trait_surface() {
+    let t = find_trait("std/ports/mechanical", "RotaryGuidePort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["GuidePort".to_string()].as_slice(),
+        "RotaryGuidePort should refine exactly [GuidePort], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        2,
+        "RotaryGuidePort should have exactly 2 required members \
+         [max_radial_load, max_axial_load]; got: {:?}",
+        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+    for (i, name) in ["max_radial_load", "max_axial_load"].iter().enumerate() {
+        assert_eq!(
+            t.required_members[i].name, *name,
+            "RotaryGuidePort required_members[{}] should be '{}'",
+            i, name
+        );
+    }
+    assert_eq!(
+        param_type("std/ports/mechanical", "RotaryGuidePort", "max_radial_load"),
+        Type::Scalar {
+            dimension: DimensionVector::FORCE
+        },
+        "RotaryGuidePort.max_radial_load must be Scalar<FORCE>"
+    );
+    assert_eq!(
+        param_type("std/ports/mechanical", "RotaryGuidePort", "max_axial_load"),
+        Type::Scalar {
+            dimension: DimensionVector::FORCE
+        },
+        "RotaryGuidePort.max_axial_load must be Scalar<FORCE>"
+    );
+
+    assert_dof_eq_one_constraint("RotaryGuidePort");
+}
+
 /// ThreadedPort refines exactly [MechanicalPort] with a single required member
 /// `thread_spec : ThreadSpec` (Type::StructureRef("ThreadSpec")) — replacing the
 /// old raw thread_diameter/pitch Length pair (PRD §4 decision 6).
@@ -1003,9 +1175,10 @@ fn std_ports_mechanical_module_cardinality_locked() {
         .collect();
     assert_eq!(
         module.trait_defs.len(),
-        8,
-        "std/ports/mechanical should declare exactly 8 traits (MechanicalPort, Bore, \
-         Shaft, RotaryPort, ThreadedPort, StructurePort, MotivePort, LinearPort), got: {:?}",
+        11,
+        "std/ports/mechanical should declare exactly 11 traits (MechanicalPort, Bore, \
+         Shaft, RotaryPort, ThreadedPort, StructurePort, MotivePort, LinearPort, \
+         GuidePort, LinearGuidePort, RotaryGuidePort), got: {:?}",
         trait_names
     );
     for expected in &[
@@ -1017,6 +1190,9 @@ fn std_ports_mechanical_module_cardinality_locked() {
         "StructurePort",
         "MotivePort",
         "LinearPort",
+        "GuidePort",
+        "LinearGuidePort",
+        "RotaryGuidePort",
     ] {
         assert!(
             module.trait_defs.iter().any(|t| t.name == *expected),
