@@ -948,8 +948,9 @@ enum FitCategory { Clearance, Transition, Interference }
 
 structure def ISOToleranceGrade {
     param grade : Int
-    param nominal_range : Range<Length>
-    let tolerance_value = ...  // from standards tables
+    param nominal_min : Length
+    param nominal_max : Length
+    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)  // ISO 286-1 IT5–IT18, nominal ≤500mm
 }
 ```
 
@@ -960,7 +961,7 @@ trait GeometricTolerance {
     param tolerance_value : Length
     param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    let nominal_zone = ...
+    let nominal_zone = ...  // scalar effective zone SIZE (Length) = effective_tolerance_zone(tolerance_value, material_condition, departure); geometric-region form deferred (needs zone-construction kernel op — out of scope)
 }
 enum MaterialCondition { MMC, LMC, RFS }
 
@@ -1012,7 +1013,7 @@ structure def SurfaceFinish {
     param parameter : SurfaceParameter
     param value : Length
     param direction : SurfaceDirection = SurfaceDirection.Multidirectional
-    param process : String = undef
+    param process : String = ""
 }
 enum SurfaceParameter { Ra, Rz, Rq, Rt, Rp, Rv, Rsk, Rku }
 enum SurfaceDirection { Parallel, Perpendicular, Crossed, Multidirectional, Circular, Radial }
