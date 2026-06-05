@@ -4071,8 +4071,9 @@ pub(crate) fn build_structure_def_skeleton(
     // Lower annotations so template.version() reflects @version(N) correctly.
     let annotations = lower_annotations(&structure.annotations, &mut throwaway_diags);
 
-    // Build value_cells for Param members only; Lets and other member kinds
-    // are irrelevant to the StructureInstanceCtor lowering path.
+    // Build value_cells for Param members; register each in scope so that Let
+    // members compiled in the second pass below can resolve sibling params
+    // without producing poison exprs (task-4342: skeleton now carries Let cells).
     let mut value_cells: Vec<ValueCellDecl> = Vec::new();
     for member in &structure.members {
         if let reify_ast::MemberDecl::Param(param) = member {
@@ -4102,6 +4103,8 @@ pub(crate) fn build_structure_def_skeleton(
             });
 
             let id = ValueCellId::new(&structure.name, &param.name);
+            // Register in scope so subsequent Let exprs can reference this param.
+            scope.register(&param.name, cell_type.clone());
             value_cells.push(ValueCellDecl {
                 id,
                 kind: ValueCellKind::Param,
@@ -4111,6 +4114,35 @@ pub(crate) fn build_structure_def_skeleton(
                 default_expr,
                 solver_hints: vec![],
                 span: param.span,
+            });
+        }
+    }
+
+    // Second pass: compile Let members against the scope that now has all params
+    // registered.  Geometry-typed lets are skipped (same as the authoritative path).
+    // `known_geometry_lets` starts empty — alias-style geometry lets in the skeleton
+    // context are exceedingly rare and the throwaway-diag budget makes this safe.
+    let known_geometry_lets: HashSet<&str> = HashSet::new();
+    for member in &structure.members {
+        if let reify_ast::MemberDecl::Let(let_decl) = member {
+            if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
+                continue;
+            }
+            let compiled_expr =
+                compile_expr(&let_decl.value, &scope, enum_defs, functions, &mut throwaway_diags);
+            let cell_type = compiled_expr.result_type.clone();
+            let id = ValueCellId::new(&structure.name, &let_decl.name);
+            // Register in scope so later lets can reference earlier lets.
+            scope.register(&let_decl.name, cell_type.clone());
+            value_cells.push(ValueCellDecl {
+                id,
+                kind: ValueCellKind::Let,
+                visibility: Visibility::Public,
+                is_aux: let_decl.is_aux,
+                cell_type,
+                default_expr: Some(compiled_expr),
+                solver_hints: vec![],
+                span: let_decl.span,
             });
         }
     }

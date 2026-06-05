@@ -1404,13 +1404,26 @@ pub(crate) fn compile_expr_guarded(
                     .skip(covered)
                     .filter_map(|(n, d)| d.map(|e| ((*n).to_string(), e.clone())))
                     .collect();
+                // Collect the template's Let cells in declaration order (task-4342):
+                // each Let's compiled expr is stored in `default_expr`; the ctor
+                // carries them so eval can eagerly materialize derived members.
+                let lets: Vec<(String, CompiledExpr)> = template
+                    .value_cells
+                    .iter()
+                    .filter(|vc| matches!(vc.kind, ValueCellKind::Let))
+                    .filter_map(|vc| {
+                        vc.default_expr
+                            .as_ref()
+                            .map(|e| (vc.id.member.clone(), e.clone()))
+                    })
+                    .collect();
                 return CompiledExpr::structure_instance_ctor(
                     reify_ir::StructureTypeId(0),
                     name.clone(),
                     template.version(),
                     ordered_args,
                     defaults,
-                    Vec::new(), // lets: populated in step_4 (task-4342)
+                    lets,
                     Type::StructureRef(name.clone()),
                 );
             }
