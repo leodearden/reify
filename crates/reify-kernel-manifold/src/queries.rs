@@ -712,7 +712,7 @@ pub(crate) fn tri_unit_normal(tri: &[[f64; 3]; 3]) -> [f64; 3] {
 /// A degenerate (zero-area) triangle contributes 0.0, which is correct.
 /// Used by the `SurfaceArea` query arm for a `SubShape::Face`.
 pub(crate) fn face_area(tris: &[[[f64; 3]; 3]]) -> f64 {
-    tris.iter().map(|t| tri_area(t)).sum()
+    tris.iter().map(tri_area).sum()
 }
 
 /// Shared planar normal of a face: unit normal of the first non-degenerate
@@ -771,12 +771,15 @@ const PLANE_TOL: f64 = 1e-6;
 ///
 /// Used by [`crate::kernel::ManifoldKernel::extract_faces`] (step-2 of
 /// task-4262) to replace the previous one-triangle-per-face enumeration.
+/// BTreeMap keyed by a quantised plane key `(nx, ny, nz, d)` mapping to the
+/// list of triangles on that plane.  Factored out to keep the type readable.
+type PlaneGroupMap = std::collections::BTreeMap<(i64, i64, i64, i64), Vec<[[f64; 3]; 3]>>;
+
 pub(crate) fn coalesce_coplanar_faces(
     verts: &[[f64; 3]],
     tri_indices: &[u64],
 ) -> Vec<Vec<[[f64; 3]; 3]>> {
-    let mut groups: std::collections::BTreeMap<(i64, i64, i64, i64), Vec<[[f64; 3]; 3]>> =
-        std::collections::BTreeMap::new();
+    let mut groups: PlaneGroupMap = std::collections::BTreeMap::new();
 
     let quant = |f: f64| -> i64 { (f / PLANE_TOL).round() as i64 };
 
