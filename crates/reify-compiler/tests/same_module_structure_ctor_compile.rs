@@ -327,12 +327,9 @@ structure def Tol {
 pub fn make_tol() -> Tol { Tol(5.0, 0.02) }
 "#;
 
-/// step_3b RED: a same-module fn-returned struct with a sibling-referencing
+/// step_3b (task-4342): a same-module fn-returned struct with a sibling-referencing
 /// derived let must produce a StructureInstanceCtor that carries `lets` AND
 /// whose let expr is NOT poison (result_type != Type::Error).
-///
-/// RED on current base: `lets` is Vec::new() (build_structure_def_skeleton does
-/// not yet attach Let cells — step_4 will fix this).
 #[test]
 fn fn_returned_struct_ctor_carries_non_poison_lets() {
     let module = reify_test_support::helpers::compile_source_with_stdlib(TOL_SRC);
@@ -385,5 +382,83 @@ fn fn_returned_struct_ctor_carries_non_poison_lets() {
             );
         }
         other => panic!("make_tol body should be StructureInstanceCtor; got: {:?}", other),
+    }
+}
+
+// ─── task-4342 step-9: guarded lets excluded from skeleton ctor ────────────────
+
+/// A structure with both an unguarded `let` and a per-decl-guarded `let … where cond`
+/// in a same-module fn-returned position.
+///
+/// RED: `build_structure_def_skeleton`'s second pass currently pushes every non-geometry
+/// let into value_cells unconditionally — including guarded lets.  The ctor-lets
+/// collection (expr.rs) then harvests guarded_limit alongside plain_limit.
+///
+/// After step_10 GREEN: the skeleton skips `where_clause.is_some()` lets, matching
+/// the authoritative path (entity.rs:1457-1472) which routes them to guarded_groups.
+const GUARDED_LET_SRC: &str = r#"
+module test.guarded
+
+structure def G {
+    param nominal    : Real = 0.0
+    param upper_dev  : Real = 0.001
+    param active     : Bool = true
+    let plain_limit   = nominal + upper_dev
+    let guarded_limit = nominal - upper_dev where active
+}
+
+pub fn make_g() -> G { G(5.0, 0.02, true) }
+"#;
+
+#[test]
+fn fn_returned_struct_ctor_excludes_guarded_lets() {
+    let module = reify_test_support::helpers::compile_source_with_stdlib(GUARDED_LET_SRC);
+
+    // (a) Zero errors.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "G module should compile without errors; got: {:#?}",
+        errors
+    );
+
+    // (b) make_g body is StructureInstanceCtor.
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_g")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `make_g` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, lets, .. } => {
+            assert_eq!(type_name, "G", "fn body ctor type_name must be G");
+
+            let let_names: Vec<&str> = lets.iter().map(|(n, _)| n.as_str()).collect();
+
+            // (c) Unguarded let is present.
+            assert!(
+                let_names.contains(&"plain_limit"),
+                "ctor `lets` must contain \"plain_limit\" (unguarded); got: {:?}",
+                let_names
+            );
+
+            // (d) Guarded let is absent — must not be eagerly materialized.
+            assert!(
+                !let_names.contains(&"guarded_limit"),
+                "ctor `lets` must NOT contain \"guarded_limit\" (per-decl guarded); \
+                 got: {:?}",
+                let_names
+            );
+        }
+        other => panic!("make_g body should be StructureInstanceCtor; got: {:?}", other),
     }
 }
