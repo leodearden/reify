@@ -1094,6 +1094,11 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         | GeometryOp::BezierCurve { .. }
         | GeometryOp::NurbsCurve { .. } => ParentHandles::Inline([z, z], 0),
 
+        // Profile face producers — no parent handles.
+        GeometryOp::RectangleProfile { .. } | GeometryOp::CircleProfile { .. } => {
+            ParentHandles::Inline([z, z], 0)
+        }
+
         // Pipe — kernel-internal circle profile; no user-facing parent.
         GeometryOp::Pipe { .. } => ParentHandles::Inline([z, z], 0),
 
@@ -1198,8 +1203,8 @@ fn substitute_op_parents(
             }
         }
 
-        // Parent-less ops: primitives, curve constructors, Pipe — nothing to
-        // substitute.
+        // Parent-less ops: primitives, curve constructors, profile producers,
+        // Pipe — nothing to substitute.
         GeometryOp::Box { .. }
         | GeometryOp::Cylinder { .. }
         | GeometryOp::Sphere { .. }
@@ -1212,6 +1217,8 @@ fn substitute_op_parents(
         | GeometryOp::InterpCurve { .. }
         | GeometryOp::BezierCurve { .. }
         | GeometryOp::NurbsCurve { .. }
+        | GeometryOp::RectangleProfile { .. }
+        | GeometryOp::CircleProfile { .. }
         | GeometryOp::Pipe { .. } => {}
     }
 }
@@ -1343,6 +1350,10 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::InterpCurve { .. } => Operation::CurveInterpCurve,
         GeometryOp::BezierCurve { .. } => Operation::CurveBezierCurve,
         GeometryOp::NurbsCurve { .. } => Operation::CurveNurbsCurve,
+
+        // Profile face producers
+        GeometryOp::RectangleProfile { .. } => Operation::ProfileRectangle,
+        GeometryOp::CircleProfile { .. } => Operation::ProfileCircle,
     }
 }
 
@@ -1422,6 +1433,9 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // Curves — sources (no geometric input); same rationale as Primitives.
         CurveLineSegment | CurveArc | CurveHelix | CurveInterpCurve | CurveBezierCurve
         | CurveNurbsCurve => Some(BREP_ONLY),
+
+        // Profile face producers — sources (no geometric input); same rationale.
+        ProfileRectangle | ProfileCircle => Some(BREP_ONLY),
 
         // Catch-all: genuinely-new future variants → conservative (None).
         // Unreachable for all current variants (strum test above enforces this).
@@ -9849,6 +9863,20 @@ mod tests {
                 },
                 expected: Operation::CurveNurbsCurve,
                 label: "NurbsCurve → CurveNurbsCurve",
+            },
+            // Profiles (task-4160)
+            Case {
+                op: GeometryOp::RectangleProfile {
+                    width: r(0.02),
+                    height: r(0.01),
+                },
+                expected: Operation::ProfileRectangle,
+                label: "RectangleProfile → ProfileRectangle",
+            },
+            Case {
+                op: GeometryOp::CircleProfile { radius: r(0.008) },
+                expected: Operation::ProfileCircle,
+                label: "CircleProfile → ProfileCircle",
             },
         ];
 

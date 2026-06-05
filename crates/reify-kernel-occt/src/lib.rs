@@ -2680,6 +2680,34 @@ impl OcctKernel {
                 ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::RectangleProfile { width, height } => {
+                let w = extract_f64(width)?;
+                let h = extract_f64(height)?;
+                if !(w.is_finite() && w > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "rectangle_profile width must be a finite positive value".into(),
+                    ));
+                }
+                if !(h.is_finite() && h > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "rectangle_profile height must be a finite positive value".into(),
+                    ));
+                }
+                let shape = ffi::ffi::make_rectangle_face(w, h, 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, BRepKind::Face));
+            }
+            GeometryOp::CircleProfile { radius } => {
+                let r = extract_f64(radius)?;
+                if !(r.is_finite() && r > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "circle_profile radius must be a finite positive value".into(),
+                    ));
+                }
+                let shape = ffi::ffi::make_circle_face(r, 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, BRepKind::Face));
+            }
         };
         Ok(self.store(shape))
     }
