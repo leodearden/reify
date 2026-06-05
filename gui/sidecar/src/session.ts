@@ -52,8 +52,13 @@ export interface SessionConfig {
  */
 export const SPAWN_ERROR_LOG_PREFIX = '[sidecar] spawned claude error:';
 
-/** MCP endpoint URL for the reify-debug server (always registered). */
-const REIFY_DEBUG_URL = 'http://127.0.0.1:3939/mcp';
+/** Resolve the reify-debug MCP endpoint URL from the environment. Default port 3939. */
+function resolveReifyDebugUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env['REIFY_DEBUG_PORT'];
+  const parsed = raw !== undefined ? parseInt(raw, 10) : NaN;
+  const port = Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535 ? parsed : 3939;
+  return `http://127.0.0.1:${port}/mcp`;
+}
 
 /**
  * Tools Claude is allowed to use without per-call permission prompts.
@@ -310,7 +315,7 @@ export class SidecarSession {
       this.mcpConfigTmpFile = path.join(this.mcpConfigTmpDir, 'mcp-config.json');
       const mcpConfig = {
         mcpServers: {
-          'reify-debug': { type: 'http', url: REIFY_DEBUG_URL },
+          'reify-debug': { type: 'http', url: resolveReifyDebugUrl() },
           ...(this.config.permissionMcp
             ? { 'reify-permission': { type: 'http', url: this.config.permissionMcp.url } }
             : {}),
