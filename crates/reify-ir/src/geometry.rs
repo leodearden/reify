@@ -6054,12 +6054,26 @@ mod tests {
                     faces_to_remove: vec![0],
                 },
             ),
+            // task-4160: 2-D profile face producers
+            (
+                "RectangleProfile",
+                GeometryOp::RectangleProfile {
+                    width: Value::Real(0.02),
+                    height: Value::Real(0.01),
+                },
+            ),
+            (
+                "CircleProfile",
+                GeometryOp::CircleProfile {
+                    radius: Value::Real(0.008),
+                },
+            ),
         ];
         // Changing this constant forces the test to be updated whenever a
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 38;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 40;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,

@@ -9070,4 +9070,117 @@ mod tests {
             "make_rectangle_face with height=-0.01 should return Err, got Ok"
         );
     }
+
+    // --- Profile IR → kernel execute tests (task-4160, step-3) ---
+    // These exercise OcctKernel::execute() for the new GeometryOp::RectangleProfile
+    // and GeometryOp::CircleProfile variants.  RED until step-4 adds those variants.
+
+    /// RectangleProfile execute → extrude → volume ≈ w·h·d.
+    ///
+    /// w=0.020, h=0.010, d=0.003 → V = 6.0e-7 m³ (exact rectangular prism;
+    /// OCCT error ~1e-12 relative, so the 2 % bound is met with enormous margin).
+    ///
+    /// RED until step-4 adds GeometryOp::RectangleProfile.
+    #[test]
+    fn rectangle_profile_executes_and_extrude_volume() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_h = kernel
+            .execute(&GeometryOp::RectangleProfile {
+                width: Value::Real(0.020),
+                height: Value::Real(0.010),
+            })
+            .expect("RectangleProfile execute should succeed");
+        let solid_h = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: profile_h.id,
+                distance: Value::Real(0.003),
+            })
+            .expect("Extrude of RectangleProfile should succeed");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(solid_h.id))
+            .expect("Volume query should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+        let expected = 0.020_f64 * 0.010 * 0.003; // w·h·d = 6.0e-7 m³
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "RectangleProfile extrude volume: expected ≈ {expected:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// CircleProfile execute → SurfaceArea ≈ π·r².
+    ///
+    /// r=0.008 → A = π·0.064e-3 = 2.0106e-4 m² (OCCT analytic Geom_Circle; exact).
+    ///
+    /// RED until step-4 adds GeometryOp::CircleProfile.
+    #[test]
+    fn circle_profile_executes_surface_area() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_h = kernel
+            .execute(&GeometryOp::CircleProfile {
+                radius: Value::Real(0.008),
+            })
+            .expect("CircleProfile execute should succeed");
+        let area = kernel
+            .query(&GeometryQuery::SurfaceArea(profile_h.id))
+            .expect("SurfaceArea query should succeed")
+            .as_f64()
+            .expect("SurfaceArea should be numeric");
+        let expected = std::f64::consts::PI * 0.008_f64 * 0.008; // π·r² = 2.0106e-4 m²
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "CircleProfile surface area: expected ≈ {expected:.4e}, got {area:.4e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// Degenerate input: RectangleProfile with width=0 returns GeometryError::OperationFailed.
+    ///
+    /// RED until step-4 adds GeometryOp::RectangleProfile.
+    #[test]
+    fn rectangle_profile_zero_width_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::RectangleProfile {
+            width: Value::Real(0.0),
+            height: Value::Real(0.010),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for width=0, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// Degenerate input: CircleProfile with negative radius returns GeometryError::OperationFailed.
+    ///
+    /// RED until step-4 adds GeometryOp::CircleProfile.
+    #[test]
+    fn circle_profile_negative_radius_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(-0.008),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for negative radius, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
 }
