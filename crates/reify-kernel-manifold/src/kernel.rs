@@ -463,6 +463,12 @@ impl GeometryKernel for ManifoldKernel {
             // `face_index`, self excluded, ascending — Value::List<Value::Int>
             // mirroring OCCT's AdjacentFaces wire format. On the closed cube
             // each triangle has exactly 3 such neighbours. (KGQ-π / task 3625.)
+            //
+            // NOTE: `face_index` is a raw mesh-triangle index (0..num_triangles),
+            // NOT an index into the coalesced planar-face handles returned by
+            // `extract_faces`. These two index spaces are disjoint. A unit cube
+            // has 12 raw triangles (face_index in 0..12) and 6 planar-face
+            // handles from extract_faces; the two cannot be used interchangeably.
             GeometryQuery::AdjacentFaces { shape, face_index } => {
                 let (_verts, tris) = {
                     let m = self
@@ -487,6 +493,10 @@ impl GeometryKernel for ManifoldKernel {
             // face_b` yields an empty list (design decision). Edge indices are
             // into the same canonical_edges enumeration extract_edges exposes,
             // so SharedEdges and extract_edges agree. (KGQ-π / task 3625.)
+            //
+            // NOTE: `face_a` and `face_b` are raw mesh-triangle indices
+            // (0..num_triangles), NOT handles or indices from extract_faces'
+            // coalesced planar-face space. These two index spaces are disjoint.
             GeometryQuery::SharedEdges {
                 shape,
                 face_a,
@@ -711,6 +721,10 @@ impl GeometryKernel for ManifoldKernel {
             crate::queries::mesh_geometry(m)
         };
         if verts.is_empty() || tris.is_empty() {
+            // Memoize the empty result so the cache-first branch covers
+            // this path too, keeping the contract uniform: every code path
+            // through extract_faces inserts into extracted_faces before returning.
+            self.extracted_faces.insert(handle.0, Vec::new());
             return Ok(Vec::new());
         }
         let groups = crate::queries::coalesce_coplanar_faces(&verts, &tris);
