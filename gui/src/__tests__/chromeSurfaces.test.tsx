@@ -27,6 +27,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
+import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 import { MenuBar } from '../panels/MenuBar';
 import { FileTabs } from '../editor/FileTabs';
 import { DiagnosticsPanel } from '../panels/DiagnosticsPanel';
@@ -69,6 +70,8 @@ function makeStores(): DebugStores {
       } as any,
       selectEntity: vi.fn(),
       hoverEntity: vi.fn(),
+      clearSelection: vi.fn(),
+      toggleSelect: vi.fn(),
     },
     claude: {
       state: {
@@ -77,7 +80,7 @@ function makeStores(): DebugStores {
         currentMessageId: null,
       },
     },
-    viewState: { resetToDefaultView: vi.fn() },
+    viewState: makeViewStateStoreMock(),
     layout: {
       state: {
         editorWidth: 300,

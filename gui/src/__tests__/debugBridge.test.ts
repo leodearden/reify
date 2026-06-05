@@ -24,6 +24,7 @@ import { toPng } from 'html-to-image';
 import { initDebugBridge } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
+import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
 
@@ -61,6 +62,8 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
       } as any,
       selectEntity: vi.fn(),
       hoverEntity: vi.fn(),
+      clearSelection: vi.fn(),
+      toggleSelect: vi.fn(),
     },
     claude: {
       state: {
@@ -69,7 +72,7 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
         currentMessageId: null,
       },
     },
-    viewState: { resetToDefaultView: vi.fn() },
+    viewState: makeViewStateStoreMock(),
     layout: {
       state: {
         editorWidth: 300,
