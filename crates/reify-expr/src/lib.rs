@@ -953,13 +953,35 @@ fn eval_structure_instance_ctor(
 /// to later ones), and write the result into BOTH the child map and `fields`.
 #[inline(never)]
 fn materialize_template_lets(
-    _type_name: &str,
-    _lets: &[(String, CompiledExpr)],
-    _fields: &mut PersistentMap<String, Value>,
-    _ctx: &EvalContext,
+    type_name: &str,
+    lets: &[(String, CompiledExpr)],
+    fields: &mut PersistentMap<String, Value>,
+    ctx: &EvalContext,
 ) {
-    // TODO (task-4342 step-6): implement eager let materialization.
-    // Stub body — lets are not yet materialized; step_5 RED, step_6 GREEN.
+    // Build a child ValueMap keyed by ValueCellId::new(type_name, member)
+    // from the already-populated `fields` (params + defaults filled in by
+    // eval_structure_instance_ctor).  The child scope lets the let exprs
+    // reference sibling params by their ValueCellId (entity == type_name).
+    let mut child = ValueMap::new();
+    for (member, value) in fields.iter() {
+        child.insert(ValueCellId::new(type_name, member.as_str()), value.clone());
+    }
+
+    // Evaluate lets in declaration order.  For each let:
+    //   1. evaluate its compiled expr against ctx.with_scope(&child) — the
+    //      temporary borrow is released after eval_expr returns, so
+    //      child.insert on the next line is safe;
+    //   2. insert the result into `child` so later lets see earlier ones;
+    //   3. insert into `fields` for the final StructureInstance.
+    //
+    // Declaration order is a valid eval order: the compiler enforces left-to-right
+    // scoping (a let can only reference earlier params/lets), so no topological
+    // sort or cycle guard is needed here (unlike elaborate_child_lets_only).
+    for (name, let_expr) in lets {
+        let value = eval_expr(let_expr, &ctx.with_scope(&child));
+        child.insert(ValueCellId::new(type_name, name.as_str()), value.clone());
+        fields.insert(name.clone(), value);
+    }
 }
 
 /// Evaluate `CompiledExprKind::IndexAccess`. Extracted from `eval_expr`'s
