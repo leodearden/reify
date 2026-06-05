@@ -230,21 +230,16 @@ describe('applyWorkspaceEdit', () => {
       },
     };
 
-    // Must not throw.
-    expect(() => applyWorkspaceEdit(view, edit, URI)).not.toThrow();
+    // A thrown error would fail the test; assert return value and dispatch
+    // state on the single call without re-invoking.
+    const result = applyWorkspaceEdit(view, edit, URI);
 
     // Returns true (at least one edit survived).
-    expect(applyWorkspaceEdit(view, edit, URI)).toBe(true);
-
-    // Dispatched exactly once (after the second call above — dispatch is reset
-    // per test so we check count relative to the second call).
-    // Reset and call once more for a clean assertion.
-    dispatch.mockClear();
-    applyWorkspaceEdit(view, edit, URI);
-
+    expect(result).toBe(true);
+    // Dispatched exactly once, carrying only the in-range edit.
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(dispatch).toHaveBeenCalledWith({
-      changes: [{ from: 5, to: 10, insert: 'girth' }], // only the in-range edit
+      changes: [{ from: 5, to: 10, insert: 'girth' }],
       userEvent: 'rename',
     });
   });

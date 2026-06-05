@@ -50,8 +50,15 @@ export function lspPositionToOffset(
  * ranges (`from === to`) are returned as-is — diagnostics and rename both need
  * them; only the decoration RangeSet in occurrenceHighlight drops them (locally).
  *
- * @returns `{from, to}` on success, or `null` when `doc.line()` throws for
- *   either endpoint (stale LSP response vs. the live document).
+ * **Inverted ranges** (`from > to`, i.e. end before start) are returned as-is.
+ * The LSP spec requires well-ordered ranges, so an inverted range indicates a
+ * malformed server response.  CodeMirror will reject such a range in a
+ * `view.dispatch`; callers that need strict validation should check `r.from <=
+ * r.to` themselves (occurrenceHighlight's `r.to > r.from` guard already covers
+ * this for the highlight case).
+ *
+ * @returns `{from, to}` on success, or `null` when `doc.line()` throws a
+ *   `RangeError` for either endpoint (stale LSP response vs. the live document).
  */
 export function lspRangeToCmRange(
   doc: { line(n: number): { from: number; to: number } },
@@ -64,10 +71,13 @@ export function lspRangeToCmRange(
     const from = lspPositionToOffset(doc, range.start.line, range.start.character);
     const to = lspPositionToOffset(doc, range.end.line, range.end.character);
     return { from, to };
-  } catch {
-    // Out-of-range line: the LSP server's document version is briefly ahead of
-    // or behind the live editor doc (didChange in flight).  Return null so the
-    // caller can skip/filter this range rather than propagating an exception.
-    return null;
+  } catch (e) {
+    if (e instanceof RangeError) {
+      // Out-of-range line: the LSP server's document version is briefly ahead of
+      // or behind the live editor doc (didChange in flight).  Return null so the
+      // caller can skip/filter this range rather than propagating an exception.
+      return null;
+    }
+    throw e;
   }
 }

@@ -58,9 +58,9 @@ function lspSeverityToCm(severity?: number): 'error' | 'warning' | 'info' {
  *
  * Uses `lspRangeToCmRange` for the offset mapping, which clamps over-long
  * characters to `line.to` and returns null on out-of-range lines.  The sole
- * caller (Editor.tsx:506-514) already filters null values with
- * `.filter((d): d is CmDiagnostic => d !== null)`, so null is transparently
- * absorbed without a caller change.
+ * caller (the diagnostics-event listener in `Editor.tsx`) already filters null
+ * values with `.filter((d): d is CmDiagnostic => d !== null)`, so null is
+ * transparently absorbed without a caller change.
  */
 export function lspDiagnosticToCodeMirror(
   diag: LspDiagnostic,
