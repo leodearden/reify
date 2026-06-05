@@ -394,6 +394,15 @@ describe('wait_for_selector: validation errors', () => {
     expect(result.error).toBeDefined();
     expect(typeof result.error).toBe('string');
   });
+
+  it('returns {error} immediately for an invalid state value', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 6, 'wait_for_selector', {
+      testId: 'some-el',
+      state: 'sideways',
+    }) as any;
+    expect(result.error).toBeDefined();
+    expect(typeof result.error).toBe('string');
+  });
 });
 
 describe('wait_for_selector: default timeout', () => {
@@ -621,6 +630,32 @@ describe('wait_for: validation errors', () => {
 
   it('returns {error} when predicate is missing', async () => {
     const result = await dispatchAndGetResult(capturedHandler!, 15, 'wait_for', {}) as any;
+    expect(result.error).toBeDefined();
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('returns {error} when selector predicate has no testId', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 16, 'wait_for', {
+      predicate: { kind: 'selector', state: 'visible' },
+    }) as any;
+    expect(result.error).toBeDefined();
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('returns {error} immediately for store predicate with unknown root path', async () => {
+    // A typo'd root should surface a clear error rather than silently timing out.
+    const result = await dispatchAndGetResult(capturedHandler!, 17, 'wait_for', {
+      predicate: { kind: 'store', path: 'viewState.something', equals: 'x' },
+    }) as any;
+    expect(result.error).toBeDefined();
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('returns {error} immediately for store predicate with missing equals', async () => {
+    // equals is required; omitting it is ambiguous (undefined matches any undefined path).
+    const result = await dispatchAndGetResult(capturedHandler!, 18, 'wait_for', {
+      predicate: { kind: 'store', path: 'engine.evalStatus.phase' },
+    }) as any;
     expect(result.error).toBeDefined();
     expect(typeof result.error).toBe('string');
   });

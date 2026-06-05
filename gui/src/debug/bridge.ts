@@ -665,10 +665,17 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       }
       const pred = predicate as Record<string, unknown>;
       const kind = pred.kind;
-      const timeoutMs =
-        typeof params.timeout_ms === 'number' && params.timeout_ms > 0
-          ? params.timeout_ms
-          : 5000;
+      let timeoutMs = 5000;
+      if (params.timeout_ms !== undefined) {
+        if (
+          typeof params.timeout_ms !== 'number' ||
+          !Number.isInteger(params.timeout_ms) ||
+          params.timeout_ms <= 0
+        ) {
+          return { error: 'timeout_ms must be a positive integer' };
+        }
+        timeoutMs = params.timeout_ms;
+      }
 
       if (kind === 'selector') {
         const testId = pred.testId;
@@ -686,8 +693,22 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         if (typeof path !== 'string' || path === '') {
           return { error: 'predicate.path is required for store kind' };
         }
-        // Build a snapshot object {engine, editor, selection, claude} and walk a
-        // dotted path against it. Snapshot is re-evaluated each poll tick via closure.
+        // equals is required: Object.is uses primitive-identity (object/array values
+        // can never match), and an omitted equals silently matches any undefined path.
+        if (equals === undefined) {
+          return { error: 'predicate.equals is required for store kind' };
+        }
+        // Guard against unknown roots so a typo'd path surfaces a clear error
+        // instead of silently timing out. layout.state is included; viewState has no .state.
+        const knownStoreRoots = new Set(['engine', 'editor', 'selection', 'claude', 'layout']);
+        const rootKey = path.split('.')[0];
+        if (!knownStoreRoots.has(rootKey)) {
+          return {
+            error: `unknown store root '${rootKey}'; addressable roots: engine, editor, selection, claude, layout`,
+          };
+        }
+        // Build a snapshot object and walk a dotted path against it.
+        // Snapshot is re-evaluated each poll tick via closure.
         const getByPath = (root: Record<string, unknown>, dotted: string): unknown => {
           return dotted.split('.').reduce<unknown>((acc, key) => {
             if (acc !== null && typeof acc === 'object') {
@@ -702,6 +723,7 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
             editor: ctx.stores.editor.state,
             selection: ctx.stores.selection.state,
             claude: ctx.stores.claude.state,
+            layout: ctx.stores.layout.state,
           };
           return Object.is(getByPath(snapshot, path), equals);
         }, timeoutMs);
@@ -720,10 +742,17 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         return { error: 'state must be visible|gone' };
       }
       const text = typeof params.text === 'string' ? params.text : undefined;
-      const timeoutMs =
-        typeof params.timeout_ms === 'number' && params.timeout_ms > 0
-          ? params.timeout_ms
-          : 5000;
+      let timeoutMs = 5000;
+      if (params.timeout_ms !== undefined) {
+        if (
+          typeof params.timeout_ms !== 'number' ||
+          !Number.isInteger(params.timeout_ms) ||
+          params.timeout_ms <= 0
+        ) {
+          return { error: 'timeout_ms must be a positive integer' };
+        }
+        timeoutMs = params.timeout_ms;
+      }
       return pollUntil(
         buildSelectorPredicate({ testId, state: stateParam as 'visible' | 'gone', text }),
         timeoutMs,

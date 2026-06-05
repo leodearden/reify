@@ -106,10 +106,14 @@ describe('idempotency', () => {
     expect(matching.length).toBe(1);
   });
 
-  it('does not recurse on console.error calls inside the patch', () => {
-    // Install capture (already done in beforeAll — this is a no-op); then trigger
+  it('does not recurse on console.error calls inside the patch (buffer gains exactly one entry)', () => {
+    // Install is idempotent — no-op here since it ran in beforeAll.
     installConsoleErrorCapture();
-    expect(() => console.error('no-recurse')).not.toThrow();
+    console.error('no-recurse');
+    const errors = getConsoleErrors();
+    const matching = errors.filter((e) => e.message.includes('no-recurse'));
+    // Exactly one entry: a re-entrant wrapper would push twice (or more).
+    expect(matching.length).toBe(1);
   });
 });
 
