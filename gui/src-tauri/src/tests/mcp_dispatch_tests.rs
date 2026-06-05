@@ -523,7 +523,7 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
         "compile_diagnostics must be non-empty after editA"
     );
     assert!(
-        diags_a.iter().any(|d| d["message"].as_str().map_or(false, |m| m.contains("bogus_thk"))),
+        diags_a.iter().any(|d| d["message"].as_str().is_some_and(|m| m.contains("bogus_thk"))),
         "compile_diagnostics after editA must reference 'bogus_thk'; got: {:?}", diags_a
     );
 
@@ -567,11 +567,11 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
         "compile_diagnostics must be non-empty after editB"
     );
     assert!(
-        diags_b.iter().any(|d| d["message"].as_str().map_or(false, |m| m.contains("mystery_vol"))),
+        diags_b.iter().any(|d| d["message"].as_str().is_some_and(|m| m.contains("mystery_vol"))),
         "compile_diagnostics after editB must reference 'mystery_vol'; got: {:?}", diags_b
     );
     assert!(
-        !diags_b.iter().any(|d| d["message"].as_str().map_or(false, |m| m.contains("bogus_thk"))),
+        !diags_b.iter().any(|d| d["message"].as_str().is_some_and(|m| m.contains("bogus_thk"))),
         "compile_diagnostics after editB must NOT reference 'bogus_thk' (stale diag must be gone)"
     );
 
