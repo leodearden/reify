@@ -3688,6 +3688,9 @@ pub(crate) fn compile_expr_guarded(
             // A single-hole "{x}" lowers to render(x) with no spurious "" +.
             let mut iter = part_exprs.into_iter();
             match iter.next() {
+                // Defensive: the parser always emits ≥1 part for InterpolatedString
+                // (empty `""` stays ExprKind::StringLiteral), so this is unreachable
+                // in practice.
                 None => CompiledExpr::literal(Value::String(String::new()), Type::String),
                 Some(first) => iter.fold(first, |acc, next| {
                     CompiledExpr::binop(BinOp::Add, acc, next, Type::String)

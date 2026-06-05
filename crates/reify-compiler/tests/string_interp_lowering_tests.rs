@@ -69,7 +69,7 @@ structure S {
     );
 
     // The outer expression must be a BinOp::Add (the concat fold).
-    let CompiledExprKind::BinOp { op, right, .. } = &expr.kind else {
+    let CompiledExprKind::BinOp { op, left, right } = &expr.kind else {
         panic!(
             "expected CompiledExprKind::BinOp for interpolated string fold, got {:?}",
             expr.kind
@@ -79,6 +79,22 @@ structure S {
         *op,
         BinOp::Add,
         "expected BinOp::Add for concat fold of interpolated string",
+    );
+
+    // The left operand must be a bare Literal("x="), confirming that literal
+    // StringParts bypass the render wrapper (only Hole parts are wrapped).
+    let CompiledExprKind::Literal(left_val) = &left.kind else {
+        panic!(
+            "expected left operand to be CompiledExprKind::Literal (literal string part \
+             must NOT be wrapped in __interp_render), got {:?}",
+            left.kind
+        );
+    };
+    assert_eq!(
+        left_val,
+        &Value::String("x=".into()),
+        "expected left operand Literal(Value::String(\"x=\")), got {:?}",
+        left_val,
     );
 
     // The right operand must be a FunctionCall to std::__interp_render.
@@ -146,6 +162,62 @@ structure S {
         errors.is_empty(),
         "expected no Severity::Error diagnostics for \"a{{t}}b\" (got: {:?})",
         errors,
+    );
+}
+
+/// A hole-only string `"{1+1}"` must lower to a bare `FunctionCall` to
+/// `std::__interp_render` — NOT a `BinOp::Add` with an empty-string left seed.
+///
+/// Pins the no-seed-fold invariant from the code comment at expr.rs line ~3688:
+/// when there is exactly one part (a single `Hole`), `iter.next()` returns that
+/// part as `acc` and the fold body never executes.  The result is `render(1+1)`
+/// directly, with no spurious `"" +` prefix.
+///
+/// GREEN after step-2 real lowering.
+#[test]
+fn hole_only_lowers_to_render_not_binop_add() {
+    let source = r#"
+structure S {
+    let v = "{1+1}"
+}
+"#;
+    let module = compile_source(source);
+
+    // No "not yet" placeholder diagnostic.
+    let has_not_yet = module
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("not yet"));
+    assert!(
+        !has_not_yet,
+        "expected no 'not yet' placeholder diagnostic for hole-only interpolated string, got: {:?}",
+        module.diagnostics,
+    );
+
+    let expr = get_let_expr(&module, "v");
+
+    // Result type must be Type::String.
+    assert_eq!(
+        expr.result_type,
+        Type::String,
+        "expected result_type Type::String for hole-only string, got {:?}",
+        expr.result_type,
+    );
+
+    // The outer expression must be a FunctionCall to std::__interp_render —
+    // NOT a BinOp::Add with an empty-string left operand (no-seed fold guarantee).
+    let CompiledExprKind::FunctionCall { function, .. } = &expr.kind else {
+        panic!(
+            "expected CompiledExprKind::FunctionCall (render only, no BinOp) for hole-only \
+             string \"{{1+1}}\", got {:?} — did the fold accidentally concat with an empty string?",
+            expr.kind
+        );
+    };
+    assert_eq!(
+        function.qualified_name,
+        "std::__interp_render",
+        "expected function qualified_name == \"std::__interp_render\" for hole-only string, got {:?}",
+        function.qualified_name,
     );
 }
 
