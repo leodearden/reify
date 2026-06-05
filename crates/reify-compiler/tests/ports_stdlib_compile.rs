@@ -10,7 +10,10 @@
 //! Tests use the production-path `load_stdlib()` helper, modeled on
 //! `process_stdlib_compile.rs`.
 
-use reify_compiler::{CompiledTrait, DefaultKind, EntityKind, RequirementKind, stdlib_loader};
+use reify_compiler::{
+    CompiledTrait, DefaultKind, EntityKind, RequirementKind, ValueCellDecl, ValueCellKind,
+    stdlib_loader,
+};
 use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::EnumDef;
 use reify_test_support::compile_source_with_stdlib;
@@ -252,6 +255,74 @@ fn std_ports_module_cardinality_locked() {
         "std/ports should declare 0 structures, got: {:?}",
         structure_names
     );
+}
+
+// ─── step-3 (task α): Frame3 structure surface ───────────────────────────────
+
+/// std/ports should contain a `structure def Frame3` with exactly 4 Param-kind
+/// value cells (origin, x_axis, y_axis, z_axis), each resolving to
+/// `Type::Vector { n: 3, quantity: Scalar[LENGTH] }`.
+///
+/// Frame3 is the port-frame structure added by task α, step-4.
+/// RED on current main (no Frame3 in std/ports → template lookup fails).
+#[test]
+fn frame3_structure_surface() {
+    let module = load_module("std/ports");
+
+    let frame3 = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Frame3" && t.entity_kind == EntityKind::Structure)
+        .expect(
+            "std/ports should contain 'structure def Frame3'; \
+             check ports.ri for the Frame3 definition"
+        );
+
+    // Collect Param-kind value cells (excluding Let/Auto).
+    let param_cells: Vec<&ValueCellDecl> = frame3
+        .value_cells
+        .iter()
+        .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
+        .collect();
+
+    let param_names: Vec<&str> = param_cells
+        .iter()
+        .map(|vc| vc.id.member.as_str())
+        .collect();
+
+    assert_eq!(
+        param_cells.len(),
+        4,
+        "Frame3 should have exactly 4 param cells \
+         (origin, x_axis, y_axis, z_axis), got: {:?}",
+        param_names
+    );
+
+    // All 4 params must resolve to Vector3<Length>.
+    let expected_type = Type::Vector {
+        n: 3,
+        quantity: Box::new(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+    };
+    for expected_name in &["origin", "x_axis", "y_axis", "z_axis"] {
+        let cell = param_cells
+            .iter()
+            .find(|vc| vc.id.member == *expected_name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Frame3 missing param '{}'; got: {:?}",
+                    expected_name, param_names
+                )
+            });
+        assert_eq!(
+            cell.cell_type,
+            expected_type,
+            "Frame3.{} must be Type::Vector{{n:3, quantity:Scalar[LENGTH]}}, got {:?}",
+            expected_name,
+            cell.cell_type
+        );
+    }
 }
 
 // ─── step-5: std/ports/mechanical loads + marker traits ──────────────────────
