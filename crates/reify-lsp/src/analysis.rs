@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
@@ -54,19 +56,34 @@ pub struct EntitySummary<'a> {
 /// Shared analysis context that runs the parse → compile → check pipeline once
 /// and provides structured accessors for hover, goto-def, and completions.
 pub struct AnalysisContext {
-    pub parsed: ParsedModule,
+    pub parsed: Arc<ParsedModule>,
     pub compiled: CompiledModule,
     pub check_result: CheckResult,
 }
 
 impl AnalysisContext {
-    /// Build a new analysis context by running the full pipeline.
+    /// Build a new analysis context by parsing `source` and running the full
+    /// compile + check pipeline.
     pub fn new(source: &str, uri: &Url) -> Self {
         let module_name = module_name_from_uri(uri);
         // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
-        // disambiguate to `EnumAccess`; pairs with `compile_with_stdlib` below.
-        // See task 2525.
+        // disambiguate to `EnumAccess`; pairs with `compile_with_stdlib` in
+        // `from_parsed`. See task 2525.
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+        Self::from_parsed(Arc::new(parsed))
+    }
+
+    /// Build an analysis context from an already-parsed module, running only the
+    /// compile + constraint-check stages.
+    ///
+    /// This is the shared entry point for the LSP providers: the per-document
+    /// parse cache (see [`crate::document::DocumentState::parsed_module`]) hands
+    /// the same `Arc<ParsedModule>` to every request for a given document
+    /// version, so hover and completion compile + check the cached parse instead
+    /// of re-parsing. [`AnalysisContext::new`] delegates here after parsing.
+    pub fn from_parsed(parsed: Arc<ParsedModule>) -> Self {
+        // `&parsed` (`&Arc<ParsedModule>`) deref-coerces to the `&ParsedModule`
+        // the compiler expects.
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
