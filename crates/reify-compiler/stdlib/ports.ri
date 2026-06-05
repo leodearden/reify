@@ -1,8 +1,14 @@
-// Stdlib: Port Interfaces — Directionality, Port
+// Stdlib: Port Interfaces — Directionality, Port, Frame3, LocatedPort, RegionPort
 // Provides the base trait surface for representing directional port interfaces
 // on parametric structures (connectors, interfaces, joints).
 //
-// Reference: docs/prds/v0_6/stdlib-reconstruction.md task α.
+// Reference: docs/prds/v0_6/ports-breadth-expansion.md task α (§7).
+//
+// This task (α) adds:
+//   - Port.direction default = Directionality.Bidi (§4 decision 1)
+//   - structure def Frame3  { origin/x_axis/y_axis/z_axis : Vector3<Length> }
+//   - trait LocatedPort : Port { param frame : Frame3 }
+//   - trait RegionPort : LocatedPort { param region : Geometry }
 //
 // Deviations from §11 spec (forced by current language scope):
 //   1. `Directionality` mirrors the Rust `PortDirection` enum at
@@ -13,6 +19,9 @@
 //      adding the pragma would violate the stdlib_loader_tests invariant that
 //      only {std/units, std/materials/mechanical, std/analysis, std/tolerancing}
 //      may carry it.
+//   3. Frame3 uses uniform Vector3<Length> for ALL members (including origin),
+//      per PRD §4 decision 1. This deviates from constitutive.ri MaterialFrame
+//      which uses Point3<Length> for origin.
 
 // ── Enumerations ─────────────────────────────────────────────────────────────
 
@@ -26,6 +35,8 @@ enum Directionality { In, Out, Bidi }
 
 // Base trait for any port interface on a parametric structure.
 // direction: which way the port is oriented (In/Out/Bidi).
+// Default is Bidi — most mechanical and bidirectional connections omit it.
+// (precedent: tolerancing.ri MaterialCondition.RFS / solver_buckling.ri ElementOrder.P1)
 trait Port {
-    param direction : Directionality
+    param direction : Directionality = Directionality.Bidi
 }
