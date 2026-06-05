@@ -3643,16 +3643,57 @@ pub(crate) fn compile_expr_guarded(
                 "not yet supported",
             )),
         ),
-        reify_ast::ExprKind::InterpolatedString(_) => make_poison_literal(
-            diagnostics,
-            Diagnostic::error(
-                "string interpolation is not yet supported (task γ)".to_string(),
-            )
-            .with_label(DiagnosticLabel::new(
-                expr.span,
-                "not yet supported",
-            )),
-        ),
+        reify_ast::ExprKind::InterpolatedString(parts) => {
+            // Render-then-concat fold (PRD §3 + §9.1).
+            //
+            // Each Hole is wrapped in __interp_render (std::__interp_render) so
+            // that ANY Value maps to String before the String+String concat.
+            // Without the render step, String + non-String falls through
+            // eval_add to Value::Undef (reify-expr/src/lib.rs:2718).
+            let part_exprs: Vec<CompiledExpr> = parts
+                .iter()
+                .map(|part| match part {
+                    reify_ast::StringPart::Literal(s) => {
+                        CompiledExpr::literal(Value::String(s.clone()), Type::String)
+                    }
+                    reify_ast::StringPart::Hole(e) => {
+                        let compiled = compile_expr_guarded(
+                            e,
+                            scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            current_guard,
+                            lambda_counter,
+                        );
+                        let content_hash = ContentHash::of(&[TAG_FUNCTION_CALL])
+                            .combine(ContentHash::of_str("std::__interp_render"))
+                            .combine(compiled.content_hash);
+                        CompiledExpr {
+                            kind: CompiledExprKind::FunctionCall {
+                                function: ResolvedFunction {
+                                    name: "__interp_render".to_string(),
+                                    qualified_name: "std::__interp_render".to_string(),
+                                },
+                                args: vec![compiled],
+                            },
+                            result_type: Type::String,
+                            content_hash,
+                        }
+                    }
+                })
+                .collect();
+
+            // No-seed left fold: first part seeds acc, then concat the rest.
+            // A single-hole "{x}" lowers to render(x) with no spurious "" +.
+            let mut iter = part_exprs.into_iter();
+            match iter.next() {
+                None => CompiledExpr::literal(Value::String(String::new()), Type::String),
+                Some(first) => iter.fold(first, |acc, next| {
+                    CompiledExpr::binop(BinOp::Add, acc, next, Type::String)
+                }),
+            }
+        }
     }
 }
 
