@@ -332,9 +332,23 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         ? editor.state.openFiles.find((f) => f.path === activeFile)
         : undefined;
 
+      // The editorStore snapshot (file?.content) is stale-by-design on every
+      // keystroke — Editor.tsx's docChanged handler deliberately never calls
+      // updateFileContent (the "anti-loop invariant", Editor.tsx:493-497) so
+      // that typing does not re-fire the store→view sync and compile-diagnostics
+      // effects on each keystroke.  The live buffer lives on ctx.editorView,
+      // the same handle that type_in_editor reads (bridge.ts:509).
+      // Guard: substitute live content only when an active file is open AND
+      // the EditorView is present; otherwise fall back to the store snapshot.
+      // When there is no active file we must NOT use editorView (it holds ''
+      // for the untitled buffer), so content stays null.
+      const liveContent = activeFile && ctx.editorView
+        ? ctx.editorView.state.doc.toString()
+        : undefined;
+
       return {
         activeFile,
-        content: file?.content ?? null,
+        content: liveContent ?? file?.content ?? null,
         cursorPosition: editor.state.cursorPosition,
         activeFileOutOfSyncWithDisk: activeFile !== null && activeFile !== undefined
           ? editor.state.externallyChanged.includes(activeFile)
