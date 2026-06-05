@@ -439,3 +439,189 @@ describe('wait_for_selector: default timeout', () => {
     expect(result.error).toBe('timeout');
   });
 });
+
+// ─── Part B: wait_for ────────────────────────────────────────────────────────
+
+describe('wait_for: selector kind', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let testEl: HTMLElement | null = null;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    const stores = makeStores('idle');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+  });
+
+  afterEach(() => {
+    if (testEl && testEl.parentNode) {
+      document.body.removeChild(testEl);
+    }
+    testEl = null;
+    delete window.__REIFY_DEBUG__;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('selector predicate: appears-after-delay resolves {ok:true}', async () => {
+    vi.mocked(invoke).mockClear();
+    const dispatchPromise = capturedHandler!({
+      payload: {
+        id: 10,
+        command: 'wait_for',
+        params: { predicate: { kind: 'selector', testId: 'wait-for-el', state: 'visible' } },
+      },
+    });
+
+    // Element not yet present
+    await vi.advanceTimersByTimeAsync(32);
+    expect(vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response')).toBeUndefined();
+
+    // Append element with stubbed rect
+    testEl = document.createElement('div');
+    testEl.setAttribute('data-testid', 'wait-for-el');
+    testEl.getBoundingClientRect = () => ({
+      x: 0, y: 0, width: 100, height: 20,
+      top: 0, right: 100, bottom: 20, left: 0,
+      toJSON: () => ({}),
+    });
+    document.body.appendChild(testEl);
+
+    await vi.advanceTimersByTimeAsync(32);
+    await dispatchPromise;
+
+    const responseCall = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const result = JSON.parse((responseCall![1] as any).result);
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('wait_for: store kind', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let stores: DebugStores;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    stores = makeStores('evaluating');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('store predicate: resolves {ok:true} once dotted-path value matches', async () => {
+    vi.mocked(invoke).mockClear();
+    const dispatchPromise = capturedHandler!({
+      payload: {
+        id: 11,
+        command: 'wait_for',
+        params: {
+          predicate: { kind: 'store', path: 'engine.evalStatus.phase', equals: 'idle' },
+          timeout_ms: 5000,
+        },
+      },
+    });
+
+    // Phase is 'evaluating' — not matched
+    await vi.advanceTimersByTimeAsync(32);
+    expect(vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response')).toBeUndefined();
+
+    // Transition store to idle
+    stores.engine.state.evalStatus.phase = 'idle';
+
+    // Advance one poll tick
+    await vi.advanceTimersByTimeAsync(32);
+    await dispatchPromise;
+
+    const responseCall = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const result = JSON.parse((responseCall![1] as any).result);
+    expect(result.ok).toBe(true);
+  });
+
+  it('store predicate: times out when value never matches', async () => {
+    vi.mocked(invoke).mockClear();
+    const dispatchPromise = capturedHandler!({
+      payload: {
+        id: 12,
+        command: 'wait_for',
+        params: {
+          predicate: { kind: 'store', path: 'engine.evalStatus.phase', equals: 'idle' },
+          timeout_ms: 100,
+        },
+      },
+    });
+
+    // Phase stays 'evaluating'
+    await vi.advanceTimersByTimeAsync(200);
+    await dispatchPromise;
+
+    const responseCall = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const result = JSON.parse((responseCall![1] as any).result);
+    expect(result.error).toBe('timeout');
+  });
+});
+
+describe('wait_for: validation errors', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    const stores = makeStores('idle');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    vi.unstubAllGlobals();
+  });
+
+  it('returns {error} for unknown predicate kind', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 13, 'wait_for', {
+      predicate: { kind: 'nope' },
+    }) as any;
+    expect(result.error).toBeDefined();
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('returns {error} when predicate is not an object', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 14, 'wait_for', {
+      predicate: 'string-not-object',
+    }) as any;
+    expect(result.error).toBeDefined();
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('returns {error} when predicate is missing', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 15, 'wait_for', {}) as any;
+    expect(result.error).toBeDefined();
+    expect(typeof result.error).toBe('string');
+  });
+});
