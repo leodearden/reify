@@ -8836,4 +8836,37 @@ mod tests {
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
         }
     }
+
+    // --- Wedge FFI tests (task-4158, step-1) ---
+
+    /// FFI-level test: make_wedge produces a solid with the expected volume and
+    /// face count.
+    ///
+    /// V = depth·height·(width+top_width)/2 = 0.010·0.015·(0.020+0.005)/2
+    ///   = 1.875e-6 m³ (exact for flat-faced OCCT BRepPrimAPI_MakeWedge).
+    /// Face count = 6: 2 trapezoid end-caps + 4 lateral faces.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_wedge.
+    #[test]
+    fn make_wedge_ffi_produces_solid_with_expected_volume_and_face_count() {
+        let shape = ffi::ffi::make_wedge(0.020, 0.010, 0.015, 0.005)
+            .expect("make_wedge(0.020, 0.010, 0.015, 0.005) should succeed");
+
+        // Volume: V = depth·height·(width+top_width)/2
+        let expected_vol: f64 = 0.010 * 0.015 * (0.020 + 0.005) / 2.0; // 1.875e-6 m³
+        let vol = ffi::ffi::query_volume(&shape).expect("query_volume should succeed");
+        let rel_err = (vol - expected_vol).abs() / expected_vol;
+        assert!(
+            rel_err < 0.02,
+            "wedge volume: expected ≈ {expected_vol:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+
+        // Face count: 6 (2 trapezoid caps + 4 lateral faces)
+        let faces = ffi::ffi::get_faces(&shape).expect("get_faces should succeed");
+        let face_count = ffi::ffi::shape_vec_len(&faces);
+        assert_eq!(
+            face_count, 6,
+            "wedge should have exactly 6 faces, got {face_count}"
+        );
+    }
 }
