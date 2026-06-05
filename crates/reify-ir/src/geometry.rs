@@ -1542,6 +1542,156 @@ pub struct Mesh {
     pub normals: Option<Vec<f32>>,
 }
 
+// ── STL serializers ──────────────────────────────────────────────────────────
+
+/// Compute the geometric facet normal for a triangle given its three XYZ
+/// vertices as `[f32; 3]` arrays.  Returns the normalized cross product of
+/// `(b-a) × (c-a)`.  Returns `[0.0, 0.0, 0.0]` for a degenerate (zero-area)
+/// triangle.  The result is independent of `Mesh::normals` (per-vertex, optional)
+/// and is the canonical value written into STL binary/ascii files.
+fn compute_facet_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
+    // Edge vectors
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    // Cross product ab × ac
+    let n = [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    ];
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if len == 0.0 {
+        [0.0, 0.0, 0.0]
+    } else {
+        [n[0] / len, n[1] / len, n[2] / len]
+    }
+}
+
+/// Fetch the XYZ position of vertex `idx` from the flat `vertices` buffer.
+/// Returns `None` if `idx` is out of bounds.
+fn mesh_vertex(vertices: &[f32], idx: u32) -> Option<[f32; 3]> {
+    let base = (idx as usize).checked_mul(3)?;
+    let end = base.checked_add(3)?;
+    if end > vertices.len() {
+        return None;
+    }
+    Some([vertices[base], vertices[base + 1], vertices[base + 2]])
+}
+
+/// Write a mesh to the STL binary format.
+///
+/// **Format** (LITTLE-ENDIAN):
+/// - 80-byte header (fixed ASCII label, NOT starting with "solid")
+/// - `u32`: number of triangles (`indices.len() / 3`)
+/// - Per triangle (50 bytes): 3×f32 facet normal + 3×(3×f32) vertices + `u16` attribute count 0
+///
+/// Facet normals are computed geometrically from the edge cross-product.
+/// `mesh.normals` is intentionally ignored: it is per-vertex and optional;
+/// ManifoldKernel meshes always carry `None`.
+///
+/// Returns `Err(io::Error(InvalidData))` if any triangle index is out of bounds.
+/// Returns an 84-byte (zero-triangle) file for an empty mesh — no panic.
+pub fn write_stl_binary(
+    mesh: &Mesh,
+    writer: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+
+    // 80-byte header — deliberately does NOT start with "solid" to avoid
+    // misclassification by naive ascii/binary discriminators.
+    let mut header = [0u8; 80];
+    let label = b"Reify binary STL";
+    let copy_len = label.len().min(80);
+    header[..copy_len].copy_from_slice(&label[..copy_len]);
+    writer.write_all(&header)?;
+
+    // Triangle count
+    let tri_count = (mesh.indices.len() / 3) as u32;
+    writer.write_all(&tri_count.to_le_bytes())?;
+
+    // Per-triangle body
+    for chunk in mesh.indices.chunks_exact(3) {
+        let i0 = chunk[0];
+        let i1 = chunk[1];
+        let i2 = chunk[2];
+
+        let v0 = mesh_vertex(&mesh.vertices, i0)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i0} out of bounds")))?;
+        let v1 = mesh_vertex(&mesh.vertices, i1)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i1} out of bounds")))?;
+        let v2 = mesh_vertex(&mesh.vertices, i2)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i2} out of bounds")))?;
+
+        let n = compute_facet_normal(v0, v1, v2);
+
+        // Facet normal (3 × f32 LE)
+        for &c in &n {
+            writer.write_all(&c.to_le_bytes())?;
+        }
+        // Vertex 0 (3 × f32 LE)
+        for &c in &v0 {
+            writer.write_all(&c.to_le_bytes())?;
+        }
+        // Vertex 1 (3 × f32 LE)
+        for &c in &v1 {
+            writer.write_all(&c.to_le_bytes())?;
+        }
+        // Vertex 2 (3 × f32 LE)
+        for &c in &v2 {
+            writer.write_all(&c.to_le_bytes())?;
+        }
+        // Attribute byte count = 0
+        writer.write_all(&0u16.to_le_bytes())?;
+    }
+
+    Ok(())
+}
+
+/// Write a mesh to the STL ASCII format.
+///
+/// Emits `solid reify\n … endsolid reify\n`.  Each triangle produces a
+/// `facet normal …` / `outer loop` / 3× `vertex …` / `endloop` / `endfacet`
+/// block.  Facet normals are computed geometrically (same as `write_stl_binary`).
+///
+/// Returns `Err(io::Error(InvalidData))` if any triangle index is out of bounds.
+pub fn write_stl_ascii(
+    mesh: &Mesh,
+    writer: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+
+    writer.write_all(b"solid reify\n")?;
+
+    for chunk in mesh.indices.chunks_exact(3) {
+        let i0 = chunk[0];
+        let i1 = chunk[1];
+        let i2 = chunk[2];
+
+        let v0 = mesh_vertex(&mesh.vertices, i0)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i0} out of bounds")))?;
+        let v1 = mesh_vertex(&mesh.vertices, i1)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i1} out of bounds")))?;
+        let v2 = mesh_vertex(&mesh.vertices, i2)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i2} out of bounds")))?;
+
+        let n = compute_facet_normal(v0, v1, v2);
+
+        writer.write_all(
+            format!(
+                "  facet normal {nx} {ny} {nz}\n    outer loop\n      vertex {x0} {y0} {z0}\n      vertex {x1} {y1} {z1}\n      vertex {x2} {y2} {z2}\n    endloop\n  endfacet\n",
+                nx = n[0], ny = n[1], nz = n[2],
+                x0 = v0[0], y0 = v0[1], z0 = v0[2],
+                x1 = v1[0], y1 = v1[1], z1 = v1[2],
+                x2 = v2[0], y2 = v2[1], z2 = v2[2],
+            )
+            .as_bytes(),
+        )?;
+    }
+
+    writer.write_all(b"endsolid reify\n")?;
+    Ok(())
+}
+
 /// FEA element-order discriminator for a tet-based [`VolumeMesh`].
 ///
 /// `P1` tetrahedra carry 4 corner nodes per element (linear shape functions,
