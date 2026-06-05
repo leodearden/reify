@@ -455,6 +455,38 @@ fn extract_faces_unit_cube_returns_6_planar_faces() {
     assert_handles_valid_and_distinct(&faces, "face");
 }
 
+/// `extract_faces` on the same parent handle returns the **same** ids in the
+/// **same order** on every call (per-parent memoization).
+///
+/// The per-parent idempotency contract mirrors OCCT's
+/// (`crates/reify-kernel-occt/src/lib.rs:619-628` doc): given the same parent
+/// handle, the returned `Vec<GeometryHandleId>` must be element-for-element
+/// identical — both in id values and in order — across calls.
+///
+/// RED (step-3): after step-2 (coalescing), `store_sub_shape` mints FRESH
+/// monotonic ids on every call, so the second `extract_faces` returns a
+/// disjoint vec and `assert_eq!` fails.  GREEN after step-4 (memoization).
+#[test]
+fn extract_faces_is_idempotent_per_parent_handle() {
+    let mut kernel = ManifoldKernel::new();
+    let handle = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+
+    let first = kernel
+        .extract_faces(handle)
+        .expect("first extract_faces call must succeed");
+    let second = kernel
+        .extract_faces(handle)
+        .expect("second extract_faces call must succeed");
+
+    assert_eq!(
+        first,
+        second,
+        "extract_faces must return identical ids in identical order for the same parent handle \
+         (per-parent memoization contract, mirroring OCCT); \
+         first={first:?}, second={second:?}",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Topology extraction: extract_edges (steps 3 + 4)
 // ---------------------------------------------------------------------------
