@@ -24,7 +24,7 @@ import { toPng } from 'html-to-image';
 import { initDebugBridge } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
-import type { ViewStateStore } from '../stores/viewStateStore';
+import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
 
@@ -72,7 +72,7 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
         currentMessageId: null,
       },
     },
-    viewState: { resetToDefaultView: vi.fn() } as unknown as ViewStateStore,
+    viewState: makeViewStateStoreMock(),
     layout: {
       state: {
         editorWidth: 300,

@@ -27,7 +27,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
-import type { ViewStateStore } from '../stores/viewStateStore';
+import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 import { MenuBar } from '../panels/MenuBar';
 import { FileTabs } from '../editor/FileTabs';
 import { DiagnosticsPanel } from '../panels/DiagnosticsPanel';
@@ -80,7 +80,7 @@ function makeStores(): DebugStores {
         currentMessageId: null,
       },
     },
-    viewState: { resetToDefaultView: vi.fn() } as unknown as ViewStateStore,
+    viewState: makeViewStateStoreMock(),
     layout: {
       state: {
         editorWidth: 300,

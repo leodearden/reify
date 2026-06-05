@@ -19,7 +19,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
-import type { ViewStateStore } from '../stores/viewStateStore';
+import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
 
@@ -66,7 +66,7 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
         currentMessageId: null,
       },
     },
-    viewState: { resetToDefaultView: vi.fn() } as unknown as ViewStateStore,
+    viewState: makeViewStateStoreMock(),
     layout: {
       state: {
         editorWidth: 300,

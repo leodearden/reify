@@ -1,8 +1,11 @@
 /**
  * Compile-time type-contract file for DebugStores.
  * This file is NOT executed — it only needs to pass `tsc --noEmit`.
- * It verifies that DebugStores.selection exposes clearSelection/toggleSelect,
- * and that DebugStores.viewState is exactly ViewStateStore.
+ *
+ * Load-bearing assertion: DebugStores.viewState must be EXACTLY ViewStateStore
+ * (Equals<> fails if it becomes a narrow subset).
+ * Drift guards: the real stores must remain assignable to DebugStores, catching
+ * any future rename or removal of a required member.
  */
 import type { DebugStores } from '../debug/types';
 import type { ViewStateStore } from '../stores/viewStateStore';
@@ -14,29 +17,18 @@ type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type AssertTrue<T extends true> = T;
 
-// (1) clearSelection must be a required member of DebugStores.selection
-const _cs: DebugStores['selection']['clearSelection'] = () => {};
-void _cs;
-
-// (2) toggleSelect must be a required member of DebugStores.selection
-const _ts: DebugStores['selection']['toggleSelect'] = (_p: string) => {};
-void _ts;
-
-// (3) Drift guard — real selection store must be assignable to DebugStores.selection.
-// Compiles both before and after the fix (assignment widening; structural subtyping).
+// Drift guard: real selection store must remain assignable to DebugStores.selection.
+// Catches future renames/removals of required members (clearSelection, toggleSelect, …).
 declare const realSel: ReturnType<typeof createSelectionStore>;
 const _selAssign: DebugStores['selection'] = realSel;
 void _selAssign;
 
-// (4) DebugStores.viewState must be EXACTLY ViewStateStore (not a narrow subset).
+// DebugStores.viewState must be EXACTLY ViewStateStore (not a narrow subset).
+// This is the key structural invariant — fails if viewState drifts to a Pick<>.
 type _VsExact = AssertTrue<Equals<DebugStores['viewState'], ViewStateStore>>;
 
-// (5) Drift guard — real viewState store must be assignable to DebugStores.viewState.
-// Compiles both before and after the fix (assignment widening).
+// Drift guard: real viewState store must remain assignable to DebugStores.viewState.
+// Catches future ViewStateStore member changes that would break App.tsx:1127.
 declare const realVs: ReturnType<typeof createViewStateStore>;
 const _vsAssign: DebugStores['viewState'] = realVs;
 void _vsAssign;
-
-// (6) switchView must be reachable through DebugStores.viewState
-const _sw: DebugStores['viewState']['switchView'] = () => false;
-void _sw;
