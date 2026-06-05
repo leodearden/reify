@@ -2059,10 +2059,18 @@ impl EngineSession {
     ///
     /// # One-snapshot invariant (task 4258)
     ///
-    /// `files[].content` and `compile_diagnostics` are always from the **same**
-    /// source snapshot.  On a failed edit, `files[0].content` is overridden with
-    /// `CompileFailure.source` (the exact buffer the failing compile ran against),
-    /// so a diagnostic's `line`/`col` indexes correctly into the returned content.
+    /// `files[].content` and `compile_diagnostics` are from the **same** source
+    /// snapshot, with one precision: **Error** diagnostics from the failing compile
+    /// have line/col positions guaranteed to index into the overridden
+    /// `files[].content`; **Warning/Info** diagnostics carried over from the
+    /// last-good compile retain their last-good positions and may be off if the
+    /// edit shifted lines.
+    ///
+    /// **`get_source_location` spans** are resolved against the last-good compiled
+    /// source (`source_map`).  They must NOT be applied as indices into
+    /// `files[].content` when the session is stale (failed-edit) — the two buffers
+    /// differ.  Use `get_source_location` spans only when `compile_failure` is
+    /// `None` (i.e. `stale == false` at the MCP layer).
     ///
     /// `meshes` and `values` intentionally remain last-good on failure so the
     /// viewport stays populated.  See `commands::engine_state_json` for the full
