@@ -792,6 +792,37 @@ mod tests {
 
     const GUARDED_GROUP_SOURCE: &str = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n}";
 
+    // --- step-07: injectable completion core over a shared AnalysisContext ---
+
+    /// `compute_completions_in_context`, fed a context built from a shared
+    /// parse, must return completion items identical to the
+    /// `compute_completions` wrapper — proving the cache-fed core path is
+    /// output-equivalent to the per-request path.
+    #[test]
+    fn compute_completions_in_context_matches_wrapper() {
+        let source = reify_test_support::bracket_source();
+        let uri = test_uri();
+        let position = Position::new(1, 0); // inside the structure body
+
+        let parsed = std::sync::Arc::new(reify_compiler::parse_with_stdlib(
+            source,
+            reify_core::ModulePath::single("test"),
+        ));
+        let ctx = AnalysisContext::from_parsed(parsed);
+
+        let via_context = compute_completions_in_context(&ctx, source, position);
+        let via_wrapper = compute_completions(source, &uri, position);
+
+        assert!(
+            !via_context.is_empty(),
+            "in-context completions should be non-empty in a structure body"
+        );
+        assert_eq!(
+            via_context, via_wrapper,
+            "in-context completions must match the wrapper output"
+        );
+    }
+
     // --- step-9: completion tests ---
 
     #[test]
