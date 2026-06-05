@@ -4075,6 +4075,21 @@ pub(crate) fn build_structure_def_skeleton(
     // members compiled in the second pass below can resolve sibling params
     // without producing poison exprs (task-4342: skeleton now carries Let cells).
     let mut value_cells: Vec<ValueCellDecl> = Vec::new();
+
+    // Mirror the authoritative path's incremental geometry-let classification
+    // (entity.rs:623, 853-856).  `known_geometry_lets` tracks names that resolve
+    // to geometry — either a direct geometry function call, or an Ident/branch
+    // alias to an already-known geometry let or geometry param.  `is_geometry_let`
+    // consults this set for its Ident/Conditional/Match branches (geometry.rs),
+    // so it MUST be populated incrementally as the walk proceeds — otherwise an
+    // aliased geometry let (e.g. `let base = box(w,w,w); let shifted = base`) is
+    // skipped on the authoritative/sub path but NOT here, leaking a spurious
+    // Undef `shifted` field into the ctor `lets` and breaking the cross-path
+    // consistency this task exists to guarantee.  Geometry params are seeded in
+    // the first pass below (authoritative: entity.rs:822-831); geometry lets are
+    // accumulated in the second pass.
+    let mut known_geometry_lets: HashSet<&str> = HashSet::new();
+
     for member in &structure.members {
         if let reify_ast::MemberDecl::Param(param) = member {
             // Resolve cell_type; fall back to Real on None / unresolvable.
@@ -4103,6 +4118,19 @@ pub(crate) fn build_structure_def_skeleton(
             });
 
             let id = ValueCellId::new(&structure.name, &param.name);
+            // Seed `known_geometry_lets` with geometry-typed params whose default
+            // is a geometry expression, so a later let aliasing this param (e.g.
+            // `let shifted = base_solid`) is classified as geometry and routed out
+            // of value_cells.  Mirrors the authoritative path (entity.rs:822-831).
+            if cell_type == Type::Geometry
+                && param
+                    .default
+                    .as_ref()
+                    .map(|e| is_geometry_let(e, functions, &known_geometry_lets))
+                    .unwrap_or(false)
+            {
+                known_geometry_lets.insert(param.name.as_str());
+            }
             // Register in scope so subsequent Let exprs can reference this param.
             scope.register(&param.name, cell_type.clone());
             value_cells.push(ValueCellDecl {
@@ -4148,10 +4176,13 @@ pub(crate) fn build_structure_def_skeleton(
     //   • Visibility respects `let_decl.is_pub` (authoritative: entity.rs:1434) so
     //     downstream callers (e.g. the ctor-lets lowering filter at expr.rs:1413) see
     //     identical metadata on both paths.
-    let known_geometry_lets: HashSet<&str> = HashSet::new();
     for member in &structure.members {
         if let reify_ast::MemberDecl::Let(let_decl) = member {
             if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
+                // Accumulate this geometry let's name so subsequent lets that
+                // alias it (Ident/branch references) are also classified as
+                // geometry — matching the authoritative path (entity.rs:853-856).
+                known_geometry_lets.insert(let_decl.name.as_str());
                 continue;
             }
             // Per-decl guarded lets belong in guarded_groups on the authoritative path;
