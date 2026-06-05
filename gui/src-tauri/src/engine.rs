@@ -2056,6 +2056,17 @@ impl EngineSession {
     }
 
     /// Build the full GUI state from the current engine state.
+    ///
+    /// # One-snapshot invariant (task 4258)
+    ///
+    /// `files[].content` and `compile_diagnostics` are always from the **same**
+    /// source snapshot.  On a failed edit, `files[0].content` is overridden with
+    /// `CompileFailure.source` (the exact buffer the failing compile ran against),
+    /// so a diagnostic's `line`/`col` indexes correctly into the returned content.
+    ///
+    /// `meshes` and `values` intentionally remain last-good on failure so the
+    /// viewport stays populated.  See `commands::engine_state_json` for the full
+    /// contract as exposed by the MCP `engine_state` tool.
     pub fn build_gui_state(&mut self) -> Result<GuiState, String> {
         // When `compiled` is `None` (the session has never completed a successful
         // parse+compile+check cycle), surface the most recent failure diagnostics

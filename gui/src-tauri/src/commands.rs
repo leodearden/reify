@@ -131,6 +131,23 @@ pub fn update_source_impl(
 ///   `constraints`, `files`.
 /// * New staleness keys: `compile_diagnostics`, `tessellation_diagnostics`,
 ///   `stale` (bool), `reload_error` (string or null).
+///
+/// # One-snapshot invariant (task 4258)
+///
+/// `files[].content` and `compile_diagnostics` are always computed from the
+/// **same** source snapshot:
+/// - **On a failed edit** (`stale == true`, `compile_diagnostics` non-empty):
+///   `files[0].content` equals `CompileFailure.source` — the exact buffer the
+///   failing compile was run against.  A diagnostic's `line`/`col` therefore
+///   indexes into `files[0].content` at the offending text.
+/// - **On success** (`stale == false`): `files[].content` reflects the
+///   last-good committed source (`source_map`), and `compile_diagnostics`
+///   carries only warnings from that same committed compile.
+///
+/// **Deliberate split**: `meshes` and `values` intentionally remain last-good
+/// on a failed edit — they describe the last successfully compiled module so
+/// the viewport stays populated.  Only `files[].content` is retargeted to the
+/// failing buffer so the diagnostic source is consistent.
 pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
     let gui_state = session
         .build_gui_state()
