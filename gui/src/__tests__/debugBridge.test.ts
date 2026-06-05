@@ -1052,6 +1052,23 @@ describe('debug bridge editor_content live buffer', () => {
     // non-active entry must stay store-derived
     expect(otherEntry.length).toBe('OTHER'.length);            // 5
   });
+
+  it('empty live buffer (\'\') is returned verbatim, not replaced by store snapshot', async () => {
+    // Guards against a regression where `??` is simplified to `||` or the
+    // liveContent !== undefined guard is changed to a truthiness check:
+    // an empty live doc ('') is a valid post-edit state and must NOT fall
+    // back to the stale store content.
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'PRE-EDIT' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    const emptyView = { state: { doc: { toString: () => '', length: 0 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, emptyView);
+    // content must be '' (live), not 'PRE-EDIT' (stale store)
+    expect(result.content).toBe('');
+    // active openFiles entry length must be 0 (live), not 8 (stale store)
+    const activeEntry = result.openFiles.find((f: any) => f.path === 'bracket.ri');
+    expect(activeEntry.length).toBe(0);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

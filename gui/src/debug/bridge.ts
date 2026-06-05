@@ -349,6 +349,14 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return {
         activeFile,
         content: liveContent ?? file?.content ?? null,
+        // cursorPosition is intentionally kept store-derived (not read from
+        // ctx.editorView.state.selection.main.head).  The store updates
+        // cursorPosition on the cursor-changed transaction listener, which
+        // fires on every selection change — it is not subject to the
+        // anti-loop invariant that prevents calling updateFileContent on
+        // typing.  A consumer mapping cursorPosition as a byte offset into
+        // the live `content` field should be aware that the two values may
+        // briefly diverge mid-keystroke if the cursor moves with the edit.
         cursorPosition: editor.state.cursorPosition,
         activeFileOutOfSyncWithDisk: activeFile !== null && activeFile !== undefined
           ? editor.state.externallyChanged.includes(activeFile)
