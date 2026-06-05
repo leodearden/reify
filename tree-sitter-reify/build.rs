@@ -153,7 +153,6 @@ fn shell_stamp_is_current(
     //    sha256sum on a single small file is near-instant (<10 ms); no timeout needed.
     let output = match std::process::Command::new("sha256sum")
         .arg(grammar_path)
-        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .output()
     {
