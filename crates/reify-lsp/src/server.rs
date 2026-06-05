@@ -269,13 +269,18 @@ impl LanguageServer for ReifyLanguageServer {
         let position = params.text_document_position_params.position;
 
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         drop(state);
 
-        Ok(crate::hover::compute_hover(&text, &uri, position))
+        // Reuse the per-document cached parse (one parse per edit) instead of
+        // re-parsing inside AnalysisContext::new; compile+check stay per-request.
+        let text = doc.text.clone();
+        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
+        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module(mp));
+        Ok(crate::hover::compute_hover_in_context(&ctx, &text, position))
     }
 
     async fn goto_definition(
@@ -286,8 +291,8 @@ impl LanguageServer for ReifyLanguageServer {
         let position = params.text_document_position_params.position;
 
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         let workspace_root = state.workspace_root.clone();
@@ -301,8 +306,15 @@ impl LanguageServer for ReifyLanguageServer {
         // Move all CPU-bound parsing and blocking filesystem I/O
         // (ModuleResolver::resolve_import_path calls .exists(), and
         // std::fs::read_to_string) to Tokio's blocking thread pool so the
-        // async worker thread stays free for other LSP requests.
+        // async worker thread stays free for other LSP requests. The primary
+        // document's parse comes from its per-document cache (one parse per
+        // edit): the Arc<DocumentState> moves into the blocking task and the
+        // parse — cache-filling on the first request after an edit — runs there.
         let location = match tokio::task::spawn_blocking(move || {
+            let mp =
+                reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
+            let parsed = doc.parsed_module(mp);
+            let primary_source = doc.text.as_str();
             if let Some(root) = workspace_root {
                 // Build a resolver closure using ModuleResolver for cross-file navigation.
                 // Use explicit stdlib_path if configured; fall back to the dev-mode path
@@ -321,15 +333,21 @@ impl LanguageServer for ReifyLanguageServer {
                     let target_uri = Url::from_file_path(&path).ok()?;
                     Some((target_uri, source))
                 };
-                crate::goto_def::compute_goto_definition_cross_file(
-                    &text,
+                crate::goto_def::compute_goto_definition_cross_file_with_parsed(
+                    &parsed,
+                    primary_source,
                     &uri,
                     position,
                     &resolve_import,
                 )
             } else {
                 // No workspace root — fall back to single-file resolution.
-                crate::goto_def::compute_goto_definition(&text, &uri, position)
+                crate::goto_def::compute_goto_definition_with_parsed(
+                    &parsed,
+                    primary_source,
+                    &uri,
+                    position,
+                )
             }
         })
         .await
@@ -351,13 +369,17 @@ impl LanguageServer for ReifyLanguageServer {
         let position = params.text_document_position.position;
 
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         drop(state);
 
-        let items = crate::completion::compute_completions(&text, &uri, position);
+        // Reuse the per-document cached parse (one parse per edit).
+        let text = doc.text.clone();
+        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
+        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module(mp));
+        let items = crate::completion::compute_completions_in_context(&ctx, &text, position);
         Ok(Some(CompletionResponse::Array(items)))
     }
 
@@ -370,13 +392,17 @@ impl LanguageServer for ReifyLanguageServer {
         // Brief read lock: snapshot the document text, then release before the
         // (pure, CPU-only) symbol walk — mirrors the hover/completion handlers.
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         drop(state);
 
-        let symbols = crate::analysis::compute_document_symbols(&text, &uri);
+        // Reuse the per-document cached parse (one parse per edit).
+        let text = doc.text.clone();
+        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
+        let parsed = doc.parsed_module(mp);
+        let symbols = crate::analysis::compute_document_symbols_from_parsed(&parsed, &text);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
@@ -390,16 +416,17 @@ impl LanguageServer for ReifyLanguageServer {
         // Brief read lock: snapshot the document text, then drop it before the
         // (CPU-only) parse + scope walk — mirrors document_symbol/prepare_rename.
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         drop(state);
 
-        // Prelude-aware parse for AST-shape consistency with goto_def/rename.
-        let module_name = crate::analysis::module_name_from_uri(&uri);
-        let parsed =
-            reify_compiler::parse_with_stdlib(&text, reify_core::ModulePath::single(module_name));
+        // Reuse the per-document cached parse (one parse per edit) — prelude-aware
+        // for AST-shape consistency with goto_def/rename.
+        let text = doc.text.clone();
+        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
+        let parsed = doc.parsed_module(mp);
 
         // The δ producer returns None for non-resolvable positions (keywords/
         // literals/types/declaration names), which the editor renders as "no
@@ -420,17 +447,17 @@ impl LanguageServer for ReifyLanguageServer {
         // Brief read lock: snapshot the document text, then drop it before the
         // (CPU-only) parse + scope walk — mirrors hover/document_symbol.
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         drop(state);
 
-        // Prelude-aware parse for AST-shape consistency with the rest of reify-lsp
-        // (goto_def/document_symbol use the same pattern).
-        let module_name = crate::analysis::module_name_from_uri(&uri);
-        let parsed =
-            reify_compiler::parse_with_stdlib(&text, reify_core::ModulePath::single(module_name));
+        // Reuse the per-document cached parse (one parse per edit) — prelude-aware
+        // for AST-shape consistency with the rest of reify-lsp.
+        let text = doc.text.clone();
+        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
+        let parsed = doc.parsed_module(mp);
 
         // Forward to the α producer: it returns None for every non-renameable
         // position (keywords/literals/builtins/types/declaration names/cross-module
@@ -452,15 +479,16 @@ impl LanguageServer for ReifyLanguageServer {
         let new_name = params.new_name;
 
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         drop(state);
 
-        let module_name = crate::analysis::module_name_from_uri(&uri);
-        let parsed =
-            reify_compiler::parse_with_stdlib(&text, reify_core::ModulePath::single(module_name));
+        // Reuse the per-document cached parse (one parse per edit).
+        let text = doc.text.clone();
+        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
+        let parsed = doc.parsed_module(mp);
 
         // compute_rename validates new_name and guarantees a re-parse-clean edit
         // (Invariant 5); it returns None for unknown/non-renameable positions and
