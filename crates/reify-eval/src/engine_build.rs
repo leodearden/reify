@@ -1083,7 +1083,8 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         | GeometryOp::Cylinder { .. }
         | GeometryOp::Sphere { .. }
         | GeometryOp::Tube { .. }
-        | GeometryOp::Cone { .. } => ParentHandles::Inline([z, z], 0),
+        | GeometryOp::Cone { .. }
+        | GeometryOp::Wedge { .. } => ParentHandles::Inline([z, z], 0),
 
         // Curve constructors — no parent handles.
         GeometryOp::LineSegment { .. }
@@ -1204,6 +1205,7 @@ fn substitute_op_parents(
         | GeometryOp::Sphere { .. }
         | GeometryOp::Tube { .. }
         | GeometryOp::Cone { .. }
+        | GeometryOp::Wedge { .. }
         | GeometryOp::LineSegment { .. }
         | GeometryOp::Arc { .. }
         | GeometryOp::Helix { .. }
@@ -1294,6 +1296,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Sphere { .. } => Operation::PrimitiveSphere,
         GeometryOp::Tube { .. } => Operation::PrimitiveTube,
         GeometryOp::Cone { .. } => Operation::PrimitiveCone,
+        GeometryOp::Wedge { .. } => Operation::PrimitiveWedge,
 
         // Booleans
         GeometryOp::Union { .. } => Operation::BooleanUnion,
@@ -1411,7 +1414,8 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // Primitives — sources (no geometric input); classified as BRep to
         // document the conscious 'not a Mesh-accepting consumer' decision and
         // satisfy the strum-completeness test (test d, step-3).
-        PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube | PrimitiveCone => {
+        PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube | PrimitiveCone
+        | PrimitiveWedge => {
             Some(BREP_ONLY)
         }
 
@@ -1450,6 +1454,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             PrimitiveKind::Sphere => Operation::PrimitiveSphere,
             PrimitiveKind::Tube => Operation::PrimitiveTube,
             PrimitiveKind::Cone => Operation::PrimitiveCone,
+            PrimitiveKind::Wedge => Operation::PrimitiveWedge,
         },
         CompiledGeometryOp::Boolean { op, .. } => match op {
             BooleanOp::Union => Operation::BooleanUnion,
@@ -6172,6 +6177,7 @@ mod tests {
                 (Operation::PrimitiveSphere, ReprKind::BRep),
                 (Operation::PrimitiveTube, ReprKind::BRep),
                 (Operation::PrimitiveCone, ReprKind::BRep),
+                (Operation::PrimitiveWedge, ReprKind::BRep),
                 (Operation::BooleanUnion, ReprKind::BRep),
                 (Operation::BooleanDifference, ReprKind::BRep),
                 (Operation::BooleanIntersection, ReprKind::BRep),
@@ -9541,6 +9547,25 @@ mod tests {
                 },
                 expected: Operation::PrimitiveTube,
                 label: "Tube → PrimitiveTube",
+            },
+            Case {
+                op: GeometryOp::Cone {
+                    bottom_radius: r(0.01),
+                    top_radius: r(0.005),
+                    height: r(0.02),
+                },
+                expected: Operation::PrimitiveCone,
+                label: "Cone → PrimitiveCone",
+            },
+            Case {
+                op: GeometryOp::Wedge {
+                    width: r(0.020),
+                    depth: r(0.010),
+                    height: r(0.015),
+                    top_width: r(0.005),
+                },
+                expected: Operation::PrimitiveWedge,
+                label: "Wedge → PrimitiveWedge",
             },
             // Booleans
             Case {

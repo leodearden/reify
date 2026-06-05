@@ -59,6 +59,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "box_centered",
     "cylinder_centered",
     "cone",
+    "wedge",
 ];
 
 pub(crate) fn is_geometry_function(name: &str) -> bool {

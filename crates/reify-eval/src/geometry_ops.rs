@@ -408,6 +408,12 @@ pub(crate) fn compile_geometry_op(
                     top_radius: eval_arg("top_radius")?,
                     height: eval_arg("height")?,
                 }),
+                PrimitiveKind::Wedge => Ok(reify_ir::GeometryOp::Wedge {
+                    width: eval_arg("width")?,
+                    depth: eval_arg("depth")?,
+                    height: eval_arg("height")?,
+                    top_width: eval_arg("top_width")?,
+                }),
             }
         }
         CompiledGeometryOp::Boolean { op, left, right } => {

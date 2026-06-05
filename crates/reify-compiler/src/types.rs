@@ -1150,6 +1150,10 @@ pub enum PrimitiveKind {
     /// Setting `top_radius == 0` yields a pointed apex natively via
     /// `BRepPrimAPI_MakeCone`. Both radii zero is invalid (degenerate line).
     Cone,
+    /// Wedge (trapezoidal prism): `wedge(width, depth, height, top_width)`.
+    /// Bbox corner at origin; top_width=0 degenerates to a triangular prism.
+    /// Implemented via `BRepPrimAPI_MakeWedge(dx=width, dy=depth, dz=height, ltx=top_width)`.
+    Wedge,
 }
 
 impl std::fmt::Display for PrimitiveKind {
@@ -1160,6 +1164,7 @@ impl std::fmt::Display for PrimitiveKind {
             PrimitiveKind::Sphere => f.write_str("sphere"),
             PrimitiveKind::Tube => f.write_str("tube"),
             PrimitiveKind::Cone => f.write_str("cone"),
+            PrimitiveKind::Wedge => f.write_str("wedge"),
         }
     }
 }
@@ -1512,6 +1517,7 @@ mod kind_display_tests {
             (PrimitiveKind::Sphere, "sphere"),
             (PrimitiveKind::Tube, "tube"),
             (PrimitiveKind::Cone, "cone"),
+            (PrimitiveKind::Wedge, "wedge"),
         ]);
     }
 

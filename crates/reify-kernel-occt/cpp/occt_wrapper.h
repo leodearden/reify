@@ -114,6 +114,15 @@ std::unique_ptr<OcctShape> make_sphere(double radius);
 /// top_r==0 produces a pointed cone; both non-zero produces a frustum.
 std::unique_ptr<OcctShape> make_cone(double bottom_r, double top_r, double height);
 
+/// Create a wedge (trapezoidal prism) with bbox corner at origin (in meters).
+/// dx=width  — X-extent at the y=0 face.
+/// dy=depth  — Y-extent (distance between the two trapezoidal end-caps).
+/// dz=height — Z-extent.
+/// ltx=top_width — X-extent at the y=dy face (0 = degenerate triangular prism;
+///               ltx > dx produces an inverted/wider-top taper, which is valid).
+/// Volume = dy * dz * (dx + ltx) / 2.
+std::unique_ptr<OcctShape> make_wedge(double dx, double dy, double dz, double ltx);
+
 // --- Compound assembly ---
 
 /// Assemble N solid shapes into a single TopoDS_Compound for multi-body STEP

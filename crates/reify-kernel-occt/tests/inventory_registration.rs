@@ -47,6 +47,10 @@ fn occt_capability_descriptor_lists_brep_primitives_and_booleans() {
         descriptor.supports(Operation::PrimitiveCone, ReprKind::BRep),
         "OCCT must declare (PrimitiveCone, BRep)",
     );
+    assert!(
+        descriptor.supports(Operation::PrimitiveWedge, ReprKind::BRep),
+        "OCCT must declare (PrimitiveWedge, BRep)",
+    );
 
     // Booleans ×3
     assert!(
