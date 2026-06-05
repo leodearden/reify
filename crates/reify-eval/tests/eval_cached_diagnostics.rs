@@ -10,7 +10,7 @@
 //! relevant diagnostic substring appears in `result.eval_result.diagnostics`.
 //! The tests are grouped with TDD step numbers in comments for traceability.
 
-use reify_core::{Diagnostic, DimensionVector, ModulePath, Severity, Type, ValueCellId, VersionId};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, ModulePath, Severity, Type, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeId};
 use reify_eval::{CachedEvalResult, Engine};
 use reify_ir::{BinOp, CompiledExpr, DeterminacyState, Value};
@@ -1371,6 +1371,57 @@ fn eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning() {
         &result_b.eval_result.diagnostics,
         |d| d.message.contains("Constraint solver made no progress"),
         "solver NoProgress warning",
+    );
+}
+
+// ── task-4308 step-3: eval_cached parity for E_MECHANISM_DUPLICATE_SOLID ─────
+
+/// eval_cached must emit a `Severity::Error` diagnostic coded
+/// `DiagnosticCode::MechanismDuplicateSolid` when the source constructs a
+/// mechanism where the same solid name is attached twice.
+///
+/// This is the eval/eval_cached diagnostic-parity test for task 4308's
+/// `detect_mechanism_errors` helper.  It FAILS until step-4 wires
+/// `detect_mechanism_errors` into `Engine::eval_cached`.
+///
+/// The `.ri` source mirrors `DUPLICATE_SOLID_SOURCE` from
+/// `mechanism_duplicate_solid_diag_e2e.rs` (the eval() counterpart).
+#[test]
+fn eval_cached_emits_mechanism_duplicate_solid_error_diagnostic() {
+    const DUPLICATE_SOLID_SOURCE: &str = r#"
+structure def DuplicateSolid {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
+
+    let m0 = mechanism()
+    let m1 = body(m0, "a", j_a)
+    // Attaching solid "a" a second time (different joint) triggers duplicate_solid.
+    let m2 = body(m1, "a", j_b)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(DUPLICATE_SOLID_SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval_cached(&compiled, VersionId(1));
+
+    let matching: Vec<_> = result
+        .eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::MechanismDuplicateSolid)
+        })
+        .collect();
+
+    assert_eq!(
+        matching.len(),
+        1,
+        "eval_cached must emit exactly one E_MECHANISM_DUPLICATE_SOLID Error diagnostic \
+         for a duplicate-solid source; got {} matching diagnostic(s) out of {} total.\n\
+         All diagnostics: {:#?}",
+        matching.len(),
+        result.eval_result.diagnostics.len(),
+        result.eval_result.diagnostics,
     );
 }
 

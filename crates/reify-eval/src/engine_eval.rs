@@ -447,6 +447,90 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
     diagnostics
 }
 
+/// Scan the evaluated value-map for duplicate-solid mechanism errors and emit
+/// a typed [`Diagnostic`] for each distinct errored mechanism.
+///
+/// Called in both `eval` and `eval_cached` (eval/eval_cached diagnostic-parity
+/// discipline) OUTSIDE the solver gate so the error surfaces on kernel-less
+/// `reify check` and in the GUI panel.
+///
+/// **Dedup strategy:** `body()` returns an already-errored mechanism Map
+/// verbatim (mechanism.rs:88), so a single duplicate-solid event propagates
+/// an identical error Map to multiple cells.  Matches are sorted by
+/// [`ValueCellId`] for reproducible ordering and deduplicated by structural
+/// [`Value`] equality — one diagnostic per distinct errored mechanism.
+///
+/// **Known v0.1 limitation — structural dedup:** Two genuinely independent
+/// errored mechanisms that happen to be structurally identical (e.g. two
+/// separate let-bindings both building `body(body(mechanism(),"a",j),"a",j)`)
+/// will collapse to a single diagnostic, under-reporting one error.  The dedup
+/// is necessary to collapse same-error propagation chains (a single
+/// duplicate-solid event can reach dozens of downstream cells as identical
+/// Maps), but keying on the structural `Value` cannot distinguish "re-propagated
+/// copy of the same error" from "two independent errors that happen to match".
+/// Fixing this would require per-mechanism provenance tracking (e.g. an
+/// originating cell id stored in the error Map); accepted as a v0.1 limitation.
+///
+/// **No source span / [`DiagnosticLabel`]:** Unlike `detect_scope_coupling`
+/// (which attaches a constraint span from `constraint.span`), there is no
+/// usable location to attach here.  [`ValueCellId`] carries only
+/// `{entity, member}` strings with no source-span.  The `error_path1` and
+/// `error_path2` fields in the error Map are empty `Value::List`s by the
+/// v0.1 error-Map convention (see `make_duplicate_solid_error` in
+/// `mechanism.rs`) — duplicate-solid detection has no path-shaped diagnostic
+/// context to surface.  A follow-up task could resolve the originating
+/// `body()` call's span via the compiler's span table.
+fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
+    let mut hits: Vec<(&ValueCellId, &Value)> = values
+        .iter()
+        .filter(|(_, v)| is_duplicate_solid_mechanism(v))
+        .collect();
+    // Sort by ValueCellId for deterministic ordering across hash-based ValueMap iteration.
+    hits.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    // Dedup by structural Value equality — one diagnostic per distinct errored mechanism.
+    // See the "Known v0.1 limitation" note in the function doc above.
+    let mut seen = std::collections::BTreeSet::new();
+    let mut diagnostics = Vec::new();
+    for (_, value) in hits {
+        if seen.insert(value.clone()) {
+            let msg = mechanism_error_message(value);
+            // No DiagnosticLabel: ValueCellId carries no source span and
+            // error_path1/error_path2 are empty Lists (see doc comment above).
+            diagnostics.push(
+                Diagnostic::error(msg).with_code(DiagnosticCode::MechanismDuplicateSolid),
+            );
+        }
+    }
+    diagnostics
+}
+
+/// Returns `true` when `v` is a mechanism `Value::Map` (`kind="mechanism"`)
+/// carrying `error="duplicate_solid"`.  Inline predicate matching the
+/// documented error-Map shape (`make_duplicate_solid_error` in mechanism.rs).
+fn is_duplicate_solid_mechanism(v: &Value) -> bool {
+    let Value::Map(m) = v else {
+        return false;
+    };
+    let kind_key = Value::String("kind".to_string());
+    let error_key = Value::String("error".to_string());
+    matches!(m.get(&kind_key), Some(Value::String(k)) if k == "mechanism")
+        && matches!(m.get(&error_key), Some(Value::String(e)) if e == "duplicate_solid")
+}
+
+/// Extract the `error_message` string from a duplicate-solid mechanism Map,
+/// falling back to a constant if the field is absent or not a string.
+fn mechanism_error_message(v: &Value) -> String {
+    let Value::Map(m) = v else {
+        return "duplicate solid in mechanism".to_string();
+    };
+    let msg_key = Value::String("error_message".to_string());
+    match m.get(&msg_key) {
+        Some(Value::String(msg)) => msg.clone(),
+        _ => "duplicate solid in mechanism".to_string(),
+    }
+}
+
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
 /// auto-param cells and constraints, returning `None` when there are no auto
 /// cells (signalling "skip solver invocation").
@@ -2493,6 +2577,12 @@ impl Engine {
         // and needs no solved values.
         diagnostics.extend(detect_scope_coupling(&module.templates));
 
+        // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
+        // Placed OUTSIDE the `has_active_solver` gate so the error surfaces on
+        // `reify check` (no kernel needed — duplicate-solid detection is at
+        // mechanism-builder eval).  Mirrors the detect_scope_coupling seam.
+        diagnostics.extend(detect_mechanism_errors(&values));
+
         EvalResult {
             values,
             diagnostics,
@@ -3049,6 +3139,12 @@ impl Engine {
                 }
             }
         }
+
+        // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
+        // Mirrors the eval() call site (above detect_scope_coupling).  eval_cached
+        // is the incremental LSP path; without this call the GUI/LSP would drop the
+        // MechanismDuplicateSolid diagnostic on every incremental re-evaluation.
+        diagnostics.extend(detect_mechanism_errors(&values));
 
         CachedEvalResult {
             eval_result: EvalResult {
