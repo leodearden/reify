@@ -3712,4 +3712,85 @@ mod tests {
             "cone with 2 args must emit at least one diagnostic"
         );
     }
+
+    // --- wedge() compiler dispatch (task-4158, step-7 RED) ---
+
+    /// `wedge(20mm,10mm,15mm,5mm)` must compile to a single
+    /// `CompiledGeometryOp::Primitive { kind: PrimitiveKind::Wedge }` with four
+    /// named args: `width`, `depth`, `height`, `top_width`.
+    ///
+    /// RED until step-8 adds the "wedge" arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_wedge_4args_returns_primitive_wedge() {
+        let expr = make_call_with_arity("wedge", 4);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("wedge(_, _, _, _) should produce ops");
+        assert_eq!(ops.len(), 1, "wedge must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Primitive { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    PrimitiveKind::Wedge,
+                    "wedge op must have kind PrimitiveKind::Wedge"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["width", "depth", "height", "top_width"],
+                    "wedge arg names must be width / depth / height / top_width"
+                );
+            }
+            other => panic!("expected Primitive(Wedge), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "wedge(_, _, _, _) must emit no diagnostics");
+    }
+
+    /// `wedge(10mm, 5mm, 20mm)` (3 args) must emit an arity diagnostic and return `None`.
+    ///
+    /// RED until step-8 adds the "wedge" arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_wedge_wrong_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("wedge", 3);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "wedge with 3 args must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "wedge with 3 args must emit at least one diagnostic"
+        );
+    }
 }

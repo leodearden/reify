@@ -254,7 +254,8 @@ pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
         | PrimitiveKind::Cylinder
         | PrimitiveKind::Sphere
         | PrimitiveKind::Tube
-        | PrimitiveKind::Cone => InferredTraits::all(),
+        | PrimitiveKind::Cone
+        | PrimitiveKind::Wedge => InferredTraits::all(),
     }
 }
 
@@ -774,4 +775,39 @@ fn first_two_geometry_args_in_env(
         .map(|a| infer_traits_for_expr_in_env(a, env))
         .unwrap_or(InferredTraits::all());
     (a, b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- wedge inference (task-4158, step-7 RED) ---
+
+    /// `infer_primitive(PrimitiveKind::Wedge)` must return `InferredTraits::all()` —
+    /// dimension=Solid, bounded, connected, convex (PRD δ spec).
+    ///
+    /// Already implemented in step-4; this test pins the behaviour.
+    #[test]
+    fn infer_primitive_wedge_returns_all() {
+        assert_eq!(
+            infer_primitive(PrimitiveKind::Wedge),
+            InferredTraits::all(),
+            "wedge must have all traits (bounded, connected, convex)"
+        );
+    }
+
+    /// `try_infer_traits_for_function_call("wedge", &[])` must return
+    /// `Some(InferredTraits::all())`.
+    ///
+    /// RED until step-8 adds "wedge" to the name arm in
+    /// `try_infer_traits_for_function_call_in_env`.
+    #[test]
+    fn try_infer_traits_for_function_call_wedge_returns_some_all() {
+        let result = try_infer_traits_for_function_call("wedge", &[]);
+        assert_eq!(
+            result,
+            Some(InferredTraits::all()),
+            "try_infer_traits_for_function_call(\"wedge\", ..) must return Some(all())"
+        );
+    }
 }
