@@ -191,15 +191,16 @@ structure def SurfaceFinish {
 // ── Fit ───────────────────────────────────────────────────────────────────────
 
 // Shaft-and-hole fit per ISO 286.
-// Clearances are derived: positive = clearance, negative = interference.
+// hole_tolerance and shaft_tolerance carry the full DimensionalTolerance band for
+// each feature.  Clearances are derived: positive = clearance, negative = interference.
+//   max_clearance = hole upper limit − shaft lower limit
+//   min_clearance = hole lower limit − shaft upper limit  (negative → interference fit)
 structure def Fit {
-    param hole_upper : Length
-    param hole_lower : Length
-    param shaft_upper : Length
-    param shaft_lower : Length
-    param fit_type : FitCategory
-    let max_clearance = hole_upper - shaft_lower
-    let min_clearance = hole_lower - shaft_upper
+    param hole_tolerance  : DimensionalTolerance
+    param shaft_tolerance : DimensionalTolerance
+    param fit_type        : FitCategory
+    let max_clearance = hole_tolerance.upper_limit - shaft_tolerance.lower_limit
+    let min_clearance = hole_tolerance.lower_limit - shaft_tolerance.upper_limit
 }
 
 // ── ISO Tolerance Grade ───────────────────────────────────────────────────────
