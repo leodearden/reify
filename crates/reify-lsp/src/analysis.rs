@@ -2341,6 +2341,49 @@ mod tests {
         assert_selection_on_name(source, guarded);
     }
 
+    // --- step-11: injectable document-symbol core over a shared ParsedModule ---
+
+    /// `compute_document_symbols_from_parsed`, fed a `ParsedModule` built once
+    /// by the caller, must yield the same symbol tree as the
+    /// `compute_document_symbols` wrapper (which parses internally) — proving
+    /// the cache-fed core is output-equivalent to the per-request path.
+    #[test]
+    fn compute_document_symbols_from_parsed_matches_wrapper() {
+        // Multi-declaration source spanning every navigable symbol kind plus
+        // members, so the equivalence covers names, kinds, ranges, and the
+        // nested children tree — not just the top-level list.
+        let source = r#"structure Bracket {
+    param width : Scalar = 80mm
+    sub motor = Motor()
+}
+occurrence def Joint {
+    param diameter : Scalar = 10mm
+}
+trait Rigid {
+    param mass : Scalar = 5mm
+}
+enum Shape { Circle, Square }
+fn area(w: Scalar) -> Scalar { w }"#;
+        let uri = test_uri();
+
+        let parsed = reify_compiler::parse_with_stdlib(
+            source,
+            ModulePath::single(module_name_from_uri(&uri)),
+        );
+
+        let via_parsed = compute_document_symbols_from_parsed(&parsed, source);
+        let via_wrapper = compute_document_symbols(source, &uri);
+
+        assert!(
+            !via_parsed.is_empty(),
+            "multi-declaration source should yield symbols"
+        );
+        assert_eq!(
+            via_parsed, via_wrapper,
+            "from-parsed document symbols must match the wrapper (names/kinds/ranges/children)"
+        );
+    }
+
     // --- name_token_span tests (step-1) ---
     //
     // `name_token_span(source, member_span, name)` narrows a member-statement
