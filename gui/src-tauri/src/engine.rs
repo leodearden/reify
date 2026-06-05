@@ -2124,11 +2124,24 @@ impl EngineSession {
                     code: Some("hot-reload-error".to_owned()),
                 });
             }
+            // One-snapshot invariant (task 4258): surface the failing buffer as
+            // files[0] so compile_diagnostics (which carry line/col computed
+            // against that buffer) can be indexed.  The check()-panic path has no
+            // structured CompileFailure, so files stays empty there — the synthetic
+            // `last_reload_error` diagnostic has line=1 / col=1 and needs no
+            // buffer to index into.
+            let files_early = match &self.compile_failure {
+                Some(f) => vec![FileData {
+                    path: f.file_key.clone(),
+                    content: f.source.clone(),
+                }],
+                None => Vec::new(),
+            };
             return Ok(GuiState {
                 meshes: Vec::new(),
                 values: Vec::new(),
                 constraints: Vec::new(),
-                files: Vec::new(),
+                files: files_early,
                 tessellation_diagnostics: Vec::new(),
                 compile_diagnostics: compile_diagnostics_early,
                 tensegrity_wires: Vec::new(),

@@ -6585,21 +6585,24 @@ fn load_file_with_std_import_does_not_double_seed_stdlib() {
 
 /// After a failed `update_source` (parse error on a fresh session with no
 /// `file_path` set), `build_gui_state` must surface the failure in
-/// `compile_diagnostics`.
+/// `compile_diagnostics` AND surface the failing buffer in `files[0]` so
+/// diagnostics line/col can be indexed against the actual text (task 4258).
 ///
 /// Pins step-3/step-4 of the task-3351 plan: `update_source`'s single-file
 /// branch (when `self.file_path` is `None`) must populate
 /// `compile_failure` on failure, just like `load_from_source`.
+/// Updated for task 4258: `files` is now non-empty (failing source is surfaced).
 #[test]
 fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_session() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
+    let bad_source = "this is not valid {{{}}}";
     // Fresh session — no load_file or load_from_source, so self.file_path is None.
     // update_source takes the single-file branch (compile_single_file_with_stdlib).
     let err = session
-        .update_source("foo.ri", "this is not valid {{{}}}")
+        .update_source("foo.ri", bad_source)
         .expect_err("invalid source should return Err");
     assert!(
         err.contains("Parse errors"),
@@ -6622,11 +6625,24 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
         first.severity
     );
 
-    // Remaining fields should still be empty.
+    // task 4258: files must carry the failing buffer (one-snapshot invariant).
+    assert!(
+        !state.files.is_empty(),
+        "files must be non-empty after a cold-start failure — failing source must be surfaced"
+    );
+    assert_eq!(
+        state.files[0].path, "foo.ri",
+        "files[0].path must equal the module key derived from 'foo.ri'"
+    );
+    assert_eq!(
+        state.files[0].content, bad_source,
+        "files[0].content must equal the exact failing buffer"
+    );
+
+    // These fields remain empty (no successful compile yet).
     assert!(state.meshes.is_empty(), "meshes should be empty");
     assert!(state.values.is_empty(), "values should be empty");
     assert!(state.constraints.is_empty(), "constraints should be empty");
-    assert!(state.files.is_empty(), "files should be empty");
     assert!(
         state.tessellation_diagnostics.is_empty(),
         "tessellation_diagnostics should be empty"
@@ -6634,21 +6650,24 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
 }
 
 /// After a failed `load_from_source` (parse error on a fresh session),
-/// `build_gui_state` must surface the failure in `compile_diagnostics` rather
-/// than returning a silent empty viewport.
+/// `build_gui_state` must surface the failure in `compile_diagnostics` AND
+/// surface the failing buffer in `files[0]` so diagnostics line/col can be
+/// indexed against the actual text (task 4258).
 ///
 /// Pins step-1 of the task-3351 plan: the early-return branch of
 /// `build_gui_state` (when `compiled` is `None`) must emit the stored
 /// `compile_failure.diags` rather than `Vec::new()`.
+/// Updated for task 4258: `files` is now non-empty (failing source is surfaced).
 #[test]
 fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
+    let bad_source = "this is not valid reify syntax {{{}}}";
     // A parse-error source — `{{{` is invalid reify syntax so `parsed.errors` is non-empty.
     let err = session
-        .load_from_source("this is not valid reify syntax {{{}}}", "bad")
+        .load_from_source(bad_source, "bad")
         .expect_err("invalid source should return Err");
     assert!(
         err.contains("Parse errors"),
@@ -6678,11 +6697,24 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
         first.file_path
     );
 
-    // The rest of the GuiState should remain empty (early-return semantics preserved).
+    // task 4258: files must carry the failing buffer (one-snapshot invariant).
+    assert!(
+        !state.files.is_empty(),
+        "files must be non-empty after a cold-start failure — failing source must be surfaced"
+    );
+    assert_eq!(
+        state.files[0].path, "bad.ri",
+        "files[0].path must equal the module key derived from module_name 'bad'"
+    );
+    assert_eq!(
+        state.files[0].content, bad_source,
+        "files[0].content must equal the exact failing buffer"
+    );
+
+    // These fields remain empty (no successful compile yet).
     assert!(state.meshes.is_empty(), "meshes should be empty");
     assert!(state.values.is_empty(), "values should be empty");
     assert!(state.constraints.is_empty(), "constraints should be empty");
-    assert!(state.files.is_empty(), "files should be empty");
     assert!(
         state.tessellation_diagnostics.is_empty(),
         "tessellation_diagnostics should be empty"
@@ -6856,17 +6888,21 @@ fn build_gui_state_returns_empty_tessellation_diagnostics_when_no_module_loaded(
 }
 
 /// After a failed `load_file` (parse error in the file-on-disk), `build_gui_state`
-/// must surface the failure in `compile_diagnostics`.
+/// must surface the failure in `compile_diagnostics` AND surface the failing buffer
+/// in `files[0]` so diagnostics line/col can be indexed against the actual text
+/// (task 4258).
 ///
 /// Pins step-5/step-6 of the task-3351 plan: `load_file` routes through
 /// `compile_entry_with_imports`, which must also populate
 /// `compile_failure` on failure once refactored in step-6.
+/// Updated for task 4258: `files` is now non-empty (failing source is surfaced).
 #[test]
 fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
     let dir = tempfile::tempdir().expect("tempdir should be created");
     // Write an invalid .ri file — `{{{` is unparseable syntax.
     let file_path = dir.path().join("main.ri");
-    std::fs::write(&file_path, "structure {{{}}}}\n").expect("write should succeed");
+    let bad_source = "structure {{{}}}}\n";
+    std::fs::write(&file_path, bad_source).expect("write should succeed");
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -6896,11 +6932,24 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
         first.severity
     );
 
-    // Remaining fields should still be empty.
+    // task 4258: files must carry the failing buffer (one-snapshot invariant).
+    assert!(
+        !state.files.is_empty(),
+        "files must be non-empty after a cold-start failure — failing source must be surfaced"
+    );
+    assert_eq!(
+        state.files[0].path, "main.ri",
+        "files[0].path must equal the module key derived from file stem 'main'"
+    );
+    assert_eq!(
+        state.files[0].content, bad_source,
+        "files[0].content must equal the exact failing buffer"
+    );
+
+    // These fields remain empty (no successful compile yet).
     assert!(state.meshes.is_empty(), "meshes should be empty");
     assert!(state.values.is_empty(), "values should be empty");
     assert!(state.constraints.is_empty(), "constraints should be empty");
-    assert!(state.files.is_empty(), "files should be empty");
     assert!(
         state.tessellation_diagnostics.is_empty(),
         "tessellation_diagnostics should be empty"
