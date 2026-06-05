@@ -1535,6 +1535,39 @@ describe('debug bridge ui_outline', () => {
     const hiddenEntry = result.outline.find((e: any) => e.testId === 'hidden-btn');
     expect(hiddenEntry).toBeUndefined();
   });
+
+  it('button nested inside a display:none div is excluded from outline', async () => {
+    // Ancestor-hidden case: the button itself has no inline style, but its parent
+    // container has display:none — ui_outline must walk ancestors to detect this.
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'none';
+    const innerBtn = document.createElement('button');
+    innerBtn.setAttribute('data-testid', 'inner-hidden-btn');
+    innerBtn.textContent = 'Inner';
+    wrapper.appendChild(innerBtn);
+    document.body.appendChild(wrapper);
+
+    const result = await dispatchUiOutline(3006);
+    const innerEntry = result.outline.find((e: any) => e.testId === 'inner-hidden-btn');
+    expect(innerEntry).toBeUndefined();
+    // afterEach cleans up document.body.innerHTML
+  });
+
+  it('truncates at MAX=500: truncated===true, outline.length===500, count===total-visible', async () => {
+    // beforeEach adds 3 visible (run-btn, stop-btn, design-tree) + 1 hidden (hidden-btn).
+    // Adding 500 more visible buttons brings total visible to 503, which exceeds MAX=500.
+    for (let i = 0; i < 500; i++) {
+      const btn = document.createElement('button');
+      btn.setAttribute('data-testid', `extra-${i}`);
+      btn.textContent = `Extra ${i}`;
+      document.body.appendChild(btn);
+    }
+    const result = await dispatchUiOutline(3007);
+    expect(result.truncated).toBe(true);
+    expect(result.outline.length).toBe(500);
+    expect(result.count).toBe(503); // 3 from beforeEach + 500 extra
+    expect(result.count).toBeGreaterThan(result.outline.length);
+  });
 });
 
 // ---------------------------------------------------------------------------

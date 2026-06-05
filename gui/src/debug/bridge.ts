@@ -93,6 +93,23 @@ function describeElement(el: HTMLElement) {
   };
 }
 
+// Helper for ui_outline: returns true if el or any ancestor up to <html> is hidden.
+// CSS `display` is NOT an inherited property, so getComputedStyle(el).display==='none'
+// only catches the element itself — not elements inside a hidden parent container
+// (e.g. collapsed panels, closed modals, hidden tabs). Walk the ancestor chain so that
+// subtrees whose parent has display:none or visibility:hidden are correctly excluded.
+// (visibility IS inherited, so the child check would already catch it, but walking
+// ancestors handles both uniformly and is the correct render-tree-presence criterion.)
+function isEffectivelyHidden(el: Element): boolean {
+  let node: Element | null = el;
+  while (node && node !== document.documentElement) {
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden') return true;
+    node = node.parentElement;
+  }
+  return false;
+}
+
 // Reshape a DiagnosticInfo into the get_diagnostics wire format.
 // Groups the flat line/column/end_line/end_column quad into a `range` object
 // matching PRD §3, with no field loss.
@@ -393,8 +410,7 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       const all = Array.from(nodes);
       const outline: Array<Record<string, unknown>> = [];
       for (const el of all) {
-        const style = window.getComputedStyle(el);
-        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        if (isEffectivelyHidden(el)) continue;
         const h = el as HTMLElement & { disabled?: boolean };
         outline.push({
           tagName: el.tagName.toLowerCase(),
