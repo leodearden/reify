@@ -164,9 +164,9 @@ fn temperature_dependent_has_reference_temperature_default_with_temperature_type
 fn elastic_poissons_ratio_high_is_violated() {
     let src = r#"
         structure def StiffMat : Elastic {
-            param youngs_modulus : Real = 200.0
+            param youngs_modulus : Pressure = 200GPa
             param poissons_ratio : Real = 0.7
-            param shear_modulus  : Real = 77.0
+            param shear_modulus  : Pressure = 77GPa
         }
     "#;
     let result: CheckResult = check_source_with_stdlib(src);
@@ -206,9 +206,9 @@ fn elastic_poissons_ratio_high_is_violated() {
 fn elastic_poissons_ratio_negative_is_violated() {
     let src = r#"
         structure def AuxeticMat : Elastic {
-            param youngs_modulus : Real = 100.0
+            param youngs_modulus : Pressure = 100GPa
             param poissons_ratio : Real = -0.1
-            param shear_modulus  : Real = 40.0
+            param shear_modulus  : Pressure = 40GPa
         }
     "#;
     let result: CheckResult = check_source_with_stdlib(src);
@@ -246,9 +246,9 @@ fn elastic_poissons_ratio_negative_is_violated() {
 fn elastic_poissons_ratio_valid_is_clean() {
     let src = r#"
         structure def NormalMat : Elastic {
-            param youngs_modulus : Real = 200.0
+            param youngs_modulus : Pressure = 200GPa
             param poissons_ratio : Real = 0.3
-            param shear_modulus  : Real = 77.0
+            param shear_modulus  : Pressure = 77GPa
         }
     "#;
     let result: CheckResult = check_source_with_stdlib(src);
@@ -286,7 +286,7 @@ fn elastic_poissons_ratio_valid_is_clean() {
 fn elastic_omits_shear_modulus_is_clean() {
     let src = r#"
         structure def ElasticNoShear : Elastic {
-            param youngs_modulus : Real = 200.0
+            param youngs_modulus : Pressure = 200GPa
             param poissons_ratio : Real = 0.3
         }
     "#;
@@ -313,8 +313,8 @@ fn elastic_omits_shear_modulus_is_clean() {
 fn strong_omits_compressive_strength_is_clean() {
     let src = r#"
         structure def StrongNoCompr : Strong {
-            param yield_strength            : Real = 250.0
-            param ultimate_tensile_strength : Real = 400.0
+            param yield_strength            : Pressure = 250MPa
+            param ultimate_tensile_strength : Pressure = 400MPa
         }
     "#;
     let compiled = compile_source_with_stdlib(src);
@@ -402,8 +402,8 @@ fn ductile_old_elongation_name_is_missing_required_member() {
 fn strong_ultimate_tensile_strength_valid_is_clean() {
     let src = r#"
         structure def StrongRenameOk : Strong {
-            param yield_strength             : Real = 250.0
-            param ultimate_tensile_strength  : Real = 400.0
+            param yield_strength             : Pressure = 250MPa
+            param ultimate_tensile_strength  : Pressure = 400MPa
         }
     "#;
     let compiled = compile_source_with_stdlib(src);
@@ -429,8 +429,8 @@ fn strong_ultimate_tensile_strength_valid_is_clean() {
 fn strong_ultimate_tensile_strength_below_yield_is_violated() {
     let src = r#"
         structure def StrongRenameViolated : Strong {
-            param yield_strength             : Real = 400.0
-            param ultimate_tensile_strength  : Real = 250.0
+            param yield_strength             : Pressure = 400MPa
+            param ultimate_tensile_strength  : Pressure = 250MPa
         }
     "#;
     let result: CheckResult = check_source_with_stdlib(src);
@@ -505,7 +505,7 @@ fn strong_old_uts_name_is_missing_required_member() {
 fn fatigue_rated_no_fatigue_params_is_clean() {
     let src = r#"
         structure def FatigueNone : FatigueRated {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name    : String = "steel"
         }
     "#;
@@ -531,9 +531,9 @@ fn fatigue_rated_no_fatigue_params_is_clean() {
 fn fatigue_rated_subset_fatigue_limit_only_is_clean() {
     let src = r#"
         structure def FatigueSubset : FatigueRated {
-            param density      : Real   = 7850.0
-            param name         : String = "steel"
-            param fatigue_limit : Real  = 300.0
+            param density      : Density = 7850kg/m^3
+            param name         : String  = "steel"
+            param fatigue_limit : Pressure = 300MPa
         }
     "#;
     let compiled = compile_source_with_stdlib(src);
@@ -641,7 +641,7 @@ fn fatigue_rated_optional_params_in_defaults() {
 fn impact_resistant_no_impact_params_is_clean() {
     let source = r#"
         structure def ImpactNone : ImpactResistant {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
     "#;
@@ -666,10 +666,10 @@ fn impact_resistant_no_impact_params_is_clean() {
 fn impact_resistant_both_impact_params_is_clean() {
     let source = r#"
         structure def ImpactBoth : ImpactResistant {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
-            param charpy_impact : Real = 80.0
-            param izod_impact : Real = 60.0
+            param charpy_impact : Energy = 80J
+            param izod_impact : Energy = 60J
         }
     "#;
     let compiled = compile_source_with_stdlib(source);

@@ -756,12 +756,12 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
 fn four_refining_traits_with_all_material_members_conform_cleanly() {
     // (trait_name, trait-specific params to include alongside inherited density/name)
     let cases: &[(&str, &str)] = &[
-        ("FatigueRated", "    param fatigue_limit : Real = 500.0"),
+        ("FatigueRated", "    param fatigue_limit : Pressure = 500MPa"),
         (
             "FractureTough",
             "    param fracture_toughness : FractureToughness = 50.0 * 1Pa * sqrt(1m)",
         ),
-        ("ImpactResistant", "    param charpy_impact : Real = 30.0"),
+        ("ImpactResistant", "    param charpy_impact : Energy = 30J"),
         (
             "Damping",
             "    param damping_ratio : Real = 0.05\n    param loss_factor : Real = 0.1",
@@ -770,7 +770,7 @@ fn four_refining_traits_with_all_material_members_conform_cleanly() {
 
     for (trait_name, own_members) in cases {
         let source = format!(
-            "structure def Test{} : {} {{\n    param density : Real = 7850.0\n    param name : String = \"steel\"\n{}\n}}\n",
+            "structure def Test{} : {} {{\n    param density : Density = 7850kg/m^3\n    param name : String = \"steel\"\n{}\n}}\n",
             trait_name, trait_name, own_members
         );
         let compiled = compile_source_with_stdlib(&source);
