@@ -8,6 +8,11 @@
 //!   `wedge(20mm, 10mm, 15mm, 5mm)` → non-degenerate Solid, 6 faces,
 //!   volume ≈ 1.875e-6 m³ (= depth·height·(width+top_width)/2, exact for
 //!   a flat-faced trapezoidal prism built by BRepPrimAPI_MakeWedge).
+//!
+//! Volume and face-count assertions at the OCCT kernel level are covered by
+//! `kernel_wedge_volume_and_face_count_match_expected` in
+//! `crates/reify-kernel-occt/src/lib.rs`. The tests here exercise paths the
+//! unit tests cannot: the compiler→eval→engine pipeline (mock and real kernels).
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 use reify_core::{ModulePath, Severity};
@@ -174,60 +179,3 @@ fn wedge_through_full_pipeline_produces_geometry() {
     assert!(!mesh.indices.is_empty(), "wedge mesh should have triangles");
 }
 
-/// Verify volume ≈ 1.875e-6 m³ (exact closed-form for a flat-faced trapezoidal
-/// prism: V = depth·height·(width+top_width)/2) and exactly 6 faces.
-///
-/// Uses OcctKernel directly (no engine framework) to isolate the OCCT-level
-/// assertion from the compiler/eval pipeline tested by the other two tests.
-/// Volume tolerance 2% matches the project convention (torus tests, lib.rs:3446).
-#[test]
-fn wedge_occt_volume_matches_closed_form_and_has_six_faces() {
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping: OCCT not available");
-        return;
-    }
-
-    use reify_ir::{GeometryQuery, Value};
-
-    let mut kernel = reify_kernel_occt::OcctKernel::new();
-
-    let handle = kernel
-        .execute(&GeometryOp::Wedge {
-            width: mm(20.0),
-            depth: mm(10.0),
-            height: mm(15.0),
-            top_width: mm(5.0),
-        })
-        .expect("kernel.execute(Wedge) should succeed");
-
-    // Volume: V = depth·height·(width+top_width)/2
-    //           = 0.010·0.015·(0.020+0.005)/2
-    //           = 1.875e-6 m³  (exact for a planar-faced trapezoidal prism)
-    let expected_volume = 1.875e-6_f64;
-    let volume_result = kernel
-        .query(&GeometryQuery::Volume(handle.id))
-        .expect("Volume query should succeed");
-    let volume = match volume_result {
-        Value::Real(v) => v,
-        other => panic!("expected Real volume, got {:?}", other),
-    };
-    let rel_err = (volume - expected_volume).abs() / expected_volume;
-    assert!(
-        rel_err < 0.02,
-        "wedge volume {:.6e} m³ differs from expected {:.6e} m³ by {:.1}% (tolerance 2%)",
-        volume,
-        expected_volume,
-        rel_err * 100.0
-    );
-
-    // Face count: 2 trapezoidal caps + 4 lateral faces = 6
-    let faces = kernel
-        .extract_faces(handle.id)
-        .expect("extract_faces should succeed");
-    assert_eq!(
-        faces.len(),
-        6,
-        "wedge should have exactly 6 faces (2 trapezoidal caps + 4 lateral faces), got {}",
-        faces.len()
-    );
-}
