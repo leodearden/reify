@@ -42,10 +42,13 @@ structure def DimensionalTolerance {
 // Base trait for all geometric tolerance types.
 // feature uses Real pending a dedicated Geometry type.
 // material_condition specifies MMC, LMC, or RFS modifier.
+// nominal_zone: the tolerance zone width at zero bonus departure (departure=0mm),
+//   equivalent to tolerance_value for all condition modifiers.
 trait GeometricTolerance {
     param tolerance_value : Length
     param feature : Real
-    param material_condition : MaterialCondition
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    let nominal_zone = effective_tolerance_zone(tolerance_value, material_condition, 0mm)
 }
 
 // Form tolerances constrain shape without a datum reference.
@@ -181,8 +184,8 @@ structure def Datum {
 structure def SurfaceFinish {
     param parameter : SurfaceParameter
     param value : Length
-    param direction : SurfaceDirection
-    param process : String
+    param direction : SurfaceDirection = SurfaceDirection.Multidirectional
+    param process : String = ""
 }
 
 // ── Fit ───────────────────────────────────────────────────────────────────────
@@ -204,20 +207,24 @@ structure def Fit {
 // ISO 286-1 tolerance grade entry.
 // grade: IT number (IT01, IT0, IT1..IT18 encoded as integer).
 // nominal_min / nominal_max: diameter range for which this grade applies.
-// tolerance_value: the actual tolerance width for this grade and range.
+// tolerance_value: derived from the ISO 286-1 table via iso_it_tolerance builtin.
 structure def ISOToleranceGrade {
     param grade : Int
     param nominal_min : Length
     param nominal_max : Length
-    param tolerance_value : Length
+    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)
 }
 
 // ── Conforms constraint def ───────────────────────────────────────────────────
 
-// Asserts that a tolerance_value is positive (a meaningful tolerance).
-constraint def Conforms {
-    param tolerance_value : Length
-    tolerance_value > 0
+// GD&T conformance check: asserts that the effective tolerance zone
+// (expanded by feature_departure under MMC/LMC) encompasses the measured_deviation.
+// `pub` is required for cross-module instantiation (registry folds only is_pub prelude defs).
+pub constraint def Conforms {
+    param tolerance : GeometricTolerance
+    param measured_deviation : Length = 0mm
+    param feature_departure : Length = 0mm
+    effective_tolerance_zone(tolerance.tolerance_value, tolerance.material_condition, feature_departure) >= measured_deviation
 }
 
 // ── Constructor Functions ─────────────────────────────────────────────────────
@@ -231,4 +238,10 @@ fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {
 // Computes the tolerance band width from upper and lower limits.
 fn limit_tolerance(upper: Length, lower: Length) -> Length {
     upper - lower
+}
+
+// Asserts that a surface finish specification is non-trivial (value > 0mm).
+// feature is a Real placeholder for the feature geometry; δ/#3116 will flip to Geometry.
+fn require_finish(feature: Real, finish: SurfaceFinish) -> Bool {
+    finish.value > 0mm
 }
