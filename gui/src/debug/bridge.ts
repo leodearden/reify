@@ -9,6 +9,7 @@ import type { RawGuiState, DiagnosticInfo } from '../types';
 import { Box3, Vector3 } from 'three';
 import type { Mesh, BufferGeometry } from 'three';
 import { testMode, setTestMode } from './testMode';
+import { getConsoleErrors, clearConsoleErrors } from './consoleErrors';
 import { toPng } from 'html-to-image';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
@@ -592,6 +593,14 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       }
 
       return { ok: true, path };
+    },
+
+    list_console_errors: (params) => {
+      const errors = getConsoleErrors();
+      if (params.clear === true) {
+        clearConsoleErrors();
+      }
+      return { errors, count: errors.length };
     },
 
     wait_for_idle: async (params) => {
