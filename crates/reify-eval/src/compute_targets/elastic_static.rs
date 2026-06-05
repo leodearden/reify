@@ -385,6 +385,23 @@ pub fn solve_elastic_static_trampoline(
         // Shell kernel takes a scalar transverse force; X/Y components are
         // ignored on the shell route (in-plane directional shell loading is
         // out of scope — task 4245 cylinder/PressureLoad exclusion).
+        //
+        // Warn when directional PointLoad(s) carry non-negligible in-plane
+        // (X/Y) force so the silent discard is visible to the caller.
+        // Threshold: XY magnitude > 1 ppm of Z magnitude (or 1 pN absolute),
+        // which avoids noise from floating-point rounding near exact-zero.
+        let xy_mag = (tip_force[0] * tip_force[0] + tip_force[1] * tip_force[1]).sqrt();
+        let z_ref = tip_force[2].abs().max(1e-12);
+        if xy_mag > z_ref * 1e-6 {
+            route_diagnostics.push(Diagnostic::warning(format!(
+                "PointLoad has non-negligible in-plane force components \
+                 (fx={:.3e}, fy={:.3e}) on the shell route; only the \
+                 transverse -Z component (fz={:.3e}) is applied. \
+                 In-plane shell loading is out of scope in this release \
+                 (task 4245). Use the tet/solid path for in-plane loads.",
+                tip_force[0], tip_force[1], tip_force[2],
+            )));
+        }
         let shell_tip_force = -tip_force[2];
         let (channels, mid_field, max_von_mises, converged, iterations) =
             super::shell_solve::solve_shell_static(length, width, height, iso, shell_tip_force);
@@ -428,11 +445,12 @@ pub fn solve_elastic_static_trampoline(
 
         // One-shot shell solve: the shell kernel runs its own cold CG, so no
         // `CgWarmState` is donated back (warm-state caching is tet-only in v0.4).
+        // `route_diagnostics` carries any XY-force-on-shell warning emitted above.
         return ComputeOutcome::Completed {
             result,
             new_warm_state: None,
             cost_per_byte: None,
-            diagnostics: vec![],
+            diagnostics: route_diagnostics,
         };
     }
 
@@ -552,9 +570,11 @@ pub fn solve_elastic_static_trampoline(
     //
     // `diagnostics`   — `route_diagnostics`: empty on the normal tet path (CG
     //                   convergence failures are reflected in `converged =
-    //                   Bool(false)`), or a single Warning when a Shell-
-    //                   classified non-isotropic body soft-fell-back to tet
-    //                   under `Auto`/`Off` (esc-3594 suggestion 3).
+    //                   Bool(false)`), or a Warning when a Shell-classified
+    //                   non-isotropic body soft-fell-back to tet under
+    //                   `Auto`/`Off` (esc-3594 suggestion 3).  The shell path
+    //                   also carries `route_diagnostics` (XY-force warning
+    //                   emitted by task-4245 esc amendment).
     ComputeOutcome::Completed {
         result,
         new_warm_state,
@@ -1269,8 +1289,11 @@ fn extract_scalar_si(val: &Value) -> f64 {
 /// in a **single pass**, returning `(tip_force, pressures)`.
 ///
 /// - `tip_force` — per-axis `[f64; 3]` sum of `force * direction` over all
-///   `PointLoad` items.  A missing or malformed `direction` defaults to
-///   `[0.0, 0.0, -1.0]` (-Z).  Passed as-is to `solve_cantilever_fea`.
+///   `PointLoad` items.  Direction magnitude is significant: supplying a
+///   non-unit direction (e.g. `[0, 0, -2]`) silently scales the applied force
+///   by `|direction|`; callers are expected to pass unit vectors.  A missing
+///   or malformed `direction` defaults to `[0.0, 0.0, -1.0]` (-Z).
+///   Passed as-is to `solve_cantilever_fea`.
 /// - `pressures` — one `PressureSpec` per `PressureLoad` item; items of any
 ///   other type (e.g. `FixedSupport`) are silently skipped.
 ///
@@ -2564,6 +2587,97 @@ mod tests {
         assert!((fx).abs() < 1e-9, "(c) expected fx≈0, got {fx}");
         assert!((fy - (-500.0)).abs() < 1e-9, "(c) expected fy=-500, got {fy}");
         assert!((fz - (-1000.0)).abs() < 1e-9, "(c) expected fz=-1000, got {fz}");
+    }
+
+    /// amendment (task 4245 esc): `extract_loads` direction elements carried as
+    /// `Value::Scalar` (e.g. structure-def defaults materialising as dimensionless
+    /// scalars) are handled by the `Value::Scalar { si_value, .. }` branch.
+    ///
+    /// This test covers suggestion-3 from the code-review: the Scalar branch was
+    /// claimed as the path for structure-def defaults, but had no dedicated
+    /// regression test.  A PointLoad whose direction list contains `Value::Scalar`
+    /// elements must behave identically to one with `Value::Real` elements.
+    #[test]
+    fn extract_loads_direction_scalar_elements_handled() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        // Build a PointLoad where direction elements are Value::Scalar
+        // (dimensionless), mirroring structure-def default materialisation.
+        let dir_scalars: Vec<Value> = [-0.0_f64, -1.0_f64, 0.0_f64]
+            .iter()
+            .map(|&v| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS })
+            .collect();
+        let fields: PersistentMap<String, Value> = [
+            ("force".to_string(), Value::Real(800.0)),
+            ("direction".to_string(), Value::List(dir_scalars)),
+        ]
+        .into_iter()
+        .collect();
+        let point_load = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "PointLoad".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }));
+
+        let loads = Value::List(vec![point_load]);
+        let ([fx, fy, fz], _) = extract_loads(&loads);
+        // force=800, direction=[0,-1,0] → tip_force_vec=[0,-800,0]
+        assert!((fx).abs() < 1e-9, "expected fx≈0, got {fx}");
+        assert!((fy - (-800.0)).abs() < 1e-9, "expected fy=-800, got {fy}");
+        assert!((fz).abs() < 1e-9, "expected fz≈0, got {fz}");
+    }
+
+    /// amendment (task 4245 esc): malformed `direction` values silently fall back
+    /// to `[0, 0, -1]` — this is the intentional forward-compatibility contract
+    /// (design_decision[4] in plan.json).  This test pins the contract so the
+    /// silent-default behaviour is a deliberate, regression-tested choice rather
+    /// than dead code.
+    ///
+    /// Cases:
+    ///   (a) direction list has only 2 elements (length ≠ 3) → fallback to -Z.
+    ///   (b) direction field is a `Value::String` (entirely wrong type, e.g. typo
+    ///       in a Rust-constructed test fixture) → fallback to -Z.
+    #[test]
+    fn extract_loads_malformed_direction_defaults_to_neg_z() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        fn make_point_load(force: f64, direction: Value) -> Value {
+            let fields: PersistentMap<String, Value> = [
+                ("force".to_string(), Value::Real(force)),
+                ("direction".to_string(), direction),
+            ]
+            .into_iter()
+            .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "PointLoad".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        }
+
+        // (a) too-short list [0.0, -1.0] → fallback to [0,0,-1]; force=300
+        let short_dir = Value::List(vec![Value::Real(0.0), Value::Real(-1.0)]);
+        let loads_a = Value::List(vec![make_point_load(300.0, short_dir)]);
+        let ([fx, fy, fz], _) = extract_loads(&loads_a);
+        assert!((fx).abs() < 1e-9, "(a) fx: expected 0, got {fx}");
+        assert!((fy).abs() < 1e-9, "(a) fy: expected 0, got {fy}");
+        assert!(
+            (fz - (-300.0)).abs() < 1e-9,
+            "(a) fz: expected -300 (default -Z fallback), got {fz}"
+        );
+
+        // (b) direction is a String (entirely wrong type) → fallback to [0,0,-1]
+        let str_dir = Value::String("neg_z".to_string());
+        let loads_b = Value::List(vec![make_point_load(400.0, str_dir)]);
+        let ([fx, fy, fz], _) = extract_loads(&loads_b);
+        assert!((fx).abs() < 1e-9, "(b) fx: expected 0, got {fx}");
+        assert!((fy).abs() < 1e-9, "(b) fy: expected 0, got {fy}");
+        assert!(
+            (fz - (-400.0)).abs() < 1e-9,
+            "(b) fz: expected -400 (default -Z fallback), got {fz}"
+        );
     }
 
     /// step-3 RED (task 4245): `solve_cantilever_fea` honours a -Y tip_force.

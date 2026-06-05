@@ -301,10 +301,15 @@ trait Support { }
 structure def PointLoad : Load {
     param point : String = ""
     param force : Real = 0.0
-    // Applied-force direction unit vector.  Default [0, 0, -1] (−Z, the
-    // canonical bending/gravity direction) preserves backward compatibility —
-    // a bare PointLoad() contributes [0, 0, -force], byte-identical to the
-    // pre-4245 hardcoded -Z path.
+    // Applied-force direction vector.  The total force contribution from this
+    // load is `force * direction` component-wise (see elastic_static.rs
+    // `extract_loads`); callers are expected to supply a unit vector so that
+    // `force` retains its physical magnitude meaning.  Non-unit vectors
+    // silently scale the applied force by |direction| — e.g. [0, 0, -2]
+    // doubles the -Z force.  Default [0, 0, -1] (−Z, the canonical
+    // bending/gravity direction) preserves backward compatibility — a bare
+    // PointLoad() contributes [0, 0, -force], byte-identical to the pre-4245
+    // hardcoded -Z path.
     //
     // `direction` is declared LAST on purpose: structure-def constructors bind
     // arguments POSITIONALLY (declaration order), so existing call sites that
