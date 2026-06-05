@@ -7,10 +7,28 @@ use crate::convert::{find_word_at_offset, position_to_offset};
 ///
 /// Returns `None` if there is nothing to show at the given position.
 pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hover> {
+    let ctx = AnalysisContext::new(source, uri);
+    compute_hover_in_context(&ctx, source, position)
+}
+
+/// Compute hover information for the symbol at `position` using a pre-built
+/// [`AnalysisContext`].
+///
+/// This is the injectable core shared by the per-request wrapper
+/// [`compute_hover`] and the server's cache-fed path: the server builds the
+/// context once from the per-document parse cache (one parse per edit) and
+/// calls this directly, while the wrapper builds a fresh context per call.
+/// Word/offset resolution runs here because it depends only on `source` and
+/// `position`.
+///
+/// Returns `None` if there is nothing to show at the given position.
+pub fn compute_hover_in_context(
+    ctx: &AnalysisContext,
+    source: &str,
+    position: Position,
+) -> Option<Hover> {
     let offset = position_to_offset(source, position);
     let (_word_start, word) = find_word_at_offset(source, offset)?;
-
-    let ctx = AnalysisContext::new(source, uri);
 
     // Determine the enclosing structure so member lookup is scoped correctly
     let enclosing = ctx.enclosing_decl_name_at(offset);
