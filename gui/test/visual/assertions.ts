@@ -95,6 +95,9 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
     ],
   },
   // task-4297 step-8 GREEN: R2 e2e signal scenarios (live signal via npm run test:e2e)
+  // Non-racy: openFixture in run.ts calls open_file + wait_for_idle before invoking the
+  // tool, so the engine has settled and diagnostic population is complete before the
+  // get_diagnostics call. broken_syntax.ri is intentionally unparseable → ≥1 compile diag.
   {
     name: "get_diagnostics_broken_syntax",
     fixture: "broken_syntax",

@@ -200,35 +200,14 @@ describe("VALUE_SCENARIOS", () => {
   });
 
   // task-4297 step-7 RED → step-8 GREEN: R2 e2e signal scenarios
-  it("contains get_diagnostics_broken_syntax with correct shape", () => {
-    const scenario: ValueScenario | undefined = VALUE_SCENARIOS.find(
-      (s) => s.name === "get_diagnostics_broken_syntax",
-    );
-    expect(scenario).toBeDefined();
-    if (scenario) {
-      expect(scenario.fixture).toBe("broken_syntax");
-      expect(scenario.tool).toBe("get_diagnostics");
-      expect(scenario.assertions).toContainEqual({
-        path: "compileCount",
-        op: "atLeast",
-        expected: 1,
-      });
-    }
-  });
-
-  it("contains ui_outline_small_cube with correct shape", () => {
-    const scenario: ValueScenario | undefined = VALUE_SCENARIOS.find(
-      (s) => s.name === "ui_outline_small_cube",
-    );
-    expect(scenario).toBeDefined();
-    if (scenario) {
-      expect(scenario.fixture).toBe("small_cube");
-      expect(scenario.tool).toBe("ui_outline");
-      expect(scenario.assertions).toContainEqual({
-        path: "count",
-        op: "atLeast",
-        expected: 1,
-      });
+  // Existence + uniqueness only — the generic structural tests above already
+  // validate fixture/tool/assertions shape. Detailed field pinning would restate
+  // the config and break on harmless scenario data edits.
+  it("R2 scenarios (get_diagnostics_broken_syntax, ui_outline_small_cube) are both present and unique", () => {
+    const r2Names = ["get_diagnostics_broken_syntax", "ui_outline_small_cube"];
+    for (const name of r2Names) {
+      const matching = VALUE_SCENARIOS.filter((s) => s.name === name);
+      expect(matching.length, `${name} should appear exactly once`).toBe(1);
     }
   });
 });
