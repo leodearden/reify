@@ -799,6 +799,15 @@ trait TemperatureDependent {
 ### 6.2 `std.materials.mechanical`
 
 ```
+// Dimensioned-type note: the Pressure/Energy param types shown below (youngs_modulus,
+// yield_strength, ultimate_tensile_strength, compressive_strength, shear_modulus,
+// fatigue_limit, fatigue_strength_at, charpy_impact, izod_impact) are the target of the
+// deferred #3111-family dimensional tightening and are currently Real placeholders in the
+// shipped stdlib. The thermal/electrical/optical/fracture dimensioned types shown in §6.3–§6.5
+// have been realized by tasks #3112/#3113/#3115 (ThermalExpansion, ElectricResistivity,
+// DielectricStrength, AbsorptionCoeff, FractureToughness). Do not downgrade the Pressure/Energy
+// types shown here — they remain the documented aspiration pending #3111.
+
 // Elastic, Strong, Hard, Ductile are free-standing (no MaterialSpec base) — deliberate
 // design drift #3487. Conformers carry density/name via a separate `material : MaterialSpec`
 // slot rather than inheriting from the base trait directly.
@@ -836,7 +845,8 @@ trait ImpactResistant : MaterialSpec {
     param izod_impact : Energy = undef
 }
 trait Damping : MaterialSpec {
-    param loss_factor : Real
+    param damping_ratio : Real  // fraction of critical damping (dimensionless)
+    param loss_factor : Real    // ratio of dissipated to stored energy per cycle (dimensionless)
 }
 ```
 
@@ -851,8 +861,10 @@ trait ThermallyCharacterized : MaterialSpec {
     param max_service_temperature : Temperature = undef
     param glass_transition : Temperature = undef
 }
+// Refractory threshold is 1500.0 K (≈ 1226.85 °C) — tightened from the former
+// `>= 1500degC` aspiration to K-typed form tracking task #3112.
 trait Refractory : ThermallyCharacterized {
-    constraint max_service_temperature >= 1500degC
+    constraint max_service_temperature >= 1500.0K
 }
 ```
 
@@ -868,9 +880,13 @@ trait ElectricallyCharacterized : MaterialSpec {
 trait Conductive : ElectricallyCharacterized {
     constraint resistivity < 0.0001ohm*m
 }
+// Insulating: dielectric_strength constraint replaced by a positivity bound (task #2484).
+// When a conformer omits dielectric_strength (optional), `> 0.0V/m` evaluates as
+// `Undef > 0.0V/m → Undef` (Kleene, arch §2.5), producing Satisfaction::Indeterminate
+// + a ConstraintIndeterminate Warning rather than a hard error.
 trait Insulating : ElectricallyCharacterized {
     constraint resistivity > 1000000ohm*m
-    constraint determined(dielectric_strength)
+    constraint dielectric_strength > 0.0V/m
 }
 ```
 
