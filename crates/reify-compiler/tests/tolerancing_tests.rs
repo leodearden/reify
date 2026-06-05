@@ -1729,3 +1729,181 @@ structure def Probe {
     //   tolerance_band = 0.1mm − 0mm = 0.1mm = 0.0001 m  (== upper − lower)
     assert_length!("Probe", "band",  0.0001_f64, "limit_tolerance.tolerance_band");
 }
+
+// ─── γ-5: Fit exposes nested DimensionalTolerance members ────────────────────
+
+/// (γ step-5 RED → GREEN) Fit is reshaped to use nested DimensionalTolerance params.
+///
+/// (a) Structural: Fit must have Param cells `hole_tolerance` and `shaft_tolerance`
+///     (replacing the four flat scalars) plus `fit_type`, and Let cells
+///     `max_clearance` and `min_clearance`.
+///
+/// (b) Eval: build `Fit(hole_tolerance: symmetric_tolerance(10mm, 0.1mm),
+///                      shaft_tolerance: symmetric_tolerance(9.9mm, 0.05mm),
+///                      fit_type: FitCategory.Clearance)` then read nested members:
+///
+///   hole_tolerance = symmetric_tolerance(10mm, 0.1mm):
+///     .upper_limit = 10.1mm = 0.0101 m
+///     .lower_limit = 9.9mm  = 0.0099 m
+///   shaft_tolerance = symmetric_tolerance(9.9mm, 0.05mm):
+///     .upper_limit = 9.95mm = 0.00995 m
+///     .lower_limit = 9.85mm = 0.00985 m
+///
+///   hu  = f.hole_tolerance.upper_limit      = 10.1mm  = 0.0101 m
+///   maxc = f.max_clearance = 10.1mm − 9.85mm = 0.25mm  = 2.5e-4 m
+///   minc = f.min_clearance =  9.9mm − 9.95mm = −0.05mm = −5e-5  m (interference)
+///
+/// RED on base: Fit has flat hole_upper/hole_lower/shaft_upper/shaft_lower params;
+/// hole_tolerance/shaft_tolerance don't exist (compile error or Undef).
+#[test]
+fn fit_exposes_nested_dimensional_tolerance_members() {
+    // (a) Structural: Fit must have Param cells hole_tolerance + shaft_tolerance + fit_type ──
+    let module = load_stdlib_module();
+    let fit = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Fit")
+        .expect("expected 'Fit' template");
+
+    let param_names: Vec<&str> = fit
+        .value_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Param)
+        .map(|vc| vc.id.member.as_str())
+        .collect();
+    assert!(
+        param_names.contains(&"hole_tolerance"),
+        "Fit should have 'hole_tolerance' Param cell; got params: {:?}",
+        param_names
+    );
+    assert!(
+        param_names.contains(&"shaft_tolerance"),
+        "Fit should have 'shaft_tolerance' Param cell; got params: {:?}",
+        param_names
+    );
+    assert!(
+        param_names.contains(&"fit_type"),
+        "Fit should still have 'fit_type' Param cell; got params: {:?}",
+        param_names
+    );
+    // Flat scalars must NOT be present after reshape
+    assert!(
+        !param_names.contains(&"hole_upper"),
+        "Fit should NOT have 'hole_upper' after reshape; got params: {:?}",
+        param_names
+    );
+    assert!(
+        !param_names.contains(&"shaft_lower"),
+        "Fit should NOT have 'shaft_lower' after reshape; got params: {:?}",
+        param_names
+    );
+
+    // (b) Eval: nested member reads and clearance arithmetic ──────────────────
+    let source = r#"
+structure def Probe {
+    let f    = Fit(hole_tolerance: symmetric_tolerance(10mm, 0.1mm),
+                   shaft_tolerance: symmetric_tolerance(9.9mm, 0.05mm),
+                   fit_type: FitCategory.Clearance)
+    let hu   = f.hole_tolerance.upper_limit
+    let maxc = f.max_clearance
+    let minc = f.min_clearance
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "Fit Probe should compile without errors, got: {:?}",
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    let all_keys: Vec<_> = result
+        .values
+        .iter()
+        .map(|(k, _)| format!("{}.{}", k.entity, k.member))
+        .collect();
+
+    // Helper: assert a LENGTH scalar within 1e-9 relative tolerance (for positive values)
+    macro_rules! assert_length_rel {
+        ($entity:expr, $member:expr, $expected:expr, $label:literal) => {{
+            let id = ValueCellId::new($entity, $member);
+            let value = result.values.get(&id).unwrap_or_else(|| {
+                panic!(
+                    "γ {}: {}.{} not found; present keys: {:?}",
+                    $label, $entity, $member, all_keys
+                )
+            });
+            match value {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::LENGTH,
+                        "γ {}: {}.{} expected LENGTH, got {:?}",
+                        $label, $entity, $member, dimension
+                    );
+                    let rel_err = (si_value - $expected).abs() / ($expected as f64).abs();
+                    assert!(
+                        rel_err < 1e-9,
+                        "γ {}: {}.{} expected {:.8e} m, got {:.8e} m (rel_err {:.2e})",
+                        $label, $entity, $member, $expected, si_value, rel_err
+                    );
+                }
+                other => panic!(
+                    "γ {}: {}.{} expected Value::Scalar (LENGTH), got {:?}",
+                    $label, $entity, $member, other
+                ),
+            }
+        }};
+    }
+    // Helper: assert a LENGTH scalar using absolute error (for near-zero or negative values)
+    macro_rules! assert_length_abs {
+        ($entity:expr, $member:expr, $expected:expr, $label:literal) => {{
+            let id = ValueCellId::new($entity, $member);
+            let value = result.values.get(&id).unwrap_or_else(|| {
+                panic!(
+                    "γ {}: {}.{} not found; present keys: {:?}",
+                    $label, $entity, $member, all_keys
+                )
+            });
+            match value {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::LENGTH,
+                        "γ {}: {}.{} expected LENGTH, got {:?}",
+                        $label, $entity, $member, dimension
+                    );
+                    assert!(
+                        (si_value - $expected).abs() < 1e-9,
+                        "γ {}: {}.{} expected {:.8e} m, got {:.8e} m (abs_err {:.2e})",
+                        $label, $entity, $member, $expected, si_value, (si_value - $expected).abs()
+                    );
+                }
+                other => panic!(
+                    "γ {}: {}.{} expected Value::Scalar (LENGTH), got {:?}",
+                    $label, $entity, $member, other
+                ),
+            }
+        }};
+    }
+
+    // hu = f.hole_tolerance.upper_limit = 10mm + 0.1mm = 10.1mm = 0.0101 m
+    assert_length_rel!("Probe", "hu",   0.0101_f64,  "Fit.hole_tolerance.upper_limit");
+    // maxc = hole.upper(10.1mm) − shaft.lower(9.85mm) = 0.25mm = 2.5e-4 m
+    assert_length_rel!("Probe", "maxc", 0.00025_f64, "Fit.max_clearance");
+    // minc = hole.lower(9.9mm) − shaft.upper(9.95mm) = −0.05mm = −5e-5 m (interference)
+    assert_length_abs!("Probe", "minc", -5e-5_f64,   "Fit.min_clearance");
+}
