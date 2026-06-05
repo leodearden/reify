@@ -143,6 +143,17 @@ pub constraint def Manufacturable {
     measured >= capability
 }
 
+// Per-category DFM constraint def: Subtracting.
+// Geometry-backed (Subtracting.tool_access is a Solid) — compile-clean in γ;
+// runtime OK→VIOLATED flip is exercised by δ's kernel-backed CI examples.
+
+// Checks that a design feature size meets the process minimum.
+pub constraint def FeatureManufacturable {
+    param proc    : Subtracting
+    param feature : Length
+    feature >= proc.min_feature_size
+}
+
 // Forming-process DFM constraint defs.
 // Pure-scalar (no Solid params) → evaluate to definite Satisfied/Violated
 // with the no-kernel engine. Runtime OK→VIOLATED flip for geometry-backed
