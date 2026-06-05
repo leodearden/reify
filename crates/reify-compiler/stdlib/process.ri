@@ -179,3 +179,15 @@ pub constraint def DraftManufacturable {
     param draft : Angle
     draft >= proc.draft_angle
 }
+
+// Per-category DFM constraint def: Adding / build-volume check.
+// Geometry-backed: wraps both Solid args in bounding_box(...) so that α's
+// fits_build_volume builtin (which requires BoundingBox inputs) receives the
+// correct type. Runtime OK→VIOLATED flip requires OCCT and is exercised by δ.
+
+// Checks that a part's bounding box fits within the process build envelope.
+pub constraint def FitsBuildVolume {
+    param proc : Adding
+    param part : Solid
+    fits_build_volume(bounding_box(part), bounding_box(proc.build_volume))
+}
