@@ -566,25 +566,14 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
     },
 
     clear_selection: () => {
-      // clearSelection is exposed on the store if available, else fall back to selectEntity(null)
-      const sel = ctx.stores.selection as any;
-      if (typeof sel.clearSelection === 'function') {
-        sel.clearSelection();
-      } else {
-        ctx.stores.selection.selectEntity(null);
-      }
+      ctx.stores.selection.clearSelection();
       return { ok: true };
     },
 
     toggle_select: (params) => {
       const entityPath = params.entityPath as string;
       if (!entityPath) return { error: 'entityPath is required' };
-      const sel = ctx.stores.selection as any;
-      if (typeof sel.toggleSelect === 'function') {
-        sel.toggleSelect(entityPath);
-      } else {
-        ctx.stores.selection.selectEntity(entityPath);
-      }
+      ctx.stores.selection.toggleSelect(entityPath);
       return { ok: true };
     },
 
