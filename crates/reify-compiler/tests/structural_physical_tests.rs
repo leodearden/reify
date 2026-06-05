@@ -355,7 +355,7 @@ fn bracket_conforms_to_physical_with_geometry_and_material() {
     let source = r#"
 structure def Bracket : Physical {
     param geometry : Solid = box(10mm, 20mm, 30mm)
-    param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -560,7 +560,7 @@ fn structure_conforms_to_thermally_conductive_with_inherited_physical_constraint
         r#"
 structure def HeatSink : ThermallyConductive {
     param geometry : Solid = box(10mm, 20mm, 30mm)
-    param material : Material = Material(name: "aluminum", density: 2700.0, youngs_modulus: 70000000000.0)
+    param material : Material = Material(name: "aluminum", density: 2700kg/m^3, youngs_modulus: 70GPa)
     param thermal_conductivity : ThermalConductivity = 205.0 * 1W / (1m * 1K)
     param max_service_temp : Temperature = 573.0 * 1K
 }
@@ -618,7 +618,7 @@ fn structure_conforms_to_electrically_conductive_with_inherited_physical_constra
         r#"
 structure def Wire : ElectricallyConductive {
     param geometry : Solid = box(10mm, 20mm, 30mm)
-    param material : Material = Material(name: "copper", density: 8960.0, youngs_modulus: 110000000000.0)
+    param material : Material = Material(name: "copper", density: 8960kg/m^3, youngs_modulus: 110GPa)
     param electrical_conductivity : ElectricalConductivity = 1000.0 * 1S / 1m
     param resistivity : ElectricResistivity = 0.001 * 1ohm * 1m
 }
@@ -722,7 +722,7 @@ fn physical_constraint_injected_into_conforming_structure() {
     let source = r#"
 structure def Block : Physical {
     param geometry : Solid = box(10mm, 20mm, 30mm)
-    param material : Material = Material(name: "block", density: 7850.0, youngs_modulus: 200000000000.0)
+    param material : Material = Material(name: "block", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -765,7 +765,7 @@ structure def Block : Physical {
 fn missing_geometry_produces_error_diagnostic() {
     let source = r#"
 structure def Incomplete : Physical {
-    param material : Material = Material(name: "no geometry", density: 7850.0, youngs_modulus: 200000000000.0)
+    param material : Material = Material(name: "no geometry", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -1090,7 +1090,7 @@ fn rigid_cross_module_three_level_refinement_chain() {
 structure def Beam : Rigid {
     // Physical requirements (post-GHR-α: geometry + material struct slot)
     param geometry : Solid = box(10mm, 20mm, 30mm)
-    param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
     // Rigid requirement (from structural_physical.ri)
     // 10×20×30 mm steel block, mass ≈ 0.047 kg → I ≈ m(a²+b²)/12 ≈ 2e-6 kg·m²

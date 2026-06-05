@@ -16,7 +16,7 @@
 // Constraint from Physical: material.density > 0
 structure def RigidPost : Rigid {
     param geometry : Solid = box(100mm, 100mm, 300mm)
-    param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
     // Rigid.moment_of_inertia — mass moment of inertia (kg·m², MomentOfInertia alias).
     // 100×100×300 mm steel post, mass ≈ 23.6 kg → I_z = m(a²+b²)/12 ≈ 0.039 kg·m²
@@ -59,7 +59,7 @@ structure def PlasticBracket : Plastic {
 // Constraints: thermal_conductivity > 0 (TC); max_service_temp > 0 (task α); material.density > 0 (Physical).
 structure def AluminiumHeatSink : ThermallyConductive {
     param geometry : Solid = box(150mm, 50mm, 80mm)
-    param material : Material = Material(name: "aluminum", density: 2700.0, youngs_modulus: 70000000000.0)
+    param material : Material = Material(name: "aluminum", density: 2700kg/m^3, youngs_modulus: 70GPa)
 
     // ThermallyConductive members
     param thermal_conductivity : ThermalConductivity = 205.0W/(m*K)

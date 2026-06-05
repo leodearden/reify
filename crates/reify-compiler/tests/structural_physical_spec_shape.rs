@@ -132,7 +132,7 @@ fn spec_shape_physical_bracket_lowers_geometry_to_realization() {
     let source = r#"
 structure def Bracket : Physical {
     param geometry : Solid = box(10mm, 20mm, 30mm)
-    param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }
 "#;
     let compiled = compile_source_with_stdlib(source);

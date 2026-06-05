@@ -42,7 +42,7 @@ fn make_source(n: usize) -> String {
     format!(
         r#"
         structure def Steel : MaterialSpec {{
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }}
         structure def Host {{ param ms : List<Option<MaterialSpec>> }}

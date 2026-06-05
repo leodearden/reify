@@ -48,8 +48,8 @@ structure def SteelBeam : Physical {
     param geometry : Solid = box(150mm, 150mm, 3000mm)
     param material : Material = Material(
         name: "Steel Beam W150x37",
-        density: 7850.0,
-        youngs_modulus: 200000000000.0
+        density: 7850kg/m^3,
+        youngs_modulus: 200GPa
     )
 
     port load_face : out MechanicalFace {
@@ -64,8 +64,8 @@ structure def AluminumPlate : Physical {
     param geometry : Solid = box(500mm, 500mm, 4mm)
     param material : Material = Material(
         name: "Aluminum Plate 6061",
-        density: 2700.0,
-        youngs_modulus: 69000000000.0
+        density: 2700kg/m^3,
+        youngs_modulus: 69GPa
     )
 
     port mount : in MechanicalFace {
@@ -80,8 +80,8 @@ structure def StiffenerBracket : Physical {
     param geometry : Solid = box(75mm, 50mm, 150mm)
     param material : Material = Material(
         name: "Steel Stiffener L75x50x6",
-        density: 7850.0,
-        youngs_modulus: 200000000000.0
+        density: 7850kg/m^3,
+        youngs_modulus: 200GPa
     )
 }
 
@@ -91,8 +91,8 @@ structure def BoltConnector : Physical {
     param geometry : Solid = cylinder(6mm, 60mm)
     param material : Material = Material(
         name: "M12 Bolt Grade 8.8",
-        density: 7850.0,
-        youngs_modulus: 200000000000.0
+        density: 7850kg/m^3,
+        youngs_modulus: 200GPa
     )
 }
 
@@ -102,8 +102,8 @@ structure def MotorUnit : Physical {
     param geometry : Solid = cylinder(90mm, 220mm)
     param material : Material = Material(
         name: "AC Induction Motor 0.75kW",
-        density: 3000.0,
-        youngs_modulus: 110000000000.0
+        density: 3000kg/m^3,
+        youngs_modulus: 110GPa
     )
 
     port shaft : out MechanicalFace {
@@ -123,8 +123,8 @@ structure def GearboxUnit : Physical {
     param geometry : Solid = box(200mm, 150mm, 250mm)
     param material : Material = Material(
         name: "Helical Gearbox i=3 95%",
-        density: 4000.0,
-        youngs_modulus: 200000000000.0
+        density: 4000kg/m^3,
+        youngs_modulus: 200GPa
     )
 
     port input : in MechanicalFace {
@@ -139,8 +139,8 @@ structure def CoverPanel : Physical {
     param geometry : Solid = box(500mm, 400mm, 2mm)
     param material : Material = Material(
         name: "Aluminum Cover Sheet 2mm",
-        density: 2700.0,
-        youngs_modulus: 69000000000.0
+        density: 2700kg/m^3,
+        youngs_modulus: 69GPa
     )
 }
 
@@ -150,8 +150,8 @@ structure def SensorPod : Physical {
     param geometry : Solid = box(60mm, 40mm, 30mm)
     param material : Material = Material(
         name: "IMU Sensor Pod",
-        density: 1500.0,
-        youngs_modulus: 50000000000.0
+        density: 1500kg/m^3,
+        youngs_modulus: 50GPa
     )
 
     port data : out ElectricalInterface {

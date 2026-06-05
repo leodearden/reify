@@ -156,7 +156,7 @@ fn param_material_resolves_to_struct_ref() {
 
 // ─── step-7: struct-call is a valid default for a struct-typed param ────────
 
-/// `param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)`
+/// `param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)`
 /// must compile cleanly: the param type is `Type::StructureRef("Material")`,
 /// and the default expression is recorded as a call to `Material` carrying the
 /// three supplied arguments. This is the core "`: Material = Material(...)` is
@@ -167,7 +167,7 @@ fn param_material_resolves_to_struct_ref() {
 fn material_struct_call_is_valid_param_default() {
     let source = r#"
         structure def Part {
-            param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+            param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
         }
     "#;
     let module = compile_source_with_stdlib(source);
@@ -266,7 +266,7 @@ const BOLTFLANGE_MIRROR_SOURCE: &str = r#"
 
             // Canonical Material struct default — the task-1876 payoff this
             // test pins (recorded StructureInstanceCtor with 3 bound args).
-            param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+            param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
             constraint outer_radius > bolt_circle_radius
             constraint hole_count > 0
@@ -441,7 +441,7 @@ fn material_spec_trait_still_usable_as_trait_object() {
     let source = r#"
         structure def SomeSteel : MaterialSpec {
             param name : String = "steel"
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
         }
         trait HasMat { param m : MaterialSpec }
         structure def Widget : HasMat {
