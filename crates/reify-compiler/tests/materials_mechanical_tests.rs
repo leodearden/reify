@@ -431,28 +431,8 @@ fn remaining_five_traits_exist() {
             .any(|r| r.name == "endurance_limit"),
         "endurance_limit must no longer exist as a required member (dropped in β #4240)"
     );
-    // All three new params must appear in defaults.
-    assert!(
-        fatigue
-            .defaults
-            .iter()
-            .any(|d| d.name.as_deref() == Some("fatigue_limit")),
-        "FatigueRated should have 'fatigue_limit' in defaults"
-    );
-    assert!(
-        fatigue
-            .defaults
-            .iter()
-            .any(|d| d.name.as_deref() == Some("fatigue_strength_at")),
-        "FatigueRated should have 'fatigue_strength_at' in defaults"
-    );
-    assert!(
-        fatigue
-            .defaults
-            .iter()
-            .any(|d| d.name.as_deref() == Some("fatigue_cycles")),
-        "FatigueRated should have 'fatigue_cycles' in defaults"
-    );
+    // Richer per-param defaults + cell_type assertions live in
+    // materials_param_surface_tests::fatigue_rated_optional_params_in_defaults.
 
     // FractureTough: 1 member (fracture_toughness)
     let fracture = module
@@ -526,20 +506,8 @@ fn remaining_five_traits_exist() {
             .any(|r| r.name == "impact_energy"),
         "impact_energy must no longer exist as a required member (dropped in β #4240)"
     );
-    assert!(
-        impact
-            .defaults
-            .iter()
-            .any(|d| d.name.as_deref() == Some("charpy_impact")),
-        "ImpactResistant should have 'charpy_impact' in defaults"
-    );
-    assert!(
-        impact
-            .defaults
-            .iter()
-            .any(|d| d.name.as_deref() == Some("izod_impact")),
-        "ImpactResistant should have 'izod_impact' in defaults"
-    );
+    // Richer per-param defaults + cell_type assertions live in
+    // materials_param_surface_tests::impact_resistant_optional_params_in_defaults.
 
     // Damping: 2 members (damping_ratio, loss_factor)
     let damping = module

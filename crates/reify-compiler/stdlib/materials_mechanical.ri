@@ -121,6 +121,10 @@ trait Hard {
 // All three params are optional (= undef): real datasheets rarely report all
 // three simultaneously. fatigue_limit is the stress amplitude for unlimited
 // cycles; fatigue_strength_at is the amplitude at fatigue_cycles cycles.
+// NOTE: fatigue_strength_at and fatigue_cycles are only meaningful as a pair
+// (they define a single S-N data point). Supplying one without the other is
+// semantically incomplete. A co-presence constraint will be added once
+// undef-aware constraints are supported (follow-up #4240-co-presence).
 // task β #4240: replaced single required endurance_limit with these three optionals.
 trait FatigueRated : MaterialSpec {
     param fatigue_limit : Real = undef        // optional — stress amplitude for unlimited cycles
