@@ -241,9 +241,9 @@ fn std_ports_module_cardinality_locked() {
         .collect();
     assert_eq!(
         module.trait_defs.len(),
-        1,
-        "std/ports should declare exactly 1 trait (Port) after step-4; \
-         LocatedPort and RegionPort land in steps 6 and 8, got: {:?}",
+        2,
+        "std/ports should declare exactly 2 traits (Port, LocatedPort) after step-6; \
+         RegionPort lands in step 8, got: {:?}",
         trait_names
     );
 

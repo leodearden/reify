@@ -55,3 +55,15 @@ structure def Frame3 {
     param y_axis : Vector3<Length>
     param z_axis : Vector3<Length>
 }
+
+// ── Spatial port traits ───────────────────────────────────────────────────────
+
+// Trait for ports with a defined spatial attachment frame.
+// The compiler has expected this trait BY NAME since task 370
+// (reify-core/src/identity.rs:115, LOCATED_PORT_TRAIT = "LocatedPort").
+// connect.rs:322 checks trait_satisfies(port_type, LOCATED_PORT_TRAIT) and
+// emits the asymmetric-LocatedPort warning (connect.rs:344) when only one side
+// of a connection satisfies it.
+trait LocatedPort : Port {
+    param frame : Frame3
+}
