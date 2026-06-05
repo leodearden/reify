@@ -798,9 +798,10 @@ pub fn resolve_workspace_dir(
 
 /// Build the environment variable list to inject into the spawned sidecar process.
 ///
-/// Always includes `REIFY_WORKSPACE` (the landlock-writable workspace dir).
+/// Always includes `REIFY_WORKSPACE` (the landlock-writable workspace dir) and
+/// `REIFY_DEBUG_PORT` (the resolved debug server port, default 3939).
 /// Includes `REIFY_LANDLOCK_EXEC` only when `landlock_exec` is `Some`.
-/// Ordering is deterministic: workspace first, then landlock_exec if present.
+/// Ordering is deterministic: workspace first, then landlock_exec if present, then debug port.
 pub fn compute_sidecar_env(
     workspace: &std::path::Path,
     landlock_exec: Option<&std::path::Path>,
@@ -815,6 +816,11 @@ pub fn compute_sidecar_env(
             le.to_string_lossy().into_owned(),
         ));
     }
+    #[cfg(feature = "gui")]
+    envs.push((
+        "REIFY_DEBUG_PORT".to_string(),
+        crate::debug_server::resolve_debug_port().to_string(),
+    ));
     envs
 }
 
