@@ -2357,12 +2357,11 @@ mod tests {
                 n_times,
                 "end_effector_track_at column len == t_samples"
             );
-            for t in 0..n_times {
+            for (t, &got) in combined.iter().enumerate() {
                 let want = (10 * loc + t) as f64;
                 assert!(
-                    (combined[t] - want).abs() < SPLINE_TOL,
-                    "end_effector_track_at[{loc}][{t}] = {} want {want}",
-                    combined[t]
+                    (got - want).abs() < SPLINE_TOL,
+                    "end_effector_track_at[{loc}][{t}] = {got} want {want}",
                 );
             }
 
@@ -2372,12 +2371,11 @@ mod tests {
                 &[track.clone(), loc_v.clone()],
             ));
             assert_eq!(dev.len(), n_times, "deviation_from_nominal_at len == t_samples");
-            for t in 0..n_times {
+            for (t, &got) in dev.iter().enumerate() {
                 let want = (10 * loc + t) as f64;
                 assert!(
-                    (dev[t] - want).abs() < SPLINE_TOL,
-                    "deviation_from_nominal_at[{loc}][{t}] = {} want {want}",
-                    dev[t]
+                    (got - want).abs() < SPLINE_TOL,
+                    "deviation_from_nominal_at[{loc}][{t}] = {got} want {want}",
                 );
             }
 
