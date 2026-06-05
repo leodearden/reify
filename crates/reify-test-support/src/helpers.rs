@@ -1757,4 +1757,77 @@ mod tests {
             ops[1].op
         );
     }
+
+    // ─── collect_value_ref_members unit tests ────────────────────────────────
+
+    /// collect_value_ref_members: bare ValueRef returns the member name.
+    #[test]
+    fn test_collect_value_ref_members_bare_value_ref() {
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
+
+        let expr = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let result = super::collect_value_ref_members(&expr);
+        assert!(
+            result.iter().any(|m| m == "a"),
+            "expected \"a\" in result; got {:?}",
+            result
+        );
+    }
+
+    /// collect_value_ref_members: BinOp recursion collects refs from both branches.
+    #[test]
+    fn test_collect_value_ref_members_binop() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+
+        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let b = CompiledExpr::value_ref(crate::vcid("E", "b"), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::Real);
+        let result = super::collect_value_ref_members(&expr);
+        assert!(
+            result.iter().any(|m| m == "a"),
+            "expected \"a\" in result; got {:?}",
+            result
+        );
+        assert!(
+            result.iter().any(|m| m == "b"),
+            "expected \"b\" in result; got {:?}",
+            result
+        );
+    }
+
+    /// collect_value_ref_members: UnOp recursion collects the operand's ref.
+    #[test]
+    fn test_collect_value_ref_members_unop() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, UnOp};
+
+        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let expr = CompiledExpr::unop(UnOp::Neg, a, Type::Real);
+        let result = super::collect_value_ref_members(&expr);
+        assert!(
+            result.iter().any(|m| m == "a"),
+            "expected \"a\" in result; got {:?}",
+            result
+        );
+    }
+
+    /// collect_value_ref_members: ITEM-#3 regression guard — a ValueRef nested
+    /// under OptionSome (a variant the old `_ => vec![]` arm silently dropped) is
+    /// now collected because `CompiledExpr::walk` recurses into OptionSome.
+    #[test]
+    fn test_collect_value_ref_members_option_some_regression() {
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
+
+        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let expr = CompiledExpr::option_some(a, Type::Real);
+        let result = super::collect_value_ref_members(&expr);
+        assert!(
+            result.iter().any(|m| m == "a"),
+            "expected \"a\" nested under OptionSome to be collected; got {:?}",
+            result
+        );
+    }
 }
