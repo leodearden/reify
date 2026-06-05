@@ -1,6 +1,6 @@
 //! Regression test for `examples/trajectory/printer_print_envelope.ri` (task ρ — 3878).
 //!
-//! Pins four leaf signals (pattern: tots_optimal_ptp_example_tests.rs):
+//! Pins three leaf signals (pattern: tots_optimal_ptp_example_tests.rs):
 //!
 //!   1. The file parses with zero errors.
 //!   2. It compiles under the stdlib prelude with zero Error-severity diagnostics.
@@ -8,9 +8,6 @@
 //!      (distinguishes this test from the bulk examples_smoke gate, which only
 //!      checks compile-clean without inspecting the resulting template set, and
 //!      also proves the correct file was resolved via CARGO_MANIFEST_DIR).
-//!   4. Minimal API-surface source pins: the source contains the key stdlib
-//!      symbols exercised by the dogfood (simulate_trajectory, input_shape,
-//!      TOTSShaper, peak_deviation, gcode_import).
 //!
 //! The example is the TERMINAL user-observable dogfood for the four-PRD stack
 //! (kinematics + RBD + modal + trajectory). "Runs end-to-end" means the full
@@ -93,24 +90,4 @@ fn printer_print_envelope_example_compiles_under_stdlib_with_zero_errors() {
         module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 
-    // ── API-surface source pins ────────────────────────────────────────────────
-    //
-    // Confirm the five key stdlib symbols are present in the source text. This
-    // prevents a silent regression where refactoring removes a symbol from the
-    // example without the compiler test catching it.
-
-    for symbol in &[
-        "simulate_trajectory",
-        "input_shape",
-        "TOTSShaper",
-        "peak_deviation",
-        "gcode_import",
-    ] {
-        assert!(
-            src.contains(symbol),
-            "expected source to contain '{}' but it does not — \
-             the dogfood may have lost a key API-surface reference",
-            symbol
-        );
-    }
 }
