@@ -12,9 +12,7 @@
 //!   2. `peak_unshaped`, `peak_impulse`, `peak_tots` cells are finite and ≥ 0.
 //!   3. `budget` cell is finite and > 0.
 //!   4. `imported_count` cell is ≥ 1.
-//!   5. The budget decision `acceptable = peak_unshaped <= budget` is computable
-//!      (both finite — the comparison is well-defined).
-//!   6. The eval graph contains ComputeNodes with targets
+//!   5. The eval graph contains ComputeNodes with targets
 //!      "trajectory::simulate" AND "trajectory::input_shape".
 //!
 //! ## Numeric posture
@@ -40,8 +38,8 @@
 //! the result has ≥ 2 motion-profile segments (the fixture has one M-code split
 //! between two motion runs).
 //!
-//! RED until step-6 creates the fixture file (read_to_string panics "fixture should
-//! exist" if absent).
+//! The fixture file ships alongside this test under
+//! `examples/trajectory/test_data/printer_print_envelope.gcode`.
 
 use reify_core::{Severity, ValueCellId};
 use reify_eval::compute_targets::register_compute_fns;
@@ -138,7 +136,6 @@ fn register_compute_fns_installs_trajectory_trampolines() {
 ///   - peak_unshaped / peak_impulse / peak_tots are finite and ≥ 0
 ///     (peak_deviation_at maxes Euclidean distances → always ≥ 0)
 ///   - budget is finite and > 0 (0.5 mm tolerance)
-///   - acceptable = peak_unshaped <= budget is computable (both finite)
 ///   - ComputeNode "trajectory::simulate" and "trajectory::input_shape" are present
 #[cfg_attr(debug_assertions, ignore = "heavy modal + trajectory solve; release-only")]
 #[test]
@@ -250,28 +247,7 @@ fn printer_print_envelope_eval_e2e() {
         imported_count
     );
 
-    // ── (5) Budget decision is computable ─────────────────────────────────────
-    //
-    // Demonstrate the PRD §10.2 "acceptable / requires TOTS reshaping" workflow:
-    // read peak_unshaped and budget and compute the boolean — both finite means
-    // the comparison is well-defined. No assertion on the direction (<=/>);
-    // the value depends on the modal solve + trajectory parameters.
-    let peak_unshaped_cell = ValueCellId::new("PrinterPrintEnvelope", "peak_unshaped");
-    let peak_unshaped = num(
-        eval_result
-            .values
-            .get(&peak_unshaped_cell)
-            .expect("peak_unshaped cell must be present"),
-    );
-    let _acceptable = peak_unshaped <= budget; // computable: both finite
-    assert!(
-        peak_unshaped.is_finite() && budget.is_finite(),
-        "budget decision requires both peak_unshaped ({}) and budget ({}) to be finite",
-        peak_unshaped,
-        budget
-    );
-
-    // ── (6) ComputeNode presence for trajectory trampolines ───────────────────
+    // ── (5) ComputeNode presence for trajectory trampolines ───────────────────
     //
     // Mirrors `modal_analysis_e2e.rs` ComputeNode-presence check.
     // Both "trajectory::simulate" and "trajectory::input_shape" must appear
@@ -316,7 +292,7 @@ fn printer_print_envelope_eval_e2e() {
     );
 }
 
-// ── Fixture sub-test (step-5, RED until step-6 creates the gcode file) ────────
+// ── Fixture sub-test ─────────────────────────────────────────────────────────
 //
 // Lowers `examples/trajectory/test_data/printer_print_envelope.gcode` through
 // gcode_import under MarlinDialect via `reify_stdlib::eval_builtin` and asserts
@@ -326,9 +302,6 @@ fn printer_print_envelope_eval_e2e() {
 // M104 temp set) separating two groups of G1 moves, so lower_gcode produces
 // ≥ 2 contiguous motion segments. This is a structural consequence of the
 // M-code split, not a guessed numeric threshold.
-//
-// RED until step-6 creates the fixture file — read_to_string panics with
-// "fixture should exist" if the file is absent.
 
 /// Multi-segment bolt-on G-code fixture: asserts ≥ 2 motion-profile segments.
 ///

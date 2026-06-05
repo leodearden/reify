@@ -52,9 +52,9 @@
 //
 // Verification:
 //   crates/reify-compiler/tests/printer_print_envelope_example_tests.rs —
-//     parse + compile-clean + PrinterPrintEnvelope template presence + source pins.
+//     parse + compile-clean + PrinterPrintEnvelope template presence.
 //   crates/reify-eval/tests/printer_print_envelope_e2e.rs —
-//     register_compute_fns + engine.eval + ValueCellId reads + budget decision.
+//     register_compute_fns + engine.eval + ValueCellId reads + ComputeNode presence.
 //   The bulk examples_smoke gate auto-discovers this file and requires compile-clean.
 // ─────────────────────────────────────────────────────────────────────────────────
 structure def PrinterPrintEnvelope {
