@@ -870,12 +870,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             version,
             ordered_args,
             defaults,
+            lets,
         } => eval_structure_instance_ctor(
             *type_id,
             type_name,
             *version,
             ordered_args,
             defaults,
+            lets,
             ctx,
         ),
     }
@@ -911,6 +913,7 @@ fn eval_structure_instance_ctor(
     version: u32,
     ordered_args: &[(String, CompiledExpr)],
     defaults: &[(String, CompiledExpr)],
+    lets: &[(String, CompiledExpr)],
     ctx: &EvalContext,
 ) -> Value {
     let mut fields: PersistentMap<String, Value> = PersistentMap::new();
@@ -922,12 +925,41 @@ fn eval_structure_instance_ctor(
             fields.insert(name.clone(), eval_expr(def, ctx));
         }
     }
+    if !lets.is_empty() {
+        materialize_template_lets(type_name, lets, &mut fields, ctx);
+    }
     Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
         type_id,
         type_name: type_name.to_string(),
         version,
         fields,
     }))
+}
+
+/// Eagerly materialize template `Let` cells into a just-built structure
+/// instance's `fields` map (task-4342, step-6).
+///
+/// Marked `#[inline(never)]` for the same reason `eval_structure_instance_ctor`
+/// is hoisted out: the locals here (a `ValueMap` plus loop temporaries) must
+/// NOT inflate `eval_expr`'s stack frame or widen the frame the
+/// `eval_user_fn_recursion_depth_exceeded` safety test relies on.  This
+/// function is called only when `!lets.is_empty()`, so the deep user-fn path
+/// (no struct lets) never pays the extra frame.
+///
+/// Algorithm: build a child `reify_ir::ValueMap` keyed by
+/// `ValueCellId::new(type_name, member)` from the already-populated `fields`,
+/// then iterate `lets` in declaration order.  For each let evaluate its
+/// compiled expr against `ctx.with_scope(&child)` (so earlier lets are visible
+/// to later ones), and write the result into BOTH the child map and `fields`.
+#[inline(never)]
+fn materialize_template_lets(
+    _type_name: &str,
+    _lets: &[(String, CompiledExpr)],
+    _fields: &mut PersistentMap<String, Value>,
+    _ctx: &EvalContext,
+) {
+    // TODO (task-4342 step-6): implement eager let materialization.
+    // Stub body — lets are not yet materialized; step_5 RED, step_6 GREEN.
 }
 
 /// Evaluate `CompiledExprKind::IndexAccess`. Extracted from `eval_expr`'s
@@ -4715,6 +4747,17 @@ mod tests {
         ordered: Vec<(&str, CompiledExpr)>,
         defaults: Vec<(&str, CompiledExpr)>,
     ) -> CompiledExpr {
+        sct_with_lets(name, version, ordered, defaults, vec![])
+    }
+
+    /// Like `sct` but also accepts template `Let` cells for step-5 / step-6.
+    fn sct_with_lets(
+        name: &str,
+        version: u32,
+        ordered: Vec<(&str, CompiledExpr)>,
+        defaults: Vec<(&str, CompiledExpr)>,
+        lets: Vec<(&str, CompiledExpr)>,
+    ) -> CompiledExpr {
         CompiledExpr::structure_instance_ctor(
             reify_ir::StructureTypeId(0),
             name.to_string(),
@@ -4725,6 +4768,9 @@ mod tests {
                 .collect(),
             defaults
                 .into_iter()
+                .map(|(n, e)| (n.to_string(), e))
+                .collect(),
+            lets.into_iter()
                 .map(|(n, e)| (n.to_string(), e))
                 .collect(),
             Type::StructureRef(name.to_string()),

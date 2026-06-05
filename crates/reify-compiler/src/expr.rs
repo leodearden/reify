@@ -1410,6 +1410,7 @@ pub(crate) fn compile_expr_guarded(
                     template.version(),
                     ordered_args,
                     defaults,
+                    Vec::new(), // lets: populated in step_4 (task-4342)
                     Type::StructureRef(name.clone()),
                 );
             }
