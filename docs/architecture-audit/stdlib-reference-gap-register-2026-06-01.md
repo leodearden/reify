@@ -123,15 +123,28 @@ Ground-truth corroboration from source: `PrimitiveKind = {Box, Cylinder, Sphere,
 
 ### P13 tolerancing  — 7 gaps (1 high)
 
+> **STATUS 2026-06-06 — cluster CLOSED; do NOT re-PRD.** Owned by
+> `docs/prds/v0_6/tolerancing-gdt-surface-completion.md`. All 7 rows landed
+> on main: **α #4265** (`reify-stdlib/src/tolerancing.rs` — `iso_it_tolerance`
+> + `effective_tolerance_zone` builtins), **β #4266** (`tolerancing.ri` core —
+> `GeometricTolerance.nominal_zone` let, `ISOToleranceGrade` derived
+> `tolerance_value`, GD&T-aware `pub constraint def Conforms`, `require_finish`
+> fn, `SurfaceFinish` direction + process defaults), **γ #4267**
+> (`symmetric_tolerance`/`limit_tolerance` → `DimensionalTolerance`, `Fit`
+> nested `DimensionalTolerance` members), **ε #4268** (this task: end-to-end
+> §7 example CI gate + stdlib-reference §7 doc reconcile). Note δ #3116
+> (Geometry/DatumRef typing for `feature` params) is a separate downstream
+> follow-on — it is NOT a P13 gap.
+
 | sev | symbol / gap | doc | type | tracked | evidence-summary |
 |-----|--------------|-----|------|---------|------------------|
-| high | require_finish() does not exist anywhere | §7.3 surface L939 | missing_decl | untracked #336(done,0.57); #4004(done,0.61) | The only documented free function in §7.3 (require_finish) is completely absent from both the .ri and Rust layers. |
-| medium | ISOToleranceGrade tolerance_value standards-table lookup unimplemented | §7.1 dimensional L868-872 | declared_only_eval_undef | untracked #4004(done,0.42); #2651(done,0.45) | ISOToleranceGrade has no standards-table-driven tolerance computation — the value is just a passthrough param, and the documented Range<Length> field is missing. |
-| medium | Conforms constraint does not perform MMC/LMC/RFS expansion | §7.2 geometric L921-924 | partial | untracked #2651(done,0.53); #3116(deferred,0.47); #4004(done,0.42) | The universal Conforms constraint is a trivial tolerance_value>0 check, not the GeometricTolerance-aware MMC/LMC/RFS expansion the doc promises. |
-| medium | GeometricTolerance.nominal_zone let absent | §7.2 geometric L882 | missing_decl | untracked #3116(deferred,0.47); #2651(done,0.46) | The trait-level derived nominal_zone (the actual geometric tolerance zone) is documented but never declared or computed. |
-| low | symmetric_tolerance/limit_tolerance return Length not DimensionalTolerance | §7.1 dimensional L856-857 | partial | untracked #2651(done,0.55); #2790(done,0.51); #2798(done,0.50) | Both documented constructor fns evaluate but return a bare Length scalar instead of the documented DimensionalTolerance structure. |
-| low | Fit params are flat scalars, not nested DimensionalTolerance | §7.1 dimensional L859-865 | partial | untracked #2530(done,0.49); #2531(done,0.46); #3116(deferred,0.43) | Fit works but with a different (flat-scalar) field shape than documented — the documented nested DimensionalTolerance members are not accessible. |
-| low | SurfaceFinish direction/process lack documented defaults | §7.3 surface L930-935 | partial | untracked #2830(done,0.39); #3116(deferred,0.34) | SurfaceFinish evaluates but direction/process are required rather than carrying the documented defaults, so the documented optional-param ergonomics are unrealized. |
+| high | require_finish() does not exist anywhere | §7.3 surface L939 | missing_decl | tracked_done #4266(done) | RESOLVED — LANDED on main by β #4266 (`crates/reify-compiler/stdlib/tolerancing.ri`: `fn require_finish(feature: Real, finish: SurfaceFinish) -> Bool { finish.value > 0mm }`) + tolerancing_tests.rs `require_finish_bool_free_fn` tests. |
+| medium | ISOToleranceGrade tolerance_value standards-table lookup unimplemented | §7.1 dimensional L868-872 | declared_only_eval_undef | tracked_done #4265(done) | RESOLVED — LANDED on main by α #4265 (`crates/reify-stdlib/src/tolerancing.rs`: `iso_it_tolerance` builtin, ISO 286-1 IT5–IT18 ≤500mm) + β #4266 (`tolerancing.ri`: `let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)`). |
+| medium | Conforms constraint does not perform MMC/LMC/RFS expansion | §7.2 geometric L921-924 | partial | tracked_done #4266(done) | RESOLVED — LANDED on main by β #4266 (`tolerancing.ri`: `pub constraint def Conforms { effective_tolerance_zone(tolerance.tolerance_value, tolerance.material_condition, feature_departure) >= measured_deviation }`) + tolerancing_tests.rs `conforms_gdt_mmc_satisfied_rfs_violated` test. |
+| medium | GeometricTolerance.nominal_zone let absent | §7.2 geometric L882 | missing_decl | tracked_done #4266(done) | RESOLVED — LANDED on main by β #4266 (`tolerancing.ri`: `trait GeometricTolerance { let nominal_zone = effective_tolerance_zone(tolerance_value, material_condition, 0mm) }`) + α #4265 `effective_tolerance_zone` builtin. |
+| low | symmetric_tolerance/limit_tolerance return Length not DimensionalTolerance | §7.1 dimensional L856-857 | partial | tracked_done #4267(done) | RESOLVED — LANDED on main by γ #4267 (`tolerancing.ri`: `fn symmetric_tolerance(...) -> DimensionalTolerance` + `fn limit_tolerance(...) -> DimensionalTolerance`) + tolerancing_tests.rs `symmetric_tolerance_returns_dimensional_tolerance` test. |
+| low | Fit params are flat scalars, not nested DimensionalTolerance | §7.1 dimensional L859-865 | partial | tracked_done #4267(done) | RESOLVED — LANDED on main by γ #4267 (`tolerancing.ri`: `structure def Fit { param hole_tolerance: DimensionalTolerance; param shaft_tolerance: DimensionalTolerance; let max_clearance/min_clearance }`) + tolerancing_tests.rs `fit_exposes_nested_dimensional_tolerance_members` test. |
+| low | SurfaceFinish direction/process lack documented defaults | §7.3 surface L930-935 | partial | tracked_done #4266(done) | RESOLVED — LANDED on main by β #4266 (`tolerancing.ri`: `param direction: SurfaceDirection = SurfaceDirection.Multidirectional; param process: String = ""`) + tolerancing_tests.rs `surface_finish_defaults` test. |
 
 ### P14 process-dfm  — 3 gaps (1 high)
 
