@@ -1420,6 +1420,107 @@ mod tests {
         }
     }
 
+    // task-4298 step-9 RED → step-10 GREEN: R3 tools list_console_errors, wait_for,
+    // wait_for_selector must be registered in tool_defs() with correct schema shapes.
+    // Schema-shape-only assertions — NO prose/substring pinning of descriptions (step-9 convention).
+    #[test]
+    fn tool_defs_includes_list_console_errors() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "list_console_errors")
+            .expect("list_console_errors must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "list_console_errors must have a non-empty description"
+        );
+        // 'clear' is optional — if a required array exists it must NOT force 'clear'
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("clear")),
+                "'clear' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_defs_includes_wait_for() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "wait_for")
+            .expect("wait_for must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "wait_for must have a non-empty description"
+        );
+        // Must have a 'predicate' property
+        assert!(
+            schema["properties"]["predicate"].is_object(),
+            "properties.predicate must be present and an object"
+        );
+        // timeout_ms is optional — if a required array exists it must NOT force timeout_ms
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("timeout_ms")),
+                "'timeout_ms' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_defs_includes_wait_for_selector() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "wait_for_selector")
+            .expect("wait_for_selector must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "wait_for_selector must have a non-empty description"
+        );
+        // testId must be a string property
+        assert_eq!(
+            schema["properties"]["testId"]["type"].as_str(),
+            Some("string"),
+            "properties.testId.type must be 'string'"
+        );
+        // testId IS required
+        let required = schema["required"]
+            .as_array()
+            .expect("input_schema.required must be an array for wait_for_selector");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("testId")),
+            "'testId' must be listed in required"
+        );
+        // timeout_ms is optional — must NOT be required
+        assert!(
+            !required.iter().any(|v| v.as_str() == Some("timeout_ms")),
+            "'timeout_ms' must NOT be listed in required (it is optional)"
+        );
+    }
+
     // step-5 RED → GREEN: all five viewport-aware tools must expose an optional
     // viewportId property in their schemas. Consolidated into one table-driven test
     // so adding a sixth tool is a one-line change (amend: suggestion-4).
