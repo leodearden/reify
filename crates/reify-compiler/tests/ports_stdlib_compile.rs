@@ -119,6 +119,29 @@ fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
     }
 }
 
+/// Recursively collect numeric-literal values (`Value::Real`/`Value::Scalar`/
+/// `Value::Int` operands) from a compiled expression tree.
+///
+/// `collect_value_ref_members` proves a `let` RHS references the right *params*,
+/// but not the literal *coefficients* baked beside them — a regression that
+/// changed `pitch * 1.0825` to `pitch * 1.25` would still reference `pitch` and
+/// slip past that walk. This pins the exact ISO coefficients instead (see
+/// `thread_spec_derived_let_coefficients_pinned`).
+fn collect_number_literals(expr: &CompiledExpr) -> Vec<f64> {
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => vec![*v],
+        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => vec![*si_value],
+        CompiledExprKind::Literal(Value::Int(v)) => vec![*v as f64],
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let mut lits = collect_number_literals(left);
+            lits.extend(collect_number_literals(right));
+            lits
+        }
+        CompiledExprKind::UnOp { operand, .. } => collect_number_literals(operand),
+        _ => vec![],
+    }
+}
+
 // ─── step-1: module loads + Directionality enum ──────────────────────────────
 
 /// The std/ports module must load through the production stdlib path with zero
@@ -661,6 +684,103 @@ fn rotary_port_trait_surface() {
     );
 }
 
+/// Behavioural (conformance): a concrete structure conforming to RotaryPort that
+/// supplies all four required members (frame, max_speed, max_torque, axis)
+/// compiles clean.
+///
+/// End-to-end counterpart to `rotary_port_trait_surface`: it drives the merged
+/// RotaryPort requirement set (Port→LocatedPort→MechanicalPort→MotivePort→
+/// RotaryPort) through the strict `structure def X : Trait` conformance checker
+/// (the lenient `port p : in Trait {}` slot does NOT enforce required-member
+/// presence). This is the POSITIVE half of the `max_torque` name-shadowing
+/// guarantee: RotaryPort's required `max_torque : Torque` re-declares
+/// MechanicalPort's optional `max_torque : Option<Torque> = none`, and supplying a
+/// real `Torque` here satisfies it. The NEGATIVE half is
+/// `rotary_port_conformer_inherited_option_default_does_not_satisfy_max_torque`.
+#[test]
+fn rotary_port_concrete_conformer_compiles() {
+    let source = r#"
+import std.ports.mechanical
+
+structure def RotaryConformer : RotaryPort {
+    param frame : Frame3 = Frame3(
+        origin: vec3(0mm, 0mm, 0mm),
+        x_axis: vec3(1mm, 0mm, 0mm),
+        y_axis: vec3(0mm, 1mm, 0mm),
+        z_axis: vec3(0mm, 0mm, 1mm),
+    )
+    param max_speed : AngularVelocity = 1rad / 1s
+    param max_torque : Torque = 1N * 1m / 1rad
+    param axis : Vector3<Length> = vec3(0mm, 0mm, 1mm)
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a structure conforming to RotaryPort and supplying frame/max_speed/max_torque/axis \
+         should compile without errors (the required max_torque:Torque is satisfied by the \
+         supplied Torque value); got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Behavioural (conformance): a structure conforming to RotaryPort that omits
+/// `max_torque` is REJECTED — the inherited MechanicalPort default
+/// `max_torque : Option<Torque> = none` does NOT satisfy RotaryPort's required
+/// `max_torque : Torque`.
+///
+/// This is the load-bearing half of the `max_torque` shadowing guarantee
+/// (plan.json design decision 1). The conformance checker compares the inherited
+/// `Option<Torque>` default against the required `Torque` and rejects it on type
+/// grounds — "type mismatch for trait member 'max_torque' … available default has
+/// Option<…>" — rather than silently accepting the optional default. If that
+/// shadowing ever regressed so the `Option<Torque>=none` default DID satisfy the
+/// requirement, this conformer would compile clean and the assertion would fail.
+///
+/// Probed against the omit-`max_speed` case (a required member with NO inherited
+/// default → plain "missing required member"), which confirms the strict
+/// conformance checker is reached for both — so the type-mismatch outcome here is
+/// specifically the inherited Option default being rejected, not a generic miss.
+#[test]
+fn rotary_port_conformer_inherited_option_default_does_not_satisfy_max_torque() {
+    let source = r#"
+import std.ports.mechanical
+
+structure def RotaryConformerMissingTorque : RotaryPort {
+    param frame : Frame3 = Frame3(
+        origin: vec3(0mm, 0mm, 0mm),
+        x_axis: vec3(1mm, 0mm, 0mm),
+        y_axis: vec3(0mm, 1mm, 0mm),
+        z_axis: vec3(0mm, 0mm, 1mm),
+    )
+    param max_speed : AngularVelocity = 1rad / 1s
+    param axis : Vector3<Length> = vec3(0mm, 0mm, 1mm)
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("max_torque") && d.message.contains("Option<")),
+        "omitting max_torque from a RotaryPort conformer must be rejected because the inherited \
+         Option<Torque>=none default cannot satisfy the required Torque (expected a diagnostic \
+         naming max_torque and the rejected Option<…> default); got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// LinearPort refines exactly [MotivePort] with required members [max_speed,
 /// max_force, stroke, axis] in order:
 ///   max_speed : Scalar<Velocity = Length/Time>
@@ -1136,6 +1256,75 @@ fn thread_spec_structure_surface() {
             refs
         );
     }
+}
+
+/// Pin the *exact* ISO coefficients baked into the ThreadSpec derived `let`s.
+///
+/// `thread_spec_structure_surface` only asserts each `let` RHS references
+/// `nominal_diameter` and `pitch`; it would still pass if a coefficient drifted
+/// (e.g. `pitch * 1.0825` → `pitch * 1.25`). This walks each RHS's compiled
+/// expression tree and pins the literal coefficient against the 60°-flank
+/// identities (ISO 68-1 / ISO 273):
+///   minor_diameter = D − P·1.0825   (ISO 68-1 d1: D − 1.25H, H = 0.866P)
+///   pitch_diameter = D − P·0.6495   (ISO 68-1 d2: D − 0.75H)
+///   clearance_hole = D + P·0.5      (ISO 273 medium-fit approximation)
+///   tap_drill      = D − P          (no coefficient — pure nominal − pitch)
+///
+/// Closes the test-coverage gap that a coefficient regression in
+/// ports_mechanical.ri would otherwise slip past both this compile test and the
+/// eval test (which exercises a locally re-declared copy of ThreadSpec).
+#[test]
+fn thread_spec_derived_let_coefficients_pinned() {
+    let module = load_module("std/ports/mechanical");
+    let thread_spec = module
+        .templates
+        .iter()
+        .find(|t| t.name == "ThreadSpec" && t.entity_kind == EntityKind::Structure)
+        .expect("std/ports/mechanical should contain 'structure def ThreadSpec'");
+
+    // Coefficient-bearing lets: assert the exact ISO constant is a literal operand.
+    let assert_coeff = |member: &str, expected: f64| {
+        let cell = thread_spec
+            .value_cells
+            .iter()
+            .find(|vc| matches!(vc.kind, ValueCellKind::Let) && vc.id.member == member)
+            .unwrap_or_else(|| panic!("ThreadSpec should have a let cell '{}'", member));
+        let rhs = cell
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("ThreadSpec.{} (let) must have a RHS default_expr", member));
+        let lits = collect_number_literals(rhs);
+        assert!(
+            lits.iter().any(|v| (v - expected).abs() < 1e-12),
+            "ThreadSpec.{} RHS must bake the ISO coefficient {} (regression guard against a \
+             drifted thread-geometry constant); got literals: {:?}",
+            member,
+            expected,
+            lits
+        );
+    };
+    assert_coeff("minor_diameter", 1.0825);
+    assert_coeff("pitch_diameter", 0.6495);
+    assert_coeff("clearance_hole", 0.5);
+
+    // tap_drill is pure `nominal_diameter − pitch` — no numeric coefficient at all.
+    let tap_drill = thread_spec
+        .value_cells
+        .iter()
+        .find(|vc| matches!(vc.kind, ValueCellKind::Let) && vc.id.member == "tap_drill")
+        .expect("ThreadSpec should have a let cell 'tap_drill'");
+    let tap_lits = collect_number_literals(
+        tap_drill
+            .default_expr
+            .as_ref()
+            .expect("ThreadSpec.tap_drill (let) must have a RHS default_expr"),
+    );
+    assert!(
+        tap_lits.is_empty(),
+        "ThreadSpec.tap_drill RHS should be pure `nominal_diameter − pitch` with no numeric \
+         coefficient; got literals: {:?}",
+        tap_lits
+    );
 }
 
 /// std/ports/mechanical cardinality lock: exactly 6 traits (MechanicalPort,
