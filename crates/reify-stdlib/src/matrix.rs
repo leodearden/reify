@@ -290,26 +290,22 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
     })
 }
 
-/// Extract a square or rectangular matrix from a `Value` into `(nrows, ncols, flat_data, element_dim)`.
+/// Row variants for [`rank2_components`]: shared by [`matrix_components_f64`]
+/// (Matrix / Tensor containers) and [`list_matrix_components_f64`] (List-of-List).
+enum Rows<'a> {
+    Matrix(&'a [Vec<Value>]),
+    Tensor(&'a [Value]),
+    List(&'a [Value]),
+}
+
+/// Shared rank-2 guard/flatten core.
 ///
-/// Handles both `Value::Matrix(rows)` and nested `Value::Tensor` (rank-2 Tensor).
-/// All elements must share the same dimension and be numeric.
-pub(crate) fn matrix_components_f64(
-    v: &Value,
-) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
-    enum Rows<'a> {
-        Matrix(&'a [Vec<Value>]),
-        Tensor(&'a [Value]),
-    }
-    let rows = match v {
-        Value::Matrix(r) if !r.is_empty() => Rows::Matrix(r),
-        Value::Tensor(items)
-            if !items.is_empty() && items.iter().all(|r| matches!(r, Value::Tensor(_))) =>
-        {
-            Rows::Tensor(items)
-        }
-        _ => return None,
-    };
+/// Validates shape (non-empty outer, every row non-empty with the same
+/// column count), checks uniform element dimension, and flattens to a
+/// row-major `Vec<f64>`. Called by both [`matrix_components_f64`] and
+/// [`list_matrix_components_f64`] — shape/dimension/numeric guards live in
+/// one place.
+fn rank2_components(rows: Rows<'_>) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
     let (nrows, ncols) = match &rows {
         Rows::Matrix(r) => {
             let nc = r[0].len();
@@ -333,12 +329,31 @@ pub(crate) fn matrix_components_f64(
             }
             (items.len(), nc)
         }
+        Rows::List(items) => {
+            let nc = match &items[0] {
+                Value::List(elems) => elems.len(),
+                _ => return None,
+            };
+            if nc == 0
+                || items.iter().any(|r| match r {
+                    Value::List(elems) => elems.len() != nc,
+                    _ => true,
+                })
+            {
+                return None;
+            }
+            (items.len(), nc)
+        }
     };
     // Flatten and extract f64 values, checking uniform dimension.
     let first_elem = match &rows {
         Rows::Matrix(r) => &r[0][0],
         Rows::Tensor(items) => match &items[0] {
             Value::Tensor(elems) => &elems[0],
+            _ => return None,
+        },
+        Rows::List(items) => match &items[0] {
+            Value::List(elems) => &elems[0],
             _ => return None,
         },
     };
@@ -374,11 +389,66 @@ pub(crate) fn matrix_components_f64(
                             return None;
                         }
                     }
+                } else {
+                    return None;
+                }
+            }
+        }
+        Rows::List(items) => {
+            for item in *items {
+                if let Value::List(elems) = item {
+                    for elem in elems {
+                        if !check_and_push(elem, &mut data) {
+                            return None;
+                        }
+                    }
+                } else {
+                    return None;
                 }
             }
         }
     }
     Some((nrows, ncols, data, first_dim))
+}
+
+/// Extract a square or rectangular matrix from a `Value` into
+/// `(nrows, ncols, flat_data, element_dim)`.
+///
+/// Handles `Value::Matrix(rows)` and nested `Value::Tensor` (rank-2 Tensor).
+/// All elements must share the same dimension and be numeric.
+/// Returns `None` for `Value::List` — use [`list_matrix_components_f64`] for
+/// that container; its 10 callers (matrix builtins, geometry.rs, analysis.rs)
+/// are unaffected.
+pub(crate) fn matrix_components_f64(
+    v: &Value,
+) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
+    let rows = match v {
+        Value::Matrix(r) if !r.is_empty() => Rows::Matrix(r),
+        // Non-empty guard stays here because rank2_components accesses items[0] directly.
+        // Per-row Tensor validation is handled by rank2_components (Rows::Tensor arm).
+        Value::Tensor(items) if !items.is_empty() => Rows::Tensor(items),
+        _ => return None,
+    };
+    rank2_components(rows)
+}
+
+/// Extract a depth-2 `Value::List`-of-`Value::List` into
+/// `(nrows, ncols, row_major_data, element_dim)`.
+///
+/// The `Value::List` container analogue of [`matrix_components_f64`]: both
+/// delegate to [`rank2_components`] so the shape/dimension/numeric guards live
+/// in one place. `matrix_components_f64` still rejects `Value::List`
+/// (contract preserved; 10 callers unaffected). Used by `construct::eval_matrix`.
+pub(crate) fn list_matrix_components_f64(
+    v: &Value,
+) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
+    // Non-empty guard stays here because rank2_components accesses items[0] directly.
+    // Per-row List validation is handled by rank2_components (Rows::List arm).
+    let items = match v {
+        Value::List(items) if !items.is_empty() => items,
+        _ => return None,
+    };
+    rank2_components(Rows::List(items))
 }
 
 /// Build a nested `Value::Tensor` (rank-2) from flat f64 data.
@@ -410,7 +480,7 @@ mod tests {
     use reify_core::DimensionVector;
     use reify_ir::Value;
 
-    use super::matrix_components_f64;
+    use super::{list_matrix_components_f64, matrix_components_f64};
 
     fn make_matrix(rows: &[&[f64]]) -> Value {
         Value::Tensor(
@@ -1638,5 +1708,145 @@ mod tests {
     #[test]
     fn complex_eigenvalues_non_matrix_returns_undef() {
         assert!(eval_builtin("complex_eigenvalues", &[Value::Real(5.0)]).is_undef());
+    }
+
+    // --- list_matrix_components_f64 characterization tests (step-1 RED / step-2 GREEN) ---
+
+    /// Contract lock: the existing `matrix_components_f64` must still return None
+    /// for a Value::List (parallel to helpers' tensor_components_f64_list_returns_none).
+    #[test]
+    fn matrix_components_f64_rejects_list_returns_none() {
+        let list = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Value::List(vec![Value::Real(3.0), Value::Real(4.0)]),
+        ]);
+        assert!(
+            matrix_components_f64(&list).is_none(),
+            "matrix_components_f64 must return None for Value::List (contract preserved)"
+        );
+    }
+
+    /// (a-1) A 2×2 List-of-List extracts to the correct (nrows, ncols, data, dim).
+    #[test]
+    fn list_matrix_components_f64_2x2_dimensionless() {
+        let input = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Value::List(vec![Value::Real(3.0), Value::Real(4.0)]),
+        ]);
+        let (nrows, ncols, data, dim) = list_matrix_components_f64(&input)
+            .expect("2×2 dimensionless list-of-list should return Some");
+        assert_eq!(nrows, 2);
+        assert_eq!(ncols, 2);
+        assert_eq!(data, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(dim, DimensionVector::DIMENSIONLESS);
+    }
+
+    /// (a-2) A non-square 2×3 List-of-List extracts with the correct shape.
+    #[test]
+    fn list_matrix_components_f64_2x3_dimensionless() {
+        let input = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
+            Value::List(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]),
+        ]);
+        let (nrows, ncols, data, dim) = list_matrix_components_f64(&input)
+            .expect("2×3 dimensionless list-of-list should return Some");
+        assert_eq!(nrows, 2);
+        assert_eq!(ncols, 3);
+        assert_eq!(data, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(dim, DimensionVector::DIMENSIONLESS);
+    }
+
+    /// (b) LENGTH-Scalar cells → element dim = LENGTH.
+    #[test]
+    fn list_matrix_components_f64_length_scalars() {
+        let l = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        let input = Value::List(vec![
+            Value::List(vec![l(1.0), l(2.0)]),
+            Value::List(vec![l(3.0), l(4.0)]),
+        ]);
+        let (nrows, ncols, data, dim) = list_matrix_components_f64(&input)
+            .expect("2×2 LENGTH list-of-list should return Some");
+        assert_eq!(nrows, 2);
+        assert_eq!(ncols, 2);
+        assert_eq!(dim, DimensionVector::LENGTH);
+        assert_eq!(data, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    /// (c-1) Rejection: empty outer list → None.
+    #[test]
+    fn list_matrix_components_f64_empty_outer_returns_none() {
+        assert!(
+            list_matrix_components_f64(&Value::List(vec![])).is_none(),
+            "empty outer list should return None"
+        );
+    }
+
+    /// (c-2) Rejection: empty row → None.
+    #[test]
+    fn list_matrix_components_f64_empty_row_returns_none() {
+        let input = Value::List(vec![Value::List(vec![])]);
+        assert!(
+            list_matrix_components_f64(&input).is_none(),
+            "empty row should return None"
+        );
+    }
+
+    /// (c-3) Rejection: ragged rows → None.
+    #[test]
+    fn list_matrix_components_f64_ragged_rows_returns_none() {
+        let input = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Value::List(vec![Value::Real(3.0)]),
+        ]);
+        assert!(
+            list_matrix_components_f64(&input).is_none(),
+            "ragged rows should return None"
+        );
+    }
+
+    /// (c-4) Rejection: non-list row → None.
+    #[test]
+    fn list_matrix_components_f64_non_list_row_returns_none() {
+        let input = Value::List(vec![
+            Value::List(vec![Value::Real(1.0)]),
+            Value::Real(2.0),
+        ]);
+        assert!(
+            list_matrix_components_f64(&input).is_none(),
+            "non-list row should return None"
+        );
+    }
+
+    /// (c-5) Rejection: mixed-dimension cells → None.
+    #[test]
+    fn list_matrix_components_f64_mixed_dimension_returns_none() {
+        let input = Value::List(vec![Value::List(vec![
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ])]);
+        assert!(
+            list_matrix_components_f64(&input).is_none(),
+            "mixed-dimension cells should return None"
+        );
+    }
+
+    /// (c-6) Rejection: non-numeric cell → None.
+    #[test]
+    fn list_matrix_components_f64_non_numeric_cell_returns_none() {
+        let input =
+            Value::List(vec![Value::List(vec![
+                Value::Real(1.0),
+                Value::String("x".to_string()),
+            ])]);
+        assert!(
+            list_matrix_components_f64(&input).is_none(),
+            "non-numeric cell should return None"
+        );
     }
 }
