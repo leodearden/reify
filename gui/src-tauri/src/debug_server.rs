@@ -388,6 +388,23 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {}
             }),
         },
+        // --- R2 inspection tools (task-4297) — frontend-mediated, dispatched via query_frontend ---
+        ToolDef {
+            name: "get_diagnostics",
+            description: "Structured dump of the engine's compile and tessellation diagnostics (severity, message, code, source range) read from the real engineStore.compileDiagnostics + tessellationDiagnostics. Returns { compile: Diag[], tessellation: Diag[], compileCount, tessellationCount } where Diag = { severity, message, code, file_path, range: { line, column, end_line, end_column } }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "ui_outline",
+            description: "DOM-derived semantic text snapshot of visible UI elements in document order. Returns { outline: Node[], count, truncated } where Node = { tagName, role, testId, text, enabled }. Captures buttons, inputs, [role], [data-testid], and other interactive elements visible in the render tree (computed display != none && visibility != hidden). This is a pragmatic DOM APPROXIMATION — NOT a true accessibility tree (true AX tree support deferred to tracker AX-1). Capped at 500 elements.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
     ]
 }
 
@@ -1345,6 +1362,41 @@ mod tests {
         // Tools that require nothing (no required array or empty)
         let no_param_tools = ["active_element", "get_window_state"];
         for tool_name in no_param_tools {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{tool_name}: required array must be empty; got {required:?}"
+                );
+            }
+        }
+    }
+
+    // task-4297 step-5 RED → step-6 GREEN: R2 tools get_diagnostics and ui_outline
+    // must be registered in tool_defs() with correct schema shape.
+    // Note: the ui_outline DOM-approximation / not-an-AX-tree label lives in the
+    // ToolDef source description (see debug_server.rs:402); it is not substring-pinned
+    // here to avoid brittle wording-pin failures on harmless rewording (step-9).
+    #[test]
+    fn tool_defs_registers_r2_inspection_tools() {
+        let defs = tool_defs();
+
+        // Both R2 tools take no required params.
+        let r2_tools = ["get_diagnostics", "ui_outline"];
+        for tool_name in r2_tools {
             let entry = defs
                 .iter()
                 .find(|t| t.name == tool_name)

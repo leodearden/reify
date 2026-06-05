@@ -5,7 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import type { DebugStores, DebugViewport, ReifyDebugContext } from './types';
 import { convertRawGuiState } from '../types';
-import type { RawGuiState } from '../types';
+import type { RawGuiState, DiagnosticInfo } from '../types';
 import { Box3, Vector3 } from 'three';
 import type { Mesh, BufferGeometry } from 'three';
 import { testMode, setTestMode } from './testMode';
@@ -93,6 +93,36 @@ function describeElement(el: HTMLElement) {
   };
 }
 
+// Helper for ui_outline: returns true if el or any ancestor up to <html> is hidden.
+// CSS `display` is NOT an inherited property, so getComputedStyle(el).display==='none'
+// only catches the element itself — not elements inside a hidden parent container
+// (e.g. collapsed panels, closed modals, hidden tabs). Walk the ancestor chain so that
+// subtrees whose parent has display:none or visibility:hidden are correctly excluded.
+// (visibility IS inherited, so the child check would already catch it, but walking
+// ancestors handles both uniformly and is the correct render-tree-presence criterion.)
+function isEffectivelyHidden(el: Element): boolean {
+  let node: Element | null = el;
+  while (node && node !== document.documentElement) {
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden') return true;
+    node = node.parentElement;
+  }
+  return false;
+}
+
+// Reshape a DiagnosticInfo into the get_diagnostics wire format.
+// Groups the flat line/column/end_line/end_column quad into a `range` object
+// matching PRD §3, with no field loss.
+function shapeDiagnostic(d: DiagnosticInfo) {
+  return {
+    severity: d.severity,
+    message: d.message,
+    code: d.code,
+    file_path: d.file_path,
+    range: { line: d.line, column: d.column, end_line: d.end_line, end_column: d.end_column },
+  };
+}
+
 // Validates selector param, queries the DOM, and returns either an error, the
 // matched element, or null (no match). Handlers map null → {exists:false}.
 function resolveElement(params: Record<string, unknown>): { error: string } | { el: Element | null } {
@@ -140,6 +170,20 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
           messageCount: claude.state.messages.length,
           currentMessageId: claude.state.currentMessageId,
         },
+      };
+    },
+
+    // --- R2: get_diagnostics (frontend-mediated, reads engineStore) ---
+
+    get_diagnostics: () => {
+      const { engine } = ctx.stores;
+      const compile = (engine.state.compileDiagnostics ?? []).map(shapeDiagnostic);
+      const tessellation = (engine.state.tessellationDiagnostics ?? []).map(shapeDiagnostic);
+      return {
+        compile,
+        tessellation,
+        compileCount: compile.length,
+        tessellationCount: tessellation.length,
       };
     },
 
@@ -351,6 +395,35 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       devicePixelRatio: window.devicePixelRatio,
       focused: document.hasFocus(),
     }),
+
+    // --- R2: ui_outline (frontend-mediated, reads live DOM) ---
+    // Returns a flat ordered list of visible semantic elements (tagName, role,
+    // data-testid, text, enabled-state). This is a pragmatic DOM APPROXIMATION —
+    // NOT a true accessibility tree (deferred to tracker AX-1).
+    // Visibility is determined by computed display/visibility (NOT getBoundingClientRect
+    // geometry, which is all-zero under jsdom) — the correct render-tree criterion.
+    ui_outline: () => {
+      const MAX = 500;
+      const nodes = document.querySelectorAll(
+        '[data-testid], [role], button, a[href], input, select, textarea, [tabindex]',
+      );
+      const all = Array.from(nodes);
+      const outline: Array<Record<string, unknown>> = [];
+      for (const el of all) {
+        if (isEffectivelyHidden(el)) continue;
+        const h = el as HTMLElement & { disabled?: boolean };
+        outline.push({
+          tagName: el.tagName.toLowerCase(),
+          role: el.getAttribute('role'),
+          testId: el.getAttribute('data-testid'),
+          text: ((h.innerText ?? el.textContent ?? '').slice(0, 200)),
+          enabled: !h.disabled && el.getAttribute('aria-disabled') !== 'true',
+        });
+      }
+      const truncated = outline.length > MAX;
+      const sliced = outline.slice(0, MAX);
+      return { outline: sliced, count: outline.length, truncated };
+    },
 
     // --- Write commands (frontend-mediated) ---
 

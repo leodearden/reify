@@ -30,6 +30,8 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
         values: {} as any,
         constraints: {} as any,
         evalStatus: { phase },
+        compileDiagnostics: [],
+        tessellationDiagnostics: [],
       },
       initFromState: vi.fn(),
     },

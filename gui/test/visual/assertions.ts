@@ -94,6 +94,30 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
       { path: "overflow.horizontal", op: "equals", expected: true },
     ],
   },
+  // task-4297 step-8 GREEN: R2 e2e signal scenarios (live signal via npm run test:e2e)
+  // Non-racy: openFixture in run.ts calls open_file + wait_for_idle before invoking the
+  // tool, so the engine has settled and diagnostic population is complete before the
+  // get_diagnostics call. broken_syntax.ri is intentionally unparseable → ≥1 compile diag.
+  {
+    name: "get_diagnostics_broken_syntax",
+    fixture: "broken_syntax",
+    tool: "get_diagnostics",
+    args: {},
+    assertions: [
+      { path: "compile", op: "exists" },
+      { path: "compileCount", op: "atLeast", expected: 1 },
+    ],
+  },
+  {
+    name: "ui_outline_small_cube",
+    fixture: "small_cube",
+    tool: "ui_outline",
+    args: {},
+    assertions: [
+      { path: "outline", op: "exists" },
+      { path: "count", op: "atLeast", expected: 1 },
+    ],
+  },
 ];
 
 // ─── Assertion type + evaluateAssertion ──────────────────────────────────────
