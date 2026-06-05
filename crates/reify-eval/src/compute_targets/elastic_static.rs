@@ -1295,8 +1295,15 @@ fn extract_loads(val: &Value) -> ([f64; 3], Vec<PressureSpec>) {
                         Some(Value::List(elems)) if elems.len() == 3 => {
                             let mut d = [0.0f64; 3];
                             for (i, e) in elems.iter().enumerate() {
-                                if let Value::Real(v) = e {
-                                    d[i] = *v;
+                                // List<Real> elements materialize as either
+                                // `Value::Real` (scene literals) or dimensionless
+                                // `Value::Scalar` (structure-def default values),
+                                // mirroring the `magnitude` parse below. Handle
+                                // both so the default [0,0,-1] is honoured.
+                                match e {
+                                    Value::Real(v) => d[i] = *v,
+                                    Value::Scalar { si_value, .. } => d[i] = *si_value,
+                                    _ => {}
                                 }
                             }
                             d

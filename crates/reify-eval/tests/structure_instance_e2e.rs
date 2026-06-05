@@ -547,7 +547,9 @@ fn point_load_direction_field_default_and_override() {
     const SOURCE: &str = r#"
 structure def DirectionFixture {
     let a = PointLoad()
-    let b = PointLoad(direction: [0.0, -1.0, 0.0])
+    // `direction` is the LAST param (ctors bind positionally), so an explicit
+    // override must also supply point/force in declaration order.
+    let b = PointLoad(point: "", force: 0.0, direction: [0.0, -1.0, 0.0])
 }
 "#;
 
