@@ -6703,4 +6703,109 @@ mod tests {
             "error kind must be InvalidData"
         );
     }
+
+    // ── ASCII serializer unit tests ──────────────────────────────────────────
+
+    #[test]
+    fn write_stl_ascii_single_triangle_structure() {
+        let mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+            ],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_ascii(&mesh, &mut buf).expect("write_stl_ascii should succeed");
+        let text = std::str::from_utf8(&buf).expect("ascii output must be valid UTF-8");
+
+        // Must start with "solid" and end with "endsolid"
+        assert!(
+            text.starts_with("solid"),
+            "ascii STL must start with 'solid'"
+        );
+        assert!(
+            text.contains("endsolid"),
+            "ascii STL must contain 'endsolid'"
+        );
+
+        // Exactly 1 "facet normal" and 1 "outer loop"
+        assert_eq!(
+            text.matches("facet normal").count(),
+            1,
+            "single triangle: expected 1 'facet normal'"
+        );
+        assert_eq!(
+            text.matches("outer loop").count(),
+            1,
+            "single triangle: expected 1 'outer loop'"
+        );
+
+        // Exactly 3 "vertex " lines
+        assert_eq!(
+            text.matches("vertex ").count(),
+            3,
+            "single triangle: expected 3 'vertex ' entries"
+        );
+
+        // Known vertex coordinates appear in the text
+        assert!(
+            text.contains("1") && text.contains("0"),
+            "coordinates must appear in ascii output"
+        );
+    }
+
+    #[test]
+    fn write_stl_ascii_two_triangle_quad() {
+        let mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                1.0, 1.0, 0.0, // v2
+                0.0, 1.0, 0.0, // v3
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_ascii(&mesh, &mut buf).expect("write_stl_ascii should succeed");
+        let text = std::str::from_utf8(&buf).expect("ascii output must be valid UTF-8");
+
+        assert_eq!(
+            text.matches("facet normal").count(),
+            2,
+            "two-triangle quad: expected 2 'facet normal'"
+        );
+        assert_eq!(
+            text.matches("outer loop").count(),
+            2,
+            "two-triangle quad: expected 2 'outer loop'"
+        );
+        assert_eq!(
+            text.matches("vertex ").count(),
+            6,
+            "two-triangle quad: expected 6 'vertex ' entries"
+        );
+    }
+
+    #[test]
+    fn write_stl_ascii_empty_mesh() {
+        let mesh = Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_ascii(&mesh, &mut buf).expect("empty mesh should not panic");
+        let text = std::str::from_utf8(&buf).expect("must be valid UTF-8");
+        assert!(text.starts_with("solid"), "must start with solid");
+        assert!(text.contains("endsolid"), "must contain endsolid");
+        assert_eq!(
+            text.matches("facet normal").count(),
+            0,
+            "empty mesh: no facets"
+        );
+    }
 }
