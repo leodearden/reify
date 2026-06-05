@@ -1,14 +1,19 @@
-// Stdlib: Manufacturing Processes — Process, DFMRule, and process-category traits
-// Provides the trait surface for representing manufacturing process constraints
-// and design-for-manufacturability (DFM) rules on parametric structures.
+// Stdlib: Manufacturing Processes — Process, DFMRule, process-category traits,
+// and DFM constraint defs.
 //
-// Reference: docs/prds/v0_6/stdlib-reconstruction.md §Slice B.
+// Provides the declarative DFM evaluation surface for parametric structures:
+//   - Process trait hierarchy (Process, Subtracting, Adding, Forming, Joining,
+//     Parting, SurfaceTreating, HeatTreating) — process-category trait surface.
+//   - DFMRule trait — annotates a structure with a named DFM rule.
+//   - DFM constraint defs (Manufacturable and per-category defs) — the
+//     evaluable manufacturability checks that turn process-category capability
+//     params into `reify check`-reportable constraint results.
 //
-// TRAIT SURFACE ONLY — DFM-rule evaluation (running a rule against geometry)
-// is OUT OF SCOPE for this module. This module declares the types that let a
-// designer annotate a structure with process constraints and DFM rules; it does
-// not provide any rule-evaluation engine or geometry checker. A future task
-// will add an evaluation seam here.
+// Reference: docs/prds/v0_6/stdlib-reconstruction.md §Slice B;
+//            docs/prds/v0_6/process-dfm-completion.md §2.2/§7 task γ.
+//
+// Geometry metrology (spatial sampling, clearance fields, etc.) remains
+// deferred per docs/prds/v0_6/process-dfm-geometry-metrology.md.
 //
 // DFMSeverity note: this module declares its own `DFMSeverity` enum for use as
 // a DSL type. This is distinct from the Rust type `reify_core::Severity` used
@@ -105,10 +110,6 @@ trait HeatTreating : Process {
 }
 
 // ── DFM rule trait ────────────────────────────────────────────────────────────
-// TRAIT SURFACE ONLY — this trait declares the interface for a DFM rule;
-// it does NOT provide any evaluation engine or geometry-checking capability.
-// A future evaluation task will add the seam for running rules against geometry.
-//
 // applies_to is the process-applicability marker: it names the process (or
 // process category) to which this rule applies. Conformers supply a concrete
 // Process value (e.g. MilledPart()), mirroring fdm.ri's
@@ -117,4 +118,76 @@ trait DFMRule {
     param rule_name : String
     param severity : DFMSeverity
     param applies_to : Process
+}
+
+// ── DFM constraint defs ───────────────────────────────────────────────────────
+// Evaluable manufacturability checks backed by the process-category capability
+// params (task β). Use these inside structure defs with a process conformer:
+//
+//   let proc = MilledBracket()
+//   constraint Manufacturable(measured: wall, capability: proc.min_feature_size)
+//
+// Scalar defs (Manufacturable, BendManufacturable, DrawManufacturable,
+// DraftManufacturable) evaluate to a definite Satisfied/Violated result with the
+// no-kernel engine. Geometry-backed defs (FeatureManufacturable over a
+// Subtracting conformer, FitsBuildVolume) require bounding_box resolution; their
+// runtime OK→VIOLATED flip is exercised by δ's kernel-backed CI examples.
+
+// Universal scalar manufacturability check.
+// measured >= capability — asserts a design measurement meets or exceeds the
+// process capability threshold. The "capability" param holds the process limit
+// (e.g. proc.min_feature_size); "measured" holds the design value to check.
+pub constraint def Manufacturable {
+    param measured    : Length
+    param capability  : Length
+    measured >= capability
+}
+
+// Per-category DFM constraint def: Subtracting.
+// Geometry-backed (Subtracting.tool_access is a Solid) — compile-clean in γ;
+// runtime OK→VIOLATED flip is exercised by δ's kernel-backed CI examples.
+
+// Checks that a design feature size meets the process minimum.
+pub constraint def FeatureManufacturable {
+    param proc    : Subtracting
+    param feature : Length
+    feature >= proc.min_feature_size
+}
+
+// Forming-process DFM constraint defs.
+// Pure-scalar (no Solid params) → evaluate to definite Satisfied/Violated
+// with the no-kernel engine. Runtime OK→VIOLATED flip for geometry-backed
+// defs (FeatureManufacturable, FitsBuildVolume) is exercised by δ.
+
+// Checks that a bend radius meets the process minimum.
+pub constraint def BendManufacturable {
+    param proc        : Forming
+    param bend_radius : Length
+    bend_radius >= proc.min_bend_radius
+}
+
+// Checks that a draw depth does not exceed the process maximum.
+pub constraint def DrawManufacturable {
+    param proc       : Forming
+    param draw_depth : Length
+    draw_depth <= proc.max_draw_depth
+}
+
+// Checks that a draft angle meets the process minimum.
+pub constraint def DraftManufacturable {
+    param proc  : Forming
+    param draft : Angle
+    draft >= proc.draft_angle
+}
+
+// Per-category DFM constraint def: Adding / build-volume check.
+// Geometry-backed: wraps both Solid args in bounding_box(...) so that α's
+// fits_build_volume builtin (which requires BoundingBox inputs) receives the
+// correct type. Runtime OK→VIOLATED flip requires OCCT and is exercised by δ.
+
+// Checks that a part's bounding box fits within the process build envelope.
+pub constraint def FitsBuildVolume {
+    param proc : Adding
+    param part : Solid
+    fits_build_volume(bounding_box(part), bounding_box(proc.build_volume))
 }
