@@ -4122,22 +4122,53 @@ pub(crate) fn build_structure_def_skeleton(
     // registered.  Geometry-typed lets are skipped (same as the authoritative path).
     // `known_geometry_lets` starts empty — alias-style geometry lets in the skeleton
     // context are exceedingly rare and the throwaway-diag budget makes this safe.
+    //
+    // Divergence from authoritative path fixed here (task-4342 amendment, suggestion 1):
+    //   • `fixup_option_none_for_let` is now called so that `let x: Option<T> = none`
+    //     gets the correct typed-none expr on both the skeleton and authoritative paths.
+    //     Without this, the skeleton's `Option<Real>` fallback type diverges from the
+    //     authoritative `Option<T>`, breaking sub-consistency for option-typed derived lets.
+    //   • Visibility now respects `let_decl.is_pub` (authoritative: entity.rs:1434) instead
+    //     of hardcoding `Visibility::Public`.  The two paths must agree so that downstream
+    //     callers (e.g. the ctor-lets lowering filter at expr.rs:1413) see identical metadata.
+    //
+    // Solver-hints/annotation lowering and per-decl where-clause guards are intentionally
+    // NOT replicated here — they require the full diagnostic machinery (alias registry,
+    // structure_names, trait_names) and are compiler-internal; the skeleton is transient
+    // and never participates in constraint solving.
     let known_geometry_lets: HashSet<&str> = HashSet::new();
     for member in &structure.members {
         if let reify_ast::MemberDecl::Let(let_decl) = member {
             if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
                 continue;
             }
-            let compiled_expr =
+            let mut compiled_expr =
                 compile_expr(&let_decl.value, &scope, enum_defs, functions, &mut throwaway_diags);
+            // Mirror the authoritative path's fixup so `Option<T>` typed lets get the
+            // correct none type, not the parser's `Option<Real>` fallback.
+            fixup_option_none_for_let(
+                &mut compiled_expr,
+                let_decl.type_expr.as_ref(),
+                &type_param_names,
+                &local_alias_registry,
+                structure_names,
+                trait_names,
+                &mut throwaway_diags,
+            );
             let cell_type = compiled_expr.result_type.clone();
             let id = ValueCellId::new(&structure.name, &let_decl.name);
             // Register in scope so later lets can reference earlier lets.
             scope.register(&let_decl.name, cell_type.clone());
+            // Respect is_pub, matching the authoritative path (entity.rs:1434).
+            let let_visibility = if let_decl.is_pub {
+                Visibility::Public
+            } else {
+                Visibility::Private
+            };
             value_cells.push(ValueCellDecl {
                 id,
                 kind: ValueCellKind::Let,
-                visibility: Visibility::Public,
+                visibility: let_visibility,
                 is_aux: let_decl.is_aux,
                 cell_type,
                 default_expr: Some(compiled_expr),

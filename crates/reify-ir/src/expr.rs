@@ -802,6 +802,27 @@ impl CompiledExpr {
                 // type_name) — do NOT apply `f`, which remaps surrounding-scope
                 // refs.  Pass through cloned-unchanged so lets survive the
                 // map_value_refs rebuild without being dropped or wrongly remapped.
+                //
+                // INVARIANT ENFORCEMENT (suggestion 4): assert in debug/test builds
+                // that every ValueRef inside a let expr has entity == type_name.
+                // This makes the "no-traverse" contract visible and loud (rather than
+                // silently-wrong) if a future let ever captures a surrounding-scope ref.
+                // Walk + collect_value_refs_inner intentionally skip `lets` (they use
+                // `..`), so any cross-scope ref there would be missed by dependency
+                // analysis and remapping — this assert fires before that can happen.
+                #[cfg(debug_assertions)]
+                for (let_name, let_expr) in &lets {
+                    for ref_id in let_expr.collect_value_refs() {
+                        debug_assert_eq!(
+                            ref_id.entity, type_name,
+                            "StructureInstanceCtor let '{}' contains a ValueCellId \
+                             with entity '{}' != type_name '{}'; cross-scope refs in \
+                             lets are silently skipped by walk/collect_value_refs/\
+                             remap_entity — this is a compiler bug",
+                            let_name, ref_id.entity, type_name,
+                        );
+                    }
+                }
                 CompiledExpr::structure_instance_ctor(
                     type_id,
                     type_name,

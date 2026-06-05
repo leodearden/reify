@@ -1407,10 +1407,31 @@ pub(crate) fn compile_expr_guarded(
                 // Collect the template's Let cells in declaration order (task-4342):
                 // each Let's compiled expr is stored in `default_expr`; the ctor
                 // carries them so eval can eagerly materialize derived members.
+                //
+                // Which Let kinds are intentionally included / excluded (suggestion 3):
+                //   INCLUDED:  all source-declared Let cells, whether Public or Private.
+                //     Private lets are included because they may be intermediate helpers
+                //     referenced by later Public lets (`priv let x = a*2; let y = x+1mm`).
+                //     Excluding them would silently break the Public let's evaluation.
+                //   EXCLUDED:  auto-synthesized `__count_<coll>` lets generated from
+                //     Constraint members (entity.rs:1483-1489).  These are compiler-internal
+                //     collection-count cells keyed by a private naming convention; they are
+                //     used by the engine's collection elaboration, not by ctor-path member
+                //     access, and their RHS may reference sub-component values unavailable
+                //     at ctor time.
+                //   EXCLUDED:  geometry-typed lets — already filtered out before they reach
+                //     `value_cells` by `is_geometry_let` (entity.rs:1411-1413), so the
+                //     `starts_with("__count_")` guard below is the only runtime filter needed.
                 let lets: Vec<(String, CompiledExpr)> = template
                     .value_cells
                     .iter()
-                    .filter(|vc| matches!(vc.kind, ValueCellKind::Let))
+                    .filter(|vc| {
+                        matches!(vc.kind, ValueCellKind::Let)
+                            // Exclude auto-synthesized collection-count lets (entity.rs:1482-1493).
+                            // These are compiler-internal cells whose RHS may reference
+                            // sub-component values that are unavailable at ctor construction time.
+                            && !vc.id.member.starts_with("__count_")
+                    })
                     .filter_map(|vc| {
                         vc.default_expr
                             .as_ref()

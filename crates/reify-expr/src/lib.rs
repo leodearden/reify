@@ -977,6 +977,27 @@ fn materialize_template_lets(
     // Declaration order is a valid eval order: the compiler enforces left-to-right
     // scoping (a let can only reference earlier params/lets), so no topological
     // sort or cycle guard is needed here (unlike elaborate_child_lets_only).
+    //
+    // SCOPE INVARIANT (suggestion 2): `ctx.with_scope(&child)` REPLACES the value
+    // map entirely.  This is intentional and correct for structure-def lets because:
+    //
+    //   (a) The compiler compiles each let expr in a `CompilationScope` that only
+    //       registers the structure's own param names and earlier lets
+    //       (entity.rs:1107 / entity.rs:4107,4136).  Any identifier not in that
+    //       scope produces a compile error or an unresolved-ICE Undef expr — so a
+    //       well-compiled let expr can only carry `ValueRef(ValueCellId{entity ==
+    //       type_name, ...})` refs, all of which are present in `child`.
+    //
+    //   (b) The `sub`-path reference implementation (`elaborate_child_lets_only`,
+    //       reify-eval/src/unfold.rs:570-574) ALSO evaluates let exprs against a
+    //       child-scoped context (`eval_ctx_with_meta(&child_values, ...)`), not
+    //       the full module ValueMap.  Our behavior is therefore identical to the
+    //       sub baseline, guaranteeing sub-consistency by construction.
+    //
+    // If a future language feature adds module-level constants accessible inside
+    // structure-def lets (analogous to C++ `static constexpr`), the child scope
+    // would need to be layered over `ctx.values` for unresolved ids.  For now no
+    // such feature exists; the invariant is enforced by the compiler.
     for (name, let_expr) in lets {
         let value = eval_expr(let_expr, &ctx.with_scope(&child));
         child.insert(ValueCellId::new(type_name, name.as_str()), value.clone());
