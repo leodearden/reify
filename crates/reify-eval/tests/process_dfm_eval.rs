@@ -10,8 +10,32 @@
 //! level only in `crates/reify-compiler/tests/process_stdlib_compile.rs` — the
 //! no-kernel `make_simple_engine()` cannot realize `bounding_box(solid)`.
 
+use reify_eval::{CheckResult, ConstraintCheckEntry};
 use reify_ir::Satisfaction;
 use reify_test_support::check_source_with_stdlib;
+
+// ─── test helper ──────────────────────────────────────────────────────────────
+
+/// Find a constraint-check entry in `result` by entity name and label string.
+///
+/// Panics with a diagnostic listing all entries if not found, using a
+/// consistent message format across all tests in this module.
+fn find_constraint_result<'a>(
+    result: &'a CheckResult,
+    entity: &str,
+    label: &str,
+) -> &'a ConstraintCheckEntry {
+    result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == entity && e.label == Some(label.to_string()))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected {entity} {label}; got: {:?}",
+                result.constraint_results
+            )
+        })
+}
 
 // ─── step-1: universal Manufacturable — violated / satisfied ──────────────────
 
@@ -47,41 +71,15 @@ structure def InSpecWall {
     let result = check_source_with_stdlib(source);
 
     // UnderSpecWall: 0.5mm >= 1mm → false → Violated
-    let under_entry = result
-        .constraint_results
-        .iter()
-        .find(|e| {
-            e.id.entity == "UnderSpecWall"
-                && e.label == Some("Manufacturable#0[0]".to_string())
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "expected UnderSpecWall Manufacturable#0[0]; got: {:?}",
-                result.constraint_results
-            )
-        });
     assert_eq!(
-        under_entry.satisfaction,
+        find_constraint_result(&result, "UnderSpecWall", "Manufacturable#0[0]").satisfaction,
         Satisfaction::Violated,
         "UnderSpecWall: 0.5mm >= 1mm should be Violated"
     );
 
     // InSpecWall: 2mm >= 1mm → true → Satisfied
-    let inspec_entry = result
-        .constraint_results
-        .iter()
-        .find(|e| {
-            e.id.entity == "InSpecWall"
-                && e.label == Some("Manufacturable#0[0]".to_string())
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "expected InSpecWall Manufacturable#0[0]; got: {:?}",
-                result.constraint_results
-            )
-        });
     assert_eq!(
-        inspec_entry.satisfaction,
+        find_constraint_result(&result, "InSpecWall", "Manufacturable#0[0]").satisfaction,
         Satisfaction::Satisfied,
         "InSpecWall: 2mm >= 1mm should be Satisfied"
     );
@@ -140,52 +138,36 @@ structure def InSpecPart {
 
     let result = check_source_with_stdlib(source);
 
-    // Helper: find a constraint result by entity + label.
-    let find = |entity: &str, label: &str| {
-        result
-            .constraint_results
-            .iter()
-            .find(|e| {
-                e.id.entity == entity && e.label == Some(label.to_string())
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected {entity} {label}; got: {:?}",
-                    result.constraint_results
-                )
-            })
-    };
-
     // UnderSpecPart violations
     assert_eq!(
-        find("UnderSpecPart", "BendManufacturable#0[0]").satisfaction,
+        find_constraint_result(&result, "UnderSpecPart", "BendManufacturable#0[0]").satisfaction,
         Satisfaction::Violated,
         "UnderSpecPart: 1mm >= 2mm should be Violated"
     );
     assert_eq!(
-        find("UnderSpecPart", "DrawManufacturable#0[0]").satisfaction,
+        find_constraint_result(&result, "UnderSpecPart", "DrawManufacturable#0[0]").satisfaction,
         Satisfaction::Violated,
         "UnderSpecPart: 80mm <= 50mm should be Violated"
     );
     assert_eq!(
-        find("UnderSpecPart", "DraftManufacturable#0[0]").satisfaction,
+        find_constraint_result(&result, "UnderSpecPart", "DraftManufacturable#0[0]").satisfaction,
         Satisfaction::Violated,
         "UnderSpecPart: 1deg >= 3deg should be Violated"
     );
 
     // InSpecPart satisfactions
     assert_eq!(
-        find("InSpecPart", "BendManufacturable#0[0]").satisfaction,
+        find_constraint_result(&result, "InSpecPart", "BendManufacturable#0[0]").satisfaction,
         Satisfaction::Satisfied,
         "InSpecPart: 5mm >= 2mm should be Satisfied"
     );
     assert_eq!(
-        find("InSpecPart", "DrawManufacturable#0[0]").satisfaction,
+        find_constraint_result(&result, "InSpecPart", "DrawManufacturable#0[0]").satisfaction,
         Satisfaction::Satisfied,
         "InSpecPart: 10mm <= 50mm should be Satisfied"
     );
     assert_eq!(
-        find("InSpecPart", "DraftManufacturable#0[0]").satisfaction,
+        find_constraint_result(&result, "InSpecPart", "DraftManufacturable#0[0]").satisfaction,
         Satisfaction::Satisfied,
         "InSpecPart: 5deg >= 3deg should be Satisfied"
     );

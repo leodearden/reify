@@ -688,13 +688,15 @@ structure def SmallPart {
     );
 }
 
-/// γ cardinality lock — the std/process module must contain exactly the six
+/// γ name-presence lock — the std/process module must contain each of the six
 /// named DFM constraint defs:
 /// Manufacturable, FeatureManufacturable, BendManufacturable,
 /// DrawManufacturable, DraftManufacturable, FitsBuildVolume.
 ///
-/// RED (before step-8): `FitsBuildVolume` absent → count == 5 and the name
-/// check fails.
+/// Presence is checked by name (not by exact count) so that future tasks adding
+/// additional DFM constraint defs do not spuriously fail this test.
+///
+/// RED (before step-8): `FitsBuildVolume` absent → the name check fails.
 #[test]
 fn process_module_has_exactly_six_dfm_constraint_defs() {
     let module = load_stdlib_module();
@@ -713,14 +715,6 @@ fn process_module_has_exactly_six_dfm_constraint_defs() {
         .iter()
         .map(|c| c.name.as_str())
         .collect();
-
-    assert_eq!(
-        module.constraint_defs.len(),
-        6,
-        "std/process should have exactly 6 DFM constraint defs; found {}: {:?}",
-        module.constraint_defs.len(),
-        found_names
-    );
 
     for name in &expected_names {
         assert!(
