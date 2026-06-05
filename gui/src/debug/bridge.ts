@@ -355,7 +355,13 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
           : false,
         openFiles: editor.state.openFiles.map((f) => ({
           path: f.path,
-          length: f.content.length,
+          // Reflect the live buffer length for the active entry so that
+          // openFiles[active].length agrees with the top-level content field.
+          // Non-active entries stay store-derived (only the active file has a
+          // live EditorView handle).
+          length: f.path === activeFile && liveContent !== undefined
+            ? liveContent.length
+            : f.content.length,
           dirty: editor.state.dirtyFiles.includes(f.path),
           externallyChanged: editor.state.externallyChanged.includes(f.path),
         })),
