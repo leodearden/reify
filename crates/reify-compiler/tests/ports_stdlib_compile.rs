@@ -556,53 +556,69 @@ fn mechanical_port_optional_ratings_surface() {
 
 // ─── step-7: RotaryPort/ThreadedPort + cardinality lock ──────────────────────
 
-/// RotaryPort refines [MechanicalPort] with required members [torque_capacity,
-/// max_speed] in order.
+// ─── step-9 (task β): MotivePort / RotaryPort / LinearPort surfaces ───────────
+
+/// MotivePort is the motive (power-delivering) port base: it refines exactly
+/// [MechanicalPort] with no own required members.
 ///
-/// `torque_capacity` is asserted to the exact Torque dimension
-/// (Force·Length/Angle = kg·m²·s⁻²·rad⁻¹), which is distinct from Energy
-/// (kg·m²·s⁻²) via the Angle⁻¹ slot.  This locks the `Torque = Force *
-/// Length / Angle` deviation documented in ports_mechanical.ri and ensures
-/// that a regression to Energy or any other scalar would be caught.
+/// RED: MotivePort is absent → find_trait panics.
+#[test]
+fn motive_port_trait_surface() {
+    let t = find_trait("std/ports/mechanical", "MotivePort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["MechanicalPort".to_string()].as_slice(),
+        "MotivePort should refine exactly [MechanicalPort], got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.required_members.is_empty(),
+        "MotivePort should have no own required_members, got: {:?}",
+        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+}
+
+/// RotaryPort refines exactly [MotivePort] (was [MechanicalPort]) with required
+/// members [max_speed, max_torque, axis] in order (was [torque_capacity,
+/// max_speed]):
+///   max_speed  : Scalar<ANGULAR_VELOCITY>
+///   max_torque : Scalar<Torque = Force·Length/Angle>  (renamed from torque_capacity)
+///   axis       : Vector3<Length>
 ///
-/// `max_speed` is asserted to Scalar<ANGULAR_VELOCITY>.
+/// The Torque dimension (Force·Length/Angle) is distinct from Energy
+/// (kg·m²·s⁻²) via the Angle⁻¹ slot — a regression to Energy is caught here.
+///
+/// RED: RotaryPort still refines [MechanicalPort] with [torque_capacity, max_speed].
 #[test]
 fn rotary_port_trait_surface() {
     let t = find_trait("std/ports/mechanical", "RotaryPort");
 
     assert_eq!(
         t.refinements.as_slice(),
-        ["MechanicalPort".to_string()].as_slice(),
-        "RotaryPort should refine exactly [MechanicalPort], got: {:?}",
+        ["MotivePort".to_string()].as_slice(),
+        "RotaryPort should refine exactly [MotivePort], got: {:?}",
         t.refinements
     );
 
     assert_eq!(
         t.required_members.len(),
-        2,
-        "RotaryPort should have exactly 2 required members; got: {:?}",
+        3,
+        "RotaryPort should have exactly 3 required members [max_speed, max_torque, axis]; \
+         got: {:?}",
         t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
     );
     assert_eq!(
-        t.required_members[0].name, "torque_capacity",
-        "RotaryPort required_members[0] should be 'torque_capacity'"
+        t.required_members[0].name, "max_speed",
+        "RotaryPort required_members[0] should be 'max_speed'"
     );
     assert_eq!(
-        t.required_members[1].name, "max_speed",
-        "RotaryPort required_members[1] should be 'max_speed'"
+        t.required_members[1].name, "max_torque",
+        "RotaryPort required_members[1] should be 'max_torque'"
     );
-
-    // Torque = Force * Length / Angle (distinct from Energy by the Angle⁻¹ slot).
-    let expected_torque_dim = DimensionVector::FORCE
-        .mul(&DimensionVector::LENGTH)
-        .div(&DimensionVector::ANGLE);
     assert_eq!(
-        param_type("std/ports/mechanical", "RotaryPort", "torque_capacity"),
-        Type::Scalar {
-            dimension: expected_torque_dim
-        },
-        "RotaryPort.torque_capacity must be Scalar<Force·Length/Angle> \
-         (Torque alias — distinct from Energy via Angle⁻¹ slot)"
+        t.required_members[2].name, "axis",
+        "RotaryPort required_members[2] should be 'axis'"
     );
 
     assert_eq!(
@@ -611,6 +627,105 @@ fn rotary_port_trait_surface() {
             dimension: DimensionVector::ANGULAR_VELOCITY
         },
         "RotaryPort.max_speed must have DimensionVector::ANGULAR_VELOCITY"
+    );
+
+    // Torque = Force * Length / Angle (distinct from Energy by the Angle⁻¹ slot).
+    let expected_torque_dim = DimensionVector::FORCE
+        .mul(&DimensionVector::LENGTH)
+        .div(&DimensionVector::ANGLE);
+    assert_eq!(
+        param_type("std/ports/mechanical", "RotaryPort", "max_torque"),
+        Type::Scalar {
+            dimension: expected_torque_dim
+        },
+        "RotaryPort.max_torque must be Scalar<Force·Length/Angle> \
+         (Torque alias — distinct from Energy via Angle⁻¹ slot)"
+    );
+
+    assert_eq!(
+        param_type("std/ports/mechanical", "RotaryPort", "axis"),
+        Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }),
+        },
+        "RotaryPort.axis must be Vector3<Length>"
+    );
+
+    // Regression guard: torque_capacity was renamed to max_torque.
+    assert!(
+        !t.required_members.iter().any(|r| r.name == "torque_capacity"),
+        "RotaryPort must not expose 'torque_capacity' (renamed to max_torque)"
+    );
+}
+
+/// LinearPort refines exactly [MotivePort] with required members [max_speed,
+/// max_force, stroke, axis] in order:
+///   max_speed : Scalar<Velocity = Length/Time>
+///   max_force : Scalar<FORCE>
+///   stroke    : Scalar<LENGTH>
+///   axis      : Vector3<Length>
+///
+/// RED: LinearPort is absent → find_trait panics.
+#[test]
+fn linear_port_trait_surface() {
+    let t = find_trait("std/ports/mechanical", "LinearPort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["MotivePort".to_string()].as_slice(),
+        "LinearPort should refine exactly [MotivePort], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        4,
+        "LinearPort should have exactly 4 required members \
+         [max_speed, max_force, stroke, axis]; got: {:?}",
+        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+    for (i, name) in ["max_speed", "max_force", "stroke", "axis"].iter().enumerate() {
+        assert_eq!(
+            t.required_members[i].name, *name,
+            "LinearPort required_members[{}] should be '{}'",
+            i, name
+        );
+    }
+
+    // Velocity = Length / Time (alias resolves to the composite dimension).
+    let expected_velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+    assert_eq!(
+        param_type("std/ports/mechanical", "LinearPort", "max_speed"),
+        Type::Scalar {
+            dimension: expected_velocity_dim
+        },
+        "LinearPort.max_speed must be Scalar<Length/Time> (Velocity alias)"
+    );
+    assert_eq!(
+        param_type("std/ports/mechanical", "LinearPort", "max_force"),
+        Type::Scalar {
+            dimension: DimensionVector::FORCE
+        },
+        "LinearPort.max_force must be Scalar<FORCE>"
+    );
+    assert_eq!(
+        param_type("std/ports/mechanical", "LinearPort", "stroke"),
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
+        "LinearPort.stroke must be Scalar<LENGTH>"
+    );
+    assert_eq!(
+        param_type("std/ports/mechanical", "LinearPort", "axis"),
+        Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }),
+        },
+        "LinearPort.axis must be Vector3<Length>"
     );
 }
 
@@ -888,11 +1003,28 @@ fn std_ports_mechanical_module_cardinality_locked() {
         .collect();
     assert_eq!(
         module.trait_defs.len(),
-        6,
-        "std/ports/mechanical should declare exactly 6 traits \
-         (MechanicalPort, Bore, Shaft, RotaryPort, ThreadedPort, StructurePort), got: {:?}",
+        8,
+        "std/ports/mechanical should declare exactly 8 traits (MechanicalPort, Bore, \
+         Shaft, RotaryPort, ThreadedPort, StructurePort, MotivePort, LinearPort), got: {:?}",
         trait_names
     );
+    for expected in &[
+        "MechanicalPort",
+        "Bore",
+        "Shaft",
+        "RotaryPort",
+        "ThreadedPort",
+        "StructurePort",
+        "MotivePort",
+        "LinearPort",
+    ] {
+        assert!(
+            module.trait_defs.iter().any(|t| t.name == *expected),
+            "std/ports/mechanical should contain trait '{}', got: {:?}",
+            expected,
+            trait_names
+        );
+    }
 
     let structure_names: Vec<&str> = module
         .templates
