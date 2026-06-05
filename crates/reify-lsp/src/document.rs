@@ -1,17 +1,62 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use reify_ast::ParsedModule;
+use reify_core::ModulePath;
 use tower_lsp::lsp_types::Url;
 
 /// State of a single open document.
 pub struct DocumentState {
     pub text: String,
     pub version: i32,
+    /// Lazily-filled, per-version cache of the prelude-aware parse of `text`.
+    ///
+    /// Filled on the first [`DocumentState::parsed_module`] call after this
+    /// state is created, then shared (as a cheap `Arc` clone) by every later
+    /// call for the same document version. A version bump replaces the whole
+    /// `DocumentState` with a fresh one whose cache starts empty, so the cache
+    /// is keyed by document version by construction — no version compare, no
+    /// data race. The `Mutex` provides interior mutability so the cache can
+    /// fill while a caller holds only a shared reference to the document.
+    parsed_cache: Mutex<Option<Arc<ParsedModule>>>,
+}
+
+impl DocumentState {
+    /// Create a new document state with an empty parse cache.
+    pub fn new(text: String, version: i32) -> Self {
+        Self {
+            text,
+            version,
+            parsed_cache: Mutex::new(None),
+        }
+    }
+
+    /// Return the prelude-aware parse of this document, parsing once and caching
+    /// the result for the lifetime of this `DocumentState` (i.e. this document
+    /// version).
+    ///
+    /// The first call parses `text` via [`reify_compiler::parse_with_stdlib`]
+    /// and stores the result behind an `Arc`; later calls return a clone of the
+    /// SAME `Arc` (a cache hit — deterministically verifiable with
+    /// `Arc::ptr_eq`). Lock poisoning is recovered rather than propagated,
+    /// matching the crate's `eval_state` lock convention, so a panic mid-parse
+    /// cannot wedge every subsequent request.
+    pub fn parsed_module(&self, module_path: ModulePath) -> Arc<ParsedModule> {
+        let mut cache = self.parsed_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(parsed) = cache.as_ref() {
+            return Arc::clone(parsed);
+        }
+        let parsed = Arc::new(reify_compiler::parse_with_stdlib(&self.text, module_path));
+        *cache = Some(Arc::clone(&parsed));
+        parsed
+    }
 }
 
 /// Stores open document contents, keyed by URI.
 #[derive(Default)]
 pub struct DocumentStore {
-    documents: HashMap<Url, DocumentState>,
+    documents: HashMap<Url, Arc<DocumentState>>,
 }
 
 impl DocumentStore {
@@ -20,13 +65,16 @@ impl DocumentStore {
     }
 
     pub fn open(&mut self, uri: Url, text: String, version: i32) {
-        self.documents.insert(uri, DocumentState { text, version });
+        self.documents
+            .insert(uri, Arc::new(DocumentState::new(text, version)));
     }
 
     pub fn update(&mut self, uri: &Url, text: String, version: i32) -> bool {
-        if let Some(doc) = self.documents.get_mut(uri) {
-            doc.text = text;
-            doc.version = version;
+        if let Some(slot) = self.documents.get_mut(uri) {
+            // Replace the whole state — and its empty cache — so the prior
+            // version's parse is structurally invalidated (cache keyed by
+            // document version). This is the invalidation point.
+            *slot = Arc::new(DocumentState::new(text, version));
             true
         } else {
             false
@@ -37,11 +85,11 @@ impl DocumentStore {
         self.documents.remove(uri);
     }
 
-    pub fn get(&self, uri: &Url) -> Option<&DocumentState> {
-        self.documents.get(uri)
+    pub fn get(&self, uri: &Url) -> Option<Arc<DocumentState>> {
+        self.documents.get(uri).cloned()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&Url, &DocumentState)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Url, &Arc<DocumentState>)> {
         self.documents.iter()
     }
 
