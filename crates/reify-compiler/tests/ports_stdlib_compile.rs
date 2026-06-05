@@ -1073,6 +1073,98 @@ fn example_ports_domains_ri_compiles_clean() {
     );
 }
 
+// ─── step-7 (task α): RegionPort trait surface + asymmetric-LocatedPort warning ─
+
+/// RegionPort refines exactly ["LocatedPort"] and has exactly one required member:
+/// `region : Geometry`.  Proves dep-4253 Geometry alias resolves in param position.
+///
+///   - RegionPort.refinements == ["LocatedPort"]
+///   - RegionPort.required_members == [{ name: "region", kind: Param(Type::Geometry) }]
+///   - param_type helper finds "region" as Type::Geometry
+///
+/// RED on current main (RegionPort absent → find_trait panics).
+#[test]
+fn region_port_trait_surface() {
+    let t = find_trait("std/ports", "RegionPort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["LocatedPort".to_string()].as_slice(),
+        "RegionPort should refine exactly [LocatedPort], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        1,
+        "RegionPort should have exactly 1 required member (region); got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name, "region",
+        "RegionPort required_members[0] should be 'region', got '{}'",
+        t.required_members[0].name
+    );
+
+    assert_eq!(
+        param_type("std/ports", "RegionPort", "region"),
+        Type::Geometry,
+        "RegionPort.region must be Type::Geometry \
+         (Geometry alias from dep 4253 / task G)"
+    );
+}
+
+/// Proves that a `RegionPort` → `Port` connection fires the asymmetric-LocatedPort
+/// warning from connect.rs when the stdlib RegionPort trait is in the prelude
+/// trait registry.
+///
+/// Rationale for using RegionPort (not LocatedPort directly): `trait_satisfies`
+/// (entity.rs:3747) is REFLEXIVE — a port typed `LocatedPort` matches by name
+/// alone, even without the stdlib trait.  `RegionPort` satisfies LocatedPort ONLY
+/// via its declared refinement chain (RegionPort→LocatedPort), which requires
+/// RegionPort to be in the prelude registry (build_trait_registry merges prelude
+/// traits, traits_phase.rs:39-43).  This makes the warning a true behavioral
+/// signal of the step-8 edit.
+///
+/// The fixture deliberately omits frame/region — errors are expected.  We assert
+/// only the warning (do NOT assert zero-errors).
+///
+/// RED on current main: RegionPort absent → not in prelude registry →
+/// trait_satisfies("RegionPort","LocatedPort")==false → no asymmetric warning.
+#[test]
+fn asymmetric_located_port_warning_fires_for_stdlib_region_port() {
+    let source = r#"
+structure def S {
+    port a : out RegionPort {}
+    port b : in Port {}
+    connect a -> b
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let located_warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("LocatedPort")
+                && d.message.contains("asymmetric")
+        })
+        .collect();
+
+    assert!(
+        !located_warnings.is_empty(),
+        "expected at least one asymmetric-LocatedPort warning when connecting \
+         a RegionPort (satisfies LocatedPort via stdlib refinement) to a plain Port; \
+         got diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
 // ─── step-9: capstone example compile ─────────────────────────────────────────
 
 /// examples/stdlib/ports_mechanical.ri must compile without errors and
