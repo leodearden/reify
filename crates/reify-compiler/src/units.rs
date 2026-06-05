@@ -60,6 +60,8 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "cylinder_centered",
     "cone",
     "wedge",
+    "rectangle",
+    "circle",
 ];
 
 pub(crate) fn is_geometry_function(name: &str) -> bool {
@@ -1989,5 +1991,20 @@ mod tests {
         assert_eq!(affine_map_algebra_result_type("affine_apply", None), None);
         assert_eq!(affine_map_algebra_result_type("box", None), None);
         assert_eq!(affine_map_algebra_result_type("", None), None);
+    }
+
+    // --- 2-D profile face producers (task-4160) ---
+    // RED until step-6 adds "rectangle" and "circle" to GEOMETRY_FUNCTION_NAMES.
+
+    #[test]
+    fn is_geometry_function_rectangle_recognized() {
+        // RED until step-6 adds "rectangle" to GEOMETRY_FUNCTION_NAMES.
+        assert!(is_geometry_function("rectangle"));
+    }
+
+    #[test]
+    fn is_geometry_function_circle_recognized() {
+        // RED until step-6 adds "circle" to GEOMETRY_FUNCTION_NAMES.
+        assert!(is_geometry_function("circle"));
     }
 }

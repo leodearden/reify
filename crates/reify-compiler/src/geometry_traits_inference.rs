@@ -224,6 +224,23 @@ impl InferredTraits {
         }
     }
 
+    /// A 2-D profile face (`rectangle`/`circle`). Bounded/connected/convex are
+    /// all true (a rectangle or circle face is finite, single-component, and
+    /// convex). `dimension == GeomDim::Surface`, `planar == true`,
+    /// `closed == true` — satisfying `violates_profile_requirement`'s
+    /// Surface+closed+planar contract so extrude/revolve/loft accept them, and
+    /// `violates_path_requirement`'s Curve contract rejects them as sweep paths.
+    pub const fn surface() -> Self {
+        Self {
+            bounded: true,
+            connected: true,
+            convex: true,
+            dimension: GeomDim::Surface,
+            planar: true,
+            closed: true,
+        }
+    }
+
     /// Look up the flag for a [`GeometryTrait`] kind. Used by the
     /// conformance walker's diagnostic emit path so the same enum kind drives
     /// both the inference table and the call-site check.
@@ -554,6 +571,9 @@ fn infer_op(
         // Curve constructors are 1-D primitives → GeomDim::Curve (preserving
         // the all()-equivalent bounded/connected/convex flags).
         CompiledGeometryOp::Curve { .. } => InferredTraits::curve(),
+
+        // 2-D profile face constructors → GeomDim::Surface (planar, closed).
+        CompiledGeometryOp::Profile { .. } => InferredTraits::surface(),
     }
 }
 
@@ -706,6 +726,9 @@ pub fn try_infer_traits_for_function_call_in_env(
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
             Some(InferredTraits::curve())
         }
+
+        // ─── Profile face constructors → surface() (2-D faces) ──────────
+        "rectangle" | "circle" => Some(InferredTraits::surface()),
 
         // Unknown function name → None. The private wrapper maps this to
         // `InferredTraits::all()` (default-Bounded). This is the single

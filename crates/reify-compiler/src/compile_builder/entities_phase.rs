@@ -790,7 +790,8 @@ fn for_each_template_root_expr(
                 | CompiledGeometryOp::Transform { args, .. }
                 | CompiledGeometryOp::Pattern { args, .. }
                 | CompiledGeometryOp::Sweep { args, .. }
-                | CompiledGeometryOp::Curve { args, .. } => {
+                | CompiledGeometryOp::Curve { args, .. }
+                | CompiledGeometryOp::Profile { args, .. } => {
                     for (_, arg) in args {
                         f(arg, realization.span);
                     }

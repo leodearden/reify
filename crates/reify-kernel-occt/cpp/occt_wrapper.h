@@ -720,6 +720,12 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 /// Create a flat circular face (disk) at a given Z height (for extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
 
+/// Create a flat axis-aligned rectangular face centred at origin in the XY plane
+/// at the given Z height (for extrude profiles).
+/// Corners: (±width/2, ±height/2, z_height).  Both width and height must be
+/// finite and positive.
+std::unique_ptr<OcctShape> make_rectangle_face(double width, double height, double z_height);
+
 /// Create a straight line wire between two 3D points (for sweep paths).
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
     double x2, double y2, double z2);

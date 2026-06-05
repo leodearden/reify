@@ -352,6 +352,12 @@ pub enum Operation {
     /// NURBS curve.
     CurveNurbsCurve,
 
+    // ── Profile (2D face producers) ─────────────────────────────────────────
+    /// Axis-aligned rectangular face centred at origin in the XY plane.
+    ProfileRectangle,
+    /// Circular face (disk) centred at origin in the XY plane.
+    ProfileCircle,
+
     // ── Convert (representation change) ─────────────────────────────────────
     /// Convert geometry from one [`ReprKind`] family to another. The pair
     /// `(Convert { from: BRep }, Mesh)` in a kernel's `supports` table reads
@@ -794,6 +800,19 @@ pub enum GeometryOp {
         thickness: Value,
         faces_to_remove: Vec<usize>,
     },
+
+    // ── Profile (2-D face producers) ─────────────────────────────────────
+    /// Axis-aligned rectangular face centred at origin in the XY plane at z=0.
+    ///
+    /// Corners at (±width/2, ±height/2, 0).  The resulting `BRep` face is
+    /// consumable by `Extrude`, `Revolve`, `Loft`, and any other sweep that
+    /// expects a `Surface`-dimension profile.
+    RectangleProfile { width: Value, height: Value },
+    /// Circular face (disk) centred at origin in the XY plane at z=0.
+    ///
+    /// The resulting `BRep` face is consumable by `Extrude`, `Revolve`,
+    /// `Loft`, and any other sweep that expects a `Surface`-dimension profile.
+    CircleProfile { radius: Value },
 }
 
 impl GeometryOp {
@@ -845,6 +864,8 @@ impl GeometryOp {
             GeometryOp::Draft { .. } => "Draft",
             GeometryOp::Thicken { .. } => "Thicken",
             GeometryOp::Shell { .. } => "Shell",
+            GeometryOp::RectangleProfile { .. } => "RectangleProfile",
+            GeometryOp::CircleProfile { .. } => "CircleProfile",
         }
     }
 }
@@ -2165,6 +2186,8 @@ pub enum StepKind {
     Sweep,
     /// A curve construction op (line_segment, arc, helix, …).
     Curve,
+    /// A 2-D face profile op (rectangle, circle).
+    Profile,
 }
 
 /// A feature tag attached to a compiler-generated geometry op.
@@ -5348,6 +5371,8 @@ mod tests {
             Operation::CurveInterpCurve => {}
             Operation::CurveBezierCurve => {}
             Operation::CurveNurbsCurve => {}
+            Operation::ProfileRectangle => {}
+            Operation::ProfileCircle => {}
             Operation::Convert { from: _ } => {}
         }
     }
@@ -6054,12 +6079,26 @@ mod tests {
                     faces_to_remove: vec![0],
                 },
             ),
+            // task-4160: 2-D profile face producers
+            (
+                "RectangleProfile",
+                GeometryOp::RectangleProfile {
+                    width: Value::Real(0.02),
+                    height: Value::Real(0.01),
+                },
+            ),
+            (
+                "CircleProfile",
+                GeometryOp::CircleProfile {
+                    radius: Value::Real(0.008),
+                },
+            ),
         ];
         // Changing this constant forces the test to be updated whenever a
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 38;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 40;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
