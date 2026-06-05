@@ -6421,4 +6421,136 @@ mod tests {
             ),
         }
     }
+
+    // ── STL serializer unit tests ────────────────────────────────────────────
+
+    /// Helper: parse a u32 from little-endian bytes at `buf[offset..offset+4]`.
+    fn le_u32(buf: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap())
+    }
+
+    /// Helper: parse an f32 from little-endian bytes at `buf[offset..offset+4]`.
+    fn le_f32(buf: &[u8], offset: usize) -> f32 {
+        f32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn write_stl_binary_single_triangle_byte_layout() {
+        // Single CCW triangle in the z=0 plane.
+        let mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+            ],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_binary(&mesh, &mut buf).expect("write_stl_binary should succeed");
+
+        // Byte length: 80 header + 4 triangle count + 1*(12 normal + 36 verts + 2 attr) = 84+50
+        assert_eq!(buf.len(), 134, "single triangle: expected 84+50=134 bytes");
+
+        // Header must be exactly 80 bytes and must NOT start with b"solid"
+        let header = &buf[0..80];
+        assert_ne!(
+            &header[0..5],
+            b"solid",
+            "binary STL header must NOT start with 'solid'"
+        );
+
+        // Triangle count == 1
+        assert_eq!(le_u32(&buf, 80), 1, "triangle count must be 1");
+
+        // Facet normal for z=0 CCW triangle: |nz| ≈ 1, nx ≈ ny ≈ 0
+        let nx = le_f32(&buf, 84);
+        let ny = le_f32(&buf, 88);
+        let nz = le_f32(&buf, 92);
+        assert!(
+            nx.abs() < 1e-5,
+            "nx should be ≈0 for z=0 triangle, got {nx}"
+        );
+        assert!(
+            ny.abs() < 1e-5,
+            "ny should be ≈0 for z=0 triangle, got {ny}"
+        );
+        assert!(
+            nz.abs() > 0.999,
+            "|nz| should be ≈1 for z=0 triangle, got {nz}"
+        );
+
+        // Vertex 0 at bytes 96..108: must round-trip exactly
+        assert_eq!(le_f32(&buf, 96), 0.0_f32, "v0.x");
+        assert_eq!(le_f32(&buf, 100), 0.0_f32, "v0.y");
+        assert_eq!(le_f32(&buf, 104), 0.0_f32, "v0.z");
+        // Vertex 1 at bytes 108..120
+        assert_eq!(le_f32(&buf, 108), 1.0_f32, "v1.x");
+        assert_eq!(le_f32(&buf, 112), 0.0_f32, "v1.y");
+        assert_eq!(le_f32(&buf, 116), 0.0_f32, "v1.z");
+        // Vertex 2 at bytes 120..132
+        assert_eq!(le_f32(&buf, 120), 0.0_f32, "v2.x");
+        assert_eq!(le_f32(&buf, 124), 1.0_f32, "v2.y");
+        assert_eq!(le_f32(&buf, 128), 0.0_f32, "v2.z");
+
+        // Attribute byte count at bytes 132..134 must be 0
+        let attr = u16::from_le_bytes(buf[132..134].try_into().unwrap());
+        assert_eq!(attr, 0, "attribute byte count must be 0");
+    }
+
+    #[test]
+    fn write_stl_binary_two_triangle_quad() {
+        // Two-triangle quad (4 verts, 2 triangles)
+        let mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                1.0, 1.0, 0.0, // v2
+                0.0, 1.0, 0.0, // v3
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_binary(&mesh, &mut buf).expect("write_stl_binary should succeed");
+
+        // Byte length: 84 + 2*50 = 184
+        assert_eq!(buf.len(), 184, "two-triangle quad: expected 84+100=184 bytes");
+
+        // Triangle count == 2
+        assert_eq!(le_u32(&buf, 80), 2, "triangle count must be 2");
+    }
+
+    #[test]
+    fn write_stl_binary_empty_mesh() {
+        let mesh = Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_binary(&mesh, &mut buf).expect("empty mesh should not panic");
+
+        // Byte length: 84 (header + 0 triangles)
+        assert_eq!(buf.len(), 84, "empty mesh: expected 84 bytes");
+        assert_eq!(le_u32(&buf, 80), 0, "triangle count must be 0");
+    }
+
+    #[test]
+    fn write_stl_binary_out_of_bounds_index_returns_error() {
+        // Triangle index 5 is out of bounds for 3-vertex mesh
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 5], // index 5 is out of bounds
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_stl_binary(&mesh, &mut buf);
+        assert!(result.is_err(), "out-of-bounds index should return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
+        );
+    }
 }
