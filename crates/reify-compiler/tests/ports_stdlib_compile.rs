@@ -10,7 +10,7 @@
 //! Tests use the production-path `load_stdlib()` helper, modeled on
 //! `process_stdlib_compile.rs`.
 
-use reify_compiler::{CompiledTrait, EntityKind, RequirementKind, stdlib_loader};
+use reify_compiler::{CompiledTrait, DefaultKind, EntityKind, RequirementKind, stdlib_loader};
 use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::EnumDef;
 use reify_test_support::compile_source_with_stdlib;
@@ -131,10 +131,19 @@ fn std_ports_loads_with_no_errors_and_directionality_enum() {
     );
 }
 
-// ─── step-3: Port base trait ──────────────────────────────────────────────────
+// ─── step-1 (task α): Port.direction=Bidi default ────────────────────────────
 
-/// Port base trait has no refinements and exactly one required param:
-/// direction : Directionality.
+/// Port base trait has no refinements.  After the Bidi-default lands (task α
+/// step-2), `direction` moves from `required_members` (no default) to
+/// `defaults` (DefaultKind::Param with Directionality.Bidi).
+///
+/// Asserts:
+///   (a) Port has no refinements.
+///   (b) Port.required_members is EMPTY — `direction` is no longer required.
+///   (c) Port.defaults contains an entry `name == Some("direction")` with
+///       `DefaultKind::Param { cell_type: Type::Enum("Directionality"), .. }`
+///       whose `default_decl.default` is
+///       `ExprKind::EnumAccess { type_name: "Directionality", variant: "Bidi" }`.
 #[test]
 fn port_base_trait_requires_direction_directionality() {
     let t = find_trait("std/ports", "Port");
@@ -145,25 +154,59 @@ fn port_base_trait_requires_direction_directionality() {
         t.refinements
     );
 
-    assert_eq!(
-        t.required_members.len(),
-        1,
-        "Port should have exactly 1 required member (direction); got: {:?}",
+    // direction now has a default (= Directionality.Bidi), so it is absent from
+    // required_members (which only holds members that have no default).
+    assert!(
+        t.required_members.is_empty(),
+        "Port should have 0 required members after Bidi default lands; got: {:?}",
         t.required_members
             .iter()
             .map(|r| &r.name)
             .collect::<Vec<_>>()
     );
-    assert_eq!(
-        t.required_members[0].name, "direction",
-        "Port required_members[0] should be 'direction', got '{}'",
-        t.required_members[0].name
-    );
-    assert_eq!(
-        param_type("std/ports", "Port", "direction"),
-        Type::Enum("Directionality".into()),
-        "Port.direction must be Type::Enum(\"Directionality\")"
-    );
+
+    // direction must be in defaults with the correct type and Bidi variant.
+    let dir_default = t
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("direction"))
+        .expect("Port.defaults should contain an entry named 'direction' (= Directionality.Bidi)");
+
+    match &dir_default.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Enum("Directionality".into()),
+                "Port.direction default cell_type must be Type::Enum(\"Directionality\")"
+            );
+            let expr = default_decl
+                .default
+                .as_ref()
+                .expect("Port.direction default_decl must have a default expression");
+            match &expr.kind {
+                reify_ast::ExprKind::EnumAccess { type_name, variant } => {
+                    assert_eq!(
+                        type_name, "Directionality",
+                        "Port.direction default expr type_name should be \"Directionality\""
+                    );
+                    assert_eq!(
+                        variant, "Bidi",
+                        "Port.direction default expr variant should be \"Bidi\""
+                    );
+                }
+                other => panic!(
+                    "Port.direction default expr should be \
+                     EnumAccess {{ type_name: \"Directionality\", variant: \"Bidi\" }}, \
+                     got: {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!(
+            "Port.direction default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
 }
 
 /// std/ports cardinality lock: exactly 1 trait (Port), 1 enum (Directionality),
