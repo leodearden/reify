@@ -1017,6 +1017,141 @@ mod tests {
         }
     }
 
+    // --- task 4250 step-13: single parse per edit, shared & invalidated ---
+
+    /// A single parse is cached per document version, shared across the store's
+    /// `get()` path, and structurally invalidated by an edit (did_change).
+    ///
+    /// Cache reuse is proven with `Arc::ptr_eq` (same allocation = no re-parse);
+    /// invalidation is proven by a fresh allocation reflecting the new text after
+    /// a version bump. The test also guards that every primary-document provider
+    /// (hover/goto-def/completion/document_symbol) still returns correct results
+    /// once the per-document cache is the parse source — output-equivalence
+    /// across the cache-wiring refactor.
+    #[tokio::test]
+    async fn single_parse_per_edit_shared_and_invalidated() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await; // v1 = bracket_source
+
+        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
+
+        // v1: the cached parse is stable across repeated store lookups — two
+        // get()+parsed_module() calls return the SAME Arc allocation (a cache
+        // hit, i.e. a single parse per version).
+        let a = {
+            let state = server.state().read().await;
+            let doc = state.documents.get(&uri).expect("doc present at v1");
+            doc.parsed_module(mp.clone())
+        };
+        let b = {
+            let state = server.state().read().await;
+            let doc = state.documents.get(&uri).expect("doc present at v1");
+            doc.parsed_module(mp.clone())
+        };
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "same document version must reuse one cached parse (no re-parse)"
+        );
+        assert_eq!(
+            a.declarations.len(),
+            1,
+            "bracket_source has a single top-level declaration"
+        );
+
+        // Providers must return correct results with the cache as the parse source.
+        assert!(
+            server
+                .hover(HoverParams {
+                    text_document_position_params: TextDocumentPositionParams {
+                        text_document: TextDocumentIdentifier { uri: uri.clone() },
+                        position: Position::new(1, 10), // 'width'
+                    },
+                    work_done_progress_params: Default::default(),
+                })
+                .await
+                .unwrap()
+                .is_some(),
+            "hover should resolve 'width' after did_open"
+        );
+        assert!(
+            server
+                .goto_definition(GotoDefinitionParams {
+                    text_document_position_params: TextDocumentPositionParams {
+                        text_document: TextDocumentIdentifier { uri: uri.clone() },
+                        position: Position::new(9, 15), // 'thickness' in constraint
+                    },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                })
+                .await
+                .unwrap()
+                .is_some(),
+            "goto-def should resolve 'thickness' after did_open"
+        );
+        let comp = server
+            .completion(CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: Position::new(1, 0),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert!(comp.is_some(), "completion should return items after did_open");
+        match server
+            .document_symbol(DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap()
+        {
+            Some(DocumentSymbolResponse::Nested(syms)) => {
+                assert_eq!(syms.len(), 1, "bracket_source has one top-level symbol");
+                assert_eq!(syms[0].name, "Bracket");
+            }
+            other => panic!("expected Some(Nested(..)), got {other:?}"),
+        }
+
+        // Edit (did_change) to a different valid source bumps the version and
+        // structurally invalidates the cache: the new document owns a fresh,
+        // empty cache, so its parse is a DIFFERENT Arc reflecting the new text.
+        let v2 = "structure A {\n    param x: Scalar = 1mm\n}\nstructure B {\n    param y: Scalar = 2mm\n}";
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: v2.to_string(),
+                }],
+            })
+            .await;
+
+        let c = {
+            let state = server.state().read().await;
+            let doc = state.documents.get(&uri).expect("doc present at v2");
+            doc.parsed_module(mp.clone())
+        };
+        assert!(
+            !Arc::ptr_eq(&a, &c),
+            "an edit must invalidate the cache (a fresh parse allocation)"
+        );
+        assert_eq!(
+            c.declarations.len(),
+            2,
+            "the post-edit cached parse must reflect the new text (two declarations)"
+        );
+    }
+
     // --- task 4207 η: document_symbol handler tests ---
 
     #[tokio::test]
