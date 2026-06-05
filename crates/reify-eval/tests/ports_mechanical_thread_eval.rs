@@ -18,8 +18,9 @@
 //!   2. linear_guide_port_dof_constraint_violation — the dof==1 invariant rejects
 //!      a degrees_of_freedom == 2 conformer at check() time (added in step-15).
 
+use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
-use reify_ir::Value;
+use reify_ir::{Satisfaction, Value};
 use reify_test_support::make_simple_engine;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -170,5 +171,92 @@ fn thread_spec_derived_lets_eval() {
         "tap_drill",
         0.005,
         DimensionVector::LENGTH,
+    );
+}
+
+// ─── step-15/16 (task β): LinearGuidePort dof==1 constraint violation ─────────
+
+/// Inline fixture: two structures carrying the exact LinearGuidePort/RotaryGuidePort
+/// invariant `constraint degrees_of_freedom == 1`. BadGuide fixes
+/// degrees_of_freedom = 2 (a two-DOF guide — an invalid prismatic/revolute guide),
+/// GoodGuide fixes it to 1.
+///
+/// step-15 (RED) ships these WITHOUT the constraint clause, so check() yields no
+/// constraint_results for either entity. step-16 (GREEN) adds the constraint so
+/// BadGuide → Satisfaction::Violated and GoodGuide → Satisfaction::Satisfied.
+const DOF_CONSTRAINT_FIXTURE: &str = r#"
+structure def BadGuide {
+    param degrees_of_freedom : Int = 2
+}
+
+structure def GoodGuide {
+    param degrees_of_freedom : Int = 1
+}
+"#;
+
+/// PRD task-β `reify check` signal: a guide port whose degrees_of_freedom is not 1
+/// is a constraint violation (the LinearGuidePort/RotaryGuidePort invariant).
+/// BadGuide (dof=2) → Violated; GoodGuide (dof=1) → Satisfied. Mirrors
+/// stress_error_messages.rs::constraint_violation_diagnostic.
+///
+/// RED (step-15): fixture omits the `constraint degrees_of_freedom == 1` clause,
+/// so no constraint_results appear for either entity.
+#[test]
+fn linear_guide_port_dof_constraint_violation() {
+    let parsed = reify_syntax::parse(
+        DOF_CONSTRAINT_FIXTURE,
+        ModulePath::single("ports_mechanical_dof_eval"),
+    );
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let compiled = reify_compiler::compile(&parsed);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "compile errors: {:?}",
+        compile_errors
+    );
+
+    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let check_result = engine.check(&compiled);
+
+    // BadGuide (dof=2) must violate `degrees_of_freedom == 1`.
+    let bad: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.id.entity == "BadGuide")
+        .collect();
+    assert!(
+        !bad.is_empty(),
+        "expected at least one constraint result for 'BadGuide'"
+    );
+    assert!(
+        bad.iter().any(|e| e.satisfaction == Satisfaction::Violated),
+        "expected Satisfaction::Violated for BadGuide (degrees_of_freedom=2 vs ==1), got: {:?}",
+        bad.iter()
+            .map(|e| (&e.id, &e.satisfaction))
+            .collect::<Vec<_>>()
+    );
+
+    // GoodGuide (dof=1) must satisfy the same invariant.
+    let good: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.id.entity == "GoodGuide")
+        .collect();
+    assert!(
+        !good.is_empty(),
+        "expected at least one constraint result for 'GoodGuide'"
+    );
+    assert!(
+        good.iter().all(|e| e.satisfaction == Satisfaction::Satisfied),
+        "expected Satisfaction::Satisfied for GoodGuide (degrees_of_freedom=1), got: {:?}",
+        good.iter()
+            .map(|e| (&e.id, &e.satisfaction))
+            .collect::<Vec<_>>()
     );
 }
