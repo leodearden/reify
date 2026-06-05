@@ -20,6 +20,15 @@ beforeEach(() => {
 });
 
 describe('lspDiagnosticToCodeMirror', () => {
+  // Mock doc: line 1 (LSP 0) → [0, 19]; line 2 (LSP 1) → [20, 39]; throws otherwise.
+  const mockDoc = {
+    line: (n: number) => {
+      if (n === 1) return { from: 0, to: 19 };
+      if (n === 2) return { from: 20, to: 39 };
+      throw new RangeError(`line ${n} out of range`);
+    },
+  };
+
   it('converts an LSP diagnostic to CodeMirror lint Diagnostic format', () => {
     const lspDiag = {
       range: {
@@ -30,25 +39,17 @@ describe('lspDiagnosticToCodeMirror', () => {
       message: 'unexpected token',
     };
 
-    // Provide a mock doc for line offset calculation
-    const mockDoc = {
-      line: (n: number) => ({
-        from: n === 1 ? 0 : 20,
-        to: n === 1 ? 19 : 39,
-      }),
-    };
-
     const result = lspDiagnosticToCodeMirror(lspDiag, mockDoc as any);
 
     expect(result).toBeDefined();
-    expect(result.from).toBe(5); // line 1 offset 0 + character 5
-    expect(result.to).toBe(15); // line 1 offset 0 + character 15
-    expect(result.severity).toBe('error');
-    expect(result.message).toBe('unexpected token');
+    expect(result!.from).toBe(5); // line 1 offset 0 + character 5
+    expect(result!.to).toBe(15); // line 1 offset 0 + character 15
+    expect(result!.severity).toBe('error');
+    expect(result!.message).toBe('unexpected token');
   });
 
   it('maps LSP severity to CodeMirror severity', () => {
-    const mockDoc = {
+    const wideDoc = {
       line: (_n: number) => ({ from: 0, to: 50 }),
     };
 
@@ -58,13 +59,44 @@ describe('lspDiagnosticToCodeMirror', () => {
     };
 
     // Error (1)
-    expect(lspDiagnosticToCodeMirror({ ...baseDiag, severity: 1 }, mockDoc as any).severity).toBe('error');
+    expect(lspDiagnosticToCodeMirror({ ...baseDiag, severity: 1 }, wideDoc as any)!.severity).toBe('error');
     // Warning (2)
-    expect(lspDiagnosticToCodeMirror({ ...baseDiag, severity: 2 }, mockDoc as any).severity).toBe('warning');
+    expect(lspDiagnosticToCodeMirror({ ...baseDiag, severity: 2 }, wideDoc as any)!.severity).toBe('warning');
     // Info (3)
-    expect(lspDiagnosticToCodeMirror({ ...baseDiag, severity: 3 }, mockDoc as any).severity).toBe('info');
+    expect(lspDiagnosticToCodeMirror({ ...baseDiag, severity: 3 }, wideDoc as any)!.severity).toBe('info');
     // Hint (4)
-    expect(lspDiagnosticToCodeMirror({ ...baseDiag, severity: 4 }, mockDoc as any).severity).toBe('info');
+    expect(lspDiagnosticToCodeMirror({ ...baseDiag, severity: 4 }, wideDoc as any)!.severity).toBe('info');
+  });
+
+  // --- NEW hardening tests (RED against current unguarded/unclamped impl) ---
+
+  it('clamps an over-long end character to line.to', () => {
+    // end character 999 exceeds line 1 (.to=19) → should clamp to 19, not overflow.
+    const lspDiag = {
+      range: {
+        start: { line: 0, character: 5 },
+        end: { line: 0, character: 999 },
+      },
+      severity: 2,
+      message: 'wide diagnostic',
+    };
+    const result = lspDiagnosticToCodeMirror(lspDiag, mockDoc as any);
+    expect(result).not.toBeNull();
+    expect(result!.to).toBe(19); // clamped to line 1.to
+  });
+
+  it('returns null (does NOT throw) when an LSP line is out of range', () => {
+    // LSP line 50 → doc.line(51) throws RangeError → must return null, not throw.
+    const lspDiag = {
+      range: {
+        start: { line: 50, character: 0 },
+        end: { line: 50, character: 5 },
+      },
+      severity: 1,
+      message: 'stale diagnostic',
+    };
+    expect(() => lspDiagnosticToCodeMirror(lspDiag, mockDoc as any)).not.toThrow();
+    expect(lspDiagnosticToCodeMirror(lspDiag, mockDoc as any)).toBeNull();
   });
 });
 
