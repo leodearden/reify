@@ -927,6 +927,78 @@ structure def PinHeader<P: PinPort> {
     );
 }
 
+/// Behavioral: a concrete conformer that supplies ALL inherited+own members of
+/// PinPort (the diamond hierarchy) must compile with zero Severity::Error diagnostics.
+///
+/// PinPort's inheritance diamond:
+///
+///         Port  (direction : Directionality = Bidi — defaulted, can omit)
+///        /    \
+///  ElectrPort  LocatedPort
+///   (voltage_  (frame : Frame3)
+///    current_)
+///        \    /
+///        PinPort
+///         (pin_id : String)
+///
+/// Required supplied here:
+///   voltage_rating : Voltage  (from ElectricalPort)
+///   current_rating : Current  (from ElectricalPort)
+///   frame          : Frame3   (from LocatedPort)
+///   pin_id         : String   (own PinPort)
+///   direction                 (omitted — Port default = Directionality.Bidi)
+///
+/// A diamond-merge bug in inherited-member resolution that still leaves the
+/// trait declarable would not be caught by the trait-surface or bound-usage
+/// tests alone.  This conformer drives the full merged requirement set through
+/// the conformance-checking path.
+#[test]
+fn pin_port_concrete_conformer_diamond_merge_compiles() {
+    let source = r#"
+import std.ports.electrical
+
+structure def PinConformer {
+    port p : in PinPort {
+        param voltage_rating : Voltage = 3.3V
+        param current_rating : Current = 0.1A
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1mm, 0mm, 0mm),
+            y_axis: vec3(0mm, 1mm, 0mm),
+            z_axis: vec3(0mm, 0mm, 1mm),
+        )
+        param pin_id : String = "A1"
+    }
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "PinPort concrete conformer (diamond: ElectricalPort+LocatedPort both refine Port) \
+         should compile without errors when all inherited+own params are supplied; got: {:?}",
+        errors
+    );
+
+    assert!(
+        compiled
+            .templates
+            .iter()
+            .any(|t| t.name == "PinConformer" && t.entity_kind == EntityKind::Structure),
+        "PinConformer should be declared as a Structure template; found: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.entity_kind))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// std/ports/electrical cardinality lock: exactly 4 traits (ElectricalPort,
 /// PowerPort, SignalPort, PinPort), 1 enum (SignalKind), 0 structures.
 ///
