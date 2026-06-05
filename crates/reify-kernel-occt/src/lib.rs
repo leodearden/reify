@@ -9021,4 +9021,53 @@ mod tests {
             "wedge should have exactly 6 faces, got {face_count}"
         );
     }
+
+    // --- RectangleProfile FFI tests (task-4160, step-1) ---
+
+    /// FFI-level test: make_rectangle_face produces a face that can be extruded
+    /// to a solid with the expected volume.
+    ///
+    /// Rectangle w=0.020 m, h=0.010 m, extruded by d=0.003 m →
+    /// V = w·h·d = 0.020·0.010·0.003 = 6.0e-7 m³ (exact for rectangular prism).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_rectangle_face.
+    #[test]
+    fn make_rectangle_face_ffi_extrude_volume() {
+        let face = ffi::ffi::make_rectangle_face(0.020, 0.010, 0.0)
+            .expect("make_rectangle_face(0.020, 0.010, 0.0) should succeed");
+        let prism = ffi::ffi::make_prism(&face, 0.0, 0.0, 0.003)
+            .expect("make_prism should succeed for rectangle face");
+        let vol =
+            ffi::ffi::query_volume(&prism).expect("query_volume should work for extruded rect");
+        let expected = 0.020_f64 * 0.010 * 0.003; // w·h·d = 6.0e-7 m³
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "rectangle extrude volume: expected ≈ {expected:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// Degenerate input: width=0 must return Err (not panic).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_rectangle_face.
+    #[test]
+    fn make_rectangle_face_ffi_zero_width_returns_err() {
+        let result = ffi::ffi::make_rectangle_face(0.0, 0.010, 0.0);
+        assert!(
+            result.is_err(),
+            "make_rectangle_face with width=0 should return Err, got Ok"
+        );
+    }
+
+    /// Degenerate input: negative height must return Err (not panic).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_rectangle_face.
+    #[test]
+    fn make_rectangle_face_ffi_negative_height_returns_err() {
+        let result = ffi::ffi::make_rectangle_face(0.020, -0.010, 0.0);
+        assert!(
+            result.is_err(),
+            "make_rectangle_face with height=-0.01 should return Err, got Ok"
+        );
+    }
 }
