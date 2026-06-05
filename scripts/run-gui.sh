@@ -10,7 +10,7 @@
 #   4. Export LD_LIBRARY_PATH so OCCT's bundled shared libraries are found.
 #   5. exec target/release/reify-gui <file.ri>.
 #
-# For dev-mode (vite dev server, MCP debug listener on :3939, devtools)
+# For dev-mode (vite dev server, configurable debug MCP port, devtools)
 # use scripts/run-gui-dev.sh instead.
 
 set -euo pipefail
