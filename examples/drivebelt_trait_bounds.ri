@@ -34,7 +34,7 @@
 //   density, name              ← MaterialSpec (shared via IR ∩ D diamond merge)
 //   stiffness, max_deflection  ← Flexible (via ElasticallyDeformable)
 //   max_elastic_strain         ← ElasticallyDeformable
-//   impact_energy              ← ImpactResistant
+//   charpy_impact              ← ImpactResistant
 //   damping_ratio, loss_factor ← Damping
 //
 // Constraints injected by traits:
@@ -58,7 +58,7 @@ structure def DriveBelt : ElasticallyDeformable + ImpactResistant + Damping {
     param max_elastic_strain : Real = 0.1  // 10% recoverable strain limit
 
     // ImpactResistant
-    param impact_energy : Real = 500.0     // J — Charpy/Izod equivalent
+    param charpy_impact : Real = 500.0     // J — Charpy impact energy
 
     // Damping
     param damping_ratio : Real = 0.15      // 15% of critical damping (typical rubber)

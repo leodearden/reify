@@ -4,7 +4,8 @@
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
 // Dimensioned params (density, youngs_modulus, shear_modulus, yield_strength,
-// uts, compressive_strength, endurance_limit, impact_energy) are tightenable-now
+// ultimate_tensile_strength, compressive_strength, fatigue_limit, fatigue_strength_at,
+// charpy_impact, izod_impact) are tightenable-now
 // (task #3111). fracture_toughness was previously blocked-composite and is
 // now tightened to the `FractureToughness` (Pa·√m) alias by task #3115.
 //
@@ -92,15 +93,15 @@ trait Elastic {
 
 // ── Strength ─────────────────────────────────────────────────────────────────
 
-// yield_strength, uts (ultimate tensile strength), compressive_strength all
-// in Pa (using Real). The constraint enforces uts >= yield_strength.
+// yield_strength, ultimate_tensile_strength (UTS), compressive_strength all
+// in Pa (using Real). The constraint enforces ultimate_tensile_strength >= yield_strength.
 // compressive_strength is optional (= undef): many material datasheets report
 // tensile data only; compressive data may not be available for all conformers.
 trait Strong {
     param yield_strength : Real
-    param uts : Real
+    param ultimate_tensile_strength : Real
     param compressive_strength : Real = undef // optional — omit when not reported
-    constraint uts >= yield_strength
+    constraint ultimate_tensile_strength >= yield_strength
 }
 
 // ── Hardness ─────────────────────────────────────────────────────────────────
@@ -116,9 +117,19 @@ trait Hard {
 
 // ── Fatigue ───────────────────────────────────────────────────────────────────
 
-// Stress amplitude below which the material can sustain unlimited cycles (Pa, using Real).
+// Fatigue characterisation params (Pa, using Real; fatigue_cycles: Int).
+// All three params are optional (= undef): real datasheets rarely report all
+// three simultaneously. fatigue_limit is the stress amplitude for unlimited
+// cycles; fatigue_strength_at is the amplitude at fatigue_cycles cycles.
+// NOTE: fatigue_strength_at and fatigue_cycles are only meaningful as a pair
+// (they define a single S-N data point). Supplying one without the other is
+// semantically incomplete. A co-presence constraint will be added once
+// undef-aware constraints are supported (follow-up #4240-co-presence).
+// task β #4240: replaced single required endurance_limit with these three optionals.
 trait FatigueRated : MaterialSpec {
-    param endurance_limit : Real
+    param fatigue_limit : Real = undef        // optional — stress amplitude for unlimited cycles
+    param fatigue_strength_at : Real = undef  // optional — stress amplitude at fatigue_cycles
+    param fatigue_cycles : Int = undef        // optional — cycle count for fatigue_strength_at
 }
 
 // ── Fracture toughness ────────────────────────────────────────────────────────
@@ -131,20 +142,23 @@ trait FractureTough : MaterialSpec {
 
 // ── Ductility ─────────────────────────────────────────────────────────────────
 
-// elongation: % elongation at break; reduction_of_area: % cross-section reduction.
+// elongation_at_break: % strain-to-fracture; reduction_of_area: % cross-section reduction.
 // Both dimensionless fractions — use Real.
-// reduction_of_area is optional (= undef): elongation is the more commonly
+// reduction_of_area is optional (= undef): elongation_at_break is the more commonly
 // reported ductility metric; area reduction may be absent in standard datasheets.
 trait Ductile {
-    param elongation : Real // dimensionless
+    param elongation_at_break : Real // dimensionless
     param reduction_of_area : Real = undef // optional — omit when not reported
 }
 
 // ── Impact resistance ─────────────────────────────────────────────────────────
 
-// Energy absorbed in a Charpy or Izod impact test (J, using Real).
+// Charpy and Izod impact energy (J, using Real). Both optional (= undef): many
+// datasheets report only one test method; conformers may omit either or both.
+// task β #4240: replaced single required impact_energy with these two optionals.
 trait ImpactResistant : MaterialSpec {
-    param impact_energy : Real
+    param charpy_impact : Real = undef  // optional — energy absorbed in Charpy test (J)
+    param izod_impact : Real = undef    // optional — energy absorbed in Izod test (J)
 }
 
 // ── Damping ───────────────────────────────────────────────────────────────────

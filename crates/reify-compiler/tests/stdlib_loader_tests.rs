@@ -565,8 +565,8 @@ fn compile_with_prelude_makes_traits_visible() {
 
 /// compile_with_prelude injects trait constraint defaults from the prelude.
 /// A structure conforming to the prelude's Strong trait gets the
-/// `uts >= yield_strength` constraint injected. Verifies both presence
-/// and content of the injected constraint.
+/// `ultimate_tensile_strength >= yield_strength` constraint injected. Verifies
+/// both presence and content of the injected constraint.
 #[test]
 fn compile_with_prelude_injects_trait_constraints() {
     let source = steel_strong_source();
@@ -593,10 +593,10 @@ fn compile_with_prelude_injects_trait_constraints() {
         .expect("expected at least 1 template");
     assert!(
         !template.constraints.is_empty(),
-        "expected constraint from Strong trait (uts >= yield_strength) injected into Steel, but constraints is empty"
+        "expected constraint from Strong trait (ultimate_tensile_strength >= yield_strength) injected into Steel, but constraints is empty"
     );
 
-    // Structurally verify the constraint encodes uts >= yield_strength.
+    // Structurally verify the constraint encodes ultimate_tensile_strength >= yield_strength.
     // Pattern-match on CompiledExprKind variants rather than relying on Debug formatting.
     let ge_constraint = template
         .constraints
@@ -614,8 +614,8 @@ fn compile_with_prelude_injects_trait_constraints() {
     let ge_expr = &ge_constraint.unwrap().expr;
     let refs = collect_value_ref_members(ge_expr);
     assert!(
-        refs.contains(&"uts"),
-        "expected 'uts' ValueRef in >= constraint, got refs: {:?}",
+        refs.contains(&"ultimate_tensile_strength"),
+        "expected 'ultimate_tensile_strength' ValueRef in >= constraint, got refs: {:?}",
         refs
     );
     assert!(
