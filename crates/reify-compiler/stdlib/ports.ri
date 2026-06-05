@@ -67,3 +67,12 @@ structure def Frame3 {
 trait LocatedPort : Port {
     param frame : Frame3
 }
+
+// A port with a spatial attachment frame AND a bounding geometry region.
+// Refines LocatedPort (frame) and adds a `region` param typed as the canonical
+// Geometry surface alias (dep 4253 / task G: type_resolution.rs:564).
+// Useful for ports that represent spatial envelopes or connection regions,
+// e.g. an interface pad, a mating surface, or a spatial service volume.
+trait RegionPort : LocatedPort {
+    param region : Geometry
+}
