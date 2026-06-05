@@ -94,17 +94,34 @@ fn cubic_spline_kind() -> Value {
     }
 }
 
-/// A well-formed `PiecewisePolynomialProfile` Value for a single-joint linear
-/// ramp from `q0` to `q1` over `[0, T]` seconds with `NaturalSpline` boundary
+/// A well-formed `PiecewisePolynomialProfile` Value for a single-joint *curved*
+/// move from `q0` to `q1` over `[0, T]` seconds with `NaturalSpline` boundary
 /// and `CubicSpline` kind. `value_to_multijoint_spline` will marshal this.
+///
+/// Three waypoints, with the mid-point deliberately OFF the straight line
+/// (`q0 + 0.75·(q1−q0)` at `T/2`, not the collinear `0.5·(q1−q0)`). A 2-knot
+/// natural cubic would be exactly *linear* (q̈ ≡ 0), and the forward
+/// simulator's modal forcing is acceleration-driven (τ = m·q̈), so a linear
+/// ramp excites ZERO vibration regardless of `q1` — every `q1` would then yield
+/// a byte-identical all-zero track, and a profile-change cache MISS could not be
+/// told apart from a stale HIT. The non-collinear mid-point gives the natural
+/// cubic a non-zero interior acceleration; because a natural cubic is linear in
+/// its control values, with `q0 = 0` the whole spline (and hence the vibration
+/// it drives) scales linearly with `q1`, so a changed `q1` produces a genuinely
+/// distinct track.
 fn ramp_profile(q0: f64, q1: f64, t_end: f64) -> Value {
+    let q_mid = q0 + 0.75 * (q1 - q0);
     struct_instance(
         "PiecewisePolynomialProfile",
         vec![
             ("mechanism".to_string(), Value::Real(1.0)),
             (
                 "waypoints".to_string(),
-                Value::List(vec![waypoint(0.0, &[q0]), waypoint(t_end, &[q1])]),
+                Value::List(vec![
+                    waypoint(0.0, &[q0]),
+                    waypoint(t_end / 2.0, &[q_mid]),
+                    waypoint(t_end, &[q1]),
+                ]),
             ),
             (
                 "boundary".to_string(),
@@ -142,18 +159,24 @@ fn modal_result(modes: Vec<Value>) -> Value {
 }
 
 /// The three flat `value_inputs` for `simulate_trajectory(profile, mech, modal)`:
-/// - `profile`: a 1-joint ramp `PiecewisePolynomialProfile` with a control
-///   value `q1` that can be varied to force a cache MISS.
+/// - `profile`: a 1-joint curved move `PiecewisePolynomialProfile` with a
+///   control value `q1` that can be varied to force a cache MISS (and a
+///   genuinely distinct vibration track — see [`ramp_profile`]).
 /// - `mech`: a `Real` placeholder (value_to_mechanism_model falls back to a
-///   single-link unit-mass prismatic model — the path θ tests use).
-/// - `modal`: a `ModalResult` with one 10 Hz, ζ=0 mode and a unit Z-shape
-///   (matches θ's step-response fixture so simulate_trajectory_core returns a
-///   plausible EndEffectorTrackData with non-zero vibration_offset).
+///   single-link unit-mass prismatic-X model — the path θ tests use). Its lone
+///   DOF is the linear-X axis, so the modal forcing reads τ's X component.
+/// - `modal`: a `ModalResult` with one 10 Hz, ζ=0 mode whose `shape` projects
+///   onto that prismatic-X DOF (`[1, 0, 0]`). `forces_to_forcing_history` dots
+///   the per-DOF τ vector with the flattened shape over their common length
+///   (1 DOF here), so a Z-only shape (`[0, 0, 1]`) would project to zero and
+///   excite NO vibration; aligning the shape with the actuated X axis (mirroring
+///   θ's `force_projection: [1.0]` step-response fixture) yields a plausible
+///   non-zero, `q1`-scaling vibration_offset.
 fn simulate_value_inputs(q1: f64) -> Vec<Value> {
     vec![
         ramp_profile(0.0, q1, 1.0),
         Value::Real(1.0),
-        modal_result(vec![mode(10.0, 0.0, &[[0.0, 0.0, 1.0]])]),
+        modal_result(vec![mode(10.0, 0.0, &[[1.0, 0.0, 0.0]])]),
     ]
 }
 
