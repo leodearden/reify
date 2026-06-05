@@ -36,30 +36,10 @@ assertRepoRootStructure(REPO_ROOT);
 const SCREENSHOTS_DIR = path.join(REPO_ROOT, "gui", "test", "screenshots");
 
 // ─── Scenario definitions ─────────────────────────────────────────────────────
+// Catalogue lives in scenarios.ts (unit-tested headlessly via scenarios.test.ts).
+// SCENARIOS[0] is the bootstrap fixture used to start the GUI process below.
 
-interface Camera {
-  position: [number, number, number];
-  target: [number, number, number];
-  up?: [number, number, number];
-  zoom?: number;
-}
-
-interface Scenario {
-  name: string;
-  fixture: string;
-  camera: Camera;
-}
-
-const SCENARIOS: Scenario[] = [
-  {
-    name: "m5_geometry_flange",
-    fixture: "examples/m5_geometry_flange.ri",
-    camera: {
-      position: [0.15, 0.1, 0.15],
-      target: [0, 0, 0],
-    },
-  },
-];
+import { SCENARIOS, type Scenario, type Camera } from "./scenarios.js";
 
 // ─── RPC client ───────────────────────────────────────────────────────────────
 
