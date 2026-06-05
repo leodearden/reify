@@ -312,3 +312,249 @@ fn skeleton_pass_produces_no_spurious_parametric_alias_info_diagnostics() {
         spurious
     );
 }
+
+// ─── task-4342 step-3b: fn-returned struct carries lets in skeleton ────────────
+
+const TOL_SRC: &str = r#"
+module test.tol
+
+structure def Tol {
+    param nominal      : Real = 0.0
+    param upper_dev    : Real = 0.001
+    let upper_limit    = nominal + upper_dev
+}
+
+pub fn make_tol() -> Tol { Tol(5.0, 0.02) }
+"#;
+
+/// step_3b (task-4342): a same-module fn-returned struct with a sibling-referencing
+/// derived let must produce a StructureInstanceCtor that carries `lets` AND
+/// whose let expr is NOT poison (result_type != Type::Error).
+#[test]
+fn fn_returned_struct_ctor_carries_non_poison_lets() {
+    let module = reify_test_support::helpers::compile_source_with_stdlib(TOL_SRC);
+
+    // The module must compile without errors.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "Tol module should compile without errors; got: {:#?}",
+        errors
+    );
+
+    // find make_tol in compiled functions
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_tol")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `make_tol` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    // The fn body must be a StructureInstanceCtor.
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, lets, .. } => {
+            assert_eq!(type_name, "Tol", "fn body ctor type_name must be Tol");
+            // RED: currently lets is Vec::new() because step_4 skeleton doesn't attach lets.
+            assert_eq!(
+                lets.len(), 1,
+                "fn-returned Tol ctor must carry 1 let (upper_limit); got {} lets: {:?}",
+                lets.len(),
+                lets.iter().map(|(n, _)| n).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                lets[0].0, "upper_limit",
+                "let member name must be upper_limit"
+            );
+            // The let expr must not be poison — the skeleton must register sibling
+            // params before compiling let exprs so the sibling refs resolve.
+            assert_ne!(
+                lets[0].1.result_type,
+                Type::Error,
+                "let expr result_type must not be Error (sibling refs must resolve in skeleton)"
+            );
+        }
+        other => panic!("make_tol body should be StructureInstanceCtor; got: {:?}", other),
+    }
+}
+
+// ─── task-4342 step-9: guarded lets excluded from skeleton ctor ────────────────
+
+/// A structure with both an unguarded `let` and a per-decl-guarded `let … where cond`
+/// in a same-module fn-returned position.
+///
+/// RED: `build_structure_def_skeleton`'s second pass currently pushes every non-geometry
+/// let into value_cells unconditionally — including guarded lets.  The ctor-lets
+/// collection (expr.rs) then harvests guarded_limit alongside plain_limit.
+///
+/// After step_10 GREEN: the skeleton skips `where_clause.is_some()` lets, matching
+/// the authoritative path (entity.rs:1457-1472) which routes them to guarded_groups.
+const GUARDED_LET_SRC: &str = r#"
+module test.guarded
+
+structure def G {
+    param nominal    : Real = 0.0
+    param upper_dev  : Real = 0.001
+    param active     : Bool = true
+    let plain_limit   = nominal + upper_dev
+    let guarded_limit = nominal - upper_dev where active
+}
+
+pub fn make_g() -> G { G(5.0, 0.02, true) }
+"#;
+
+#[test]
+fn fn_returned_struct_ctor_excludes_guarded_lets() {
+    let module = reify_test_support::helpers::compile_source_with_stdlib(GUARDED_LET_SRC);
+
+    // (a) Zero errors.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "G module should compile without errors; got: {:#?}",
+        errors
+    );
+
+    // (b) make_g body is StructureInstanceCtor.
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_g")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `make_g` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, lets, .. } => {
+            assert_eq!(type_name, "G", "fn body ctor type_name must be G");
+
+            let let_names: Vec<&str> = lets.iter().map(|(n, _)| n.as_str()).collect();
+
+            // (c) Unguarded let is present.
+            assert!(
+                let_names.contains(&"plain_limit"),
+                "ctor `lets` must contain \"plain_limit\" (unguarded); got: {:?}",
+                let_names
+            );
+
+            // (d) Guarded let is absent — must not be eagerly materialized.
+            assert!(
+                !let_names.contains(&"guarded_limit"),
+                "ctor `lets` must NOT contain \"guarded_limit\" (per-decl guarded); \
+                 got: {:?}",
+                let_names
+            );
+        }
+        other => panic!("make_g body should be StructureInstanceCtor; got: {:?}", other),
+    }
+}
+
+// ─── task-4342 (esc-4342-21): geometry-let alias excluded from skeleton ctor ────
+
+/// A structure with a geometry let (`base = box(...)`), an Ident *alias* to that
+/// geometry let (`shifted = base`), and a scalar derived let, in a fn-returned
+/// position.
+///
+/// Regression for the path-consistency divergence flagged in esc-4342-21: the
+/// skeleton's second pass previously used an EMPTY `known_geometry_lets` set, so
+/// `is_geometry_let` could not recognize `shifted` as an alias of the geometry
+/// let `base`.  `shifted` would then be `compile_expr`'d against a scope where
+/// `base` was never registered as geometry, yielding a poison/Undef expr that
+/// leaked into the ctor `lets` — a field the authoritative/sub path never
+/// produces.  After the fix the skeleton builds `known_geometry_lets`
+/// incrementally (mirroring entity.rs:853-856), so both `base` and `shifted` are
+/// routed out of value_cells, while the scalar `scaled` survives.
+const GEOMETRY_ALIAS_SRC: &str = r#"
+module test.geomalias
+
+structure def H {
+    param w      : Real = 1.0
+    param factor : Real = 2.0
+    let base    = box(w, w, w)
+    let shifted = base
+    let scaled  = w * factor
+}
+
+pub fn make_h() -> H { H(1.0, 2.0) }
+"#;
+
+#[test]
+fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
+    let module = reify_test_support::helpers::compile_source_with_stdlib(GEOMETRY_ALIAS_SRC);
+
+    // (a) Zero errors.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "H module should compile without errors; got: {:#?}",
+        errors
+    );
+
+    // (b) make_h body is StructureInstanceCtor.
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "make_h")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `make_h` in compiled module; found functions: {:?}",
+                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+
+    match &func.body.result_expr.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, lets, .. } => {
+            assert_eq!(type_name, "H", "fn body ctor type_name must be H");
+
+            let let_names: Vec<&str> = lets.iter().map(|(n, _)| n.as_str()).collect();
+
+            // (c) The direct geometry let is routed out.
+            assert!(
+                !let_names.contains(&"base"),
+                "ctor `lets` must NOT contain \"base\" (direct geometry let); got: {:?}",
+                let_names
+            );
+
+            // (d) The Ident-alias of the geometry let is ALSO routed out — this is
+            //     the divergence esc-4342-21 fixed.
+            assert!(
+                !let_names.contains(&"shifted"),
+                "ctor `lets` must NOT contain \"shifted\" (alias of geometry let \
+                 `base`); got: {:?}",
+                let_names
+            );
+
+            // (e) The scalar derived let still survives and is non-poison.
+            assert!(
+                let_names.contains(&"scaled"),
+                "ctor `lets` must contain \"scaled\" (scalar derived let); got: {:?}",
+                let_names
+            );
+            let scaled = lets.iter().find(|(n, _)| n == "scaled").unwrap();
+            assert_ne!(
+                scaled.1.result_type,
+                Type::Error,
+                "`scaled` let expr result_type must not be Error"
+            );
+        }
+        other => panic!("make_h body should be StructureInstanceCtor; got: {:?}", other),
+    }
+}

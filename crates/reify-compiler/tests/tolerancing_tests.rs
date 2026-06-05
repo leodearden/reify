@@ -1329,3 +1329,184 @@ structure def ProbeFail {
         result_fail.constraint_results
     );
 }
+
+// ─── task-4342: ctor derived-let sub-consistency acceptance test ─────────────
+
+/// End-to-end acceptance test for task-4342: derived `let` members of a
+/// `StructureInstance` are correctly materialized across all three non-`sub`
+/// arrival paths, and their values equal the `sub`-path baseline
+/// (sub-consistency — the acceptance bar).
+///
+/// Uses locally-redeclared structures so the eval engine can resolve templates
+/// from the user module (engine does not look up stdlib templates by name).
+///
+/// Paths exercised:
+///   (1) ctor-in-entity-let:  `let g = TestDT(5mm, 0.02mm, -0.01mm)`
+///                             `let ul = g.upper_limit`
+///   (2) param-held:          `TestHolder { param p: TestDT; let d = p.upper_limit }`
+///                             instantiated as `TestHolder(TestDT(5mm, 0.02mm, -0.01mm))`
+///   (3) fn-returned:         `fn make_dt() -> TestDT { TestDT(5mm, 0.02mm, -0.01mm) }`
+///                             `let g2 = make_dt()`, `let ul2 = g2.upper_limit`
+///   (baseline) sub:          `sub s = TestDT(5mm, 0.02mm, -0.01mm)` reading `s.upper_limit`
+///
+/// All four must agree: upper_limit = nominal + upper_deviation = 5mm + 0.02mm = 0.00502 m.
+/// Also asserts TestFit.max_clearance resolves (a Length-difference derived let).
+///
+/// RED on base (steps 4+6 not done): all non-sub paths return Undef.
+/// GREEN after step-4 (compiler carries lets) + step-6 (eval materializes them).
+#[test]
+fn ctor_derived_let_materializes_across_all_arrival_paths() {
+    let source = r#"
+structure def TestDT {
+    param nominal          : Length
+    param upper_deviation  : Length
+    param lower_deviation  : Length
+    let upper_limit    = nominal + upper_deviation
+    let lower_limit    = nominal + lower_deviation
+    let tolerance_band = upper_deviation - lower_deviation
+}
+
+structure def TestFit {
+    param hole_upper  : Length
+    param shaft_lower : Length
+    let max_clearance = hole_upper - shaft_lower
+}
+
+structure def TestHolder {
+    param p : TestDT
+    let d   = p.upper_limit
+}
+
+pub fn make_dt() -> TestDT {
+    TestDT(5mm, 0.02mm, -0.01mm)
+}
+
+structure def Scenario {
+    let g   = TestDT(5mm, 0.02mm, -0.01mm)
+    let ul  = g.upper_limit
+    let g2  = make_dt()
+    let ul2 = g2.upper_limit
+    sub s   = TestDT(nominal: 5mm, upper_deviation: 0.02mm, lower_deviation: -0.01mm)
+    let fit = TestFit(10mm, 8mm)
+    let mc  = fit.max_clearance
+}
+
+structure def HolderInst {
+    let h       = TestHolder(TestDT(5mm, 0.02mm, -0.01mm))
+    let param_d = h.d
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "task-4342 acceptance: compile errors: {:?}",
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "task-4342 acceptance: eval errors: {:?}",
+        eval_errors
+    );
+
+    // Expected: 5mm + 0.02mm = 0.005 m + 0.00002 m = 0.00502 m
+    let expected_si = 0.00502_f64;
+
+    let all_keys: Vec<_> = result
+        .values
+        .iter()
+        .map(|(k, _)| format!("{}.{}", k.entity, k.member))
+        .collect();
+
+    // ── helper: assert a cell holds a LENGTH Scalar ≈ expected ───────────────
+    macro_rules! assert_length {
+        ($entity:expr, $member:expr, $expected:expr, $path_name:literal) => {{
+            let id = ValueCellId::new($entity, $member);
+            let value = result.values.get(&id).unwrap_or_else(|| {
+                panic!(
+                    "task-4342 {} path: {}.{} not found in eval result; \
+                     present keys: {:?}",
+                    $path_name, $entity, $member, all_keys
+                )
+            });
+            match value {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::LENGTH,
+                        "task-4342 {} path: {}.{} expected LENGTH dimension, got {:?}",
+                        $path_name, $entity, $member, dimension
+                    );
+                    let rel_err = (si_value - $expected).abs() / $expected;
+                    assert!(
+                        rel_err < 1e-9,
+                        "task-4342 {} path: {}.{} expected {:.8e} m, \
+                         got {:.8e} m (rel_err {:.2e})",
+                        $path_name, $entity, $member, $expected, si_value, rel_err
+                    );
+                }
+                other => panic!(
+                    "task-4342 {} path: {}.{} expected Value::Scalar (LENGTH), \
+                     got {:?}",
+                    $path_name, $entity, $member, other
+                ),
+            }
+        }};
+    }
+
+    // (baseline) sub path: elaborate_child_lets_only sets s.upper_limit
+    assert_length!("Scenario.s", "upper_limit", expected_si, "sub baseline");
+
+    // (1) ctor-in-entity-let: Scenario.ul = g.upper_limit
+    assert_length!("Scenario", "ul", expected_si, "ctor-in-entity-let");
+
+    // (3) fn-returned: Scenario.ul2 = make_dt().upper_limit
+    assert_length!("Scenario", "ul2", expected_si, "fn-returned");
+
+    // (2) param-held: HolderInst.param_d = TestHolder(TestDT(...)).d
+    assert_length!("HolderInst", "param_d", expected_si, "param-held");
+
+    // Fit.max_clearance = 10mm - 8mm = 2mm = 0.002 m
+    let mc_id = ValueCellId::new("Scenario", "mc");
+    let mc_value = result.values.get(&mc_id).unwrap_or_else(|| {
+        panic!(
+            "task-4342 Fit path: Scenario.mc not found; present keys: {:?}",
+            all_keys
+        )
+    });
+    match mc_value {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "Scenario.mc expected LENGTH dimension, got {:?}",
+                dimension
+            );
+            let expected_mc = 0.002_f64;
+            let rel_err = (si_value - expected_mc).abs() / expected_mc;
+            assert!(
+                rel_err < 1e-9,
+                "Scenario.mc expected 0.002 m (10mm - 8mm), \
+                 got {:.8e} m (rel_err {:.2e})",
+                si_value, rel_err
+            );
+        }
+        other => panic!(
+            "Scenario.mc expected Value::Scalar (LENGTH), got {:?}",
+            other
+        ),
+    }
+}

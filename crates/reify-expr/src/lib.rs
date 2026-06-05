@@ -870,12 +870,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             version,
             ordered_args,
             defaults,
+            lets,
         } => eval_structure_instance_ctor(
             *type_id,
             type_name,
             *version,
             ordered_args,
             defaults,
+            lets,
             ctx,
         ),
     }
@@ -911,6 +913,7 @@ fn eval_structure_instance_ctor(
     version: u32,
     ordered_args: &[(String, CompiledExpr)],
     defaults: &[(String, CompiledExpr)],
+    lets: &[(String, CompiledExpr)],
     ctx: &EvalContext,
 ) -> Value {
     let mut fields: PersistentMap<String, Value> = PersistentMap::new();
@@ -922,12 +925,94 @@ fn eval_structure_instance_ctor(
             fields.insert(name.clone(), eval_expr(def, ctx));
         }
     }
+    if !lets.is_empty() {
+        materialize_template_lets(type_name, lets, &mut fields, ctx);
+    }
     Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
         type_id,
         type_name: type_name.to_string(),
         version,
         fields,
     }))
+}
+
+/// Eagerly materialize template `Let` cells into a just-built structure
+/// instance's `fields` map (task-4342, step-6).
+///
+/// Marked `#[inline(never)]` for the same reason `eval_structure_instance_ctor`
+/// is hoisted out: the locals here (a `ValueMap` plus loop temporaries) must
+/// NOT inflate `eval_expr`'s stack frame or widen the frame the
+/// `eval_user_fn_recursion_depth_exceeded` safety test relies on.  This
+/// function is called only when `!lets.is_empty()`, so the deep user-fn path
+/// (no struct lets) never pays the extra frame.
+///
+/// Algorithm: build a child `reify_ir::ValueMap` keyed by
+/// `ValueCellId::new(type_name, member)` from the already-populated `fields`,
+/// then iterate `lets` in declaration order.  For each let evaluate its
+/// compiled expr against `ctx.with_scope(&child)` (so earlier lets are visible
+/// to later ones), and write the result into BOTH the child map and `fields`.
+#[inline(never)]
+fn materialize_template_lets(
+    type_name: &str,
+    lets: &[(String, CompiledExpr)],
+    fields: &mut PersistentMap<String, Value>,
+    ctx: &EvalContext,
+) {
+    // Build a child ValueMap keyed by ValueCellId::new(type_name, member)
+    // from the already-populated `fields` (params + defaults filled in by
+    // eval_structure_instance_ctor).  The child scope lets the let exprs
+    // reference sibling params by their ValueCellId (entity == type_name).
+    //
+    // PERFORMANCE NOTE: this loop performs an O(fields) deep-clone — one
+    // `value.clone()` per param/default in the struct.  For structures with
+    // many fields instantiated in hot loops this adds up.  In practice,
+    // tolerancing-style derives are cheap arithmetic and this path is gated on
+    // `!lets.is_empty()` in the caller, so structs with no derived lets pay
+    // nothing.  If profiling ever shows this on a hot path, consider an
+    // overlay/COW scope that borrows from `fields` directly rather than copying
+    // every entry (analogous to how `ctx.with_scope` borrows without cloning the
+    // full value map).
+    let mut child = ValueMap::new();
+    for (member, value) in fields.iter() {
+        child.insert(ValueCellId::new(type_name, member.as_str()), value.clone());
+    }
+
+    // Evaluate lets in declaration order.  For each let:
+    //   1. evaluate its compiled expr against ctx.with_scope(&child) — the
+    //      temporary borrow is released after eval_expr returns, so
+    //      child.insert on the next line is safe;
+    //   2. insert the result into `child` so later lets see earlier ones;
+    //   3. insert into `fields` for the final StructureInstance.
+    //
+    // Declaration order is a valid eval order: the compiler enforces left-to-right
+    // scoping (a let can only reference earlier params/lets), so no topological
+    // sort or cycle guard is needed here (unlike elaborate_child_lets_only).
+    //
+    // SCOPE INVARIANT (suggestion 2): `ctx.with_scope(&child)` REPLACES the value
+    // map entirely.  This is intentional and correct for structure-def lets because:
+    //
+    //   (a) The compiler compiles each let expr in a `CompilationScope` that only
+    //       registers the structure's own param names and earlier lets
+    //       (entity.rs:1107 / entity.rs:4107,4136).  Any identifier not in that
+    //       scope produces a compile error or an unresolved-ICE Undef expr — so a
+    //       well-compiled let expr can only carry `ValueRef(ValueCellId{entity ==
+    //       type_name, ...})` refs, all of which are present in `child`.
+    //
+    //   (b) The `sub`-path reference implementation (`elaborate_child_lets_only`,
+    //       reify-eval/src/unfold.rs:570-574) ALSO evaluates let exprs against a
+    //       child-scoped context (`eval_ctx_with_meta(&child_values, ...)`), not
+    //       the full module ValueMap.  Our behavior is therefore identical to the
+    //       sub baseline, guaranteeing sub-consistency by construction.
+    //
+    // If a future language feature adds module-level constants accessible inside
+    // structure-def lets (analogous to C++ `static constexpr`), the child scope
+    // would need to be layered over `ctx.values` for unresolved ids.  For now no
+    // such feature exists; the invariant is enforced by the compiler.
+    for (name, let_expr) in lets {
+        let value = eval_expr(let_expr, &ctx.with_scope(&child));
+        child.insert(ValueCellId::new(type_name, name.as_str()), value.clone());
+        fields.insert(name.clone(), value);
+    }
 }
 
 /// Evaluate `CompiledExprKind::IndexAccess`. Extracted from `eval_expr`'s
@@ -4715,6 +4800,17 @@ mod tests {
         ordered: Vec<(&str, CompiledExpr)>,
         defaults: Vec<(&str, CompiledExpr)>,
     ) -> CompiledExpr {
+        sct_with_lets(name, version, ordered, defaults, vec![])
+    }
+
+    /// Like `sct` but also accepts template `Let` cells for step-5 / step-6.
+    fn sct_with_lets(
+        name: &str,
+        version: u32,
+        ordered: Vec<(&str, CompiledExpr)>,
+        defaults: Vec<(&str, CompiledExpr)>,
+        lets: Vec<(&str, CompiledExpr)>,
+    ) -> CompiledExpr {
         CompiledExpr::structure_instance_ctor(
             reify_ir::StructureTypeId(0),
             name.to_string(),
@@ -4725,6 +4821,9 @@ mod tests {
                 .collect(),
             defaults
                 .into_iter()
+                .map(|(n, e)| (n.to_string(), e))
+                .collect(),
+            lets.into_iter()
                 .map(|(n, e)| (n.to_string(), e))
                 .collect(),
             Type::StructureRef(name.to_string()),
@@ -4845,6 +4944,199 @@ mod tests {
                 );
             }
             other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    // ── task-4342 step-5: StructureInstanceCtor let materialization (RED) ──────
+    //
+    // `eval_expr` on a `StructureInstanceCtor` carrying `lets` must eagerly
+    // materialize derived members into `fields`.  RED until step-6 implements
+    // `materialize_template_lets` (currently a stub that does nothing).
+
+    /// (a) single `let sum = a + b` over two Real params; (e) fields.len()
+    /// counts params + materialized lets.
+    ///
+    /// RED: stub does nothing — fields["sum"] is absent (None) and
+    /// fields.len() == 2 (params only), not 3.
+    #[test]
+    fn ctor_let_single_sum_materializes() {
+        // let sum = a + b
+        let sum_let = CompiledExpr::binop(
+            BinOp::Add,
+            vref("S", "a", Type::Real),
+            vref("S", "b", Type::Real),
+            Type::Real,
+        );
+        let expr = sct_with_lets(
+            "S",
+            1,
+            vec![
+                ("a", lit(Value::Real(3.0), Type::Real)),
+                ("b", lit(Value::Real(5.0), Type::Real)),
+            ],
+            vec![],
+            vec![("sum", sum_let)],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                let sum = data.fields.get(&"sum".to_string());
+                assert_eq!(
+                    sum,
+                    Some(&Value::Real(8.0)),
+                    "let sum = a + b must materialize to Real(8.0); got {:?}",
+                    sum
+                );
+                // (e) fields.len() must count params + materialized lets
+                assert_eq!(
+                    data.fields.len(),
+                    3,
+                    "fields must include both params and materialized lets (len 3); got {}",
+                    data.fields.len()
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    /// (b) a let referencing an EARLIER let resolves (declaration-order dependency).
+    ///
+    /// RED: stub; neither derived let is materialized → fields["double"] and
+    /// fields["quad"] are absent.
+    #[test]
+    fn ctor_let_chain_declaration_order() {
+        // param a = 2.0
+        // let double = a + a      → 4.0
+        // let quad   = double + double → 8.0
+        let double_let = CompiledExpr::binop(
+            BinOp::Add,
+            vref("S", "a", Type::Real),
+            vref("S", "a", Type::Real),
+            Type::Real,
+        );
+        let quad_let = CompiledExpr::binop(
+            BinOp::Add,
+            vref("S", "double", Type::Real),
+            vref("S", "double", Type::Real),
+            Type::Real,
+        );
+        let expr = sct_with_lets(
+            "S",
+            1,
+            vec![("a", lit(Value::Real(2.0), Type::Real))],
+            vec![],
+            vec![("double", double_let), ("quad", quad_let)],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.fields.get(&"double".to_string()),
+                    Some(&Value::Real(4.0)),
+                    "let double = a + a must be Real(4.0)"
+                );
+                assert_eq!(
+                    data.fields.get(&"quad".to_string()),
+                    Some(&Value::Real(8.0)),
+                    "let quad = double + double must be Real(8.0) (reads earlier let)"
+                );
+                assert_eq!(data.fields.len(), 3, "1 param + 2 lets = 3 fields total");
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    /// (c) a let reading a NESTED struct member resolves — nesting composition.
+    ///
+    /// Inner ctor S_inner { param x = 3.0; let derived = x + x } → derived = 6.0.
+    /// Outer ctor reads inner_s.derived via IndexAccess.
+    ///
+    /// RED: inner lets not materialized → inner.derived absent → outer let reads Undef.
+    #[test]
+    fn ctor_let_reads_nested_struct_member() {
+        // inner struct
+        let inner_derived_let = CompiledExpr::binop(
+            BinOp::Add,
+            vref("S_inner", "x", Type::Real),
+            vref("S_inner", "x", Type::Real),
+            Type::Real,
+        );
+        let inner_ctor = sct_with_lets(
+            "S_inner",
+            1,
+            vec![("x", lit(Value::Real(3.0), Type::Real))],
+            vec![],
+            vec![("derived", inner_derived_let)],
+        );
+
+        // outer struct: let outer_d = inner_s.derived
+        let inner_s_ref = vref("S_outer", "inner_s", Type::StructureRef("S_inner".to_string()));
+        let derived_key = CompiledExpr::literal(
+            Value::String("derived".to_string()),
+            Type::String,
+        );
+        let outer_let = CompiledExpr::index_access(inner_s_ref, derived_key, Type::Real);
+        let expr = sct_with_lets(
+            "S_outer",
+            1,
+            vec![("inner_s", inner_ctor)],
+            vec![],
+            vec![("outer_d", outer_let)],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.fields.get(&"outer_d".to_string()),
+                    Some(&Value::Real(6.0)),
+                    "let outer_d = inner_s.derived must be Real(6.0) (inner derived = x+x = 6.0); \
+                     got {:?}",
+                    data.fields.get(&"outer_d".to_string())
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    /// (d) an Undef param yields an Undef derived member kept IN ITS SLOT —
+    /// no short-circuit of the whole structure.
+    ///
+    /// RED: stub; the let slot is absent entirely (not Undef-in-slot).
+    #[test]
+    fn ctor_let_undef_param_yields_undef_in_slot() {
+        // param a = Undef (unbound vref), param b = 5.0
+        // let sum = a + b → Undef (Undef propagation)
+        let sum_let = CompiledExpr::binop(
+            BinOp::Add,
+            vref("S", "a", Type::Real),
+            vref("S", "b", Type::Real),
+            Type::Real,
+        );
+        let expr = sct_with_lets(
+            "S",
+            1,
+            vec![
+                ("a", vref("nowhere", "missing", Type::Real)), // unbound → Undef
+                ("b", lit(Value::Real(5.0), Type::Real)),
+            ],
+            vec![],
+            vec![("sum", sum_let)],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                // The whole struct must still be constructed (no Undef short-circuit).
+                assert!(
+                    data.fields.contains_key(&"sum".to_string()),
+                    "let sum slot must exist even when derived value is Undef (no short-circuit)"
+                );
+                assert_eq!(
+                    data.fields.get(&"sum".to_string()),
+                    Some(&Value::Undef),
+                    "let sum = a + b must be Undef when a is Undef"
+                );
+            }
+            other => panic!("expected StructureInstance (not Undef short-circuit), got {:?}", other),
         }
     }
 
