@@ -162,11 +162,12 @@ structure S {
 ///
 /// Setup:
 ///   - User defines `symmetric_tolerance(x: Length) -> Length` (1-arg, returns x).
-///   - Prelude defines `symmetric_tolerance(nominal, deviation)` (2-arg, returns sum).
+///   - Prelude defines `symmetric_tolerance(nominal, deviation)` (2-arg, returns
+///     DimensionalTolerance; `.upper_limit` == nominal+deviation).
 ///
 /// Expected:
 ///   - `symmetric_tolerance(5mm)` → user impl → 5mm = 0.005 m
-///   - `symmetric_tolerance(5mm, 2mm)` → prelude impl → 7mm = 0.007 m
+///   - `symmetric_tolerance(5mm, 2mm).upper_limit` → prelude impl → upper_limit = 7mm = 0.007 m
 ///
 /// If the arity-mismatch were incorrectly treated as shadowing, the prelude's
 /// 2-arg form would be inaccessible and `b` would fail to resolve.
@@ -227,7 +228,8 @@ structure S {
         a
     );
 
-    // b = symmetric_tolerance(5mm, 2mm) → prelude impl (2-arg, returns sum) → 7mm = 0.007 m
+    // b = symmetric_tolerance(5mm, 2mm).upper_limit → prelude impl (2-arg, returns DimensionalTolerance;
+    //   .upper_limit == nominal+deviation = 5mm+2mm = 7mm = 0.007 m)
     let cell_b = ValueCellId::new("S", "b");
     let b = result
         .values
@@ -267,9 +269,11 @@ structure S {
 /// Without the fix at 1455, the post-solver `evaluate_let_bindings` uses
 /// `&module.functions` (empty) so `symmetric_tolerance(x, 1mm)` → Undef.
 ///
-/// Expected relationships (prelude `symmetric_tolerance(a, b) = a + b`):
+/// Expected relationships (prelude `symmetric_tolerance(a, b)` returns DimensionalTolerance;
+/// `.upper_limit = a + b`):
 ///   - `x` is finite and satisfies `x < 20mm` (solver produced a feasible point)
-///   - `y == x + 0.001` exactly (prelude was reachable in post-solver re-eval)
+///   - `y = symmetric_tolerance(x, 1mm).upper_limit = x + 0.001` exactly (prelude was
+///     reachable in post-solver re-eval)
 ///
 /// The exact value of `x` is not asserted — it depends on DimensionalSolver's
 /// feasibility-shortcut policy and pinning it would couple this test to solver
@@ -337,7 +341,8 @@ structure S {
         x
     );
 
-    // y = symmetric_tolerance(x, 1mm) = x + 0.001 (exact, by prelude definition).
+    // y = symmetric_tolerance(x, 1mm).upper_limit = x + 0.001 (exact, by prelude definition;
+    //   upper_limit = nominal + upper_deviation = x + 1mm).
     // This is the real regression guard: it proves the prelude function was reachable
     // from the post-solver let-binding re-evaluation, regardless of solver x choice.
     let cell_y = ValueCellId::new("S", "y");
@@ -357,7 +362,8 @@ structure S {
         });
     assert!(
         (y - (x + 0.001)).abs() < 1e-9,
-        "S.y: post-solver re-eval should give symmetric_tolerance(x, 1mm) = x + 0.001 = {}, got {}",
+        "S.y: post-solver re-eval should give symmetric_tolerance(x, 1mm).upper_limit \
+         = x + 0.001 = {}, got {}",
         x + 0.001,
         y
     );

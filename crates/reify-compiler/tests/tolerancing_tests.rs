@@ -1907,3 +1907,63 @@ structure def Probe {
     // minc = hole.lower(9.9mm) − shaft.upper(9.95mm) = −0.05mm = −5e-5 m (interference)
     assert_length_abs!("Probe", "minc", -5e-5_f64,   "Fit.min_clearance");
 }
+
+// ─── γ-amend: inverted tolerance band violates user-declared constraint ────────
+
+/// Guard: the DimensionalTolerance constraint `upper_deviation >= lower_deviation`
+/// fails when the band is inverted. After the γ reshape, this failure mode is
+/// reachable through the constructor functions:
+///
+///   - `limit_tolerance(9mm, 10mm)`: upper < lower →
+///       DT(nominal: 10mm, upper_deviation: −1mm, lower_deviation: 0mm)
+///       → tolerance_band = upper_deviation − lower_deviation = −1mm
+///
+///   - `symmetric_tolerance(10mm, −1mm)`: negative deviation →
+///       DT(nominal: 10mm, upper_deviation: −1mm, lower_deviation: 1mm)
+///       → tolerance_band = −1mm − 1mm = −2mm
+///
+/// Both cases are surfaced via an explicit user-module constraint
+/// `constraint band >= 0mm`. When tolerance_band < 0mm the constraint fires as
+/// Violated, pinning the behavior so a regression that silently drops the
+/// DimensionalTolerance constraint would be caught here.
+#[test]
+fn inverted_tolerance_band_violates_constraint() {
+    // limit_tolerance(9mm, 10mm): upper < lower → tolerance_band = −1mm < 0mm
+    let source_inv_limit = r#"
+structure def ProbeInvLimit {
+    let inv  = limit_tolerance(9mm, 10mm)
+    let band = inv.tolerance_band
+    constraint band >= 0mm
+}
+"#;
+    let result_limit = check_source_with_stdlib(source_inv_limit);
+    assert!(
+        result_limit
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Violated),
+        "limit_tolerance(9mm, 10mm) inverts the band (tolerance_band = −1mm < 0mm); \
+         user constraint 'band >= 0mm' must fire as Violated, got: {:?}",
+        result_limit.constraint_results
+    );
+
+    // symmetric_tolerance(10mm, −1mm): negative deviation → tolerance_band = −2mm < 0mm
+    // (deviation = −1mm → upper_deviation = −1mm; lower_deviation = −(−1mm) = 1mm)
+    let source_inv_sym = r#"
+structure def ProbeInvSym {
+    let inv  = symmetric_tolerance(10mm, 0mm - 1mm)
+    let band = inv.tolerance_band
+    constraint band >= 0mm
+}
+"#;
+    let result_sym = check_source_with_stdlib(source_inv_sym);
+    assert!(
+        result_sym
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Violated),
+        "symmetric_tolerance(10mm, −1mm) inverts the band (tolerance_band = −2mm < 0mm); \
+         user constraint 'band >= 0mm' must fire as Violated, got: {:?}",
+        result_sym.constraint_results
+    );
+}
