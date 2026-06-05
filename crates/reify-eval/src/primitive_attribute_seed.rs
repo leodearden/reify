@@ -9,10 +9,12 @@
 //!   This module covers the *seeding* phase — originating attributes for the
 //!   leaves of the feature tree (primitives), which have no parent.
 //!
-//! Scope of this task (#2574), extended by task #4156 (Cone):
-//! - `GeometryOp::Box` / `GeometryOp::Sphere` — every face seeded
-//!   `Role::Side`; every edge seeded `Role::NewEdge`. `local_index` is
-//!   the construction-order (TopExp) position within `(feature_id, role)`.
+//! Scope of this task (#2574), extended by task #4156 (Cone), task #4158 (Wedge):
+//! - `GeometryOp::Box` / `GeometryOp::Sphere` / `GeometryOp::Wedge` — every
+//!   face seeded `Role::Side`; every edge seeded `Role::NewEdge`. `local_index`
+//!   is the construction-order (TopExp) position within `(feature_id, role)`.
+//!   (Wedge uses the same generic path — its planar faces have no Cap/Side
+//!   distinction in the current selector vocabulary; task #4158 PRD δ step 7.)
 //! - `GeometryOp::Cylinder` / `GeometryOp::Cone` — faces classified into
 //!   `Cap(Top)`, `Cap(Bottom)`, or `Side` via `GeometryQuery::FaceNormal`'s
 //!   z-component; every edge seeded `Role::NewEdge`. A pointed cone
@@ -179,6 +181,7 @@ fn is_seedable_primitive(op: &GeometryOp) -> bool {
             | GeometryOp::Cylinder { .. }
             | GeometryOp::Sphere { .. }
             | GeometryOp::Cone { .. }
+            | GeometryOp::Wedge { .. }
     )
 }
 
@@ -240,6 +243,17 @@ pub fn seed_primitive_attributes(
             // face gets Role::Side with construction-order local_index — but
             // no analytic vertices per PRD §2 Q-MM2-1, so vertex_handles
             // is intentionally ignored.
+            record_all_faces_as_side(table, face_handles, feature_id);
+            record_all_edges_as_new_edge(table, edge_handles, feature_id);
+            Ok(())
+        }
+        GeometryOp::Wedge { .. } => {
+            // Wedge uses the same generic seeding path as Box/Sphere: every
+            // face gets Role::Side and every edge Role::NewEdge with
+            // construction-order local_index. A wedge's planar faces have no
+            // Cap/Side distinction in the current selector vocabulary (PRD δ
+            // step 7). No vertex seeding — vertex_handles is intentionally
+            // ignored (non-Box ops carry no analytic vertex attributes).
             record_all_faces_as_side(table, face_handles, feature_id);
             record_all_edges_as_new_edge(table, edge_handles, feature_id);
             Ok(())
