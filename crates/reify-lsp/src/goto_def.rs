@@ -1082,4 +1082,77 @@ mod tests {
             .expect("goto-def for y should fall back to B");
         assert_eq!(loc.range.start.line, 5, "should find y in B via fallback");
     }
+
+    // --- step-09: injectable parsed cores over a shared ParsedModule ---
+
+    /// `compute_goto_definition_with_parsed`, fed a `ParsedModule` built once by
+    /// the caller, must return the same `Location` as the
+    /// `compute_goto_definition` wrapper (which parses internally) for an
+    /// in-document member reference — proving the cache-fed core is
+    /// output-equivalent to the per-request path.
+    #[test]
+    fn compute_goto_definition_with_parsed_matches_wrapper() {
+        let source = reify_test_support::bracket_source();
+        let uri = test_uri();
+        // 'thickness' in 'constraint thickness > 2mm' (line 9) → param on line 3.
+        let position = Position::new(9, 15);
+
+        let parsed = reify_compiler::parse_with_stdlib(
+            source,
+            reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri)),
+        );
+
+        let via_parsed = compute_goto_definition_with_parsed(&parsed, source, &uri, position);
+        let via_wrapper = compute_goto_definition(source, &uri, position);
+
+        assert!(
+            via_parsed.is_some(),
+            "with-parsed goto-def should resolve the thickness reference"
+        );
+        assert_eq!(
+            via_parsed, via_wrapper,
+            "with-parsed goto-def must match the wrapper output"
+        );
+    }
+
+    /// `compute_goto_definition_cross_file_with_parsed`, fed a `ParsedModule`
+    /// built once by the caller plus an import resolver, must return the same
+    /// `Location` as the `compute_goto_definition_cross_file` wrapper (which
+    /// parses internally) for an imported-entity reference.
+    #[test]
+    fn compute_goto_definition_cross_file_with_parsed_matches_wrapper() {
+        let source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole\n}";
+        let target_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let uri = test_uri();
+        let target_uri = parts_uri();
+
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "parts".to_string(),
+            (target_uri.clone(), target_source.to_string()),
+        );
+        let resolver = mock_resolver(map);
+
+        // Cursor on 'Hole' in 'sub hole = Hole' (line 2, col 16).
+        let position = Position::new(2, 16);
+
+        let parsed = reify_compiler::parse_with_stdlib(
+            source,
+            reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri)),
+        );
+
+        let via_parsed = compute_goto_definition_cross_file_with_parsed(
+            &parsed, source, &uri, position, &resolver,
+        );
+        let via_wrapper = compute_goto_definition_cross_file(source, &uri, position, &resolver);
+
+        assert!(
+            via_parsed.is_some(),
+            "cross-file with-parsed goto-def should resolve the imported Hole"
+        );
+        assert_eq!(
+            via_parsed, via_wrapper,
+            "cross-file with-parsed goto-def must match the wrapper output"
+        );
+    }
 }
