@@ -377,12 +377,32 @@ pub(crate) enum CompileFailureKind {
 ///
 /// `Clone` is required because `build_gui_state`'s early-return branch clones `diags`
 /// into the returned `GuiState`.
+///
+/// # One-snapshot invariant
+///
+/// `source` and `diags` are always from the SAME compile attempt: `diags` carry
+/// line/col positions computed against `source`, so indexing `source` by a
+/// diagnostic's `line`/`col` always yields the offending text.  `build_gui_state`
+/// surfaces `source` as `files[].content` whenever it reports `diags`, ensuring
+/// the MCP `engine_state` snapshot is internally consistent.
 #[derive(Debug, Clone)]
 pub(crate) struct CompileFailure {
     /// Structured diagnostics from the failed attempt.
     pub(crate) diags: Vec<DiagnosticInfo>,
     /// Which execution path produced this failure.
     pub(crate) kind: CompileFailureKind,
+    /// The exact source text the failing compile was run against.
+    ///
+    /// `build_gui_state` surfaces this as `files[].content` (overriding the
+    /// last-good `source_map` entry) so `compile_diagnostics` line/col positions
+    /// index into the correct buffer.  Set to the full entry-file text passed to
+    /// `compile_single_file_with_stdlib` or `compile_entry_with_imports`.
+    pub(crate) source: String,
+    /// Module key (e.g. `"bracket.ri"`) derived via `module_key(module_name)`.
+    ///
+    /// Identifies which `source_map` entry `build_gui_state`'s LiveEdit branch
+    /// should override with `source`.
+    pub(crate) file_key: String,
 }
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -1572,7 +1592,7 @@ impl EngineSession {
     ) -> Result<GuiState, String> {
         let (parsed, compiled) =
             compile_single_file_with_stdlib(source, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags);
+                self.record_compile_failure(diags, source, module_name);
                 msg
             })?;
 
@@ -1679,7 +1699,7 @@ impl EngineSession {
 
         let (compiled, parsed) =
             compile_entry_with_imports(path, &source, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags);
+                self.record_compile_failure(diags, &source, module_name);
                 msg
             })?;
         // check_with_solve_slot fires the SolveCancellationSink lifecycle (task γ/4086).
@@ -1746,7 +1766,7 @@ impl EngineSession {
             // self.file_path.  See task 3318 (item 3), task 3228, and task 3370.
             let (compiled, parsed) = compile_entry_with_imports(&entry_path, content, module_name)
                 .map_err(|(msg, diags)| {
-                    self.record_compile_failure(diags);
+                    self.record_compile_failure(diags, content, module_name);
                     msg
                 })?;
             (parsed, compiled)
@@ -1754,7 +1774,7 @@ impl EngineSession {
             // Single-file flow — no prior load_file means no project_root anchor;
             // delegate to compile_single_file_with_stdlib (shared with load_from_source).
             compile_single_file_with_stdlib(content, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags);
+                self.record_compile_failure(diags, content, module_name);
                 msg
             })?
         };
@@ -1794,13 +1814,28 @@ impl EngineSession {
     ///
     /// `Option<CompileFailure>` makes the at-most-one-non-empty invariant a type-level
     /// guarantee — no `debug_assert!` guards are needed.
-    fn record_compile_failure(&mut self, diags: Vec<DiagnosticInfo>) {
+    ///
+    /// `source` is the full entry-file text that was compiled (the same buffer used
+    /// to compute `diags` line/col positions).  `module_name` is the bare module name
+    /// (without `.ri`); `module_key(module_name)` is stored as `file_key` so
+    /// `build_gui_state`'s LiveEdit branch can locate the right `source_map` entry.
+    fn record_compile_failure(
+        &mut self,
+        diags: Vec<DiagnosticInfo>,
+        source: &str,
+        module_name: &str,
+    ) {
         let kind = if self.core.compiled().is_none() {
             CompileFailureKind::ColdStart
         } else {
             CompileFailureKind::LiveEdit
         };
-        self.compile_failure = Some(CompileFailure { diags, kind });
+        self.compile_failure = Some(CompileFailure {
+            diags,
+            kind,
+            source: source.to_owned(),
+            file_key: module_key(module_name),
+        });
     }
 
     /// Record a hot-reload failure message as the authoritative staleness signal.
@@ -2021,6 +2056,25 @@ impl EngineSession {
     }
 
     /// Build the full GUI state from the current engine state.
+    ///
+    /// # One-snapshot invariant (task 4258)
+    ///
+    /// `files[].content` and `compile_diagnostics` are from the **same** source
+    /// snapshot, with one precision: **Error** diagnostics from the failing compile
+    /// have line/col positions guaranteed to index into the overridden
+    /// `files[].content`; **Warning/Info** diagnostics carried over from the
+    /// last-good compile retain their last-good positions and may be off if the
+    /// edit shifted lines.
+    ///
+    /// **`get_source_location` spans** are resolved against the last-good compiled
+    /// source (`source_map`).  They must NOT be applied as indices into
+    /// `files[].content` when the session is stale (failed-edit) — the two buffers
+    /// differ.  Use `get_source_location` spans only when `compile_failure` is
+    /// `None` (i.e. `stale == false` at the MCP layer).
+    ///
+    /// `meshes` and `values` intentionally remain last-good on failure so the
+    /// viewport stays populated.  See `commands::engine_state_json` for the full
+    /// contract as exposed by the MCP `engine_state` tool.
     pub fn build_gui_state(&mut self) -> Result<GuiState, String> {
         // When `compiled` is `None` (the session has never completed a successful
         // parse+compile+check cycle), surface the most recent failure diagnostics
@@ -2089,11 +2143,24 @@ impl EngineSession {
                     code: Some("hot-reload-error".to_owned()),
                 });
             }
+            // One-snapshot invariant (task 4258): surface the failing buffer as
+            // files[0] so compile_diagnostics (which carry line/col computed
+            // against that buffer) can be indexed.  The check()-panic path has no
+            // structured CompileFailure, so files stays empty there — the synthetic
+            // `last_reload_error` diagnostic has line=1 / col=1 and needs no
+            // buffer to index into.
+            let files_early = match &self.compile_failure {
+                Some(f) => vec![FileData {
+                    path: f.file_key.clone(),
+                    content: f.source.clone(),
+                }],
+                None => Vec::new(),
+            };
             return Ok(GuiState {
                 meshes: Vec::new(),
                 values: Vec::new(),
                 constraints: Vec::new(),
-                files: Vec::new(),
+                files: files_early,
                 tessellation_diagnostics: Vec::new(),
                 compile_diagnostics: compile_diagnostics_early,
                 tensegrity_wires: Vec::new(),
@@ -2202,8 +2269,8 @@ impl EngineSession {
             None => (Vec::new(), Vec::new()),
         };
 
-        // Build files
-        let files: Vec<FileData> = self
+        // Build files from the last-good source_map.
+        let mut files: Vec<FileData> = self
             .core
             .source_map()
             .iter()
@@ -2212,6 +2279,30 @@ impl EngineSession {
                 content: content.clone(),
             })
             .collect();
+
+        // One-snapshot invariant (task 4258): when a LiveEdit failure is stored,
+        // override the matching files entry's content with the failing buffer so
+        // `files[].content` and `compile_diagnostics` are computed from the same
+        // source snapshot.  meshes/values/get_source_location intentionally stay
+        // last-good (they describe the last successfully compiled module) — only
+        // the SOURCE text is retargeted to the failing buffer.
+        //
+        // The `else` branch handles the unlikely edge case where the failing file
+        // was not present in source_map (e.g. a brand-new file on first load
+        // without a prior success for that key) — push a new entry so diagnostics
+        // can always be indexed against a source.
+        if let Some(f) = &self.compile_failure
+            && f.kind == CompileFailureKind::LiveEdit
+        {
+            if let Some(entry) = files.iter_mut().find(|fd| fd.path == f.file_key) {
+                entry.content = f.source.clone();
+            } else {
+                files.push(FileData {
+                    path: f.file_key.clone(),
+                    content: f.source.clone(),
+                });
+            }
+        }
 
         // Collect compile diagnostics (errors, warnings, info) from the most
         // recently compiled module. Called after tessellate_snapshot so the

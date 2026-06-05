@@ -1647,19 +1647,25 @@ fn get_source_location_correct_after_failed_update() {
         "file should be unchanged after failed update"
     );
 
-    // (5) build_gui_state should still return Ok with original valid state
+    // (5) build_gui_state should still return Ok.
+    //     values/get_source_location use the LAST-GOOD compiled module (unchanged).
+    //     files[0].content tracks the FAILING buffer (task 4258 one-snapshot invariant).
     let state = session
         .build_gui_state()
         .expect("build_gui_state should work after failed update");
     assert!(
         state.values.len() >= 5,
-        "should still have original values after failed update, got {}",
+        "should still have original values after failed update (last-good retained), got {}",
         state.values.len()
     );
     assert_eq!(state.files.len(), 1);
+    // After task 4258 fix: files[0].content must reflect the FAILING buffer so
+    // compile_diagnostics line/col (computed against the failing buffer) can be
+    // correctly indexed.  get_source_location still resolves against the last-good
+    // compiled module — the split is intentional and tested separately.
     assert!(
-        state.files[0].content.contains("structure Bracket"),
-        "files should still contain original valid source, got: {}",
+        state.files[0].content.contains("this is not valid"),
+        "files[0].content must contain the failing buffer after task 4258 fix, got: {}",
         &state.files[0].content[..50.min(state.files[0].content.len())]
     );
 }
@@ -6579,21 +6585,24 @@ fn load_file_with_std_import_does_not_double_seed_stdlib() {
 
 /// After a failed `update_source` (parse error on a fresh session with no
 /// `file_path` set), `build_gui_state` must surface the failure in
-/// `compile_diagnostics`.
+/// `compile_diagnostics` AND surface the failing buffer in `files[0]` so
+/// diagnostics line/col can be indexed against the actual text (task 4258).
 ///
 /// Pins step-3/step-4 of the task-3351 plan: `update_source`'s single-file
 /// branch (when `self.file_path` is `None`) must populate
 /// `compile_failure` on failure, just like `load_from_source`.
+/// Updated for task 4258: `files` is now non-empty (failing source is surfaced).
 #[test]
 fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_session() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
+    let bad_source = "this is not valid {{{}}}";
     // Fresh session — no load_file or load_from_source, so self.file_path is None.
     // update_source takes the single-file branch (compile_single_file_with_stdlib).
     let err = session
-        .update_source("foo.ri", "this is not valid {{{}}}")
+        .update_source("foo.ri", bad_source)
         .expect_err("invalid source should return Err");
     assert!(
         err.contains("Parse errors"),
@@ -6616,11 +6625,24 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
         first.severity
     );
 
-    // Remaining fields should still be empty.
+    // task 4258: files must carry the failing buffer (one-snapshot invariant).
+    assert!(
+        !state.files.is_empty(),
+        "files must be non-empty after a cold-start failure — failing source must be surfaced"
+    );
+    assert_eq!(
+        state.files[0].path, "foo.ri",
+        "files[0].path must equal the module key derived from 'foo.ri'"
+    );
+    assert_eq!(
+        state.files[0].content, bad_source,
+        "files[0].content must equal the exact failing buffer"
+    );
+
+    // These fields remain empty (no successful compile yet).
     assert!(state.meshes.is_empty(), "meshes should be empty");
     assert!(state.values.is_empty(), "values should be empty");
     assert!(state.constraints.is_empty(), "constraints should be empty");
-    assert!(state.files.is_empty(), "files should be empty");
     assert!(
         state.tessellation_diagnostics.is_empty(),
         "tessellation_diagnostics should be empty"
@@ -6628,21 +6650,24 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
 }
 
 /// After a failed `load_from_source` (parse error on a fresh session),
-/// `build_gui_state` must surface the failure in `compile_diagnostics` rather
-/// than returning a silent empty viewport.
+/// `build_gui_state` must surface the failure in `compile_diagnostics` AND
+/// surface the failing buffer in `files[0]` so diagnostics line/col can be
+/// indexed against the actual text (task 4258).
 ///
 /// Pins step-1 of the task-3351 plan: the early-return branch of
 /// `build_gui_state` (when `compiled` is `None`) must emit the stored
 /// `compile_failure.diags` rather than `Vec::new()`.
+/// Updated for task 4258: `files` is now non-empty (failing source is surfaced).
 #[test]
 fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
+    let bad_source = "this is not valid reify syntax {{{}}}";
     // A parse-error source — `{{{` is invalid reify syntax so `parsed.errors` is non-empty.
     let err = session
-        .load_from_source("this is not valid reify syntax {{{}}}", "bad")
+        .load_from_source(bad_source, "bad")
         .expect_err("invalid source should return Err");
     assert!(
         err.contains("Parse errors"),
@@ -6672,11 +6697,24 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_from_source() {
         first.file_path
     );
 
-    // The rest of the GuiState should remain empty (early-return semantics preserved).
+    // task 4258: files must carry the failing buffer (one-snapshot invariant).
+    assert!(
+        !state.files.is_empty(),
+        "files must be non-empty after a cold-start failure — failing source must be surfaced"
+    );
+    assert_eq!(
+        state.files[0].path, "bad.ri",
+        "files[0].path must equal the module key derived from module_name 'bad'"
+    );
+    assert_eq!(
+        state.files[0].content, bad_source,
+        "files[0].content must equal the exact failing buffer"
+    );
+
+    // These fields remain empty (no successful compile yet).
     assert!(state.meshes.is_empty(), "meshes should be empty");
     assert!(state.values.is_empty(), "values should be empty");
     assert!(state.constraints.is_empty(), "constraints should be empty");
-    assert!(state.files.is_empty(), "files should be empty");
     assert!(
         state.tessellation_diagnostics.is_empty(),
         "tessellation_diagnostics should be empty"
@@ -6707,7 +6745,7 @@ fn commit_state_clears_cold_start_compile_failure_on_successful_load() {
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::ColdStart, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::ColdStart, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(ColdStart) with non-empty diags after a failed load"
     );
@@ -6750,7 +6788,7 @@ fn commit_state_clears_live_edit_compile_failure_on_successful_recovery() {
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after a failed live edit"
     );
@@ -6850,17 +6888,21 @@ fn build_gui_state_returns_empty_tessellation_diagnostics_when_no_module_loaded(
 }
 
 /// After a failed `load_file` (parse error in the file-on-disk), `build_gui_state`
-/// must surface the failure in `compile_diagnostics`.
+/// must surface the failure in `compile_diagnostics` AND surface the failing buffer
+/// in `files[0]` so diagnostics line/col can be indexed against the actual text
+/// (task 4258).
 ///
 /// Pins step-5/step-6 of the task-3351 plan: `load_file` routes through
 /// `compile_entry_with_imports`, which must also populate
 /// `compile_failure` on failure once refactored in step-6.
+/// Updated for task 4258: `files` is now non-empty (failing source is surfaced).
 #[test]
 fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
     let dir = tempfile::tempdir().expect("tempdir should be created");
     // Write an invalid .ri file — `{{{` is unparseable syntax.
     let file_path = dir.path().join("main.ri");
-    std::fs::write(&file_path, "structure {{{}}}}\n").expect("write should succeed");
+    let bad_source = "structure {{{}}}}\n";
+    std::fs::write(&file_path, bad_source).expect("write should succeed");
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -6890,11 +6932,24 @@ fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
         first.severity
     );
 
-    // Remaining fields should still be empty.
+    // task 4258: files must carry the failing buffer (one-snapshot invariant).
+    assert!(
+        !state.files.is_empty(),
+        "files must be non-empty after a cold-start failure — failing source must be surfaced"
+    );
+    assert_eq!(
+        state.files[0].path, "main.ri",
+        "files[0].path must equal the module key derived from file stem 'main'"
+    );
+    assert_eq!(
+        state.files[0].content, bad_source,
+        "files[0].content must equal the exact failing buffer"
+    );
+
+    // These fields remain empty (no successful compile yet).
     assert!(state.meshes.is_empty(), "meshes should be empty");
     assert!(state.values.is_empty(), "values should be empty");
     assert!(state.constraints.is_empty(), "constraints should be empty");
-    assert!(state.files.is_empty(), "files should be empty");
     assert!(
         state.tessellation_diagnostics.is_empty(),
         "tessellation_diagnostics should be empty"
@@ -6941,7 +6996,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_from_source_w
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after a failed load_from_source with prior compile"
     );
@@ -7004,7 +7059,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_sing
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after a failed update_source (single-file)"
     );
@@ -7072,7 +7127,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_mult
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after a failed update_source (multi-file)"
     );
@@ -7138,7 +7193,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_file_with_pri
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after a failed load_file with prior compile"
     );
@@ -7202,7 +7257,7 @@ fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_orde
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after failed live edit"
     );
@@ -11281,5 +11336,501 @@ fn staleness_api_cleared_after_successful_reload() {
     assert!(
         !has_reload_error_diag,
         "no 'hot-reload-error' diagnostic must appear after a successful reload"
+    );
+}
+
+// ── Task 4258: content/diagnostics one-snapshot invariant ──────────────────────
+
+/// (step-1 RED) After a failed live edit, `build_gui_state` must surface the
+/// FAILING buffer as `files[].content` so it is consistent with the
+/// `compile_diagnostics` line/col (which are computed against that buffer).
+///
+/// Today this fails because `source_map` is never updated on a failed edit, so
+/// `files[0].content` contains the last-good source rather than the edited buffer.
+#[test]
+fn build_gui_state_live_edit_failure_content_matches_diagnostics() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // (1) Load valid bracket source successfully.
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+
+    // (2) Produce a failing live edit: replace `thickness` in the box() call with an
+    //     unresolved name `bogus_thk` — this triggers a compile-phase
+    //     UnresolvedName error with line/col pointing into the edited buffer.
+    let edited = bracket_source().replace("box(width, height, thickness)", "box(width, height, bogus_thk)");
+    let result = session.update_source("bracket.ri", &edited);
+    assert!(result.is_err(), "edited source with unresolved name must return Err");
+
+    // (3) compile_failure should record a LiveEdit failure (compiled was Some before).
+    let failure = session
+        .compile_failure_for_test()
+        .expect("compile_failure must be set after failed update_source");
+    assert_eq!(
+        failure.kind,
+        CompileFailureKind::LiveEdit,
+        "failure kind must be LiveEdit when a prior good compile existed"
+    );
+
+    // (4) build_gui_state must return Ok (failure is surfaced via compile_diagnostics,
+    //     not as an Err return).
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must return Ok even after a failed live edit");
+
+    // (5) files must contain exactly one entry whose content == the edited (failing)
+    //     buffer — NOT the last-good source.
+    assert_eq!(
+        state.files.len(),
+        1,
+        "files must have exactly one entry after a failed live edit"
+    );
+    assert!(
+        state.files[0].content.contains("bogus_thk"),
+        "files[0].content must contain the failing buffer text 'bogus_thk' (was last-good); \
+         got first 100 chars: {:?}",
+        &state.files[0].content.chars().take(100).collect::<String>()
+    );
+    assert_eq!(
+        state.files[0].content, edited,
+        "files[0].content must equal the exact failing buffer"
+    );
+
+    // (6) compile_diagnostics must carry an Error mentioning 'bogus_thk'.
+    let error_diags: Vec<&_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "compile_diagnostics must have at least one Error; got: {:?}",
+        state.compile_diagnostics
+    );
+    let bogus_diag = error_diags
+        .iter()
+        .find(|d| d.message.contains("bogus_thk"))
+        .expect("at least one Error diagnostic must reference 'bogus_thk'");
+
+    // (7) The diagnostic's line (1-based) must index into files[0].content at a
+    //     line containing 'bogus_thk' — proving content and diagnostics are one
+    //     consistent snapshot.
+    let diag_line = bogus_diag.line as usize;
+    assert!(diag_line >= 1, "diagnostic line must be >= 1 (1-based)");
+    let source_lines: Vec<&str> = state.files[0].content.lines().collect();
+    assert!(
+        diag_line <= source_lines.len(),
+        "diagnostic line {} must be within files[0].content ({} lines)",
+        diag_line,
+        source_lines.len()
+    );
+    assert!(
+        source_lines[diag_line - 1].contains("bogus_thk"),
+        "line {} of files[0].content must contain 'bogus_thk'; got: {:?}",
+        diag_line,
+        source_lines[diag_line - 1]
+    );
+
+    // (8) meshes must be non-empty — last-good viewport is preserved.
+    assert!(
+        !state.meshes.is_empty(),
+        "meshes must remain non-empty after a failed live edit (last-good retained)"
+    );
+}
+
+/// (step-3 RED) After a cold-start failure (no prior successful compile),
+/// `build_gui_state` must surface the failing buffer as `files[].content` so it
+/// is consistent with `compile_diagnostics`.
+///
+/// Today this fails because the ColdStart early-return branch returns
+/// `files: Vec::new()` — an agent sees diagnostics it cannot index into any source.
+#[test]
+fn build_gui_state_cold_start_failure_surfaces_failing_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    // Fresh session — no prior successful load, so compiled is None.
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // (1) Attempt a cold-start load with a failing source: replace `thickness` in the
+    //     box() call with an unresolved name `bogus_thk`.
+    let bad = bracket_source().replace("box(width, height, thickness)", "box(width, height, bogus_thk)");
+    let result = session.load_from_source(&bad, "bracket");
+    assert!(result.is_err(), "bad source must return Err from load_from_source");
+
+    // (2) compile_failure should record a ColdStart failure (compiled was None).
+    let failure = session
+        .compile_failure_for_test()
+        .expect("compile_failure must be set after failed load_from_source");
+    assert_eq!(
+        failure.kind,
+        CompileFailureKind::ColdStart,
+        "failure kind must be ColdStart when no prior good compile existed"
+    );
+
+    // (3) build_gui_state must return Ok.
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must return Ok even after a cold-start failure");
+
+    // (4) files must be NON-empty and carry the failing buffer — NOT empty.
+    assert!(
+        !state.files.is_empty(),
+        "files must be non-empty after a cold-start failure so diagnostics can be indexed \
+         (currently returns Vec::new())"
+    );
+    assert_eq!(
+        state.files[0].path, "bracket.ri",
+        "files[0].path must equal the module key 'bracket.ri'"
+    );
+    assert_eq!(
+        state.files[0].content, bad,
+        "files[0].content must equal the exact failing buffer"
+    );
+    assert!(
+        state.files[0].content.contains("bogus_thk"),
+        "files[0].content must contain the failing buffer text 'bogus_thk'"
+    );
+
+    // (5) compile_diagnostics must carry an Error referencing 'bogus_thk'.
+    let error_diags: Vec<&_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error")
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "compile_diagnostics must have at least one Error on cold-start failure; got: {:?}",
+        state.compile_diagnostics
+    );
+    let bogus_diag = error_diags
+        .iter()
+        .find(|d| d.message.contains("bogus_thk"))
+        .expect("at least one Error diagnostic must reference 'bogus_thk'");
+
+    // (6) The diagnostic's line must index into files[0].content at a line with 'bogus_thk'.
+    let diag_line = bogus_diag.line as usize;
+    assert!(diag_line >= 1, "diagnostic line must be >= 1 (1-based)");
+    let source_lines: Vec<&str> = state.files[0].content.lines().collect();
+    assert!(
+        diag_line <= source_lines.len(),
+        "diagnostic line {} must be within files[0].content ({} lines)",
+        diag_line,
+        source_lines.len()
+    );
+    assert!(
+        source_lines[diag_line - 1].contains("bogus_thk"),
+        "line {} of files[0].content must contain 'bogus_thk'; got: {:?}",
+        diag_line,
+        source_lines[diag_line - 1]
+    );
+
+    // (7) meshes must be empty — no last-good module on cold start.
+    assert!(
+        state.meshes.is_empty(),
+        "meshes must be empty after a cold-start failure (no last-good module)"
+    );
+}
+
+// ── Amendment tests (task 4258 reviewer suggestions) ─────────────────────────
+
+/// (amendment — suggestion 3, case 1) After `load_file` establishes a multi-file
+/// project (entry + imported helper), a failing `update_source` must override
+/// ONLY the entry file's `files[].content` with the failing buffer.
+///
+/// This exercises the LiveEdit override path via `compile_entry_with_imports`
+/// (the multi-file call site at engine.rs:1769) rather than the single-file
+/// path used by the other added tests.  It also confirms that the single-entry
+/// source_map stores only the entry key ("main.ri"), not the imported key
+/// ("helper.ri"), so `build_gui_state` produces exactly one `files` entry
+/// after the override — the entry file with the failing buffer.
+#[test]
+fn build_gui_state_live_edit_multi_file_entry_key_overridden() {
+    let (_dir, mut session, main_path, _main_content) = loaded_helper_session();
+
+    // Verify the session is in a good state — compiled Some, Helper.x present.
+    let good_state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed before failing edit");
+    assert!(
+        good_state.values.iter().any(|v| v.name == "x" && v.entity_path == "Helper"),
+        "pre-condition: Helper.x must be present before the failing edit"
+    );
+
+    // Trigger a failing live edit on the entry file.  The import line is kept
+    // so compile_entry_with_imports is taken (multi-file path), and the bogus
+    // reference produces a compile-phase UnresolvedName error.
+    let bad_main = "import helper\nstructure Top { sub h = Helper()\nlet broken = bogus_var }\n";
+    let result = session.update_source(main_path.to_str().unwrap(), bad_main);
+    assert!(result.is_err(), "update_source with bogus_var must return Err");
+
+    // compile_failure must be LiveEdit (compiled was Some before the failure).
+    let failure = session
+        .compile_failure_for_test()
+        .expect("compile_failure must be set after failed update_source");
+    assert_eq!(
+        failure.kind,
+        CompileFailureKind::LiveEdit,
+        "failure kind must be LiveEdit for a multi-file session with prior good compile"
+    );
+    // The file key must be the entry module key ("main.ri"), not a full path.
+    assert_eq!(
+        failure.file_key, "main.ri",
+        "compile_failure.file_key must equal module_key(\"main\") = \"main.ri\""
+    );
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must return Ok even after a failed live edit");
+
+    // source_map has exactly one entry ("main.ri"); build_gui_state overrides it
+    // with the failing buffer → files has exactly one entry.
+    assert_eq!(
+        state.files.len(),
+        1,
+        "files must have exactly one entry (entry module only) after a multi-file live-edit failure; \
+         got: {:?}",
+        state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        state.files[0].path, "main.ri",
+        "files[0].path must be 'main.ri' (the entry module key)"
+    );
+    assert_eq!(
+        state.files[0].content, bad_main,
+        "files[0].content must equal the exact failing buffer"
+    );
+    assert!(
+        state.files[0].content.contains("bogus_var"),
+        "files[0].content must contain 'bogus_var' (the unresolved reference)"
+    );
+
+    // compile_diagnostics must contain an Error referencing the bad identifier.
+    assert!(
+        state.compile_diagnostics.iter().any(|d| d.severity == "Error"),
+        "compile_diagnostics must have at least one Error; got: {:?}",
+        state.compile_diagnostics
+    );
+
+    // Note: meshes are empty here because the multi-file fixture (Top + Helper)
+    // contains no geometry bodies — the MockGeometryKernel has nothing to
+    // tessellate.  This is expected and correct; the key assertions are on
+    // files[].content and compile_diagnostics above.
+}
+
+/// (amendment — suggestion 3, case 2) Exercises the `else`-push branch in
+/// `build_gui_state`'s LiveEdit override block: when `compile_failure.file_key`
+/// is absent from `source_map`, a new `FileData` entry is pushed rather than an
+/// existing entry being replaced.
+///
+/// This happens when `update_source` is called with a path that maps to a
+/// DIFFERENT module name than the one stored in `source_map` (e.g. because the
+/// caller accidentally passes a different filename string on a session that was
+/// loaded via `load_from_source`, where `file_path` is `None` and the
+/// module_name is derived from the caller's `path` argument).
+#[test]
+fn build_gui_state_live_edit_else_push_branch_key_not_in_source_map() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Establish a good compile state keyed to "bracket.ri".
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load should succeed");
+
+    // Call update_source with a DIFFERENT module name ("different_module.ri").
+    // Since file_path is None (load_from_source doesn't set it), module_name is
+    // derived from the path argument → "different_module".
+    // compile_failure.file_key = module_key("different_module") = "different_module.ri"
+    // which is NOT in source_map (which only has "bracket.ri").
+    let bad = bracket_source().replace("box(width, height, thickness)", "box(width, height, bogus_dim)");
+    let result = session.update_source("different_module.ri", &bad);
+    assert!(result.is_err(), "update_source with bogus_dim must return Err");
+
+    // compile_failure must be LiveEdit with file_key "different_module.ri".
+    let failure = session
+        .compile_failure_for_test()
+        .expect("compile_failure must be set after failed update_source");
+    assert_eq!(failure.kind, CompileFailureKind::LiveEdit);
+    assert_eq!(
+        failure.file_key, "different_module.ri",
+        "compile_failure.file_key must be 'different_module.ri' (from the path arg)"
+    );
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must return Ok");
+
+    // The else-push branch fires: "different_module.ri" is not in source_map
+    // ("bracket.ri" is), so a new FileData is pushed.
+    // files must have TWO entries: "bracket.ri" (from source_map) + "different_module.ri" (pushed).
+    assert_eq!(
+        state.files.len(),
+        2,
+        "files must have two entries: one from source_map (bracket.ri) + one pushed (different_module.ri); \
+         got: {:?}",
+        state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+
+    // Find each entry by path (order not guaranteed).
+    let bracket_entry = state.files.iter().find(|f| f.path == "bracket.ri")
+        .expect("files must contain 'bracket.ri' (last-good source_map entry)");
+    let diff_entry = state.files.iter().find(|f| f.path == "different_module.ri")
+        .expect("files must contain 'different_module.ri' (else-push from compile_failure)");
+
+    // "bracket.ri" must retain the last-good (original) source.
+    assert!(
+        bracket_entry.content.contains("box(width, height, thickness)"),
+        "bracket.ri entry must retain last-good content (original box call); \
+         got: {:?}",
+        &bracket_entry.content.chars().take(100).collect::<String>()
+    );
+
+    // "different_module.ri" must carry the failing buffer.
+    assert_eq!(
+        diff_entry.content, bad,
+        "different_module.ri entry must equal the exact failing buffer"
+    );
+    assert!(
+        diff_entry.content.contains("bogus_dim"),
+        "different_module.ri entry must contain 'bogus_dim' (the unresolved reference)"
+    );
+}
+
+/// (amendment — suggestion 3, case 3 / suggestion 1 guard) When the SAME file
+/// is both the last-good source and the failing live-edit target, `build_gui_state`
+/// overrides `files[0].content` with the failing buffer.  The Error diagnostic
+/// from the failing compile correctly indexes into that buffer, but Warning/Info
+/// diagnostics carried over from the last-good compile retain their last-good
+/// positions (which may be off relative to the overridden content).
+///
+/// This test guards the content-override behaviour for the same-file scenario
+/// and documents the Warning positional limitation narrowed in the
+/// `engine_state_json` doc comment (commands.rs, task 4258 amendment).
+#[test]
+fn build_gui_state_live_edit_same_file_content_is_failing_buffer_warning_positions_are_last_good() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Load a source that produces a Warning at a known line.
+    // warn_source_with_unknown_port_type() is:
+    //   line 1: structure def S {
+    //   line 2:     port mount : NonExistentTrait {
+    //   line 3:         param d : Length = 5mm
+    //   line 4:     }
+    //   line 5: }
+    // The "unknown port type" Warning is on line 2.
+    session
+        .load_from_source(warn_source_with_unknown_port_type(), "warn")
+        .expect("warn source should compile (warning, not error)");
+
+    // Confirm a Warning was recorded for the last-good compile.
+    let good_state = session
+        .build_gui_state()
+        .expect("build_gui_state should return Ok for the good compile");
+    assert!(
+        good_state.compile_diagnostics.iter().any(|d| d.severity == "Warning"),
+        "pre-condition: compile_diagnostics must contain a Warning after loading warn source; \
+         got: {:?}",
+        good_state.compile_diagnostics
+    );
+
+    // Now trigger a failing live edit on the SAME file ("warn.ri").
+    // The bad source has only 1 line — much shorter than the 5-line warn source —
+    // so the Warning's line 2 position falls outside the new content.
+    let bad = "structure def S { let invalid = totally_bogus_ref }";
+    let result = session.update_source("warn.ri", bad);
+    assert!(result.is_err(), "update_source with totally_bogus_ref must return Err");
+
+    // compile_failure must be LiveEdit with file_key "warn.ri" (same file).
+    let failure = session
+        .compile_failure_for_test()
+        .expect("compile_failure must be set after failed update_source");
+    assert_eq!(failure.kind, CompileFailureKind::LiveEdit);
+    assert_eq!(
+        failure.file_key, "warn.ri",
+        "compile_failure.file_key must be 'warn.ri' (same file as last-good)"
+    );
+
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must return Ok even after a same-file live-edit failure");
+
+    // files[0].content must be the FAILING buffer, not the last-good warn source.
+    assert_eq!(
+        state.files.len(),
+        1,
+        "files must have exactly one entry (single-file session)"
+    );
+    assert_eq!(
+        state.files[0].content, bad,
+        "files[0].content must equal the failing buffer ('bad'), not the last-good warn source"
+    );
+    assert!(
+        !state.files[0].content.contains("NonExistentTrait"),
+        "files[0].content must NOT contain 'NonExistentTrait' (last-good source leaked)"
+    );
+
+    // Both Warning (from last-good) and Error (from live edit) must be present.
+    assert!(
+        state.compile_diagnostics.iter().any(|d| d.severity == "Warning"),
+        "compile_diagnostics must contain the prior Warning (carried over from last-good compile); \
+         got: {:?}",
+        state.compile_diagnostics
+    );
+    assert!(
+        state.compile_diagnostics.iter().any(|d| d.severity == "Error"),
+        "compile_diagnostics must contain the live-edit Error; got: {:?}",
+        state.compile_diagnostics
+    );
+
+    // The Error diagnostic's line must correctly index into files[0].content
+    // (the failing buffer) — this is the guaranteed-consistent part of the invariant.
+    let error_diag = state
+        .compile_diagnostics
+        .iter()
+        .find(|d| d.severity == "Error")
+        .unwrap();
+    let err_line = error_diag.line as usize;
+    let bad_lines: Vec<&str> = bad.lines().collect();
+    assert!(
+        err_line >= 1 && err_line <= bad_lines.len(),
+        "Error diag line {} must be within files[0].content ({} lines)",
+        err_line,
+        bad_lines.len()
+    );
+    assert!(
+        bad_lines[err_line - 1].contains("totally_bogus_ref"),
+        "line {} of files[0].content must contain 'totally_bogus_ref'; got: {:?}",
+        err_line,
+        bad_lines[err_line - 1]
+    );
+
+    // Document the Warning positional limitation: the Warning's line (2) was
+    // computed against the 5-line last-good source.  files[0].content is now the
+    // 1-line failing buffer, so the Warning's line is OUT OF RANGE for
+    // files[0].content.  This is the known gap narrowed in the
+    // engine_state_json doc: Warning/Info positions are last-good and may not
+    // index correctly into the (overridden) files[].content on a failed edit.
+    let warning_diag = state
+        .compile_diagnostics
+        .iter()
+        .find(|d| d.severity == "Warning")
+        .unwrap();
+    let warn_line = warning_diag.line as usize;
+    // The warn source is 5 lines; the bad source is 1 line.  The Warning's line
+    // (>= 1, from last-good positions) will be > 1 line beyond the failing buffer.
+    // We don't assert the exact line, but we document that it exceeds bad_lines.len().
+    assert!(
+        warn_line > bad_lines.len(),
+        "Warning line {} should exceed the 1-line failing buffer length ({}) — \
+         documenting that last-good Warning positions are stale relative to the \
+         overridden files[0].content (this is expected behavior per the amended invariant)",
+        warn_line,
+        bad_lines.len()
     );
 }
