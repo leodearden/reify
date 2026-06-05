@@ -27,6 +27,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
+import type { ViewStateStore } from '../stores/viewStateStore';
 
 type DebugRequestHandler = (event: {
   payload: { id: number; command: string; params: Record<string, unknown> };
@@ -65,6 +66,8 @@ function makeStores(): DebugStores {
       } as any,
       selectEntity: vi.fn(),
       hoverEntity: vi.fn(),
+      clearSelection: vi.fn(),
+      toggleSelect: vi.fn(),
     },
     claude: {
       state: {
@@ -73,7 +76,7 @@ function makeStores(): DebugStores {
         currentMessageId: null,
       },
     },
-    viewState: { resetToDefaultView: vi.fn() },
+    viewState: { resetToDefaultView: vi.fn() } as unknown as ViewStateStore,
     layout: {
       state: {
         editorWidth: 300,
