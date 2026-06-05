@@ -256,12 +256,12 @@ fn fn_signature_resolves_solid_builtin_alias() {
 /// that both phases share the ctx name sets without interference.
 #[test]
 fn phase_traits_consumes_shared_names_no_regression() {
-    // MyMat must implement all required MaterialSpec members (density: Real,
+    // MyMat must implement all required MaterialSpec members (density: Density,
     // name: String) to avoid conformance errors — those are orthogonal to the
     // type-resolution contract being pinned here.
     let source = r#"
         structure def MyMat : MaterialSpec {
-            param density : Real = 7800.0
+            param density : Density = 7800kg/m^3
             param name : String = "my-mat"
             param young_modulus : Real = 210000.0
         }
