@@ -29,7 +29,7 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
-use reify_eval::Engine;
+use reify_eval::{ConstraintCheckEntry, Engine};
 use reify_ir::{ExportFormat, Satisfaction};
 use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -196,4 +196,157 @@ fn std_process_dfm_scalar_constraints_satisfied_violated() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+// ── (b) OCCT-GATED: build-volume flip + severity bridge ──────────────────────
+
+/// Helper: find the first constraint entry in `results` matching `entity` +
+/// label starting with `label_prefix`.
+fn find_fvb_entry(
+    results: &[ConstraintCheckEntry],
+    entity: &str,
+    label_prefix: &str,
+) -> Option<ConstraintCheckEntry> {
+    results
+        .iter()
+        .find(|e| {
+            e.id.entity == entity
+                && e.label
+                    .as_deref()
+                    .map(|l| l.starts_with(label_prefix))
+                    .unwrap_or(false)
+        })
+        .cloned()
+}
+
+/// ALWAYS-ON presence guard + OCCT-GATED FitsBuildVolume flip and severity
+/// diagnostic assertions.
+///
+/// **(a) ALWAYS-ON presence guard** — asserts that the two `FitsBuildVolume`
+/// constraint entries (`FittingPart`, `OversizedPart`) appear in the no-kernel
+/// `check()` result as `Satisfaction::Indeterminate`. This makes the step RED
+/// until the build-volume section is authored in the example, regardless of
+/// whether OCCT is available on the CI host.
+///
+/// **(b) OCCT-GATED** — skips cleanly when OCCT is absent. When available,
+/// builds with a full `OcctKernelHandle` engine and asserts:
+///
+/// - `FittingPart`'s `FitsBuildVolume` → `Satisfaction::Satisfied`
+///   (100×100×150 mm part fits the 220×220×250 mm FDM build envelope).
+/// - `OversizedPart`'s `FitsBuildVolume` → `Satisfaction::Violated`
+///   (250 mm on X exceeds the 220 mm envelope).
+/// - `result.diagnostics` contains a `Severity::Warning` message with
+///   `"W_DFM_BUILD_VOLUME"` (default 2-arg `FitsBuildVolume` violation
+///   from `OversizedPart`).
+/// - `result.diagnostics` contains a `Severity::Error` message with
+///   `"E_DFM_BUILD_VOLUME"` (3-arg `DFMSeverity.Error` direct call
+///   in `DFMSeverityBridge`).
+/// - `result.diagnostics` contains a `Severity::Info` message with
+///   `"I_DFM_BUILD_VOLUME"` (3-arg `DFMSeverity.Info` direct call
+///   in `DFMSeverityBridge`).
+///
+/// RED: example has no build-volume parts / direct severity calls.
+/// GREEN: step-4 adds the geometry-backed build-volume surface.
+#[test]
+fn std_process_dfm_build_volume_flip_and_severity_diagnostics() {
+    let source = read_dfm_example();
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "compile check failed:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    // ── (a) ALWAYS-ON: FitsBuildVolume entries exist and are Indeterminate ────
+    let mut no_kernel_engine = make_simple_engine();
+    let no_kernel_result = no_kernel_engine.check(&compiled);
+
+    assert!(
+        find_fvb_entry(&no_kernel_result.constraint_results, "FittingPart", "FitsBuildVolume")
+            .is_some(),
+        "expected FittingPart FitsBuildVolume constraint entry in no-kernel result; \
+         check the build-volume section of examples/process/std_process_dfm.ri; got:\n{:#?}",
+        no_kernel_result.constraint_results
+    );
+    assert!(
+        find_fvb_entry(
+            &no_kernel_result.constraint_results,
+            "OversizedPart",
+            "FitsBuildVolume"
+        )
+        .is_some(),
+        "expected OversizedPart FitsBuildVolume constraint entry in no-kernel result; \
+         got:\n{:#?}",
+        no_kernel_result.constraint_results
+    );
+
+    // ── (b) OCCT-GATED: build-volume flip and severity diagnostics ────────────
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping OCCT-gated FitsBuildVolume assertions: OCCT not available");
+        return;
+    }
+
+    let checker = SimpleConstraintChecker;
+    let kernel: Box<dyn reify_ir::GeometryKernel> =
+        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
+    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // FittingPart: 100×100×150 mm fits the 220×220×250 mm FDM build envelope.
+    let fitting = find_fvb_entry(&result.constraint_results, "FittingPart", "FitsBuildVolume")
+        .unwrap_or_else(|| {
+            panic!(
+                "FittingPart FitsBuildVolume absent from build result; got:\n{:#?}",
+                result.constraint_results
+            )
+        });
+    assert_eq!(
+        fitting.satisfaction,
+        Satisfaction::Satisfied,
+        "FittingPart (100×100×150 mm) should fit the 220×220×250 mm envelope; got {:?}",
+        fitting.satisfaction
+    );
+
+    // OversizedPart: 250 mm on X exceeds the 220 mm envelope.
+    let oversized =
+        find_fvb_entry(&result.constraint_results, "OversizedPart", "FitsBuildVolume")
+            .unwrap_or_else(|| {
+                panic!(
+                    "OversizedPart FitsBuildVolume absent from build result; got:\n{:#?}",
+                    result.constraint_results
+                )
+            });
+    assert_eq!(
+        oversized.satisfaction,
+        Satisfaction::Violated,
+        "OversizedPart (250×100×100 mm) should exceed the 220 mm X-axis envelope; got {:?}",
+        oversized.satisfaction
+    );
+
+    // W_DFM_BUILD_VOLUME — from OversizedPart's 2-arg FitsBuildVolume (default Warning).
+    assert!(
+        result.diagnostics.iter().any(|d| d.severity == Severity::Warning
+            && d.message.contains("W_DFM_BUILD_VOLUME")),
+        "expected a Warning diagnostic containing 'W_DFM_BUILD_VOLUME' \
+         (from OversizedPart FitsBuildVolume); diagnostics:\n{:#?}",
+        result.diagnostics
+    );
+
+    // E_DFM_BUILD_VOLUME — from DFMSeverityBridge DFMSeverity.Error direct call.
+    assert!(
+        result.diagnostics.iter().any(|d| d.severity == Severity::Error
+            && d.message.contains("E_DFM_BUILD_VOLUME")),
+        "expected an Error diagnostic containing 'E_DFM_BUILD_VOLUME' \
+         (from DFMSeverityBridge DFMSeverity.Error); diagnostics:\n{:#?}",
+        result.diagnostics
+    );
+
+    // I_DFM_BUILD_VOLUME — from DFMSeverityBridge DFMSeverity.Info direct call.
+    assert!(
+        result.diagnostics.iter().any(|d| d.severity == Severity::Info
+            && d.message.contains("I_DFM_BUILD_VOLUME")),
+        "expected an Info diagnostic containing 'I_DFM_BUILD_VOLUME' \
+         (from DFMSeverityBridge DFMSeverity.Info); diagnostics:\n{:#?}",
+        result.diagnostics
+    );
 }
