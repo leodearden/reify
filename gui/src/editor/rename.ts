@@ -16,6 +16,7 @@
  */
 import type { EditorView } from '@codemirror/view';
 import type { PrepareRenameResult, Range, WorkspaceEdit } from './lspClient';
+import { lspRangeToCmRange } from './lspRange';
 
 /**
  * Apply an LSP WorkspaceEdit's edits for `uri` to the editor as one transaction.
@@ -39,14 +40,13 @@ export function applyWorkspaceEdit(
   if (!edits || edits.length === 0) return false;
 
   const doc = view.state.doc;
-  const changes = edits.map((e) => {
-    const startLine = doc.line(e.range.start.line + 1);
-    const endLine = doc.line(e.range.end.line + 1);
-    const from = Math.min(startLine.from + e.range.start.character, startLine.to);
-    const to = Math.min(endLine.from + e.range.end.character, endLine.to);
-    return { from, to, insert: e.newText };
+  const changes = edits.flatMap((e) => {
+    const r = lspRangeToCmRange(doc, e.range);
+    if (!r) return []; // out-of-range (version skew) — skip without throwing
+    return [{ from: r.from, to: r.to, insert: e.newText }];
   });
 
+  if (changes.length === 0) return false;
   view.dispatch({ changes, userEvent: 'rename' });
   return true;
 }

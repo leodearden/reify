@@ -16,6 +16,10 @@ import {
   type ViewUpdate,
 } from '@codemirror/view';
 import type { DocumentHighlight } from './lspClient';
+import { lspRangeToCmRange, type CmRange } from './lspRange';
+
+/** Re-export the shared CmRange type so existing importers don't change. */
+export type { CmRange } from './lspRange';
 
 /**
  * Occurrence-highlight debounce (ms). Distinct from the editor's 300ms
@@ -23,12 +27,6 @@ import type { DocumentHighlight } from './lspClient';
  * Question 3, ~150ms, matching useEditorSelectionSync's responsiveness tier).
  */
 export const HIGHLIGHT_DEBOUNCE_MS = 150;
-
-/** A CodeMirror offset range. */
-export interface CmRange {
-  from: number;
-  to: number;
-}
 
 /**
  * Map LSP DocumentHighlight ranges to CodeMirror {from,to} offsets.
@@ -54,17 +52,12 @@ export function highlightsToRanges(
 ): CmRange[] {
   const out: CmRange[] = [];
   for (const h of highlights) {
-    try {
-      const startLine = doc.line(h.range.start.line + 1);
-      const endLine = doc.line(h.range.end.line + 1);
-      const from = Math.min(startLine.from + h.range.start.character, startLine.to);
-      const to = Math.min(endLine.from + h.range.end.character, endLine.to);
-      // Drop degenerate / inverted ranges so the decoration set stays valid.
-      if (to > from) {
-        out.push({ from, to });
-      }
-    } catch {
-      // Out-of-range line (stale response vs. the current doc) — skip this mark.
+    const r = lspRangeToCmRange(doc, h.range);
+    // Guard: null means out-of-range line (stale response vs. the current doc).
+    // Degenerate-drop: the decoration RangeSet requires non-degenerate marks;
+    // zero-width ranges are dropped here (consumer-specific, not in the helper).
+    if (r && r.to > r.from) {
+      out.push(r);
     }
   }
   return out;

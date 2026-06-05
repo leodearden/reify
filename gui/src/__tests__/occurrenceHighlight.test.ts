@@ -18,7 +18,7 @@ const mockDoc = {
     if (n === 1) return { from: 0, to: 20 };
     if (n === 2) return { from: 21, to: 40 };
     if (n === 8) return { from: 100, to: 130 };
-    throw new Error(`line ${n} out of range`);
+    throw new RangeError(`line ${n} out of range`);
   },
 };
 
