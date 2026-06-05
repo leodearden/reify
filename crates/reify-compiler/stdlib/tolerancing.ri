@@ -191,15 +191,16 @@ structure def SurfaceFinish {
 // ── Fit ───────────────────────────────────────────────────────────────────────
 
 // Shaft-and-hole fit per ISO 286.
-// Clearances are derived: positive = clearance, negative = interference.
+// hole_tolerance and shaft_tolerance carry the full DimensionalTolerance band for
+// each feature.  Clearances are derived: positive = clearance, negative = interference.
+//   max_clearance = hole upper limit − shaft lower limit
+//   min_clearance = hole lower limit − shaft upper limit  (negative → interference fit)
 structure def Fit {
-    param hole_upper : Length
-    param hole_lower : Length
-    param shaft_upper : Length
-    param shaft_lower : Length
-    param fit_type : FitCategory
-    let max_clearance = hole_upper - shaft_lower
-    let min_clearance = hole_lower - shaft_upper
+    param hole_tolerance  : DimensionalTolerance
+    param shaft_tolerance : DimensionalTolerance
+    param fit_type        : FitCategory
+    let max_clearance = hole_tolerance.upper_limit - shaft_tolerance.lower_limit
+    let min_clearance = hole_tolerance.lower_limit - shaft_tolerance.upper_limit
 }
 
 // ── ISO Tolerance Grade ───────────────────────────────────────────────────────
@@ -229,15 +230,18 @@ pub constraint def Conforms {
 
 // ── Constructor Functions ─────────────────────────────────────────────────────
 
-// Creates a symmetric tolerance band around nominal.
-// Returns the upper limit (nominal + deviation).
-fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {
-    nominal + deviation
+// Creates a symmetric DimensionalTolerance centered at nominal with ±deviation.
+// upper_limit = nominal + deviation; lower_limit = nominal − deviation.
+fn symmetric_tolerance(nominal: Length, deviation: Length) -> DimensionalTolerance {
+    DimensionalTolerance(nominal: nominal, upper_deviation: deviation, lower_deviation: -deviation)
 }
 
-// Computes the tolerance band width from upper and lower limits.
-fn limit_tolerance(upper: Length, lower: Length) -> Length {
-    upper - lower
+// Creates a DimensionalTolerance from explicit upper and lower limits.
+// Nominal is set to lower; upper_deviation = upper − lower; lower_deviation = 0mm.
+// Consequently .upper_limit == upper and .lower_limit == lower, realising the [lower, upper] band.
+// The inherited constraint (upper_deviation >= lower_deviation) reduces to upper >= lower.
+fn limit_tolerance(upper: Length, lower: Length) -> DimensionalTolerance {
+    DimensionalTolerance(nominal: lower, upper_deviation: upper - lower, lower_deviation: 0mm)
 }
 
 // Asserts that a surface finish specification is non-trivial (value > 0mm).
