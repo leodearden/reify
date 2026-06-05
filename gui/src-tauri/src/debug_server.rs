@@ -1654,4 +1654,25 @@ mod tests {
             }
         }
     }
+
+    // ── parse_debug_port ────────────────────────────────────────────────────
+    #[test]
+    fn parse_debug_port_known_good_values() {
+        assert_eq!(parse_debug_port(Some("3939")), 3939u16);
+        assert_eq!(parse_debug_port(Some("4500")), 4500u16);
+        assert_eq!(parse_debug_port(Some("1")), 1u16);
+        assert_eq!(parse_debug_port(Some("65535")), 65535u16);
+    }
+
+    #[test]
+    fn parse_debug_port_fallback_to_default() {
+        assert_eq!(parse_debug_port(None), 3939u16);
+        assert_eq!(parse_debug_port(Some("")), 3939u16);
+        assert_eq!(parse_debug_port(Some("abc")), 3939u16);
+        assert_eq!(parse_debug_port(Some("0")), 3939u16);
+        // 70000 is out of u16 range (> 65535) — must fall back
+        assert_eq!(parse_debug_port(Some("70000")), 3939u16);
+        // leading/trailing whitespace is NOT stripped — falls back
+        assert_eq!(parse_debug_port(Some(" 4500 ")), 3939u16);
+    }
 }
