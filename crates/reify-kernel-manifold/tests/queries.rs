@@ -628,9 +628,9 @@ fn query_sub_face_surface_area_and_normal_unit_cube() {
         };
         assert_unit_axis_aligned(n, &format!("FaceNormal(face[{i}])"));
         // Record which (axis, sign) this normal corresponds to.
-        for axis in 0..3 {
-            if (n[axis].abs() - 1.0).abs() < 1e-6 {
-                let sign = if n[axis] > 0.0 { 1i8 } else { -1i8 };
+        for (axis, &component) in n.iter().enumerate() {
+            if (component.abs() - 1.0).abs() < 1e-6 {
+                let sign = if component > 0.0 { 1i8 } else { -1i8 };
                 axis_dirs.push((axis, sign));
             }
         }
