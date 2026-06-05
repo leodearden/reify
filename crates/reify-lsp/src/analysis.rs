@@ -384,7 +384,20 @@ pub fn format_value(value: &Value) -> String {
 pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> {
     let module_name = module_name_from_uri(uri);
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+    compute_document_symbols_from_parsed(&parsed, source)
+}
 
+/// Compute the [`DocumentSymbol`] tree from a pre-built [`ParsedModule`].
+///
+/// Injectable core shared by the per-request wrapper [`compute_document_symbols`]
+/// (which parses internally) and the server's cache-fed path (which supplies the
+/// per-document cached parse — one parse per edit). Walks `parsed.declarations`
+/// WITHOUT compiling or constraint-checking; see [`compute_document_symbols`] for
+/// the declaration→symbol mapping.
+pub fn compute_document_symbols_from_parsed(
+    parsed: &ParsedModule,
+    source: &str,
+) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
     for decl in &parsed.declarations {
         match decl {
