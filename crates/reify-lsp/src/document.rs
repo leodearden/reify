@@ -6,10 +6,22 @@ use reify_ast::ParsedModule;
 use reify_core::ModulePath;
 use tower_lsp::lsp_types::Url;
 
+use crate::analysis::module_name_from_uri;
+
 /// State of a single open document.
 pub struct DocumentState {
     pub text: String,
     pub version: i32,
+    /// This document's module identity, derived once from its URI at
+    /// construction (by [`DocumentStore`]).
+    ///
+    /// Owned by the document rather than supplied per parse request: every parse
+    /// of this document uses this one path, so the cached parse below can never
+    /// be built under a module name that disagrees with a later caller's. This
+    /// is what makes [`DocumentState::parsed_module`] argument-free and removes
+    /// the footgun of a per-call module path that a cache hit would silently
+    /// ignore.
+    module_path: ModulePath,
     /// Lazily-filled, per-version cache of the prelude-aware parse of `text`.
     ///
     /// Filled on the first [`DocumentState::parsed_module`] call after this
@@ -24,10 +36,15 @@ pub struct DocumentState {
 
 impl DocumentState {
     /// Create a new document state with an empty parse cache.
-    pub fn new(text: String, version: i32) -> Self {
+    ///
+    /// `module_path` is the document's module identity (derived from its URI by
+    /// the [`DocumentStore`]); it is stored once and reused for every parse of
+    /// this document, so the cached parse is never keyed by a per-request value.
+    pub fn new(text: String, version: i32, module_path: ModulePath) -> Self {
         Self {
             text,
             version,
+            module_path,
             parsed_cache: Mutex::new(None),
         }
     }
@@ -36,18 +53,24 @@ impl DocumentState {
     /// the result for the lifetime of this `DocumentState` (i.e. this document
     /// version).
     ///
-    /// The first call parses `text` via [`reify_compiler::parse_with_stdlib`]
-    /// and stores the result behind an `Arc`; later calls return a clone of the
-    /// SAME `Arc` (a cache hit — deterministically verifiable with
-    /// `Arc::ptr_eq`). Lock poisoning is recovered rather than propagated,
-    /// matching the crate's `eval_state` lock convention, so a panic mid-parse
-    /// cannot wedge every subsequent request.
-    pub fn parsed_module(&self, module_path: ModulePath) -> Arc<ParsedModule> {
+    /// The parse uses the document's own [`ModulePath`] (fixed at construction),
+    /// so repeated calls always describe the same module — there is no per-call
+    /// module argument that a cache hit could silently ignore. The first call
+    /// parses `text` via [`reify_compiler::parse_with_stdlib`] and stores the
+    /// result behind an `Arc`; later calls return a clone of the SAME `Arc` (a
+    /// cache hit — deterministically verifiable with `Arc::ptr_eq`). Lock
+    /// poisoning is recovered rather than propagated, matching the crate's
+    /// `eval_state` lock convention, so a panic mid-parse cannot wedge every
+    /// subsequent request.
+    pub fn parsed_module(&self) -> Arc<ParsedModule> {
         let mut cache = self.parsed_cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(parsed) = cache.as_ref() {
             return Arc::clone(parsed);
         }
-        let parsed = Arc::new(reify_compiler::parse_with_stdlib(&self.text, module_path));
+        let parsed = Arc::new(reify_compiler::parse_with_stdlib(
+            &self.text,
+            self.module_path.clone(),
+        ));
         *cache = Some(Arc::clone(&parsed));
         parsed
     }
@@ -65,16 +88,20 @@ impl DocumentStore {
     }
 
     pub fn open(&mut self, uri: Url, text: String, version: i32) {
+        let module_path = ModulePath::single(module_name_from_uri(&uri));
         self.documents
-            .insert(uri, Arc::new(DocumentState::new(text, version)));
+            .insert(uri, Arc::new(DocumentState::new(text, version, module_path)));
     }
 
     pub fn update(&mut self, uri: &Url, text: String, version: i32) -> bool {
         if let Some(slot) = self.documents.get_mut(uri) {
             // Replace the whole state — and its empty cache — so the prior
             // version's parse is structurally invalidated (cache keyed by
-            // document version). This is the invalidation point.
-            *slot = Arc::new(DocumentState::new(text, version));
+            // document version). This is the invalidation point. The module
+            // path is re-derived from the (unchanged) URI so the fresh state
+            // parses under the same module identity.
+            let module_path = ModulePath::single(module_name_from_uri(uri));
+            *slot = Arc::new(DocumentState::new(text, version, module_path));
             true
         } else {
             false
@@ -261,9 +288,8 @@ mod tests {
         let source = "structure A {\n    param x: Scalar = 1mm\n}";
         store.open(uri.clone(), source.to_string(), 1);
         let doc = store.get(&uri).expect("document should exist");
-        let mp = reify_core::ModulePath::single("test");
-        let a = doc.parsed_module(mp.clone());
-        let b = doc.parsed_module(mp.clone());
+        let a = doc.parsed_module();
+        let b = doc.parsed_module();
         assert!(
             std::sync::Arc::ptr_eq(&a, &b),
             "second parsed_module call should return the same cached Arc (cache hit)"
@@ -283,7 +309,7 @@ mod tests {
         let source = "structure A {\n    param x: Scalar = 1mm\n}\nstructure B {\n    param y: Scalar = 2mm\n}";
         store.open(uri.clone(), source.to_string(), 1);
         let doc = store.get(&uri).expect("document should exist");
-        let parsed = doc.parsed_module(reify_core::ModulePath::single("test"));
+        let parsed = doc.parsed_module();
         assert_eq!(
             parsed.declarations.len(),
             2,
@@ -298,7 +324,6 @@ mod tests {
     fn update_invalidates_parse_cache() {
         let mut store = DocumentStore::new();
         let uri = test_uri("invalidate");
-        let mp = reify_core::ModulePath::single("test");
 
         // v1: a single declaration.
         store.open(
@@ -308,7 +333,7 @@ mod tests {
         );
         let a = {
             let doc = store.get(&uri).expect("document should exist at v1");
-            doc.parsed_module(mp.clone())
+            doc.parsed_module()
         };
         assert_eq!(a.declarations.len(), 1, "v1 has one declaration");
 
@@ -321,7 +346,7 @@ mod tests {
         );
         let c = {
             let doc = store.get(&uri).expect("document should exist at v2");
-            doc.parsed_module(mp.clone())
+            doc.parsed_module()
         };
 
         assert!(

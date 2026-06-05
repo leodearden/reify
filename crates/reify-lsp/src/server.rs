@@ -277,9 +277,9 @@ impl LanguageServer for ReifyLanguageServer {
 
         // Reuse the per-document cached parse (one parse per edit) instead of
         // re-parsing inside AnalysisContext::new; compile+check stay per-request.
+        // The parse uses the document's own module path (no per-call argument).
         let text = doc.text.clone();
-        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
-        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module(mp));
+        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
         Ok(crate::hover::compute_hover_in_context(&ctx, &text, position))
     }
 
@@ -311,9 +311,7 @@ impl LanguageServer for ReifyLanguageServer {
         // edit): the Arc<DocumentState> moves into the blocking task and the
         // parse — cache-filling on the first request after an edit — runs there.
         let location = match tokio::task::spawn_blocking(move || {
-            let mp =
-                reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
-            let parsed = doc.parsed_module(mp);
+            let parsed = doc.parsed_module();
             let primary_source = doc.text.as_str();
             if let Some(root) = workspace_root {
                 // Build a resolver closure using ModuleResolver for cross-file navigation.
@@ -377,8 +375,7 @@ impl LanguageServer for ReifyLanguageServer {
 
         // Reuse the per-document cached parse (one parse per edit).
         let text = doc.text.clone();
-        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
-        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module(mp));
+        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
         let items = crate::completion::compute_completions_in_context(&ctx, &text, position);
         Ok(Some(CompletionResponse::Array(items)))
     }
@@ -400,8 +397,7 @@ impl LanguageServer for ReifyLanguageServer {
 
         // Reuse the per-document cached parse (one parse per edit).
         let text = doc.text.clone();
-        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
-        let parsed = doc.parsed_module(mp);
+        let parsed = doc.parsed_module();
         let symbols = crate::analysis::compute_document_symbols_from_parsed(&parsed, &text);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
@@ -425,8 +421,7 @@ impl LanguageServer for ReifyLanguageServer {
         // Reuse the per-document cached parse (one parse per edit) — prelude-aware
         // for AST-shape consistency with goto_def/rename.
         let text = doc.text.clone();
-        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
-        let parsed = doc.parsed_module(mp);
+        let parsed = doc.parsed_module();
 
         // The δ producer returns None for non-resolvable positions (keywords/
         // literals/types/declaration names), which the editor renders as "no
@@ -456,8 +451,7 @@ impl LanguageServer for ReifyLanguageServer {
         // Reuse the per-document cached parse (one parse per edit) — prelude-aware
         // for AST-shape consistency with the rest of reify-lsp.
         let text = doc.text.clone();
-        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
-        let parsed = doc.parsed_module(mp);
+        let parsed = doc.parsed_module();
 
         // Forward to the α producer: it returns None for every non-renameable
         // position (keywords/literals/builtins/types/declaration names/cross-module
@@ -487,8 +481,7 @@ impl LanguageServer for ReifyLanguageServer {
 
         // Reuse the per-document cached parse (one parse per edit).
         let text = doc.text.clone();
-        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
-        let parsed = doc.parsed_module(mp);
+        let parsed = doc.parsed_module();
 
         // compute_rename validates new_name and guarantees a re-parse-clean edit
         // (Invariant 5); it returns None for unknown/non-renameable positions and
@@ -1062,20 +1055,18 @@ mod tests {
         let server = service.inner();
         let uri = open_bracket_source(server).await; // v1 = bracket_source
 
-        let mp = reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri));
-
         // v1: the cached parse is stable across repeated store lookups — two
         // get()+parsed_module() calls return the SAME Arc allocation (a cache
         // hit, i.e. a single parse per version).
         let a = {
             let state = server.state().read().await;
             let doc = state.documents.get(&uri).expect("doc present at v1");
-            doc.parsed_module(mp.clone())
+            doc.parsed_module()
         };
         let b = {
             let state = server.state().read().await;
             let doc = state.documents.get(&uri).expect("doc present at v1");
-            doc.parsed_module(mp.clone())
+            doc.parsed_module()
         };
         assert!(
             Arc::ptr_eq(&a, &b),
@@ -1167,7 +1158,7 @@ mod tests {
         let c = {
             let state = server.state().read().await;
             let doc = state.documents.get(&uri).expect("doc present at v2");
-            doc.parsed_module(mp.clone())
+            doc.parsed_module()
         };
         assert!(
             !Arc::ptr_eq(&a, &c),
