@@ -1510,3 +1510,112 @@ structure def HolderInst {
         ),
     }
 }
+
+// ─── γ-1: symmetric_tolerance returns DimensionalTolerance ───────────────────
+
+/// (γ step-1 RED → GREEN) symmetric_tolerance is reshaped to return DimensionalTolerance.
+///
+/// (a) Structural: the compiled stdlib `symmetric_tolerance` function has
+///     `return_type == Type::StructureRef("DimensionalTolerance")`.
+///
+/// (b) Eval: calling symmetric_tolerance(10mm, 0.1mm) in a Probe structure and
+///     reading its derived lets via ctor-in-entity-let path should give:
+///       upper_limit = nominal + upper_deviation = 10mm + 0.1mm = 10.1mm = 0.0101 m
+///       lower_limit = nominal + lower_deviation = 10mm + (−0.1mm) = 9.9mm = 0.0099 m
+///       tolerance_band = upper_deviation − lower_deviation = 0.2mm = 0.0002 m
+///
+/// RED on base: symmetric_tolerance returns bare Length; return_type is Length,
+/// member accesses yield Undef.
+#[test]
+fn symmetric_tolerance_returns_dimensional_tolerance() {
+    // (a) Structural: return_type must be StructureRef("DimensionalTolerance") ──
+    let module = load_stdlib_module();
+    let sym = module
+        .functions
+        .iter()
+        .find(|f| f.name == "symmetric_tolerance")
+        .expect("expected 'symmetric_tolerance' function");
+    assert_eq!(
+        sym.return_type,
+        Type::StructureRef("DimensionalTolerance".to_string()),
+        "symmetric_tolerance return_type should be Type::StructureRef(\"DimensionalTolerance\"), \
+         got {:?}",
+        sym.return_type
+    );
+
+    // (b) Eval: prelude fn returns prelude struct; derived lets materialise ───
+    let source = r#"
+structure def Probe {
+    let st    = symmetric_tolerance(10mm, 0.1mm)
+    let upper = st.upper_limit
+    let lower = st.lower_limit
+    let band  = st.tolerance_band
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "symmetric_tolerance Probe should compile without errors, got: {:?}",
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    let all_keys: Vec<_> = result
+        .values
+        .iter()
+        .map(|(k, _)| format!("{}.{}", k.entity, k.member))
+        .collect();
+
+    macro_rules! assert_length {
+        ($entity:expr, $member:expr, $expected:expr, $label:literal) => {{
+            let id = ValueCellId::new($entity, $member);
+            let value = result.values.get(&id).unwrap_or_else(|| {
+                panic!(
+                    "γ {}: {}.{} not found; present keys: {:?}",
+                    $label, $entity, $member, all_keys
+                )
+            });
+            match value {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::LENGTH,
+                        "γ {}: {}.{} expected LENGTH dimension, got {:?}",
+                        $label, $entity, $member, dimension
+                    );
+                    let rel_err = (si_value - $expected).abs() / $expected;
+                    assert!(
+                        rel_err < 1e-9,
+                        "γ {}: {}.{} expected {:.8e} m, got {:.8e} m (rel_err {:.2e})",
+                        $label, $entity, $member, $expected, si_value, rel_err
+                    );
+                }
+                other => panic!(
+                    "γ {}: {}.{} expected Value::Scalar (LENGTH), got {:?}",
+                    $label, $entity, $member, other
+                ),
+            }
+        }};
+    }
+
+    // symmetric_tolerance(10mm, 0.1mm):
+    //   upper_limit  = 10mm + 0.1mm    = 10.1mm = 0.0101 m
+    assert_length!("Probe", "upper", 0.0101_f64, "symmetric_tolerance.upper_limit");
+    //   lower_limit  = 10mm + (−0.1mm) =  9.9mm = 0.0099 m
+    assert_length!("Probe", "lower", 0.0099_f64, "symmetric_tolerance.lower_limit");
+    //   tolerance_band = 0.1mm − (−0.1mm) = 0.2mm = 0.0002 m
+    assert_length!("Probe", "band",  0.0002_f64, "symmetric_tolerance.tolerance_band");
+}
