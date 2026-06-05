@@ -15,7 +15,7 @@ use reify_compiler::{
     stdlib_loader,
 };
 use reify_core::{DimensionVector, Severity, Type};
-use reify_ir::EnumDef;
+use reify_ir::{CompiledExpr, CompiledExprKind, EnumDef, Value};
 use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -98,6 +98,23 @@ fn param_type(module_path: &str, trait_name: &str, member: &str) -> Type {
             "module '{}' trait '{}' member '{}' should be RequirementKind::Param, got {:?}",
             module_path, trait_name, member, other
         ),
+    }
+}
+
+/// Recursively collect ValueRef member names from a compiled expression tree.
+/// Mirrors `collect_value_ref_members` in `modal_options_validation_tests.rs`
+/// and `buckling_stdlib_compile.rs` — used to assert a `let` RHS references
+/// the expected param cells.
+fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let mut refs = collect_value_ref_members(left);
+            refs.extend(collect_value_ref_members(right));
+            refs
+        }
+        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
+        _ => vec![],
     }
 }
 
@@ -607,9 +624,162 @@ fn mechanical_thread_enums_surface() {
     );
 }
 
+// ─── step-3 (task β): ThreadSpec structure surface ───────────────────────────
+
+/// std/ports/mechanical declares `structure def ThreadSpec` with exactly 6
+/// Param cells (in order) and 4 derived Let cells (in order):
+///
+///   params: system : ThreadSystem
+///           nominal_diameter : Length
+///           pitch : Length
+///           thread_class : ThreadClass
+///           tightening : ThreadTighteningDirection = ThreadTighteningDirection.Clockwise
+///           thread_form : Option<Geometry> = none
+///   lets:   minor_diameter, pitch_diameter, tap_drill, clearance_hole
+///           (each an arithmetic expr over nominal_diameter & pitch)
+///
+/// RED: ThreadSpec is absent → template lookup panics.
+#[test]
+fn thread_spec_structure_surface() {
+    let module = load_module("std/ports/mechanical");
+
+    let thread_spec = module
+        .templates
+        .iter()
+        .find(|t| t.name == "ThreadSpec" && t.entity_kind == EntityKind::Structure)
+        .expect(
+            "std/ports/mechanical should contain 'structure def ThreadSpec'; \
+             check ports_mechanical.ri for the ThreadSpec definition",
+        );
+
+    // ── Param cells: exact names, order, and types ───────────────────────────
+    let param_cells: Vec<&ValueCellDecl> = thread_spec
+        .value_cells
+        .iter()
+        .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
+        .collect();
+    let param_names: Vec<&str> = param_cells.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    let expected_params: [(&str, Type); 6] = [
+        ("system", Type::Enum("ThreadSystem".into())),
+        (
+            "nominal_diameter",
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+        ),
+        ("pitch", Type::Scalar { dimension: DimensionVector::LENGTH }),
+        ("thread_class", Type::Enum("ThreadClass".into())),
+        ("tightening", Type::Enum("ThreadTighteningDirection".into())),
+        ("thread_form", Type::Option(Box::new(Type::Geometry))),
+    ];
+
+    assert_eq!(
+        param_cells.len(),
+        6,
+        "ThreadSpec should have exactly 6 param cells \
+         [system, nominal_diameter, pitch, thread_class, tightening, thread_form], got: {:?}",
+        param_names
+    );
+    for (i, (name, ty)) in expected_params.iter().enumerate() {
+        assert_eq!(
+            param_cells[i].id.member, *name,
+            "ThreadSpec param #{} should be '{}', got '{}'",
+            i, name, param_cells[i].id.member
+        );
+        assert_eq!(
+            param_cells[i].cell_type, *ty,
+            "ThreadSpec.{} should be type {:?}, got {:?}",
+            name, ty, param_cells[i].cell_type
+        );
+    }
+
+    // ── tightening default = ThreadTighteningDirection.Clockwise ─────────────
+    let tightening = param_cells
+        .iter()
+        .find(|vc| vc.id.member == "tightening")
+        .unwrap();
+    match &tightening
+        .default_expr
+        .as_ref()
+        .expect(
+            "ThreadSpec.tightening must have a default_expr \
+             (= ThreadTighteningDirection.Clockwise)",
+        )
+        .kind
+    {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+            assert_eq!(
+                type_name, "ThreadTighteningDirection",
+                "tightening default enum type"
+            );
+            assert_eq!(variant, "Clockwise", "tightening default enum variant");
+        }
+        other => panic!(
+            "ThreadSpec.tightening default should be Literal(Value::Enum {{ \
+             type_name: \"ThreadTighteningDirection\", variant: \"Clockwise\" }}), got: {:?}",
+            other
+        ),
+    }
+
+    // ── thread_form default = none (OptionNone) ──────────────────────────────
+    let thread_form = param_cells
+        .iter()
+        .find(|vc| vc.id.member == "thread_form")
+        .unwrap();
+    match &thread_form
+        .default_expr
+        .as_ref()
+        .expect("ThreadSpec.thread_form must have a default_expr (= none)")
+        .kind
+    {
+        CompiledExprKind::OptionNone => {}
+        other => panic!(
+            "ThreadSpec.thread_form default should be \
+             CompiledExprKind::OptionNone (none), got: {:?}",
+            other
+        ),
+    }
+
+    // ── Let cells: exact names, order, each references nominal_diameter+pitch ─
+    let let_cells: Vec<&ValueCellDecl> = thread_spec
+        .value_cells
+        .iter()
+        .filter(|vc| matches!(vc.kind, ValueCellKind::Let))
+        .collect();
+    let let_names: Vec<&str> = let_cells.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        let_cells.len(),
+        4,
+        "ThreadSpec should have exactly 4 let cells \
+         [minor_diameter, pitch_diameter, tap_drill, clearance_hole], got: {:?}",
+        let_names
+    );
+    for (i, name) in ["minor_diameter", "pitch_diameter", "tap_drill", "clearance_hole"]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(
+            let_cells[i].id.member, *name,
+            "ThreadSpec let #{} should be '{}', got '{}'",
+            i, name, let_cells[i].id.member
+        );
+        let rhs = let_cells[i]
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("ThreadSpec.{} (let) must have a RHS default_expr", name));
+        let refs = collect_value_ref_members(rhs);
+        assert!(
+            refs.contains(&"nominal_diameter") && refs.contains(&"pitch"),
+            "ThreadSpec.{} RHS must reference both 'nominal_diameter' and 'pitch', got refs: {:?}",
+            name,
+            refs
+        );
+    }
+}
+
 /// std/ports/mechanical cardinality lock: exactly 6 traits (MechanicalPort,
 /// Bore, Shaft, RotaryPort, ThreadedPort, StructurePort), 3 enums (ThreadSystem,
-/// ThreadClass, ThreadTighteningDirection), 0 structures.
+/// ThreadClass, ThreadTighteningDirection), 1 structure (ThreadSpec).
 ///
 /// Bumped incrementally by task β steps (mirroring task α's in-file discipline):
 ///   step-1: enums 0→3 (ThreadSystem, ThreadClass, ThreadTighteningDirection)
@@ -658,8 +828,16 @@ fn std_ports_mechanical_module_cardinality_locked() {
         .collect();
     assert_eq!(
         structure_names.len(),
-        0,
-        "std/ports/mechanical should declare 0 structures, got: {:?}",
+        1,
+        "std/ports/mechanical should declare exactly 1 structure (ThreadSpec), got: {:?}",
+        structure_names
+    );
+    assert!(
+        module
+            .templates
+            .iter()
+            .any(|t| t.name == "ThreadSpec" && t.entity_kind == EntityKind::Structure),
+        "std/ports/mechanical should contain 'ThreadSpec' structure, got: {:?}",
         structure_names
     );
 }
