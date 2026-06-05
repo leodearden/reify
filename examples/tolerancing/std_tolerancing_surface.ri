@@ -1,0 +1,143 @@
+// std_tolerancing_surface.ri — §7 GD&T tolerancing stdlib end-to-end example.
+//
+// PRD docs/prds/v0_6/tolerancing-gdt-surface-completion.md §7
+// Tasks: α#4265 (builtins), β#4266 (core .ri), γ#4267 (DimensionalTolerance
+//        reshape), ε#4268 (this CI gate).
+//
+// Exercises all §7 tolerancing stdlib symbols in a single top-level structure.
+// `reify eval` prints all `let` cells; `reify check` verifies satisfiable
+// constraints exit 0.
+//
+// ── Observable headline signal ──────────────────────────────────────────────
+// MMC-vs-RFS conformance FLIP (asserted in cli_tolerancing_eval.rs Test A):
+//   conforms_mmc = effective_tolerance_zone(0.1mm, MMC, 0.1mm) >= 0.15mm
+//               = 0.2mm >= 0.15mm  →  true
+//   conforms_rfs = effective_tolerance_zone(0.1mm, RFS, 0.1mm) >= 0.15mm
+//               = 0.1mm >= 0.15mm  →  false
+//
+// ── Hand-calc reference ─────────────────────────────────────────────────────
+//
+//   ISO 286-1 IT7 for nominal Ø30–50mm:
+//     D_geom = sqrt(30 × 50) = sqrt(1500) = 38.730mm
+//     i  = 0.45 × ∛38.730 + 0.001 × 38.730
+//        = 0.45 × 3.382  + 0.03873
+//        = 1.5219 + 0.03873 = 1.5606 µm
+//     IT7 = 16 × i = 16 × 1.5606 = 24.969 µm ≈ 25 µm (published)
+//
+//   effective_tolerance_zone(tol, RFS, departure) = tol            (bonus ignored)
+//   effective_tolerance_zone(tol, MMC, departure) = tol + departure  (MMC bonus)
+//   effective_tolerance_zone(tol, LMC, departure) = tol + departure  (LMC bonus)
+//
+//   symmetric_tolerance(10mm, 0.1mm):
+//     upper_limit = 10mm + 0.1mm  = 10.1mm
+//     lower_limit = 10mm − 0.1mm  =  9.9mm
+//
+//   limit_tolerance(upper=10mm, lower=9.9mm):
+//     upper_limit = 10mm,  lower_limit = 9.9mm
+//
+//   Fit (hole = sym(10mm, 0.1mm), shaft = sym(9.9mm, 0.05mm), Clearance):
+//     hole  : upper_limit = 10.1mm,   lower_limit = 9.9mm
+//     shaft : upper_limit = 9.95mm,   lower_limit = 9.85mm
+//     max_clearance = hole.upper − shaft.lower = 10.1 − 9.85 =  0.25mm
+//     min_clearance = hole.lower − shaft.upper =  9.9 − 9.95 = −0.05mm
+//
+//   require_finish(0.0, SurfaceFinish(Ra, 1.6µm)) → 1.6µm > 0mm → true
+//   Conforms MMC: zone = 0.1mm + 0.1mm = 0.2mm ≥ 0.15mm → Satisfied
+//
+// ── NOTE on eval-engine constraints ─────────────────────────────────────────
+// The eval engine resolves `sub` templates from the USER module only; stdlib
+// structs are NOT sub-resolvable via `sub x = StdlibStruct()`.  The example
+// uses ctor-in-entity-let (`let x = StdlibStruct(...)`) throughout, which
+// materialises derived/nested `let` cells at eval (proven GREEN by γ tests
+// symmetric_tolerance_returns_dimensional_tolerance and
+// fit_exposes_nested_dimensional_tolerance_members, and task-4342
+// ctor_derived_let_materializes_across_all_arrival_paths).
+//
+// `constraint Conforms(tolerance: ...)` requires a GeometricTolerance-typed
+// argument.  PosMMCTol is a USER-DEFINED structure that implements that trait;
+// it is instantiated via `sub pos_mmc = PosMMCTol()` (user-module sub IS
+// resolvable) so the Conforms predicate can be exercised in check position.
+
+// ── Local tolerance type for the Conforms constraint ─────────────────────────
+// Declares a user-module GeometricTolerance implementation so that the
+// `sub pos_mmc = PosMMCTol()` + `constraint Conforms(tolerance: self.pos_mmc,...)`
+// pattern works (the eval engine resolves user-module subs, not stdlib subs).
+structure def PosMMCTol : GeometricTolerance {
+    param tolerance_value    : Length            = 0.1mm
+    param feature            : Real              = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.MMC
+}
+
+// ── Main surface structure ─────────────────────────────────────────────────────
+structure def StdTolerancingSurface {
+
+    // ── §7.1 ISO Tolerance Grade ──────────────────────────────────────────────
+    // Direct builtin: IT7@Ø30–50mm ≈ 24.969µm (≈25µm published, ISO 286-1)
+    let it7_width = iso_it_tolerance(7, 30mm, 50mm)
+
+    // ISOToleranceGrade struct: derives tolerance_value via iso_it_tolerance(...)
+    let grade7 = ISOToleranceGrade(grade: 7, nominal_min: 30mm, nominal_max: 50mm)
+    let it7_via_grade = grade7.tolerance_value    // same ≈24.969µm as it7_width
+
+    // ── §7.2 Effective tolerance zones ────────────────────────────────────────
+    // RFS: bonus ignored — zone = tol = 0.1mm
+    let nominal_zone_rfs = effective_tolerance_zone(0.1mm, MaterialCondition.RFS, 0.1mm)
+    // MMC: bonus = departure — zone = tol + departure = 0.1 + 0.1 = 0.2mm
+    let expanded_zone_mmc = effective_tolerance_zone(0.1mm, MaterialCondition.MMC, 0.1mm)
+
+    // ── THE OBSERVABLE FLIP: MMC expands the zone; RFS does not ──────────────
+    let conforms_mmc = expanded_zone_mmc >= 0.15mm    // 0.2mm ≥ 0.15mm → true
+    let conforms_rfs = nominal_zone_rfs  >= 0.15mm    // 0.1mm < 0.15mm → false
+
+    // ── §7.2 Flatness form tolerance ──────────────────────────────────────────
+    // nominal_zone (trait-inherited let) = efz(0.05mm, RFS, 0mm) = 0.05mm
+    let flat      = Flatness(tolerance_value: 0.05mm, feature: 0.0, material_condition: MaterialCondition.RFS)
+    let flat_zone = flat.nominal_zone
+
+    // ── §7.2 Position location tolerance ─────────────────────────────────────
+    // nominal_zone = efz(0.1mm, MMC, 0mm) = 0.1mm (zero departure at nominal)
+    let pos      = Position(tolerance_value: 0.1mm, feature: 0.0,
+                            material_condition: MaterialCondition.MMC, datum_refs: 0.0)
+    let pos_zone = pos.nominal_zone
+
+    // ── §7.1 Dimensional tolerances — symmetric ───────────────────────────────
+    // symmetric_tolerance: upper_limit = 10mm + 0.1mm = 10.1mm
+    //                      lower_limit = 10mm − 0.1mm = 9.9mm
+    let sym       = symmetric_tolerance(10mm, 0.1mm)
+    let sym_upper = sym.upper_limit    // 10.1mm = 0.0101 m
+    let sym_lower = sym.lower_limit    //  9.9mm = 0.0099 m
+
+    // ── §7.1 Dimensional tolerances — limit ───────────────────────────────────
+    // limit_tolerance(upper, lower): upper_limit = 10mm, lower_limit = 9.9mm
+    let lim       = limit_tolerance(10mm, 9.9mm)
+    let lim_upper = lim.upper_limit    // 10mm  = 0.01 m
+
+    // ── §7.1 Fit with nested DimensionalTolerance members ────────────────────
+    // hole  : sym(10mm,  0.1mm)  → [9.9mm, 10.1mm]
+    // shaft : sym(9.9mm, 0.05mm) → [9.85mm, 9.95mm]
+    let fit           = Fit(
+        hole_tolerance:  symmetric_tolerance(10mm, 0.1mm),
+        shaft_tolerance: symmetric_tolerance(9.9mm, 0.05mm),
+        fit_type:        FitCategory.Clearance
+    )
+    let fit_hole_upper = fit.hole_tolerance.upper_limit    // 10.1mm =  0.0101 m
+    let fit_maxc       = fit.max_clearance                  //  0.25mm =  2.5e-4 m
+    let fit_minc       = fit.min_clearance                  // -0.05mm = -5.0e-5 m (slight interference)
+
+    // ── §7.3 Surface finish require_finish predicate ──────────────────────────
+    // direction and process omitted → exercises defaults (Multidirectional, "")
+    // 1.6µm > 0mm → true
+    let finish_ok = require_finish(0.0, SurfaceFinish(
+        parameter: SurfaceParameter.Ra,
+        value: 1.6um
+    ))
+
+    // ── Sub for the satisfiable Conforms constraint (user-module sub) ─────────
+    sub pos_mmc = PosMMCTol()
+
+    // ── Satisfiable constraints (reify check gate, Test B) ────────────────────
+    // require_finish: 1.6µm > 0mm → Satisfied
+    constraint require_finish(0.0, SurfaceFinish(parameter: SurfaceParameter.Ra, value: 1.6um))
+    // Conforms MMC: zone = 0.1mm + 0.1mm = 0.2mm ≥ 0.15mm → Satisfied
+    constraint Conforms(tolerance: self.pos_mmc, measured_deviation: 0.15mm, feature_departure: 0.1mm)
+}
