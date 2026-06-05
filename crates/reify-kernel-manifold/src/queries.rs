@@ -742,6 +742,67 @@ pub(crate) fn face_points_bbox(tris: &[[[f64; 3]; 3]]) -> ([f64; 3], [f64; 3]) {
     points_bbox(&all_points)
 }
 
+/// Quantisation tolerance used by [`coalesce_coplanar_faces`] to group mesh
+/// triangles by their supporting plane.  Normals and offsets are rounded to
+/// the nearest multiple of this value (1e-6).
+///
+/// 1e-6 comfortably separates the six faces of a unit cube (offsets differ by
+/// 1.0) while tolerating the f32→f64 round-off from Reify's ingest pipeline.
+const PLANE_TOL: f64 = 1e-6;
+
+/// Group mesh triangles into coplanar planar faces.
+///
+/// For each triangle the supporting **plane key** is
+/// `(quantised(nx), quantised(ny), quantised(nz), quantised(d))` where
+/// `(nx,ny,nz)` is the unit normal and `d = dot(normal, v0)` is the signed
+/// offset.  Quantisation rounds each component to the nearest multiple of
+/// [`PLANE_TOL`] (1e-6), so coplanar triangles collide on the same key.
+/// Degenerate (zero-area) triangles — those whose cross-product length is
+/// zero — are skipped because they have no well-defined plane.
+///
+/// Groups are accumulated in a [`std::collections::BTreeMap`] keyed on the
+/// quantised `(i64, i64, i64, i64)` tuple; `BTreeMap` iterates in ascending
+/// lexicographic order, giving deterministic face order across runs.
+///
+/// Returns one inner `Vec` per planar face; each inner Vec contains the
+/// triangles (`[v0, v1, v2]` in winding order) that share that face's plane.
+/// For a unit cube aligned on integer vertices this yields **6** groups of 2,
+/// matching BRep face cardinality.
+///
+/// Used by [`crate::kernel::ManifoldKernel::extract_faces`] (step-2 of
+/// task-4262) to replace the previous one-triangle-per-face enumeration.
+pub(crate) fn coalesce_coplanar_faces(
+    verts: &[[f64; 3]],
+    tri_indices: &[u64],
+) -> Vec<Vec<[[f64; 3]; 3]>> {
+    let mut groups: std::collections::BTreeMap<(i64, i64, i64, i64), Vec<[[f64; 3]; 3]>> =
+        std::collections::BTreeMap::new();
+
+    let quant = |f: f64| -> i64 { (f / PLANE_TOL).round() as i64 };
+
+    for chunk in tri_indices.chunks_exact(3) {
+        let v0 = verts[chunk[0] as usize];
+        let v1 = verts[chunk[1] as usize];
+        let v2 = verts[chunk[2] as usize];
+        let tri = [v0, v1, v2];
+
+        let n = tri_unit_normal(&tri);
+        // Skip degenerate triangles — they have no well-defined plane.
+        if n == [0.0, 0.0, 0.0] {
+            continue;
+        }
+
+        // Signed plane offset d = dot(n, v0).
+        let d = n[0] * v0[0] + n[1] * v0[1] + n[2] * v0[2];
+
+        let key = (quant(n[0]), quant(n[1]), quant(n[2]), quant(d));
+        groups.entry(key).or_default().push(tri);
+    }
+
+    // BTreeMap iterates ascending by key → deterministic face order.
+    groups.into_values().collect()
+}
+
 /// Format an xyz vector as the OCCT-compatible `{"x":_,"y":_,"z":_}` JSON
 /// wire string.
 ///

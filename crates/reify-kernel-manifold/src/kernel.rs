@@ -643,16 +643,24 @@ impl GeometryKernel for ManifoldKernel {
             normals: None,
         })
     }
-    /// Extract the mesh faces of the stored Manifold as face sub-handles.
+    /// Extract the mesh faces of the stored Manifold as coalesced planar-face
+    /// sub-handles (task-4262 step-2).
     ///
-    /// # Coplanar-triangle coalescing (task-4262 step-2)
+    /// # Coplanar-triangle coalescing
     ///
-    /// Currently emits one sub-handle per mesh triangle (each `SubShape::Face`
-    /// holding a 1-element Vec), so the unit cube still yields **12** face
-    /// handles.  Step-2 will replace this with `coalesce_coplanar_faces` to
-    /// group coplanar triangles into planar faces (cube → 6).  This interim
-    /// state isolates the `SubShape::Face` type change (pre-1) from the
-    /// semantic 12→6 change (step-2).
+    /// Triangles are grouped into planar faces by their supporting **plane key**
+    /// — a quantised `(unit_normal, signed_offset)` pair — via
+    /// [`crate::queries::coalesce_coplanar_faces`].  Degenerate (zero-area)
+    /// triangles are skipped; groups are sorted by their plane key so the
+    /// returned face order is deterministic across calls.
+    ///
+    /// For a unit cube (12 mesh triangles, 6 planar faces of 2 triangles each)
+    /// this yields **6** sub-handles — matching OCCT's BRep box face count and
+    /// resolving PRD Open Question §10.5 (`12 ≠ 6` semantic gap).
+    ///
+    /// Note: IDs are still freshly minted on every call at this step.
+    /// Step-4 adds a per-parent-handle memoization cache so repeated calls
+    /// return the same IDs (required for `resolve_unique_by_attribute`).
     ///
     /// An empty or degenerate mesh yields `Ok(empty vec)`.
     fn extract_faces(
@@ -670,13 +678,10 @@ impl GeometryKernel for ManifoldKernel {
         if verts.is_empty() || tris.is_empty() {
             return Ok(Vec::new());
         }
-        let mut faces = Vec::with_capacity(tris.len() / 3);
-        for tri in tris.chunks_exact(3) {
-            let v0 = verts[tri[0] as usize];
-            let v1 = verts[tri[1] as usize];
-            let v2 = verts[tri[2] as usize];
-            // One planar-face Vec per triangle until step-2 coalesces them.
-            faces.push(self.store_sub_shape(SubShape::Face(vec![[v0, v1, v2]])));
+        let groups = crate::queries::coalesce_coplanar_faces(&verts, &tris);
+        let mut faces = Vec::with_capacity(groups.len());
+        for group in groups {
+            faces.push(self.store_sub_shape(SubShape::Face(group)));
         }
         Ok(faces)
     }
