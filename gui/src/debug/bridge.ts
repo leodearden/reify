@@ -332,16 +332,44 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         ? editor.state.openFiles.find((f) => f.path === activeFile)
         : undefined;
 
+      // The editorStore snapshot (file?.content) is stale-by-design on every
+      // keystroke — Editor.tsx's docChanged handler deliberately never calls
+      // updateFileContent (the "anti-loop invariant", Editor.tsx:493-497) so
+      // that typing does not re-fire the store→view sync and compile-diagnostics
+      // effects on each keystroke.  The live buffer lives on ctx.editorView,
+      // the same handle that type_in_editor reads (bridge.ts:509).
+      // Guard: substitute live content only when an active file is open AND
+      // the EditorView is present; otherwise fall back to the store snapshot.
+      // When there is no active file we must NOT use editorView (it holds ''
+      // for the untitled buffer), so content stays null.
+      const liveContent = activeFile && ctx.editorView
+        ? ctx.editorView.state.doc.toString()
+        : undefined;
+
       return {
         activeFile,
-        content: file?.content ?? null,
+        content: liveContent ?? file?.content ?? null,
+        // cursorPosition is intentionally kept store-derived (not read from
+        // ctx.editorView.state.selection.main.head).  The store updates
+        // cursorPosition on the cursor-changed transaction listener, which
+        // fires on every selection change — it is not subject to the
+        // anti-loop invariant that prevents calling updateFileContent on
+        // typing.  A consumer mapping cursorPosition as a byte offset into
+        // the live `content` field should be aware that the two values may
+        // briefly diverge mid-keystroke if the cursor moves with the edit.
         cursorPosition: editor.state.cursorPosition,
         activeFileOutOfSyncWithDisk: activeFile !== null && activeFile !== undefined
           ? editor.state.externallyChanged.includes(activeFile)
           : false,
         openFiles: editor.state.openFiles.map((f) => ({
           path: f.path,
-          length: f.content.length,
+          // Reflect the live buffer length for the active entry so that
+          // openFiles[active].length agrees with the top-level content field.
+          // Non-active entries stay store-derived (only the active file has a
+          // live EditorView handle).
+          length: f.path === activeFile && liveContent !== undefined
+            ? liveContent.length
+            : f.content.length,
           dirty: editor.state.dirtyFiles.includes(f.path),
           externallyChanged: editor.state.externallyChanged.includes(f.path),
         })),
