@@ -539,8 +539,11 @@ fn rotary_port_trait_surface() {
     );
 }
 
-/// ThreadedPort refines [MechanicalPort] with required members [thread_diameter,
-/// pitch] in order; both resolve to Scalar<LENGTH>.
+/// ThreadedPort refines exactly [MechanicalPort] with a single required member
+/// `thread_spec : ThreadSpec` (Type::StructureRef("ThreadSpec")) — replacing the
+/// old raw thread_diameter/pitch Length pair (PRD §4 decision 6).
+///
+/// RED: ThreadedPort still exposes [thread_diameter, pitch].
 #[test]
 fn threaded_port_trait_surface() {
     let t = find_trait("std/ports/mechanical", "ThreadedPort");
@@ -554,32 +557,28 @@ fn threaded_port_trait_surface() {
 
     assert_eq!(
         t.required_members.len(),
-        2,
-        "ThreadedPort should have exactly 2 required members; got: {:?}",
+        1,
+        "ThreadedPort should have exactly 1 required member (thread_spec); got: {:?}",
         t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
     );
     assert_eq!(
-        t.required_members[0].name, "thread_diameter",
-        "ThreadedPort required_members[0] should be 'thread_diameter'"
+        t.required_members[0].name, "thread_spec",
+        "ThreadedPort required_members[0] should be 'thread_spec'"
     );
     assert_eq!(
-        t.required_members[1].name, "pitch",
-        "ThreadedPort required_members[1] should be 'pitch'"
+        param_type("std/ports/mechanical", "ThreadedPort", "thread_spec"),
+        Type::StructureRef("ThreadSpec".into()),
+        "ThreadedPort.thread_spec must be Type::StructureRef(\"ThreadSpec\")"
     );
 
-    assert_eq!(
-        param_type("std/ports/mechanical", "ThreadedPort", "thread_diameter"),
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH
-        },
-        "ThreadedPort.thread_diameter must have DimensionVector::LENGTH"
+    // Regression guards: the raw thread_diameter/pitch pair was replaced.
+    assert!(
+        !t.required_members.iter().any(|r| r.name == "thread_diameter"),
+        "ThreadedPort must not expose 'thread_diameter' (replaced by thread_spec)"
     );
-    assert_eq!(
-        param_type("std/ports/mechanical", "ThreadedPort", "pitch"),
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH
-        },
-        "ThreadedPort.pitch must have DimensionVector::LENGTH"
+    assert!(
+        !t.required_members.iter().any(|r| r.name == "pitch"),
+        "ThreadedPort must not expose 'pitch' (replaced by thread_spec)"
     );
 }
 
