@@ -1915,12 +1915,12 @@ structure def Probe {
 /// reachable through the constructor functions:
 ///
 ///   - `limit_tolerance(9mm, 10mm)`: upper < lower →
-///       DT(nominal: 10mm, upper_deviation: −1mm, lower_deviation: 0mm)
-///       → tolerance_band = upper_deviation − lower_deviation = −1mm
+///     DT(nominal: 10mm, upper_deviation: −1mm, lower_deviation: 0mm)
+///     → tolerance_band = upper_deviation − lower_deviation = −1mm
 ///
 ///   - `symmetric_tolerance(10mm, −1mm)`: negative deviation →
-///       DT(nominal: 10mm, upper_deviation: −1mm, lower_deviation: 1mm)
-///       → tolerance_band = −1mm − 1mm = −2mm
+///     DT(nominal: 10mm, upper_deviation: −1mm, lower_deviation: 1mm)
+///     → tolerance_band = −1mm − 1mm = −2mm
 ///
 /// Both cases are surfaced via an explicit user-module constraint
 /// `constraint band >= 0mm`. When tolerance_band < 0mm the constraint fires as
