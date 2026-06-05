@@ -185,6 +185,21 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 
         CompiledExprKind::FunctionCall { function, args } => {
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
+            // __interp_render intercept — MUST sit before the strict-Undef
+            // short-circuit below. This placement is load-bearing: the
+            // determinacy decision (PRD §6.3, task 3964) requires that an
+            // Undef interpolation hole renders as the literal string "undef"
+            // rather than poisoning the result with Value::Undef. A stdlib
+            // binding would be reached only AFTER the short-circuit and could
+            // never observe an Undef argument.
+            //
+            // Match on the fully qualified name ("std::__interp_render") rather
+            // than the bare name so that a user-defined symbol that happens to
+            // carry the unqualified name "__interp_render" is never silently
+            // intercepted and mis-rendered.
+            if function.qualified_name == "std::__interp_render" && evaluated_args.len() == 1 {
+                return Value::String(interp_render(&evaluated_args[0]));
+            }
             // Strict Undef propagation: if any arg is Undef, short-circuit
             if evaluated_args.iter().any(|v| v.is_undef()) {
                 return Value::Undef;
@@ -1247,6 +1262,41 @@ fn eval_quantifier(
                 Value::Bool(false)
             }
         }
+    }
+}
+
+/// Render a [`Value`] to its human-display [`String`] for string-interpolation
+/// holes (task 3964, PRD §3).
+///
+/// Uses the `format_display` family — **never** the [`std::fmt::Display`] impl —
+/// to produce bare strings (not quoted), engineering units (5 mm not 0.005 m),
+/// and composite forms.
+///
+/// Render rules:
+/// - `Undef` → `"undef"` (the surface keyword; NOT `format_display`'s `"undefined"`)
+/// - `Scalar | Complex | Option(Some(_))` → `format_display_pair` joined
+///   `"{value} {unit}"` when the unit is non-empty (e.g. `5 mm`); plain value
+///   when the unit is empty (dimensionless scalars)
+/// - Everything else → `format_display` verbatim
+///
+/// # Nested Undef in composites
+///
+/// When `value` is a composite (e.g. `List`, `Map`, `Point`) whose *elements*
+/// contain `Undef`, those inner undefs are rendered by `format_display`, which
+/// emits `"undefined"` — **not** `"undef"`.  This divergence from the top-level
+/// case is intentional: PRD §3 specifies the `Undef → "undef"` rule only for
+/// the interpolation hole value itself, and `format_display` is the
+/// authoritative renderer for composite interiors.  A future revision could
+/// normalise the two spellings inside `format_display` if consistency becomes a
+/// requirement.
+fn interp_render(value: &Value) -> String {
+    match value {
+        Value::Undef => "undef".to_string(),
+        Value::Scalar { .. } | Value::Complex { .. } | Value::Option(Some(_)) => {
+            let (v, u) = value.format_display_pair();
+            if u.is_empty() { v } else { format!("{v} {u}") }
+        }
+        _ => value.format_display(),
     }
 }
 
