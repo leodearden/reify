@@ -192,6 +192,62 @@ describe('applyWorkspaceEdit', () => {
     expect(result).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
   });
+
+  // --- NEW hardening test (RED against current unguarded impl) ---
+
+  it('skips out-of-range edits without throwing; dispatches ONE transaction with only in-range edits', () => {
+    // Line 999 is out of range in the mock doc (makeMockView maps line(n) for n up to
+    // 100 with no throw, so override line to throw for n > 50).
+    // In-range edit: line 0 → doc.line(1) = {from:0, to:15} → from 5, to 10.
+    // Out-of-range edit: line 999 → doc.line(1000) throws RangeError.
+    const dispatch = vi.fn();
+    const view = makeMockView({
+      dispatch,
+      state: {
+        doc: {
+          line: (n: number) => {
+            if (n > 50) throw new RangeError(`line ${n} out of range`);
+            return { from: (n - 1) * 20, to: (n - 1) * 20 + 15 };
+          },
+        },
+      },
+    });
+
+    const edit: WorkspaceEdit = {
+      changes: {
+        [URI]: [
+          // In-range edit: line 0 char 5→10 → from 5, to 10
+          {
+            range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } },
+            newText: 'girth',
+          },
+          // Out-of-range edit: line 999 → throws in doc.line → must be skipped
+          {
+            range: { start: { line: 999, character: 0 }, end: { line: 999, character: 5 } },
+            newText: 'bad',
+          },
+        ],
+      },
+    };
+
+    // Must not throw.
+    expect(() => applyWorkspaceEdit(view, edit, URI)).not.toThrow();
+
+    // Returns true (at least one edit survived).
+    expect(applyWorkspaceEdit(view, edit, URI)).toBe(true);
+
+    // Dispatched exactly once (after the second call above — dispatch is reset
+    // per test so we check count relative to the second call).
+    // Reset and call once more for a clean assertion.
+    dispatch.mockClear();
+    applyWorkspaceEdit(view, edit, URI);
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith({
+      changes: [{ from: 5, to: 10, insert: 'girth' }], // only the in-range edit
+      userEvent: 'rename',
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
