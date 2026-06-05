@@ -1647,19 +1647,25 @@ fn get_source_location_correct_after_failed_update() {
         "file should be unchanged after failed update"
     );
 
-    // (5) build_gui_state should still return Ok with original valid state
+    // (5) build_gui_state should still return Ok.
+    //     values/get_source_location use the LAST-GOOD compiled module (unchanged).
+    //     files[0].content tracks the FAILING buffer (task 4258 one-snapshot invariant).
     let state = session
         .build_gui_state()
         .expect("build_gui_state should work after failed update");
     assert!(
         state.values.len() >= 5,
-        "should still have original values after failed update, got {}",
+        "should still have original values after failed update (last-good retained), got {}",
         state.values.len()
     );
     assert_eq!(state.files.len(), 1);
+    // After task 4258 fix: files[0].content must reflect the FAILING buffer so
+    // compile_diagnostics line/col (computed against the failing buffer) can be
+    // correctly indexed.  get_source_location still resolves against the last-good
+    // compiled module — the split is intentional and tested separately.
     assert!(
-        state.files[0].content.contains("structure Bracket"),
-        "files should still contain original valid source, got: {}",
+        state.files[0].content.contains("this is not valid"),
+        "files[0].content must contain the failing buffer after task 4258 fix, got: {}",
         &state.files[0].content[..50.min(state.files[0].content.len())]
     );
 }
@@ -6707,7 +6713,7 @@ fn commit_state_clears_cold_start_compile_failure_on_successful_load() {
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::ColdStart, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::ColdStart, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(ColdStart) with non-empty diags after a failed load"
     );
@@ -6750,7 +6756,7 @@ fn commit_state_clears_live_edit_compile_failure_on_successful_recovery() {
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after a failed live edit"
     );
@@ -6941,7 +6947,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_from_source_w
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after a failed load_from_source with prior compile"
     );
@@ -7004,7 +7010,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_sing
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after a failed update_source (single-file)"
     );
@@ -7072,7 +7078,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_mult
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after a failed update_source (multi-file)"
     );
@@ -7138,7 +7144,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_file_with_pri
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after a failed load_file with prior compile"
     );
@@ -7202,7 +7208,7 @@ fn build_gui_state_surfaces_prior_warning_and_live_error_together_in_append_orde
     assert!(
         matches!(
             session.compile_failure_for_test(),
-            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags }) if !diags.is_empty()
+            Some(CompileFailure { kind: CompileFailureKind::LiveEdit, diags, .. }) if !diags.is_empty()
         ),
         "compile_failure should be Some(LiveEdit) with non-empty diags after failed live edit"
     );
