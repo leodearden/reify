@@ -1,0 +1,219 @@
+// std.process §8 DFM surface — end-to-end CI example (task #4275, PRD §7).
+//
+// Consumer:  `reify check examples/process/std_process_dfm.ri` (DFM-minded designer).
+//            The companion kernel-backed e2e test is
+//            crates/reify-eval/tests/process_dfm_e2e.rs.
+//
+// What this file demonstrates:
+//   - One process conformer per std.process category (7 total):
+//     Subtracting, Adding, Forming, Joining, Parting, SurfaceTreating, HeatTreating.
+//   - Three DFMRule conformers, one each at DFMSeverity.Info / .Warning / .Error.
+//   - Scalar DFM constraints (Manufacturable + Forming-family Bend/Draw/Draft)
+//     with a curated OK / VIOLATED set — evaluates under plain `reify check`
+//     (no geometry kernel required).
+//   - Two FitsBuildVolume constraints: a fitting part (Satisfied under OCCT)
+//     and an oversized part (Violated under OCCT).
+//   - Direct 3-arg fits_build_volume calls exercising each DFMSeverity level
+//     (I/W/E_DFM_BUILD_VOLUME) via the DFMSeverityBridge structure.
+//
+// Note on geometry-backed checks:
+//   FitsBuildVolume and the direct fits_build_volume calls use bounding_box(solid),
+//   which requires the OCCT kernel. Without OCCT, those constraints are Indeterminate
+//   and the let-bindings resolve to Value::Undef (emitting advisory E_DFM diagnostics).
+//   The OK→VIOLATED flip is exercised by the companion OCCT-gated test.
+//
+// Reference: docs/prds/v0_6/process-dfm-completion.md §7 (task δ).
+// Deferred: geometry-metrology DFM engine (docs/prds/v0_6/process-dfm-geometry-metrology.md).
+
+import std.process
+
+// ── 1. Process conformers — one per category ──────────────────────────────────
+//
+// Each supplies defaults for:
+//   - Process base params: duration (Time) and cost (Money).
+//   - Category capability params (the DFM evaluation surface from task β).
+// Pattern mirrors examples/stdlib/process.ri (MilledPart : Subtracting).
+
+// Material-removal: CNC aluminium milling.
+structure def MilledAluminium : Subtracting {
+    param duration          : Time   = 45min
+    param cost              : Money  = 80USD
+    param tool_access       : Solid  = box(200mm, 150mm, 80mm)
+    param min_feature_size  : Length = 0.5mm
+    param achievable_finish : Length = 0.0016mm
+}
+
+// Additive: FDM nylon printer with 220×220×250 mm build envelope.
+structure def FDMNylonPart : Adding {
+    param duration         : Time   = 4h
+    param cost             : Money  = 25USD
+    param layer_thickness  : Length = 0.2mm
+    param min_feature_size : Length = 0.4mm
+    param build_volume     : Solid  = box(220mm, 220mm, 250mm)
+}
+
+// Forming: sheet-metal stamping process.
+structure def StampedSheetMetal : Forming {
+    param duration        : Time   = 10min
+    param cost            : Money  = 15USD
+    param min_bend_radius : Length = 2.0mm
+    param max_draw_depth  : Length = 30.0mm
+    param draft_angle     : Angle  = 2.0deg
+}
+
+// Joining: MIG weld joint.
+structure def WeldedJoint : Joining {
+    param duration       : Time     = 20min
+    param cost           : Money    = 40USD
+    param joint_strength : Pressure = 250MPa
+    param reversible     : Bool     = false
+}
+
+// Parting: band-saw cut.
+structure def SawnBar : Parting {
+    param duration         : Time   = 5min
+    param cost             : Money  = 8USD
+    param kerf_width       : Length = 3.0mm
+    param min_feature_size : Length = 5.0mm
+}
+
+// Surface treating: hard anodising.
+structure def AnodisingProcess : SurfaceTreating {
+    param duration          : Time   = 60min
+    param cost              : Money  = 20USD
+    param coating_thickness : Length = 0.020mm
+    param achievable_finish : Length = 0.0010mm
+}
+
+// Heat treating: stress-relief anneal.
+structure def AnnealingProcess : HeatTreating {
+    param duration              : Time        = 2h
+    param cost                  : Money       = 35USD
+    param treatment_temperature : Temperature = 800K
+    param hold_duration         : Time        = 1h
+}
+
+// ── 2. DFMRule conformers — one each at Info / Warning / Error ────────────────
+
+// Informational: minimum feature size advisory.
+structure def FeatureSizeInfoRule : DFMRule {
+    param rule_name  : String      = "min_feature_size_advisory"
+    param severity   : DFMSeverity = DFMSeverity.Info
+    param applies_to : Process     = MilledAluminium()
+}
+
+// Warning: minimum wall thickness.
+structure def WallThicknessWarningRule : DFMRule {
+    param rule_name  : String      = "min_wall_thickness"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = StampedSheetMetal()
+}
+
+// Error: draft angle required for die release.
+structure def DraftAngleErrorRule : DFMRule {
+    param rule_name  : String      = "draft_angle_required"
+    param severity   : DFMSeverity = DFMSeverity.Error
+    param applies_to : Process     = StampedSheetMetal()
+}
+
+// ── 3. Scalar DFM constraints (pure-scalar — no geometry kernel required) ─────
+//
+// All constraints here evaluate to a definite Satisfied or Violated result under
+// the no-kernel engine because no Solid param is referenced in the predicate.
+//
+// Curated OK / VIOLATED pairs per constraint def:
+//   Manufacturable:      1.0mm >= 0.5mm → Satisfied;  0.2mm < 0.5mm → Violated
+//   BendManufacturable:  3.0mm >= 2.0mm → Satisfied;  1.0mm < 2.0mm → Violated
+//   DrawManufacturable: 20.0mm <= 30.0mm → Satisfied; 40.0mm > 30.0mm → Violated
+//   DraftManufacturable: 3.0deg >= 2.0deg → Satisfied; 1.0deg < 2.0deg → Violated
+
+structure def DFMScalarChecks {
+    // Process instances bound for use as constraint arguments.
+    let milled = MilledAluminium()
+    let formed = StampedSheetMetal()
+
+    // Manufacturable #0: Satisfied — feature 1.0mm meets milling min 0.5mm.
+    constraint Manufacturable(measured: 1.0mm, capability: milled.min_feature_size)
+
+    // Manufacturable #1: Violated — feature 0.2mm is below milling min 0.5mm.
+    constraint Manufacturable(measured: 0.2mm, capability: milled.min_feature_size)
+
+    // BendManufacturable #0: Satisfied — 3.0mm bend radius exceeds forming min 2.0mm.
+    constraint BendManufacturable(proc: formed, bend_radius: 3.0mm)
+
+    // BendManufacturable #1: Violated — 1.0mm bend radius is below forming min 2.0mm.
+    constraint BendManufacturable(proc: formed, bend_radius: 1.0mm)
+
+    // DrawManufacturable #0: Satisfied — 20mm draw depth within forming max 30mm.
+    constraint DrawManufacturable(proc: formed, draw_depth: 20.0mm)
+
+    // DrawManufacturable #1: Violated — 40mm draw depth exceeds forming max 30mm.
+    constraint DrawManufacturable(proc: formed, draw_depth: 40.0mm)
+
+    // DraftManufacturable #0: Satisfied — 3.0deg draft meets forming minimum 2.0deg.
+    constraint DraftManufacturable(proc: formed, draft: 3.0deg)
+
+    // DraftManufacturable #1: Violated — 1.0deg draft is below forming minimum 2.0deg.
+    constraint DraftManufacturable(proc: formed, draft: 1.0deg)
+}
+
+// ── 4. Build-volume constraints (geometry-backed; OCCT kernel required) ────────
+//
+// FitsBuildVolume wraps both Solid args in bounding_box(...) inside the constraint
+// def predicate, so OCCT must build the geometry before the constraint resolves.
+//
+// Without OCCT: both constraints are Satisfaction::Indeterminate.
+// With OCCT:    FittingPart → Satisfied, OversizedPart → Violated.
+//
+// The companion OCCT-gated test (process_dfm_e2e.rs §b) verifies the flip.
+
+// Fitting part: 100×100×150 mm fits inside the 220×220×250 mm FDM build envelope.
+structure def FittingPart {
+    let proc       = FDMNylonPart()
+    param part     : Solid = box(100mm, 100mm, 150mm)
+    // 100 ≤ 220, 100 ≤ 220, 150 ≤ 250 on every axis → Satisfied under OCCT.
+    constraint FitsBuildVolume(proc: proc, part: part)
+}
+
+// Oversized part: 250 mm on X exceeds the 220 mm envelope → Violated under OCCT.
+// The FitsBuildVolume constraint fires at its default DFMSeverity.Warning (W_DFM).
+structure def OversizedPart {
+    let proc   = FDMNylonPart()
+    param part : Solid = box(250mm, 100mm, 100mm)
+    // 250 > 220 on X axis → Violated under OCCT.
+    // Default severity (no 3rd arg) → W_DFM_BUILD_VOLUME diagnostic.
+    constraint FitsBuildVolume(proc: proc, part: part)
+}
+
+// ── 5. DFMSeverity bridge — exercises I/E_DFM at non-default levels ───────────
+//
+// The shipped FitsBuildVolume constraint def omits the 3rd arg, so a violation
+// through it always defaults to Severity::Warning (W_DFM_BUILD_VOLUME).
+// These direct 3-arg fits_build_volume let-bindings use DFMSeverity.Error and
+// DFMSeverity.Info on a deliberately-undersized envelope (10mm) vs the part's
+// bounding box (250mm cube) to produce E_DFM and I_DFM diagnostics concretely.
+//
+// Without OCCT: bounding_box(box(...)) → Value::Undef → fits_build_volume(Undef,…)
+// → Value::Undef → E_DFM_BUILD_VOLUME usage-error diagnostic (always Error severity).
+// With OCCT: bounding_box resolves → Bool(false) → E_DFM / I_DFM respectively.
+//
+// The OCCT-gated assertions in process_dfm_e2e.rs §b verify the correct severity.
+
+structure def DFMSeverityBridge {
+    param big_part  : Solid = box(250mm, 250mm, 250mm)
+    param tiny_env  : Solid = box(10mm, 10mm, 10mm)
+
+    // DFMSeverity.Error direct call → E_DFM_BUILD_VOLUME (Error severity).
+    let check_error = fits_build_volume(
+        bounding_box(big_part),
+        bounding_box(tiny_env),
+        DFMSeverity.Error
+    )
+
+    // DFMSeverity.Info direct call → I_DFM_BUILD_VOLUME (Info severity).
+    let check_info = fits_build_volume(
+        bounding_box(big_part),
+        bounding_box(tiny_env),
+        DFMSeverity.Info
+    )
+}
