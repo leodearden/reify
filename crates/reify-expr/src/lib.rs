@@ -962,6 +962,16 @@ fn materialize_template_lets(
     // from the already-populated `fields` (params + defaults filled in by
     // eval_structure_instance_ctor).  The child scope lets the let exprs
     // reference sibling params by their ValueCellId (entity == type_name).
+    //
+    // PERFORMANCE NOTE: this loop performs an O(fields) deep-clone — one
+    // `value.clone()` per param/default in the struct.  For structures with
+    // many fields instantiated in hot loops this adds up.  In practice,
+    // tolerancing-style derives are cheap arithmetic and this path is gated on
+    // `!lets.is_empty()` in the caller, so structs with no derived lets pay
+    // nothing.  If profiling ever shows this on a hot path, consider an
+    // overlay/COW scope that borrows from `fields` directly rather than copying
+    // every entry (analogous to how `ctx.with_scope` borrows without cloning the
+    // full value map).
     let mut child = ValueMap::new();
     for (member, value) in fields.iter() {
         child.insert(ValueCellId::new(type_name, member.as_str()), value.clone());

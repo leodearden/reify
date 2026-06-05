@@ -4050,8 +4050,24 @@ pub(crate) fn build_structure_def_skeleton(
     // already recorded and silently skip its Info diagnostic (task 3895 bugfix).
     let local_alias_registry = alias_registry.clone();
 
-    // Neutral scope: unit registry set so quantity literals resolve;
-    // no sibling params registered (neutral-scope semantics).
+    // Compilation scope: unit registry set so quantity literals resolve.
+    // Params are registered incrementally in the first pass (see first-pass
+    // loop below), so that Let members compiled in the second pass can resolve
+    // sibling-param references without producing poison exprs.
+    //
+    // NOTE: `set_template_registry` is intentionally NOT called here.  The
+    // skeleton runs in `phase_functions`, before the full template registry is
+    // available (templates are built IN this same phase from the skeletons).
+    // As a consequence, a derived let whose RHS constructs another structure
+    // (e.g. `let h = InnerStruct(...)`) will compile to a generic FunctionCall
+    // rather than a StructureInstanceCtor, and will therefore NOT carry
+    // InnerStruct's own lets — introducing a narrow sub-consistency gap for
+    // nested-ctor-in-let cases on the fn-returned path.  The current test suite
+    // only exercises scalar / geometry derived lets in fn-returned structs
+    // (make_dt / make_g / make_h) so this gap is latent but untested.
+    // Future fix: pass the partially-built registry once all skeletons have been
+    // collected (a two-sub-pass split of phase_functions).  Until then, the
+    // limitation is documented here so a future regression is visible.
     let mut scope = CompilationScope::new(&structure.name);
     scope.set_unit_registry(unit_registry);
 
@@ -4187,6 +4203,19 @@ pub(crate) fn build_structure_def_skeleton(
             }
             // Per-decl guarded lets belong in guarded_groups on the authoritative path;
             // exclude them here so value_cells (and thus ctor `lets`) are path-consistent.
+            //
+            // SUB-CONSISTENCY GAP (accepted, out-of-scope for task-4342):
+            // A guarded member (e.g. `let active_limit = nominal - dev where active`) is
+            // present in the authoritative template's `guarded_groups` and is materialised
+            // via `elaborate_child_lets_only` on the `sub` path when its guard evaluates to
+            // true.  On the ctor / fn-returned / param-held paths the member is simply
+            // absent from `ctor.lets`, so `instance.active_limit` yields Undef regardless
+            // of the guard condition.  This is intentional for task-4342 — the eager
+            // materialisation strategy does not carry the guard expression, so evaluating it
+            // conditionally would require a different IR representation.  A follow-up task
+            // should either (a) extend the `lets` vec to carry `(name, expr, Option<guard>)`
+            // and conditionally evaluate guarded lets in `materialize_template_lets`, or
+            // (b) accept the gap and document it as "guarded members are sub-only".
             if let_decl.where_clause.is_some() {
                 continue;
             }
