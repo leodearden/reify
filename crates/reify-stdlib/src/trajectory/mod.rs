@@ -18,6 +18,11 @@ mod sampling;
 mod simulate;
 mod spline;
 mod tots;
+// `pub(crate)` so the crate-root re-exports in `lib.rs` can name the
+// `trampoline` path segment for the cache keys + `*_value` composers that
+// `reify-eval/src/trajectory_ops.rs` consumes (task π, prereq-1). Mirrors the
+// `input_shape` visibility above and `dynamics::trampoline`.
+pub(crate) mod trampoline;
 
 /// Evaluate a trajectory stdlib function by name.
 ///
@@ -63,6 +68,22 @@ pub(crate) fn eval_trajectory(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "gcode_import" | "gcode_import_lower" => Some(gcode_import::eval_gcode_import(args)),
         "input_shape" | "input_shape_apply" => Some(input_shape::eval_input_shape(args)),
+        // η EndEffectorTrack accessor intrinsics (task π) — the `*_at` delegates
+        // the trajectory.ri accessor bodies call. Wrong arity → Undef (the
+        // bad-args convention); a malformed track / out-of-range location is
+        // handled gracefully inside each impl (empty list / 0, no panic).
+        "end_effector_track_at" => Some(match args {
+            [track, location] => trampoline::end_effector_track_at(track, location),
+            _ => Value::Undef,
+        }),
+        "deviation_from_nominal_at" => Some(match args {
+            [track, location] => trampoline::deviation_from_nominal_at(track, location),
+            _ => Value::Undef,
+        }),
+        "peak_deviation_at" => Some(match args {
+            [track, location] => trampoline::peak_deviation_at(track, location),
+            _ => Value::Undef,
+        }),
         "piecewise_polynomial"
         | "evaluate_profile"
         | "evaluate_profile_dot"

@@ -1,0 +1,52 @@
+// Stdlib: `@optimized fn simulate_trajectory` (`std.trajectory.fns`)
+//
+// PRD: docs/prds/v0_3/trajectory-input-shaping.md §6.1, §11 Phase 3 θ / π.
+//
+// WHY this is a separate module (phase-order, mirrors std.modal.analysis.fns):
+//   In the Reify compiler, `phase_functions` runs before `phase_entities`
+//   within a single module. `simulate_trajectory`'s placeholder body
+//   constructs `EndEffectorTrack()` (a no-arg ctor — like `ModalResult()` in
+//   modal_analysis_fns.ri, which likewise carries no per-field defaults), which
+//   requires `EndEffectorTrack`'s `structure def` to already be resolved in the
+//   prelude template registry. When the function lives alongside the struct
+//   definition in `std.trajectory`, `phase_functions` runs before the
+//   `EndEffectorTrack` `structure def` is processed and the type is not yet
+//   resolvable.
+//
+//   Solution: declare the struct types in `std.trajectory` (loaded first),
+//   then declare `simulate_trajectory` here in `std.trajectory.fns` (loaded
+//   immediately after). By the time `phase_functions` processes this file,
+//   `EndEffectorTrack`, `Profile`, and `ModalResult` are all in the prelude
+//   template registry and the ctor resolves. Same split + rationale as the
+//   `std.modal.analysis` / `std.modal.analysis.fns` split
+//   (modal_analysis_fns.ri:6-20, esc-3851-32).
+
+// ── simulate_trajectory ───────────────────────────────────────────────────────
+
+// `@optimized("trajectory::simulate")` causes the engine to insert a
+// ComputeNode with target == "trajectory::simulate" rather than body-inlining.
+// The trampoline lives at crates/reify-eval/src/trajectory_ops.rs (task π); it
+// marshals (profile, mech, modal) through the pure forward-pass simulator
+// (`reify-stdlib/src/trajectory/{trampoline,simulate}.rs`) and returns a real
+// `EndEffectorTrack` `Value`. The placeholder body below is NEVER evaluated on
+// the registered path — dispatch replaces the whole call with the ComputeNode.
+//
+// Signature deviation from PRD §6.1 `(profile, mechanism, modal_result)`:
+//   `mech : Real` — the kinematic `Mechanism` type lives in `std.kinematic`,
+//     which is loaded AFTER `std.trajectory(.fns)` in the prelude sequence and
+//     so is unavailable here. Uses the bare `Real` placeholder, the uniform
+//     convention across this module (`PiecewisePolynomialProfile.mechanism :
+//     Real`, `EndEffectorTrack.mechanism : Real` — trajectory.ri:261,319).
+//     TODO(mechanism-type): tighten to `Mechanism` once the kinematic-
+//     completion PRD lands.
+//   `modal : ModalResult` — in-prelude (`std.modal.analysis` loads earlier).
+//
+// Unregistered-engine fallback: if the "trajectory::simulate" trampoline is not
+// registered, the engine body-inlines this placeholder (+ an Error diagnostic),
+// yielding an empty `EndEffectorTrack()`. Every test needing REAL dispatch must
+// call `reify_eval::compute_targets::register_compute_fns(&mut engine)` first
+// (plan design-decision-10).
+@optimized("trajectory::simulate")
+pub fn simulate_trajectory(p: Profile, mech: Real, modal: ModalResult) -> EndEffectorTrack {
+    EndEffectorTrack()
+}

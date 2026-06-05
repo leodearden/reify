@@ -96,6 +96,24 @@ pub use analysis::compute_von_mises_3x3;
 /// train at exactly the ζ it was constructed from.
 pub use trajectory::impulse_shaper;
 pub use trajectory::input_shape::{build_train_for_shaper, shaper_damping_ratio};
+/// Public re-export of the trajectory ComputeNode trampolines' pure content-hash
+/// cache keys (task π). `reify-eval/src/trajectory_ops.rs` keys its warm-state
+/// result cache on [`SimulateTrajectoryCacheKey`] (`simulate_trajectory`) and
+/// [`InputShapeCacheKey`] (`input_shape`) — the keys that decide a cache HIT vs
+/// MISS (identical inputs ⇒ HIT; a profile control-point change ⇒ MISS). The
+/// `trajectory::trampoline` module is `pub(crate)` (the θ/κ core types it
+/// marshals are `pub(crate)`), so these keys reach reify-eval only via this
+/// crate-root re-export — mirroring the `build_train_for_shaper` boundary above.
+/// The `Value`→`Value` composers (`simulate_trajectory_value` /
+/// `input_shape_value`) join this re-export as they land (steps 14 / 16):
+/// [`simulate_trajectory_value`] runs the profile/mech/modal → `EndEffectorTrack`
+/// forward-pass pipeline that `reify-eval`'s `simulate_trajectory_trampoline`
+/// wraps, and [`input_shape_value`] runs the profile/shaper → shaped-`Profile`
+/// command-shaping pipeline that `input_shape_trampoline` wraps (the θ/κ core
+/// types they marshal are `pub(crate)`, so they must live here).
+pub use trajectory::trampoline::{
+    input_shape_value, simulate_trajectory_value, InputShapeCacheKey, SimulateTrajectoryCacheKey,
+};
 
 #[cfg(test)]
 #[macro_use]
