@@ -427,8 +427,9 @@ fn located_port_trait_surface() {
 // ─── step-5: std/ports/mechanical loads + marker traits ──────────────────────
 
 /// std/ports/mechanical must load with zero Severity::Error diagnostics.
-/// MechanicalPort refines exactly ["Port"]; Bore, Shaft, StructurePort each
-/// refine exactly ["MechanicalPort"] with empty own required_members.
+/// MechanicalPort refines exactly ["LocatedPort"] (step-8 restructure); Bore,
+/// Shaft, StructurePort each refine exactly ["MechanicalPort"] with empty own
+/// required_members.
 #[test]
 fn std_ports_mechanical_loads_with_no_errors_and_marker_traits() {
     let module = load_module("std/ports/mechanical");
@@ -447,13 +448,17 @@ fn std_ports_mechanical_loads_with_no_errors_and_marker_traits() {
     let mechanical_port = find_trait("std/ports/mechanical", "MechanicalPort");
     assert_eq!(
         mechanical_port.refinements.as_slice(),
-        ["Port".to_string()].as_slice(),
-        "MechanicalPort should refine exactly [Port], got: {:?}",
+        ["LocatedPort".to_string()].as_slice(),
+        "MechanicalPort should refine exactly [LocatedPort] (step-8 restructure: a \
+         mechanical port is spatially located), got: {:?}",
         mechanical_port.refinements
     );
+    // max_load/max_torque carry `= none` defaults, so they live in `defaults`,
+    // not `required_members` (which holds only members with no default).
     assert!(
         mechanical_port.required_members.is_empty(),
-        "MechanicalPort should have no own required_members, got: {:?}",
+        "MechanicalPort should have no own required_members (max_load/max_torque \
+         are Option<…> = none, hence in defaults), got: {:?}",
         mechanical_port
             .required_members
             .iter()
@@ -476,6 +481,76 @@ fn std_ports_mechanical_loads_with_no_errors_and_marker_traits() {
             name,
             t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
         );
+    }
+}
+
+// ─── step-7 (task β): MechanicalPort optional ratings ────────────────────────
+
+/// MechanicalPort carries two optional ratings as `Option<…> = none` defaults:
+///   max_load   : Option<Force>  = none
+///   max_torque : Option<Torque> = none
+/// Both live in `defaults` (DefaultKind::Param), not required_members.
+///
+/// Mirrors signal_port_trait_surface's impedance-default assertion.
+/// RED: MechanicalPort has an empty body (no such defaults).
+#[test]
+fn mechanical_port_optional_ratings_surface() {
+    let t = find_trait("std/ports/mechanical", "MechanicalPort");
+
+    // max_load : Option<Force> = none
+    let max_load = t
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("max_load"))
+        .expect("MechanicalPort.defaults should contain an entry named 'max_load' (= none)");
+    match &max_load.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: DimensionVector::FORCE
+                })),
+                "MechanicalPort.max_load default cell_type must be Type::Option(Scalar<FORCE>)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "MechanicalPort.max_load default_decl must have a default expression (none)"
+            );
+        }
+        other => panic!(
+            "MechanicalPort.max_load default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
+
+    // max_torque : Option<Torque> = none  (Torque = Force·Length/Angle)
+    let expected_torque_dim = DimensionVector::FORCE
+        .mul(&DimensionVector::LENGTH)
+        .div(&DimensionVector::ANGLE);
+    let max_torque = t
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("max_torque"))
+        .expect("MechanicalPort.defaults should contain an entry named 'max_torque' (= none)");
+    match &max_torque.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: expected_torque_dim
+                })),
+                "MechanicalPort.max_torque default cell_type must be \
+                 Type::Option(Scalar<Torque>) (Force·Length/Angle)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "MechanicalPort.max_torque default_decl must have a default expression (none)"
+            );
+        }
+        other => panic!(
+            "MechanicalPort.max_torque default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
     }
 }
 
