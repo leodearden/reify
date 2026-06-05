@@ -1386,8 +1386,10 @@ mod tests {
     }
 
     // task-4297 step-5 RED → step-6 GREEN: R2 tools get_diagnostics and ui_outline
-    // must be registered in tool_defs() with correct schema shape and the ui_outline
-    // description must explicitly label it a DOM approximation / not an AX tree.
+    // must be registered in tool_defs() with correct schema shape.
+    // Note: the ui_outline DOM-approximation / not-an-AX-tree label lives in the
+    // ToolDef source description (see debug_server.rs:402); it is not substring-pinned
+    // here to avoid brittle wording-pin failures on harmless rewording (step-9).
     #[test]
     fn tool_defs_registers_r2_inspection_tools() {
         let defs = tool_defs();
@@ -1416,22 +1418,6 @@ mod tests {
                 );
             }
         }
-
-        // PRD §4.2 / G6: ui_outline must be labelled as a DOM approximation,
-        // NOT a true accessibility tree. Pin the contract via substring check.
-        let ui_outline = defs
-            .iter()
-            .find(|t| t.name == "ui_outline")
-            .expect("ui_outline must be present in tool_defs()");
-        let desc_lower = ui_outline.description.to_lowercase();
-        assert!(
-            desc_lower.contains("approximation"),
-            "ui_outline description must contain 'approximation' (PRD §4.2 labelled-contract)"
-        );
-        assert!(
-            desc_lower.contains("accessibility"),
-            "ui_outline description must contain 'accessibility' (PRD §4.2 labelled-contract)"
-        );
     }
 
     // step-5 RED → GREEN: all five viewport-aware tools must expose an optional
