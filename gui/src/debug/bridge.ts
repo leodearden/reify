@@ -9,6 +9,7 @@ import type { RawGuiState, DiagnosticInfo } from '../types';
 import { Box3, Vector3 } from 'three';
 import type { Mesh, BufferGeometry } from 'three';
 import { testMode, setTestMode } from './testMode';
+import { getConsoleErrors, clearConsoleErrors } from './consoleErrors';
 import { toPng } from 'html-to-image';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
@@ -120,6 +121,69 @@ function shapeDiagnostic(d: DiagnosticInfo) {
     code: d.code,
     file_path: d.file_path,
     range: { line: d.line, column: d.column, end_line: d.end_line, end_column: d.end_column },
+  };
+}
+
+/**
+ * Returns true iff the element is visible in the render tree.
+ * Reuses the existing isEffectivelyHidden() ancestor walk (so collapsed/hidden
+ * panels count as not-visible) plus the rect.width>0 convention shared with
+ * describeElement/dom_query/list_elements.
+ */
+function isElementVisible(el: Element): boolean {
+  return !isEffectivelyHidden(el) && (el as HTMLElement).getBoundingClientRect().width > 0;
+}
+
+/**
+ * Poll predicate at ~60Hz until it returns true or the deadline passes.
+ * No final requestAnimationFrame tick (DOM/store predicates are satisfied
+ * by current state and need no paint flush; avoids rAF stubbing in tests).
+ */
+async function pollUntil(
+  predicate: () => boolean,
+  timeoutMs: number,
+): Promise<{ ok: true; waited_ms: number } | { error: 'timeout' }> {
+  const start = performance.now();
+  while (true) {
+    if (predicate()) {
+      return { ok: true, waited_ms: Math.round(performance.now() - start) };
+    }
+    if (performance.now() - start >= timeoutMs) {
+      return { error: 'timeout' };
+    }
+    await new Promise((r) => setTimeout(r, 16));
+  }
+}
+
+/**
+ * Build a selector predicate for wait_for_selector / the selector arm of wait_for.
+ * Resolves el = document.querySelector(`[data-testid="${CSS.escape(testId)}"]`).
+ * 'visible': el exists AND isElementVisible AND (text===undefined OR textContent.trim()===text)
+ * 'gone':    el===null OR !isElementVisible(el)
+ */
+function buildSelectorPredicate(opts: {
+  testId: string;
+  state: 'visible' | 'gone';
+  text?: string;
+}): () => boolean {
+  const { testId, state, text } = opts;
+  // CSS.escape is not available in all environments (e.g. jsdom); fall back to
+  // a minimal escape that handles the most common testId characters safely.
+  const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(testId)
+    : testId.replace(/["\\]/g, '\\$&');
+  const sel = `[data-testid="${escaped}"]`;
+  return () => {
+    const el = document.querySelector(sel);
+    if (state === 'gone') {
+      return el === null || !isElementVisible(el);
+    }
+    // state === 'visible'
+    if (!el || !isElementVisible(el)) return false;
+    if (text !== undefined) {
+      return (el as HTMLElement).textContent?.trim() === text;
+    }
+    return true;
   };
 }
 
@@ -592,6 +656,115 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       }
 
       return { ok: true, path };
+    },
+
+    wait_for: async (params) => {
+      const predicate = params.predicate;
+      if (predicate === null || typeof predicate !== 'object' || Array.isArray(predicate)) {
+        return { error: 'predicate {kind} required' };
+      }
+      const pred = predicate as Record<string, unknown>;
+      const kind = pred.kind;
+      let timeoutMs = 5000;
+      if (params.timeout_ms !== undefined) {
+        if (
+          typeof params.timeout_ms !== 'number' ||
+          !Number.isInteger(params.timeout_ms) ||
+          params.timeout_ms <= 0
+        ) {
+          return { error: 'timeout_ms must be a positive integer' };
+        }
+        timeoutMs = params.timeout_ms;
+      }
+
+      if (kind === 'selector') {
+        const testId = pred.testId;
+        if (typeof testId !== 'string' || testId === '') {
+          return { error: 'predicate.testId is required for selector kind' };
+        }
+        const state = (pred.state ?? 'visible') as 'visible' | 'gone';
+        const text = typeof pred.text === 'string' ? pred.text : undefined;
+        return pollUntil(buildSelectorPredicate({ testId, state, text }), timeoutMs);
+      }
+
+      if (kind === 'store') {
+        const path = pred.path;
+        const equals = pred.equals;
+        if (typeof path !== 'string' || path === '') {
+          return { error: 'predicate.path is required for store kind' };
+        }
+        // equals is required: Object.is uses primitive-identity (object/array values
+        // can never match), and an omitted equals silently matches any undefined path.
+        if (equals === undefined) {
+          return { error: 'predicate.equals is required for store kind' };
+        }
+        // Guard against unknown roots so a typo'd path surfaces a clear error
+        // instead of silently timing out. layout.state is included; viewState has no .state.
+        const knownStoreRoots = new Set(['engine', 'editor', 'selection', 'claude', 'layout']);
+        const rootKey = path.split('.')[0];
+        if (!knownStoreRoots.has(rootKey)) {
+          return {
+            error: `unknown store root '${rootKey}'; addressable roots: engine, editor, selection, claude, layout`,
+          };
+        }
+        // Build a snapshot object and walk a dotted path against it.
+        // Snapshot is re-evaluated each poll tick via closure.
+        const getByPath = (root: Record<string, unknown>, dotted: string): unknown => {
+          return dotted.split('.').reduce<unknown>((acc, key) => {
+            if (acc !== null && typeof acc === 'object') {
+              return (acc as Record<string, unknown>)[key];
+            }
+            return undefined;
+          }, root);
+        };
+        return pollUntil(() => {
+          const snapshot: Record<string, unknown> = {
+            engine: ctx.stores.engine.state,
+            editor: ctx.stores.editor.state,
+            selection: ctx.stores.selection.state,
+            claude: ctx.stores.claude.state,
+            layout: ctx.stores.layout.state,
+          };
+          return Object.is(getByPath(snapshot, path), equals);
+        }, timeoutMs);
+      }
+
+      return { error: `unknown predicate kind: ${String(kind)}` };
+    },
+
+    wait_for_selector: async (params) => {
+      const testId = params.testId;
+      if (typeof testId !== 'string' || testId === '') {
+        return { error: 'testId is required' };
+      }
+      const stateParam = params.state ?? 'visible';
+      if (stateParam !== 'visible' && stateParam !== 'gone') {
+        return { error: 'state must be visible|gone' };
+      }
+      const text = typeof params.text === 'string' ? params.text : undefined;
+      let timeoutMs = 5000;
+      if (params.timeout_ms !== undefined) {
+        if (
+          typeof params.timeout_ms !== 'number' ||
+          !Number.isInteger(params.timeout_ms) ||
+          params.timeout_ms <= 0
+        ) {
+          return { error: 'timeout_ms must be a positive integer' };
+        }
+        timeoutMs = params.timeout_ms;
+      }
+      return pollUntil(
+        buildSelectorPredicate({ testId, state: stateParam as 'visible' | 'gone', text }),
+        timeoutMs,
+      );
+    },
+
+    list_console_errors: (params) => {
+      const errors = getConsoleErrors();
+      if (params.clear === true) {
+        clearConsoleErrors();
+      }
+      return { errors, count: errors.length };
     },
 
     wait_for_idle: async (params) => {

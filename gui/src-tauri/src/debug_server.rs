@@ -405,6 +405,45 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {}
             }),
         },
+        // --- R3 tools (task-4298) — console-error capture + wait_for/wait_for_selector ---
+        ToolDef {
+            name: "list_console_errors",
+            description: "Return captured console.error/console.warn/window.onerror/unhandledrejection entries from the always-on ring buffer installed at app startup. Returns { errors: ConsoleErrorEntry[], count: number }. Optional { clear: true } drains the buffer after returning. Useful for detecting JS errors that occurred before or after the debug bridge initialized.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "clear": { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "wait_for",
+            description: "Poll until a predicate is satisfied or a timeout elapses. Returns { ok: true, waited_ms: number } on success or { error: 'timeout' } when the deadline expires. Predicate is a tagged union: { kind: 'selector', testId, state: 'visible'|'gone', text? } for DOM presence checks, or { kind: 'store', path, equals } for store dotted-path equality checks. Optional timeout_ms (default 5000, must be positive).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "predicate": {
+                        "type": "object",
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text? } or { kind: 'store', path, equals }"
+                    },
+                    "timeout_ms": { "type": "integer" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "wait_for_selector",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional timeout_ms (default 5000, must be positive).",
+            input_schema: json!({
+                "type": "object",
+                "required": ["testId"],
+                "properties": {
+                    "testId": { "type": "string" },
+                    "state": { "type": "string", "enum": ["visible", "gone"] },
+                    "text": { "type": "string" },
+                    "timeout_ms": { "type": "integer" }
+                }
+            }),
+        },
     ]
 }
 
@@ -495,8 +534,12 @@ async fn dispatch_tool(
         "mesh_stats" => handle_mesh_stats(state).await,
         "open_file" => handle_open_file(state, params).await,
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
+        "wait_for" => handle_wait_for(state, params).await,
+        "wait_for_selector" => handle_wait_for_selector(state, params).await,
         _ => {
-            // Frontend-mediated: delegate to DebugBridge
+            // Frontend-mediated: delegate to DebugBridge.
+            // list_console_errors falls through here — it returns instantly so
+            // the default 5s query_frontend timeout is more than sufficient.
             state.debug_bridge.query_frontend(name, params).await
         }
     }
@@ -879,6 +922,64 @@ async fn handle_wait_for_idle(state: &DebugServerState, params: Value) -> Result
     state
         .debug_bridge
         .query_frontend_with_timeout("wait_for_idle", canonical_params, rust_timeout)
+        .await
+}
+
+async fn handle_wait_for(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    // Validate and canonicalize timeout_ms. Default 5000ms (matching the frontend default).
+    let timeout_ms: u64 = match params.get("timeout_ms") {
+        None => 5_000,
+        Some(v) => match v.as_u64().filter(|&n| n > 0) {
+            Some(n) => n,
+            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
+        },
+    };
+
+    // Build canonical params: pass predicate through as-is so the frontend parses it.
+    let canonical_params = json!({
+        "predicate": params.get("predicate").cloned().unwrap_or(Value::Null),
+        "timeout_ms": timeout_ms
+    });
+    // Add a 5-second buffer so the Rust oneshot fires *after* the frontend
+    // has had a chance to return its own {error: "timeout"} response.
+    let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
+    state
+        .debug_bridge
+        .query_frontend_with_timeout("wait_for", canonical_params, rust_timeout)
+        .await
+}
+
+async fn handle_wait_for_selector(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    // Validate and canonicalize timeout_ms. Default 5000ms.
+    let timeout_ms: u64 = match params.get("timeout_ms") {
+        None => 5_000,
+        Some(v) => match v.as_u64().filter(|&n| n > 0) {
+            Some(n) => n,
+            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
+        },
+    };
+
+    // Build canonical params and pass through to the frontend.
+    let mut canonical_params = serde_json::Map::new();
+    canonical_params.insert("timeout_ms".to_string(), json!(timeout_ms));
+    if let Some(v) = params.get("testId") {
+        canonical_params.insert("testId".to_string(), v.clone());
+    }
+    if let Some(v) = params.get("state") {
+        canonical_params.insert("state".to_string(), v.clone());
+    }
+    if let Some(v) = params.get("text") {
+        canonical_params.insert("text".to_string(), v.clone());
+    }
+    let canonical_params = Value::Object(canonical_params);
+
+    let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
+    state
+        .debug_bridge
+        .query_frontend_with_timeout("wait_for_selector", canonical_params, rust_timeout)
         .await
 }
 
@@ -1418,6 +1519,107 @@ mod tests {
                 );
             }
         }
+    }
+
+    // task-4298 step-9 RED → step-10 GREEN: R3 tools list_console_errors, wait_for,
+    // wait_for_selector must be registered in tool_defs() with correct schema shapes.
+    // Schema-shape-only assertions — NO prose/substring pinning of descriptions (step-9 convention).
+    #[test]
+    fn tool_defs_includes_list_console_errors() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "list_console_errors")
+            .expect("list_console_errors must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "list_console_errors must have a non-empty description"
+        );
+        // 'clear' is optional — if a required array exists it must NOT force 'clear'
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("clear")),
+                "'clear' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_defs_includes_wait_for() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "wait_for")
+            .expect("wait_for must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "wait_for must have a non-empty description"
+        );
+        // Must have a 'predicate' property
+        assert!(
+            schema["properties"]["predicate"].is_object(),
+            "properties.predicate must be present and an object"
+        );
+        // timeout_ms is optional — if a required array exists it must NOT force timeout_ms
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("timeout_ms")),
+                "'timeout_ms' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_defs_includes_wait_for_selector() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "wait_for_selector")
+            .expect("wait_for_selector must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "wait_for_selector must have a non-empty description"
+        );
+        // testId must be a string property
+        assert_eq!(
+            schema["properties"]["testId"]["type"].as_str(),
+            Some("string"),
+            "properties.testId.type must be 'string'"
+        );
+        // testId IS required
+        let required = schema["required"]
+            .as_array()
+            .expect("input_schema.required must be an array for wait_for_selector");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("testId")),
+            "'testId' must be listed in required"
+        );
+        // timeout_ms is optional — must NOT be required
+        assert!(
+            !required.iter().any(|v| v.as_str() == Some("timeout_ms")),
+            "'timeout_ms' must NOT be listed in required (it is optional)"
+        );
     }
 
     // step-5 RED → GREEN: all five viewport-aware tools must expose an optional
