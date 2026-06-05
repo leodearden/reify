@@ -28,11 +28,13 @@
 //     PRD §1 frozen geometry-query family (Phase 1 typecheck-only; eval-time
 //     dispatch arrives in Phase 6 / GHR-ζ, currently produces `Value::Undef`).
 //   - `let centroid = centroid(geometry)` — same status as `mass`.
-//   - `constraint material.density > 0` — preserves the "Physical injects at
-//     least one positivity constraint" invariant from the legacy shape
+//   - `constraint material.density > 0kg/m^3` — preserves the "Physical injects
+//     at least one positivity constraint" invariant from the legacy shape
 //     (the prior `constraint volume > 0` is gone because `volume` is no
 //     longer a flat param; a geometry-derived positivity will be revived
-//     in Phase 6).
+//     in Phase 6). RHS is dimensioned (kg/m³) so `eval_cmp` dim-equality
+//     succeeds at runtime after task #3111 tightened Material.density from
+//     Real to Density; a bare `0` yields Indeterminate per esc-3115-112.
 //
 // Historical note: prior to task 1876 this refined a trait named `Material`,
 // later renamed to `MaterialSpec`. PRD Phase 1 retires the trait edge
@@ -43,7 +45,7 @@ trait Physical {
     param material : Material
     let mass = volume(geometry) * material.density
     let centroid = centroid(geometry)
-    constraint material.density > 0
+    constraint material.density > 0kg/m^3
 }
 
 // ── Rigidity ────────────────────────────────────────────────────────────────

@@ -75,12 +75,13 @@ fn assert_constraint_op(template: &TopologyTemplate, member: &str, expected: Bin
 }
 
 /// Assert that `template.constraints` contains the spec-shape Physical
-/// `material.density > 0` constraint (post-GHR-α / task 3603), positively
-/// pinning its lowered shape:
+/// `material.density > 0kg/m^3` constraint (post-GHR-α / task 3603; RHS
+/// dimensioned after task #3111 tightened Material.density from Real to
+/// Density), positively pinning its lowered shape:
 ///
 ///   `BinOp { op: Gt, left: IndexAccess { object: ValueRef(material),
 ///                                        index: Literal(String("density")) },
-///            right: Literal(Int(0) | Real(~0)) }`
+///            right: Literal(Int(0) | Real(~0) | Scalar{si_value≈0, ..}) }`
 ///
 /// This is the shape produced by SIR-α's struct-member access lowering
 /// (`expr.rs:1948-1964`), which turns `material.density` into
@@ -116,10 +117,15 @@ fn assert_density_positive_constraint_present(template: &TopologyTemplate) {
             if key != "density" {
                 return false;
             }
-            // Right side: literal 0 (Int or Real near-zero).
+            // Right side: zero literal — Int(0), Real(~0), or Scalar{si_value≈0}
+            // (the last form is produced after task #3111 tightened the RHS to
+            // `0kg/m^3` so that `eval_cmp` dim-equality succeeds at runtime).
             match &right.kind {
                 CompiledExprKind::Literal(Value::Int(v)) => *v == 0,
                 CompiledExprKind::Literal(Value::Real(v)) => v.abs() < 1e-9,
+                CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => {
+                    si_value.abs() < 1e-9
+                }
                 _ => false,
             }
         })
@@ -127,7 +133,7 @@ fn assert_density_positive_constraint_present(template: &TopologyTemplate) {
 
     assert!(
         !matches.is_empty(),
-        "expected an injected `material.density > 0` constraint with shape \
+        "expected an injected `material.density > 0kg/m^3` constraint with shape \
          BinOp(Gt, IndexAccess(material, \"density\"), 0); got constraint \
          shapes: {:?}",
         template
