@@ -52,11 +52,23 @@ export interface SessionConfig {
  */
 export const SPAWN_ERROR_LOG_PREFIX = '[sidecar] spawned claude error:';
 
-/** Resolve the reify-debug MCP endpoint URL from the environment. Default port 3939. */
+/**
+ * Resolve the reify-debug MCP endpoint URL from the environment.
+ *
+ * Accepts only pure decimal digit strings (no whitespace, no trailing chars),
+ * matching the Rust `parse_debug_port` contract in `debug_server.rs`.
+ * Falls back to port 3939 for unset / empty / non-digit / out-of-range input.
+ *
+ * Cross-ref: `gui/test/visual/endpoint.ts` `resolveDebugPort` uses identical
+ * validation logic; `gui/src-tauri/src/debug_server.rs` `parse_debug_port` is
+ * the Rust source-of-truth.  Keep all three in lockstep if rules change.
+ */
 function resolveReifyDebugUrl(env: NodeJS.ProcessEnv = process.env): string {
   const raw = env['REIFY_DEBUG_PORT'];
-  const parsed = raw !== undefined ? parseInt(raw, 10) : NaN;
-  const port = Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535 ? parsed : 3939;
+  // Strict digits-only — rejects whitespace-padded (" 4500 ") and trailing
+  // garbage ("4500x") that parseInt would silently accept.
+  const n = raw !== undefined && /^\d+$/.test(raw) ? parseInt(raw, 10) : NaN;
+  const port = Number.isFinite(n) && n >= 1 && n <= 65535 ? n : 3939;
   return `http://127.0.0.1:${port}/mcp`;
 }
 
