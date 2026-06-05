@@ -588,3 +588,53 @@ structure def IncompleteMilled : Subtracting {
         error_msg
     );
 }
+
+// ─── step-5 (task-4274): FeatureManufacturable compile-clean ─────────────────
+
+/// γ compile-clean lock — `FeatureManufacturable` over a full Subtracting conformer.
+///
+/// A `MilledBracket` conformer (all five Subtracting params supplied) is bound
+/// via `let proc = MilledBracket()` inside `CheckedPart`, which applies
+/// `constraint FeatureManufacturable(proc: proc, feature: wall)`.
+/// Since `FeatureManufacturable` reads `proc.min_feature_size` (a Length on
+/// Subtracting), the compiler must resolve the member access on a trait-typed
+/// let-binding — the test confirms this type-checks with zero Error diagnostics.
+///
+/// Compile-only (no kernel/eval) because `MilledBracket.tool_access` is a Solid
+/// and `check_source_with_stdlib` uses a no-kernel engine — the runtime
+/// OK→VIOLATED flip for `feature >= proc.min_feature_size` is left to δ.
+///
+/// RED: `FeatureManufacturable` does not exist yet → "unknown constraint def" error.
+#[test]
+fn feature_manufacturable_over_subtracting_conformer_compiles_clean() {
+    let source = r#"
+import std.process
+
+structure def MilledBracket : Subtracting {
+    param duration         : Time   = 30min
+    param cost             : Money  = 50USD
+    param tool_access      : Solid  = box(10mm, 20mm, 30mm)
+    param min_feature_size : Length = 1mm
+    param achievable_finish: Length = 0.01mm
+}
+
+structure def CheckedPart {
+    let proc  = MilledBracket()
+    param wall : Length = 0.5mm
+    constraint FeatureManufacturable(proc: proc, feature: wall)
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "FeatureManufacturable over Subtracting conformer should compile clean; errors: {:?}",
+        errors
+    );
+}
