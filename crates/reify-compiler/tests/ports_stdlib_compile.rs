@@ -213,7 +213,10 @@ fn port_base_trait_requires_direction_directionality() {
 }
 
 /// std/ports cardinality lock: exactly 1 trait (Port), 1 enum (Directionality),
-/// 0 structures.
+/// 1 structure (Frame3). Updated incrementally by task α steps:
+///   step-4: structures 0→1 (Frame3)
+///   step-6: traits 1→2 (+ LocatedPort)
+///   step-8: traits 2→3 (+ RegionPort)
 #[test]
 fn std_ports_module_cardinality_locked() {
     let module = load_module("std/ports");
@@ -239,7 +242,8 @@ fn std_ports_module_cardinality_locked() {
     assert_eq!(
         module.trait_defs.len(),
         1,
-        "std/ports should declare exactly 1 trait (Port), got: {:?}",
+        "std/ports should declare exactly 1 trait (Port) after step-4; \
+         LocatedPort and RegionPort land in steps 6 and 8, got: {:?}",
         trait_names
     );
 
@@ -251,8 +255,16 @@ fn std_ports_module_cardinality_locked() {
         .collect();
     assert_eq!(
         structure_names.len(),
-        0,
-        "std/ports should declare 0 structures, got: {:?}",
+        1,
+        "std/ports should declare exactly 1 structure (Frame3), got: {:?}",
+        structure_names
+    );
+    assert!(
+        module
+            .templates
+            .iter()
+            .any(|t| t.name == "Frame3" && t.entity_kind == EntityKind::Structure),
+        "std/ports should contain 'Frame3' structure, got: {:?}",
         structure_names
     );
 }

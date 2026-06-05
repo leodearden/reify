@@ -40,3 +40,18 @@ enum Directionality { In, Out, Bidi }
 trait Port {
     param direction : Directionality = Directionality.Bidi
 }
+
+// ── Port-frame structure ──────────────────────────────────────────────────────
+
+// A coordinate frame for a port attachment point in 3-D space.
+// All four members are Vector3<Length> (uniform, per PRD §4 decision 1).
+// Shape mirrors constitutive.ri MaterialFrame (origin + 3 axes, axes-as-vectors
+// convention), but uses Vector3<Length> for origin rather than Point3<Length>.
+// LocatedPort.frame uses this type so the compiler can route spatial-port
+// connections through the existing asymmetric-LocatedPort warning (connect.rs).
+structure def Frame3 {
+    param origin : Vector3<Length>
+    param x_axis : Vector3<Length>
+    param y_axis : Vector3<Length>
+    param z_axis : Vector3<Length>
+}
