@@ -11,14 +11,28 @@ use crate::convert::{find_word_at_offset, offset_to_position, position_to_offset
 /// the position is not on a navigable identifier (keywords, structure
 /// names, and unknown words return `None`).
 pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> Option<Location> {
-    let offset = position_to_offset(source, position);
-    let (_word_start, word) = find_word_at_offset(source, offset)?;
-
     // Only needs ParsedModule for declaration spans (compiler discards them).
     // Use prelude-aware parse for AST-shape consistency with the rest of
     // reify-lsp (diagnostics + analysis); see task 2525.
     let module_name = module_name_from_uri(uri);
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+    compute_goto_definition_with_parsed(&parsed, source, uri, position)
+}
+
+/// Compute go-to-definition using a pre-built [`ParsedModule`].
+///
+/// This is the injectable core shared by the per-request wrapper
+/// [`compute_goto_definition`] (which parses internally) and the server's
+/// cache-fed path (which supplies the per-document cached parse — one parse
+/// per edit). Only declaration spans are needed, so no compile/check runs.
+pub fn compute_goto_definition_with_parsed(
+    parsed: &reify_ast::ParsedModule,
+    source: &str,
+    uri: &Url,
+    position: Position,
+) -> Option<Location> {
+    let offset = position_to_offset(source, position);
+    let (_word_start, word) = find_word_at_offset(source, offset)?;
 
     // Try to find the enclosing declaration by checking if the cursor offset
     // falls within a declaration's span. If found, search only that declaration
@@ -76,13 +90,30 @@ pub fn compute_goto_definition_cross_file(
     position: Position,
     resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
 ) -> Option<Location> {
-    let offset = position_to_offset(source, position);
-    let (_word_start, word) = find_word_at_offset(source, offset)?;
-
     let module_name = module_name_from_uri(uri);
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
+    compute_goto_definition_cross_file_with_parsed(&parsed, source, uri, position, resolve_import)
+}
+
+/// Compute cross-file go-to-definition using a pre-built [`ParsedModule`].
+///
+/// Like [`compute_goto_definition_cross_file`] but takes the primary
+/// document's parse instead of parsing internally — the server supplies the
+/// per-document cached parse (one parse per edit). Its single-file phase
+/// delegates to [`compute_goto_definition_with_parsed`] with the same parse,
+/// so the primary document is parsed at most once (the previous wrapper
+/// re-parsed it inside the single-file phase).
+pub fn compute_goto_definition_cross_file_with_parsed(
+    parsed: &reify_ast::ParsedModule,
+    source: &str,
+    uri: &Url,
+    position: Position,
+    resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
+) -> Option<Location> {
+    let offset = position_to_offset(source, position);
+    let (_word_start, word) = find_word_at_offset(source, offset)?;
 
     let offset_u32 = offset as u32;
 
@@ -121,8 +152,10 @@ pub fn compute_goto_definition_cross_file(
         }
     }
 
-    // Phase 1 + 1b: Single-file resolution (delegate to existing function).
-    if let Some(loc) = compute_goto_definition(source, uri, position) {
+    // Phase 1 + 1b: Single-file resolution (delegate to the single-file core
+    // with the SAME parse — avoids re-parsing the primary document, which the
+    // previous `compute_goto_definition` call did).
+    if let Some(loc) = compute_goto_definition_with_parsed(parsed, source, uri, position) {
         return Some(loc);
     }
 
