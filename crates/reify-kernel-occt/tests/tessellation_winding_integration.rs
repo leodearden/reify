@@ -195,3 +195,99 @@ fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Test B — supplied normals agree with the emitted winding (step-3)
+// ---------------------------------------------------------------------------
+
+/// After the winding fix (step-2), emitted triangles are outward-wound.
+/// But `tessellate_shape` also emits per-vertex normals; without the
+/// corresponding normal flip for REVERSED faces, those normals still point
+/// inward while the winding points outward — breaking GUI shading and export.
+///
+/// This test asserts that the average supplied normal for each triangle agrees
+/// (dot > 0) with the geometric normal derived from the emitted winding order.
+///
+/// RED after step-2 / before step-4 (winding fixed, normals not yet flipped).
+/// GREEN after step-4 (both winding and normals consistently outward).
+#[test]
+fn tessellated_box_supplied_normals_agree_with_winding() {
+    let mesh = tessellate_box(10.0, 20.0, 30.0, 0.1);
+
+    let supplied = mesh
+        .normals
+        .as_ref()
+        .expect("tessellate should emit per-vertex normals for a box");
+
+    assert_eq!(
+        mesh.indices.len() % 3,
+        0,
+        "index count must be a multiple of 3"
+    );
+    assert_eq!(
+        supplied.len(),
+        mesh.vertices.len(),
+        "normals array must have same length as vertices array"
+    );
+
+    let num_tris = mesh.indices.len() / 3;
+    for t in 0..num_tris {
+        let i0 = mesh.indices[t * 3] as usize;
+        let i1 = mesh.indices[t * 3 + 1] as usize;
+        let i2 = mesh.indices[t * 3 + 2] as usize;
+
+        // Vertex positions.
+        let pa = [
+            mesh.vertices[i0 * 3] as f64,
+            mesh.vertices[i0 * 3 + 1] as f64,
+            mesh.vertices[i0 * 3 + 2] as f64,
+        ];
+        let pb = [
+            mesh.vertices[i1 * 3] as f64,
+            mesh.vertices[i1 * 3 + 1] as f64,
+            mesh.vertices[i1 * 3 + 2] as f64,
+        ];
+        let pc = [
+            mesh.vertices[i2 * 3] as f64,
+            mesh.vertices[i2 * 3 + 1] as f64,
+            mesh.vertices[i2 * 3 + 2] as f64,
+        ];
+
+        // Geometric normal from the emitted winding (AB × AC).
+        let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        let winding_normal = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+
+        // Average of the three supplied per-vertex normals.
+        let avg_supplied = [
+            (supplied[i0 * 3] as f64 + supplied[i1 * 3] as f64 + supplied[i2 * 3] as f64)
+                / 3.0,
+            (supplied[i0 * 3 + 1] as f64
+                + supplied[i1 * 3 + 1] as f64
+                + supplied[i2 * 3 + 1] as f64)
+                / 3.0,
+            (supplied[i0 * 3 + 2] as f64
+                + supplied[i1 * 3 + 2] as f64
+                + supplied[i2 * 3 + 2] as f64)
+                / 3.0,
+        ];
+
+        let dot = winding_normal[0] * avg_supplied[0]
+            + winding_normal[1] * avg_supplied[1]
+            + winding_normal[2] * avg_supplied[2];
+
+        assert!(
+            dot > 0.0,
+            "triangle {t}: supplied normals (avg [{:.4},{:.4},{:.4}]) disagree with \
+             the geometric winding normal (dot = {dot:.6}); \
+             supplied normals must agree with the outward-wound triangles",
+            avg_supplied[0],
+            avg_supplied[1],
+            avg_supplied[2],
+        );
+    }
+}
