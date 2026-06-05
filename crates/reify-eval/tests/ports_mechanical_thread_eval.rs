@@ -187,10 +187,12 @@ fn thread_spec_derived_lets_eval() {
 const DOF_CONSTRAINT_FIXTURE: &str = r#"
 structure def BadGuide {
     param degrees_of_freedom : Int = 2
+    constraint degrees_of_freedom == 1
 }
 
 structure def GoodGuide {
     param degrees_of_freedom : Int = 1
+    constraint degrees_of_freedom == 1
 }
 "#;
 
