@@ -68,7 +68,7 @@ When extending an existing `.ri` file:
 
 Reify ships a GUI with a debug MCP for visual verification. Two launch scripts (both auto-set `LD_LIBRARY_PATH` for OCCT's bundled libs):
 
-- **Dev (HMR + debug MCP):** `scripts/run-gui-dev.sh <file.ri>` — vite on `:1420`, debug MCP on `127.0.0.1:3939`. Use this when iterating.
+- **Dev (HMR + debug MCP):** `scripts/run-gui-dev.sh <file.ri>` — vite on `:1420`, debug MCP on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`. Set `REIFY_DEBUG_PORT` per worktree to avoid port collisions. Use this when iterating.
 - **Release:** `scripts/run-gui.sh <file.ri>` — what end users will see.
 
 If `reify` is built: `reify gui --debug <file.ri>` (alias `reify gui-debug <file.ri>`).

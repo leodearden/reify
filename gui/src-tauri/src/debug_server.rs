@@ -983,6 +983,28 @@ async fn handle_wait_for_selector(
         .await
 }
 
+// --- Port resolution ---
+
+pub const DEFAULT_DEBUG_PORT: u16 = 3939;
+
+/// Parse a raw env-var value into a valid port (1..=65535), falling back to
+/// DEFAULT_DEBUG_PORT for unset, empty, non-numeric, zero, or out-of-range input.
+/// Whitespace is NOT stripped; " 4500 " falls back to 3939.
+pub fn parse_debug_port(raw: Option<&str>) -> u16 {
+    raw.and_then(|s| s.parse::<u32>().ok())
+        .and_then(|n| u16::try_from(n).ok())
+        .filter(|&p| p >= 1)
+        .unwrap_or(DEFAULT_DEBUG_PORT)
+}
+
+pub fn resolve_debug_port() -> u16 {
+    parse_debug_port(std::env::var("REIFY_DEBUG_PORT").ok().as_deref())
+}
+
+pub fn debug_endpoint_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/mcp")
+}
+
 // --- Server spawn ---
 
 pub async fn spawn_debug_server(
@@ -1006,11 +1028,12 @@ pub async fn spawn_debug_server(
         .route("/debug/{command}", post(handle_rest))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3939")
+    let port = resolve_debug_port();
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
         .await
-        .map_err(|e| format!("failed to bind debug server on :3939: {e}"))?;
+        .map_err(|e| format!("failed to bind debug server on :{port}: {e}"))?;
 
-    tracing::info!("Debug server listening on http://127.0.0.1:3939");
+    tracing::info!("Debug server listening on {}", debug_endpoint_url(port));
 
     axum::serve(listener, app.into_make_service())
         .await
@@ -1653,5 +1676,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── parse_debug_port ────────────────────────────────────────────────────
+    #[test]
+    fn parse_debug_port_known_good_values() {
+        assert_eq!(parse_debug_port(Some("3939")), 3939u16);
+        assert_eq!(parse_debug_port(Some("4500")), 4500u16);
+        assert_eq!(parse_debug_port(Some("1")), 1u16);
+        assert_eq!(parse_debug_port(Some("65535")), 65535u16);
+    }
+
+    #[test]
+    fn parse_debug_port_fallback_to_default() {
+        assert_eq!(parse_debug_port(None), 3939u16);
+        assert_eq!(parse_debug_port(Some("")), 3939u16);
+        assert_eq!(parse_debug_port(Some("abc")), 3939u16);
+        assert_eq!(parse_debug_port(Some("0")), 3939u16);
+        // 70000 is out of u16 range (> 65535) — must fall back
+        assert_eq!(parse_debug_port(Some("70000")), 3939u16);
+        // leading/trailing whitespace is NOT stripped — falls back
+        assert_eq!(parse_debug_port(Some(" 4500 ")), 3939u16);
+    }
+
+    // ── debug_endpoint_url ──────────────────────────────────────────────────
+    #[test]
+    fn debug_endpoint_url_formats_correctly() {
+        assert_eq!(debug_endpoint_url(3939), "http://127.0.0.1:3939/mcp");
+        assert_eq!(debug_endpoint_url(51000), "http://127.0.0.1:51000/mcp");
     }
 }

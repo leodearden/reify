@@ -99,7 +99,7 @@ export interface MorphStats {
 - **Consumer:** Claude debug-MCP session via `mcp__reify-debug__morph_stats` tool call.
 - **No `bridge.ts` wrapper:** This is an RPC response shape, not a Tauri event payload. There is
   no frontend `onMorphStats(callback)` listener. The response flows directly from the debug-MCP
-  server (axum on `127.0.0.1:3939`) to the MCP client.
+  server (axum on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`) to the MCP client.
 - **No frontend subscription:** Not subscribed by any panel or store (RPC, not push event).
 
 ---

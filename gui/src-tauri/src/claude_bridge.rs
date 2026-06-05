@@ -798,9 +798,10 @@ pub fn resolve_workspace_dir(
 
 /// Build the environment variable list to inject into the spawned sidecar process.
 ///
-/// Always includes `REIFY_WORKSPACE` (the landlock-writable workspace dir).
+/// Always includes `REIFY_WORKSPACE` (the landlock-writable workspace dir) and
+/// `REIFY_DEBUG_PORT` (the resolved debug server port, default 3939).
 /// Includes `REIFY_LANDLOCK_EXEC` only when `landlock_exec` is `Some`.
-/// Ordering is deterministic: workspace first, then landlock_exec if present.
+/// Ordering is deterministic: workspace first, then landlock_exec if present, then debug port.
 pub fn compute_sidecar_env(
     workspace: &std::path::Path,
     landlock_exec: Option<&std::path::Path>,
@@ -815,6 +816,11 @@ pub fn compute_sidecar_env(
             le.to_string_lossy().into_owned(),
         ));
     }
+    #[cfg(feature = "gui")]
+    envs.push((
+        "REIFY_DEBUG_PORT".to_string(),
+        crate::debug_server::resolve_debug_port().to_string(),
+    ));
     envs
 }
 
@@ -1214,6 +1220,32 @@ mod tests {
             process_is_dead_or_zombie,
             "sleep process (pid {}) should have been killed by Drop but is still running",
             pid
+        );
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn compute_sidecar_env_includes_debug_port_and_workspace() {
+        let workspace = std::path::Path::new("/tmp/test-workspace");
+        let env = compute_sidecar_env(workspace, None);
+
+        // Regression guard: REIFY_WORKSPACE must still be present.
+        assert!(
+            env.iter().any(|(k, _)| k == "REIFY_WORKSPACE"),
+            "REIFY_WORKSPACE must be present in compute_sidecar_env output"
+        );
+
+        // New: REIFY_DEBUG_PORT must be present and consistent with the resolver.
+        let port_entry = env.iter().find(|(k, _)| k == "REIFY_DEBUG_PORT");
+        assert!(
+            port_entry.is_some(),
+            "REIFY_DEBUG_PORT must be present in compute_sidecar_env output"
+        );
+        let expected = crate::debug_server::resolve_debug_port().to_string();
+        assert_eq!(
+            port_entry.unwrap().1,
+            expected,
+            "REIFY_DEBUG_PORT value must match resolve_debug_port()"
         );
     }
 }

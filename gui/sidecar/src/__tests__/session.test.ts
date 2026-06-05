@@ -3919,3 +3919,82 @@ describe('virtual node:fs mock readFileSync semantics (task 3306)', () => {
     expect(strFromOpts).toBe('hello');
   });
 });
+
+describe('REIFY_DEBUG_PORT env override (task 4340)', () => {
+  let outputs: OutboundMessage[];
+
+  beforeEach(() => {
+    outputs = [];
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('uses REIFY_DEBUG_PORT=4500 in the MCP config url when set', async () => {
+    const savedPort = process.env['REIFY_DEBUG_PORT'];
+    process.env['REIFY_DEBUG_PORT'] = '4500';
+    try {
+      let capturedMcpConfig: unknown = null;
+      vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
+        const mcpConfigIdx = args.indexOf('--mcp-config');
+        if (mcpConfigIdx !== -1) {
+          const filePath = args[mcpConfigIdx + 1];
+          try {
+            capturedMcpConfig = JSON.parse(readFileSync(filePath, 'utf-8'));
+          } catch {}
+        }
+        return createMockProcess([{ type: 'result', session_id: 'sess-4340-port' }]);
+      }) as any));
+
+      const session = new SidecarSession({
+        model: 'claude-opus-4-6',
+        workingDirectory: '/tmp/test-project',
+        systemPrompt: 'You are helpful.',
+      });
+      session.onOutput = (msg) => outputs.push(msg);
+      await session.handleMessage({ type: 'send_message', id: 'msg-4340-port', text: 'Hello' });
+
+      expect((capturedMcpConfig as any)?.mcpServers?.['reify-debug']?.url).toBe(
+        'http://127.0.0.1:4500/mcp',
+      );
+    } finally {
+      if (savedPort === undefined) {
+        delete process.env['REIFY_DEBUG_PORT'];
+      } else {
+        process.env['REIFY_DEBUG_PORT'] = savedPort;
+      }
+    }
+  });
+
+  it('uses default port 3939 when REIFY_DEBUG_PORT is unset (back-compat)', async () => {
+    const savedPort = process.env['REIFY_DEBUG_PORT'];
+    delete process.env['REIFY_DEBUG_PORT'];
+    try {
+      let capturedMcpConfig: unknown = null;
+      vi.mocked(spawn).mockImplementation((((_cmd: string, args: string[]) => {
+        const mcpConfigIdx = args.indexOf('--mcp-config');
+        if (mcpConfigIdx !== -1) {
+          const filePath = args[mcpConfigIdx + 1];
+          try {
+            capturedMcpConfig = JSON.parse(readFileSync(filePath, 'utf-8'));
+          } catch {}
+        }
+        return createMockProcess([{ type: 'result', session_id: 'sess-4340-default' }]);
+      }) as any));
+
+      const session = new SidecarSession({
+        model: 'claude-opus-4-6',
+        workingDirectory: '/tmp/test-project',
+        systemPrompt: 'You are helpful.',
+      });
+      session.onOutput = (msg) => outputs.push(msg);
+      await session.handleMessage({ type: 'send_message', id: 'msg-4340-default', text: 'Hello' });
+
+      expect((capturedMcpConfig as any)?.mcpServers?.['reify-debug']?.url).toBe(
+        'http://127.0.0.1:3939/mcp',
+      );
+    } finally {
+      if (savedPort !== undefined) {
+        process.env['REIFY_DEBUG_PORT'] = savedPort;
+      }
+    }
+  });
+});
