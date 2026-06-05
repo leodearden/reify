@@ -883,4 +883,97 @@ mod tests {
             height: Value::Real(0.010),
         });
     }
+
+    // ─── step-9 — Wedge generic seeding (task-4158) ──────────────────────────
+    //
+    // RED until step-10 adds:
+    //   - GeometryOp::Wedge to `is_seedable_primitive`
+    //   - A Wedge arm in `seed_primitive_attributes` using the generic
+    //     `record_all_faces_as_side` / `record_all_edges_as_new_edge` helpers.
+
+    fn wedge_op() -> GeometryOp {
+        GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.010),
+            height: Value::Real(0.015),
+            top_width: Value::Real(0.005),
+        }
+    }
+
+    /// `is_seedable_primitive` must return `true` for a Wedge op.
+    ///
+    /// RED until step-10 adds `GeometryOp::Wedge { .. }` to the OR-list in
+    /// `is_seedable_primitive`.
+    #[test]
+    fn is_seedable_primitive_wedge_returns_true() {
+        assert!(
+            is_seedable_primitive(&wedge_op()),
+            "GeometryOp::Wedge must be recognised as a seedable primitive"
+        );
+    }
+
+    /// `seed_primitive_attributes` must write exactly N_faces + N_edges entries
+    /// for a Wedge, all faces as `Role::Side` and all edges as `Role::NewEdge`.
+    ///
+    /// Uses pre-supplied fake `GeometryHandleId` values — no kernel call
+    /// needed (the Wedge arm only uses the provided handles, not the kernel).
+    ///
+    /// RED until step-10 adds the Wedge arm that calls
+    /// `record_all_faces_as_side` + `record_all_edges_as_new_edge`.
+    #[test]
+    fn seed_primitive_attributes_wedge_records_role_side_and_new_edge() {
+        let face_handles: Vec<GeometryHandleId> = (10..16).map(GeometryHandleId).collect(); // 6 fake faces
+        let edge_handles: Vec<GeometryHandleId> = (20..32).map(GeometryHandleId).collect(); // 12 fake edges
+
+        let fid = feature_id();
+        let mut table = TopologyAttributeTable::default();
+        let mut kernel = MockKernel;
+
+        seed_primitive_attributes(
+            &mut table,
+            &mut kernel,
+            &face_handles,
+            &edge_handles,
+            &[], // no vertex seeding for wedge
+            &fid,
+            &wedge_op(),
+        )
+        .expect("seed_primitive_attributes for wedge must return Ok(())");
+
+        assert_eq!(
+            table.len(),
+            face_handles.len() + edge_handles.len(),
+            "wedge: must record one entry per face + one per edge"
+        );
+
+        for (idx, &fh) in face_handles.iter().enumerate() {
+            let attr = table
+                .lookup(fh)
+                .unwrap_or_else(|| panic!("wedge face #{idx} (handle {:?}) must have an entry", fh));
+            assert_eq!(
+                attr.role,
+                Role::Side,
+                "wedge face #{idx} must be Role::Side (no Cap classification)"
+            );
+            assert_eq!(
+                attr.local_index, idx as u32,
+                "wedge face #{idx} local_index must be construction-order position"
+            );
+        }
+
+        for (idx, &eh) in edge_handles.iter().enumerate() {
+            let attr = table
+                .lookup(eh)
+                .unwrap_or_else(|| panic!("wedge edge #{idx} (handle {:?}) must have an entry", eh));
+            assert_eq!(
+                attr.role,
+                Role::NewEdge,
+                "wedge edge #{idx} must be Role::NewEdge"
+            );
+            assert_eq!(
+                attr.local_index, idx as u32,
+                "wedge edge #{idx} local_index must be construction-order position"
+            );
+        }
+    }
 }

@@ -2012,6 +2012,27 @@ impl OcctKernel {
                 ffi::ffi::make_cone(bottom_r, top_r, h)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::Wedge {
+                width,
+                depth,
+                height,
+                top_width,
+            } => {
+                let w = extract_f64(width)?;
+                let d = extract_f64(depth)?;
+                let h = extract_f64(height)?;
+                let ltx = extract_f64(top_width)?;
+                validate_positive_finite(w, "wedge width")?;
+                validate_positive_finite(d, "wedge depth")?;
+                validate_positive_finite(h, "wedge height")?;
+                if !(ltx.is_finite() && ltx >= 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "wedge top_width must be finite and non-negative".into(),
+                    ));
+                }
+                ffi::ffi::make_wedge(w, d, h, ltx)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
@@ -8833,6 +8854,137 @@ mod tests {
         match result {
             Err(GeometryError::OperationFailed(_)) => {}
             Ok(_) => panic!("expected error for zero height"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    // --- Wedge kernel-execute tests (task-4158, step-3) ---
+
+    /// Kernel execute: wedge(20mm,10mm,15mm,5mm) → Ok; volume ≈ 1.875e-6 m³
+    /// within 2%; exactly 6 faces.
+    ///
+    /// V = depth·height·(width+top_width)/2 = 0.010·0.015·(0.020+0.005)/2 = 1.875e-6 m³.
+    /// Face count 6 = 2 trapezoid end-caps + 4 lateral faces.
+    ///
+    /// RED until step-4 adds GeometryOp::Wedge and wires the execute arm.
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_wedge_volume_and_face_count_match_expected() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Wedge {
+                width: Value::Real(0.020),
+                depth: Value::Real(0.010),
+                height: Value::Real(0.015),
+                top_width: Value::Real(0.005),
+            })
+            .expect("Wedge execute should succeed");
+
+        let expected = 0.010_f64 * 0.015 * (0.020 + 0.005) / 2.0; // 1.875e-6 m³
+        assert_volume_near(&mut kernel, handle.id, expected, 0.02, "wedge 20×10×15 top5");
+
+        let face_ids = kernel
+            .extract_faces(handle.id)
+            .expect("extract_faces on wedge should succeed");
+        assert_eq!(
+            face_ids.len(),
+            6,
+            "wedge should have exactly 6 faces, got {}",
+            face_ids.len()
+        );
+    }
+
+    /// top_width=0 is valid (degenerate triangular-prism wedge — analogous to
+    /// cone with top_radius=0). Should succeed with 5 faces.
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_wedge_zero_top_width_degenerate_succeeds() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.010),
+            height: Value::Real(0.015),
+            top_width: Value::Real(0.0),
+        });
+        assert!(
+            result.is_ok(),
+            "top_width=0 should produce a valid degenerate wedge, got {:?}",
+            result.err()
+        );
+    }
+
+    /// Negative width must be rejected with OperationFailed.
+    #[test]
+    fn kernel_wedge_negative_width_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Wedge {
+            width: Value::Real(-0.001),
+            depth: Value::Real(0.010),
+            height: Value::Real(0.015),
+            top_width: Value::Real(0.005),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for negative width"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// Zero depth must be rejected.
+    #[test]
+    fn kernel_wedge_zero_depth_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.0),
+            height: Value::Real(0.015),
+            top_width: Value::Real(0.005),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for zero depth"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// Non-finite height must be rejected.
+    #[test]
+    fn kernel_wedge_infinite_height_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.010),
+            height: Value::Real(f64::INFINITY),
+            top_width: Value::Real(0.005),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for infinite height"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// Negative top_width must be rejected.
+    #[test]
+    fn kernel_wedge_negative_top_width_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.010),
+            height: Value::Real(0.015),
+            top_width: Value::Real(-0.001),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for negative top_width"),
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
         }
     }

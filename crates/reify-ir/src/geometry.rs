@@ -279,6 +279,8 @@ pub enum Operation {
     PrimitiveTube,
     /// Cone (or frustum) primitive along Z axis.
     PrimitiveCone,
+    /// Wedge (trapezoidal prism) primitive with bbox corner at origin.
+    PrimitiveWedge,
 
     // ── Modify (local edits to a single shape) ──────────────────────────────
     /// Fillet (round) edges by radius.
@@ -546,6 +548,18 @@ pub enum GeometryOp {
         top_radius: Value,
         height: Value,
     },
+    /// Create a wedge (trapezoidal prism) with bbox corner at origin.
+    ///
+    /// The cross-section is a trapezoid with parallel sides `width` (at y=0)
+    /// and `top_width` (at y=depth), separated by `depth`, extruded by `height`.
+    /// `top_width == 0` is valid (degenerate triangular-prism wedge).
+    /// Volume = depth * height * (width + top_width) / 2.
+    Wedge {
+        width: Value,
+        depth: Value,
+        height: Value,
+        top_width: Value,
+    },
     /// Boolean union.
     Union {
         left: GeometryHandleId,
@@ -798,6 +812,7 @@ impl GeometryOp {
             GeometryOp::Sphere { .. } => "Sphere",
             GeometryOp::Tube { .. } => "Tube",
             GeometryOp::Cone { .. } => "Cone",
+            GeometryOp::Wedge { .. } => "Wedge",
             GeometryOp::Union { .. } => "Union",
             GeometryOp::Difference { .. } => "Difference",
             GeometryOp::Intersection { .. } => "Intersection",
@@ -5195,12 +5210,13 @@ mod tests {
             Operation::BooleanUnion,
             Operation::BooleanDifference,
             Operation::BooleanIntersection,
-            // Primitives (5)
+            // Primitives (6)
             Operation::PrimitiveBox,
             Operation::PrimitiveCylinder,
             Operation::PrimitiveSphere,
             Operation::PrimitiveTube,
             Operation::PrimitiveCone,
+            Operation::PrimitiveWedge,
             // Modify (5)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
@@ -5302,6 +5318,7 @@ mod tests {
             Operation::PrimitiveSphere => {}
             Operation::PrimitiveTube => {}
             Operation::PrimitiveCone => {}
+            Operation::PrimitiveWedge => {}
             Operation::ModifyFillet => {}
             Operation::ModifyChamfer => {}
             Operation::ModifyShell => {}
@@ -5776,6 +5793,15 @@ mod tests {
                 },
             ),
             (
+                "Wedge",
+                GeometryOp::Wedge {
+                    width: Value::Real(0.02),
+                    depth: Value::Real(0.01),
+                    height: Value::Real(0.015),
+                    top_width: Value::Real(0.005),
+                },
+            ),
+            (
                 "Union",
                 GeometryOp::Union {
                     left: GeometryHandleId(1),
@@ -6033,7 +6059,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 37;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 38;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
@@ -6046,6 +6072,19 @@ mod tests {
                 "kind_name() mismatch for GeometryOp::{expected}"
             );
         }
+    }
+
+    /// Standalone pin for GeometryOp::Wedge.kind_name() == "Wedge".
+    /// RED until step-4 adds GeometryOp::Wedge.
+    #[test]
+    fn geometry_op_wedge_kind_name_is_wedge() {
+        let op = GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.010),
+            height: Value::Real(0.015),
+            top_width: Value::Real(0.005),
+        };
+        assert_eq!(op.kind_name(), "Wedge");
     }
 
     #[test]
