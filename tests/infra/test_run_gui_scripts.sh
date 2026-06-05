@@ -263,6 +263,19 @@ assert "scripts/run-gui-dev.sh invokes 'target/debug/reify-gui'" \
 assert "scripts/run-gui-dev.sh does NOT exec target/debug/reify-gui (trap must fire)" \
     bash -c "! grep -E '^[[:space:]]*exec target/debug/reify-gui' '$RUN_GUI_DEV'"
 
+# -- Test 20b: REIFY_DEBUG_PORT — configured, default 3939, exported ----------
+echo ""
+echo "--- Test 20b: dev script configures REIFY_DEBUG_PORT (task 4340) ---"
+
+assert "scripts/run-gui-dev.sh references REIFY_DEBUG_PORT" \
+    bash -c "grep -q 'REIFY_DEBUG_PORT' '$RUN_GUI_DEV'"
+
+assert "scripts/run-gui-dev.sh defaults REIFY_DEBUG_PORT to 3939 when unset" \
+    bash -c "grep -qE 'REIFY_DEBUG_PORT=.*:-3939' '$RUN_GUI_DEV'"
+
+assert "scripts/run-gui-dev.sh exports REIFY_DEBUG_PORT" \
+    bash -c "grep -qE 'export REIFY_DEBUG_PORT' '$RUN_GUI_DEV'"
+
 # -- Test 21: behavioral — no args -> usage + non-zero ---------------------
 echo ""
 echo "--- Test 21: dev script no-args invocation prints usage + exits non-zero ---"
