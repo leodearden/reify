@@ -764,6 +764,51 @@ mod tests {
         assert!(ctx.compiled.templates.is_empty());
     }
 
+    /// `from_parsed` must produce an `AnalysisContext` observably equivalent to
+    /// `new` when fed the same parse — it just skips the parse step and reuses a
+    /// shared `Arc<ParsedModule>`. Equivalence is asserted on the public
+    /// accessors hover/completion/goto-def actually rely on (compiled templates,
+    /// `find_member_decl`, `entity_names`), not on private fields.
+    #[test]
+    fn analysis_context_from_parsed_matches_new() {
+        let source = reify_test_support::bracket_source();
+        let uri = test_uri();
+        let parsed = std::sync::Arc::new(reify_compiler::parse_with_stdlib(
+            source,
+            ModulePath::single("test"),
+        ));
+
+        let ctx_fp = AnalysisContext::from_parsed(parsed.clone());
+        let ctx_new = AnalysisContext::new(source, &uri);
+
+        // compile ran: templates are present.
+        assert!(
+            !ctx_fp.compiled.templates.is_empty(),
+            "from_parsed should compile templates"
+        );
+
+        // find_member_decl("width", None): kind + type + span agree with `new`.
+        let m_fp = ctx_fp
+            .find_member_decl("width", None)
+            .expect("width via from_parsed");
+        let m_new = ctx_new
+            .find_member_decl("width", None)
+            .expect("width via new");
+        assert_eq!(m_fp.name, m_new.name);
+        assert_eq!(m_fp.kind, m_new.kind);
+        assert_eq!(*m_fp.cell_type, *m_new.cell_type);
+        assert_eq!(m_fp.span, m_new.span);
+
+        // entity_names(): names + member counts agree with `new`.
+        let summarize = |ctx: &AnalysisContext| -> Vec<(String, usize, usize, usize)> {
+            ctx.entity_names()
+                .into_iter()
+                .map(|e| (e.name.to_string(), e.params, e.lets, e.constraints))
+                .collect()
+        };
+        assert_eq!(summarize(&ctx_fp), summarize(&ctx_new));
+    }
+
     // --- find_member_decl tests ---
 
     #[test]
