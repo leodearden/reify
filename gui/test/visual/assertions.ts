@@ -118,6 +118,31 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
       { path: "count", op: "atLeast", expected: 1 },
     ],
   },
+  // task-4298 step-11: R3 e2e signal scenarios (live signal via npm run test:e2e)
+  // wait_for_selector: verifies the tool resolves once the main app-layout element is
+  // visible. openFixture in run.ts already calls open_file + wait_for_idle before
+  // invoking the tool, so the layout element is mounted and visible by this point.
+  {
+    name: "wait_for_selector_app_layout_visible",
+    fixture: "small_cube",
+    tool: "wait_for_selector",
+    args: { testId: "app-layout", state: "visible" },
+    assertions: [{ path: "ok", op: "equals", expected: true }],
+  },
+  // list_console_errors: asserts SHAPE only (errors array + count present).
+  // The declarative single-tool harness cannot deterministically inject a frontend
+  // JS error before the call; full message+stack signal is covered by unit tests
+  // (step-1/step-3). Shape existence is sufficient as an e2e smoke check.
+  {
+    name: "list_console_errors_shape",
+    fixture: "small_cube",
+    tool: "list_console_errors",
+    args: {},
+    assertions: [
+      { path: "errors", op: "exists" },
+      { path: "count", op: "exists" },
+    ],
+  },
 ];
 
 // ─── Assertion type + evaluateAssertion ──────────────────────────────────────
