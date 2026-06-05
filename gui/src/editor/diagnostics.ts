@@ -107,11 +107,10 @@ export function diagnosticInfoToCmDiagnostic(
     return null;
   }
   try {
-    const startLine = doc.line(diag.line);
-    const from = Math.min(startLine.from + (diag.column - 1), startLine.to);
-
-    const endLine = doc.line(diag.end_line);
-    const to = Math.min(endLine.from + (diag.end_column - 1), endLine.to);
+    // DiagnosticInfo uses 1-based line/column; lspPositionToOffset expects 0-based.
+    // doc.line((line-1)+1) == doc.line(line), so the arithmetic is identical.
+    const from = lspPositionToOffset(doc, diag.line - 1, diag.column - 1);
+    const to = lspPositionToOffset(doc, diag.end_line - 1, diag.end_column - 1);
 
     return {
       from,
