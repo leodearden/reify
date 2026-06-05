@@ -142,3 +142,29 @@ pub constraint def Manufacturable {
     param capability  : Length
     measured >= capability
 }
+
+// Forming-process DFM constraint defs.
+// Pure-scalar (no Solid params) → evaluate to definite Satisfied/Violated
+// with the no-kernel engine. Runtime OK→VIOLATED flip for geometry-backed
+// defs (FeatureManufacturable, FitsBuildVolume) is exercised by δ.
+
+// Checks that a bend radius meets the process minimum.
+pub constraint def BendManufacturable {
+    param proc        : Forming
+    param bend_radius : Length
+    bend_radius >= proc.min_bend_radius
+}
+
+// Checks that a draw depth does not exceed the process maximum.
+pub constraint def DrawManufacturable {
+    param proc       : Forming
+    param draw_depth : Length
+    draw_depth <= proc.max_draw_depth
+}
+
+// Checks that a draft angle meets the process minimum.
+pub constraint def DraftManufacturable {
+    param proc  : Forming
+    param draft : Angle
+    draft >= proc.draft_angle
+}
