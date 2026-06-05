@@ -4,6 +4,38 @@
   background: var(--reify-editor-bg, #1e1e2e);
   display: flex;
   flex-direction: column;
+  /* Positioning context for the absolutely-positioned F2 rename overlay. */
+  position: relative;
+}
+
+/* F2 inline rename field — pre-filled with the symbol's current name. */
+.renameField {
+  position: absolute;
+  z-index: 10;
+  padding: 2px 6px;
+  font-family: var(--reify-font-mono, 'JetBrains Mono', 'Fira Code', monospace);
+  font-size: 13px;
+  color: var(--reify-text, #cdd6f4);
+  background: var(--reify-surface, #2a2a3a);
+  border: 1px solid var(--reify-accent, #89b4fa);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  outline: none;
+}
+
+/* Transient "can't rename here" message for the prepareRename refusal path. */
+.renameMessage {
+  position: absolute;
+  z-index: 10;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--reify-text, #cdd6f4);
+  background: var(--reify-surface, #2a2a3a);
+  border: 1px solid var(--reify-border, #45475a);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .container :global(.cm-editor) {

@@ -226,4 +226,90 @@ describe('createLspClient', () => {
 
     expect(result).toEqual([]);
   });
+
+  // --- task 4203 γ: prepareRename / rename ---
+
+  it('createLspClient() exposes prepareRename and rename functions', () => {
+    const client = createLspClient();
+    expect(typeof client.prepareRename).toBe('function');
+    expect(typeof client.rename).toBe('function');
+  });
+
+  it('prepareRename sends textDocument/prepareRename with the position and returns the target', async () => {
+    const mockTarget = {
+      range: { start: { line: 7, character: 17 }, end: { line: 7, character: 22 } },
+      placeholder: 'width',
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(mockTarget));
+
+    const client = createLspClient();
+    const result = await client.prepareRename('file:///test.ri', 7, 17);
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'textDocument/prepareRename',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({
+      textDocument: { uri: 'file:///test.ri' },
+      position: { line: 7, character: 17 },
+    });
+    expect(result).not.toBeNull();
+    expect(result!.placeholder).toBe('width');
+    expect(result!.range.start).toEqual({ line: 7, character: 17 });
+  });
+
+  it('prepareRename returns null when the response is null (Invariant-4 refusal)', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    const result = await client.prepareRename('file:///test.ri', 0, 0);
+
+    expect(result).toBeNull();
+  });
+
+  it('rename sends textDocument/rename with newName and returns the WorkspaceEdit', async () => {
+    const mockEdit = {
+      changes: {
+        'file:///test.ri': [
+          {
+            range: { start: { line: 1, character: 10 }, end: { line: 1, character: 15 } },
+            newText: 'girth',
+          },
+          {
+            range: { start: { line: 7, character: 17 }, end: { line: 7, character: 22 } },
+            newText: 'girth',
+          },
+        ],
+      },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(mockEdit));
+
+    const client = createLspClient();
+    const result = await client.rename('file:///test.ri', 7, 17, 'girth');
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'textDocument/rename',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({
+      textDocument: { uri: 'file:///test.ri' },
+      position: { line: 7, character: 17 },
+      newName: 'girth',
+    });
+    expect(result).not.toBeNull();
+    expect(result!.changes!['file:///test.ri']).toHaveLength(2);
+  });
+
+  it('rename returns null when the response is null', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    const result = await client.rename('file:///test.ri', 0, 0, 'girth');
+
+    expect(result).toBeNull();
+  });
 });

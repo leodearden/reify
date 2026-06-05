@@ -68,9 +68,14 @@ pub fn build_doc_model(compiled: &CompiledModule, source: &str) -> DocModel {
         items.push(lower_field(field));
     }
 
-    // 5. Purposes.
+    // 5. Purposes — skip those merged from the prelude (declaration_span is the
+    // prelude sentinel, start == end == u32::MAX).  Prelude-merged purposes are
+    // globally available for activation but were not declared in this module's
+    // source, so they must not appear in the module's doc.
     for p in &compiled.compiled_purposes {
-        items.push(lower_purpose(p, source));
+        if !p.declaration_span.is_prelude() {
+            items.push(lower_purpose(p, source));
+        }
     }
 
     // 6. Enums.
@@ -642,4 +647,35 @@ fn cell_local_name(id_str: &str) -> String {
         .next()
         .unwrap_or(id_str)
         .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Stdlib doc model entry point (task-3565)
+// ---------------------------------------------------------------------------
+
+/// Build a combined [`DocModel`] for the entire standard library.
+///
+/// Iterates [`reify_compiler::stdlib_loader::load_stdlib()`], calls
+/// [`build_doc_model`] on each [`CompiledModule`] with an empty source string
+/// (the stdlib retains no per-module source text at runtime), and concatenates
+/// all the resulting single-module `ModuleDoc`s into one `DocModel`.
+///
+/// An empty source string is safe because:
+/// - Symbol names, signatures, and trait members come from the compiled types,
+///   not from source slices.
+/// - `span_text` / `byte_offset_to_line_col` are guarded against empty /
+///   out-of-range inputs, yielding empty `expr_repr` strings and `line: None`
+///   for constraints rather than panicking.
+///
+/// The order of modules in the returned `DocModel` matches the order that
+/// `load_stdlib()` returns them.
+pub fn build_stdlib_doc_model() -> DocModel {
+    use reify_compiler::stdlib_loader::load_stdlib;
+    let mut modules = Vec::new();
+    for compiled in load_stdlib() {
+        let single_model = build_doc_model(compiled, "");
+        // build_doc_model always returns exactly one ModuleDoc.
+        modules.extend(single_model.modules);
+    }
+    DocModel { modules }
 }

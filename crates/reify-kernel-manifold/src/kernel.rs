@@ -751,6 +751,13 @@ impl GeometryKernel for ManifoldKernel {
                  manifold3d::from_mesh_f64 reported: {e}"
             ))
         })?;
+        // Tag each ingested mesh as an "original" so Manifold assigns it a stable,
+        // non-negative originalID that survives through boolean operations and
+        // appears in the result's `run_original_id` vector.  Without this call
+        // `original_id()` returns -1 and the provenance walk in
+        // `propagate_attributes` cannot correlate result triangles back to their
+        // source parent attribute.
+        let manifold = manifold.as_original();
         Ok(self.store(manifold))
     }
 
@@ -767,51 +774,96 @@ impl GeometryKernel for ManifoldKernel {
 
 /// First concrete impl of [`KernelAttributeHook`] — see PRD line 70.
 ///
-/// The body unconditionally returns `Ok(KernelAttributeOutcome::Discarded)`
-/// and emits a structured WARN diagnostic (required by the `Discarded`
-/// contract). The Manifold C++ FFI is wired (boolean ops + tessellate go
-/// through `manifold3d` 0.1) and the manifold3d accessors needed for real
-/// propagation (`originalID`, `MeshGL.run_*`, `merge_from_vert`/
-/// `merge_to_vert`, `face_id`) are reachable from this crate; the actual
-/// `MeshGL` walk is implemented in persistent-naming-v2 PRD task 9 (a
-/// separate task that depends on this crate's FFI wiring).
+/// Walks the Manifold `MeshGL64` provenance vectors (`run_original_id`,
+/// `run_index`, `face_id`) to correlate each surviving triangle of the
+/// boolean result back to a source [`TopologyAttribute`] from the parent
+/// table.  Returns `Ok(Propagated)` when the walk succeeds, and
+/// `Ok(Discarded)` with a WARN on the lossy path (empty parent map, missing
+/// result mesh, or degenerate empty result).
 ///
-/// When PRD task 9 lands, the body switches to walk `MeshGL` merge
-/// vectors + per-triangle `faceID` / `originalID` to copy parent
-/// attributes onto result face handles, returning `Propagated` on success
-/// and `Discarded` (with a `reason="heavy_remeshing"` flavoured WARN) on
-/// lossy remeshing — the trait surface is stable across that swap.
+/// # Degenerate (Discarded) path
+///
+/// Fires when any of the following hold:
+/// - No parent handle has both a stored `Manifold` with a non-negative
+///   `original_id()` **and** a `TopologyAttribute` in `table` (parent map
+///   is empty after the loop).
+/// - The result handle is not present in `self.shapes`.
+/// - The result manifold `is_empty()`.
+///
+/// In all these cases exactly one `tracing::warn!` is emitted at the
+/// `reify_kernel_manifold::kernel` target (operator visibility for the
+/// lossy-attribute diagnostic), and `Ok(Discarded)` is returned.
+///
+/// # Descriptor-keyed persistence
+///
+/// The correlation (`Vec<FacetProvenance>`) is computed and validated but
+/// **not** persisted into the `GeometryHandleId`-keyed
+/// `TopologyAttributeTable` — there is no descriptor-keyed store until
+/// task 4262, and `&self` is immutable.  The engine (`engine_build.rs:4414`)
+/// intentionally swallows all three `Ok` variants, so returning `Propagated`
+/// without writing the table is safe for the current call graph.
 impl KernelAttributeHook for ManifoldKernel {
     fn propagate_attributes(
         &self,
-        _table: &mut TopologyAttributeTable,
+        table: &mut TopologyAttributeTable,
         op: &GeometryOp,
         parent_handles: &[GeometryHandleId],
-        _result_handle: GeometryHandleId,
+        result_handle: GeometryHandleId,
         _splitting_feature_id: &FeatureId,
     ) -> Result<KernelAttributeOutcome, QueryError> {
-        // v0.2 stub: FFI is wired but the MeshGL walk that implements
-        // real attribute propagation is PRD task 9 (persistent-naming-v2).
-        // Emit a WARN diagnostic (operator visibility for the intentional
-        // attribute-loss path) and return Discarded. The
-        // `KernelAttributeOutcome::Discarded` contract mandates that hook
-        // impls emit their own diagnostic before returning, so consumers
-        // do not need to surface a duplicate.
-        //
-        // `target: "reify_kernel_manifold::kernel"` matches the module
-        // path of this impl so a `RUST_LOG=reify_kernel_manifold::kernel=warn`
-        // (or the broader `reify_kernel_manifold=warn`) operator filter
-        // sees the event. `reason="task_9_pending"` is the structured-
-        // fields key by which a future `reason="heavy_remeshing"` (when
-        // PRD task 9 lands the real walk) can be distinguished.
-        tracing::warn!(
-            target: "reify_kernel_manifold::kernel",
-            reason = "task_9_pending",
-            op = ?op,
-            parents = parent_handles.len(),
-            "Manifold attribute propagation discarded — MeshGL walk pending (PRD task 9)"
-        );
-        Ok(KernelAttributeOutcome::Discarded)
+        // Build a map from each parent's Manifold originalID → TopologyAttribute.
+        // Requires both a stored Manifold with a non-negative original_id() (set
+        // by ingest_mesh via as_original()) AND a table entry for the same handle.
+        let mut parent_map: std::collections::HashMap<u32, reify_ir::TopologyAttribute> =
+            std::collections::HashMap::new();
+        for &handle in parent_handles {
+            if let Some(m) = self.shapes.get(&handle.0) {
+                let oid = m.original_id();
+                if let (Some(id), Some(attr)) =
+                    (u32::try_from(oid).ok(), table.lookup(handle))
+                {
+                    parent_map.insert(id, attr.clone());
+                }
+            }
+        }
+
+        // Degenerate path: no trackable parent provenance or missing/empty result.
+        let result_manifold = self.shapes.get(&result_handle.0);
+        let is_degenerate = parent_map.is_empty()
+            || result_manifold.is_none()
+            || result_manifold.is_some_and(|m| m.is_empty());
+
+        if is_degenerate {
+            tracing::warn!(
+                target: "reify_kernel_manifold::kernel",
+                reason = "no_parent_provenance",
+                op = ?op,
+                parents = parent_handles.len(),
+                parent_map_len = parent_map.len(),
+                "Manifold attribute propagation discarded — no trackable parent provenance \
+                 or empty result mesh"
+            );
+            return Ok(KernelAttributeOutcome::Discarded);
+        }
+
+        // Walk the MeshGL64 provenance vectors to correlate result triangles
+        // with their source attributes.
+        let mg = result_manifold.unwrap().to_meshgl64();
+        match crate::provenance::correlate_facets(&mg, &parent_map) {
+            Ok(facets) => {
+                let source_count =
+                    facets.iter().filter(|f| f.source.is_some()).count();
+                tracing::debug!(
+                    target: "reify_kernel_manifold::kernel",
+                    facets = facets.len(),
+                    with_source = source_count,
+                    "Manifold attribute propagation completed — kernel-level walk done; \
+                     descriptor-keyed persistence deferred to task 4262"
+                );
+                Ok(KernelAttributeOutcome::Propagated)
+            }
+            Err(e) => Err(QueryError::QueryFailed(e)),
+        }
     }
 }
 
@@ -856,6 +908,23 @@ mod tests {
             other => panic!(
                 "{label} of two valid stored cubes must return Ok(GeometryHandle); got {other:?}"
             ),
+        }
+    }
+
+    /// Convenience constructor for a `TopologyAttribute` with `Role::Side`,
+    /// `local_index: 0`, and no label or modification history.
+    ///
+    /// Shared by the provenance-walk tests in this module.  A companion copy
+    /// lives in `provenance.rs` tests; full consolidation into `test_fixtures`
+    /// is deferred because `test_fixtures.rs` is outside this task's scope lock.
+    #[cfg(feature = "test-fixtures")]
+    fn make_attr(name: &str) -> reify_ir::TopologyAttribute {
+        reify_ir::TopologyAttribute {
+            feature_id: FeatureId::new(name),
+            role: reify_ir::Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![],
         }
     }
 
@@ -1120,17 +1189,20 @@ mod tests {
         );
     }
 
-    /// PRD line 70: heavy remeshing within tolerance (and, in this v0.2 stub,
-    /// the pending PRD task 9 MeshGL walk) discards attributes with a
-    /// `tracing::warn!` diagnostic.
+    /// Pins the degenerate-path contract of `propagate_attributes`: when the
+    /// kernel has no stored shapes for the given handles (empty `ManifoldKernel`,
+    /// synthetic handle ids), the parent map is empty and the hook must:
     ///
-    /// Three properties are pinned by this test:
-    /// (a) `propagate_attributes` returns `Ok(KernelAttributeOutcome::Discarded)`
-    ///     for the v0.2 stub regardless of inputs — the trait surface model.
-    /// (b) `table` is left unchanged: the stub does not write spurious entries.
-    /// (c) Exactly one WARN-level event fires at the `reify_kernel_manifold::kernel`
-    ///     target, matching the `Discarded` contract that hook impls emit
-    ///     their own diagnostic before returning.
+    /// (a) Return `Ok(KernelAttributeOutcome::Discarded)`.
+    /// (b) Leave `table` unchanged (no spurious writes on the lossy path).
+    /// (c) Emit exactly one WARN at the `reify_kernel_manifold::kernel` target.
+    ///
+    /// The degenerate path is reached whenever the parent map is empty — either
+    /// because the handles aren't in `self.shapes`, or because none of the
+    /// stored manifolds have a non-negative `original_id()`, or because no
+    /// parent has a table entry.  This test exercises the first case (empty
+    /// kernel), which is the cheapest fixture that hits the same branch.
+    /// Descriptor-keyed persistence is deferred to task 4262.
     ///
     /// Reuses the `CountingSubscriberBuilder` pattern from
     /// `crates/reify-eval/src/kernel_registry.rs:329-353`. Synthetic op +
@@ -1165,14 +1237,15 @@ mod tests {
             kernel.propagate_attributes(&mut table, &op, &parents, result, &feature_id)
         });
 
-        // (a) Outcome is Ok(Discarded) for the v0.2 stub.
+        // (a) Outcome is Ok(Discarded) on the degenerate (empty kernel) path.
         // Match-on-outcome rather than `assert_eq!` because `QueryError` does
         // not derive `PartialEq` (would require widening reify-types' surface
         // for a single test assertion).
         match outcome {
             Ok(KernelAttributeOutcome::Discarded) => {}
             other => panic!(
-                "v0.2 Manifold stub must return Ok(Discarded) — MeshGL walk pending PRD task 9; got {other:?}"
+                "propagate_attributes must return Ok(Discarded) when no parent provenance \
+                 is available (empty kernel, no shapes for synthetic handles); got {other:?}"
             ),
         }
 
@@ -1700,5 +1773,202 @@ mod tests {
             "ManifoldKernel::ingest_mesh must accept an un-welded OCCT-style cube \
              once the weld is in place"
         );
+    }
+
+    /// Completion-condition test (task 3525): after a real Manifold union,
+    /// `correlate_facets` maps every surviving triangle back to a source attribute.
+    ///
+    /// # Premises pinned
+    ///
+    /// The property that `a.original_id()` and `b.original_id()` both appear in
+    /// the union's `run_original_id` is the Manifold provenance guarantee.  It is
+    /// verified-reachable from the landed egress test
+    /// `union_meshgl64_exposes_provenance_and_merge_pairing_invariant` (task 4247).
+    ///
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn union_walk_correlates_surviving_facets_to_source_features() {
+        use crate::test_fixtures::unit_cube_manifold;
+        use crate::provenance::correlate_facets;
+        use reify_ir::TopologyAttribute;
+        use std::collections::{HashMap, HashSet};
+
+        // Call as_original() to assign a stable non-negative tracking ID that
+        // survives through boolean operations and appears in run_original_id.
+        // This mirrors the production ingest_mesh path (which also calls
+        // as_original() before storing), ensuring the test exercises the same
+        // provenance-tracking contract.
+        let a = unit_cube_manifold([0.0, 0.0, 0.0]).as_original();
+        let b = unit_cube_manifold([0.5, 0.0, 0.0]).as_original();
+
+        // Premise: both parents have distinct non-negative original_ids.
+        let id_a = a.original_id();
+        let id_b = b.original_id();
+        assert!(id_a >= 0, "a.original_id() must be >= 0 (Manifold provenance guarantee)");
+        assert!(id_b >= 0, "b.original_id() must be >= 0 (Manifold provenance guarantee)");
+        assert_ne!(id_a, id_b, "two distinct inputs must have distinct original_ids");
+
+        let id_a = id_a as u32;
+        let id_b = id_b as u32;
+
+        let union = a.union(&b);
+        let m = union.to_meshgl64();
+
+        // Premise: both parent ids appear in the union's run_original_id.
+        let roi: HashSet<u32> = m.run_original_id().into_iter().collect();
+        assert!(
+            roi.contains(&id_a) && roi.contains(&id_b),
+            "union run_original_id must contain both parent ids {id_a} and {id_b}; got {roi:?}"
+        );
+
+        let attr_a = make_attr("featureA");
+        let attr_b = make_attr("featureB");
+
+        let mut parent: HashMap<u32, TopologyAttribute> = HashMap::new();
+        parent.insert(id_a, attr_a.clone());
+        parent.insert(id_b, attr_b.clone());
+
+        let facets = correlate_facets(&m, &parent)
+            .expect("correlate_facets must succeed on a well-formed union MeshGL64");
+
+        // Every surviving triangle must be present.
+        assert_eq!(
+            facets.len(),
+            m.num_tri(),
+            "correlate_facets must produce one entry per triangle; got {} for {} tris",
+            facets.len(),
+            m.num_tri()
+        );
+
+        // Every facet must have a source (both parents are in the map).
+        for (i, f) in facets.iter().enumerate() {
+            assert!(
+                f.source.is_some(),
+                "facet {i} has run_original_id={} which is in the parent map; source must be Some",
+                f.descriptor.run_original_id
+            );
+        }
+
+        // Both feature ids must appear in the output.
+        let feature_ids: HashSet<String> = facets
+            .iter()
+            .map(|f| f.source.as_ref().unwrap().feature_id.to_string())
+            .collect();
+        assert!(
+            feature_ids.contains("featureA") && feature_ids.contains("featureB"),
+            "both featureA and featureB must appear in facet sources; got {feature_ids:?}"
+        );
+
+        // Per-facet consistency: each facet's source feature_id matches its run_original_id.
+        for (i, f) in facets.iter().enumerate() {
+            let expected_feature = if f.descriptor.run_original_id == id_a {
+                "featureA"
+            } else {
+                "featureB"
+            };
+            let actual_feature = f.source.as_ref().unwrap().feature_id.to_string();
+            assert_eq!(
+                actual_feature, expected_feature,
+                "facet {i}: run_original_id={} must map to {expected_feature}, got {actual_feature}",
+                f.descriptor.run_original_id
+            );
+        }
+    }
+
+    /// Step-7 RED: `propagate_attributes` must return `Ok(Propagated)` when
+    /// both parent manifolds were ingested with `as_original()` (via the
+    /// production `ingest_mesh` path) and have corresponding entries in the
+    /// `TopologyAttributeTable`.
+    ///
+    /// # Two assertions in one test
+    ///
+    /// (a) **Happy path** — two ingested cubes unioned, both parents annotated:
+    ///     call must return `Ok(Propagated)`.
+    ///
+    /// (b) **Degenerate path** — empty kernel, synthetic parent/result handle
+    ///     ids that don't exist in `shapes`, empty table: must still return
+    ///     `Ok(Discarded)` (the existing contract from the empty-kernel tests).
+    ///
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn propagate_attributes_returns_propagated_when_parent_provenance_present() {
+        use crate::test_fixtures::unit_cube_mesh;
+        use reify_ir::{GeometryOp, KernelAttributeOutcome, TopologyAttributeTable};
+
+        // (a) Happy path: two ingested overlapping cubes, both annotated.
+        let mut kernel = ManifoldKernel::new();
+        let mesh_a = unit_cube_mesh([0.0, 0.0, 0.0]);
+        let mesh_b = unit_cube_mesh([0.5, 0.0, 0.0]);
+
+        let handle_a = kernel.ingest_mesh(&mesh_a)
+            .expect("ingest_mesh must accept a valid unit cube");
+        let handle_b = kernel.ingest_mesh(&mesh_b)
+            .expect("ingest_mesh must accept a valid unit cube");
+
+        let mut table = TopologyAttributeTable::default();
+        table.record(handle_a.id, make_attr("A"));
+        table.record(handle_b.id, make_attr("B"));
+
+        let result_handle = kernel
+            .execute(&GeometryOp::Union { left: handle_a.id, right: handle_b.id })
+            .expect("union of two valid cubes must succeed");
+
+        let feature_id = FeatureId::new("t#realization[0]");
+        let op = GeometryOp::Union { left: handle_a.id, right: handle_b.id };
+        let outcome = kernel.propagate_attributes(
+            &mut table,
+            &op,
+            &[handle_a.id, handle_b.id],
+            result_handle.id,
+            &feature_id,
+        );
+
+        match outcome {
+            Ok(KernelAttributeOutcome::Propagated) => {}
+            other => panic!(
+                "propagate_attributes must return Ok(Propagated) when both parents are annotated \
+                 and the result mesh is non-empty; got {other:?}"
+            ),
+        }
+
+        // The table must be unchanged on the Propagated path.  Descriptor-keyed
+        // persistence is deferred to task 4262 (`propagate_attributes` takes `&self`;
+        // there is no descriptor store until 4262 lands).
+        assert!(
+            table.lookup(result_handle.id).is_none(),
+            "propagate_attributes must not write a result-handle entry on the Propagated path \
+             (descriptor-keyed persistence deferred to task 4262)"
+        );
+        assert!(
+            table.lookup(handle_a.id).is_some(),
+            "handle_a entry must be unchanged in the table after propagate_attributes"
+        );
+        assert!(
+            table.lookup(handle_b.id).is_some(),
+            "handle_b entry must be unchanged in the table after propagate_attributes"
+        );
+
+        // (b) Degenerate path: empty kernel, synthetic handles not in shapes,
+        //     empty table — must still return Ok(Discarded).
+        let empty_kernel = ManifoldKernel::new();
+        let mut empty_table = TopologyAttributeTable::default();
+        let synthetic_op = GeometryOp::Union {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        };
+        let degenerate_outcome = empty_kernel.propagate_attributes(
+            &mut empty_table,
+            &synthetic_op,
+            &[GeometryHandleId(1), GeometryHandleId(2)],
+            GeometryHandleId(3),
+            &FeatureId::new("t#realization[0]"),
+        );
+        match degenerate_outcome {
+            Ok(KernelAttributeOutcome::Discarded) => {}
+            other => panic!(
+                "propagate_attributes must return Ok(Discarded) for an empty kernel \
+                 (no shapes, no table entries); got {other:?}"
+            ),
+        }
     }
 }

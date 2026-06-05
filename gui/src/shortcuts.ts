@@ -106,6 +106,9 @@ const _SHORTCUTS_DEF = [
   { id: 'gotoDefinition', key: 'F12',   description: 'Go to definition', category: 'Editor' },
   { id: 'navBack',        key: 'Alt+←', description: 'Navigate back',    category: 'Editor' },
   { id: 'navForward',     key: 'Alt+→', description: 'Navigate forward', category: 'Editor' },
+  // Display-only: dispatch is owned by the F2 keymap in Editor.tsx (same pattern as
+  // the nav entries above). prepareRename gates the rename, so this never edits unsafely.
+  { id: 'rename',         key: 'F2',    description: 'Rename symbol',    category: 'Editor' },
   // Command palette and symbol-jump — global actions exempt from the typing-context
   // guard in useKeyboardShortcuts so they open from any focus state (including the CM editor).
   { id: 'commandPalette', key: 'Ctrl+Shift+P', description: 'Command palette', category: 'View', bind: { key: 'p', ctrl: true, shift: true } },

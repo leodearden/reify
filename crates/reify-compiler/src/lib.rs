@@ -241,6 +241,57 @@ pub fn merge_prelude_functions(
     result
 }
 
+/// Merge is_pub prelude purposes into the user module's compiled_purposes.
+///
+/// Appends each prelude pub purpose whose name is not already present in
+/// `user_purposes` (first-wins shadow: a user-defined purpose overrides any
+/// stdlib purpose of the same name).
+///
+/// This propagates standard purposes (e.g. `simulation_ready`, `design_review`
+/// from `std.determinacy.purposes`) into every user module compiled against the
+/// stdlib, without requiring an explicit import — matching the global-prelude
+/// model used for functions, units, and type aliases.
+///
+/// Only `is_pub` purposes are merged; private prelude purposes remain scoped to
+/// their declaring module.
+///
+/// `std.determinacy.purposes` is registered LAST in `stdlib_loader::load_stdlib`.
+/// `merge_prelude_purposes` runs for every compile including each intra-stdlib
+/// module compile, but no-ops for all earlier stdlib modules because none of them
+/// declare pub purposes. `std.determinacy.purposes` is the only stdlib module with
+/// pub purposes, and being last it has no successor during `load_stdlib()` — so no
+/// other stdlib module ever sees it as a prelude and inherits its standard purposes.
+/// Stdlib-internal `compiled_purposes` counts and content hashes therefore stay
+/// byte-stable. Only user modules (compiled against the full stdlib) gain the
+/// standard purposes. (task-4016 ζ)
+///
+/// **Hash contract:** the merged purposes are included in `compute_module_hash`,
+/// so a user module's `content_hash` incorporates the full set of available
+/// standard purposes. This is intentional: any downstream cache keyed on
+/// `content_hash` should invalidate when `std.determinacy.purposes` changes,
+/// since the available purpose-checks are part of the module's semantic contract.
+/// (If `content_hash` were intended to be source-identity-only, purposes should be
+/// merged *after* hashing — but that is not the current design.)
+pub fn merge_prelude_purposes(
+    user_purposes: Vec<CompiledPurpose>,
+    prelude_refs: &[&CompiledModule],
+) -> Vec<CompiledPurpose> {
+    let mut result = user_purposes;
+    for module in prelude_refs {
+        for p in &module.compiled_purposes {
+            if p.is_pub && !result.iter().any(|up| up.name == p.name) {
+                // Mark merged purposes with the prelude sentinel so downstream
+                // consumers (e.g. doc-model builders) can distinguish them from
+                // user-declared purposes in the same compiled_purposes list.
+                let mut merged = p.clone();
+                merged.declaration_span = SourceSpan::prelude();
+                result.push(merged);
+            }
+        }
+    }
+    result
+}
+
 /// Compile a parsed module using a pre-built [`PreludeContext`].
 ///
 /// Like [`compile_with_prelude`] but skips re-flattening prelude enum
@@ -402,6 +453,11 @@ pub fn compile_with_prelude_context(
     compile_builder::post_passes::phase_augment_composed_captures(&mut compile_ctx);
 
     let compiled_purposes = compile_builder::post_passes::phase_purposes(&mut compile_ctx, parsed);
+    // Merge is_pub prelude purposes (e.g. simulation_ready/design_review from
+    // std.determinacy.purposes) into the user module's compiled_purposes.
+    // Empty-safe: when #no_prelude is active, prelude_refs is &[] and the
+    // helper no-ops (the inner for loop does not execute).
+    let compiled_purposes = merge_prelude_purposes(compiled_purposes, prelude_refs);
     let content_hash =
         compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);
 

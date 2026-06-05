@@ -1,0 +1,19 @@
+// Fixture for simulation_ready stdlib test — guard-active-Violated path.
+//
+// Geometry: width is determined (80mm) — the geometry constraint alone would pass.
+// Material: mat is auto (DeterminacyState::Auto) → constrained(mat)=true.
+//
+// The material guard fires: `exists p in material_params: constrained(p)` = true.
+// The guard body requires `forall p in material_params: determined(p)` — but mat is
+// auto (not determined), so the body = false → Violated → SomeViolated → exit non-zero.
+//
+// This locks the guard-active branch described in the determinacy_purposes.ri doc
+// comment ("can only fire Violated").
+structure Material {
+    param density : Real = 7850.0
+}
+
+structure Part {
+    param width : Length = 80mm
+    param mat : Material = auto
+}

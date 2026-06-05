@@ -12,3 +12,4 @@ pub mod build;
 pub mod cross_refs;
 
 pub use build::build_doc_model;
+pub use build::build_stdlib_doc_model;

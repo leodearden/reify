@@ -166,6 +166,22 @@ describe("VALUE_SCENARIOS", () => {
     }
   });
 
+  it("every scenario has a valid tool name and non-empty assertions array", () => {
+    const VALID_OPS = ["equals", "atLeast", "exists"];
+    for (const scenario of VALUE_SCENARIOS) {
+      expect(typeof scenario.name, `scenario name must be string`).toBe("string");
+      expect(scenario.name.length, `scenario name must be non-empty`).toBeGreaterThan(0);
+      expect(typeof scenario.tool, `${scenario.name}: tool must be string`).toBe("string");
+      expect(scenario.tool.length, `${scenario.name}: tool must be non-empty`).toBeGreaterThan(0);
+      expect(Array.isArray(scenario.assertions), `${scenario.name}: assertions must be array`).toBe(true);
+      expect(scenario.assertions.length, `${scenario.name}: assertions must be non-empty`).toBeGreaterThan(0);
+      for (const assertion of scenario.assertions) {
+        expect(typeof assertion.path, `${scenario.name}: assertion.path must be string`).toBe("string");
+        expect(VALID_OPS, `${scenario.name}: assertion.op must be valid`).toContain(assertion.op);
+      }
+    }
+  });
+
   it("contains store_state_meshcount_small_cube with correct shape", () => {
     const scenario: ValueScenario | undefined = VALUE_SCENARIOS.find(
       (s) => s.name === "store_state_meshcount_small_cube",

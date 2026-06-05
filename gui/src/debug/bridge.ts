@@ -18,6 +18,13 @@ import { toPng } from 'html-to-image';
 // ascii base64 data URLs are 1 char ≈ 1 byte, so string length is a valid proxy.
 const MAX_SCREENSHOT_CHARS = 16 * 1024 * 1024;
 
+// Default curated CSS property subset for get_computed_style (step-8 GREEN).
+// PRD §4 resolved decision #2: avoid dumping all ~400 computed properties.
+const CURATED_STYLE_PROPS = [
+  'display', 'visibility', 'opacity', 'color', 'backgroundColor',
+  'fontSize', 'fontFamily', 'fontWeight', 'overflow', 'position', 'width', 'height',
+] as const;
+
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
 /** Returns true iff v is a 3-element array of finite numbers. */
@@ -70,6 +77,32 @@ function pickViewport(
   if (ctx.viewport) return { viewport: ctx.viewport };
 
   return { error: 'viewport not ready' };
+}
+
+// Shared element descriptor used by query_selector and query_selector_all.
+// Mirrors the bounds + visible formula from dom_query for cross-tool consistency.
+function describeElement(el: HTMLElement) {
+  const rect = el.getBoundingClientRect();
+  const style = window.getComputedStyle(el);
+  return {
+    tagName: el.tagName.toLowerCase(),
+    testId: el.getAttribute('data-testid'),
+    text: el.innerText?.slice(0, 500) ?? '',
+    bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
+  };
+}
+
+// Validates selector param, queries the DOM, and returns either an error, the
+// matched element, or null (no match). Handlers map null → {exists:false}.
+function resolveElement(params: Record<string, unknown>): { error: string } | { el: Element | null } {
+  const selector = params.selector as string;
+  if (!selector) return { error: 'selector is required' };
+  try {
+    return { el: document.querySelector(selector) };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
 }
 
 function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
@@ -240,6 +273,84 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       });
       return { elements: result };
     },
+
+    // --- DOM/style/layout/window inspection tools (R1, task-4296) ---
+
+    query_selector: (params) => {
+      const r = resolveElement(params);
+      if ('error' in r) return { error: r.error };
+      if (!r.el) return { exists: false };
+      return { exists: true, ...describeElement(r.el as HTMLElement) };
+    },
+
+    query_selector_all: (params) => {
+      const selector = params.selector as string;
+      if (!selector) return { error: 'selector is required' };
+      let nodes: NodeListOf<Element>;
+      try {
+        nodes = document.querySelectorAll(selector);
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
+      const MAX = 200;
+      const all = Array.from(nodes);
+      const truncated = all.length > MAX;
+      const elements = all.slice(0, MAX).map((el) => describeElement(el as HTMLElement));
+      return { count: all.length, elements, truncated };
+    },
+
+    get_layout_metrics: (params) => {
+      const r = resolveElement(params);
+      if ('error' in r) return { error: r.error };
+      if (!r.el) return { exists: false };
+      const h = r.el as HTMLElement;
+      const rect = h.getBoundingClientRect();
+      return {
+        exists: true,
+        bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        scroll: { top: h.scrollTop, left: h.scrollLeft, width: h.scrollWidth, height: h.scrollHeight },
+        client: { width: h.clientWidth, height: h.clientHeight },
+        overflow: {
+          horizontal: h.scrollWidth > h.clientWidth,
+          vertical: h.scrollHeight > h.clientHeight,
+        },
+      };
+    },
+
+    get_computed_style: (params) => {
+      const r = resolveElement(params);
+      if ('error' in r) return { error: r.error };
+      if (!r.el) return { exists: false };
+      const cs = window.getComputedStyle(r.el);
+      const props: string[] =
+        Array.isArray(params.properties) && (params.properties as unknown[]).length > 0
+          ? (params.properties as string[])
+          : [...CURATED_STYLE_PROPS];
+      const style: Record<string, string> = {};
+      for (const prop of props) {
+        style[prop] = (cs as unknown as Record<string, string>)[prop] ?? '';
+      }
+      return { exists: true, style };
+    },
+
+    active_element: () => {
+      const el = document.activeElement;
+      if (!el) return { tagName: 'body', testId: null, role: null };
+      return {
+        tagName: el.tagName.toLowerCase(),
+        testId: el.getAttribute('data-testid'),
+        role: el.getAttribute('role'),
+      };
+    },
+
+    get_window_state: () => ({
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      screenX: window.screenX,
+      screenY: window.screenY,
+      devicePixelRatio: window.devicePixelRatio,
+      focused: document.hasFocus(),
+    }),
 
     // --- Write commands (frontend-mediated) ---
 

@@ -810,16 +810,30 @@ fn m5_purpose_example_compiles_under_stdlib_with_zero_errors() {
         errors
     );
 
-    // Secondary check: all three purposes must be present.
-    assert_eq!(
-        module.compiled_purposes.len(),
-        3,
-        "expected 3 compiled purposes (manufacturing_ready, lightweight, dimensionally_valid), got: {:?}",
-        module
-            .compiled_purposes
-            .iter()
-            .map(|p| &p.name)
-            .collect::<Vec<_>>()
+    // Secondary check: all three user-defined purposes must be present.
+    // NOTE: compile_with_stdlib merges is_pub prelude purposes (e.g. simulation_ready,
+    // design_review from std.determinacy.purposes) into compiled_purposes (task-4016 ζ),
+    // so the total count is >= 3. Use resilient name-based assertions instead of exact count.
+    let purpose_names: Vec<&str> = module
+        .compiled_purposes
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert!(
+        purpose_names.contains(&"manufacturing_ready"),
+        "expected 'manufacturing_ready' purpose; found: {purpose_names:?}"
+    );
+    assert!(
+        purpose_names.contains(&"lightweight"),
+        "expected 'lightweight' purpose; found: {purpose_names:?}"
+    );
+    assert!(
+        purpose_names.contains(&"dimensionally_valid"),
+        "expected 'dimensionally_valid' purpose; found: {purpose_names:?}"
+    );
+    assert!(
+        module.compiled_purposes.len() >= 3,
+        "expected at least 3 compiled purposes, got: {purpose_names:?}"
     );
 }
 

@@ -4349,6 +4349,8 @@ dependencies = [
  "reify-compiler",
  "reify-constraints",
  "reify-core",
+ "reify-doc",
+ "reify-doc-build",
  "reify-eval",
  "reify-expr",
  "reify-geometry",

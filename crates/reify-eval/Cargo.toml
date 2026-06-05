@@ -85,3 +85,9 @@ faer = { workspace = true }
 # reify-eval dev-dep, so `reify_ir::Operation::iter()` is reachable; the trait
 # `IntoEnumIterator` lives in `strum`, which is why strum must also appear here.
 strum.workspace = true
+# Task 3565: stdlib_doc_surface integration test calls build_stdlib_doc_model
+# (reify-doc-build) + render_html_pages (reify-doc) directly as a library test.
+# No dependency cycle: reify-doc-build depends on reify-compiler/reify-doc but
+# NOT on reify-eval.
+reify-doc.workspace = true
+reify-doc-build.workspace = true

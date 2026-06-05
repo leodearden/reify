@@ -59,6 +59,23 @@ export interface Location {
   };
 }
 
+/** A single text edit: replace `range` with `newText`. */
+export interface TextEdit {
+  range: Range;
+  newText: string;
+}
+
+/** An LSP WorkspaceEdit. Reify's rename only ever populates `changes`. */
+export interface WorkspaceEdit {
+  changes?: { [uri: string]: TextEdit[] };
+}
+
+/** Result of a successful prepareRename: the token range + its current name. */
+export interface PrepareRenameResult {
+  range: Range;
+  placeholder: string;
+}
+
 // ── LSP Client interface ───────────────────────────────────────────────
 
 export interface LspClient {
@@ -71,6 +88,17 @@ export interface LspClient {
   hover(uri: string, line: number, character: number): Promise<HoverResult | null>;
   gotoDefinition(uri: string, line: number, character: number): Promise<Location | null>;
   documentSymbol(uri: string): Promise<DocumentSymbol[]>;
+  prepareRename(
+    uri: string,
+    line: number,
+    character: number,
+  ): Promise<PrepareRenameResult | null>;
+  rename(
+    uri: string,
+    line: number,
+    character: number,
+    newName: string,
+  ): Promise<WorkspaceEdit | null>;
 }
 
 // ── Private helpers ────────────────────────────────────────────────────
@@ -179,6 +207,40 @@ export function createLspClient(): LspClient {
       const parsed = JSON.parse(response);
       if (!Array.isArray(parsed)) return [];
       return parsed as DocumentSymbol[];
+    },
+
+    async prepareRename(
+      uri: string,
+      line: number,
+      character: number,
+    ): Promise<PrepareRenameResult | null> {
+      // prepareRename is the Invariant-4 refusal gate: the server returns null
+      // for any non-renameable position, which the editor must treat as "refuse".
+      const response = await lspRequest('textDocument/prepareRename', {
+        textDocument: { uri },
+        position: { line, character },
+      });
+      const parsed = JSON.parse(response);
+      // A null payload (the Invariant-4 refusal) parses to JS null → !parsed.
+      if (!parsed) return null;
+      return parsed as PrepareRenameResult;
+    },
+
+    async rename(
+      uri: string,
+      line: number,
+      character: number,
+      newName: string,
+    ): Promise<WorkspaceEdit | null> {
+      const response = await lspRequest('textDocument/rename', {
+        textDocument: { uri },
+        position: { line, character },
+        newName,
+      });
+      const parsed = JSON.parse(response);
+      // A null payload (non-renameable / invalid name) parses to JS null → !parsed.
+      if (!parsed) return null;
+      return parsed as WorkspaceEdit;
     },
   };
 }

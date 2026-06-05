@@ -93,7 +93,8 @@ impl InProcessLsp {
     ///
     /// - **`Ok(Value)`** — A JSON-serialized response payload for successful *requests*:
     ///   `initialize`, `textDocument/completion`, `textDocument/hover`,
-    ///   `textDocument/definition`, `textDocument/documentSymbol`.
+    ///   `textDocument/definition`, `textDocument/documentSymbol`,
+    ///   `textDocument/prepareRename`, `textDocument/rename`.
     /// - **`Ok(Value::Null)`** — For successfully processed *notifications* and `shutdown`:
     ///   `initialized`, `textDocument/didOpen`, `textDocument/didChange`,
     ///   `textDocument/didClose`, `shutdown`.
@@ -204,6 +205,25 @@ impl InProcessLsp {
                     .map_err(|e| format!("documentSymbol error: {e}"))?;
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
+            "textDocument/prepareRename" => {
+                let p = parse_params::<TextDocumentPositionParams>(
+                    params,
+                    error_prefix::PREPARE_RENAME_PARAMS,
+                )?;
+                let result = server
+                    .prepare_rename(p)
+                    .await
+                    .map_err(|e| format!("prepareRename error: {e}"))?;
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+            }
+            "textDocument/rename" => {
+                let p = parse_params::<RenameParams>(params, error_prefix::RENAME_PARAMS)?;
+                let result = server
+                    .rename(p)
+                    .await
+                    .map_err(|e| format!("rename error: {e}"))?;
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+            }
             "shutdown" => {
                 server
                     .shutdown()
@@ -265,6 +285,12 @@ pub mod error_prefix {
 
     /// Prefix for deserialization failures on `textDocument/documentSymbol` params.
     pub const DOCUMENT_SYMBOL_PARAMS: &str = "documentSymbol params error";
+
+    /// Prefix for deserialization failures on `textDocument/prepareRename` params.
+    pub const PREPARE_RENAME_PARAMS: &str = "prepareRename params error";
+
+    /// Prefix for deserialization failures on `textDocument/rename` params.
+    pub const RENAME_PARAMS: &str = "rename params error";
 
     /// Prefix used when an unrecognised LSP method name is requested.
     ///
@@ -426,5 +452,116 @@ fn area(w : Scalar) -> Scalar { w }
 
         // LSP invariant across the whole tree: selection_range ⊆ range.
         assert_selection_within_range(&symbols);
+    }
+
+    // --- task 4203 γ: SIGNAL TESTS — prepareRename/rename through the bridge ---
+    //
+    // The GUI reaches the rename surface only through the Tauri `lsp_request`
+    // command -> `InProcessLsp::handle_request`, which dispatches strictly by
+    // method name. Without the "textDocument/prepareRename" and
+    // "textDocument/rename" arms the GUI would get Err("unsupported LSP
+    // method: …"); these drive the canonical bracket fixture through that exact
+    // path. Positions match the server-handler tests (width use at line 7
+    // col 17; `structure` keyword at line 0 col 0).
+
+    async fn open_bracket(lsp: &InProcessLsp, uri: &str) {
+        lsp.handle_request(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "reify",
+                    "version": 1,
+                    "text": reify_test_support::bracket_source()
+                }
+            }),
+        )
+        .await
+        .expect("didOpen should succeed");
+    }
+
+    #[tokio::test]
+    async fn handle_request_prepare_rename_returns_target_for_width() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///rename.ri";
+        open_bracket(&lsp, uri).await;
+
+        let value = lsp
+            .handle_request(
+                "textDocument/prepareRename",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 7, "character": 17 }
+                }),
+            )
+            .await
+            .expect("prepareRename request should reach the provider via the bridge");
+
+        let response: PrepareRenameResponse = serde_json::from_value(value)
+            .expect("response should deserialize as PrepareRenameResponse");
+        match response {
+            PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } => {
+                assert_eq!(placeholder, "width", "placeholder is the current name");
+            }
+            other => panic!("expected RangeWithPlaceholder for a width use, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_request_prepare_rename_refuses_keyword_returns_null() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///rename.ri";
+        open_bracket(&lsp, uri).await;
+
+        // 'structure' keyword at line 0, col 0 — Invariant 4 refusal. The
+        // handler's Ok(None) serializes to JSON null so the editor refuses.
+        let value = lsp
+            .handle_request(
+                "textDocument/prepareRename",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 0 }
+                }),
+            )
+            .await
+            .expect("prepareRename on a keyword should succeed with a null payload");
+
+        assert_eq!(
+            value,
+            Value::Null,
+            "a non-renameable position serializes to null (editor refuses)"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_request_rename_returns_workspace_edit_with_four_changes() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///rename.ri";
+        open_bracket(&lsp, uri).await;
+
+        let value = lsp
+            .handle_request(
+                "textDocument/rename",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 7, "character": 17 },
+                    "newName": "girth"
+                }),
+            )
+            .await
+            .expect("rename request should reach the provider via the bridge");
+
+        let edit: WorkspaceEdit =
+            serde_json::from_value(value).expect("response should deserialize as WorkspaceEdit");
+        let changes = edit.changes.expect("rename edit should carry changes");
+        let parsed_uri = Url::parse(uri).unwrap();
+        let edits = changes
+            .get(&parsed_uri)
+            .expect("edits keyed by the document uri");
+        assert_eq!(edits.len(), 4, "bracket fixture: 1 decl + 3 uses of width");
+        assert!(
+            edits.iter().all(|e| e.new_text == "girth"),
+            "every edit writes the new name"
+        );
     }
 }

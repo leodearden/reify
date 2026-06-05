@@ -1210,3 +1210,67 @@ describe('Viewport FEA Lock Current + readout wiring', () => {
     expect(readout.textContent).toMatch(/8/);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Viewport FEA auto-enable determinism (step-3 — RED)
+// Verifies that the auto-enable effect picks a channel deterministically
+// regardless of the insertion order of scalar_channels keys.
+//
+// Against the current inline-loop implementation this is RED: the loop picks
+// the first key in insertion order, which is 'vonMises_bottom' for test-1 and
+// 'vonMises_top' for test-2 — different results for the same logical set.
+// After step-4 wires pickDefaultScalarChannel, both cases stabilize on
+// 'vonMises_top' (the PREFERRED_FEA_CHANNELS second entry, highest preference
+// among the three shell channels).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Viewport FEA auto-enable determinism', () => {
+  it('(test-1) channels inserted as {vonMises_bottom, vonMises_mid, vonMises_top} → channel is vonMises_top', () => {
+    const store = createFeaModeStore();
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+
+    render(() => <Viewport meshes={meshes()} viewportId="test-det-1" feaModeStore={store as any} />);
+
+    // Deliver mesh with channels in non-preferred insertion order
+    setMeshes({
+      shell: {
+        entity_path: 'shell',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises_bottom: new Float32Array([1]),
+          vonMises_mid: new Float32Array([2]),
+          vonMises_top: new Float32Array([3]),
+        },
+      },
+    });
+
+    expect(store.state.enabled).toBe(true);
+    expect(store.state.channel).toBe('vonMises_top');
+  });
+
+  it('(test-2) channels inserted in reversed order {vonMises_top, vonMises_mid, vonMises_bottom} → still vonMises_top', () => {
+    const store = createFeaModeStore();
+    const [meshes, setMeshes] = createSignal<Record<string, MeshData>>({});
+
+    render(() => <Viewport meshes={meshes()} viewportId="test-det-2" feaModeStore={store as any} />);
+
+    // Same channels, reversed insertion order
+    setMeshes({
+      shell: {
+        entity_path: 'shell',
+        vertices: new Float32Array([0, 0, 0]),
+        indices: new Uint32Array([0]),
+        normals: null,
+        scalar_channels: {
+          vonMises_top: new Float32Array([3]),
+          vonMises_mid: new Float32Array([2]),
+          vonMises_bottom: new Float32Array([1]),
+        },
+      },
+    });
+
+    expect(store.state.enabled).toBe(true);
+    expect(store.state.channel).toBe('vonMises_top');
+  });
+});

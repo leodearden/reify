@@ -15,16 +15,26 @@ export interface NavigateToSourceDeps {
 
 /**
  * Navigate from viewport selection to editor source location.
- * Calls bridge.getSourceLocation, scrolls editor, and updates selection.
+ *
+ * Selection is updated unconditionally — the entity is always selected
+ * regardless of whether it has a resolvable source span.
+ *
+ * Editor source-scroll is best-effort: it is silently skipped when
+ * getSourceLocation rejects (e.g. realized/derived geometry — boolean
+ * results, patterns, auto-generated sub-entities — that has no 1:1
+ * source span). A console.error is logged for diagnostic purposes.
  */
 export async function navigateToSource(
   entityPath: string,
   deps: NavigateToSourceDeps,
 ): Promise<void> {
+  // selectEntity is a synchronous SolidJS store setter that cannot throw,
+  // so it is intentionally outside the try — the fallible step is the
+  // getSourceLocation await + scrollEditor inside the try block below.
+  deps.selectEntity(entityPath);
   try {
     const location = await deps.getSourceLocation(entityPath);
     deps.scrollEditor(location);
-    deps.selectEntity(entityPath);
   } catch (err) {
     console.error('Failed to navigate to source:', err);
   }
@@ -59,6 +69,17 @@ export async function navigateToEntity(
 
 // ── Constraint → Panels navigation ─────────────────────────────────
 
+/**
+ * Dependencies for navigateFromConstraint.
+ *
+ * ORDERING CONTRACT: `selectEntity` MUST be called before `setHighlightedParams`.
+ * `selectEntity` (→ selectSingle / clearSelection) clears `highlightedParams` as
+ * part of every ordinary selection change, so the highlight must be applied AFTER
+ * the entity selection to ensure it survives.  Callers that provide a custom
+ * `selectEntity` implementation should honour the same clearing convention, or the
+ * constraint-highlight feature will silently stop working without a test failure
+ * (the integration test in navigation.test.ts pins the observable invariant).
+ */
 export interface NavigateFromConstraintDeps {
   selectEntity: (entityPath: string | null) => void;
   setHighlightedParams: (ids: string[]) => void;
@@ -74,9 +95,12 @@ export function navigateFromConstraint(
   deps: NavigateFromConstraintDeps,
 ): void {
   const { parameter_ids } = constraint;
-  deps.setHighlightedParams(parameter_ids);
 
-  // Find the entity_path from the first matching value
+  // Select the entity FIRST so that selectEntity (→ selectSingle/clearSelection) clears
+  // highlightedParams before we set the new constraint highlight.  Setting the highlight
+  // LAST ensures it survives the selection-change clearing logic.
   const matchingValue = values.find((v) => parameter_ids.includes(v.cell_id));
   deps.selectEntity(matchingValue?.entity_path ?? null);
+
+  deps.setHighlightedParams(parameter_ids);
 }

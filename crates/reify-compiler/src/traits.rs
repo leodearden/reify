@@ -812,6 +812,7 @@ pub(crate) fn compile_purpose(
         content_hash: purpose_def.content_hash,
         annotations,
         pragmas: purpose_def.pragmas.clone(),
+        declaration_span: purpose_def.span,
     }
 }
 

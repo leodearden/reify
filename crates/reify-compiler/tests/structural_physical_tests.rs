@@ -32,6 +32,30 @@ fn compile_structure(source: &str) -> CompiledModule {
     compiled
 }
 
+/// Assert that the named trait's named member is `RequirementKind::Param` with
+/// the given `DimensionVector`. Shared by the five task-α dimension-pin tests.
+fn assert_member_dimension(trait_name: &str, member: &str, expected_dim: DimensionVector) {
+    let module = load_stdlib_module();
+    let trait_def = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == trait_name)
+        .unwrap_or_else(|| panic!("expected '{trait_name}' trait in compiled module"));
+    let req = trait_def
+        .required_members
+        .iter()
+        .find(|r| r.name == member)
+        .unwrap_or_else(|| panic!("{trait_name} should have '{member}' member"));
+    match &req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Scalar { dimension: expected_dim },
+            "{member} should be Scalar{{{expected_dim:?}}}, got {ty:?}"
+        ),
+        other => panic!("{member} should be Param, got {other:?}"),
+    }
+}
+
 /// Assert that the constraint referencing `member` in `template` uses `expected`
 /// as its BinOp operator. Panics with a message containing `member` on failure.
 fn assert_constraint_op(template: &TopologyTemplate, member: &str, expected: BinOp) {
@@ -122,9 +146,9 @@ fn assert_density_positive_constraint_present(template: &TopologyTemplate) {
 const PLASTIC_BODY_SRC: &str = r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.0
-    param hardening_modulus : Real = 500.0
+    param hardening_modulus : Pressure = 500.0 * 1Pa
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
 }
 "#;
 
@@ -410,7 +434,8 @@ fn rigid_refines_physical_with_moment_of_inertia() {
         member_names
     );
 
-    // moment_of_inertia should be Real
+    // moment_of_inertia should be MomentOfInertia (Scalar{MOMENT_OF_INERTIA})
+    // after task α tightening (was Type::Real on main before step-2).
     let moi = rigid
         .required_members
         .iter()
@@ -420,8 +445,10 @@ fn rigid_refines_physical_with_moment_of_inertia() {
         RequirementKind::Param(ty) => {
             assert_eq!(
                 *ty,
-                Type::Real,
-                "moment_of_inertia should be Real, got {:?}",
+                Type::Scalar {
+                    dimension: DimensionVector::MOMENT_OF_INERTIA,
+                },
+                "moment_of_inertia should be Scalar{{MOMENT_OF_INERTIA}} after task-α tightening, got {:?}",
                 ty
             );
         }
@@ -535,7 +562,7 @@ structure def HeatSink : ThermallyConductive {
     param geometry : Solid = box(10mm, 20mm, 30mm)
     param material : Material = Material(name: "aluminum", density: 2700.0, youngs_modulus: 70000000000.0)
     param thermal_conductivity : ThermalConductivity = 205.0 * 1W / (1m * 1K)
-    param max_service_temp : Real = 573.0
+    param max_service_temp : Temperature = 573.0 * 1K
 }
 "#,
     );
@@ -553,8 +580,10 @@ structure def HeatSink : ThermallyConductive {
         template.trait_bounds
     );
 
-    // ThermallyConductive's own `thermal_conductivity > 0`.
+    // ThermallyConductive's own constraints: thermal_conductivity > 0 and
+    // max_service_temp > 0 (added by task α tightening).
     assert_constraint_op(template, "thermal_conductivity", BinOp::Gt);
+    assert_constraint_op(template, "max_service_temp", BinOp::Gt);
     // Physical's `material.density > 0` (post-GHR-α) is injected via inheritance —
     // its left side is a member access through `material` (IndexAccess
     // lowering), so it isn't reachable via `assert_constraint_op`'s ValueRef-
@@ -564,10 +593,11 @@ structure def HeatSink : ThermallyConductive {
     assert_density_positive_constraint_present(template);
     assert_eq!(
         template.constraints.len(),
-        2,
-        "expected exactly 2 constraints from chain ThermallyConductive→Physical \
+        3,
+        "expected exactly 3 constraints from chain ThermallyConductive→Physical \
          (material.density > 0 inherited from Physical, thermal_conductivity > 0 \
-         from ThermallyConductive), got {}: {:?}",
+         and max_service_temp > 0 from ThermallyConductive — task α added the \
+         max_service_temp constraint), got {}: {:?}",
         template.constraints.len(),
         template
             .constraints
@@ -639,7 +669,7 @@ fn structure_conforms_to_elastically_deformable_with_inherited_flexible_members(
     let source = r#"
 structure def Rubber : ElasticallyDeformable {
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
     param max_elastic_strain : Real = 5.0
 }
 "#;
@@ -803,9 +833,9 @@ fn plastic_conforming_structure_has_constraints_injected() {
         r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
-    param hardening_modulus : Real = 1000.0
+    param hardening_modulus : Pressure = 1000.0 * 1Pa
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
 }
 "#,
     );
@@ -841,9 +871,9 @@ fn plastic_constraint_expressions_use_correct_operators() {
         r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
-    param hardening_modulus : Real = 1000.0
+    param hardening_modulus : Pressure = 1000.0 * 1Pa
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
 }
 "#,
     );
@@ -860,8 +890,10 @@ structure def PlasticBody : Plastic {
         template.constraints.len()
     );
 
-    // Find constraint for hardening_modulus (should use Gt, RHS=0) and
-    // plastic_strain (should use Ge, RHS=0).
+    // Find constraint for hardening_modulus (should use Gt — after task α
+    // tightening the RHS is `0.0 * 1Pa`, a dimensioned expression, not a bare
+    // Literal; so we pin only the operator, not the RHS shape) and
+    // plastic_strain (should use Ge, RHS=0 — dimensionless, stays Real).
     let mut found_hm_gt = false;
     let mut found_ps_ge = false;
     // Collect (member, op) pairs for diagnostic messages if assertions fail.
@@ -884,7 +916,10 @@ structure def PlasticBody : Plastic {
                     _ => false,
                 };
                 match (member, op) {
-                    ("hardening_modulus", BinOp::Gt) if rhs_is_zero => found_hm_gt = true,
+                    // hardening_modulus: operator pinned to Gt; RHS is now a
+                    // dimensioned expression (`0.0 * 1Pa`) after task α
+                    // tightening — do not gate on rhs_is_zero.
+                    ("hardening_modulus", BinOp::Gt) => found_hm_gt = true,
                     ("plastic_strain", BinOp::Ge) if rhs_is_zero => found_ps_ge = true,
                     _ => {}
                 }
@@ -933,9 +968,9 @@ fn plastic_strain_zero_boundary_compiles() {
         r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.0
-    param hardening_modulus : Real = 500.0
+    param hardening_modulus : Pressure = 500.0 * 1Pa
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
 }
 "#,
     );
@@ -964,9 +999,9 @@ fn hardening_modulus_zero_boundary_compiles() {
         r#"
 structure def PlasticBody : Plastic {
     param plastic_strain : Real = 0.05
-    param hardening_modulus : Real = 0.0
+    param hardening_modulus : Pressure = 0.0 * 1Pa
     param stiffness : Stiffness = 1000.0 * 1N / 1m
-    param max_deflection : Real = 0.1
+    param max_deflection : Length = 0.1 * 1m
 }
 "#,
     );
@@ -1058,7 +1093,8 @@ structure def Beam : Rigid {
     param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
 
     // Rigid requirement (from structural_physical.ri)
-    param moment_of_inertia : Real = 0.00012
+    // 10×20×30 mm steel block, mass ≈ 0.047 kg → I ≈ m(a²+b²)/12 ≈ 2e-6 kg·m²
+    param moment_of_inertia : MomentOfInertia = 0.000002 * 1kg * 1m * 1m
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -1275,4 +1311,98 @@ fn electrically_conductive_resistivity_member_is_electric_resistivity_dimension(
         ),
         other => panic!("resistivity should be Param, got {:?}", other),
     }
+}
+
+/// Task α (supersedes #3114): five dimension-pin tests — each tightened member
+/// must carry the named-dimension alias, not the prior `Real` placeholder.
+/// Uses the shared `assert_member_dimension` helper above.
+#[test]
+fn rigid_moment_of_inertia_member_is_moment_of_inertia_dimension() {
+    assert_member_dimension("Rigid", "moment_of_inertia", DimensionVector::MOMENT_OF_INERTIA);
+}
+
+#[test]
+fn flexible_max_deflection_member_is_length_dimension() {
+    assert_member_dimension("Flexible", "max_deflection", DimensionVector::LENGTH);
+}
+
+#[test]
+fn plastic_hardening_modulus_member_is_pressure_dimension() {
+    assert_member_dimension("Plastic", "hardening_modulus", DimensionVector::PRESSURE);
+}
+
+#[test]
+fn thermally_conductive_max_service_temp_member_is_temperature_dimension() {
+    assert_member_dimension("ThermallyConductive", "max_service_temp", DimensionVector::TEMPERATURE);
+}
+
+#[test]
+fn sealed_seal_pressure_rating_member_is_pressure_dimension() {
+    assert_member_dimension("Sealed", "seal_pressure_rating", DimensionVector::PRESSURE);
+}
+
+// ─── task-4226 step-3: example reader + negative dimension guard ──────────────
+
+/// structural_traits_dimensioned_example_conforms_clean: read, parse, and
+/// compile `examples/structural_traits_dimensioned.ri` against the full stdlib,
+/// then assert zero Severity::Error diagnostics.
+///
+/// RED until step-4 creates the example file (read fails with ENOENT).
+/// GREEN once the file exists and all dimensioned conformers compile clean.
+///
+/// Note: examples_smoke.rs also auto-discovers and compiles this file (as it
+/// does for all examples/**/*.ri). This dedicated test was the RED driver for
+/// step-4; both tests cover the file after it lands.
+#[test]
+fn structural_traits_dimensioned_example_conforms_clean() {
+    const EXAMPLE_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/structural_traits_dimensioned.ri"
+    );
+    let source = std::fs::read_to_string(EXAMPLE_PATH)
+        .unwrap_or_else(|e| panic!("examples/structural_traits_dimensioned.ri should exist: {}", e));
+    let compiled = compile_source_with_stdlib(&source);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "examples/structural_traits_dimensioned.ri should compile with zero error \
+         diagnostics, got: {:?}",
+        errors
+    );
+}
+
+/// wrong_dimension_member_rejected: a structure conforming to a tightened trait
+/// but supplying a wrong-dimension value must produce a dimension-mismatch error.
+///
+/// Regression guard: pins that the tightened `Sealed.seal_pressure_rating`
+/// member is dimension-checked by the conformance checker. The rejection path
+/// exists on main (conformance/checker.rs emits "type mismatch for trait member"
+/// as Severity::Error; DiagnosticCode::DimensionMismatch).
+///
+/// (Note: this test passes once step-2 lands — it is a regression guard, not a
+/// fresh RED. The example-reader test above is the RED that drives step-4.)
+#[test]
+fn wrong_dimension_member_rejected() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure def BadSeal : Sealed {
+    param seal_pressure_rating : Length = 5.0 * 1m
+}
+"#,
+    );
+    let errors = errors_only(&compiled);
+    assert!(
+        !errors.is_empty(),
+        "expected a dimension-mismatch error for `seal_pressure_rating : Length` \
+         (trait Sealed requires Pressure), but got zero error diagnostics"
+    );
+    assert!(
+        errors.iter().any(|d| {
+            d.message.contains("seal_pressure_rating")
+                || d.message.contains("type mismatch for trait member")
+        }),
+        "expected an error message referencing 'seal_pressure_rating' or \
+         'type mismatch for trait member'; got: {:?}",
+        errors
+    );
 }

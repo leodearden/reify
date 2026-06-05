@@ -79,6 +79,7 @@ For more, see [`docs/getting-started.md`](docs/getting-started.md).
 reify check  <file>                      Parse, type-check, solve constraints
 reify build  <file> -o <output>          Build geometry and export (.step / .stl)
 reify test   <file>                      Run @test-annotated structures
+reify eval   <file>                      Evaluate and print every top-level value cell
 reify gui    [--debug] <file>            Open file in GUI
 reify gui-debug <file>                   Alias for `gui --debug`
 reify lsp                                Start language server (stdin/stdout)
@@ -94,7 +95,7 @@ See [`docs/fea-cache.md`](docs/fea-cache.md) for the FEA cache surface (director
 ## Repository layout
 
 ```
-crates/                 26 Rust crates (kernel, eval, constraints, LSP, CLI…)
+crates/                 30 Rust crates (kernel, eval, constraints, LSP, CLI…)
 gui/                    Tauri 2 + SolidJS + Three.js frontend
 examples/               50+ .ri sample files
 docs/                   Language spec, stdlib reference, design notes
