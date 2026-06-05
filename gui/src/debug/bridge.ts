@@ -124,6 +124,69 @@ function shapeDiagnostic(d: DiagnosticInfo) {
   };
 }
 
+/**
+ * Returns true iff the element is visible in the render tree.
+ * Reuses the existing isEffectivelyHidden() ancestor walk (so collapsed/hidden
+ * panels count as not-visible) plus the rect.width>0 convention shared with
+ * describeElement/dom_query/list_elements.
+ */
+function isElementVisible(el: Element): boolean {
+  return !isEffectivelyHidden(el) && (el as HTMLElement).getBoundingClientRect().width > 0;
+}
+
+/**
+ * Poll predicate at ~60Hz until it returns true or the deadline passes.
+ * No final requestAnimationFrame tick (DOM/store predicates are satisfied
+ * by current state and need no paint flush; avoids rAF stubbing in tests).
+ */
+async function pollUntil(
+  predicate: () => boolean,
+  timeoutMs: number,
+): Promise<{ ok: true; waited_ms: number } | { error: 'timeout' }> {
+  const start = performance.now();
+  while (true) {
+    if (predicate()) {
+      return { ok: true, waited_ms: Math.round(performance.now() - start) };
+    }
+    if (performance.now() - start >= timeoutMs) {
+      return { error: 'timeout' };
+    }
+    await new Promise((r) => setTimeout(r, 16));
+  }
+}
+
+/**
+ * Build a selector predicate for wait_for_selector / the selector arm of wait_for.
+ * Resolves el = document.querySelector(`[data-testid="${CSS.escape(testId)}"]`).
+ * 'visible': el exists AND isElementVisible AND (text===undefined OR textContent.trim()===text)
+ * 'gone':    el===null OR !isElementVisible(el)
+ */
+function buildSelectorPredicate(opts: {
+  testId: string;
+  state: 'visible' | 'gone';
+  text?: string;
+}): () => boolean {
+  const { testId, state, text } = opts;
+  // CSS.escape is not available in all environments (e.g. jsdom); fall back to
+  // a minimal escape that handles the most common testId characters safely.
+  const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(testId)
+    : testId.replace(/["\\]/g, '\\$&');
+  const sel = `[data-testid="${escaped}"]`;
+  return () => {
+    const el = document.querySelector(sel);
+    if (state === 'gone') {
+      return el === null || !isElementVisible(el);
+    }
+    // state === 'visible'
+    if (!el || !isElementVisible(el)) return false;
+    if (text !== undefined) {
+      return (el as HTMLElement).textContent?.trim() === text;
+    }
+    return true;
+  };
+}
+
 // Validates selector param, queries the DOM, and returns either an error, the
 // matched element, or null (no match). Handlers map null → {exists:false}.
 function resolveElement(params: Record<string, unknown>): { error: string } | { el: Element | null } {
@@ -593,6 +656,26 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       }
 
       return { ok: true, path };
+    },
+
+    wait_for_selector: async (params) => {
+      const testId = params.testId;
+      if (typeof testId !== 'string' || testId === '') {
+        return { error: 'testId is required' };
+      }
+      const stateParam = params.state ?? 'visible';
+      if (stateParam !== 'visible' && stateParam !== 'gone') {
+        return { error: 'state must be visible|gone' };
+      }
+      const text = typeof params.text === 'string' ? params.text : undefined;
+      const timeoutMs =
+        typeof params.timeout_ms === 'number' && params.timeout_ms > 0
+          ? params.timeout_ms
+          : 5000;
+      return pollUntil(
+        buildSelectorPredicate({ testId, state: stateParam as 'visible' | 'gone', text }),
+        timeoutMs,
+      );
     },
 
     list_console_errors: (params) => {
