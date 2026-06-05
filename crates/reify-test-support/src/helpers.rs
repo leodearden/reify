@@ -2,10 +2,36 @@
 
 use reify_compiler::TopologyTemplate;
 use reify_core::{Diagnostic, ModulePath, Severity};
-use reify_ir::CompiledExpr;
+use reify_ir::{CompiledExpr, CompiledExprKind};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
+
+/// Collect all `ValueRef` member names reachable from `expr`.
+///
+/// This is the canonical, walk-backed replacement for the per-file
+/// `collect_value_ref_members` copies that existed in the compiler test suite.
+/// Unlike those hand-rolled copies (which matched only `ValueRef`, `BinOp`, and
+/// `UnOp`, dropping refs under any other variant via `_ => vec![]`), this
+/// implementation is backed by [`CompiledExpr::walk`], which performs an
+/// exhaustive pre-order traversal of **every** [`CompiledExprKind`] variant.
+/// This means `ValueRef` nodes nested under `FunctionCall`, `Conditional`,
+/// `OptionSome`, `ListLiteral`, etc. are now correctly collected (item-#3 fix).
+/// When a new `CompiledExprKind` variant is added, `walk`'s exhaustive match
+/// forces an update there, and this helper benefits automatically.
+///
+/// Returns owned `String`s (not `&str`s) because `walk`'s closure parameter
+/// has a higher-ranked lifetime — a borrow of `cell_id.member` cannot escape
+/// into a `Vec<&str>` tied to `expr`'s lifetime.
+pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
+    let mut members = Vec::new();
+    expr.walk(&mut |e| {
+        if let CompiledExprKind::ValueRef(cell_id) = &e.kind {
+            members.push(cell_id.member.clone());
+        }
+    });
+    members
+}
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
 /// geometry kernel. Suitable for tests that only need to evaluate logic
