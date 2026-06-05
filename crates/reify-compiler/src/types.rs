@@ -1135,6 +1135,14 @@ pub enum CompiledGeometryOp {
         kind: CurveKind,
         args: Vec<(String, CompiledExpr)>,
     },
+    /// 2-D profile face construction (rectangle, circle).
+    ///
+    /// Produces a planar face in the XY plane at z=0 (Surface-dimension).
+    /// Consumable by extrude/revolve/loft/sweep as a profile operand.
+    Profile {
+        kind: ProfileKind,
+        args: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Primitive geometry kinds.
@@ -1335,6 +1343,29 @@ impl std::fmt::Display for CurveKind {
             CurveKind::InterpCurve => f.write_str("interp_curve"),
             CurveKind::BezierCurve => f.write_str("bezier_curve"),
             CurveKind::NurbsCurve => f.write_str("nurbs_curve"),
+        }
+    }
+}
+
+/// 2-D profile face kinds.
+///
+/// Each variant produces a planar closed face in the XY plane at z=0.
+/// Used by [`CompiledGeometryOp::Profile`] and mapped to
+/// [`reify_ir::GeometryOp::RectangleProfile`] / [`reify_ir::GeometryOp::CircleProfile`]
+/// at eval time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProfileKind {
+    /// Axis-aligned centred rectangle: `rectangle(width, height)`.
+    Rectangle,
+    /// Circle in the XY plane: `circle(radius)`.
+    Circle,
+}
+
+impl std::fmt::Display for ProfileKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProfileKind::Rectangle => f.write_str("rectangle"),
+            ProfileKind::Circle => f.write_str("circle"),
         }
     }
 }

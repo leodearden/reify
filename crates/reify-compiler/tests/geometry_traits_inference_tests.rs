@@ -1492,3 +1492,56 @@ fn every_geometry_function_name_has_explicit_dispatch_arm() {
         );
     }
 }
+
+// ─── 2-D profile face producers: rectangle + circle (task-4160) ─────────────
+//
+// Both producers must infer Surface-dimension traits (planar, closed, bounded,
+// connected, convex) so that violates_profile_requirement() accepts them at
+// extrude/revolve/loft profile slots and rejects them at Curve path slots.
+//
+// RED until step-6 adds InferredTraits::surface(), the "rectangle"|"circle"
+// dispatch arm in geometry_traits_inference.rs, and the infer_op Profile arm.
+
+/// `rectangle(_, _)` → Surface, planar, closed, bounded, connected, convex.
+///
+/// RED until step-6 adds the surface() constructor and the dispatch arm.
+#[test]
+fn rectangle_infers_surface_dimension_with_full_face_traits() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    let t = try_infer_traits_for_function_call("rectangle", &[])
+        .expect("rectangle must have an explicit dispatch arm");
+    assert_eq!(
+        t.dimension,
+        GeomDim::Surface,
+        "rectangle must infer GeomDim::Surface, got {:?}",
+        t.dimension
+    );
+    assert!(t.planar, "rectangle face must be planar");
+    assert!(t.closed, "rectangle face must be closed");
+    assert!(t.bounded, "rectangle face must be bounded");
+    assert!(t.connected, "rectangle face must be connected");
+    assert!(t.convex, "rectangle face must be convex");
+}
+
+/// `circle(_, _)` → Surface, planar, closed, bounded, connected, convex.
+///
+/// RED until step-6 adds the surface() constructor and the dispatch arm.
+#[test]
+fn circle_infers_surface_dimension_with_full_face_traits() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    let t = try_infer_traits_for_function_call("circle", &[])
+        .expect("circle must have an explicit dispatch arm");
+    assert_eq!(
+        t.dimension,
+        GeomDim::Surface,
+        "circle must infer GeomDim::Surface, got {:?}",
+        t.dimension
+    );
+    assert!(t.planar, "circle face must be planar");
+    assert!(t.closed, "circle face must be closed");
+    assert!(t.bounded, "circle face must be bounded");
+    assert!(t.connected, "circle face must be connected");
+    assert!(t.convex, "circle face must be convex");
+}

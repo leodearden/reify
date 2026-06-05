@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CompiledModule, CurveKind, GeomRef, ModifyKind, PatternKind,
-    PrimitiveKind, SubComponentDecl, SweepKind, TopologyTemplate, TransformKind,
+    PrimitiveKind, ProfileKind, SubComponentDecl, SweepKind, TopologyTemplate, TransformKind,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
 use reify_ir::{
@@ -1513,6 +1513,10 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             CurveKind::BezierCurve => Operation::CurveBezierCurve,
             CurveKind::NurbsCurve => Operation::CurveNurbsCurve,
         },
+        CompiledGeometryOp::Profile { kind, .. } => match kind {
+            ProfileKind::Rectangle => Operation::ProfileRectangle,
+            ProfileKind::Circle => Operation::ProfileCircle,
+        },
     }
 }
 
@@ -1543,7 +1547,9 @@ fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
                 }
             }
         }
-        CompiledGeometryOp::Primitive { .. } | CompiledGeometryOp::Curve { .. } => {}
+        CompiledGeometryOp::Primitive { .. }
+        | CompiledGeometryOp::Curve { .. }
+        | CompiledGeometryOp::Profile { .. } => {}
     }
     refs
 }
@@ -4921,6 +4927,7 @@ impl Engine {
                         reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
                     };
                     for (arg_name, expr) in args {
@@ -5008,6 +5015,7 @@ impl Engine {
                         reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
                     };
                     for (arg_name, expr) in args {

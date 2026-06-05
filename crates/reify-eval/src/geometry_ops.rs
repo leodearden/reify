@@ -1298,6 +1298,22 @@ pub(crate) fn compile_geometry_op(
                 }
             }
         }
+        CompiledGeometryOp::Profile { kind, args } => {
+            use reify_compiler::ProfileKind;
+            let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+                eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+                    .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+            };
+            match kind {
+                ProfileKind::Rectangle => Ok(reify_ir::GeometryOp::RectangleProfile {
+                    width: eval_arg("width")?,
+                    height: eval_arg("height")?,
+                }),
+                ProfileKind::Circle => Ok(reify_ir::GeometryOp::CircleProfile {
+                    radius: eval_arg("radius")?,
+                }),
+            }
+        }
     }
 }
 
