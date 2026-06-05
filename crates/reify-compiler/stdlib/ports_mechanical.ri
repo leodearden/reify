@@ -15,11 +15,12 @@
 //      alias indirection, mirroring `pub type Velocity = Length / Time`.
 //      The alias is `pub` to mirror units.ri's `pub type Velocity` convention.
 //   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
-//   3. No `#no_prelude` pragma. std.ports.mechanical refines Port from
-//      std.ports (inter-stdlib dependency), so the growing-prelude sequence
-//      in stdlib_loader.rs must include std.ports before this module. Adding
-//      `#no_prelude` would break both the refinement resolution and the
-//      stdlib_loader_tests bidirectional invariant test.
+//   3. No `#no_prelude` pragma. std.ports.mechanical refines LocatedPort from
+//      std.ports (inter-stdlib dependency; MechanicalPort : LocatedPort : Port),
+//      so the growing-prelude sequence in stdlib_loader.rs must include
+//      std.ports before this module. Adding `#no_prelude` would break both the
+//      refinement resolution and the stdlib_loader_tests bidirectional invariant
+//      test.
 
 // ── Torque type alias ─────────────────────────────────────────────────────────
 
@@ -79,9 +80,24 @@ structure def ThreadSpec {
 // ── Mechanical port base ──────────────────────────────────────────────────────
 
 // Base trait for any mechanical connection interface.
-// Inherits `direction` from Port via refinement.
-// Bodies are empty — conformers supply Port's direction requirement directly.
-trait MechanicalPort : Port {}
+//
+// Refines LocatedPort (PRD §2 / §4 decision 1): a mechanical port is spatially
+// located, so it transitively satisfies LocatedPort — which is precisely what
+// makes connect.rs's asymmetric-LocatedPort warning fire when a mechanical port
+// connects to a non-located one. Inherits `direction` (Port) and `frame`
+// (LocatedPort) through the refinement chain.
+//
+// Two optional ratings, both `Option<…> = none` (absent unless the conformer
+// supplies them), per PRD decision 5:
+//   max_load   : Option<Force>  — maximum static/working load the port carries.
+//   max_torque : Option<Torque> — maximum continuous torque (see Torque alias).
+// RotaryPort re-declares `max_torque` as a *required* Torque; an optional default
+// and a required member of the same name never collide (trait_requirements.rs
+// only conflicts required-vs-required), so the module loads clean.
+trait MechanicalPort : LocatedPort {
+    param max_load : Option<Force> = none
+    param max_torque : Option<Torque> = none
+}
 
 // ── Marker traits ─────────────────────────────────────────────────────────────
 
