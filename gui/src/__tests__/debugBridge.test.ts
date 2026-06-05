@@ -1034,6 +1034,24 @@ describe('debug bridge editor_content live buffer', () => {
     const result = await dispatchEditorContentWithView(stores, liveView);
     expect(result.content).toBeNull();
   });
+
+  it('active openFiles[] length reflects live buffer, non-active entries stay store-derived', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [
+      { path: 'bracket.ri', content: 'PRE-EDIT' },  // stale length 8
+      { path: 'other.ri',   content: 'OTHER' },      // store-derived length 5
+    ];
+    stores.editor.state.activeFile = 'bracket.ri';
+    // editorView has 'POST-EDIT live' (length 14, not 8)
+    const liveView = { state: { doc: { toString: () => 'POST-EDIT live', length: 14 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, liveView);
+    const activeEntry = result.openFiles.find((f: any) => f.path === 'bracket.ri');
+    const otherEntry  = result.openFiles.find((f: any) => f.path === 'other.ri');
+    // active entry must use live length
+    expect(activeEntry.length).toBe('POST-EDIT live'.length);  // 14, not 8
+    // non-active entry must stay store-derived
+    expect(otherEntry.length).toBe('OTHER'.length);            // 5
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
