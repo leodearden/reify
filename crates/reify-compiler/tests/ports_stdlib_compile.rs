@@ -212,6 +212,34 @@ fn port_base_trait_requires_direction_directionality() {
     }
 }
 
+/// Positive compile test: a structure whose port conforms to Port WITHOUT
+/// specifying `direction` must compile with zero Severity::Error diagnostics.
+///
+/// This directly pins the 'omit direction → defaults to Bidi' behavioural
+/// contract that motivated the Port.direction default change.  If the default
+/// machinery is broken, a missing-required-param error would fire here.
+#[test]
+fn port_conforms_without_direction_compiles_clean() {
+    let source = r#"
+structure def Sender {
+    port out_p : out Port {}
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a Port conformer that omits 'direction' should compile without errors \
+         (direction defaults to Directionality.Bidi); got: {:?}",
+        errors
+    );
+}
+
 /// std/ports cardinality lock: exactly 1 trait (Port), 1 enum (Directionality),
 /// 1 structure (Frame3). Updated incrementally by task α steps:
 ///   step-4: structures 0→1 (Frame3)
