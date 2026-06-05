@@ -825,7 +825,7 @@ trait FatigueRated : MaterialSpec {
     param fatigue_cycles : Int = undef
 }
 trait FractureTough : MaterialSpec {
-    param fracture_toughness : Scalar<Pressure * Length^(1/2)>
+    param fracture_toughness : FractureToughness  // Pa·√m — tightened from Scalar<> by task #3115
 }
 trait Ductile {
     param elongation_at_break : Real
@@ -846,7 +846,7 @@ trait Damping : MaterialSpec {
 trait ThermallyCharacterized : MaterialSpec {
     param thermal_conductivity : ThermalConductivity
     param specific_heat : SpecificHeat
-    param thermal_expansion : Real / Temperature     // coefficient of linear expansion
+    param thermal_expansion : ThermalExpansion       // 1/K — tightened by task #3112/#3115
     param melting_point : Temperature = undef
     param max_service_temperature : Temperature = undef
     param glass_transition : Temperature = undef
@@ -860,16 +860,16 @@ trait Refractory : ThermallyCharacterized {
 
 ```
 trait ElectricallyCharacterized : MaterialSpec {
-    param resistivity : Scalar<Voltage * Length / Current>
-    param dielectric_constant : Real = undef
-    param dielectric_strength : Scalar<Voltage / Length> = undef
-    param magnetic_permeability : Real = undef
+    param resistivity : ElectricResistivity         // Ω·m — tightened by task #3115
+    param dielectric_constant : Real = undef        // dimensionless
+    param dielectric_strength : DielectricStrength = undef  // V/m — tightened by task #3115
+    param magnetic_permeability : Real = undef      // dimensionless
 }
 trait Conductive : ElectricallyCharacterized {
-    constraint resistivity < 1e-4ohm*m
+    constraint resistivity < 0.0001ohm*m
 }
 trait Insulating : ElectricallyCharacterized {
-    constraint resistivity > 1e6ohm*m
+    constraint resistivity > 1000000ohm*m
     constraint determined(dielectric_strength)
 }
 ```
@@ -879,7 +879,7 @@ trait Insulating : ElectricallyCharacterized {
 ```
 trait OpticallyCharacterized : MaterialSpec {
     param refractive_index : Real
-    param absorption_coefficient : Real = undef
+    param absorption_coefficient : AbsorptionCoeff = undef  // 1/m — tightened by task #3115
     param transmittance : Real = undef
     param reference_thickness : Length = undef
 }
