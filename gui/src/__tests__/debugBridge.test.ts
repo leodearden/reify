@@ -976,6 +976,66 @@ describe('debug bridge editor_content', () => {
   });
 });
 
+describe('debug bridge editor_content live buffer', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchEditorContentWithView(
+    stores: DebugStores,
+    editorView?: unknown,
+  ) {
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+    if (editorView !== undefined) {
+      window.__REIFY_DEBUG__!.editorView = editorView as any;
+    }
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 601, command: 'editor_content', params: {} } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('primary: editorView present → content is live doc, not stale store snapshot', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'PRE-EDIT' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    const liveView = { state: { doc: { toString: () => 'POST-EDIT live', length: 14 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, liveView);
+    expect(result.content).toBe('POST-EDIT live');
+  });
+
+  it('guard (i): no editorView → content falls back to store snapshot', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'PRE-EDIT' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    const result = await dispatchEditorContentWithView(stores);
+    expect(result.content).toBe('PRE-EDIT');
+  });
+
+  it('guard (ii): activeFile null with editorView present → content is null', async () => {
+    const stores = makeStores();
+    // activeFile stays null (default makeStores)
+    const liveView = { state: { doc: { toString: () => 'x', length: 1 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, liveView);
+    expect(result.content).toBeNull();
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // debug bridge pickViewport selection (step-3 — RED)
 // Verifies that the five viewport-mediated handlers (viewport_state, screenshot,
