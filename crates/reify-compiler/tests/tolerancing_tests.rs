@@ -1619,3 +1619,113 @@ structure def Probe {
     //   tolerance_band = 0.1mm − (−0.1mm) = 0.2mm = 0.0002 m
     assert_length!("Probe", "band",  0.0002_f64, "symmetric_tolerance.tolerance_band");
 }
+
+// ─── γ-3: limit_tolerance returns DimensionalTolerance ───────────────────────
+
+/// (γ step-3 RED → GREEN) limit_tolerance is reshaped to return DimensionalTolerance.
+///
+/// (a) Structural: the compiled stdlib `limit_tolerance` function has
+///     `return_type == Type::StructureRef("DimensionalTolerance")`.
+///
+/// (b) Eval: limit_tolerance(upper=10mm, lower=9.9mm) uses nominal=lower convention:
+///     DT(nominal: 9.9mm, upper_deviation: 0.1mm, lower_deviation: 0mm)
+///       upper_limit  = 9.9mm + 0.1mm = 10mm = 0.010 m  (== upper arg)
+///       lower_limit  = 9.9mm + 0mm   = 9.9mm = 0.0099 m (== lower arg)
+///       tolerance_band = 0.1mm − 0mm = 0.1mm = 0.0001 m (== upper−lower)
+///
+/// RED on base: limit_tolerance returns bare Length (upper − lower); return_type
+/// is Scalar{LENGTH}, member accesses yield Undef.
+#[test]
+fn limit_tolerance_returns_dimensional_tolerance() {
+    // (a) Structural: return_type must be StructureRef("DimensionalTolerance") ──
+    let module = load_stdlib_module();
+    let lim = module
+        .functions
+        .iter()
+        .find(|f| f.name == "limit_tolerance")
+        .expect("expected 'limit_tolerance' function");
+    assert_eq!(
+        lim.return_type,
+        Type::StructureRef("DimensionalTolerance".to_string()),
+        "limit_tolerance return_type should be Type::StructureRef(\"DimensionalTolerance\"), \
+         got {:?}",
+        lim.return_type
+    );
+
+    // (b) Eval: prelude limit_tolerance returns DT with nominal=lower convention ──
+    let source = r#"
+structure def Probe {
+    let lt    = limit_tolerance(10mm, 9.9mm)
+    let upper = lt.upper_limit
+    let lower = lt.lower_limit
+    let band  = lt.tolerance_band
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "limit_tolerance Probe should compile without errors, got: {:?}",
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    let all_keys: Vec<_> = result
+        .values
+        .iter()
+        .map(|(k, _)| format!("{}.{}", k.entity, k.member))
+        .collect();
+
+    macro_rules! assert_length {
+        ($entity:expr, $member:expr, $expected:expr, $label:literal) => {{
+            let id = ValueCellId::new($entity, $member);
+            let value = result.values.get(&id).unwrap_or_else(|| {
+                panic!(
+                    "γ {}: {}.{} not found; present keys: {:?}",
+                    $label, $entity, $member, all_keys
+                )
+            });
+            match value {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::LENGTH,
+                        "γ {}: {}.{} expected LENGTH dimension, got {:?}",
+                        $label, $entity, $member, dimension
+                    );
+                    let rel_err = (si_value - $expected).abs() / $expected;
+                    assert!(
+                        rel_err < 1e-9,
+                        "γ {}: {}.{} expected {:.8e} m, got {:.8e} m (rel_err {:.2e})",
+                        $label, $entity, $member, $expected, si_value, rel_err
+                    );
+                }
+                other => panic!(
+                    "γ {}: {}.{} expected Value::Scalar (LENGTH), got {:?}",
+                    $label, $entity, $member, other
+                ),
+            }
+        }};
+    }
+
+    // limit_tolerance(upper=10mm, lower=9.9mm):
+    //   DT(nominal: 9.9mm, upper_deviation: 0.1mm, lower_deviation: 0mm)
+    //   upper_limit  = 9.9mm + 0.1mm = 10mm = 0.010 m  (== upper arg)
+    assert_length!("Probe", "upper", 0.010_f64, "limit_tolerance.upper_limit");
+    //   lower_limit  = 9.9mm + 0mm = 9.9mm = 0.0099 m  (== lower arg)
+    assert_length!("Probe", "lower", 0.0099_f64, "limit_tolerance.lower_limit");
+    //   tolerance_band = 0.1mm − 0mm = 0.1mm = 0.0001 m  (== upper − lower)
+    assert_length!("Probe", "band",  0.0001_f64, "limit_tolerance.tolerance_band");
+}
