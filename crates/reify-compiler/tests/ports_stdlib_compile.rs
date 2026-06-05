@@ -566,22 +566,76 @@ fn threaded_port_trait_surface() {
     );
 }
 
+// ─── step-1 (task β): mechanical thread enums surface ─────────────────────────
+
+/// std/ports/mechanical declares the three thread-system enums with exact
+/// variants in order:
+///   ThreadSystem              == [ISO_Metric, ISO_Metric_Fine, UNC, UNF]
+///   ThreadClass               == [Class_6g6H, Class_4g6H]
+///   ThreadTighteningDirection == [Clockwise, Counterclockwise]
+///
+/// RED: the three enums are absent from the module (find_enum panics).
+#[test]
+fn mechanical_thread_enums_surface() {
+    let thread_system = find_enum("std/ports/mechanical", "ThreadSystem");
+    assert_eq!(
+        thread_system.variants,
+        vec![
+            "ISO_Metric".to_string(),
+            "ISO_Metric_Fine".to_string(),
+            "UNC".to_string(),
+            "UNF".to_string(),
+        ],
+        "ThreadSystem variants must be [ISO_Metric, ISO_Metric_Fine, UNC, UNF] in order; got: {:?}",
+        thread_system.variants
+    );
+
+    let thread_class = find_enum("std/ports/mechanical", "ThreadClass");
+    assert_eq!(
+        thread_class.variants,
+        vec!["Class_6g6H".to_string(), "Class_4g6H".to_string()],
+        "ThreadClass variants must be [Class_6g6H, Class_4g6H] in order; got: {:?}",
+        thread_class.variants
+    );
+
+    let tightening = find_enum("std/ports/mechanical", "ThreadTighteningDirection");
+    assert_eq!(
+        tightening.variants,
+        vec!["Clockwise".to_string(), "Counterclockwise".to_string()],
+        "ThreadTighteningDirection variants must be [Clockwise, Counterclockwise] in order; got: {:?}",
+        tightening.variants
+    );
+}
+
 /// std/ports/mechanical cardinality lock: exactly 6 traits (MechanicalPort,
-/// Bore, Shaft, RotaryPort, ThreadedPort, StructurePort), 0 enums, 0 structures.
+/// Bore, Shaft, RotaryPort, ThreadedPort, StructurePort), 3 enums (ThreadSystem,
+/// ThreadClass, ThreadTighteningDirection), 0 structures.
+///
+/// Bumped incrementally by task β steps (mirroring task α's in-file discipline):
+///   step-1: enums 0→3 (ThreadSystem, ThreadClass, ThreadTighteningDirection)
+///   step-3: structures 0→1 (ThreadSpec)
+///   step-9: traits 6→8 (MotivePort, LinearPort)
+///   step-11: traits 8→11 (GuidePort, LinearGuidePort, RotaryGuidePort)
 #[test]
 fn std_ports_mechanical_module_cardinality_locked() {
     let module = load_module("std/ports/mechanical");
 
+    let enum_names: Vec<&str> = module.enum_defs.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
         module.enum_defs.len(),
-        0,
-        "std/ports/mechanical should declare 0 enums, got: {:?}",
-        module
-            .enum_defs
-            .iter()
-            .map(|e| e.name.as_str())
-            .collect::<Vec<_>>()
+        3,
+        "std/ports/mechanical should declare exactly 3 enums \
+         (ThreadSystem, ThreadClass, ThreadTighteningDirection), got: {:?}",
+        enum_names
     );
+    for expected in &["ThreadSystem", "ThreadClass", "ThreadTighteningDirection"] {
+        assert!(
+            module.enum_defs.iter().any(|e| e.name == *expected),
+            "std/ports/mechanical should contain enum '{}', got: {:?}",
+            expected,
+            enum_names
+        );
+    }
 
     let trait_names: Vec<&str> = module
         .trait_defs
