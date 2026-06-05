@@ -392,12 +392,13 @@ fn geo_equiv_within_tolerance_perturbation_returns_true() {
 }
 
 // ---------------------------------------------------------------------------
-// Topology extraction: extract_faces (steps 1 + 2)
+// Topology extraction: extract_faces (task-4262 coplanar coalescing)
 //
-// Manifold "face" = mesh triangle (NOT a BRep parametric surface patch).
-// The unit cube tessellates to 12 triangles, so extract_faces returns 12
-// sub-handles — pinning the Manifold-face=triangle semantic gap (PRD Open
-// Question §10.5) as runtime behaviour: 12 != 6 (BRep's box face count).
+// After task-4262, extract_faces groups coplanar triangles into planar faces
+// and emits ONE sub-handle per planar face. A unit cube has 6 planar faces
+// (2 triangles each), so extract_faces returns 6 sub-handles — matching
+// BRep parity (PRD Open Question §10.5 resolved: coalesced planar-face
+// semantics).
 // ---------------------------------------------------------------------------
 
 /// Assert that every id in `handles` is non-INVALID and that the ids are
@@ -421,22 +422,19 @@ fn assert_handles_valid_and_distinct(handles: &[GeometryHandleId], label: &str) 
     );
 }
 
-/// `extract_faces` on the unit cube returns exactly 12 distinct, valid
-/// sub-handles — one per mesh triangle.
+/// `extract_faces` on the unit cube returns exactly 6 distinct, valid
+/// sub-handles — one per coalesced planar face (BRep parity).
 ///
-/// The `unit_cube_mesh` fixture has 12 outward-wound triangles
-/// (test_fixtures.rs), so the Manifold kernel — whose "face" is a mesh
-/// triangle, not a coalesced parametric surface patch — returns 12
-/// sub-handles. This is intentionally NOT 6 (the BRep box face count): the
-/// `12 != 6` assertion pins the documented Manifold-face-vs-BRep-face
-/// semantic gap (PRD Open Question §10.5) as observable runtime behaviour.
+/// The unit cube tessellates to 12 triangles grouped into 6 planar faces
+/// (2 coplanar triangles per face). After task-4262's coplanar coalescing,
+/// `extract_faces` emits one sub-handle per planar face, matching OCCT's
+/// BRep box face count (6). The `12 ≠ 6` semantic gap documented in PRD
+/// Open Question §10.5 is resolved: both kernels now report 6 faces.
 ///
-/// RED (step-1): `ManifoldKernel` inherits the trait default for
-/// `extract_faces`, which returns `Err(QueryError::QueryFailed("topology
-/// extraction not supported by this kernel"))`. GREEN is step-2 (sub-shape
-/// store + `extract_faces` override).
+/// RED (step-1): extract_faces still returns 12 (one handle per triangle);
+/// GREEN after step-2 (coalesce_coplanar_faces groups them into 6 planar faces).
 #[test]
-fn extract_faces_unit_cube_returns_12_distinct_handles() {
+fn extract_faces_unit_cube_returns_6_planar_faces() {
     let mut kernel = ManifoldKernel::new();
     let handle = ingest(&mut kernel, [0.0, 0.0, 0.0]);
 
@@ -444,26 +442,16 @@ fn extract_faces_unit_cube_returns_12_distinct_handles() {
         .extract_faces(handle)
         .expect("extract_faces on a stored unit cube must return Ok(Vec)");
 
-    // (a) one sub-handle per mesh triangle.
+    // (a) 6 planar faces — BRep parity. The unit cube has 6 planar surface
+    // patches (2 coplanar triangles each); coalescing must yield exactly 6.
     assert_eq!(
         faces.len(),
-        12,
-        "unit cube tessellates to 12 triangles; extract_faces must return \
-         one sub-handle per triangle",
-    );
-
-    // (b) 12 != 6 — pins the Manifold-face=triangle vs BRep-face=patch
-    // semantic gap. A BRep box has 6 faces; the Manifold mesh has 12
-    // triangles. This inequality is the runtime witness of PRD Open
-    // Question §10.5.
-    assert_ne!(
-        faces.len(),
         6,
-        "Manifold face count (mesh triangles = 12) must differ from the \
-         BRep box face count (parametric patches = 6) — the semantic gap",
+        "unit cube must yield 6 planar-face handles after coplanar coalescing \
+         (BRep parity: 6 == OCCT box faces)",
     );
 
-    // (c) ids non-INVALID and distinct.
+    // (b) ids non-INVALID and pairwise distinct.
     assert_handles_valid_and_distinct(&faces, "face");
 }
 
@@ -558,18 +546,19 @@ fn assert_unit_axis_aligned(n: [f64; 3], label: &str) {
     );
 }
 
-/// Sub-face `SurfaceArea` and `FaceNormal` over the unit cube's 12 facets.
+/// Sub-face `SurfaceArea` and `FaceNormal` over the unit cube's 6 coalesced planar faces.
 ///
-/// Each `unit_cube_mesh` facet is a right triangle with legs 1 and 1, so its
-/// area is `1/2·1·1 = 0.5` and the 12 facets sum to the cube's total surface
-/// area `6.0`. Every facet of an axis-aligned cube has an axis-aligned unit
-/// normal (both triangles of a cube face share that face's normal), so the
-/// FaceNormal check is triangle-order-independent; we additionally confirm a
-/// ±Z facet exists to exercise the Z axis explicitly (plan step-5(c)). Sign
-/// is accepted either way per the FaceNormal contract.
+/// After task-4262 coplanar coalescing, each planar face holds two coplanar
+/// right triangles (legs 1, 1) → area = 0.5 + 0.5 = **1.0** per face.  The 6
+/// faces sum to the cube's total surface area **6.0**.
 ///
-/// RED (step-5): `ManifoldKernel::query` returns `Err(QueryFailed(STUB_MSG))`
-/// for `SurfaceArea`/`FaceNormal`. GREEN is step-6.
+/// Every planar face of an axis-aligned unit cube has an axis-aligned unit
+/// normal. The six faces correspond to the ±X, ±Y, ±Z pairs, so all six
+/// axis directions must appear **exactly once** among the returned normals.
+/// Sign is accepted either way per the FaceNormal contract.
+///
+/// RED (step-1b): `extract_faces` still returns 12 one-triangle handles, so
+/// `faces.len() == 6` fails. GREEN after step-2 (coalesce_coplanar_faces).
 #[test]
 fn query_sub_face_surface_area_and_normal_unit_cube() {
     let mut kernel = ManifoldKernel::new();
@@ -577,12 +566,15 @@ fn query_sub_face_surface_area_and_normal_unit_cube() {
     let faces = kernel
         .extract_faces(handle)
         .expect("extract_faces must succeed");
-    assert_eq!(faces.len(), 12, "unit cube must have 12 facets");
+    // After coplanar coalescing: 6 planar faces (BRep parity).
+    assert_eq!(faces.len(), 6, "unit cube must have 6 coalesced planar faces");
 
     let mut area_sum = 0.0;
-    let mut saw_z_facet = false;
+    // Track which axis-direction normals we have seen (quantised to ±1 per axis).
+    // Represented as a sorted Vec of (axis, sign) pairs so we can assert all 6.
+    let mut axis_dirs: Vec<(usize, i8)> = Vec::new();
     for (i, &f) in faces.iter().enumerate() {
-        // (a) per-facet area == 0.5.
+        // (a) per-planar-face area == 1.0 (two right triangles with legs 1,1).
         let area = match kernel.query(&GeometryQuery::SurfaceArea(f)) {
             Ok(Value::Real(a)) => a,
             other => panic!(
@@ -590,12 +582,12 @@ fn query_sub_face_surface_area_and_normal_unit_cube() {
             ),
         };
         assert!(
-            (area - 0.5).abs() < 1e-6,
-            "unit-cube facet [{i}] is a right triangle (legs 1,1) => area 0.5; got {area}",
+            (area - 1.0).abs() < 1e-6,
+            "unit-cube planar face [{i}] = two right triangles (legs 1,1) => area 1.0; got {area}",
         );
         area_sum += area;
 
-        // (c) per-facet normal is a unit, axis-aligned vector.
+        // (b) per-planar-face normal is a unit, axis-aligned vector.
         let n = match kernel.query(&GeometryQuery::FaceNormal(f)) {
             Ok(Value::String(s)) => parse_xyz(&s),
             other => panic!(
@@ -603,19 +595,32 @@ fn query_sub_face_surface_area_and_normal_unit_cube() {
             ),
         };
         assert_unit_axis_aligned(n, &format!("FaceNormal(face[{i}])"));
-        if (n[2].abs() - 1.0).abs() < 1e-6 {
-            saw_z_facet = true;
+        // Record which (axis, sign) this normal corresponds to.
+        for axis in 0..3 {
+            if (n[axis].abs() - 1.0).abs() < 1e-6 {
+                let sign = if n[axis] > 0.0 { 1i8 } else { -1i8 };
+                axis_dirs.push((axis, sign));
+            }
         }
     }
 
-    // (b) sum of all 12 facet areas == total cube surface area 6.0.
+    // (c) sum of all 6 planar-face areas == total cube surface area 6.0.
     assert!(
         (area_sum - 6.0).abs() < 1e-6,
-        "sum of 12 unit-cube facet areas must be 6.0; got {area_sum}",
+        "sum of 6 unit-cube planar-face areas must be 6.0; got {area_sum}",
     );
-    assert!(
-        saw_z_facet,
-        "unit cube must have at least one facet whose normal is ≈ ±Z",
+
+    // (d) all six axis directions (+/-X, +/-Y, +/-Z) appear exactly once.
+    axis_dirs.sort_unstable();
+    let expected: Vec<(usize, i8)> = {
+        let mut v = vec![(0, -1), (0, 1), (1, -1), (1, 1), (2, -1), (2, 1)];
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(
+        axis_dirs,
+        expected,
+        "unit cube must have exactly one planar face per ±X/±Y/±Z direction; got {axis_dirs:?}",
     );
 }
 
@@ -779,17 +784,21 @@ fn query_int_list(kernel: &ManifoldKernel, q: &GeometryQuery) -> Vec<i64> {
 /// excludes the triangle itself and returns the neighbour indices as an
 /// ascending `Value::List<Value::Int>`, mirroring OCCT's wire format.
 ///
+/// `AdjacentFaces` and `SharedEdges` index **raw mesh triangles** (0..12 for
+/// the unit cube) — they are NOT affected by task-4262's coplanar coalescing
+/// of `extract_faces` from 12 handles to 6.  This test is intentionally
+/// decoupled from `extract_faces` to remain GREEN after that semantic change.
+///
 /// RED (step-9): `query()` returns `Err(QueryFailed(STUB_MSG))` for
 /// `AdjacentFaces`. GREEN is step-10.
 #[test]
 fn query_adjacent_faces_unit_cube_exactly_three_neighbours() {
     let mut kernel = ManifoldKernel::new();
     let shape = ingest(&mut kernel, [0.0, 0.0, 0.0]);
-    // Pin the 12-triangle face count the `0..12` range below rests on.
-    let faces = kernel
-        .extract_faces(shape)
-        .expect("extract_faces must succeed");
-    assert_eq!(faces.len(), 12, "unit cube must have 12 mesh triangles");
+    // The unit cube tessellates to 12 raw mesh triangles.  This raw-triangle
+    // count is the index space AdjacentFaces/SharedEdges operate on; it is
+    // independent of extract_faces' coalesced-planar-face count.
+    let raw_tri_count = 12usize;
 
     // A spread of triangle indices — the "exactly 3" invariant holds for all.
     for &face_index in &[0usize, 1, 6, 11] {
@@ -806,11 +815,11 @@ fn query_adjacent_faces_unit_cube_exactly_three_neighbours() {
             !neighbours.contains(&(face_index as i64)),
             "AdjacentFaces({face_index}) must exclude the queried triangle; got {neighbours:?}",
         );
-        // All entries are valid triangle indices in 0..12.
+        // All entries are valid triangle indices in 0..raw_tri_count.
         for &n in &neighbours {
             assert!(
-                (0..12).contains(&n),
-                "neighbour {n} of triangle {face_index} out of range 0..12",
+                (0..raw_tri_count as i64).contains(&n),
+                "neighbour {n} of triangle {face_index} out of range 0..{raw_tri_count}",
             );
         }
         // Ascending and distinct.
@@ -845,15 +854,18 @@ fn query_adjacent_faces_unit_cube_exactly_three_neighbours() {
 ///
 /// RED (step-11): `query()` returns `Err(QueryFailed(STUB_MSG))` for
 /// `SharedEdges`. GREEN is step-12.
+///
+/// `SharedEdges` indexes **raw mesh triangles** (0..12) — unaffected by
+/// task-4262's coplanar coalescing of `extract_faces`.  This test is
+/// intentionally decoupled from `extract_faces` to remain GREEN after that
+/// semantic change.
 #[test]
 fn query_shared_edges_unit_cube() {
     let mut kernel = ManifoldKernel::new();
     let shape = ingest(&mut kernel, [0.0, 0.0, 0.0]);
-    // 12 triangles; the SharedEdges index space is the 18 canonical edges.
-    let faces = kernel
-        .extract_faces(shape)
-        .expect("extract_faces must succeed");
-    assert_eq!(faces.len(), 12, "unit cube must have 12 mesh triangles");
+    // The unit cube has 12 raw mesh triangles and 18 canonical edges.
+    // AdjacentFaces/SharedEdges index the raw-triangle space (0..12)
+    // independently of extract_faces' coalesced-planar-face count (0..6).
 
     // (a) Every edge-adjacent pair shares exactly one canonical edge.
     let neighbours =

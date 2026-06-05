@@ -703,6 +703,45 @@ pub(crate) fn tri_unit_normal(tri: &[[f64; 3]; 3]) -> [f64; 3] {
     [n[0] / len, n[1] / len, n[2] / len]
 }
 
+// ---------------------------------------------------------------------------
+// Planar-face geometry helpers (task-4262)
+// ---------------------------------------------------------------------------
+
+/// Total area of a planar face = sum of its constituent triangle areas.
+///
+/// A degenerate (zero-area) triangle contributes 0.0, which is correct.
+/// Used by the `SurfaceArea` query arm for a `SubShape::Face`.
+pub(crate) fn face_area(tris: &[[[f64; 3]; 3]]) -> f64 {
+    tris.iter().map(|t| tri_area(t)).sum()
+}
+
+/// Shared planar normal of a face: unit normal of the first non-degenerate
+/// constituent triangle.
+///
+/// Coplanar triangles share the same normal (possibly negated if a triangle
+/// is wound oppositely, but for meshes produced by Manifold / ingest_mesh
+/// the winding is consistent). Returns `[0,0,0]` if all triangles are
+/// degenerate (zero-area). Used by the `FaceNormal` query arm for a
+/// `SubShape::Face`.
+pub(crate) fn face_unit_normal(tris: &[[[f64; 3]; 3]]) -> [f64; 3] {
+    for tri in tris {
+        let n = tri_unit_normal(tri);
+        if n != [0.0, 0.0, 0.0] {
+            return n;
+        }
+    }
+    [0.0, 0.0, 0.0]
+}
+
+/// Axis-aligned bounding box spanning all corners of all constituent triangles.
+///
+/// Delegates to [`points_bbox`] over the flattened corner list. Used by the
+/// `BoundingBox` query arm for a `SubShape::Face`.
+pub(crate) fn face_points_bbox(tris: &[[[f64; 3]; 3]]) -> ([f64; 3], [f64; 3]) {
+    let all_points: Vec<[f64; 3]> = tris.iter().flat_map(|tri| tri.iter().copied()).collect();
+    points_bbox(&all_points)
+}
+
 /// Format an xyz vector as the OCCT-compatible `{"x":_,"y":_,"z":_}` JSON
 /// wire string.
 ///
