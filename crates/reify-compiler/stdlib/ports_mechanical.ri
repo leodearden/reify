@@ -109,10 +109,11 @@ trait RotaryPort : MechanicalPort {
 
 // ── Parameterised threaded port ───────────────────────────────────────────────
 
-// Threaded fastener port — geometry defined by diameter and pitch.
-// thread_diameter : Length — nominal major diameter of the thread.
-// pitch : Length — thread pitch (distance between adjacent thread crests).
+// Threaded fastener port — carries a full standards-derived ThreadSpec.
+// thread_spec : ThreadSpec — the thread system, driving dimensions (major Ø +
+// pitch), tolerance class, handedness, and the derived minor/pitch/tap-drill/
+// clearance diameters (see ThreadSpec above). Replaces the previous raw
+// thread_diameter/pitch Length pair (PRD §4 decision 6).
 trait ThreadedPort : MechanicalPort {
-    param thread_diameter : Length
-    param pitch : Length
+    param thread_spec : ThreadSpec
 }
