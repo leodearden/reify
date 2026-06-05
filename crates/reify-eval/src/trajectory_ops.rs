@@ -223,27 +223,33 @@ use reify_stdlib::{InputShapeCacheKey, SimulateTrajectoryCacheKey};
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
-/// Warm-state cache entry for a completed `simulate_trajectory` dispatch.
+/// Generic warm-state cache entry for a completed trajectory ComputeNode
+/// dispatch: the content-hash `key` the result was computed for plus the cached
+/// result `Value`.
 ///
-/// Recovered on the next invocation via [`OpaqueState::downcast_ref`] and
-/// reused only when the incoming `SimulateTrajectoryCacheKey` matches (a cache
-/// HIT). Mirrors `dynamics_ops::InverseDynamicsCache` without the per-body
-/// solid-hash record (trajectory has no body-granular reuse optimisation).
+/// `K` is the per-target content-hash cache key ([`SimulateTrajectoryCacheKey`]
+/// for the forward-sim arm, [`InputShapeCacheKey`] for the input-shape arm).
+/// Recovered on the next invocation via [`OpaqueState::downcast_ref`] and reused
+/// only when the incoming key matches (a cache HIT). The result is held behind
+/// an [`Arc`] so the mandatory cache-HIT re-donation is an O(1) refcount bump
+/// rather than a second deep clone of the result tree; only the output-value-cell
+/// copy pays an unavoidable deep clone (the engine cell owns a plain `Value`).
+///
+/// This single generic collapses what were two near-verbatim per-target structs
+/// (`SimulateTrajectoryCache` / `InputShapeCache`) — they now differ only in the
+/// key type and are spelled as the type aliases below. Mirrors
+/// `dynamics_ops::InverseDynamicsCache` without the per-body solid-hash record
+/// (trajectory has no body-granular reuse optimisation).
 #[derive(Clone)]
-struct SimulateTrajectoryCache {
-    key: SimulateTrajectoryCacheKey,
-    /// Cached `EndEffectorTrack` `Value::StructureInstance`, held behind an
-    /// `Arc` so the mandatory cache-HIT re-donation is an O(1) refcount bump
-    /// rather than a second deep clone of the track data. The output-value-cell
-    /// copy pays an unavoidable deep clone (the engine cell owns a plain `Value`).
+struct ComputeResultCache<K> {
+    key: K,
     result: Arc<Value>,
 }
 
-impl SimulateTrajectoryCache {
+impl<K: Copy + Send + Sync + 'static> ComputeResultCache<K> {
     /// Coarse heap-size estimate in bytes: the flat key plus the result tree.
     fn estimated_size_bytes(&self) -> usize {
-        std::mem::size_of::<SimulateTrajectoryCacheKey>()
-            + value_size_estimate(self.result.as_ref())
+        std::mem::size_of::<K>() + value_size_estimate(self.result.as_ref())
     }
 
     /// Wrap this cache in an `OpaqueState` for donation to the warm-state pool,
@@ -254,7 +260,18 @@ impl SimulateTrajectoryCache {
     }
 }
 
-/// Coarse heap-size estimate of a `Value` tree. Mirrors `dynamics_ops::value_size_estimate`.
+/// Warm-state cache for a completed `simulate_trajectory` dispatch (keyed on the
+/// `(profile, mech, modal)` content hash).
+type SimulateTrajectoryCache = ComputeResultCache<SimulateTrajectoryCacheKey>;
+
+/// Warm-state cache for a completed `input_shape` dispatch (keyed on the
+/// `(profile, shaper)` content hash).
+type InputShapeCache = ComputeResultCache<InputShapeCacheKey>;
+
+/// Coarse heap-size estimate of a `Value` tree. Mirrors
+/// `dynamics_ops::value_size_estimate` (kept a local copy: that one is private to
+/// `dynamics_ops`, which is outside this task's lock scope — hoisting all three
+/// copies to a shared module is a follow-up).
 fn value_size_estimate(v: &Value) -> usize {
     let base = std::mem::size_of::<Value>();
     match v {
@@ -273,8 +290,11 @@ fn value_size_estimate(v: &Value) -> usize {
 
 /// Build the `Completed` outcome that donates `cache` as the node's warm state.
 /// Performs one deep clone of the result for the output value cell; the
-/// warm-state copy re-uses the same `Arc<Value>` (O(1) refcount bump).
-fn completed_donating_sim(cache: SimulateTrajectoryCache) -> ComputeOutcome {
+/// warm-state copy re-uses the same `Arc<Value>` (O(1) refcount bump). Shared by
+/// both trajectory trampolines (generic over the cache-key type `K`).
+fn completed_donating<K: Copy + Send + Sync + 'static>(
+    cache: ComputeResultCache<K>,
+) -> ComputeOutcome {
     let result = cache.result.as_ref().clone();
     let (state, size_bytes) = cache.into_opaque_state();
     let cost_per_byte = if size_bytes > 0 {
@@ -291,8 +311,8 @@ fn completed_donating_sim(cache: SimulateTrajectoryCache) -> ComputeOutcome {
 }
 
 /// Malformed-input short-circuit: `Value::Undef` with no warm state, mirroring
-/// `dynamics_ops::undef_outcome`.
-fn undef_outcome_sim() -> ComputeOutcome {
+/// `dynamics_ops::undef_outcome`. Shared by both trajectory trampolines.
+fn undef_outcome() -> ComputeOutcome {
     ComputeOutcome::Completed {
         result: Value::Undef,
         new_warm_state: None,
@@ -327,7 +347,7 @@ pub fn simulate_trajectory_trampoline(
 
     // Arity guard: simulate_trajectory(profile, mech, modal) — 3 value inputs.
     if value_inputs.len() != 3 {
-        return undef_outcome_sim();
+        return undef_outcome();
     }
     let profile = &value_inputs[0];
     let mech = &value_inputs[1];
@@ -343,21 +363,21 @@ pub fn simulate_trajectory_trampoline(
         .and_then(|s| s.downcast_ref::<SimulateTrajectoryCache>())
         && cache.key.matches(&key)
     {
-        return completed_donating_sim(cache.clone());
+        return completed_donating(cache.clone());
     }
 
     // ── cache MISS ────────────────────────────────────────────────────────────
     // Delegate to the stdlib Value→Value composer (runs the full simulation).
     let result = reify_stdlib::simulate_trajectory_value(profile, mech, modal);
     if matches!(result, Value::Undef) {
-        return undef_outcome_sim();
+        return undef_outcome();
     }
 
     let cache = SimulateTrajectoryCache {
         key,
         result: Arc::new(result),
     };
-    completed_donating_sim(cache)
+    completed_donating(cache)
 }
 
 // ── input_shape ComputeNode trampoline ───────────────────────────────────────
@@ -366,50 +386,6 @@ pub fn simulate_trajectory_trampoline(
 // shaper)`.  TOTS (heavy, cache-valuable) and impulse ZV/ZVD/EI/Cascaded
 // (cheap real shaping) both route through the same trampoline; the
 // `input_shape_value` stdlib composer branches internally.
-
-/// Warm-state cache entry for a completed `input_shape` dispatch.
-#[derive(Clone)]
-struct InputShapeCache {
-    key: InputShapeCacheKey,
-    result: Arc<Value>,
-}
-
-impl InputShapeCache {
-    fn estimated_size_bytes(&self) -> usize {
-        std::mem::size_of::<InputShapeCacheKey>()
-            + value_size_estimate(self.result.as_ref())
-    }
-
-    fn into_opaque_state(self) -> (OpaqueState, usize) {
-        let size = self.estimated_size_bytes();
-        (OpaqueState::new(self, size), size)
-    }
-}
-
-fn completed_donating_shape(cache: InputShapeCache) -> ComputeOutcome {
-    let result = cache.result.as_ref().clone();
-    let (state, size_bytes) = cache.into_opaque_state();
-    let cost_per_byte = if size_bytes > 0 {
-        Some(1.0 / size_bytes as f64)
-    } else {
-        None
-    };
-    ComputeOutcome::Completed {
-        result,
-        new_warm_state: Some(state),
-        cost_per_byte,
-        diagnostics: Vec::new(),
-    }
-}
-
-fn undef_outcome_shape() -> ComputeOutcome {
-    ComputeOutcome::Completed {
-        result: Value::Undef,
-        new_warm_state: None,
-        cost_per_byte: None,
-        diagnostics: Vec::new(),
-    }
-}
 
 /// `@optimized("trajectory::input_shape")` public `ComputeFn` for `fn
 /// input_shape` (registered in `compute_targets::register_compute_fns`).
@@ -433,7 +409,7 @@ pub fn input_shape_trampoline(
 
     // Arity guard: input_shape(profile, shaper) — 2 value inputs.
     if value_inputs.len() != 2 {
-        return undef_outcome_shape();
+        return undef_outcome();
     }
     let profile = &value_inputs[0];
     let shaper = &value_inputs[1];
@@ -446,18 +422,18 @@ pub fn input_shape_trampoline(
         .and_then(|s| s.downcast_ref::<InputShapeCache>())
         && cache.key.matches(&key)
     {
-        return completed_donating_shape(cache.clone());
+        return completed_donating(cache.clone());
     }
 
     // ── cache MISS ────────────────────────────────────────────────────────────
     let result = reify_stdlib::input_shape_value(profile, shaper);
     if matches!(result, Value::Undef) {
-        return undef_outcome_shape();
+        return undef_outcome();
     }
 
     let cache = InputShapeCache {
         key,
         result: Arc::new(result),
     };
-    completed_donating_shape(cache)
+    completed_donating(cache)
 }

@@ -322,12 +322,32 @@ fn input_shape_tots_completed_donates_warm_state_then_reuses() {
         matches!(&value2, Value::StructureInstance(d) if d.type_name == "PiecewisePolynomialProfile"),
         "warm-state HIT must return a valid PiecewisePolynomialProfile, got {value2:?}",
     );
+
+    // Beyond the type check (which a broken cache would also satisfy): identical
+    // `(profile, shaper)` ⇒ the HIT must reproduce the first dispatch's shaped
+    // profile exactly (`solve_tots` is deterministic). A HIT that re-donated a
+    // corrupted/wrong cached profile would diverge here.
+    assert_eq!(
+        value2.content_hash(),
+        value.content_hash(),
+        "warm-state HIT must return the SAME shaped profile as the first dispatch",
+    );
 }
 
 // ── (d) CHANGED PROFILE → CACHE MISS ─────────────────────────────────────────
 
-/// After a completed dispatch, changing the midpoint control value forces a
-/// cache MISS. The MISS result must still be a valid `PiecewisePolynomialProfile`.
+/// After a completed dispatch, changing a profile control point forces a cache
+/// MISS. The MISS result must be a valid `PiecewisePolynomialProfile` AND a
+/// genuine recompute — distinct from the cached first result, not a stale HIT.
+///
+/// We perturb the move ENDPOINT (`end`: 1.0 → 2.0), not the interior waypoint:
+/// TOTS treats interior waypoints as free optimisation variables (tots.rs
+/// `variable_vector` packs `[interiors…, T]`), so two interior seeds can converge
+/// to the SAME time-optimal solution — a value-inequality assertion on an
+/// interior perturbation would be fragile. The endpoints are fixed boundary
+/// conditions copied verbatim into the solved waypoints (`tots_result_to_profile`
+/// emits `j.end` as the last knot value), so a changed endpoint is reliably
+/// result-determining and the MISS recompute is guaranteed to differ.
 #[test]
 fn input_shape_tots_profile_change_forces_miss() {
     let mut engine = engine_with_input_shape_target();
@@ -336,8 +356,8 @@ fn input_shape_tots_profile_change_forces_miss() {
     let c_id = ComputeNodeId::new("InputShapeFixture", 0);
     seed_final_output(&mut engine, &cell);
 
-    // First dispatch with mid=0.5 (seeds warm state).
-    let inputs_a = tots_value_inputs(0.5);
+    // First dispatch: a 0 → 1 move (seeds warm state).
+    let inputs_a = vec![p2p_profile(5.0, 0.0, 1.0, 0.5), tots_shaper()];
     let h1 = CancellationHandle::new();
     let r1 = engine.run_compute_dispatch(
         &c_id,
@@ -349,10 +369,11 @@ fn input_shape_tots_profile_change_forces_miss() {
         &h1,
         VersionId(2),
     );
-    r1.expect("first dispatch must Ok");
+    let (value_first, _) = r1.expect("first dispatch must Ok");
 
-    // Second dispatch with mid=0.7 (different profile hash → MISS).
-    let inputs_b = tots_value_inputs(0.7);
+    // Second dispatch: change the move endpoint (1.0 → 2.0) → different
+    // profile_hash → MISS.
+    let inputs_b = vec![p2p_profile(5.0, 0.0, 2.0, 0.5), tots_shaper()];
     let h2 = CancellationHandle::new();
     let r2 = engine.run_compute_dispatch(
         &c_id,
@@ -368,6 +389,17 @@ fn input_shape_tots_profile_change_forces_miss() {
     assert!(
         matches!(&value_miss, Value::StructureInstance(d) if d.type_name == "PiecewisePolynomialProfile"),
         "MISS recompute must return a valid PiecewisePolynomialProfile, got {value_miss:?}",
+    );
+
+    // An always-HIT cache would return the cached 0→1 profile; the genuine MISS
+    // recomputes the 0→2 profile, whose final waypoint (2.0 vs 1.0) differs — so
+    // the shaped-profile content hashes must differ. This is the assertion a
+    // type-only check could not make.
+    assert_ne!(
+        value_miss.content_hash(),
+        value_first.content_hash(),
+        "a changed profile endpoint must force a recompute (distinct shaped \
+         profile), not reuse the cached 0→1 result",
     );
 }
 

@@ -281,6 +281,18 @@ fn simulate_trajectory_completed_donates_warm_state_then_reuses() {
         matches!(&value2, Value::StructureInstance(d) if d.type_name == "EndEffectorTrack"),
         "warm-state HIT must return a valid EndEffectorTrack, got {value2:?}",
     );
+
+    // A type-only check passes for a correct HIT, a correct MISS, AND a broken
+    // cache alike — so additionally pin the *value*: identical inputs ⇒ the HIT
+    // must reproduce the first dispatch's track byte-for-byte (the simulation is
+    // deterministic). A HIT that re-donated a corrupted/wrong cached track would
+    // diverge here. (The companion `..._profile_change_forces_miss` test pins the
+    // other direction: a changed input must NOT reuse the cached track.)
+    assert_eq!(
+        value2.content_hash(),
+        value.content_hash(),
+        "warm-state HIT must return the SAME EndEffectorTrack as the first dispatch",
+    );
 }
 
 // ── (d) CHANGED PROFILE → CACHE MISS ─────────────────────────────────────────
@@ -311,7 +323,7 @@ fn simulate_trajectory_profile_change_forces_miss() {
         &h1,
         VersionId(2),
     );
-    r1.expect("first dispatch must Ok");
+    let (value_first, _) = r1.expect("first dispatch must Ok");
 
     // Second dispatch with q1=2.0 (different profile → MISS).
     let inputs_b = simulate_value_inputs(2.0);
@@ -330,6 +342,20 @@ fn simulate_trajectory_profile_change_forces_miss() {
     assert!(
         matches!(&value_miss, Value::StructureInstance(d) if d.type_name == "EndEffectorTrack"),
         "MISS recompute must return a valid EndEffectorTrack, got {value_miss:?}",
+    );
+
+    // The MISS must be a genuine recompute, not a stale HIT returning the q1=1.0
+    // track. The changed control point (q1: 1.0 → 2.0) scales the modal forcing,
+    // so the recomputed track's vibration_offset/combined_pose differ from the
+    // first result — the whole-value content hash therefore differs. An always-HIT
+    // cache (e.g. `key.matches` hard-wired true) would return the stale q1=1.0
+    // track and FAIL this inequality — exactly the regression a type-only
+    // assertion let through.
+    assert_ne!(
+        value_miss.content_hash(),
+        value_first.content_hash(),
+        "a changed profile control point must force a recompute (distinct track), \
+         not reuse the cached q1=1.0 result",
     );
 }
 
