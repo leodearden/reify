@@ -27,6 +27,20 @@
 // Distinct from Energy (J = N·m) because of the Angle⁻¹ slot.
 pub type Torque = Force * Length / Angle
 
+// ── Thread system enums ───────────────────────────────────────────────────────
+
+// Thread standard / series selecting the geometric family of a ThreadSpec.
+// All four are 60°-flank threads, so the ISO 68-1 derived-let identities
+// (minor/pitch diameter from nominal & pitch) hold for every variant.
+enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
+
+// Thread tolerance / fit class (external `g` / internal `H` designations).
+enum ThreadClass { Class_6g6H, Class_4g6H }
+
+// Handedness of the thread helix — Clockwise is a right-hand thread
+// (tightens clockwise), Counterclockwise a left-hand thread.
+enum ThreadTighteningDirection { Clockwise, Counterclockwise }
+
 // ── Mechanical port base ──────────────────────────────────────────────────────
 
 // Base trait for any mechanical connection interface.
