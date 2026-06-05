@@ -187,7 +187,7 @@ fn wedge_occt_volume_matches_closed_form_and_has_six_faces() {
         return;
     }
 
-    use reify_ir::{GeometryKernel, GeometryQuery, Value};
+    use reify_ir::{GeometryQuery, Value};
 
     let mut kernel = reify_kernel_occt::OcctKernel::new();
 
