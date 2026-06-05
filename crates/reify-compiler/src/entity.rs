@@ -4119,27 +4119,44 @@ pub(crate) fn build_structure_def_skeleton(
     }
 
     // Second pass: compile Let members against the scope that now has all params
-    // registered.  Geometry-typed lets are skipped (same as the authoritative path).
-    // `known_geometry_lets` starts empty — alias-style geometry lets in the skeleton
-    // context are exceedingly rare and the throwaway-diag budget makes this safe.
+    // registered.  Two let categories are ROUTED OUT (excluded from value_cells),
+    // matching the authoritative path's routing:
     //
-    // Divergence from authoritative path fixed here (task-4342 amendment, suggestion 1):
-    //   • `fixup_option_none_for_let` is now called so that `let x: Option<T> = none`
-    //     gets the correct typed-none expr on both the skeleton and authoritative paths.
-    //     Without this, the skeleton's `Option<Real>` fallback type diverges from the
-    //     authoritative `Option<T>`, breaking sub-consistency for option-typed derived lets.
-    //   • Visibility now respects `let_decl.is_pub` (authoritative: entity.rs:1434) instead
-    //     of hardcoding `Visibility::Public`.  The two paths must agree so that downstream
-    //     callers (e.g. the ctor-lets lowering filter at expr.rs:1413) see identical metadata.
+    //   1. Geometry-typed lets — skipped as on the authoritative path (is_geometry_let).
+    //   2. Per-decl GUARDED lets (where_clause.is_some()) — routed out here to match
+    //      the authoritative path (entity.rs:1457-1472), which diverts guarded lets into
+    //      guarded_groups and never into value_cells.  If a guarded let were included in
+    //      value_cells here, the ctor-lets collection at expr.rs:1425-1440 would harvest
+    //      it and `materialize_template_lets` would evaluate it eagerly, bypassing its
+    //      guard — while the same structure reached via sub or entity-scope ctor-in-let
+    //      (authoritative template) would NOT evaluate it.  That asymmetry breaks the
+    //      sub-consistency property this task exists to guarantee.  Excluding it here
+    //      (one `continue`) makes the skeleton's value_cells contents — and therefore the
+    //      ctor `lets` — identical across all arrival paths.  The skeleton is transient
+    //      and guarded_groups is vec![] anyway; guarded lets simply do not participate
+    //      in eager materialization on the fn-returned path.
     //
-    // Solver-hints/annotation lowering and per-decl where-clause guards are intentionally
-    // NOT replicated here — they require the full diagnostic machinery (alias registry,
+    // Solver-hints/annotation lowering and per-decl guard machinery
+    // (compile_per_decl_guard / guarded_groups population) are intentionally NOT
+    // replicated here — they require the full diagnostic machinery (alias registry,
     // structure_names, trait_names) and are compiler-internal; the skeleton is transient
     // and never participates in constraint solving.
+    //
+    // Amendment (task-4342 suggestion 1):
+    //   • `fixup_option_none_for_let` is called so that `let x: Option<T> = none`
+    //     gets the correct typed-none expr on both skeleton and authoritative paths.
+    //   • Visibility respects `let_decl.is_pub` (authoritative: entity.rs:1434) so
+    //     downstream callers (e.g. the ctor-lets lowering filter at expr.rs:1413) see
+    //     identical metadata on both paths.
     let known_geometry_lets: HashSet<&str> = HashSet::new();
     for member in &structure.members {
         if let reify_ast::MemberDecl::Let(let_decl) = member {
             if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
+                continue;
+            }
+            // Per-decl guarded lets belong in guarded_groups on the authoritative path;
+            // exclude them here so value_cells (and thus ctor `lets`) are path-consistent.
+            if let_decl.where_clause.is_some() {
                 continue;
             }
             let mut compiled_expr =
