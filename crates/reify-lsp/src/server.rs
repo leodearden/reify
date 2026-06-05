@@ -156,6 +156,9 @@ impl LanguageServer for ReifyLanguageServer {
                 definition_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions::default()),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                // Occurrence highlight (task 4204 δ): the editor requests
+                // textDocument/documentHighlight on cursor-idle.
+                document_highlight_provider: Some(OneOf::Left(true)),
                 // Advertise rename with prepareProvider so the editor issues
                 // prepareRename (the Invariant-4 refusal gate) before rename.
                 rename_provider: Some(OneOf::Right(RenameOptions {
@@ -375,6 +378,36 @@ impl LanguageServer for ReifyLanguageServer {
 
         let symbols = crate::analysis::compute_document_symbols(&text, &uri);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        // Brief read lock: snapshot the document text, then drop it before the
+        // (CPU-only) parse + scope walk — mirrors document_symbol/prepare_rename.
+        let state = self.state.read().await;
+        let text = match state.documents.get(&uri) {
+            Some(doc) => doc.text.clone(),
+            None => return Ok(None),
+        };
+        drop(state);
+
+        // Prelude-aware parse for AST-shape consistency with goto_def/rename.
+        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let parsed =
+            reify_compiler::parse_with_stdlib(&text, reify_core::ModulePath::single(module_name));
+
+        // The δ producer returns None for non-resolvable positions (keywords/
+        // literals/types/declaration names), which the editor renders as "no
+        // occurrences". Its spans are inherently in-document (boundary row 7),
+        // so no active-doc filtering is needed.
+        Ok(crate::references::compute_document_highlights(
+            &text, &parsed, position,
+        ))
     }
 
     async fn prepare_rename(
@@ -1228,6 +1261,102 @@ mod tests {
         assert!(
             result.is_none(),
             "rename for an unknown URI should return Ok(None)"
+        );
+    }
+
+    // --- task 4204 δ: document_highlight handler tests ---
+    //
+    // Positions reference the canonical bracket fixture (0-based); line 7 is
+    // `    let volume = width * height * thickness` with the `width` use at col 17.
+
+    fn document_highlight_params(uri: Url, line: u32, character: u32) -> DocumentHighlightParams {
+        DocumentHighlightParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position::new(line, character),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn document_highlight_handler_returns_text_highlights_for_width() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let result = server
+            .document_highlight(document_highlight_params(uri, 7, 17))
+            .await
+            .unwrap();
+
+        let highlights = result.expect("a width use should produce document highlights");
+        assert_eq!(
+            highlights.len(),
+            4,
+            "bracket fixture: 1 decl + 3 uses of width"
+        );
+        assert!(
+            highlights
+                .iter()
+                .all(|h| h.kind == Some(DocumentHighlightKind::TEXT)),
+            "every occurrence highlight is kind TEXT, got {highlights:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn document_highlight_on_keyword_returns_none() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        // 'structure' keyword at line 0, col 0 — not a resolvable value symbol.
+        let result = server
+            .document_highlight(document_highlight_params(uri, 0, 0))
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "document_highlight on a keyword should return Ok(None), got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn document_highlight_unknown_uri_returns_none() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Never opened — not in the document store.
+        let result = server
+            .document_highlight(document_highlight_params(
+                Url::parse("file:///never_opened.ri").unwrap(),
+                7,
+                17,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "document_highlight for an unknown URI should return Ok(None)"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_document_highlight_provider() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let init_result = server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+
+        assert!(
+            init_result
+                .capabilities
+                .document_highlight_provider
+                .is_some(),
+            "should advertise document_highlight_provider (task 4204 δ)"
         );
     }
 
