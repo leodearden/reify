@@ -19,6 +19,17 @@ pub use helpers::complex_phase;
 /// stackup builtin returns `Value::Undef`.
 pub use stackup::diagnose as stackup_diagnose;
 
+/// Public re-export of the DFM (design-for-manufacturing) diagnostic classifier
+/// (PRD v0_6 process-dfm-completion, task α).
+///
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to push
+/// DFM diagnostics into the `EvalContext` sink. Like `flexure_diagnose` (and unlike
+/// the post-`Undef`-only `stackup_diagnose` / `fea_diagnose`), it fires on BOTH
+/// paths: a successfully-evaluated `fits_build_volume` returning `Bool(false)` is a
+/// build-volume VIOLATION whose severity comes from the rule argument, while a
+/// `Value::Undef` result is a usage error.
+pub use dfm::diagnose as dfm_diagnose;
+
 /// Public re-export of the ISO tolerancing diagnostic classifier (task α).
 ///
 /// Flags `iso_it_tolerance` out-of-envelope calls (well-typed args that fall
@@ -96,6 +107,7 @@ mod test_fixtures;
 mod analysis;
 mod complex;
 mod construct;
+mod dfm;
 mod fea;
 mod flexures;
 mod geometry;
@@ -180,6 +192,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         return v;
     }
     if let Some(v) = stackup::eval_stackup(name, args) {
+        return v;
+    }
+    if let Some(v) = dfm::eval_dfm(name, args) {
         return v;
     }
     if let Some(v) = tolerancing::eval_tolerancing(name, args) {

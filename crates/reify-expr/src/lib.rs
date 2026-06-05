@@ -522,6 +522,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // `eval_worst_case_dispatch`; pinned by
                     // `eval_user_fn_recursion_depth_exceeded`).
                     emit_flexure_diagnostics(&function.name, &evaluated_args, &result, ctx);
+                    // DFM build-volume rules (task 4272) surface their severity
+                    // diagnostic on BOTH the success and Undef paths, like the
+                    // flexure hook above (not the post-Undef-only stackup/fea/geometry
+                    // hooks): a `fits_build_volume` evaluating to Bool(false) is a
+                    // build-volume VIOLATION (success path), while a Value::Undef is a
+                    // usage error. Extracted into `emit_dfm_diagnostics` for the same
+                    // stack-shrinking rationale as `emit_flexure_diagnostics`.
+                    emit_dfm_diagnostics(&function.name, &evaluated_args, &result, ctx);
                     result
                 }
             }
@@ -1326,6 +1334,31 @@ fn emit_flexure_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &Ev
                 continue;
             }
         }
+        sink.borrow_mut().push(diag);
+    }
+}
+
+/// Emit DFM (design-for-manufacturing) diagnostics for a builtin call into the
+/// runtime sink (PRD v0_6 process-dfm-completion, task α).
+///
+/// Mirrors [`emit_flexure_diagnostics`]: a no-op when no sink is attached, else it
+/// pushes every `Diagnostic` returned by [`reify_stdlib::dfm_diagnose`] into the
+/// sink. Like the flexure hook — and unlike the post-`Undef`-only
+/// stackup/fea/geometry hooks consolidated in `emit_undef_builtin_diagnostics` —
+/// `dfm_diagnose` fires on BOTH paths: a `fits_build_volume` returning
+/// `Bool(false)` is a build-volume VIOLATION surfaced on the SUCCESS path, while a
+/// `Value::Undef` is a usage error. `dfm_diagnose` returns an empty `Vec` for every
+/// non-DFM name, so this is a cheap no-op for other builtins. Extracted
+/// `#[inline(never)]` for the same stack-shrinking reason as
+/// `emit_flexure_diagnostics` — keeping the per-`diag` owned-`Diagnostic` loop
+/// local off every recursive `eval_expr` frame (pinned by
+/// `eval_user_fn_recursion_depth_exceeded`).
+#[inline(never)]
+fn emit_dfm_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
+    let Some(sink) = ctx.diagnostics else {
+        return;
+    };
+    for diag in reify_stdlib::dfm_diagnose(name, args, result) {
         sink.borrow_mut().push(diag);
     }
 }
@@ -3683,6 +3716,171 @@ mod tests {
             Value::Real(v) => assert!((v - 3.0).abs() < 1e-12),
             other => panic!("expected Real(3.0), got {:?}", other),
         }
+    }
+
+    // ── task 4272 step-11: fits_build_volume DFM diagnostic via eval_expr ─────
+    //
+    // A `fits_build_volume(part, envelope, DFMSeverity.Warning)` builtin call
+    // whose design VIOLATES the rule (part bbox extent past the envelope →
+    // Bool(false)) must push a W_DFM Warning into the runtime diagnostics sink
+    // when evaluated through eval_expr's FunctionCall arm. Drives the
+    // emit_dfm_diagnostics wiring (step-12); mirrors the flexure diagnostic-sink
+    // emission, which likewise fires on the SUCCESS (non-Undef) path.
+    #[test]
+    fn fits_build_volume_violation_emits_dfm_warning_into_sink() {
+        // LENGTH scalar of `si` metres.
+        fn len(si: f64) -> Value {
+            Value::Scalar {
+                si_value: si,
+                dimension: DimensionVector::LENGTH,
+            }
+        }
+        // BoundingBox from two LENGTH Point3 corners (metres).
+        fn bbox(min: [f64; 3], max: [f64; 3]) -> Value {
+            Value::BoundingBox {
+                min: Box::new(Value::Point(vec![len(min[0]), len(min[1]), len(min[2])])),
+                max: Box::new(Value::Point(vec![len(max[0]), len(max[1]), len(max[2])])),
+            }
+        }
+
+        // Part X-extent 30 mm exceeds the 20 mm envelope → does not fit.
+        let part = bbox([0.0, 0.0, 0.0], [0.030, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let sev = Value::Enum {
+            type_name: "DFMSeverity".into(),
+            variant: "Warning".into(),
+        };
+
+        // The literal args' static Type is not consulted at runtime (eval_expr's
+        // Literal arm clones the value), so Type::Real is a neutral placeholder.
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x4f, 0x44, 0x46, 0x4d]),
+            result_type: Type::Bool,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "fits_build_volume".to_string(),
+                    qualified_name: "std::fits_build_volume".to_string(),
+                },
+                args: vec![
+                    lit(part, Type::Real),
+                    lit(env, Type::Real),
+                    lit(sev, Type::Real),
+                ],
+            },
+        };
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Bool(false), "part does not fit the envelope");
+
+        let diags = sink.borrow();
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Warning
+                    && d.message.contains("W_DFM")),
+            "expected a W_DFM Warning in the runtime sink, got {diags:?}"
+        );
+    }
+
+    // ── amend: fits_build_volume DFM diagnostics — fitting + usage-error paths ─
+    //
+    // The step-11 test above covers only the Bool(false) VIOLATION path through
+    // eval_expr. These two mirror it for the other two outcomes so the
+    // emit_dfm_diagnostics wiring itself (not just dfm.rs's unit-level diagnose) is
+    // exercised end-to-end: a regression dropping the Undef branch or always pushing
+    // a diagnostic would be caught here.
+
+    /// LENGTH scalar of `si` metres (shared shape with the step-11 test helpers).
+    fn dfm_len(si: f64) -> Value {
+        Value::Scalar {
+            si_value: si,
+            dimension: DimensionVector::LENGTH,
+        }
+    }
+
+    /// BoundingBox from two LENGTH Point3 corners (metres).
+    fn dfm_bbox(min: [f64; 3], max: [f64; 3]) -> Value {
+        Value::BoundingBox {
+            min: Box::new(Value::Point(vec![
+                dfm_len(min[0]),
+                dfm_len(min[1]),
+                dfm_len(min[2]),
+            ])),
+            max: Box::new(Value::Point(vec![
+                dfm_len(max[0]),
+                dfm_len(max[1]),
+                dfm_len(max[2]),
+            ])),
+        }
+    }
+
+    /// Build a `fits_build_volume(...)` FunctionCall expr over the given args.
+    fn dfm_call_expr(args: Vec<Value>) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x44, 0x46, 0x4d, 0x32]),
+            result_type: Type::Bool,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "fits_build_volume".to_string(),
+                    qualified_name: "std::fits_build_volume".to_string(),
+                },
+                // Literal args' static Type is not consulted at runtime; Type::Real
+                // is a neutral placeholder (matches the step-11 test).
+                args: args.into_iter().map(|v| lit(v, Type::Real)).collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn fits_build_volume_fitting_emits_no_dfm_diagnostic_into_sink() {
+        // A fitting design (Bool(true)) is NOT a violation → the sink stays empty.
+        let part = dfm_bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = dfm_bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let sev = Value::Enum {
+            type_name: "DFMSeverity".into(),
+            variant: "Warning".into(),
+        };
+        let expr = dfm_call_expr(vec![part, env, sev]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Bool(true), "part fits the envelope");
+        assert!(
+            sink.borrow().is_empty(),
+            "a fitting design emits no diagnostic, got {:?}",
+            sink.borrow()
+        );
+    }
+
+    #[test]
+    fn fits_build_volume_usage_error_emits_dfm_error_into_sink() {
+        // A non-BoundingBox part (a raw Real) makes fits_build_volume return Undef;
+        // emit_dfm_diagnostics must push exactly one Error E_DFM usage diagnostic.
+        let env = dfm_bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let expr = dfm_call_expr(vec![Value::Real(1.0), env]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Undef, "a non-bbox arg yields Undef");
+
+        let diags = sink.borrow();
+        assert_eq!(diags.len(), 1, "exactly one usage-error diagnostic, got {diags:?}");
+        assert_eq!(diags[0].severity, reify_core::Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM"),
+            "usage error carries the E_DFM prefix: {}",
+            diags[0].message
+        );
     }
 
     #[test]
