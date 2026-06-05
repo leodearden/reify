@@ -9,14 +9,15 @@
 //!   This module covers the *seeding* phase — originating attributes for the
 //!   leaves of the feature tree (primitives), which have no parent.
 //!
-//! Scope of this task (#2574):
+//! Scope of this task (#2574), extended by task #4156 (Cone):
 //! - `GeometryOp::Box` / `GeometryOp::Sphere` — every face seeded
 //!   `Role::Side`; every edge seeded `Role::NewEdge`. `local_index` is
 //!   the construction-order (TopExp) position within `(feature_id, role)`.
-//! - `GeometryOp::Cylinder` — faces classified into `Cap(Top)`, `Cap(Bottom)`,
-//!   or `Side` via `GeometryQuery::FaceNormal`'s z-component (each role
-//!   appears exactly once, so `local_index` is always 0); every edge seeded
-//!   `Role::NewEdge`.
+//! - `GeometryOp::Cylinder` / `GeometryOp::Cone` — faces classified into
+//!   `Cap(Top)`, `Cap(Bottom)`, or `Side` via `GeometryQuery::FaceNormal`'s
+//!   z-component; every edge seeded `Role::NewEdge`. A pointed cone
+//!   (top_radius == 0) emits only 2 faces (no top cap), so `Cap(Top)` count
+//!   is 0 in that case.
 //! - All other variants are intentional no-ops; the dispatch is widened in
 //!   subsequent tasks.
 //!
@@ -37,10 +38,8 @@
 //! - `GeometryOp::Tube` — composed via `boolean_cut` at the kernel layer; its
 //!   per-result attribute attachment lands with task 8 (booleans) or a Tube-
 //!   specific follow-up.
-//! - `GeometryOp::Cone` / `GeometryOp::Torus` — not yet present in
-//!   `GeometryOp` (no FFI, no compiler `PrimitiveKind`); these primitives
-//!   will be added end-to-end as a separate task before their seeding arms
-//!   are wired here.
+//! - `GeometryOp::Torus` — not yet present in `GeometryOp` (no FFI, no
+//!   compiler `PrimitiveKind`); will be added end-to-end as a separate task.
 //! - Sweep / local-feature / boolean variants — tasks 5, 7, 8.
 //!
 //! ## Why pre-extracted face/edge handle slices?
@@ -176,7 +175,10 @@ pub fn seed_primitive_attributes_for_handle(
 fn is_seedable_primitive(op: &GeometryOp) -> bool {
     matches!(
         op,
-        GeometryOp::Box { .. } | GeometryOp::Cylinder { .. } | GeometryOp::Sphere { .. }
+        GeometryOp::Box { .. }
+            | GeometryOp::Cylinder { .. }
+            | GeometryOp::Sphere { .. }
+            | GeometryOp::Cone { .. }
     )
 }
 
@@ -242,10 +244,26 @@ pub fn seed_primitive_attributes(
             record_all_edges_as_new_edge(table, edge_handles, feature_id);
             Ok(())
         }
-        GeometryOp::Cylinder { .. } => {
+        GeometryOp::Cylinder { .. } | GeometryOp::Cone { .. } => {
             // A cylinder emits 3 faces in OCCT's TopExp order: side, top
             // cap, bottom cap (order varies by OCCT version). Classify
             // each via `GeometryQuery::FaceNormal`'s z-component.
+            //
+            // A cone (frustum) similarly emits 3 faces (slanted side +
+            // top cap + bottom cap). A pointed cone (top_radius == 0)
+            // emits 2 faces (slanted side + bottom cap, no top face).
+            // The FaceNormal-z classification handles both transparently:
+            // nz ≈ +1 → Cap(Top), nz ≈ -1 → Cap(Bottom), |nz| ≈ 0 → Side.
+            //
+            // Limitation (Cone only): this assumes the lateral face has a
+            // near-horizontal normal (|nz| well below 1 - 1e-6).  A very
+            // steep frustum — large radius delta over a small height — drives
+            // the slanted-face normal toward the z-axis, risking
+            // misclassification of the Side face as Cap(Top/Bottom).
+            // Steep cones are uncommon in practice and out of scope for this
+            // task; a future improvement should classify by planar-vs-conical
+            // surface type (BRep surface type query) rather than an absolute
+            // nz threshold to handle the degenerate regime correctly.
             //
             // For the canonical 3-face case each role appears exactly
             // once and `local_index` is 0 for every entry. Per-role

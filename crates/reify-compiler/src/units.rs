@@ -58,6 +58,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "pipe",
     "box_centered",
     "cylinder_centered",
+    "cone",
 ];
 
 pub(crate) fn is_geometry_function(name: &str) -> bool {
@@ -947,6 +948,14 @@ mod tests {
     #[test]
     fn is_geometry_function_cylinder_centered_recognized() {
         assert!(is_geometry_function("cylinder_centered"));
+    }
+
+    // --- Cone (task-4156) ---
+
+    #[test]
+    fn is_geometry_function_cone_recognized() {
+        // RED until step-6 adds "cone" to GEOMETRY_FUNCTION_NAMES.
+        assert!(is_geometry_function("cone"));
     }
 
     // --- Geometry query helpers (task 2320 step-1) ---

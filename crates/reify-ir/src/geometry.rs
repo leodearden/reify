@@ -277,6 +277,8 @@ pub enum Operation {
     PrimitiveSphere,
     /// Tube primitive (hollow cylinder).
     PrimitiveTube,
+    /// Cone (or frustum) primitive along Z axis.
+    PrimitiveCone,
 
     // ── Modify (local edits to a single shape) ──────────────────────────────
     /// Fillet (round) edges by radius.
@@ -534,6 +536,16 @@ pub enum GeometryOp {
         inner_r: Value,
         height: Value,
     },
+    /// Create a cone or frustum primitive along Z axis.
+    ///
+    /// `bottom_radius` is the radius at Z=0; `top_radius` at Z=height.
+    /// Setting `top_radius == 0` yields a pointed cone (apex at top).
+    /// Requires at least one radius > 0 (both-zero is a degenerate line).
+    Cone {
+        bottom_radius: Value,
+        top_radius: Value,
+        height: Value,
+    },
     /// Boolean union.
     Union {
         left: GeometryHandleId,
@@ -785,6 +797,7 @@ impl GeometryOp {
             GeometryOp::Cylinder { .. } => "Cylinder",
             GeometryOp::Sphere { .. } => "Sphere",
             GeometryOp::Tube { .. } => "Tube",
+            GeometryOp::Cone { .. } => "Cone",
             GeometryOp::Union { .. } => "Union",
             GeometryOp::Difference { .. } => "Difference",
             GeometryOp::Intersection { .. } => "Intersection",
@@ -5182,11 +5195,12 @@ mod tests {
             Operation::BooleanUnion,
             Operation::BooleanDifference,
             Operation::BooleanIntersection,
-            // Primitives (4)
+            // Primitives (5)
             Operation::PrimitiveBox,
             Operation::PrimitiveCylinder,
             Operation::PrimitiveSphere,
             Operation::PrimitiveTube,
+            Operation::PrimitiveCone,
             // Modify (5)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
@@ -5287,6 +5301,7 @@ mod tests {
             Operation::PrimitiveCylinder => {}
             Operation::PrimitiveSphere => {}
             Operation::PrimitiveTube => {}
+            Operation::PrimitiveCone => {}
             Operation::ModifyFillet => {}
             Operation::ModifyChamfer => {}
             Operation::ModifyShell => {}
@@ -5753,6 +5768,14 @@ mod tests {
                 },
             ),
             (
+                "Cone",
+                GeometryOp::Cone {
+                    bottom_radius: Value::Real(0.01),
+                    top_radius: Value::Real(0.005),
+                    height: Value::Real(0.02),
+                },
+            ),
+            (
                 "Union",
                 GeometryOp::Union {
                     left: GeometryHandleId(1),
@@ -6010,7 +6033,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 36;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 37;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,

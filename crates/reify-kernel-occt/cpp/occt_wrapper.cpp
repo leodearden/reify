@@ -16,6 +16,7 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
 
 // OCCT booleans
 #include <BRepAlgoAPI_BooleanOperation.hxx>
@@ -333,6 +334,19 @@ std::unique_ptr<OcctShape> make_sphere(double radius) {
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepPrimAPI_MakeSphere failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_cone(double bottom_r, double top_r, double height) {
+    return wrap_occt_call("make_cone", [&]() {
+        BRepPrimAPI_MakeCone maker(bottom_r, top_r, height);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeCone failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
