@@ -179,7 +179,7 @@ fn symmetric_tolerance(x: Length) -> Length {
 
 structure S {
     let a : Length = symmetric_tolerance(5mm)
-    let b : Length = symmetric_tolerance(5mm, 2mm)
+    let b : Length = symmetric_tolerance(5mm, 2mm).upper_limit
 }
 "#;
     let prelude = stdlib_loader::load_stdlib();
@@ -281,8 +281,8 @@ fn prelude_function_resolves_in_constraint_solver_path() {
     let source = r#"
 structure S {
     param x : Length = auto(free)
-    let y : Length = symmetric_tolerance(x, 1mm)
-    constraint x < symmetric_tolerance(15mm, 5mm)
+    let y : Length = symmetric_tolerance(x, 1mm).upper_limit
+    constraint x < symmetric_tolerance(15mm, 5mm).upper_limit
 }
 "#;
     let prelude = stdlib_loader::load_stdlib();
@@ -470,7 +470,7 @@ fn prelude_function_resolves_in_downstream_dispatch_paths() {
     let source = r#"
 structure S {
     let y : Length = 5mm
-    constraint y > symmetric_tolerance(1mm, 1mm)
+    constraint y > symmetric_tolerance(1mm, 1mm).upper_limit
 }
 "#;
     let prelude = stdlib_loader::load_stdlib();
