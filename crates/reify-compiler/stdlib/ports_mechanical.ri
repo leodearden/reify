@@ -113,14 +113,43 @@ trait Shaft : MechanicalPort {}
 // Marker per spec §11.3 listing.
 trait StructurePort : MechanicalPort {}
 
-// ── Parameterised rotary port ─────────────────────────────────────────────────
+// ── Motive ports (power-delivering) ─────────────────────────────────────────────
 
-// Rotary shaft port — carries torque and has a speed limit.
-// torque_capacity : Torque — the maximum continuous torque the port can transmit.
-// max_speed : AngularVelocity — maximum continuous rotational speed (rad/s).
-trait RotaryPort : MechanicalPort {
-    param torque_capacity : Torque
+// Base trait for motive ports — mechanical interfaces that *deliver power*
+// (rotary torque or linear thrust), as opposed to a passive mating or structural
+// interface. Marker base with no own required members; refined by RotaryPort and
+// LinearPort. Refines MechanicalPort, so it inherits the frame/direction chain and
+// the optional max_load/max_torque ratings.
+trait MotivePort : MechanicalPort {}
+
+// Rotary shaft port — delivers torque about an axis with a speed limit.
+//   max_speed  : AngularVelocity — maximum continuous rotational speed (rad/s).
+//   max_torque : Torque          — maximum continuous torque (Force·Length/Angle).
+//   axis       : Vector3<Length> — rotation axis (Vector3<Length> per the
+//                constitutive.ri axis convention; the geometry Axis value type is
+//                unconstructible at stdlib scope).
+// `max_torque` (required Torque) re-declares MechanicalPort's optional
+// `max_torque : Option<Torque> = none`; a required member and an optional default
+// of the same name never collide (trait_requirements.rs conflicts only
+// required-vs-required), so the module loads clean. Renames the previously shipped
+// `torque_capacity` to `max_torque` and reparents to MotivePort (PRD §4).
+trait RotaryPort : MotivePort {
     param max_speed : AngularVelocity
+    param max_torque : Torque
+    param axis : Vector3<Length>
+}
+
+// Linear actuator port — delivers thrust along an axis over a finite stroke.
+//   max_speed : Velocity        — maximum continuous linear speed (Velocity alias
+//               = Length/Time; units.ri:91).
+//   max_force : Force           — maximum continuous thrust.
+//   stroke    : Length          — usable travel range.
+//   axis      : Vector3<Length> — travel axis (constitutive.ri convention).
+trait LinearPort : MotivePort {
+    param max_speed : Velocity
+    param max_force : Force
+    param stroke : Length
+    param axis : Vector3<Length>
 }
 
 // ── Parameterised threaded port ───────────────────────────────────────────────
