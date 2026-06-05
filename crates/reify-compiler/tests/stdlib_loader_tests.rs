@@ -4,24 +4,10 @@ use reify_compiler::stdlib_loader;
 use reify_ast::Pragma;
 use reify_test_support::{
     CompiledModuleBuilder, EXPECTED_GEOMETRY_TRAITS, EXPECTED_MATERIAL_TRAITS, collect_errors,
-    steel_elastic_source, steel_strong_source,
+    collect_value_ref_members, steel_elastic_source, steel_strong_source,
 };
 use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction};
-
-/// Recursively collect ValueRef member names from a compiled expression tree.
-fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
-    match &expr.kind {
-        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
-        CompiledExprKind::BinOp { left, right, .. } => {
-            let mut refs = collect_value_ref_members(left);
-            refs.extend(collect_value_ref_members(right));
-            refs
-        }
-        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
-        _ => vec![],
-    }
-}
 
 // ─── step-1: basic loading ──────────────────────────────────────────────
 
@@ -614,12 +600,12 @@ fn compile_with_prelude_injects_trait_constraints() {
     let ge_expr = &ge_constraint.unwrap().expr;
     let refs = collect_value_ref_members(ge_expr);
     assert!(
-        refs.contains(&"ultimate_tensile_strength"),
+        refs.iter().any(|m| m.as_str() == "ultimate_tensile_strength"),
         "expected 'ultimate_tensile_strength' ValueRef in >= constraint, got refs: {:?}",
         refs
     );
     assert!(
-        refs.contains(&"yield_strength"),
+        refs.iter().any(|m| m.as_str() == "yield_strength"),
         "expected 'yield_strength' ValueRef in >= constraint, got refs: {:?}",
         refs
     );
