@@ -9,7 +9,7 @@
 
 This document is the complete API reference for the Reify standard library. It is a companion to the Reify Language Specification, which defines the core language. The prelude (automatically imported into every module) is defined in the language specification (Section 7.6). This document covers all `std.*` modules beyond the prelude.
 
-Many standard-library traits (e.g. `Sealed`, `Material`, geometry traits in §3.10) appear as bounds on `auto:` type parameters. For the resolution algorithm — per-parameter BFS, cap of 10 candidates, lexicographic tiebreak by FQN, and deferral of cross-parameter backtracking to v0.2 — see `docs/auto-type-param-resolution.md`.
+Many standard-library traits (e.g. `Sealed`, `MaterialSpec`, geometry traits in §3.10) appear as bounds on `auto:` type parameters. For the resolution algorithm — per-parameter BFS, cap of 10 candidates, lexicographic tiebreak by FQN, and deferral of cross-parameter backtracking to v0.2 — see `docs/auto-type-param-resolution.md`.
 
 ---
 
@@ -766,10 +766,29 @@ trait HydraulicPort : FluidPort + MechanicalPort {
 
 ### 6.1 Base
 
+> **Breaking change (task #1876 / #2411):** The identifier `Material` is now a canonical
+> first-class **struct** (see below); the base trait has been renamed to `MaterialSpec`.
+> Consumers referencing `: Material` as a trait base must use `: MaterialSpec`; consumers
+> referencing `param m : Material` as a trait-typed param must use `: MaterialSpec`; concrete
+> value slots (`param m : Material`) resolve to the struct unchanged.
+> No deprecation alias is provided (a trait and a struct cannot share the same identifier).
+
 ```
-trait Material {
+// Base trait — every material-conforming structure satisfies this contract.
+// Note: density shown as Density (aspirational dimensioned type); shipped MaterialSpec
+// uses density : Real pending dimensional-type tightening (#3111-family).
+trait MaterialSpec {
     param density : Density
     param name : String
+}
+
+// Canonical first-class material value type (shipped in materials_mechanical.ri,
+// task #1876 / #2411). Use MaterialSpec above for trait-typed params; use this struct
+// when you want a concrete material value (e.g. Material(name: "steel", ...)).
+structure def Material {
+    param name : String
+    param density : Real
+    param youngs_modulus : Real
 }
 
 trait TemperatureDependent {
@@ -780,40 +799,43 @@ trait TemperatureDependent {
 ### 6.2 `std.materials.mechanical`
 
 ```
-trait Elastic : Material {
+// Elastic, Strong, Hard, Ductile are free-standing (no MaterialSpec base) — deliberate
+// design drift #3487. Conformers carry density/name via a separate `material : MaterialSpec`
+// slot rather than inheriting from the base trait directly.
+trait Elastic {
     param youngs_modulus : Pressure
     param poissons_ratio : Real
     param shear_modulus : Pressure = undef
     constraint 0 < poissons_ratio < 0.5
 }
-trait Strong : Material {
+trait Strong {
     param yield_strength : Pressure
     param ultimate_tensile_strength : Pressure
     param compressive_strength : Pressure = undef
     constraint ultimate_tensile_strength >= yield_strength
 }
-trait Hard : Material {
+trait Hard {
     param hardness_value : Real
     param hardness_scale : HardnessScale
 }
 enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }
-trait FatigueRated : Material {
+trait FatigueRated : MaterialSpec {
     param fatigue_limit : Pressure = undef
     param fatigue_strength_at : Pressure = undef
     param fatigue_cycles : Int = undef
 }
-trait FractureTough : Material {
+trait FractureTough : MaterialSpec {
     param fracture_toughness : Scalar<Pressure * Length^(1/2)>
 }
-trait Ductile : Material {
+trait Ductile {
     param elongation_at_break : Real
     param reduction_of_area : Real = undef
 }
-trait ImpactResistant : Material {
+trait ImpactResistant : MaterialSpec {
     param charpy_impact : Energy = undef
     param izod_impact : Energy = undef
 }
-trait Damping : Material {
+trait Damping : MaterialSpec {
     param loss_factor : Real
 }
 ```
@@ -821,7 +843,7 @@ trait Damping : Material {
 ### 6.3 `std.materials.thermal`
 
 ```
-trait ThermallyCharacterized : Material {
+trait ThermallyCharacterized : MaterialSpec {
     param thermal_conductivity : ThermalConductivity
     param specific_heat : SpecificHeat
     param thermal_expansion : Real / Temperature     // coefficient of linear expansion
@@ -837,7 +859,7 @@ trait Refractory : ThermallyCharacterized {
 ### 6.4 `std.materials.electrical`
 
 ```
-trait ElectricallyCharacterized : Material {
+trait ElectricallyCharacterized : MaterialSpec {
     param resistivity : Scalar<Voltage * Length / Current>
     param dielectric_constant : Real = undef
     param dielectric_strength : Scalar<Voltage / Length> = undef
@@ -855,7 +877,7 @@ trait Insulating : ElectricallyCharacterized {
 ### 6.5 `std.materials.optical`
 
 ```
-trait OpticallyCharacterized : Material {
+trait OpticallyCharacterized : MaterialSpec {
     param refractive_index : Real
     param absorption_coefficient : Real = undef
     param transmittance : Real = undef
@@ -866,11 +888,11 @@ trait OpticallyCharacterized : Material {
 ### 6.6 `std.materials.chemical`
 
 ```
-trait CorrosionResistant : Material {
+trait CorrosionResistant : MaterialSpec {
     param corrosion_class : CorrosionClass
 }
 enum CorrosionClass { C1, C2, C3, C4, C5 }
-trait Biocompatible : Material {
+trait Biocompatible : MaterialSpec {
     param biocompatibility_class : BiocompatibilityClass
 }
 enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
