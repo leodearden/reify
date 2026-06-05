@@ -235,7 +235,7 @@ fn ceramic_liner_conforms_to_refractory_with_full_member_chain() {
     // max_service_temperature = 2050.0K clears the >= 1500.0K Refractory constraint.
     let source = r#"
 structure def CeramicLiner : Refractory {
-    param density : Real = 3900.0
+    param density : Density = 3900kg/m^3
     param name : String = "alumina"
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
@@ -321,7 +321,7 @@ fn refractory_constraint_satisfied_with_defined_temperature() {
     // 2050.0K > 1500.0K → constraint must be Satisfied.
     let source = r#"
 structure RefractorySatisfied : Refractory {
-    param density : Real = 3900.0
+    param density : Density = 3900kg/m^3
     param name : String = "refractory_above_threshold"
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
@@ -382,7 +382,7 @@ fn refractory_constraint_violated_below_threshold() {
     // 1000.0K < 1500.0K → constraint must be Violated.
     let source = r#"
 structure RefractoryViolated : Refractory {
-    param density : Real = 3900.0
+    param density : Density = 3900kg/m^3
     param name : String = "refractory_below_threshold"
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)

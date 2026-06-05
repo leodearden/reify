@@ -99,7 +99,7 @@ fn parse_with_stdlib_resolves_stdlib_enum_access_without_inline_redecls() {
 
     let source = r#"
 structure def TitaniumImplant : Biocompatible + CorrosionResistant {
-    param density : Real = 4500.0
+    param density : Density = 4500kg/m^3
     param name : String = "titanium"
     param biocompatibility_class : BiocompatibilityClass = BiocompatibilityClass.USP_Class_VI
     param corrosion_class : CorrosionClass = CorrosionClass.C5
