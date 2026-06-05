@@ -1,0 +1,90 @@
+//! End-to-end CLI tests for the §7 tolerancing example CI gate.
+//!
+//! Tests are RED until step-2 creates `examples/tolerancing/std_tolerancing_surface.ri`.
+//!
+//! A benign compiler Warning (e.g. unused symbol) may appear on stderr —
+//! we do NOT assert stderr is empty (mirror of cli_stackup_eval.rs pattern).
+
+mod common;
+
+/// Test A: `reify eval examples/tolerancing/std_tolerancing_surface.ri`
+/// exits 0 and stdout shows the MMC-vs-RFS conformance FLIP:
+///   conforms_mmc = true   (effective zone 0.2mm ≥ 0.15mm under MMC)
+///   conforms_rfs = false  (effective zone 0.1mm < 0.15mm under RFS)
+///
+/// Also asserts presence of key cell-name substrings covering each signal family
+/// (ISO grade width, expanded zone, fit max clearance, symmetric upper limit,
+/// surface finish bool).  Anchors on cell NAMES + exact Bool text only —
+/// NOT fragile float formatting (exact numerics are pinned by α/β/γ unit tests).
+#[test]
+fn eval_std_tolerancing_surface_example_succeeds() {
+    let path = common::example_path("tolerancing/std_tolerancing_surface.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "reify eval std_tolerancing_surface.ri should exit 0;\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // ── The headline observable signal: MMC-vs-RFS conformance FLIP ──────────
+    assert!(
+        stdout.contains("conforms_mmc = true"),
+        "stdout should contain 'conforms_mmc = true' (MMC zone 0.2mm ≥ 0.15mm);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("conforms_rfs = false"),
+        "stdout should contain 'conforms_rfs = false' (RFS zone 0.1mm < 0.15mm);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // ── ISO tolerance grade (iso_it_tolerance builtin) ────────────────────────
+    assert!(
+        stdout.contains("it7_width"),
+        "stdout should contain 'it7_width' (IT7@Ø30–50 ISO grade cell);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // ── Effective tolerance zone cell ─────────────────────────────────────────
+    assert!(
+        stdout.contains("expanded_zone_mmc"),
+        "stdout should contain 'expanded_zone_mmc' (zone size under MMC);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // ── Fit max clearance (nested DimensionalTolerance in Fit struct) ─────────
+    assert!(
+        stdout.contains("fit_maxc"),
+        "stdout should contain 'fit_maxc' (Fit.max_clearance derived let);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // ── Symmetric tolerance upper_limit (DimensionalTolerance derived let) ────
+    assert!(
+        stdout.contains("sym_upper"),
+        "stdout should contain 'sym_upper' (symmetric_tolerance upper_limit);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // ── Surface finish require_finish bool cell ───────────────────────────────
+    assert!(
+        stdout.contains("finish_ok = true"),
+        "stdout should contain 'finish_ok = true' (require_finish returns true for 1.6µm > 0mm);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// Test B: `reify check examples/tolerancing/std_tolerancing_surface.ri`
+/// exits 0 — all satisfiable constraints pass (Conforms MMC zone 0.2mm ≥ 0.15mm
+/// + require_finish 1.6µm > 0mm).
+///
+/// `reify check` prints "All constraints satisfied." on stdout and exits 0 when
+/// every constraint is satisfied; "Some constraints violated." + exit non-zero
+/// when any constraint is violated (verified via main.rs cmd_check).
+#[test]
+fn check_std_tolerancing_surface_example_succeeds() {
+    let path = common::example_path("tolerancing/std_tolerancing_surface.ri");
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
+
+    assert!(
+        status.success(),
+        "reify check std_tolerancing_surface.ri should exit 0 (all constraints satisfied);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("Some constraints violated"),
+        "stdout should NOT contain 'Some constraints violated';\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
