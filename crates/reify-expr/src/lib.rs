@@ -192,7 +192,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             // rather than poisoning the result with Value::Undef. A stdlib
             // binding would be reached only AFTER the short-circuit and could
             // never observe an Undef argument.
-            if function.name == "__interp_render" && evaluated_args.len() == 1 {
+            //
+            // Match on the fully qualified name ("std::__interp_render") rather
+            // than the bare name so that a user-defined symbol that happens to
+            // carry the unqualified name "__interp_render" is never silently
+            // intercepted and mis-rendered.
+            if function.qualified_name == "std::__interp_render" && evaluated_args.len() == 1 {
                 return Value::String(interp_render(&evaluated_args[0]));
             }
             // Strict Undef propagation: if any arg is Undef, short-circuit
