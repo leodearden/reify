@@ -749,7 +749,7 @@ fn main() {
                         eprintln!("Debug server failed: {e}");
                     }
                 });
-                eprintln!("REIFY_DEBUG=1: debug server starting on http://127.0.0.1:3939");
+                eprintln!("REIFY_DEBUG=1: debug server starting on {}", crate::debug_server::debug_endpoint_url(crate::debug_server::resolve_debug_port()));
             }
 
             // Notify the frontend of the kernel availability at startup.
