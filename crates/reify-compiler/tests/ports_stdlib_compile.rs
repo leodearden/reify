@@ -337,6 +337,48 @@ fn frame3_structure_surface() {
     }
 }
 
+// ─── step-5 (task α): LocatedPort trait surface ──────────────────────────────
+
+/// LocatedPort refines exactly ["Port"] and has exactly one required member:
+/// `frame : Frame3`.  Proves:
+///   - LocatedPort.refinements == ["Port"]
+///   - LocatedPort.required_members == [{ name: "frame", kind: Param(StructureRef("Frame3")) }]
+///   - param_type helper finds "frame" as Type::StructureRef("Frame3")
+///
+/// RED on current main (LocatedPort absent → find_trait panics).
+#[test]
+fn located_port_trait_surface() {
+    let t = find_trait("std/ports", "LocatedPort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["Port".to_string()].as_slice(),
+        "LocatedPort should refine exactly [Port], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        1,
+        "LocatedPort should have exactly 1 required member (frame); got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name, "frame",
+        "LocatedPort required_members[0] should be 'frame', got '{}'",
+        t.required_members[0].name
+    );
+
+    assert_eq!(
+        param_type("std/ports", "LocatedPort", "frame"),
+        Type::StructureRef("Frame3".into()),
+        "LocatedPort.frame must be Type::StructureRef(\"Frame3\")"
+    );
+}
+
 // ─── step-5: std/ports/mechanical loads + marker traits ──────────────────────
 
 /// std/ports/mechanical must load with zero Severity::Error diagnostics.
