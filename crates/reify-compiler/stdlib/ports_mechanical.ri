@@ -162,3 +162,40 @@ trait LinearPort : MotivePort {
 trait ThreadedPort : MechanicalPort {
     param thread_spec : ThreadSpec
 }
+
+// ── Guide ports (kinematic guides) ──────────────────────────────────────────────
+
+// Base trait for kinematic-guide ports — interfaces that constrain relative
+// motion to a fixed number of degrees of freedom (linear rails, rotary bearings).
+//   degrees_of_freedom : Int — count of permitted relative DOFs. The concrete
+//   guide sub-traits pin this to their kinematic invariant via a trait-level
+//   `constraint` (see LinearGuidePort / RotaryGuidePort), so every conformer is
+//   REQUIRED to declare it.
+trait GuidePort : MechanicalPort {
+    param degrees_of_freedom : Int
+}
+
+// Prismatic (linear) guide — permits exactly one translational DOF along the rail.
+//
+// The `degrees_of_freedom == 1` trait constraint makes any conformer whose
+// degrees_of_freedom != 1 a constraint violation at check() time (the prismatic
+// invariant — verified behaviourally in
+// reify-eval/tests/ports_mechanical_thread_eval.rs). Adds no own params beyond the
+// inherited degrees_of_freedom.
+trait LinearGuidePort : GuidePort {
+    constraint degrees_of_freedom == 1
+}
+
+// Revolute (rotary) guide — permits exactly one rotational DOF about the bearing
+// axis, with radial/axial load ratings.
+//
+// Carries the same `degrees_of_freedom == 1` invariant (a conformer with
+// degrees_of_freedom != 1 is a constraint violation). The two ratings bound the
+// load the bearing can carry:
+//   max_radial_load : Force — maximum continuous radial (perpendicular) load.
+//   max_axial_load  : Force — maximum continuous axial (thrust) load.
+trait RotaryGuidePort : GuidePort {
+    constraint degrees_of_freedom == 1
+    param max_radial_load : Force
+    param max_axial_load : Force
+}
