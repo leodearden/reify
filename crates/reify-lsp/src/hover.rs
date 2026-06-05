@@ -851,4 +851,34 @@ structure B {
             stale
         );
     }
+
+    // --- step-05: injectable hover core over a shared AnalysisContext ---
+
+    /// `compute_hover_in_context`, fed a context built from a shared parse, must
+    /// return output identical to the `compute_hover` wrapper — proving the
+    /// cache-fed core path is output-equivalent to the per-request path.
+    #[test]
+    fn compute_hover_in_context_matches_wrapper() {
+        let source = reify_test_support::bracket_source();
+        let uri = test_uri();
+        let position = Position::new(1, 10); // on 'width'
+
+        let parsed = std::sync::Arc::new(reify_compiler::parse_with_stdlib(
+            source,
+            reify_core::ModulePath::single("test"),
+        ));
+        let ctx = AnalysisContext::from_parsed(parsed);
+
+        let via_context = compute_hover_in_context(&ctx, source, position);
+        let via_wrapper = compute_hover(source, &uri, position);
+
+        assert!(
+            via_context.is_some(),
+            "in-context hover should return info for 'width'"
+        );
+        assert_eq!(
+            via_context, via_wrapper,
+            "in-context hover must match the wrapper output"
+        );
+    }
 }
