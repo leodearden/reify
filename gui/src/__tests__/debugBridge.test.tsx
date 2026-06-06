@@ -2778,6 +2778,83 @@ describe('debug bridge hover_at', () => {
   });
 });
 
+// ─── F2 definition_at handler (step-11 RED → step-12 GREEN) ─────────────────
+
+describe('debug bridge definition_at', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchDefinition(stores: ReturnType<typeof makeStores>, params: Record<string, unknown>) {
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 3001, command: 'definition_at', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    return {
+      result: JSON.parse((responseCall![1] as { result: string }).result),
+      calls,
+    };
+  }
+
+  it('returns { found:true, uri, range } and calls lsp_request with correct method/uri/position', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify({
+          uri: 'file:///tmp/cube.ri',
+          range: { start: { line: 7, character: 10 }, end: { line: 7, character: 14 } },
+        });
+      }
+      return undefined;
+    });
+
+    const { result, calls } = await dispatchDefinition(stores, { line: 9, col: 19 });
+
+    expect(result.found).toBe(true);
+    expect(result.uri).toBe('file:///tmp/cube.ri');
+    expect(result.range.start.line).toBe(7);
+
+    const lspCall = calls.find((c) => c[0] === 'lsp_request');
+    expect(lspCall).toBeDefined();
+    expect((lspCall![1] as { method: string }).method).toBe('textDocument/definition');
+    const lspParams = JSON.parse((lspCall![1] as { params: string }).params);
+    expect(lspParams.textDocument.uri).toBe('file:///tmp/cube.ri');
+    expect(lspParams.position).toEqual({ line: 9, character: 19 });
+  });
+
+  it('returns { found:false, uri:null, range:null } when LSP returns null', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') return JSON.stringify(null);
+      return undefined;
+    });
+
+    const { result } = await dispatchDefinition(stores, { line: 0, col: 0 });
+
+    expect(result.found).toBe(false);
+    expect(result.uri).toBeNull();
+    expect(result.range).toBeNull();
+  });
+});
+
 // ─── F2 completion_at handler (step-9 RED → step-10 GREEN) ──────────────────
 
 describe('debug bridge completion_at', () => {
