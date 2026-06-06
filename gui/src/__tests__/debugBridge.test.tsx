@@ -12,6 +12,13 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: vi.fn(),
+  // LogicalSize class whose instances carry { width, height } — used by set_window_size handler.
+  LogicalSize: class LogicalSize {
+    constructor(w, h) { (this as any).width = w; (this as any).height = h; }
+  },
+}));
 vi.mock('three', () => ({
   Box3: class { expandByObject() {} isEmpty() { return true; } },
   Vector3: class {},
@@ -22,6 +29,7 @@ vi.mock('html-to-image', () => ({
 
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { toPng } from 'html-to-image';
 import { initDebugBridge } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
@@ -2414,5 +2422,102 @@ describe('debug bridge resize_panes', () => {
     expect(stores.layout.setDesignTreeHeight).not.toHaveBeenCalled();
     expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
     expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge set_window_size (step-3 RED → step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge set_window_size', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let setSizeSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    setSizeSpy = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(getCurrentWindow).mockReturnValue({ setSize: setSizeSpy } as any);
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(id: number, params: Record<string, unknown>) {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command: 'set_window_size', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) valid dimensions call setSize once and return { ok:true, width, height }', async () => {
+    const result = await dispatch(8000, { width: 1024, height: 768 });
+    expect(result).toEqual({ ok: true, width: 1024, height: 768 });
+    expect(setSizeSpy).toHaveBeenCalledTimes(1);
+    expect(setSizeSpy.mock.calls[0][0]).toMatchObject({ width: 1024, height: 768 });
+  });
+
+  it('(b) non-number width returns error, setSize not called', async () => {
+    const result = await dispatch(8001, { width: 'bad', height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) width === 0 returns error', async () => {
+    const result = await dispatch(8002, { width: 0, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) negative width returns error', async () => {
+    const result = await dispatch(8003, { width: -100, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) NaN width returns error', async () => {
+    const result = await dispatch(8004, { width: NaN, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) Infinity width returns error', async () => {
+    const result = await dispatch(8005, { width: Infinity, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) non-number height returns error', async () => {
+    const result = await dispatch(8006, { width: 1024, height: 'bad' });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) height === 0 returns error', async () => {
+    const result = await dispatch(8007, { width: 1024, height: 0 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) NaN height returns error', async () => {
+    const result = await dispatch(8008, { width: 1024, height: NaN });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) Infinity height returns error', async () => {
+    const result = await dispatch(8009, { width: 1024, height: Infinity });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
   });
 });
