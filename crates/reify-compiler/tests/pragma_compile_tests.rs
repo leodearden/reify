@@ -204,6 +204,75 @@ fn deterministic_module_pragma_no_unknown_warning() {
     );
 }
 
+/// `#deterministic` lowers to module scope: a module with the pragma has
+/// `module.deterministic == true`. Mirrors `module_pragmas_stored_on_compiled_module`.
+///
+/// Fails to COMPILE on current main because the `deterministic` field does not
+/// exist on `CompiledModule` yet. GREENed by step-8.
+#[test]
+fn deterministic_pragma_sets_module_flag() {
+    let module = compile_source("#deterministic\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.deterministic,
+        "expected module.deterministic == true after #deterministic, got false"
+    );
+}
+
+/// Absent `#deterministic` leaves `module.deterministic == false` (the default).
+/// Mirrors `version_pragma_absent_keeps_declared_version_none`.
+#[test]
+fn deterministic_pragma_absent_keeps_module_flag_false() {
+    let module = compile_source("structure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        !module.deterministic,
+        "expected module.deterministic == false when no #deterministic pragma, got true"
+    );
+}
+
+/// Two `#deterministic` pragmas: first wins (flag stays true) and the second
+/// emits exactly one "subsequent / ignored / first wins" warning. Mirrors
+/// `multiple_module_level_precision_pragmas_first_wins`.
+#[test]
+fn multiple_deterministic_pragmas_first_wins() {
+    let module = compile_source("#deterministic\n#deterministic\nstructure S { param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        module.deterministic,
+        "expected module.deterministic == true (first wins) for duplicate #deterministic"
+    );
+
+    // Exactly one warning, mentioning #deterministic, with first-wins/ignored wording.
+    let warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| {
+            let m = d.message.to_lowercase();
+            m.contains("deterministic")
+                && (m.contains("ignored") || m.contains("first wins") || m.contains("subsequent"))
+        })
+        .collect();
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 'subsequent #deterministic' warning, got {}: {:?}",
+        warns.len(),
+        warns
+    );
+}
+
 // ── Step 9: trait-level and purpose-level pragmas propagated ─────────────────
 
 /// Block-level pragma on a trait body is propagated to CompiledTrait.pragmas.
