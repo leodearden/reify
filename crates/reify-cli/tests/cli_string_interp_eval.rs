@@ -12,6 +12,71 @@
 
 mod common;
 
+/// `{{`/`}}` escaped braces collapse to literal single braces.
+/// `"{{braces}}"` must render to `"{braces}"` (no interpolation node — the
+/// parser sees this as a string-chunk-only interpolated_string).
+///
+/// Step-3 (RED): the `escaped` cell is not yet in examples/interpolation.ri.
+/// Step-4 adds it (GREEN).
+#[test]
+fn eval_interpolation_escapes_double_braces() {
+    let path = common::example_path("interpolation.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "reify eval interpolation.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains(r#"Demo.escaped = "{braces}""#),
+        "stdout should contain the escaped-braces checkpoint;\ngot stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// PRD §6.3 undef-totality: `"gap is {gap}"` where `gap : Length = auto` (no
+/// optimization objective) stays `Value::Undef` at eval time.  The
+/// __interp_render builtin maps Undef → literal `"undef"`, so the whole cell
+/// becomes a determinate `Value::String("gap is undef")` — NOT a bare unquoted
+/// `undef` (which would signal String+Undef poisoning).
+///
+/// Asserts: (1) status.success(); (2) stdout contains the quoted string line
+/// exactly; (3) the RHS after `=` starts with `"` — confirms a String cell,
+/// not a bare undef.
+///
+/// Step-3 (RED): `gap` and `undef_demo` cells not yet in the example.
+/// Step-4 adds them (GREEN).
+#[test]
+fn eval_interpolation_undef_hole_does_not_poison() {
+    let path = common::example_path("interpolation.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "reify eval interpolation.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    // The full quoted line must appear.
+    assert!(
+        stdout.contains(r#"Demo.undef_demo = "gap is undef""#),
+        "stdout should contain the undef_demo quoted line;\ngot stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // Extra pin: confirm the RHS is a quoted string (starts with `"`), not a
+    // bare `undef`.  This would catch a regression where String+Undef poisons
+    // the cell to Value::Undef (which prints without quotes).
+    let undef_demo_line = stdout
+        .lines()
+        .find(|l| l.contains("Demo.undef_demo"))
+        .unwrap_or("");
+    let rhs = undef_demo_line
+        .splitn(2, " = ")
+        .nth(1)
+        .unwrap_or("");
+    assert!(
+        rhs.starts_with('"'),
+        "Demo.undef_demo RHS should start with '\"' (a quoted String); got: {:?}",
+        rhs
+    );
+}
+
 /// PRD §1 anchor: `"thickness is {t}, doubled is {2 * t}"` with `t = 5mm`
 /// must render to `"thickness is 5 mm, doubled is 10 mm"` — this pins the
 /// format_display engineering-unit rendering path (5 mm / 10 mm), NOT
