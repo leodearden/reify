@@ -2521,3 +2521,161 @@ describe('debug bridge set_window_size', () => {
     expect(setSizeSpy).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// debug bridge tree-node expand/collapse (step-5 RED → step-6 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge tree-node expand/collapse', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+  });
+
+  async function dispatch(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  /** Inject a chevron button that toggles the design-panel expandedSet on click. */
+  function setupDesignPanel(path: string, initialExpanded = false) {
+    const expandedSet = new Set<string>();
+    if (initialExpanded) expandedSet.add(path);
+    const btn = document.createElement('button');
+    btn.setAttribute('data-testid', `chevron-${path}`);
+    btn.addEventListener('click', () => {
+      if (expandedSet.has(path)) expandedSet.delete(path);
+      else expandedSet.add(path);
+    });
+    document.body.appendChild(btn);
+    window.__REIFY_DEBUG__!.designTree = { expanded: () => expandedSet };
+    return { expandedSet, btn };
+  }
+
+  /** Inject a constraint-row button that toggles the constraint-panel expandedSet on click. */
+  function setupConstraintPanel(path: string, initialExpanded = false) {
+    const expandedSet = new Set<string>();
+    if (initialExpanded) expandedSet.add(path);
+    const btn = document.createElement('button');
+    btn.setAttribute('data-testid', `constraint-row-${path}`);
+    btn.addEventListener('click', () => {
+      if (expandedSet.has(path)) expandedSet.delete(path);
+      else expandedSet.add(path);
+    });
+    document.body.appendChild(btn);
+    window.__REIFY_DEBUG__!.constraintPanel = { expandedNodes: () => expandedSet };
+    return { expandedSet, btn };
+  }
+
+  it('(a) expand_tree_node: node NOT expanded → clicks chevron once, returns { ok:true, path, expanded:true }', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', false);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9000, 'expand_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.path).toBe('Bracket.body');
+    expect(result.expanded).toBe(true);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) expand_tree_node idempotent: node already expanded → NO click, returns expanded:true', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', true);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9001, 'expand_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(true);
+    expect(clickSpy).not.toHaveBeenCalled();
+  });
+
+  it('(c) collapse_tree_node: node expanded → clicks once, returns expanded:false', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', true);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9002, 'collapse_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(false);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('(d) collapse_tree_node idempotent: not expanded → NO click, returns expanded:false', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', false);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9003, 'collapse_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(false);
+    expect(clickSpy).not.toHaveBeenCalled();
+  });
+
+  it('(e) expand_tree_node: missing path returns { error }', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    setupDesignPanel('Bracket.body', false);
+
+    const result = await dispatch(9004, 'expand_tree_node', {});
+    expect(result).toHaveProperty('error');
+  });
+
+  it('(f) expand_tree_node: control element absent returns { error } with path in message', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    // Register accessor but do NOT inject a button
+    const expandedSet = new Set<string>();
+    window.__REIFY_DEBUG__!.designTree = { expanded: () => expandedSet };
+
+    const result = await dispatch(9005, 'expand_tree_node', { path: 'Missing.node' });
+    expect(result).toHaveProperty('error');
+    expect(result.error).toContain('Missing.node');
+  });
+
+  it('(g) panel:constraint drives constraint-row testid and reads constraintPanel.expandedNodes', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupConstraintPanel('constraint-1', false);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9006, 'expand_tree_node', { path: 'constraint-1', panel: 'constraint' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(true);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('(h) designTree panel not registered returns { error }', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    // designTree not registered on ctx (default state after initDebugBridge)
+
+    const result = await dispatch(9007, 'expand_tree_node', { path: 'Bracket.body' });
+    expect(result).toHaveProperty('error');
+  });
+});
