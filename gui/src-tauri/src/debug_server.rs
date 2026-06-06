@@ -1945,4 +1945,33 @@ mod tests {
             );
         }
     }
+
+    // task-4302 step-9 RED → step-10 GREEN: capabilities/default.json must
+    // grant core:window:allow-set-size for set_window_size to work at runtime.
+    #[test]
+    fn capabilities_default_grants_window_set_size() {
+        const CAPS: &str = include_str!("../capabilities/default.json");
+        let v: serde_json::Value = serde_json::from_str(CAPS)
+            .expect("capabilities/default.json must be valid JSON");
+        let permissions = v["permissions"]
+            .as_array()
+            .expect("capabilities/default.json must have a 'permissions' array");
+        let perm_strings: Vec<&str> = permissions
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+
+        assert!(
+            perm_strings.contains(&"core:window:allow-set-size"),
+            "capabilities/default.json must grant 'core:window:allow-set-size' \
+             so that set_window_size's getCurrentWindow().setSize() call is \
+             authorized at runtime. Add it to the permissions array."
+        );
+        // Regression guard: the pre-existing core:window:default must still be present.
+        assert!(
+            perm_strings.contains(&"core:window:default"),
+            "capabilities/default.json must still contain 'core:window:default' \
+             (regression: do not replace it with core:window:allow-set-size)."
+        );
+    }
 }
