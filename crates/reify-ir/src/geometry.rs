@@ -1628,7 +1628,7 @@ pub fn write_stl_binary(
 
     // Reject malformed meshes with a non-triangular index buffer up front
     // rather than silently dropping trailing indices via chunks_exact.
-    if mesh.indices.len() % 3 != 0 {
+    if !mesh.indices.len().is_multiple_of(3) {
         return Err(Error::new(
             ErrorKind::InvalidData,
             format!(
@@ -1691,7 +1691,7 @@ pub fn write_stl_ascii(
     use std::fmt::Write as _;
 
     // Reject malformed meshes with a non-triangular index buffer up front.
-    if mesh.indices.len() % 3 != 0 {
+    if !mesh.indices.len().is_multiple_of(3) {
         return Err(Error::new(
             ErrorKind::InvalidData,
             format!(
