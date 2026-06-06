@@ -83,6 +83,11 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
         propertyHeight: 200,
         constraintHeight: 140,
       },
+      setEditorWidth: vi.fn(),
+      setSideWidth: vi.fn(),
+      setDesignTreeHeight: vi.fn(),
+      setPropertyHeight: vi.fn(),
+      setConstraintHeight: vi.fn(),
     },
   };
 }
@@ -2316,5 +2321,98 @@ describe('debug bridge tab_order', () => {
     for (let i = 1; i < indices.length; i++) {
       expect(indices[i]).toBeGreaterThan(indices[i - 1]);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge resize_panes (step-1 RED → step-2 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge resize_panes', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(stores: ReturnType<typeof makeStores>, id: number, params: Record<string, unknown>) {
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command: 'resize_panes', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) single dimension: editorWidth calls setEditorWidth with value and returns { ok:true }', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7000, { editorWidth: 450 });
+    expect(result.ok).toBe(true);
+    expect(stores.layout.setEditorWidth).toHaveBeenCalledWith(450);
+    expect(stores.layout.setSideWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setDesignTreeHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+  });
+
+  it('(b) multi-dimension call invokes exactly those setters', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7001, { sideWidth: 380, designTreeHeight: 220 });
+    expect(result.ok).toBe(true);
+    expect(stores.layout.setSideWidth).toHaveBeenCalledWith(380);
+    expect(stores.layout.setDesignTreeHeight).toHaveBeenCalledWith(220);
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+  });
+
+  it('(c) non-number value for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7002, { editorWidth: 'bad' });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(c) negative value for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7003, { editorWidth: -1 });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(c) NaN for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7004, { editorWidth: NaN });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(c) Infinity for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7005, { editorWidth: Infinity });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(d) empty params {} returns an error', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7006, {});
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setSideWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setDesignTreeHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
   });
 });
