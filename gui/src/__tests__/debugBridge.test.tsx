@@ -3074,6 +3074,7 @@ describe('debug bridge click_at', () => {
 
   it('happy: dispatches click with correct clientX/clientY', async () => {
     const button = document.createElement('button');
+    button.setAttribute('data-testid', 'test-btn');
     document.body.appendChild(button);
     vi.spyOn(document, 'elementFromPoint').mockReturnValue(button);
 
@@ -3085,6 +3086,9 @@ describe('debug bridge click_at', () => {
     expect(firedEvent).toBeDefined();
     expect(firedEvent!.clientX).toBe(140);
     expect(firedEvent!.clientY).toBe(70);
+    // Assert target payload shape (suggestion 4: regression-guard on element resolution)
+    expect(result.target.tagName).toBe('button');
+    expect(result.target.testId).toBe('test-btn');
   });
 
   it('no element at point returns {error}', async () => {
@@ -3137,6 +3141,7 @@ describe('debug bridge hover', () => {
 
   it('happy: dispatches move event with correct clientX/clientY', async () => {
     const el = document.createElement('div');
+    el.setAttribute('data-testid', 'test-div');
     document.body.appendChild(el);
     vi.spyOn(document, 'elementFromPoint').mockReturnValue(el);
 
@@ -3150,6 +3155,9 @@ describe('debug bridge hover', () => {
     expect(firedEvent).toBeDefined();
     expect(firedEvent!.clientX).toBe(50);
     expect(firedEvent!.clientY).toBe(60);
+    // Assert target payload shape (suggestion 4: regression-guard on element resolution)
+    expect(result.target.tagName).toBe('div');
+    expect(result.target.testId).toBe('test-div');
   });
 
   it('no element at point returns {error}', async () => {
@@ -3231,6 +3239,33 @@ describe('debug bridge drag', () => {
   it('invalid from (NaN) returns {error}', async () => {
     const result = await dispatchCmd(5204, 'drag', { from: { x: NaN, y: 5 }, to: { x: 10, y: 10 } });
     expect(typeof result.error).toBe('string');
+  });
+
+  it('null to destination falls back to from element; move/up events fire at to coords', async () => {
+    // Covers the `elTo = document.elementFromPoint(to.x, to.y) ?? elFrom` fallback
+    // when the destination point resolves to null (e.g. off-canvas).
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const spy = vi.spyOn(document, 'elementFromPoint');
+    spy.mockReturnValueOnce(el);   // first call: from resolves
+    spy.mockReturnValueOnce(null); // second call: to resolves to null → falls back to el
+
+    let moveEvent: MouseEvent | undefined;
+    let upEvent: MouseEvent | undefined;
+    el.addEventListener('pointermove', (e) => { moveEvent = e as MouseEvent; });
+    el.addEventListener('mousemove', (e) => { if (!moveEvent) moveEvent = e as MouseEvent; });
+    el.addEventListener('pointerup', (e) => { upEvent = e as MouseEvent; });
+    el.addEventListener('mouseup', (e) => { if (!upEvent) upEvent = e as MouseEvent; });
+
+    const result = await dispatchCmd(5205, 'drag', { from: { x: 10, y: 20 }, to: { x: 80, y: 90 } });
+    expect(result.ok).toBe(true);
+    // Events fired on the fallback element (elFrom) but carry the to coordinates.
+    expect(moveEvent).toBeDefined();
+    expect(moveEvent!.clientX).toBe(80);
+    expect(moveEvent!.clientY).toBe(90);
+    expect(upEvent).toBeDefined();
+    expect(upEvent!.clientX).toBe(80);
+    expect(upEvent!.clientY).toBe(90);
   });
 });
 
@@ -3358,6 +3393,26 @@ describe('debug bridge scroll', () => {
 
   it('DOM mode: testId not found returns {error}', async () => {
     const result = await dispatchCmd(5405, 'scroll', { testId: 'no-such-panel', top: 50 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('DOM mode: NaN top returns {error}', async () => {
+    // isFiniteNumber guard: NaN silently coerces to 0 without this check.
+    const panel = document.createElement('div');
+    panel.setAttribute('data-testid', 'panel-nan');
+    document.body.appendChild(panel);
+    Object.defineProperty(panel, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    const result = await dispatchCmd(5406, 'scroll', { testId: 'panel-nan', top: NaN });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('editor mode: Infinity left returns {error}', async () => {
+    // isFiniteNumber guard: ±Infinity silently coerces to 0 without this check.
+    const scrollDOM = document.createElement('div');
+    Object.defineProperty(scrollDOM, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(scrollDOM, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+    (window as any).__REIFY_DEBUG__.editorView = { scrollDOM } as any;
+    const result = await dispatchCmd(5407, 'scroll', { target: 'editor', left: Infinity });
     expect(typeof result.error).toBe('string');
   });
 });

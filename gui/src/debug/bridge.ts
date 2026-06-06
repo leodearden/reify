@@ -802,8 +802,11 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         const view = ctx.editorView;
         if (!view) return { error: 'editor view not ready' };
         const sd = view.scrollDOM;
-        if (typeof params.top === 'number') sd.scrollTop = params.top;
-        if (typeof params.left === 'number') sd.scrollLeft = params.left;
+        // Reject non-finite offsets (NaN, ±Infinity) — consistent with isFiniteNumber/validXY guards.
+        if (params.top !== undefined && !isFiniteNumber(params.top)) return { error: 'top must be a finite number' };
+        if (params.left !== undefined && !isFiniteNumber(params.left)) return { error: 'left must be a finite number' };
+        if (isFiniteNumber(params.top)) sd.scrollTop = params.top;
+        if (isFiniteNumber(params.left)) sd.scrollLeft = params.left;
         return { ok: true, scrollTop: sd.scrollTop, scrollLeft: sd.scrollLeft };
       }
       // DOM mode: scroll an element resolved by data-testid.
@@ -814,8 +817,11 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         : testId.replace(/["\\]/g, '\\$&');
       const el = document.querySelector(`[data-testid="${escaped}"]`) as HTMLElement | null;
       if (!el) return { error: `element with data-testid="${testId}" not found` };
-      if (typeof params.top === 'number') el.scrollTop = params.top;
-      if (typeof params.left === 'number') el.scrollLeft = params.left;
+      // Reject non-finite offsets (NaN, ±Infinity) — consistent with isFiniteNumber/validXY guards.
+      if (params.top !== undefined && !isFiniteNumber(params.top)) return { error: 'top must be a finite number' };
+      if (params.left !== undefined && !isFiniteNumber(params.left)) return { error: 'left must be a finite number' };
+      if (isFiniteNumber(params.top)) el.scrollTop = params.top;
+      if (isFiniteNumber(params.left)) el.scrollLeft = params.left;
       return { ok: true, scrollTop: el.scrollTop, scrollLeft: el.scrollLeft };
     },
 
