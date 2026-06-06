@@ -847,6 +847,10 @@ mod tests {
     // `crate::math_signatures`, imported here to pin disjointness from the five
     // geometry families and the dynamics-query family (both directions).
     use crate::math_signatures::MATH_CONSTRUCTION_NAMES;
+    // Math-linalg operation/function family (task 4182 δ) — sibling slice in
+    // `crate::math_signatures`, imported here to pin disjointness from the five
+    // geometry families, the dynamics-query family, AND the construction family.
+    use crate::math_signatures::MATH_OPERATION_NAMES;
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
@@ -1361,6 +1365,11 @@ mod tests {
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
                  MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
             );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
         }
     }
 
@@ -1403,6 +1412,11 @@ mod tests {
                 !MATH_CONSTRUCTION_NAMES.contains(name),
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
             );
         }
     }
@@ -1449,6 +1463,65 @@ mod tests {
                 !DYNAMICS_QUERY_NAMES.contains(name),
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
                  DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ — \
+                 constructors and operations are disjoint slices)"
+            );
+        }
+    }
+
+    /// Disjointness invariant for the math-linalg OPERATION family (task 4182
+    /// δ). Every `MATH_OPERATION_NAMES` entry (`sqrt` / `dot` / `determinant` /
+    /// `eigenvalues` / `complex` / …) must be absent from all five geometry
+    /// families, the dynamics-query family, AND the math-linalg CONSTRUCTION
+    /// family — so a name can satisfy at most one classification predicate in
+    /// `expr.rs::resolve_function_overload`'s `NoUserFunctions` ladder, and the
+    /// operation/construction split stays a partition (never overlapping
+    /// slices). Sibling to `math_typed_fn_names_are_disjoint_from_other_families`
+    /// (which pins the construction family); the converse asserts added to the
+    /// geometry / dynamics / construction disjointness tests above pin the other
+    /// direction.
+    #[test]
+    fn math_operation_fn_names_are_disjoint_from_other_families() {
+        for name in MATH_OPERATION_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179 — \
+                 operations and constructors are disjoint slices)"
             );
         }
     }
