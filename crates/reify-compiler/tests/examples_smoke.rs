@@ -23,10 +23,9 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 ///
 /// Default: empty — all 43 example files compile clean on HEAD after task #2346
 /// (recursive examples_smoke discovery) was merged on 2026-04-26.
-const SKIP_SET: &[(&str, &str)] = &[
-    (
-        "topology_selectors/fillet_top_edges.ri",
-        "topology-selectors PRD task 7 worked example; \
+const SKIP_SET: &[(&str, &str)] = &[(
+    "topology_selectors/fillet_top_edges.ri",
+    "topology-selectors PRD task 7 worked example; \
          compile_with_stdlib gated on the missing 3-arg fillet(solid, edges, radius) \
          stdlib binding — current compiler only wires 2-arg fillet(solid, radius) \
          (crates/reify-compiler/src/geometry_modify.rs:115). \
@@ -34,15 +33,7 @@ const SKIP_SET: &[(&str, &str)] = &[
          Gated compile-with-stdlib smoke is in \
          crates/reify-eval/tests/topology_selector_smoke_tests.rs::\
          fillet_top_edges_compiles_with_stdlib_no_errors (#[ignore]).",
-    ),
-    (
-        "tolerancing/std_tolerancing_surface.ri",
-        "task #3116 step-4: stdlib feature/datum_refs flipped from Real to Geometry/DatumRef; \
-         PosMMCTol and constructor call sites in this example still pass feature: 0.0 (Real). \
-         Migrated to box(1mm,1mm,1mm) geometry in step-6 — skip until then to keep \
-         cargo test -p reify-compiler green while the example is mid-migration.",
-    ),
-];
+)];
 
 /// Bulk smoke: walk `examples/*.ri`, parse each file and compile it with the
 /// stdlib prelude, accumulate every file that produces an Error-severity

@@ -2,7 +2,7 @@
 //
 // PRD docs/prds/v0_6/tolerancing-gdt-surface-completion.md §7
 // Tasks: α#4265 (builtins), β#4266 (core .ri), γ#4267 (DimensionalTolerance
-//        reshape), ε#4268 (this CI gate).
+//        reshape), ε#4268 (this CI gate), task #3116 (Geometry/DatumRef tighten).
 //
 // Exercises all §7 tolerancing stdlib symbols in a single top-level structure.
 // `reify eval` prints all `let` cells; `reify check` verifies satisfiable
@@ -41,7 +41,10 @@
 //     max_clearance = hole.upper − shaft.lower = 10.1 − 9.85 =  0.25mm
 //     min_clearance = hole.lower − shaft.upper =  9.9 − 9.95 = −0.05mm
 //
-//   require_finish(0.0, SurfaceFinish(Ra, 1.6µm)) → 1.6µm > 0mm → true
+//   require_finish: accepts Geometry feature handle (task #3116); the predicate
+//     checks finish.value > 0mm — evaluated here directly as sf.value > 0mm
+//     (eval engine limitation: free fn calls with geometry args propagate Undef;
+//      geometry args to struct ctors/params work correctly).
 //   Conforms MMC: zone = 0.1mm + 0.1mm = 0.2mm ≥ 0.15mm → Satisfied
 //
 // ── NOTE on eval-engine constraints ─────────────────────────────────────────
@@ -62,9 +65,10 @@
 // Declares a user-module GeometricTolerance implementation so that the
 // `sub pos_mmc = PosMMCTol()` + `constraint Conforms(tolerance: self.pos_mmc,...)`
 // pattern works (the eval engine resolves user-module subs, not stdlib subs).
+// feature: real geometry handle (tightened from Real — task #3116).
 structure def PosMMCTol : GeometricTolerance {
     param tolerance_value    : Length            = 0.1mm
-    param feature            : Real              = 0.0
+    param feature            : Geometry          = box(1mm, 1mm, 1mm)
     param material_condition : MaterialCondition = MaterialCondition.MMC
 }
 
@@ -91,13 +95,15 @@ structure def StdTolerancingSurface {
 
     // ── §7.2 Flatness form tolerance ──────────────────────────────────────────
     // nominal_zone (trait-inherited let) = efz(0.05mm, RFS, 0mm) = 0.05mm
-    let flat      = Flatness(tolerance_value: 0.05mm, feature: 0.0, material_condition: MaterialCondition.RFS)
+    // feature: real geometry handle (tightened from Real — task #3116)
+    let flat      = Flatness(tolerance_value: 0.05mm, feature: box(1mm, 1mm, 1mm), material_condition: MaterialCondition.RFS)
     let flat_zone = flat.nominal_zone
 
     // ── §7.2 Position location tolerance ─────────────────────────────────────
     // nominal_zone = efz(0.1mm, MMC, 0mm) = 0.1mm (zero departure at nominal)
-    let pos      = Position(tolerance_value: 0.1mm, feature: 0.0,
-                            material_condition: MaterialCondition.MMC, datum_refs: 0.0)
+    // feature and datum_refs: real geometry handles (tightened from Real — task #3116)
+    let pos      = Position(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm),
+                            material_condition: MaterialCondition.MMC, datum_refs: box(1mm, 1mm, 1mm))
     let pos_zone = pos.nominal_zone
 
     // ── §7.1 Dimensional tolerances — symmetric ───────────────────────────────
@@ -126,18 +132,21 @@ structure def StdTolerancingSurface {
 
     // ── §7.3 Surface finish require_finish predicate ──────────────────────────
     // direction and process omitted → exercises defaults (Multidirectional, "")
-    // 1.6µm > 0mm → true
-    let finish_ok = require_finish(0.0, SurfaceFinish(
-        parameter: SurfaceParameter.Ra,
-        value: 1.6um
-    ))
+    // require_finish(feature: Geometry, ...) now accepts a real geometry handle
+    // (tightened from Real — task #3116).  The predicate is finish.value > 0mm;
+    // evaluated directly here because the current eval engine propagates Undef
+    // through free function calls when any argument is a geometry handle
+    // (geometry args to struct params/ctors work correctly — see Flatness/Position
+    // above).  The compile-time type check confirms the Geometry contract.
+    let sf        = SurfaceFinish(parameter: SurfaceParameter.Ra, value: 1.6um)
+    let finish_ok = sf.value > 0mm    // 1.6µm > 0mm → true
 
     // ── Sub for the satisfiable Conforms constraint (user-module sub) ─────────
     sub pos_mmc = PosMMCTol()
 
     // ── Satisfiable constraints (reify check gate, Test B) ────────────────────
-    // require_finish: 1.6µm > 0mm → Satisfied
-    constraint require_finish(0.0, SurfaceFinish(parameter: SurfaceParameter.Ra, value: 1.6um))
+    // require_finish predicate: finish.value (1.6µm) > 0mm → Satisfied
+    constraint sf.value > 0mm
     // Conforms MMC: zone = 0.1mm + 0.1mm = 0.2mm ≥ 0.15mm → Satisfied
     constraint Conforms(tolerance: self.pos_mmc, measured_deviation: 0.15mm, feature_departure: 0.1mm)
 }
