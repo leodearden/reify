@@ -16,7 +16,7 @@ vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: vi.fn(),
   // LogicalSize class whose instances carry { width, height } — used by set_window_size handler.
   LogicalSize: class LogicalSize {
-    constructor(w, h) { (this as any).width = w; (this as any).height = h; }
+    constructor(w: number, h: number) { (this as any).width = w; (this as any).height = h; }
   },
 }));
 vi.mock('three', () => ({
