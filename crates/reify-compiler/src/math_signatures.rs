@@ -212,6 +212,40 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
             )),
         },
 
+        // Matrix ops (read {n, quantity} from a rank-2 `Tensor` or a user-facing
+        // `Matrix`). The `determinant(AffineMap)→Real` row is served upstream by
+        // `affine_map_algebra_result_type` (runs before this arm), so the args
+        // reaching here are only Tensor/Matrix.
+        //
+        // `determinant` of an N×N matrix scales as Q^N. N is read from the
+        // matrix shape (capped into the i8 domain `pow` accepts); a dimensionless
+        // result routes back to Real.
+        "determinant" => scalar_or_real(
+            arg_matrix_quantity(args, 0).pow(clamp_i8(arg_matrix_n(args, 0))),
+        ),
+        // `inverse` negates the quantity dimension (Q⁻¹) and preserves the shape.
+        // ALWAYS a rank-2 Tensor variant — never the first-arg type (D7).
+        "inverse" => Type::Tensor {
+            rank: 2,
+            n: arg_matrix_n(args, 0),
+            quantity: Box::new(scalar_or_real(
+                DimensionVector::DIMENSIONLESS.div(&arg_matrix_quantity(args, 0)),
+            )),
+        },
+        // `transpose` preserves shape + quantity: identity over a statically
+        // shaped matrix; otherwise degrade to a rank-2 Tensor variant (never the
+        // first-arg type, D7).
+        "transpose" => match first.map(|a| &a.result_type) {
+            Some(t @ (Type::Tensor { .. } | Type::Matrix { .. })) => t.clone(),
+            _ => Type::Tensor {
+                rank: 2,
+                n: arg_matrix_n(args, 0),
+                quantity: Box::new(scalar_or_real(arg_matrix_quantity(args, 0))),
+            },
+        },
+        // `trace` sums the diagonal → a single quantity scalar.
+        "trace" => scalar_or_real(arg_matrix_quantity(args, 0)),
+
         _ => Type::Real,
     }
 }
@@ -241,6 +275,46 @@ fn vector_n(t: &Type) -> usize {
         Type::Vector { n, .. } => *n,
         _ => 0,
     }
+}
+
+/// The per-dimension element count `n` of a matrix-like operand — a rank-2
+/// `Tensor{n}` (what the `matrix`/`diag`/`identity` constructors produce) or a
+/// user-facing `Matrix{n}` (column count). `0` when not a statically-shaped
+/// matrix (the D7 degrade — the result still uses the correct VARIANT).
+fn matrix_n(t: &Type) -> usize {
+    match t {
+        Type::Tensor { n, .. } | Type::Matrix { n, .. } => *n,
+        _ => 0,
+    }
+}
+
+/// The shape `n` of the matrix-like `args[i]` (or `0` if absent / not a matrix).
+fn arg_matrix_n(args: &[CompiledExpr], i: usize) -> usize {
+    args.get(i).map_or(0, |a| matrix_n(&a.result_type))
+}
+
+/// The quantity dimension of a matrix-like operand (its `quantity` Scalar's
+/// dimension, or `DIMENSIONLESS` for a `Real`/unknown quantity or a non-matrix).
+fn matrix_quantity_dimension(t: &Type) -> DimensionVector {
+    match t {
+        Type::Tensor { quantity, .. } | Type::Matrix { quantity, .. } => arg_dimension(quantity),
+        _ => DimensionVector::DIMENSIONLESS,
+    }
+}
+
+/// The matrix quantity dimension of `args[i]` (or `DIMENSIONLESS` if absent).
+fn arg_matrix_quantity(args: &[CompiledExpr], i: usize) -> DimensionVector {
+    args.get(i).map_or(DimensionVector::DIMENSIONLESS, |a| {
+        matrix_quantity_dimension(&a.result_type)
+    })
+}
+
+/// Clamp a matrix dimension `n` (a `usize`) into the `i8` domain
+/// [`DimensionVector::pow`] accepts, saturating at `i8::MAX`. Realistic matrices
+/// are tiny; this only guards a pathological/overflowing `N` from silently
+/// wrapping on the `as i8` cast (the determinant `Q^N` arm).
+fn clamp_i8(n: usize) -> i8 {
+    n.min(i8::MAX as usize) as i8
 }
 
 /// The dimension of an arg's `result_type` for the math return-type algebra:
