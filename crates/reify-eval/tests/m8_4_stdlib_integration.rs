@@ -667,6 +667,24 @@ fn expect_real_or_int_panics_on_non_numeric() {
     expect_real_or_int(&val, "test_label");
 }
 
+/// Extract element [row][col] from a nested `Value::Tensor` (matrix).
+/// Panics with a descriptive message on any non-Real/Int element (incl. Undef).
+fn matrix_elem(v: &Value, row: usize, col: usize) -> f64 {
+    match v {
+        Value::Tensor(rows) => match &rows[row] {
+            Value::Tensor(cols) => match &cols[col] {
+                Value::Real(x) => *x,
+                Value::Int(i) => *i as f64,
+                other => panic!(
+                    "matrix_elem[{row}][{col}] should be Real or Int, got {other:?}"
+                ),
+            },
+            other => panic!("matrix row[{row}] should be Tensor, got {other:?}"),
+        },
+        other => panic!("expected Tensor for matrix, got {other:?}"),
+    }
+}
+
 // ── step-1: linalg_4x4_determinant ───────────────────────────────────────────
 
 /// Asserts LinalgDemo.det4 ≈ 209.0 (Value::Real).
@@ -691,6 +709,47 @@ fn linalg_4x4_determinant() {
             );
         }
         other => panic!("LinalgDemo.det4 should be Value::Real, got {:?}", other),
+    }
+}
+
+// ── step-3: linalg_4x4_inverse_roundtrip ─────────────────────────────────────
+
+/// Asserts m4 · inv4 ≈ I₄ (all 16 entries, tolerance 1e-9).
+/// m4 = tridiagonal SPD; SPD with κ≈2.36 gives try_inverse residual ~1e-15.
+/// Both m4 and inv4 are extracted as 4×4 f64 arrays via matrix_elem;
+/// the product is computed in Rust (no matmul builtin exists in .ri).
+#[test]
+fn linalg_4x4_inverse_roundtrip() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let m4_id = ValueCellId::new("LinalgDemo", "m4");
+    let m4_val = result
+        .values
+        .get(&m4_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.m4 not found in eval result"));
+
+    let inv4_id = ValueCellId::new("LinalgDemo", "inv4");
+    let inv4_val = result
+        .values
+        .get(&inv4_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.inv4 not found in eval result"));
+
+    // Extract both matrices as 4×4 f64 arrays.
+    let m4: [[f64; 4]; 4] =
+        std::array::from_fn(|r| std::array::from_fn(|c| matrix_elem(m4_val, r, c)));
+    let inv4: [[f64; 4]; 4] =
+        std::array::from_fn(|r| std::array::from_fn(|c| matrix_elem(inv4_val, r, c)));
+
+    // Compute product P = m4 · inv4 and assert P ≈ I₄.
+    for i in 0..4 {
+        for j in 0..4 {
+            let p_ij: f64 = (0..4).map(|k| m4[i][k] * inv4[k][j]).sum();
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (p_ij - expected).abs() < 1e-9,
+                "m4·inv4[{i}][{j}] should be ≈{expected}, got {p_ij}"
+            );
+        }
     }
 }
 
