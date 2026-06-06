@@ -108,9 +108,11 @@ function resolveElement(params: Record<string, unknown>): { error: string } | { 
 // Returns focusable elements in document order, excluding disabled/tabindex=-1
 // and elements hidden via computed display:none or visibility:hidden.
 // Does NOT use offsetParent/getBoundingClientRect — unavailable in jsdom.
+// Note: input[type=hidden] is excluded explicitly; the [tabindex] group also
+// guards against disabled elements that carry an explicit non-negative tabindex.
 function collectTabbables(): HTMLElement[] {
   const candidates = document.querySelectorAll<HTMLElement>(
-    'a[href]:not([tabindex="-1"]), button:not([disabled]):not([tabindex="-1"]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])',
+    'a[href]:not([tabindex="-1"]), button:not([disabled]):not([tabindex="-1"]), input:not([type="hidden"]):not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"]):not([disabled])',
   );
   return Array.from(candidates).filter((el) => {
     const style = window.getComputedStyle(el);
@@ -395,7 +397,13 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       const items: Array<{ testId: string | null; label: string; enabled: boolean }> = [];
       document.querySelectorAll('[role="menuitem"]').forEach((el) => {
         const btn = el as HTMLButtonElement;
-        const label = btn.querySelector('span')?.textContent ?? btn.innerText?.trim() ?? '';
+        // Target the un-classed label span explicitly rather than the first span
+        // by position — the shortcut span always carries a CSS-module class, so
+        // span:not([class]) reliably reaches the label regardless of DOM ordering.
+        const label =
+          btn.querySelector('span:not([class])')?.textContent?.trim() ??
+          btn.innerText?.trim() ??
+          '';
         items.push({
           testId: btn.getAttribute('data-testid'),
           label,
