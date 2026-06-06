@@ -6895,4 +6895,100 @@ mod tests {
             "error kind must be InvalidData"
         );
     }
+
+    // ── 3MF serializer tests ─────────────────────────────────────────────────
+
+    /// Helper: build a 12-triangle unit cube mesh (8 vertices, 36 indices).
+    fn unit_cube_mesh() -> Mesh {
+        // 8 corners of a unit cube [0,1]^3
+        #[rustfmt::skip]
+        let vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0, // v0
+            1.0, 0.0, 0.0, // v1
+            1.0, 1.0, 0.0, // v2
+            0.0, 1.0, 0.0, // v3
+            0.0, 0.0, 1.0, // v4
+            1.0, 0.0, 1.0, // v5
+            1.0, 1.0, 1.0, // v6
+            0.0, 1.0, 1.0, // v7
+        ];
+        // 12 triangles (2 per face, 6 faces)
+        #[rustfmt::skip]
+        let indices: Vec<u32> = vec![
+            // -Z face
+            0, 2, 1,  0, 3, 2,
+            // +Z face
+            4, 5, 6,  4, 6, 7,
+            // -Y face
+            0, 1, 5,  0, 5, 4,
+            // +Y face
+            3, 6, 2,  3, 7, 6,
+            // -X face
+            0, 4, 7,  0, 7, 3,
+            // +X face
+            1, 2, 6,  1, 6, 5,
+        ];
+        Mesh { vertices, indices, normals: None }
+    }
+
+    #[test]
+    fn write_3mf_box_produces_valid_3mf_package() {
+        use std::io::Cursor;
+        let mesh = unit_cube_mesh();
+        let tri_count = mesh.indices.len() / 3; // 12
+        let vert_count = mesh.vertices.len() / 3; // 8
+
+        let mut buf = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+            .expect("write_3mf should succeed");
+
+        // --- ZIP structure assertions ---
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf))
+            .expect("output should be a valid ZIP archive");
+
+        // Required OPC parts
+        let names: std::collections::HashSet<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(names.contains("[Content_Types].xml"), "missing [Content_Types].xml");
+        assert!(names.contains("_rels/.rels"), "missing _rels/.rels");
+        assert!(names.contains("3D/3dmodel.model"), "missing 3D/3dmodel.model");
+
+        // --- 3dmodel.model content assertions ---
+        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+        let mut model_xml = String::new();
+        std::io::Read::read_to_string(&mut model_file, &mut model_xml).unwrap();
+
+        let actual_triangles = model_xml.matches("<triangle ").count();
+        assert_eq!(actual_triangles, tri_count,
+            "expected {tri_count} <triangle> elements, got {actual_triangles}");
+
+        let actual_verts = model_xml.matches("<vertex ").count();
+        assert_eq!(actual_verts, vert_count,
+            "expected {vert_count} <vertex> elements, got {actual_verts}");
+
+        // --- Determinism: two calls on the same mesh produce byte-identical output ---
+        let mut buf2 = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf2)
+            .expect("second write_3mf should succeed");
+        assert_eq!(buf, buf2, "write_3mf must be byte-deterministic");
+    }
+
+    #[test]
+    fn write_3mf_malformed_mesh_returns_err() {
+        // 4 indices — not a multiple of 3; must be rejected.
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 1.0],
+            indices: vec![0, 1, 2, 3],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_3mf(&mesh, ThreeMfOptions::default(), &mut buf);
+        assert!(result.is_err(), "non-multiple-of-3 index buffer must return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
+        );
+    }
 }
