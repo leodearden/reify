@@ -1161,6 +1161,88 @@ mod tests {
         );
     }
 
+    /// Integration of `resolve_execution_modes` with the actual CG solve: proves
+    /// the *behavioral* determinism guarantee, not just the policy mapping
+    /// (`resolve_execution_modes_policy`) or the field plumbing (the e2e test).
+    ///
+    /// The resolver is fed a large `n_dofs` (50_000, a stand-in for a real
+    /// `>PARALLEL_DOF_THRESHOLD` problem) so it returns genuinely distinct mode
+    /// pairs for `deterministic ∈ {true, false}`; the resolved modes then drive a
+    /// solve of the cheap fan-mesh SPD system — no slow large mesh needed for CI.
+    ///
+    /// (1) `deterministic = true` → resolver returns `SolverMode::Deterministic`;
+    ///     two solves through the resolved mode are **bit-identical** — the
+    ///     cross-run reproducibility guarantee, exercised end-to-end through the
+    ///     resolver rather than by hand-passing the mode.
+    /// (2) `deterministic = false`, `threads = 4` → resolver returns
+    ///     `SolverMode::Parallel { threads: 4 }`; that solve converges and is
+    ///     tolerance-equivalent to the deterministic solve (same engineering
+    ///     result, so the default fast path stays correct).
+    #[test]
+    fn resolve_execution_modes_drives_bit_stable_and_equivalent_solves() {
+        use super::resolve_execution_modes;
+
+        let (k, f) = fan_mesh_k_spd_and_f();
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+
+        // Large n_dofs stand-in so the resolver does not short-circuit to
+        // Deterministic via the tiny-problem rule; the solved system is the cheap
+        // fan-mesh K regardless.
+        let n_dofs_large = 50_000;
+
+        // (1) deterministic = true → Deterministic mode → bit-stable across runs.
+        let (_, det_mode) = resolve_execution_modes(true, 4, n_dofs_large);
+        assert_eq!(
+            det_mode,
+            SolverMode::Deterministic,
+            "deterministic=true must resolve to Deterministic"
+        );
+        let det_a = solve_cg(&k, &f, opts.clone(), det_mode);
+        let det_b = solve_cg(&k, &f, opts.clone(), det_mode);
+        assert!(
+            det_a.converged && det_b.converged,
+            "resolver-driven deterministic solves must converge"
+        );
+        assert_eq!(
+            det_a.iterations, det_b.iterations,
+            "deterministic iterations must be bit-stable through the resolver"
+        );
+        for i in 0..f.len() {
+            assert_eq!(
+                det_a.u()[i].to_bits(),
+                det_b.u()[i].to_bits(),
+                "deterministic u[{i}] not bit-stable through the resolver: a={} b={}",
+                det_a.u()[i],
+                det_b.u()[i],
+            );
+        }
+
+        // (2) deterministic = false, threads = 4, large problem → Parallel mode →
+        //     converges and is tolerance-equivalent to the deterministic result.
+        let (_, par_mode) = resolve_execution_modes(false, 4, n_dofs_large);
+        assert_eq!(
+            par_mode,
+            SolverMode::Parallel { threads: 4 },
+            "non-deterministic large problem must resolve to Parallel"
+        );
+        let par = solve_cg(&k, &f, opts, par_mode);
+        assert!(par.converged, "resolver-driven parallel solve must converge");
+        for i in 0..f.len() {
+            let tol = 1e-9 * det_a.u()[i].abs().max(1.0);
+            let diff = (par.u()[i] - det_a.u()[i]).abs();
+            assert!(
+                diff < tol,
+                "resolver-driven parallel result not equivalent at i={i}: \
+                 u_par={}, u_det={}, |diff|={diff} ≥ tol={tol}",
+                par.u()[i],
+                det_a.u()[i],
+            );
+        }
+    }
+
     // --- Contract panics ---
 
     /// `SolverMode::Parallel { threads: 0 }` must panic with a message

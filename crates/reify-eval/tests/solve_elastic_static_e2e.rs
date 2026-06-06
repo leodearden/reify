@@ -803,6 +803,15 @@ fn e2e_cantilever_b1_b2_displacement_stress_fields() {
 //
 // On a fresh checkout (no `deterministic` field on ElasticOptions) compiling the
 // `.ri` would emit an unknown-ctor-param Error; GREENed by steps 4 + 10.
+//
+// Scope note: this test covers the *plumbing* (field accepted → ComputeNode →
+// trampoline) on a sub-threshold mesh, where deterministic:true resolves to the
+// same Deterministic modes as the default. The *behavioral* guarantee — that the
+// resolver drives a bit-stable deterministic solve and a tolerance-equivalent
+// parallel solve for a >PARALLEL_DOF_THRESHOLD problem — is verified at the
+// solver layer by
+// `reify_solver_elastic::solver::tests::resolve_execution_modes_drives_bit_stable_and_equivalent_solves`
+// (a fast small-system test rather than a slow large-mesh e2e).
 
 /// Inline cantilever source opting into deterministic execution via
 /// `ElasticOptions(deterministic: true)`. Mirrors the smoke fixture's

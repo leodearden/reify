@@ -31,10 +31,40 @@
 //!   (10_000 DOFs); tiny problems (`n_dofs < threshold`) or `threads <= 1`
 //!   still collapse to the Deterministic modes.
 //!
-//! `deterministic` is **excluded from the FEA cache key** — it changes the
-//! result bit-pattern, not its engineering value, so two solves differing only
-//! in `deterministic` are cache-equivalent. (The trampoline does not hash
-//! `ElasticOptions` at all, so this exclusion needs no cache-key code.)
+//! ## Cache key & determinism
+//!
+//! `deterministic` (like `threads`) is **excluded from the FEA cache key** by
+//! design — it changes the result bit-pattern, not its engineering value. The
+//! compute-node key is composed by [`crate::compute_cache_key::compute_cache_key`],
+//! whose *exclusion contract* mandates that thread count, determinism mode, and
+//! any future "execution profile" flag be filtered out by the upstream
+//! `options_hash` producer (`ElasticOptions::cacheable_hash`, deferred to P3.4).
+//! Today that producer is not yet wired: the FEA node's `options_hash` is a
+//! `ContentHash(0)` placeholder, and the per-call `ElasticOptions(...)` literal
+//! is not lowered into the node's `value_inputs` (the γ-slice shallow walk in
+//! `engine_eval.rs` captures only direct `ValueRef` args). So *no* `ElasticOptions`
+//! field — neither `deterministic` nor `shell_force` — participates in the key
+//! yet. This mirrors the mesher's treatment of `MeshingOptions.deterministic`.
+//!
+//! **Consequence (cache hit vs. bit-stability):** because `deterministic` is not
+//! in the key, a `deterministic: true` request can be served a previously-cached
+//! result that was produced by a *non-deterministic / parallel* solve. The
+//! bit-stability guarantee therefore holds for a **fresh (cold-cache) solve**,
+//! not necessarily for a cache hit. A consumer needing a guaranteed bit-stable
+//! baseline (e.g. a golden / regression run) must evaluate on a cold cache
+//! (fresh engine) rather than expect the flag to invalidate a cached result.
+//!
+//! ## Default-behavior change (PRD task #16)
+//!
+//! Before this wiring every elastostatic solve ran unconditionally in the
+//! `Deterministic` assembly/solve modes. With the new default `deterministic:
+//! false` and `threads: none` (→ host CPU count), any solve that clears
+//! `PARALLEL_DOF_THRESHOLD` (10_000 DOFs) now runs `Parallel` and is no longer
+//! bit-stable across runs/machines by default. All in-tree FEA solves use the
+//! coarse cantilever mesh (≈2.5K DOFs < threshold) and so still resolve to
+//! Deterministic; no existing golden/regression test depends on bit-stable
+//! output for a >10K-DOF default-options solve. A large-mesh consumer that needs
+//! reproducibility must pass `ElasticOptions(deterministic: true)`.
 //!
 //! # Analytical reference
 //!
@@ -51,6 +81,13 @@
 //! Prior warm state (if any) is recovered via `CgWarmState::from_opaque_state`;
 //! a type mismatch silently falls back to cold start. The fresh `CgWarmState`
 //! (wrapping the new displacement vector u) is donated back as `new_warm_state`.
+//!
+//! A `deterministic == true` solve **ignores any recovered warm state** and
+//! starts cold (zero initial guess): a warm state produced by an earlier
+//! parallel / run-varying solve would otherwise perturb the CG iteration count
+//! and break the bit-stability guarantee (see the Determinism contract above).
+//! It still donates a fresh `CgWarmState` back for any later non-deterministic
+//! solve to reuse.
 //!
 //! # Cache-hit contract (§3 + significance_filter.rs)
 //!
@@ -963,8 +1000,18 @@ pub(crate) fn solve_cantilever_fea(
         tolerance: 1e-6,
         max_iter: 2000,
     };
+    // Determinism contract (task 2926): bit-stability requires a *fixed* CG
+    // starting vector. CG converges to the same solution from any initial guess,
+    // but the iteration count — and thus the exact bit-pattern of the converged
+    // result — depends on it. A warm state carried over from an earlier solve
+    // (which may have run in `Parallel`, or simply varied run-to-run) would
+    // defeat the cross-run/cross-machine reproducibility guarantee. So a
+    // deterministic solve discards any prior warm state and starts cold (zero
+    // initial guess), trading a few extra CG iterations for reproducibility;
+    // bit-stability then holds for warm- and cold-lineage solves alike.
+    let warm_start = if deterministic { None } else { prior_cg.as_ref() };
     let (cg_result, fresh_warm) =
-        solve_cg_with_warm_state(&k, &f, prior_cg.as_ref(), opts, solver_mode);
+        solve_cg_with_warm_state(&k, &f, warm_start, opts, solver_mode);
 
     // ── Stress recovery: max von Mises across all elements ────────────────────
     //
