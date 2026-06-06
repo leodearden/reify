@@ -2491,6 +2491,48 @@ structure def FluidProbe {
     );
 }
 
+/// Negative: a structure that directly conforms to FluidPort but omits the newly-required
+/// `fluid_type` param must be rejected with a Severity::Error diagnostic.
+///
+/// This confirms that `fluid_type : FluidType` is genuinely enforced as a required member,
+/// not just declared. Without this negative case the positive conformer tests (which use
+/// the lenient `port p : in Trait {}` slot path) would pass even if the compiler were
+/// silently not enforcing these members as required.
+///
+/// Uses direct structure conformance (`structure def X : FluidPort`) which goes through
+/// the strict conformance checker — the same path verified by
+/// `rotary_port_conformer_inherited_option_default_does_not_satisfy_max_torque`.
+#[test]
+fn fluid_port_missing_required_fluid_type_rejected() {
+    let source = r#"
+import std.ports.fluid
+
+structure def FluidConformerMissingFluidType : FluidPort {
+    param pressure : Pressure = 101325Pa
+    param flow_rate : VolumetricFlowRate = 1gal / 1s
+    param medium : String = "water"
+    // fluid_type intentionally omitted — should trigger a required-member error
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "structure conforming to FluidPort without `fluid_type` must produce a Severity::Error \
+         (missing required member), but compiled with zero errors"
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("fluid_type")),
+        "expected a diagnostic naming 'fluid_type' for the missing required member; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 // ─── task ζ step-3: PipeConnectionType enum + PipedFluidPort trait surface ────
 
 /// PipeConnectionType enum must declare exactly 5 variants in order:
@@ -2634,6 +2676,40 @@ structure def PipeConformer {
             .iter()
             .map(|t| (&t.name, &t.entity_kind))
             .collect::<Vec<_>>()
+    );
+
+    // Diamond-merge deduplication: the shared Port base must not be duplicated across
+    // the two arms of the FluidPort+LocatedPort diamond (both refine Port, which carries
+    // the `direction : Directionality` member). If deduplication is broken, `direction`
+    // (or another shared base member) would appear twice in the compiled port's member
+    // list, making member_names.len() > unique_count.
+    let pipe_conformer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "PipeConformer")
+        .expect("PipeConformer template was confirmed present above");
+    let port_p = pipe_conformer
+        .ports
+        .iter()
+        .find(|p| p.name == "p")
+        .expect("PipeConformer should have a port named 'p'");
+    let member_names: Vec<&str> = port_p
+        .members
+        .iter()
+        .map(|m| m.id.member.as_str())
+        .collect();
+    let unique_count = member_names
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    assert_eq!(
+        member_names.len(),
+        unique_count,
+        "PipedFluidPort conformer port 'p' has duplicate member names — \
+         the shared Port base (direction) is not being deduplicated across the \
+         FluidPort+LocatedPort diamond arms; member names: {:?}",
+        member_names
     );
 }
 
