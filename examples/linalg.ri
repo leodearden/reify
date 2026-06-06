@@ -93,6 +93,16 @@ structure def LinalgDemo {
 
     let eig4 = eigenvalues(sym4)
 
+    // ── 2×2 rotation matrix (complex eigenvalue demo) ─────────────────────────
+    //   rot2 = [[0,-1],[1,0]]  (90° rotation in the plane)
+    //   Characteristic polynomial: λ² + 1 = 0 → eigenvalues ±i (exactly)
+    //   complex_eigenvalues: real-Schur decomposition → {0+1i, 0−1i}
+
+    let rot2 = matrix([[0.0, -1.0],
+                       [1.0,  0.0]])
+
+    let ceig = complex_eigenvalues(rot2)
+
     // ── @test assertions ──────────────────────────────────────────────────────
     //
     // Determinant of rotation matrix must be 1 (orthogonal matrix invariant).
