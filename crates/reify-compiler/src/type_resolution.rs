@@ -2509,4 +2509,42 @@ mod tests {
             "QualifiedAssoc default must be deferred (None) until task ιₑ resolves it"
         );
     }
+
+    // ── DatumRef resolver (task #3116) ────────────────────────────────────────
+
+    /// Regression: `resolve_type_name("Geometry")` must return `Some(Type::Geometry)`.
+    /// Already passes — used as an anchor alongside the new DatumRef test.
+    #[test]
+    fn resolve_type_name_recognises_geometry() {
+        assert_eq!(
+            resolve_type_name("Geometry"),
+            Some(Type::Geometry),
+            "\"Geometry\" should resolve to Type::Geometry"
+        );
+    }
+
+    /// Regression: `resolve_type_name("Solid")` must return `Some(Type::Geometry)` (legacy alias).
+    /// Already passes — used as an anchor alongside the new DatumRef test.
+    #[test]
+    fn resolve_type_name_recognises_solid_as_geometry_alias() {
+        assert_eq!(
+            resolve_type_name("Solid"),
+            Some(Type::Geometry),
+            "\"Solid\" should resolve to Type::Geometry (legacy alias)"
+        );
+    }
+
+    /// RED (step-1): `resolve_type_name("DatumRef")` must return `Some(Type::Geometry)`.
+    ///
+    /// `DatumRef` is the datum-reference handle type used in `tolerancing.ri`.
+    /// It aliases the existing geometry-handle type (PRD §8 Q1 / task #3116 D2).
+    /// Fails before step-2 adds `"DatumRef" => Some(Type::Geometry)` to `resolve_type_name`.
+    #[test]
+    fn resolve_type_name_recognises_datum_ref_as_geometry_handle() {
+        assert_eq!(
+            resolve_type_name("DatumRef"),
+            Some(Type::Geometry),
+            "\"DatumRef\" should resolve to Type::Geometry (datum-reference handle aliases the geometry-handle type)"
+        );
+    }
 }
