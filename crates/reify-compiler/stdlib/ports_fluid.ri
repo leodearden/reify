@@ -1,8 +1,9 @@
-// Stdlib: Fluid Port Interface — FluidPort
+// Stdlib: Fluid Port Interface — FluidPort, PipedFluidPort, HydraulicPort
 // Provides the trait surface for fluid connection interfaces using pressure
 // (across variable) and volumetric flow rate (through variable).
 //
-// Reference: docs/prds/v0_6/stdlib-reconstruction.md task β, §11.6.
+// Reference: docs/prds/v0_6/ports-breadth-expansion.md task ζ, §5.5–§5.6.
+//            docs/prds/v0_6/stdlib-reconstruction.md task β, §11.6 (origin).
 //
 // Deviations from §11 spec (forced by current language scope):
 //   1. `VolumetricFlowRate` type alias required. Volumetric flow rate (m³/s)
@@ -16,6 +17,8 @@
 //   2. `medium` is Type::String (open medium set). Fluid media (water, air,
 //      hydraulic oil, etc.) are best represented as free-form identifiers rather
 //      than a fixed enum — matches the free-form-identifier precedent in io.ri.
+//      The categorical `fluid_type : FluidType` enum is kept ALONGSIDE `medium`
+//      (PRD §4 decision 7: additive, not replacing the free-form identifier).
 //   3. Traits are NOT `pub`, matching the io.ri/process.ri convention.
 //   4. No `#no_prelude` pragma. std.ports.fluid refines Port from std.ports
 //      (inter-stdlib dependency), so the growing-prelude sequence in
@@ -30,15 +33,26 @@
 // not directly in `param x : <type>` position.
 pub type VolumetricFlowRate = Volume / Time
 
+// ── Enums ─────────────────────────────────────────────────────────────────────
+
+// Categorical fluid phase/type for the port medium.
+// Kept alongside the free-form `medium : String` identifier (PRD §4 decision 7).
+// Variants: Liquid (single-phase liquid), Gas (single-phase gas),
+//           TwoPhase (two-phase liquid/vapour mixture).
+enum FluidType { Liquid, Gas, TwoPhase }
+
 // ── Fluid port ────────────────────────────────────────────────────────────────
 
 // Fluid connection port — pressure-flow interface.
-// pressure  : Pressure             — port pressure potential (Pa).
-// flow_rate : VolumetricFlowRate   — volumetric flow rate through the port (m³/s).
-// medium    : String               — free-form fluid medium identifier
-//                                    (e.g. "water", "hydraulic_oil", "air").
+// pressure   : Pressure             — port pressure potential (Pa).
+// flow_rate  : VolumetricFlowRate   — volumetric flow rate through the port (m³/s).
+// medium     : String               — free-form fluid medium identifier
+//                                     (e.g. "water", "hydraulic_oil", "air").
+// fluid_type : FluidType            — categorical phase/type of the fluid medium
+//                                     (additive alongside `medium` per PRD §4 D7).
 trait FluidPort : Port {
     param pressure : Pressure
     param flow_rate : VolumetricFlowRate
     param medium : String
+    param fluid_type : FluidType
 }
