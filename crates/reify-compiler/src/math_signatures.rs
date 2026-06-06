@@ -246,6 +246,18 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // `trace` sums the diagonal → a single quantity scalar.
         "trace" => scalar_or_real(arg_matrix_quantity(args, 0)),
 
+        // Spectral ops. The eigenvalues of a matrix carry the matrix's quantity
+        // (a dimensionless matrix → dimensionless eigenvalues, routed to Real).
+        // The result KIND is a `List` — NEVER the first-arg Tensor — so the
+        // eval'd `Value::List` matches under `value_type_kind_matches` (D7).
+        //
+        // `eigenvalues` → List(Scalar<Q>) (real spectrum).
+        "eigenvalues" => Type::List(Box::new(scalar_or_real(arg_matrix_quantity(args, 0)))),
+        // `complex_eigenvalues` → List(Complex<Q>) (general/complex spectrum).
+        "complex_eigenvalues" => Type::List(Box::new(Type::Complex(Box::new(scalar_or_real(
+            arg_matrix_quantity(args, 0),
+        ))))),
+
         _ => Type::Real,
     }
 }
