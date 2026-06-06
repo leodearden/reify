@@ -8,9 +8,9 @@
 //! - dim(couple(...), range, steps): ≥1 E_MECHANISM_NONDRIVING_JOINT Error emitted,
 //!   confirming the seam covers the sweep/dim emission site as well.
 //!
-//! RED: `detect_nondriving_joint_errors` is not yet wired into `Engine::eval` /
-//! `Engine::eval_cached` (step-10 of the plan); all three tests below fail until
-//! that wiring lands.
+//! All three tests are GREEN: `detect_nondriving_joint_errors` is wired into
+//! both `Engine::eval` and `Engine::eval_cached` (step-10 of the plan), so the
+//! assertions below reflect the now-active contract.
 
 use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};

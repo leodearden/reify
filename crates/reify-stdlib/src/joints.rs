@@ -1366,6 +1366,17 @@ pub(crate) fn is_joint_value(v: &Value) -> bool {
 /// and fixed has zero DOF.  Passing either to `bind`/`dim`/`sweep` is an
 /// error surfaced as `E_MECHANISM_NONDRIVING_JOINT`.
 ///
+/// **Known v0.1 behavior for multi-DOF driving joints
+/// (cylindrical/planar/spherical):** `is_driving_joint` returns `true` for
+/// these kinds, so `bind(planar/cylindrical/spherical, v)` is accepted and
+/// constructs a binding Map without further validation.  `dim`/`sweep` call
+/// `driving_joint_kind`, which returns `None` for multi-DOF joints and falls
+/// through to plain `Value::Undef` — no diagnostic is emitted.  This silent
+/// path is intentional for this task's scope (coupling/fixed only) and is not
+/// a regression; a future task should surface a distinct diagnostic for
+/// unsupported multi-DOF driving joints (tracked as a v0.1 limitation
+/// separate from `E_MECHANISM_NONDRIVING_JOINT`).
+///
 /// Tied to [`JOINT_KINDS`] via slice membership — a future kind addition
 /// only needs to be made in the constant; `is_driving_joint` follows.
 /// The drift-guard unit test `driving_joint_kinds_is_subset_of_joint_kinds_and_complement_is_coupling_and_fixed`
