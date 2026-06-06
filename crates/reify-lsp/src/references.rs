@@ -2329,6 +2329,93 @@ structure S {
         );
     }
 
+    // --- step-3 (task-4346): nested-scope refusal + control ---
+
+    #[test]
+    fn member_access_field_segment_refusal_descends_into_nested_scopes() {
+        // (a) The member access lives inside a guarded `where` block; the colliding
+        // binding is top-level. The flat scan (step-2) does NOT descend into the
+        // where-block member list, so the guard fires only after the walker gains
+        // nested-scope descent (step-4). This part is RED after step-2.
+        let source_nested = "\
+structure S {
+    param diameter: Scalar = 5mm
+    param enabled: Bool = true
+    sub h = Hole(bore: 3mm)
+    where enabled {
+        let x = h.diameter
+    }
+}";
+        let parsed_nested = reify_syntax::parse(source_nested, ModulePath::single("nested"));
+        assert!(
+            parsed_nested.errors.is_empty(),
+            "nested fixture must parse clean: {:?}",
+            parsed_nested.errors
+        );
+
+        // d[0]=`param diameter` decl, d[1]=`.diameter` inside the where-block let.
+        let d = occurrences(source_nested, "diameter");
+        assert_eq!(d.len(), 2, "1 param decl + 1 nested member-access segment");
+
+        let member_pos = offset_to_position(source_nested, d[1] as u32);
+        let uri = Url::parse("file:///nested.ri").unwrap();
+
+        // All four producers must refuse the nested member-access segment.
+        assert!(
+            prepare_rename(source_nested, &parsed_nested, member_pos).is_none(),
+            "(a) prepare_rename must refuse nested .field segment"
+        );
+        assert!(
+            compute_rename(source_nested, &parsed_nested, &uri, member_pos, "renamed").is_none(),
+            "(a) compute_rename must refuse nested .field segment"
+        );
+        assert!(
+            compute_document_highlights(source_nested, &parsed_nested, member_pos).is_none(),
+            "(a) compute_document_highlights must refuse nested .field segment"
+        );
+        assert!(
+            collect_references(source_nested, &parsed_nested, member_pos, true).is_none(),
+            "(a) collect_references must refuse nested .field segment"
+        );
+
+        // Over-refusal guard: the base `h` inside the where-block still resolves.
+        let h_off = source_nested.find("h.diameter").expect("h.diameter present");
+        let h_pos = offset_to_position(source_nested, h_off as u32);
+        assert!(
+            collect_references(source_nested, &parsed_nested, h_pos, false).is_some(),
+            "(a) base `h` inside where-block must still resolve"
+        );
+
+        // (b) Control: no `param diameter` — the guard is still correct (None)
+        // because there is no local binding to mis-resolve to.  This was already
+        // None before the fix; it locks the contrast that None is the right
+        // answer for a member segment regardless of whether a collision exists.
+        let source_no_local = "\
+structure S {
+    sub h = Hole(bore: 3mm)
+    let x = h.diameter
+}";
+        let parsed_no_local = reify_syntax::parse(source_no_local, ModulePath::single("nolocal"));
+        assert!(
+            parsed_no_local.errors.is_empty(),
+            "(b) no-local fixture must parse clean: {:?}",
+            parsed_no_local.errors
+        );
+
+        let seg_off = source_no_local.find("h.diameter").expect("h.diameter present")
+            + "h.".len(); // point at `diameter`
+        let seg_pos = offset_to_position(source_no_local, seg_off as u32);
+
+        assert!(
+            prepare_rename(source_no_local, &parsed_no_local, seg_pos).is_none(),
+            "(b) prepare_rename must return None for .field when no local binding"
+        );
+        assert!(
+            collect_references(source_no_local, &parsed_no_local, seg_pos, true).is_none(),
+            "(b) collect_references must return None for .field when no local binding"
+        );
+    }
+
     // --- step-1 (task-4346): member-access .field segment refuses all four producers ---
 
     #[test]
