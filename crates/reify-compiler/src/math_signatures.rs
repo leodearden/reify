@@ -801,4 +801,80 @@ mod tests {
             sca(DimensionVector::LENGTH)
         );
     }
+
+    // ── Operation result-type: vector ops ────────────────────────────────────
+    // (task 4182 δ, step-5 RED / step-6 GREEN)
+
+    /// `Type::Vector { n, quantity: Scalar<dim> }` shorthand for tests.
+    fn vecq(n: usize, dim: DimensionVector) -> Type {
+        Type::Vector {
+            n,
+            quantity: Box::new(sca(dim)),
+        }
+    }
+
+    /// dot multiplies the operand dimensions: dot(Vec<2,L>, Vec<2,L>) → Scalar<Area>.
+    #[test]
+    fn dot_of_length_vectors_is_area() {
+        let v = typed(vecq(2, DimensionVector::LENGTH));
+        assert_eq!(
+            math_fn_result_type("dot", &[v.clone(), v]),
+            sca(DimensionVector::LENGTH.mul(&DimensionVector::LENGTH))
+        );
+    }
+
+    /// cross multiplies dims and stays a 3-vector: cross(Vec<3,L>, Vec<3,F>) →
+    /// Vector<3, Scalar<L·F>>.
+    #[test]
+    fn cross_of_length_force_is_vector3_torque() {
+        let a = typed(vecq(3, DimensionVector::LENGTH));
+        let b = typed(vecq(3, DimensionVector::FORCE));
+        assert_eq!(
+            math_fn_result_type("cross", &[a, b]),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(sca(DimensionVector::LENGTH.mul(&DimensionVector::FORCE)))
+            }
+        );
+    }
+
+    /// normalize is dimensionless and preserves N: normalize(Vec<4,L>) → Vector<4, Real>.
+    #[test]
+    fn normalize_is_dimensionless_vector_preserving_n() {
+        let v = typed(vecq(4, DimensionVector::LENGTH));
+        assert_eq!(
+            math_fn_result_type("normalize", &[v]),
+            Type::Vector {
+                n: 4,
+                quantity: Box::new(Type::Real)
+            }
+        );
+    }
+
+    /// magnitude collapses a vector to its quantity scalar: magnitude(Vec<3,L>) → Scalar<L>.
+    #[test]
+    fn magnitude_is_quantity_scalar() {
+        let v = typed(vecq(3, DimensionVector::LENGTH));
+        assert_eq!(
+            math_fn_result_type("magnitude", &[v]),
+            sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// outer is a rank-2 Tensor whose quantity is Q1·Q2 and whose n is the
+    /// column count (second-arg N): outer(Vec<2,L>, Vec<3,F>) →
+    /// Tensor{rank:2, n:3, Scalar<L·F>}.
+    #[test]
+    fn outer_is_rank2_tensor_with_product_quantity() {
+        let a = typed(vecq(2, DimensionVector::LENGTH));
+        let b = typed(vecq(3, DimensionVector::FORCE));
+        assert_eq!(
+            math_fn_result_type("outer", &[a, b]),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(sca(DimensionVector::LENGTH.mul(&DimensionVector::FORCE)))
+            }
+        );
+    }
 }
