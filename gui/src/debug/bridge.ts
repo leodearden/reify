@@ -220,6 +220,49 @@ function describeActive(el: HTMLElement) {
 }
 
 function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
+  /**
+   * C2 tree-node driver — shared between expand_tree_node and collapse_tree_node.
+   * Reads the current expanded state from the registered panel accessor,
+   * clicks the real DOM toggle control if the state needs to change (idempotent),
+   * then re-reads the state post-click for the truthful return value.
+   */
+  function driveTreeNode(params: Record<string, unknown>, wantExpanded: boolean): unknown {
+    const path = params.path as string | undefined;
+    if (!path) return { error: 'path is required' };
+
+    const panelParam = params.panel ?? 'design';
+    if (panelParam !== 'design' && panelParam !== 'constraint') {
+      return { error: `unknown panel '${String(panelParam)}'; expected 'design' or 'constraint'` };
+    }
+
+    let accessor: (() => Set<string>) | undefined;
+    let testid: string;
+
+    if (panelParam === 'design') {
+      if (!ctx.designTree) return { error: 'design tree not registered' };
+      accessor = ctx.designTree.expanded;
+      testid = `chevron-${path}`;
+    } else {
+      if (!ctx.constraintPanel) return { error: 'constraint tree not registered' };
+      accessor = ctx.constraintPanel.expandedNodes;
+      testid = `constraint-row-${path}`;
+    }
+
+    const expandedNow = accessor().has(path);
+    if (expandedNow !== wantExpanded) {
+      // CSS.escape is not available in jsdom — use the same fallback as buildSelectorPredicate.
+      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(testid)
+        : testid.replace(/["\\]/g, '\\$&');
+      const el = document.querySelector(`[data-testid="${escaped}"]`);
+      if (!el) return { error: `tree node control not found: ${path}` };
+      (el as HTMLElement).click();
+    }
+
+    // Re-read post-click — reports the real signal truth, not the pre-click assumption.
+    return { ok: true, path, expanded: accessor().has(path) };
+  }
+
   return {
     // --- Read commands (frontend-mediated) ---
 
@@ -908,6 +951,9 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       await getCurrentWindow().setSize(new LogicalSize(width, height));
       return { ok: true, width, height };
     },
+
+    expand_tree_node: (params) => driveTreeNode(params, true),
+    collapse_tree_node: (params) => driveTreeNode(params, false),
 
     wait_for_idle: async (params) => {
       const timeoutMs =
