@@ -638,4 +638,110 @@ mod tests {
             "non-square 2x3 matrix must project to n = column count = 3 (D5)"
         );
     }
+
+    // ── Operation result-type: scalar / element fns ──────────────────────────
+    // (task 4182 δ, step-3 RED / step-4 GREEN)
+
+    /// A value-agnostic typed arg — `math_fn_result_type` reads only
+    /// `result_type`, so the carried `Value` is immaterial (use `Undef`).
+    fn typed(ty: Type) -> CompiledExpr {
+        CompiledExpr::literal(Value::Undef, ty)
+    }
+
+    /// `Type::Scalar { dimension }` shorthand for tests.
+    fn sca(dim: DimensionVector) -> Type {
+        Type::Scalar { dimension: dim }
+    }
+
+    /// sqrt halves the dimension exponents: sqrt(Scalar<Length²>) → Scalar<Length>
+    /// (`LENGTH.pow(2).root(2)`).
+    #[test]
+    fn sqrt_of_area_is_length() {
+        let area = sca(DimensionVector::LENGTH.pow(2)); // == AREA
+        assert_eq!(
+            math_fn_result_type("sqrt", &[typed(area)]),
+            sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// sqrt of a dimensionless arg stays `Type::Real` (NOT Scalar{DIMENSIONLESS})
+    /// so the cell type matches the eval `Value::Real` under `value_type_kind_matches`.
+    #[test]
+    fn sqrt_of_real_is_real() {
+        assert_eq!(math_fn_result_type("sqrt", &[real_elem(4.0)]), Type::Real);
+    }
+
+    /// abs preserves a Scalar's dimension verbatim.
+    #[test]
+    fn abs_of_scalar_preserves_dimension() {
+        assert_eq!(
+            math_fn_result_type("abs", &[length_elem(1.0)]),
+            sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// abs of a `Complex<Inner>` strips the Complex, returning the inner Scalar.
+    #[test]
+    fn abs_of_complex_strips_to_inner_scalar() {
+        let z = typed(Type::Complex(Box::new(sca(DimensionVector::LENGTH))));
+        assert_eq!(
+            math_fn_result_type("abs", &[z]),
+            sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// sign is dimensionless regardless of arg → `Type::Real`.
+    #[test]
+    fn sign_is_real() {
+        assert_eq!(math_fn_result_type("sign", &[length_elem(1.0)]), Type::Real);
+    }
+
+    /// pow is pinned to `Type::Real` (PRD §3 footnote — prevents the
+    /// dimensioned-arg misread).
+    #[test]
+    fn pow_is_real() {
+        assert_eq!(
+            math_fn_result_type("pow", &[length_elem(1.0), real_elem(2.0)]),
+            Type::Real
+        );
+    }
+
+    /// min/max are identity over the first arg's type, PRESERVING its kind:
+    /// min(Scalar<Q>,…) → Scalar<Q>, but max(Real,Real) → Real (not
+    /// Scalar{DIMENSIONLESS} — the D6/D7 kind-drift hazard).
+    #[test]
+    fn min_max_are_kind_preserving_identity() {
+        assert_eq!(
+            math_fn_result_type("min", &[length_elem(1.0), length_elem(2.0)]),
+            sca(DimensionVector::LENGTH)
+        );
+        assert_eq!(
+            math_fn_result_type("max", &[length_elem(1.0), length_elem(2.0)]),
+            sca(DimensionVector::LENGTH)
+        );
+        assert_eq!(
+            math_fn_result_type("max", &[real_elem(1.0), real_elem(2.0)]),
+            Type::Real,
+            "max(Real,Real) must stay Real (kind-preserving identity), not Scalar"
+        );
+    }
+
+    /// clamp/lerp are identity over the first arg's type (kind-preserving).
+    #[test]
+    fn clamp_lerp_are_identity() {
+        assert_eq!(
+            math_fn_result_type(
+                "clamp",
+                &[length_elem(1.0), length_elem(0.0), length_elem(2.0)]
+            ),
+            sca(DimensionVector::LENGTH)
+        );
+        assert_eq!(
+            math_fn_result_type(
+                "lerp",
+                &[length_elem(0.0), length_elem(2.0), real_elem(0.5)]
+            ),
+            sca(DimensionVector::LENGTH)
+        );
+    }
 }
