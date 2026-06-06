@@ -1,0 +1,22 @@
+// String interpolation example — PRD docs/prds/v0_6/string-interpolation.md task ζ.
+//
+// Demonstrates `reify eval` printing interpolated String cells.
+// Exercises the full v0.6 string-interpolation pipeline:
+//   grammar + scanner (task α 3967) →
+//   __interp_render render builtin (task β 3964) →
+//   render-then-concat lowering (task γ 3968) →
+//   cmd_eval display (Value::String Display quotes the result)
+//
+// Plain `structure def` (no `: Rigid`/geometry) keeps eval on the lightweight
+// Engine::new + eval() path — OCCT-independent and deterministic in CI.
+
+structure def Demo {
+    // §1 anchor: engineering-unit rendering.
+    // format_display renders 5mm → "5 mm" (not SI "0.005 m").
+    param t : Length = 5mm
+
+    let label = "thickness is {t}, doubled is {2 * t}"
+
+    // Arithmetic hole: 1+1 → 2.
+    let arith = "x={1+1}"
+}
