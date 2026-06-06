@@ -135,12 +135,21 @@ fn cross<Q1: Dimension, Q2: Dimension>(a: Vector<3,Q1>, b: Vector<3,Q2>) -> Vect
 fn normalize<N: Nat, Q: Dimension>(v: Vector<N,Q>) -> Vector<N, Dimensionless>
 fn magnitude<N: Nat, Q: Dimension>(v: Vector<N,Q>) -> Scalar<Q>
 fn determinant<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Scalar<Q^N>
+                                                  // any N via dense LA (nalgebra); singular → det ≈ 0
 fn inverse<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Matrix<N,N,Q^(-1)>
+                                                  // any N via dense LA (nalgebra); singular → Undef
 fn transpose<M: Nat, N: Nat, Q: Dimension>(m: Matrix<M,N,Q>) -> Matrix<N,M,Q>
 fn outer<N: Nat, M: Nat, Q1: Dimension, Q2: Dimension>(a: Vector<N,Q1>, b: Vector<M,Q2>) -> Matrix<N,M,Q1*Q2>
 fn trace<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Scalar<Q>
 fn eigenvalues<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> List<Scalar<Q>>
+                                                  // real spectrum only; returns Undef when any eigenvalue is non-real (documented, not silent)
+
+// Added in v0.6 (task γ)
+fn complex_eigenvalues<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> List<Complex<Q>>
+                                                  // general complex spectrum, any N (matrix.rs:248-287)
 ```
+
+`determinant` and `inverse` evaluate for any N via dense linear algebra (nalgebra, task β); they are not limited to 2×2 or 3×3. `eigenvalues` returns the real spectrum `List<Scalar<Q>>` for symmetric or near-real matrices; if any eigenvalue has a non-negligible imaginary part the function returns `Undef` (not a silent projection). Use `complex_eigenvalues` (v0.6) for the full complex spectrum.
 
 ### 1.4 `std.math.complex`
 
