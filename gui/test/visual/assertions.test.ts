@@ -210,6 +210,53 @@ describe("VALUE_SCENARIOS", () => {
       expect(matching.length, `${name} should appear exactly once`).toBe(1);
     }
   });
+
+  // task-4304 step-15 RED → step-16 GREEN: F2 LSP probe e2e signal scenarios
+  it("F2 probe scenarios are present, unique, and have correct shape", () => {
+    const probeNames = [
+      "hover_at_markdown_small_cube",
+      "completion_at_nonempty_small_cube",
+      "definition_at_range_small_cube",
+    ];
+    const validFixtureKeys = Object.keys(FIXTURES);
+    for (const name of probeNames) {
+      const matching = VALUE_SCENARIOS.filter((s) => s.name === name);
+      expect(matching.length, `${name} should appear exactly once`).toBe(1);
+      const scenario = matching[0];
+      expect(validFixtureKeys, `${name}: fixture must be a valid FIXTURES key`).toContain(scenario.fixture);
+      expect(typeof scenario.args.line, `${name}: args.line must be a number`).toBe("number");
+      expect(typeof scenario.args.col, `${name}: args.col must be a number`).toBe("number");
+    }
+  });
+
+  it("hover_at_markdown_small_cube has atLeast 1 on markdownLength", () => {
+    const scenario = VALUE_SCENARIOS.find((s) => s.name === "hover_at_markdown_small_cube");
+    expect(scenario).toBeDefined();
+    expect(scenario!.tool).toBe("hover_at");
+    const assertion = scenario!.assertions.find((a) => a.path === "markdownLength");
+    expect(assertion).toBeDefined();
+    expect(assertion!.op).toBe("atLeast");
+    expect(assertion!.expected).toBeGreaterThanOrEqual(1);
+  });
+
+  it("completion_at_nonempty_small_cube has atLeast 1 on itemCount", () => {
+    const scenario = VALUE_SCENARIOS.find((s) => s.name === "completion_at_nonempty_small_cube");
+    expect(scenario).toBeDefined();
+    expect(scenario!.tool).toBe("completion_at");
+    const assertion = scenario!.assertions.find((a) => a.path === "itemCount");
+    expect(assertion).toBeDefined();
+    expect(assertion!.op).toBe("atLeast");
+    expect(assertion!.expected).toBeGreaterThanOrEqual(1);
+  });
+
+  it("definition_at_range_small_cube has exists on range.start.line", () => {
+    const scenario = VALUE_SCENARIOS.find((s) => s.name === "definition_at_range_small_cube");
+    expect(scenario).toBeDefined();
+    expect(scenario!.tool).toBe("definition_at");
+    const assertion = scenario!.assertions.find((a) => a.path === "range.start.line");
+    expect(assertion).toBeDefined();
+    expect(assertion!.op).toBe("exists");
+  });
 });
 
 describe("runValueScenario", () => {
