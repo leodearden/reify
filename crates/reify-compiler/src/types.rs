@@ -409,6 +409,15 @@ pub struct CompiledModule {
     /// the verbatim intent. Only malformed shapes (zero args, key=value-first,
     /// non-Ident bare values) leave the field as None.
     pub kernel_pragma: Option<String>,
+    /// Module-scope `#deterministic` flag (PRD task #18). `true` when a
+    /// well-formed `#deterministic` module-level pragma is present, else `false`.
+    ///
+    /// Populated by `module_pragmas::apply_module_pragmas` (first-wins; duplicate
+    /// pragmas emit a "subsequent #deterministic pragma ignored" warning). v0.3
+    /// records the flag at module scope only; the runtime determinism channel
+    /// that actually reaches the solver is the per-call `ElasticOptions.deterministic`
+    /// struct field, not this flag (block-/call-site pragma scoping is deferred).
+    pub deterministic: bool,
     /// Resolved `auto:` type-parameter substitutions for this module.
     ///
     /// See [`AutoTypeSubstitution`] for the uniqueness invariant, panic semantics,

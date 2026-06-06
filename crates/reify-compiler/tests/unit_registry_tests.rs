@@ -1987,6 +1987,7 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
         declared_version: None,
         solver_pragma: None,
         kernel_pragma: None,
+        deterministic: false,
         auto_type_substitution: AutoTypeSubstitution::default(),
         diagnostics: vec![],
         content_hash: ContentHash::of_str(""),
