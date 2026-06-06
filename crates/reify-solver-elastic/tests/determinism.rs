@@ -63,3 +63,58 @@ use reify_solver_elastic::{
     solve_cg, CgSolverOptions, CgResult, SolverMode,
     resolve_execution_modes, PARALLEL_DOF_THRESHOLD,
 };
+
+// ─── step-1 RED ──────────────────────────────────────────────────────────────
+
+/// Byte-identical displacement across repeated runs and thread counts in
+/// deterministic mode.
+///
+/// `resolve_execution_modes(true, t, ndof)` → `(Deterministic, Deterministic)`
+/// for ALL t, so threads ∈ {1, 4, 16} simultaneously exercises "repeated runs"
+/// and "across thread counts". Bit-identical u implies an identical FP-op
+/// sequence — the exactness guarantee of the pairwise-tree Deterministic path.
+///
+/// Note: `solve_box_cantilever` and `box_cantilever_fixture` are not yet
+/// defined — this test fails to compile (RED).
+#[test]
+fn deterministic_displacement_bit_stable_across_repeats_and_thread_counts() {
+    // Verify the fixture builder is callable (missing → compile error).
+    let _fixture = box_cantilever_fixture();
+
+    let out1 = solve_box_cantilever(true, 1);
+    let out4 = solve_box_cantilever(true, 4);
+    let out16 = solve_box_cantilever(true, 16);
+
+    // All runs must converge.
+    assert!(out1.converged, "deterministic t=1 did not converge (iter={})", out1.iterations);
+    assert!(out4.converged, "deterministic t=4 did not converge (iter={})", out4.iterations);
+    assert!(out16.converged, "deterministic t=16 did not converge (iter={})", out16.iterations);
+
+    // Iteration counts must be equal (same FP sequence → same convergence step).
+    assert_eq!(
+        out1.iterations, out4.iterations,
+        "deterministic iteration count differs between t=1 ({}) and t=4 ({})",
+        out1.iterations, out4.iterations,
+    );
+    assert_eq!(
+        out1.iterations, out16.iterations,
+        "deterministic iteration count differs between t=1 ({}) and t=16 ({})",
+        out1.iterations, out16.iterations,
+    );
+
+    // Displacement vector must be byte-identical (f64::to_bits slot-wise).
+    assert_eq!(out1.u.len(), out4.u.len(), "u length differs between t=1 and t=4");
+    assert_eq!(out1.u.len(), out16.u.len(), "u length differs between t=1 and t=16");
+    for i in 0..out1.u.len() {
+        assert_eq!(
+            out1.u[i].to_bits(), out4.u[i].to_bits(),
+            "u[{i}] differs between t=1 ({}) and t=4 ({})",
+            out1.u[i], out4.u[i],
+        );
+        assert_eq!(
+            out1.u[i].to_bits(), out16.u[i].to_bits(),
+            "u[{i}] differs between t=1 ({}) and t=16 ({})",
+            out1.u[i], out16.u[i],
+        );
+    }
+}
