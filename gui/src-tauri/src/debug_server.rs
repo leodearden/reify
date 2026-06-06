@@ -552,6 +552,52 @@ fn tool_defs() -> Vec<ToolDef> {
                 "required": ["path"]
             }),
         },
+        // --- F2 LSP probe tools (task-4304) — frontend-mediated ---
+        ToolDef {
+            name: "hover_at",
+            description: "Request LSP hover information at a given 0-based (line, col) position in the active editor file. \
+                          Drives the in-process LSP via the editor's lspClient and returns the structured result: \
+                          { markdown, markdownLength, contents, range }. \
+                          Returns { error } when no file is active or line/col are invalid.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "line": { "type": "integer", "description": "0-based line number." },
+                    "col":  { "type": "integer", "description": "0-based column (character offset)." }
+                },
+                "required": ["line", "col"]
+            }),
+        },
+        ToolDef {
+            name: "completion_at",
+            description: "Request LSP completion items at a given 0-based (line, col) position in the active editor file. \
+                          Drives the in-process LSP via the editor's lspClient and returns the structured result: \
+                          { items, itemCount }. \
+                          Returns { error } when no file is active or line/col are invalid.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "line": { "type": "integer", "description": "0-based line number." },
+                    "col":  { "type": "integer", "description": "0-based column (character offset)." }
+                },
+                "required": ["line", "col"]
+            }),
+        },
+        ToolDef {
+            name: "definition_at",
+            description: "Request LSP go-to-definition at a given 0-based (line, col) position in the active editor file. \
+                          Drives the in-process LSP via the editor's lspClient and returns the structured result: \
+                          { uri, range, found }. found=false when the LSP returns no location. \
+                          Returns { error } when no file is active or line/col are invalid.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "line": { "type": "integer", "description": "0-based line number." },
+                    "col":  { "type": "integer", "description": "0-based column (character offset)." }
+                },
+                "required": ["line", "col"]
+            }),
+        },
     ]
 }
 
