@@ -667,6 +667,33 @@ fn expect_real_or_int_panics_on_non_numeric() {
     expect_real_or_int(&val, "test_label");
 }
 
+// ── step-1: linalg_4x4_determinant ───────────────────────────────────────────
+
+/// Asserts LinalgDemo.det4 ≈ 209.0 (Value::Real).
+/// m4 = tridiagonal SPD [[4,1,0,0],[1,4,1,0],[0,1,4,1],[0,0,1,4]];
+/// det(m4) = 209 by recurrence D_n = 4·D_{n-1} − D_{n-2}, D_0=1,D_1=4.
+#[test]
+fn linalg_4x4_determinant() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let det_id = ValueCellId::new("LinalgDemo", "det4");
+    let det_val = result
+        .values
+        .get(&det_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.det4 not found in eval result"));
+
+    match det_val {
+        Value::Real(v) => {
+            assert!(
+                (v - 209.0).abs() < 1e-9,
+                "LinalgDemo.det4 should be ≈209.0 (tridiagonal 4×4 det), got {}",
+                v
+            );
+        }
+        other => panic!("LinalgDemo.det4 should be Value::Real, got {:?}", other),
+    }
+}
+
 // NOTE: each test independently calls eval_ri_file, re-parsing and re-compiling
 // the same .ri fixture. This matches the established m8_3 pattern; future
 // iterations may share results across same-fixture tests via
