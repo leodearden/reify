@@ -1092,4 +1092,81 @@ mod tests {
             sca(DimensionVector::LENGTH)
         );
     }
+
+    // ── Operation result-type: spectral ops ──────────────────────────────────
+    // (task 4182 δ, step-9 RED / step-10 GREEN)
+
+    /// A `Type::Tensor { rank: 2, n, quantity: Real }` shorthand — a
+    /// dimensionless N×N matrix.
+    fn ten_real(n: usize) -> Type {
+        Type::Tensor {
+            rank: 2,
+            n,
+            quantity: Box::new(Type::Real),
+        }
+    }
+
+    /// eigenvalues returns a List of the matrix quantity scalar:
+    /// eigenvalues(Tensor<2,N,Length>) → List(Scalar<Length>).
+    #[test]
+    fn eigenvalues_of_length_matrix_is_list_of_scalar() {
+        let m = typed(tenq(3, DimensionVector::LENGTH));
+        assert_eq!(
+            math_fn_result_type("eigenvalues", &[m]),
+            Type::List(Box::new(sca(DimensionVector::LENGTH)))
+        );
+    }
+
+    /// eigenvalues of a dimensionless matrix → List(Real) (NOT
+    /// List(Scalar{DIMENSIONLESS})), so the eval'd Value::List<Real> matches
+    /// under value_type_kind_matches.
+    #[test]
+    fn eigenvalues_of_dimensionless_matrix_is_list_of_real() {
+        assert_eq!(
+            math_fn_result_type("eigenvalues", &[typed(ten_real(3))]),
+            Type::List(Box::new(Type::Real))
+        );
+    }
+
+    /// complex_eigenvalues returns a List of Complex<quantity>:
+    /// complex_eigenvalues(Tensor<2,N,Length>) → List(Complex(Scalar<Length>)).
+    #[test]
+    fn complex_eigenvalues_of_length_matrix_is_list_of_complex_scalar() {
+        let m = typed(tenq(3, DimensionVector::LENGTH));
+        assert_eq!(
+            math_fn_result_type("complex_eigenvalues", &[m]),
+            Type::List(Box::new(Type::Complex(Box::new(sca(DimensionVector::LENGTH)))))
+        );
+    }
+
+    /// complex_eigenvalues of a dimensionless matrix → List(Complex(Real)).
+    #[test]
+    fn complex_eigenvalues_of_dimensionless_matrix_is_list_of_complex_real() {
+        assert_eq!(
+            math_fn_result_type("complex_eigenvalues", &[typed(ten_real(3))]),
+            Type::List(Box::new(Type::Complex(Box::new(Type::Real))))
+        );
+    }
+
+    /// The result KIND is `Type::List`, never the first-arg Tensor — so the
+    /// eval'd `Value::List` passes `value_type_kind_matches` (the D7-style kind
+    /// guard).
+    #[test]
+    fn spectral_results_are_list_kind_not_tensor() {
+        let m = typed(tenq(4, DimensionVector::LENGTH));
+        assert!(
+            matches!(
+                math_fn_result_type("eigenvalues", &[m.clone()]),
+                Type::List(_)
+            ),
+            "eigenvalues must be a Type::List, not the first-arg Tensor"
+        );
+        assert!(
+            matches!(
+                math_fn_result_type("complex_eigenvalues", &[m]),
+                Type::List(_)
+            ),
+            "complex_eigenvalues must be a Type::List, not the first-arg Tensor"
+        );
+    }
 }
