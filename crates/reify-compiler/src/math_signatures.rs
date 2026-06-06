@@ -258,6 +258,23 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
             arg_matrix_quantity(args, 0),
         ))))),
 
+        // Complex fns.
+        // `complex(re, im)` wraps the operand type in Complex (Complex<Real> for
+        // Real operands — arg0's type is cloned verbatim, preserving the
+        // Real-vs-Scalar kind).
+        "complex" => Type::Complex(Box::new(
+            first.map(|a| a.result_type.clone()).unwrap_or(Type::Real),
+        )),
+        // `real` / `imag` / `complex_magnitude` collapse a Complex to its inner
+        // quantity scalar (degrade to a scalar carrying the arg's dimension when
+        // the arg is not a Complex).
+        "real" | "imag" | "complex_magnitude" => complex_inner_or_scalar(first),
+        // `conjugate` is identity over the operand type (conj of a Complex is a
+        // Complex; conj of a real is itself) — clone verbatim, preserving kind.
+        "conjugate" => first.map(|a| a.result_type.clone()).unwrap_or(Type::Real),
+        // `phase` / `arg` return an Angle (Scalar{ANGLE}) regardless of operand.
+        "phase" | "arg" => Type::angle(),
+
         _ => Type::Real,
     }
 }
@@ -327,6 +344,19 @@ fn arg_matrix_quantity(args: &[CompiledExpr], i: usize) -> DimensionVector {
 /// wrapping on the `as i8` cast (the determinant `Q^N` arm).
 fn clamp_i8(n: usize) -> i8 {
     n.min(i8::MAX as usize) as i8
+}
+
+/// The inner quantity type of a `Complex<Inner>` operand (clone `Inner`); for a
+/// non-Complex arg, degrade to a scalar carrying the arg's dimension
+/// (`Scalar<Q>`, or `Real` if dimensionless). Used by `real` / `imag` /
+/// `complex_magnitude`, which all collapse a complex to its real-valued
+/// quantity scalar.
+fn complex_inner_or_scalar(arg: Option<&CompiledExpr>) -> Type {
+    match arg.map(|a| &a.result_type) {
+        Some(Type::Complex(inner)) => (**inner).clone(),
+        Some(t) => scalar_or_real(arg_dimension(t)),
+        None => Type::Real,
+    }
 }
 
 /// The dimension of an arg's `result_type` for the math return-type algebra:
