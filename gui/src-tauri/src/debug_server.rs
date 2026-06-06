@@ -1796,4 +1796,84 @@ mod tests {
         assert_eq!(debug_endpoint_url(3939), "http://127.0.0.1:3939/mcp");
         assert_eq!(debug_endpoint_url(51000), "http://127.0.0.1:51000/mcp");
     }
+
+    // task-4302 step-7 RED → step-8 GREEN: C2 layout-control tools must be
+    // registered in tool_defs() with correct schema shapes.
+    #[test]
+    fn tool_defs_registers_layout_control_tools() {
+        let defs = tool_defs();
+
+        // --- resize_panes ---
+        let rp = defs
+            .iter()
+            .find(|t| t.name == "resize_panes")
+            .expect("resize_panes must be present in tool_defs()");
+        assert_eq!(rp.input_schema["type"].as_str(), Some("object"),
+            "resize_panes: input_schema.type must be 'object'");
+        assert!(!rp.description.is_empty(), "resize_panes: description must be non-empty");
+        // All 5 pane properties must be present and typed as number
+        for dim in &["editorWidth", "sideWidth", "designTreeHeight", "propertyHeight", "constraintHeight"] {
+            assert_eq!(
+                rp.input_schema["properties"][dim]["type"].as_str(),
+                Some("number"),
+                "resize_panes: properties.{dim} must be 'number'",
+            );
+        }
+        // None of the pane properties should be required (all optional)
+        if let Some(required) = rp.input_schema["required"].as_array() {
+            let pane_dims = ["editorWidth", "sideWidth", "designTreeHeight", "propertyHeight", "constraintHeight"];
+            for dim in pane_dims {
+                assert!(
+                    !required.iter().any(|v| v.as_str() == Some(dim)),
+                    "resize_panes: '{dim}' must NOT be listed in required (all pane dims are optional)"
+                );
+            }
+        }
+
+        // --- set_window_size ---
+        let sws = defs
+            .iter()
+            .find(|t| t.name == "set_window_size")
+            .expect("set_window_size must be present in tool_defs()");
+        assert_eq!(sws.input_schema["type"].as_str(), Some("object"),
+            "set_window_size: input_schema.type must be 'object'");
+        assert!(!sws.description.is_empty(), "set_window_size: description must be non-empty");
+        assert_eq!(sws.input_schema["properties"]["width"]["type"].as_str(), Some("number"),
+            "set_window_size: properties.width.type must be 'number'");
+        assert_eq!(sws.input_schema["properties"]["height"]["type"].as_str(), Some("number"),
+            "set_window_size: properties.height.type must be 'number'");
+        let sws_required = sws.input_schema["required"]
+            .as_array()
+            .expect("set_window_size: required must be an array");
+        assert!(sws_required.iter().any(|v| v.as_str() == Some("width")),
+            "set_window_size: 'width' must be in required");
+        assert!(sws_required.iter().any(|v| v.as_str() == Some("height")),
+            "set_window_size: 'height' must be in required");
+
+        // --- expand_tree_node and collapse_tree_node ---
+        for tool_name in &["expand_tree_node", "collapse_tree_node"] {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == *tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(schema["type"].as_str(), Some("object"),
+                "{tool_name}: input_schema.type must be 'object'");
+            assert!(!entry.description.is_empty(),
+                "{tool_name}: description must be non-empty");
+            // path is required
+            assert_eq!(schema["properties"]["path"]["type"].as_str(), Some("string"),
+                "{tool_name}: properties.path.type must be 'string'");
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(required.iter().any(|v| v.as_str() == Some("path")),
+                "{tool_name}: 'path' must be listed in required");
+            // panel is optional
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("panel")),
+                "{tool_name}: 'panel' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
 }
