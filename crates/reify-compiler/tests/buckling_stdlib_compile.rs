@@ -22,6 +22,7 @@
 use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_test_support::collect_value_ref_members;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -92,21 +93,6 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
     cell.default_expr
         .as_ref()
         .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member))
-}
-
-/// Recursively collect ValueRef member names from a compiled expression tree.
-/// Mirrors `collect_value_ref_members` in `solver_elastic_tests.rs:496-507`.
-fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
-    match &expr.kind {
-        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
-        CompiledExprKind::BinOp { left, right, .. } => {
-            let mut refs = collect_value_ref_members(left);
-            refs.extend(collect_value_ref_members(right));
-            refs
-        }
-        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
-        _ => vec![],
-    }
 }
 
 // ─── step-1: module loads with zero error diagnostics ────────────────────────
@@ -381,7 +367,7 @@ fn buckling_options_constrains_positivity_invariants() {
             // future-proofing rationale).
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt || !collect_value_ref_members(left).contains(required) {
+                    if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
                         return false;
                     }
                     match &right.kind {
@@ -606,7 +592,7 @@ fn buckling_result_constrains_iterations_nonneg() {
         // negative value but the name + op check still passes.
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Ge || !collect_value_ref_members(left).contains(&"iterations") {
+                if *op != BinOp::Ge || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "iterations") {
                     return false;
                 }
                 match &right.kind {

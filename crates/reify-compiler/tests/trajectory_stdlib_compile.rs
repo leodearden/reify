@@ -22,6 +22,7 @@
 use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_test_support::collect_value_ref_members;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -904,21 +905,6 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
         .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member))
 }
 
-/// Recursively collect ValueRef member names from a compiled expression tree.
-/// Mirrors `collect_value_ref_members` in `modal_options_validation_tests.rs:111-122`.
-fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
-    match &expr.kind {
-        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
-        CompiledExprKind::BinOp { left, right, .. } => {
-            let mut refs = collect_value_ref_members(left);
-            refs.extend(collect_value_ref_members(right));
-            refs
-        }
-        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
-        _ => vec![],
-    }
-}
-
 // ─── step-27: profile_duration fn signature ───────────────────────────────────
 
 /// `profile_duration` is the duration accessor — it returns the profile's
@@ -1167,7 +1153,7 @@ fn joint_limit_constrains_max_force_positive() {
     // LHS must reference `max_force`.
     let lhs_refs = collect_value_ref_members(left);
     assert!(
-        lhs_refs.contains(&"max_force"),
+        lhs_refs.iter().any(|m| m.as_str() == "max_force"),
         "JointLimit constraint LHS should reference `max_force`; \
          got refs: {:?}",
         lhs_refs
@@ -1418,7 +1404,7 @@ fn tots_shaper_constrains_design_param_invariants() {
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
                     if *op != BinOp::Gt
-                        || !collect_value_ref_members(left).contains(required)
+                        || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required)
                     {
                         return false;
                     }
@@ -1450,7 +1436,7 @@ fn tots_shaper_constrains_design_param_invariants() {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
                 if *op != BinOp::Le
-                    || !collect_value_ref_members(left).contains(&"vibration_tolerance")
+                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "vibration_tolerance")
                 {
                     return false;
                 }
@@ -1599,7 +1585,7 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
     let matched = match &constraint.expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             if *op != BinOp::Gt
-                || !collect_value_ref_members(left).contains(&"target_frequency")
+                || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "target_frequency")
             {
                 false
             } else {
@@ -1733,7 +1719,7 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
     let matched = match &constraint.expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             if *op != BinOp::Gt
-                || !collect_value_ref_members(left).contains(&"target_frequency")
+                || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "target_frequency")
             {
                 false
             } else {
@@ -1869,7 +1855,7 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
                 if *op != BinOp::Gt
-                    || !collect_value_ref_members(left).contains(&"target_frequency")
+                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "target_frequency")
                 {
                     return false;
                 }
@@ -1898,7 +1884,7 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
                 if *op != BinOp::Gt
-                    || !collect_value_ref_members(left).contains(&"vibration_tolerance")
+                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "vibration_tolerance")
                 {
                     return false;
                 }
@@ -1927,7 +1913,7 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
                 if *op != BinOp::Le
-                    || !collect_value_ref_members(left).contains(&"vibration_tolerance")
+                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "vibration_tolerance")
                 {
                     return false;
                 }
