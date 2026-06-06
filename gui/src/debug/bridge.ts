@@ -751,6 +751,18 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { ok: true, target: { tagName: el.tagName.toLowerCase(), testId: el.getAttribute('data-testid') } };
     },
 
+    hover: (params) => {
+      if (!validXY(params)) return { error: 'x and y must be finite numbers' };
+      const { x, y } = params as { x: number; y: number };
+      const el = document.elementFromPoint(x, y);
+      if (!el) return { error: `no element at point (${x}, ${y})` };
+      // Dispatch synthetic move events: pointermove then mousemove.
+      // Contract §4: fires JS move handlers; CSS :hover pseudo-class NOT applied.
+      dispatchPointer(el, 'pointermove', x, y);
+      dispatchPointer(el, 'mousemove', x, y);
+      return { ok: true, target: { tagName: el.tagName.toLowerCase(), testId: el.getAttribute('data-testid') } };
+    },
+
     select_entity: (params) => {
       const entityPath = (params.entityPath as string) ?? null;
       ctx.stores.selection.selectEntity(entityPath);
