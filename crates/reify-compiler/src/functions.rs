@@ -13,7 +13,13 @@ pub(crate) fn compile_function(
     prelude_template_registry: Option<&HashMap<String, &TopologyTemplate>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
-    let empty_params = HashSet::new();
+    // Build the set of declared type-parameter names so `resolve_type_expr_with_aliases`
+    // can map a bare `T` → `Type::TypeParam("T")`. Mirror of entity.rs:560-563.
+    let type_param_names: HashSet<String> = fn_def
+        .type_params
+        .iter()
+        .map(|tp| tp.name.clone())
+        .collect();
     // Resolve parameter types.
     //
     // `param_type_resolved[i]` is `true` when the i-th param's declared type resolved
@@ -26,7 +32,7 @@ pub(crate) fn compile_function(
     for p in &fn_def.params {
         let (ty, resolved) = match resolve_type_expr_with_aliases(
             &p.type_expr,
-            &empty_params,
+            &type_param_names,
             alias_registry,
             diagnostics,
             structure_names,
@@ -123,7 +129,7 @@ pub(crate) fn compile_function(
         Some(te) => {
             match resolve_type_expr_with_aliases(
                 te,
-                &empty_params,
+                &type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -275,7 +281,13 @@ pub(crate) fn compile_assoc_function(
     trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
-    let empty_params = HashSet::new();
+    // Mirror of compile_function: build the type-param name set for signature resolution.
+    // No-op for today's non-generic assoc fns (empty fn_def.type_params → empty set).
+    let type_param_names: HashSet<String> = fn_def
+        .type_params
+        .iter()
+        .map(|tp| tp.name.clone())
+        .collect();
     let receiver_type = Type::StructureRef(conformer_name.to_string());
 
     // Resolve parameter types. The leading `is_self` receiver maps to the
@@ -289,7 +301,7 @@ pub(crate) fn compile_assoc_function(
         }
         let ty = match resolve_type_expr_with_aliases(
             &p.type_expr,
-            &empty_params,
+            &type_param_names,
             alias_registry,
             diagnostics,
             structure_names,
@@ -325,7 +337,7 @@ pub(crate) fn compile_assoc_function(
     let return_type = match &fn_def.return_type {
         Some(te) => match resolve_type_expr_with_aliases(
             te,
-            &empty_params,
+            &type_param_names,
             alias_registry,
             diagnostics,
             structure_names,

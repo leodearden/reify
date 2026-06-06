@@ -127,3 +127,70 @@ fn bare_type_param_resolves_in_param_and_return() {
         "return type should resolve to Type::TypeParam(\"T\")"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Step-5 / Step-6: type-param names resolve inside parameterised builtin types
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Type-param names resolve correctly when used as type arguments to parameterised
+/// builtins (`Field<D, C>`, `List<T>`).
+///
+/// RED until step-6: `resolve_parameterized_builtin_type` uses its own internal
+/// `empty_type_params` for all inner `resolve_type_expr_with_aliases` calls, so D/C/T
+/// remain unresolved → the outer Field/List returns None → "unresolved type" Error +
+/// `Type::Real` fallback.
+#[test]
+fn type_param_resolves_inside_parameterized_builtin() {
+    let source = r#"
+        fn constant_field<D, C>(value: C) -> Field<D, C> { value }
+        fn single<T>(x: T) -> List<T> { x }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
+
+    let cf = module
+        .functions
+        .iter()
+        .find(|f| f.name == "constant_field")
+        .expect("function 'constant_field' should be compiled");
+
+    // param: C
+    assert_eq!(
+        cf.params[0].1,
+        Type::TypeParam("C".to_string()),
+        "constant_field param 'value' should resolve to Type::TypeParam(\"C\")"
+    );
+
+    // return type: Field<D, C>
+    assert_eq!(
+        cf.return_type,
+        Type::Field {
+            domain: Box::new(Type::TypeParam("D".to_string())),
+            codomain: Box::new(Type::TypeParam("C".to_string())),
+        },
+        "constant_field return type should be Field<TypeParam(D), TypeParam(C)>"
+    );
+
+    let single = module
+        .functions
+        .iter()
+        .find(|f| f.name == "single")
+        .expect("function 'single' should be compiled");
+
+    // return type: List<T>
+    assert_eq!(
+        single.return_type,
+        Type::List(Box::new(Type::TypeParam("T".to_string()))),
+        "single return type should be List<TypeParam(T)>"
+    );
+}
