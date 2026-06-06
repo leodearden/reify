@@ -2046,14 +2046,12 @@ mod tests {
     }
 
     /// Pins that `export(handle, Stl, buf)` on a stored `unit_cube_mesh`
-    /// writes a valid binary STL: 84+50*count bytes, count > 0.
+    /// writes a valid binary STL: the output is `84 + 50*count` bytes with
+    /// `count > 0`.
     ///
     /// Manifold meshes carry `normals: None`, so this also exercises the
-    /// geometric-facet-normal path inside `write_stl_binary`.
-    ///
-    /// RED: currently fails because `ManifoldKernel::export` returns
-    /// `Err(FormatError(STUB_MSG))` unconditionally. Step
-    /// `impl-manifold-export-stl` wires the Stl arm.
+    /// geometric-facet-normal path inside `write_stl_binary` (normals are
+    /// computed from edge cross-products, not from the `Mesh::normals` field).
     #[cfg(feature = "test-fixtures")]
     #[test]
     fn export_stl_of_unit_cube_writes_valid_binary() {

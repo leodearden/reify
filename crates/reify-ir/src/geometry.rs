@@ -1578,6 +1578,29 @@ fn mesh_vertex(vertices: &[f32], idx: u32) -> Option<[f32; 3]> {
     Some([vertices[base], vertices[base + 1], vertices[base + 2]])
 }
 
+/// Fetch the three vertex positions for a triangle index chunk.
+///
+/// Returns `(v0, v1, v2)` as `[f32; 3]` positions, or `Err(InvalidData)`
+/// if any index is out of bounds.  Shared by `write_stl_binary` and
+/// `write_stl_ascii` to avoid duplicating the vertex-lookup and error
+/// construction in each serializer.
+fn triangle_verts(
+    vertices: &[f32],
+    chunk: &[u32],
+) -> std::io::Result<([f32; 3], [f32; 3], [f32; 3])> {
+    use std::io::{Error, ErrorKind};
+    let i0 = chunk[0];
+    let i1 = chunk[1];
+    let i2 = chunk[2];
+    let v0 = mesh_vertex(vertices, i0)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i0} out of bounds")))?;
+    let v1 = mesh_vertex(vertices, i1)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i1} out of bounds")))?;
+    let v2 = mesh_vertex(vertices, i2)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i2} out of bounds")))?;
+    Ok((v0, v1, v2))
+}
+
 /// Write a mesh to the STL binary format.
 ///
 /// **Format** (LITTLE-ENDIAN):
@@ -1589,13 +1612,31 @@ fn mesh_vertex(vertices: &[f32], idx: u32) -> Option<[f32; 3]> {
 /// `mesh.normals` is intentionally ignored: it is per-vertex and optional;
 /// ManifoldKernel meshes always carry `None`.
 ///
-/// Returns `Err(io::Error(InvalidData))` if any triangle index is out of bounds.
+/// Returns `Err(io::Error(InvalidData))` if `indices.len()` is not a multiple
+/// of 3 (non-triangular index buffer) or if any triangle index is out of bounds.
 /// Returns an 84-byte (zero-triangle) file for an empty mesh — no panic.
+///
+/// **Buffering:** each triangle is packed into a single 50-byte stack buffer
+/// and emitted with one `write_all`.  For very large meshes over an unbuffered
+/// sink, wrapping the writer in `BufWriter` before calling this function is
+/// recommended.
 pub fn write_stl_binary(
     mesh: &Mesh,
     writer: &mut dyn std::io::Write,
 ) -> std::io::Result<()> {
     use std::io::{Error, ErrorKind};
+
+    // Reject malformed meshes with a non-triangular index buffer up front
+    // rather than silently dropping trailing indices via chunks_exact.
+    if mesh.indices.len() % 3 != 0 {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "index buffer length {} is not a multiple of 3",
+                mesh.indices.len()
+            ),
+        ));
+    }
 
     // 80-byte header — deliberately does NOT start with "solid" to avoid
     // misclassification by naive ascii/binary discriminators.
@@ -1609,39 +1650,21 @@ pub fn write_stl_binary(
     let tri_count = (mesh.indices.len() / 3) as u32;
     writer.write_all(&tri_count.to_le_bytes())?;
 
-    // Per-triangle body
+    // Per-triangle body: pack all 50 bytes into a stack buffer and write_all
+    // once per triangle, avoiding one tiny syscall per field for unbuffered sinks.
     for chunk in mesh.indices.chunks_exact(3) {
-        let i0 = chunk[0];
-        let i1 = chunk[1];
-        let i2 = chunk[2];
-
-        let v0 = mesh_vertex(&mesh.vertices, i0)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i0} out of bounds")))?;
-        let v1 = mesh_vertex(&mesh.vertices, i1)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i1} out of bounds")))?;
-        let v2 = mesh_vertex(&mesh.vertices, i2)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i2} out of bounds")))?;
-
+        let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
         let n = compute_facet_normal(v0, v1, v2);
 
-        // Facet normal (3 × f32 LE)
-        for &c in &n {
-            writer.write_all(&c.to_le_bytes())?;
+        // Pack: 3×f32 normal + 3×(3×f32) vertices = 48 bytes, then 2-byte attr count.
+        let mut tri = [0u8; 50];
+        let mut off = 0usize;
+        for &c in n.iter().chain(v0.iter()).chain(v1.iter()).chain(v2.iter()) {
+            tri[off..off + 4].copy_from_slice(&c.to_le_bytes());
+            off += 4;
         }
-        // Vertex 0 (3 × f32 LE)
-        for &c in &v0 {
-            writer.write_all(&c.to_le_bytes())?;
-        }
-        // Vertex 1 (3 × f32 LE)
-        for &c in &v1 {
-            writer.write_all(&c.to_le_bytes())?;
-        }
-        // Vertex 2 (3 × f32 LE)
-        for &c in &v2 {
-            writer.write_all(&c.to_le_bytes())?;
-        }
-        // Attribute byte count = 0
-        writer.write_all(&0u16.to_le_bytes())?;
+        // tri[48..50] = attribute byte count 0 (already zero-initialized)
+        writer.write_all(&tri)?;
     }
 
     Ok(())
@@ -1653,39 +1676,49 @@ pub fn write_stl_binary(
 /// `facet normal …` / `outer loop` / 3× `vertex …` / `endloop` / `endfacet`
 /// block.  Facet normals are computed geometrically (same as `write_stl_binary`).
 ///
-/// Returns `Err(io::Error(InvalidData))` if any triangle index is out of bounds.
+/// Returns `Err(io::Error(InvalidData))` if `indices.len()` is not a multiple
+/// of 3 (non-triangular index buffer) or if any triangle index is out of bounds.
+///
+/// **Buffering:** a String buffer is reused across triangles (no per-triangle
+/// heap allocation) and each triangle's block is emitted with a single
+/// `write_all`.  For very large meshes over an unbuffered sink, wrapping the
+/// writer in `BufWriter` before calling is recommended.
 pub fn write_stl_ascii(
     mesh: &Mesh,
     writer: &mut dyn std::io::Write,
 ) -> std::io::Result<()> {
     use std::io::{Error, ErrorKind};
+    use std::fmt::Write as _;
+
+    // Reject malformed meshes with a non-triangular index buffer up front.
+    if mesh.indices.len() % 3 != 0 {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "index buffer length {} is not a multiple of 3",
+                mesh.indices.len()
+            ),
+        ));
+    }
 
     writer.write_all(b"solid reify\n")?;
 
+    // Reuse a String buffer to avoid a heap allocation per triangle.
+    // String::write_fmt (used by write!) is infallible — it always returns Ok(()).
+    let mut line_buf = String::with_capacity(200);
     for chunk in mesh.indices.chunks_exact(3) {
-        let i0 = chunk[0];
-        let i1 = chunk[1];
-        let i2 = chunk[2];
-
-        let v0 = mesh_vertex(&mesh.vertices, i0)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i0} out of bounds")))?;
-        let v1 = mesh_vertex(&mesh.vertices, i1)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i1} out of bounds")))?;
-        let v2 = mesh_vertex(&mesh.vertices, i2)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i2} out of bounds")))?;
-
+        let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
         let n = compute_facet_normal(v0, v1, v2);
-
-        writer.write_all(
-            format!(
-                "  facet normal {nx} {ny} {nz}\n    outer loop\n      vertex {x0} {y0} {z0}\n      vertex {x1} {y1} {z1}\n      vertex {x2} {y2} {z2}\n    endloop\n  endfacet\n",
-                nx = n[0], ny = n[1], nz = n[2],
-                x0 = v0[0], y0 = v0[1], z0 = v0[2],
-                x1 = v1[0], y1 = v1[1], z1 = v1[2],
-                x2 = v2[0], y2 = v2[1], z2 = v2[2],
-            )
-            .as_bytes(),
-        )?;
+        line_buf.clear();
+        let _ = write!(
+            line_buf,
+            "  facet normal {nx} {ny} {nz}\n    outer loop\n      vertex {x0} {y0} {z0}\n      vertex {x1} {y1} {z1}\n      vertex {x2} {y2} {z2}\n    endloop\n  endfacet\n",
+            nx = n[0], ny = n[1], nz = n[2],
+            x0 = v0[0], y0 = v0[1], z0 = v0[2],
+            x1 = v1[0], y1 = v1[1], z1 = v1[2],
+            x2 = v2[0], y2 = v2[1], z2 = v2[2],
+        );
+        writer.write_all(line_buf.as_bytes())?;
     }
 
     writer.write_all(b"endsolid reify\n")?;
@@ -2129,6 +2162,13 @@ pub trait GeometryKernel: Send + Sync {
     }
 
     /// Export a handle to the given format, writing to the provided writer.
+    ///
+    /// **STL tessellation tolerance** is currently kernel-chosen until task δ
+    /// wires `STLOutput.resolution` into the export call.  OCCT uses its own
+    /// `DEFAULT_STL_TESSELLATION_TOLERANCE` (0.1 linear deflection); Manifold
+    /// passes `0.0` (tolerance is ignored — manifold meshes are exact).
+    /// Callers must not rely on a specific tessellation tolerance for STL output
+    /// until task δ lands the demanded-tolerance plumbing.
     fn export(
         &self,
         handle: GeometryHandleId,
@@ -6750,10 +6790,19 @@ mod tests {
             "single triangle: expected 3 'vertex ' entries"
         );
 
-        // Known vertex coordinates appear in the text
+        // Each specific vertex line must appear verbatim in the output.
+        // (Rust formats 0.0f32 as "0" and 1.0f32 as "1" via Display.)
         assert!(
-            text.contains("1") && text.contains("0"),
-            "coordinates must appear in ascii output"
+            text.contains("vertex 0 0 0"),
+            "vertex (0,0,0) must appear in ascii output"
+        );
+        assert!(
+            text.contains("vertex 1 0 0"),
+            "vertex (1,0,0) must appear in ascii output"
+        );
+        assert!(
+            text.contains("vertex 0 1 0"),
+            "vertex (0,1,0) must appear in ascii output"
         );
     }
 
@@ -6806,6 +6855,44 @@ mod tests {
             text.matches("facet normal").count(),
             0,
             "empty mesh: no facets"
+        );
+    }
+
+    // ── % 3 validation tests ────────────────────────────────────────────────
+
+    #[test]
+    fn write_stl_binary_non_multiple_of_three_indices_returns_error() {
+        // 2 indices — indices.len() % 3 == 2; trailing indices must not be silently dropped.
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0],
+            indices: vec![0, 1],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_stl_binary(&mesh, &mut buf);
+        assert!(result.is_err(), "non-multiple-of-3 index buffer must return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
+        );
+    }
+
+    #[test]
+    fn write_stl_ascii_non_multiple_of_three_indices_returns_error() {
+        // 4 indices — indices.len() % 3 == 1; trailing index must not be silently dropped.
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 1.0],
+            indices: vec![0, 1, 2, 3],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_stl_ascii(&mesh, &mut buf);
+        assert!(result.is_err(), "non-multiple-of-3 index buffer must return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
         );
     }
 }
