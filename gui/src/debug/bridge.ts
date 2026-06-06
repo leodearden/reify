@@ -199,6 +199,25 @@ function resolveElement(params: Record<string, unknown>): { error: string } | { 
   }
 }
 
+// Returns focusable elements in document order, excluding disabled/tabindex=-1
+// and elements hidden via computed display:none or visibility:hidden.
+// Does NOT use offsetParent/getBoundingClientRect — unavailable in jsdom.
+// Note: input[type=hidden] is excluded explicitly; the [tabindex] group also
+// guards against disabled elements that carry an explicit non-negative tabindex.
+function collectTabbables(): HTMLElement[] {
+  const candidates = document.querySelectorAll<HTMLElement>(
+    'a[href]:not([tabindex="-1"]), button:not([disabled]):not([tabindex="-1"]), input:not([type="hidden"]):not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"]):not([disabled])',
+  );
+  return Array.from(candidates).filter((el) => {
+    const style = window.getComputedStyle(el);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  });
+}
+
+function describeActive(el: HTMLElement) {
+  return { testId: el.getAttribute('data-testid'), tagName: el.tagName.toLowerCase() };
+}
+
 function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
   return {
     // --- Read commands (frontend-mediated) ---
@@ -487,6 +506,64 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       devicePixelRatio: window.devicePixelRatio,
       focused: document.hasFocus(),
     }),
+
+    // --- App-chrome commands (frontend-mediated, C1) ---
+
+    open_menu: (params) => {
+      const name = params.name as string;
+      if (!name) return { error: 'name is required' };
+
+      // Menu names are simple lowercase identifiers — no CSS-escaping needed,
+      // and CSS.escape is absent in jsdom (unit-test environment).
+      const el = document.querySelector(`[data-testid="menu-trigger-${name}"]`);
+      if (!el) return { error: `menu trigger not found: ${name}` };
+
+      // Idempotency: if the requested menu is already open, skip the click.
+      // toggleMenu would close it on a second click — we must not do that.
+      const current = ctx.menuBar?.openMenu?.() ?? null;
+      if (current !== name) {
+        (el as HTMLElement).click();
+      }
+
+      return { ok: true, open: ctx.menuBar?.openMenu?.() ?? name };
+    },
+
+    menu_state: () => {
+      const open = ctx.menuBar?.openMenu?.() ?? null;
+      const items: Array<{ testId: string | null; label: string; enabled: boolean }> = [];
+      document.querySelectorAll('[role="menuitem"]').forEach((el) => {
+        const btn = el as HTMLButtonElement;
+        // Target the un-classed label span explicitly rather than the first span
+        // by position — the shortcut span always carries a CSS-module class, so
+        // span:not([class]) reliably reaches the label regardless of DOM ordering.
+        const label =
+          btn.querySelector('span:not([class])')?.textContent?.trim() ??
+          btn.innerText?.trim() ??
+          '';
+        items.push({
+          testId: btn.getAttribute('data-testid'),
+          label,
+          enabled: !btn.disabled,
+        });
+      });
+      return { open, items };
+    },
+
+    // Advance focus to the next focusable element in document order.
+    // Synthetic Tab keydown is untrusted (isTrusted=false) and never moves
+    // focus in a WebView or jsdom; focus is driven programmatically instead.
+    // Positive-tabindex WHATWG priority ordering is not replicated (document
+    // order only) — an accepted, documented limitation for app-chrome use.
+    press_tab: () => {
+      const list = collectTabbables();
+      if (list.length === 0) return { active_element: null };
+      const idx = list.indexOf(document.activeElement as HTMLElement);
+      const next = list[(idx + 1) % list.length];
+      next.focus();
+      return { active_element: describeActive(document.activeElement as HTMLElement) };
+    },
+
+    tab_order: () => ({ order: collectTabbables().map(describeActive) }),
 
     // --- R2: ui_outline (frontend-mediated, reads live DOM) ---
     // Returns a flat ordered list of visible semantic elements (tagName, role,

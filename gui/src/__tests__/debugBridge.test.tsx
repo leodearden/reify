@@ -3,6 +3,8 @@
  * Covers: store_state / viewport_state selectedEntities; set_test_mode.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, cleanup } from '@solidjs/testing-library';
+import { MenuBar } from '../panels/MenuBar';
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
@@ -1942,5 +1944,377 @@ describe('debug bridge R1 inspection tools', () => {
       expect(result.devicePixelRatio).toBe(2);
       expect(typeof result.focused).toBe('boolean');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge open_menu (step-1 RED → step-2 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge open_menu', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(async () => {
+    cleanup();
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) open_menu({name:"file"}) returns {ok:true, open:"file"} and openMenu()==="file"', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    const result = await dispatchCmd(3000, 'open_menu', { name: 'file' });
+    expect(result.ok).toBe(true);
+    expect(result.open).toBe('file');
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
+  });
+
+  it('(b) calling open_menu({name:"file"}) again is idempotent — menu stays open, not toggled', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(3001, 'open_menu', { name: 'file' });
+    const result2 = await dispatchCmd(3002, 'open_menu', { name: 'file' });
+    expect(result2.ok).toBe(true);
+    expect(result2.open).toBe('file');
+    // Must still be open — not toggled closed
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
+  });
+
+  it('(c) with file open, open_menu({name:"view"}) switches to view', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(3003, 'open_menu', { name: 'file' });
+    const result = await dispatchCmd(3004, 'open_menu', { name: 'view' });
+    expect(result.ok).toBe(true);
+    expect(result.open).toBe('view');
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('view');
+  });
+
+  it('(d) open_menu({name:"nope"}) returns {error} and does not change open state', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(3005, 'open_menu', { name: 'file' });
+    const result = await dispatchCmd(3006, 'open_menu', { name: 'nope' });
+    expect(result).toHaveProperty('error');
+    // State unchanged — still 'file'
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge menu_state (step-3 RED → step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge menu_state', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(async () => {
+    cleanup();
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) with no menu open, menu_state returns {open:null, items:[]}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    const result = await dispatchCmd(4000, 'menu_state', {});
+    expect(result.open).toBeNull();
+    expect(result.items).toEqual([]);
+  });
+
+  it('(b) after opening file menu, menu_state returns open:"file" and items for new/open/save/export', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(4001, 'open_menu', { name: 'file' });
+    const result = await dispatchCmd(4002, 'menu_state', {});
+
+    expect(result.open).toBe('file');
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items.length).toBeGreaterThan(0);
+
+    // File menu has new/open/save/export
+    const testIds = result.items.map((i: any) => i.testId);
+    expect(testIds).toContain('menu-item-new');
+    expect(testIds).toContain('menu-item-open');
+    expect(testIds).toContain('menu-item-save');
+    expect(testIds).toContain('menu-item-export');
+
+    // Each item has label and enabled fields
+    const openItem = result.items.find((i: any) => i.testId === 'menu-item-open');
+    expect(openItem).toBeDefined();
+    expect(typeof openItem.label).toBe('string');
+    expect(openItem.label.length).toBeGreaterThan(0);
+    expect(typeof openItem.enabled).toBe('boolean');
+    expect(openItem.enabled).toBe(true);
+  });
+
+  it('(c) edit menu items undo/redo report enabled:false (registry-disabled)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(4003, 'open_menu', { name: 'edit' });
+    const result = await dispatchCmd(4004, 'menu_state', {});
+
+    expect(result.open).toBe('edit');
+    const undoItem = result.items.find((i: any) => i.testId === 'menu-item-undo');
+    const redoItem = result.items.find((i: any) => i.testId === 'menu-item-redo');
+    expect(undoItem).toBeDefined();
+    expect(redoItem).toBeDefined();
+    expect(undoItem.enabled).toBe(false);
+    expect(redoItem.enabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge press_tab (step-5 RED → step-6 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge press_tab', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = '';
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) from body (no focus), press_tab focuses first tabbable and returns its descriptor', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+    document.body.focus();
+
+    const result = await dispatchCmd(5000, 'press_tab', {});
+    expect(result.active_element).toBeDefined();
+    expect(result.active_element.testId).toBe('a');
+    expect(result.active_element.tagName).toBe('button');
+    expect(document.activeElement?.getAttribute('data-testid')).toBe('a');
+  });
+
+  it('(b) pressing tab again advances to next tabbable', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+    document.body.focus();
+
+    await dispatchCmd(5001, 'press_tab', {});
+    const result = await dispatchCmd(5002, 'press_tab', {});
+    expect(result.active_element.testId).toBe('b');
+  });
+
+  it('(c) from last tabbable, press_tab wraps to first', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+
+    // Focus the last element manually
+    (document.querySelector('[data-testid="c"]') as HTMLElement).focus();
+
+    const result = await dispatchCmd(5003, 'press_tab', {});
+    expect(result.active_element.testId).toBe('a');
+  });
+
+  it('(d) with no tabbable elements, press_tab returns {active_element:null}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Empty body has no focusable elements
+    document.body.innerHTML = '<div>no buttons</div>';
+
+    const result = await dispatchCmd(5004, 'press_tab', {});
+    expect(result.active_element).toBeNull();
+  });
+
+  it('(e) disabled buttons and tabindex="-1" elements are skipped', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="skip-disabled" disabled>Disabled</button>
+      <button data-testid="skip-neg-tabindex" tabindex="-1">Neg</button>
+      <button data-testid="valid">Valid</button>
+    `;
+    document.body.focus();
+
+    const result = await dispatchCmd(5005, 'press_tab', {});
+    expect(result.active_element.testId).toBe('valid');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge tab_order (step-7 RED → step-8 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge tab_order', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = '';
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) returns order array matching document order for a/b/c buttons', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+
+    const result = await dispatchCmd(6000, 'tab_order', {});
+    expect(result.order).toEqual([
+      { testId: 'a', tagName: 'button' },
+      { testId: 'b', tagName: 'button' },
+      { testId: 'c', tagName: 'button' },
+    ]);
+  });
+
+  it('(b) disabled and tabindex="-1" elements excluded from order', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="skip-disabled" disabled>Skip</button>
+      <button data-testid="skip-neg" tabindex="-1">NegIdx</button>
+      <button data-testid="b">B</button>
+    `;
+
+    const result = await dispatchCmd(6001, 'tab_order', {});
+    const testIds = result.order.map((e: any) => e.testId);
+    expect(testIds).toContain('a');
+    expect(testIds).toContain('b');
+    expect(testIds).not.toContain('skip-disabled');
+    expect(testIds).not.toContain('skip-neg');
+  });
+
+  it('(c) empty body returns {order:[]}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = '<div>no buttons</div>';
+    const result = await dispatchCmd(6002, 'tab_order', {});
+    expect(result.order).toEqual([]);
+  });
+
+  it('(d) rendered MenuBar yields chrome order starting with menu-trigger-file/edit/view/help', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    const result = await dispatchCmd(6003, 'tab_order', {});
+    const testIds = result.order.map((e: any) => e.testId);
+    const chromeOrder = ['menu-trigger-file', 'menu-trigger-edit', 'menu-trigger-view', 'menu-trigger-help'];
+    // The four menu triggers must appear in MENU_DEFS order
+    const indices = chromeOrder.map((id) => testIds.indexOf(id));
+    expect(indices.every((i) => i !== -1)).toBe(true);
+    for (let i = 1; i < indices.length; i++) {
+      expect(indices[i]).toBeGreaterThan(indices[i - 1]);
+    }
   });
 });

@@ -388,6 +388,45 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {}
             }),
         },
+        // C1 app-chrome tools (frontend-mediated via debug_bridge.query_frontend catch-all)
+        ToolDef {
+            name: "open_menu",
+            description: "Open a top-level app menu by name (file|edit|view|help) by driving the MenuBar trigger; returns {ok, open}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Menu name to open: file, edit, view, or help."
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDef {
+            name: "menu_state",
+            description: "Report the currently-open menu and the open menu's per-item enabled-state, read from the rendered DOM.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "press_tab",
+            description: "Advance keyboard focus to the next focusable element in document order and report where document.activeElement lands.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "tab_order",
+            description: "Report the forward-Tab focus traversal order (document-order focusable elements).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
         // --- R2 inspection tools (task-4297) — frontend-mediated, dispatched via query_frontend ---
         ToolDef {
             name: "get_diagnostics",
@@ -1673,6 +1712,58 @@ mod tests {
                 assert!(
                     !required.iter().any(|v| v.as_str() == Some("viewportId")),
                     "{tool_name}: 'viewportId' must NOT be listed in required"
+                );
+            }
+        }
+    }
+
+    // step-9 RED → step-10 GREEN: four C1 app-chrome tools registered in tool_defs().
+    #[test]
+    fn tool_defs_registers_chrome_tools() {
+        let defs = tool_defs();
+
+        struct Expectation {
+            name: &'static str,
+            required_name: bool,
+        }
+        let tools = [
+            Expectation { name: "open_menu",  required_name: true  },
+            Expectation { name: "menu_state", required_name: false },
+            Expectation { name: "press_tab",  required_name: false },
+            Expectation { name: "tab_order",  required_name: false },
+        ];
+
+        for t in &tools {
+            let entry = defs
+                .iter()
+                .find(|d| d.name == t.name)
+                .unwrap_or_else(|| panic!("{} must be present in tool_defs()", t.name));
+            let schema = &entry.input_schema;
+            assert!(
+                !entry.description.is_empty(),
+                "{}: description must be non-empty", t.name
+            );
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{}: input_schema.type must be 'object'", t.name
+            );
+            if t.required_name {
+                assert_eq!(
+                    schema["properties"]["name"]["type"].as_str(),
+                    Some("string"),
+                    "{}: properties.name.type must be 'string'", t.name
+                );
+                let required = schema["required"].as_array()
+                    .unwrap_or_else(|| panic!("{}: required must be an array", t.name));
+                assert!(
+                    required.iter().any(|v| v.as_str() == Some("name")),
+                    "{}: 'name' must be listed in required", t.name
+                );
+            } else if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{}: required must be absent or empty; got {:?}", t.name, required
                 );
             }
         }
