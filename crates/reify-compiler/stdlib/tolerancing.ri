@@ -1,12 +1,11 @@
 #no_prelude
 // Stdlib: Tolerancing — Dimensional, Geometric (14 GD&T types), Surface
 // Provides core definitions for engineering tolerancing and geometric dimensioning.
-// Uses Length and Angle types for dimensioned params. Real is used as a
-// placeholder for Geometry and Datum-reference types pending future type system extensions.
+// Uses Length and Angle types for dimensioned params. feature uses Geometry (the
+// geometry-handle type) and datum_refs uses DatumRef (alias for Geometry per task #3116).
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
-// feature (16 sites) and datum_refs (8 sites) are blocked-geometry-type pending
-// a Geometry / DatumRef resolver capability (task #3116).
+// feature (17 sites) and datum_refs (8 sites) tightened from Real — task #3116 closed.
 
 // ── Enumerations ─────────────────────────────────────────────────────────────
 
@@ -40,13 +39,13 @@ structure def DimensionalTolerance {
 // ── Geometric Tolerance Traits ───────────────────────────────────────────────
 
 // Base trait for all geometric tolerance types.
-// feature uses Real pending a dedicated Geometry type.
+// feature: the geometric feature being toleranced (geometry handle).
 // material_condition specifies MMC, LMC, or RFS modifier.
 // nominal_zone: the tolerance zone width at zero bonus departure (departure=0mm),
 //   equivalent to tolerance_value for all condition modifiers.
 trait GeometricTolerance {
     param tolerance_value : Length
-    param feature : Real
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
     let nominal_zone = effective_tolerance_zone(tolerance_value, material_condition, 0mm)
 }
@@ -57,37 +56,37 @@ trait FormTolerance : GeometricTolerance {
 
 // Orientation tolerances constrain angular relationship to datums.
 trait OrientationTolerance : GeometricTolerance {
-    param datum_refs : Real
+    param datum_refs : DatumRef
 }
 
 // Location tolerances constrain position relative to datums.
 trait LocationTolerance : GeometricTolerance {
-    param datum_refs : Real
+    param datum_refs : DatumRef
 }
 
 // ── Form Tolerances (4 types) ────────────────────────────────────────────────
 
 structure def Flatness : FormTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
 structure def Straightness : FormTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
 structure def Circularity : FormTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
 structure def Cylindricity : FormTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
@@ -95,24 +94,24 @@ structure def Cylindricity : FormTolerance {
 
 structure def Parallelism : OrientationTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs : Real = 0.0
+    param datum_refs : DatumRef
 }
 
 structure def Perpendicularity : OrientationTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs : Real = 0.0
+    param datum_refs : DatumRef
 }
 
 // Angularity adds a nominal_angle param specifying the target angle.
 structure def Angularity : OrientationTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs : Real = 0.0
+    param datum_refs : DatumRef
     param nominal_angle : Angle = 0deg
 }
 
@@ -120,36 +119,36 @@ structure def Angularity : OrientationTolerance {
 
 structure def Position : LocationTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs : Real = 0.0
+    param datum_refs : DatumRef
 }
 
 structure def Concentricity : LocationTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs : Real = 0.0
+    param datum_refs : DatumRef
 }
 
 structure def Symmetry : LocationTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs : Real = 0.0
+    param datum_refs : DatumRef
 }
 
 // ── Runout Tolerances (2 types) ──────────────────────────────────────────────
 
 structure def CircularRunout : GeometricTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
 structure def TotalRunout : GeometricTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
@@ -157,23 +156,23 @@ structure def TotalRunout : GeometricTolerance {
 
 structure def ProfileOfSurface : GeometricTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
 structure def ProfileOfLine : GeometricTolerance {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
 // ── Datum ─────────────────────────────────────────────────────────────────────
 
 // Datum reference feature — the label identifies the datum (e.g., "A", "B").
-// feature uses Real pending a dedicated Geometry type.
+// feature: the geometry handle for the physical datum surface.
 structure def Datum {
     param label : String
-    param feature : Real
+    param feature : Geometry
 }
 
 // ── Surface Finish ────────────────────────────────────────────────────────────
@@ -245,7 +244,7 @@ fn limit_tolerance(upper: Length, lower: Length) -> DimensionalTolerance {
 }
 
 // Asserts that a surface finish specification is non-trivial (value > 0mm).
-// feature is a Real placeholder for the feature geometry; δ/#3116 will flip to Geometry.
-fn require_finish(feature: Real, finish: SurfaceFinish) -> Bool {
+// feature: the geometry handle for the surface feature (tightened from Real — task #3116).
+fn require_finish(feature: Geometry, finish: SurfaceFinish) -> Bool {
     finish.value > 0mm
 }
