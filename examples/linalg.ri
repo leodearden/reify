@@ -65,6 +65,19 @@ structure def LinalgDemo {
     let z_phase = phase(z)
     let z_mag   = complex_magnitude(z)
 
+    // ── 4×4 tridiagonal SPD matrix ────────────────────────────────────────────
+    //   m4 = [[4,1,0,0],[1,4,1,0],[0,1,4,1],[0,0,1,4]]
+    //   Tridiagonal determinant recurrence: D_n = 4·D_{n-1} − D_{n-2}
+    //     D_1=4, D_2=15, D_3=56, D_4=209  (exact integer)
+    //   SPD, condition number κ ≈ 2.36 → nalgebra LU det error ~1e-13
+
+    let m4 = matrix([[4.0, 1.0, 0.0, 0.0],
+                     [1.0, 4.0, 1.0, 0.0],
+                     [0.0, 1.0, 4.0, 1.0],
+                     [0.0, 0.0, 1.0, 4.0]])
+
+    let det4 = determinant(m4)
+
     // ── @test assertions ──────────────────────────────────────────────────────
     //
     // Determinant of rotation matrix must be 1 (orthogonal matrix invariant).
@@ -74,4 +87,6 @@ structure def LinalgDemo {
     constraint det_rot < 1.001
     constraint z_mag > 4.999
     constraint z_mag < 5.001
+    constraint det4 > 208.999
+    constraint det4 < 209.001
 }
