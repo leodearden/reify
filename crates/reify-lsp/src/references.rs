@@ -125,6 +125,19 @@ fn collect_references_at(
     let enclosing = enclosing_decl_at(&parsed.declarations, offset)?;
     let members = entity_members(enclosing)?;
 
+    // AST-aware member-segment guard (task-4346): if the cursor sits on the
+    // `.member` segment of a `MemberAccess` expression (e.g. the `.diameter` in
+    // `h.diameter`), refuse — do NOT resolve to a same-named local binding.
+    // `find_word_at_offset` is byte-based and returns the bare word even on a
+    // member segment; this guard layers the AST-aware refusal at the shared
+    // chokepoint so all four producers (find-references, prepare_rename,
+    // compute_rename, compute_document_highlights) inherit it consistently.
+    // See `cursor_on_member_segment_flat` (and its depth-carrying successor added
+    // in task-4346 step-4) for the detection logic.
+    if cursor_on_member_segment_flat(members, offset as u32) {
+        return None;
+    }
+
     // Collect every binding of `word` reachable in this entity — the flat body and
     // every nested `where`/`else` branch — each tagged with its scope region and
     // depth. Registration mirrors CompilationScope (params before lets before
@@ -182,6 +195,243 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
         _ => None,
     }
 }
+
+// ─── Member-segment detection helpers ────────────────────────────────────────
+//
+// These two helpers implement the AST-aware guard in `collect_references_at`
+// that refuses to resolve the cursor when it sits on the `.member` segment of a
+// `MemberAccess` expression (e.g. the `.diameter` in `h.diameter`).
+//
+// Design mirrors the existing traversal pair: `expr_member_segment_hit` mirrors
+// `collect_idents_in_expr` (exhaustive, no-wildcard ExprKind recursion) and
+// `cursor_on_member_segment` mirrors `collect_uses` (member-kind dispatch +
+// nested-scope descent, depth-bounded by `MAX_MEMBER_NESTING_DEPTH`). Keeping
+// the two scanners symmetric ensures the detection scan never drifts from the
+// use-collection scan.
+
+/// Return `true` when the cursor byte offset `off` falls on the `.member`
+/// segment of a `MemberAccess` node anywhere in `expr`.
+///
+/// The `.member` segment is exactly `[object.span.end, expr.span.end)`: the
+/// `.`, optional whitespace, and the member name. The cursor is on the SEGMENT
+/// iff `off >= object.span.end && off < expr.span.end`. When `off` is below
+/// `object.span.end` the cursor is on the BASE, which must stay renameable, so
+/// we recurse into `object` only.
+///
+/// The match is exhaustive (no wildcard) so a new `ExprKind` variant is a
+/// compile error that forces a deliberate decision here, keeping this walker
+/// symmetric with `collect_idents_in_expr`.
+fn expr_member_segment_hit(expr: &Expr, off: u32) -> bool {
+    match &expr.kind {
+        ExprKind::MemberAccess { object, .. } => {
+            // Cursor on the member segment (past the object's span end)?
+            if off >= object.span.end && off < expr.span.end {
+                return true;
+            }
+            // Cursor may be on the base object or inside it — recurse.
+            expr_member_segment_hit(object, off)
+        }
+        ExprKind::BinOp { left, right, .. } => {
+            expr_member_segment_hit(left, off) || expr_member_segment_hit(right, off)
+        }
+        ExprKind::UnOp { operand, .. } => expr_member_segment_hit(operand, off),
+        ExprKind::FunctionCall { args, .. } => {
+            args.iter().any(|a| expr_member_segment_hit(a, off))
+        }
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expr_member_segment_hit(condition, off)
+                || expr_member_segment_hit(then_branch, off)
+                || expr_member_segment_hit(else_branch, off)
+        }
+        ExprKind::ListLiteral(items) | ExprKind::SetLiteral(items) => {
+            items.iter().any(|i| expr_member_segment_hit(i, off))
+        }
+        ExprKind::MapLiteral(entries) => entries
+            .iter()
+            .any(|(k, v)| expr_member_segment_hit(k, off) || expr_member_segment_hit(v, off)),
+        ExprKind::IndexAccess { object, index } => {
+            expr_member_segment_hit(object, off) || expr_member_segment_hit(index, off)
+        }
+        ExprKind::Match { discriminant, arms } => {
+            expr_member_segment_hit(discriminant, off)
+                || arms.iter().any(|a| expr_member_segment_hit(&a.body, off))
+        }
+        ExprKind::Lambda { body, .. } => expr_member_segment_hit(body, off),
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            expr_member_segment_hit(collection, off) || expr_member_segment_hit(predicate, off)
+        }
+        ExprKind::AdHocSelector { base, args, .. } => {
+            expr_member_segment_hit(base, off) || args.iter().any(|a| expr_member_segment_hit(a, off))
+        }
+        ExprKind::QualifiedAccess { qualifier, .. } => expr_member_segment_hit(qualifier, off),
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            expr_member_segment_hit(object, off) || expr_member_segment_hit(qualified, off)
+        }
+        ExprKind::Range { lower, upper, .. } => {
+            lower.as_ref().is_some_and(|l| expr_member_segment_hit(l, off))
+                || upper.as_ref().is_some_and(|u| expr_member_segment_hit(u, off))
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            expr_member_segment_hit(object, off)
+                || args.iter().any(|a| expr_member_segment_hit(a, off))
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            args.iter().any(|a| expr_member_segment_hit(a, off))
+        }
+        ExprKind::VariantConstruct { fields, .. } => fields
+            .iter()
+            .any(|(_, v)| expr_member_segment_hit(v, off)),
+        ExprKind::InterpolatedString(parts) => parts.iter().any(|p| {
+            if let StringPart::Hole(e) = p {
+                expr_member_segment_hit(e, off)
+            } else {
+                false
+            }
+        }),
+        // Leaves with no sub-expressions.
+        ExprKind::Ident(_)
+        | ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Auto { .. }
+        | ExprKind::Undef => false,
+    }
+}
+
+/// Return `true` when the cursor byte offset `off` falls on the `.member`
+/// segment of a `MemberAccess` expression anywhere within `members` (FLAT scan
+/// — top-level expressions only; nested member-list scopes are added in
+/// step-4).
+///
+/// Mirrors the member-kind dispatch of `collect_uses` (470-566): for each
+/// member, runs `expr_member_segment_hit` over its direct expressions (param
+/// default + where, let value + where, constraint expr + where, etc.). Returns
+/// `true` on the first hit; does NOT descend into nested member lists yet.
+fn cursor_on_member_segment_flat(members: &[MemberDecl], off: u32) -> bool {
+    for member in members {
+        let hit = match member {
+            MemberDecl::Param(p) => {
+                p.default.as_ref().is_some_and(|d| expr_member_segment_hit(d, off))
+                    || p.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::Let(l) => {
+                expr_member_segment_hit(&l.value, off)
+                    || l.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::Constraint(c) => {
+                expr_member_segment_hit(&c.expr, off)
+                    || c.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::ConstraintInst(c) => {
+                c.args.iter().any(|(_, a)| expr_member_segment_hit(a, off))
+                    || c.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::Sub(s) => {
+                s.args.iter().any(|(_, a)| expr_member_segment_hit(a, off))
+                    || s.spec_param_overrides
+                        .iter()
+                        .any(|(_, o)| expr_member_segment_hit(o, off))
+                    || s.pose_expr
+                        .as_ref()
+                        .is_some_and(|p| expr_member_segment_hit(p, off))
+                    || s.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::Minimize(m) => {
+                expr_member_segment_hit(&m.expr, off)
+                    || m.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::Maximize(m) => {
+                expr_member_segment_hit(&m.expr, off)
+                    || m.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::GuardedGroup(g) => {
+                // Scan the guard condition (outer scope) only — nested member
+                // bodies are deferred to the depth-carrying walker in step-4.
+                expr_member_segment_hit(&g.condition, off)
+            }
+            MemberDecl::Port(p) => {
+                // Scan the frame expr (outer scope) only — port body is deferred.
+                p.frame_expr
+                    .as_ref()
+                    .is_some_and(|f| expr_member_segment_hit(f, off))
+            }
+            MemberDecl::Connect(c) => {
+                expr_member_segment_hit(&c.left.expr, off)
+                    || expr_member_segment_hit(&c.right.expr, off)
+                    || c.params.iter().any(|(_, p)| expr_member_segment_hit(p, off))
+            }
+            MemberDecl::Chain(c) => {
+                c.elements.iter().any(|e| expr_member_segment_hit(e, off))
+            }
+            MemberDecl::ForallConnect(f) => {
+                expr_member_segment_hit(&f.collection, off)
+                    || match &f.body {
+                        ForallConnectBody::Connect(c) => {
+                            expr_member_segment_hit(&c.left.expr, off)
+                                || expr_member_segment_hit(&c.right.expr, off)
+                                || c.params.iter().any(|(_, p)| expr_member_segment_hit(p, off))
+                        }
+                        ForallConnectBody::Chain(c) => {
+                            c.elements.iter().any(|e| expr_member_segment_hit(e, off))
+                        }
+                    }
+            }
+            MemberDecl::ForallConstraint(f) => {
+                expr_member_segment_hit(&f.collection, off)
+                    || match &f.body {
+                        ForallConstraintBody::Constraint(c) => {
+                            expr_member_segment_hit(&c.expr, off)
+                                || c.where_clause
+                                    .as_ref()
+                                    .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+                        }
+                        ForallConstraintBody::Instantiation(c) => {
+                            c.args.iter().any(|(_, a)| expr_member_segment_hit(a, off))
+                                || c.where_clause
+                                    .as_ref()
+                                    .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+                        }
+                    }
+            }
+            MemberDecl::MatchArmDeclGroup(g) => {
+                // Scan the discriminant (outer scope) — arm bodies deferred.
+                expr_member_segment_hit(&g.discriminant, off)
+            }
+            // Not walked by `collect_uses` — no tracked binding.
+            MemberDecl::Fn(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => false,
+        };
+        if hit {
+            return true;
+        }
+    }
+    false
+}
+
+// ─── End member-segment detection helpers ────────────────────────────────────
 
 /// One value-member binding of a target name, tagged with the scope region in
 /// which it is visible.
