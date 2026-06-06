@@ -488,6 +488,43 @@ fn deterministic_displacement_bit_stable_across_repeats_and_thread_counts() {
     }
 }
 
+// ─── step-7 RED ──────────────────────────────────────────────────────────────
+
+/// Tolerance-equivalent results across thread counts {1, 4, 16} in default mode.
+///
+/// Uses `solve_sweep(false, &THREAD_COUNTS)` to sweep default-mode solves across
+/// {1, 4, 16} threads, then compares each to a deterministic reference via
+/// `assert_tolerance_equivalent`. `resolve_execution_modes(false, 1, ndof)` →
+/// Deterministic (threads ≤ 1 policy), so the t=1 sweep entry is itself
+/// bit-identical to a deterministic solve.
+///
+/// Iteration count equality is explicitly NOT asserted: in parallel mode
+/// different thread counts use different FP reduction orders, which shifts the
+/// convergence step (within a few iterations).
+///
+/// Note: `solve_sweep` and `THREAD_COUNTS` are not yet defined — this test
+/// fails to compile (RED).
+#[test]
+fn default_parallel_tolerance_equivalent_across_thread_counts() {
+    // Deterministic reference: bit-stable baseline.
+    let det_ref = solve_box_cantilever(true, 1);
+    assert!(det_ref.converged, "deterministic reference did not converge");
+
+    // Sweep parallel-mode solves across THREAD_COUNTS (missing → RED).
+    let outputs = solve_sweep(false, &THREAD_COUNTS);
+    for (i, out) in outputs.iter().enumerate() {
+        let t = THREAD_COUNTS[i];
+        assert!(
+            out.converged,
+            "parallel mode t={t} did not converge (iter={})",
+            out.iterations,
+        );
+        // Tolerance-equivalence against the deterministic reference.
+        // Iteration equality deliberately NOT asserted (parallel mode).
+        assert_tolerance_equivalent(&det_ref, out, &format!("threads={t}"));
+    }
+}
+
 // ─── step-5 RED ──────────────────────────────────────────────────────────────
 
 /// Tolerance-equivalent displacement and von Mises across 3 repeated runs in
