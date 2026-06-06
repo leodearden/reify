@@ -1703,28 +1703,46 @@ pub(crate) fn compile_expr_guarded(
                         // PRD §4.3 (task γ) algebra free-functions.
                         t
                     } else if is_math_typed_fn(name) {
-                        // vec / matrix / diag / identity: the math-linalg α
-                        // CONSTRUCTION family (task 4179, §3 contract). The
-                        // per-call result type comes from `math_fn_result_type`,
-                        // which recovers the return *shape* (`n`) from the
-                        // COMPILED ARGUMENT STRUCTURE — list length from a
-                        // `ListLiteral`, the literal value from
-                        // `Literal(Value::Int)` — since `Type::List` carries no
-                        // length. Setting `vec(...)` → `Vector{n,..}` and
-                        // matrix/diag/identity → `Tensor{rank:2,n,..}` up-front
-                        // is load-bearing: the eval'd values are a real
-                        // `Value::Vector` / `Value::Tensor`, so falling through
-                        // to the first-arg `List`/`Int` fallback would make the
-                        // assigned cell type mismatch under
-                        // `value_type_kind_matches` (List ≠ Vector/Tensor) and
+                        // The math-linalg family, routed via two sibling
+                        // single-source-of-truth slices in `math_signatures`:
+                        //   • CONSTRUCTION (task 4179, MATH_CONSTRUCTION_NAMES):
+                        //     vec / matrix / diag / identity.
+                        //   • OPERATION / FUNCTION (task 4182 δ,
+                        //     MATH_OPERATION_NAMES): the §3 table — sqrt/abs/…,
+                        //     dot/cross/normalize/magnitude/outer,
+                        //     determinant/inverse/transpose/trace,
+                        //     eigenvalues/complex_eigenvalues, and the complex
+                        //     fns complex/real/imag/conjugate/complex_magnitude/
+                        //     phase/arg.
+                        // `math_fn_result_type` computes the per-call result type
+                        // for BOTH: for constructors it recovers the return
+                        // *shape* (`n`) from the COMPILED ARGUMENT STRUCTURE —
+                        // list length from a `ListLiteral`, the literal value
+                        // from `Literal(Value::Int)` — since `Type::List` carries
+                        // no length; for operations it computes the §3 DIMENSIONAL
+                        // return type from the args' quantity dimensions via the
+                        // `DimensionVector` algebra (e.g. sqrt=Q.root(2),
+                        // dot=Q1·Q2, determinant=Q^N, inverse=Q⁻¹).
+                        // Setting `vec(...)` → `Vector{n,..}`,
+                        // matrix/diag/identity → `Tensor{rank:2,n,..}`, and the
+                        // operations → their Scalar/Vector/Tensor/List/Complex
+                        // results up-front is load-bearing: the eval'd values are
+                        // real `Value::Vector` / `Value::Tensor` / `Value::List`
+                        // / `Value::Complex`, so falling through to the first-arg
+                        // `List`/`Int`/matrix fallback would make the assigned
+                        // cell type mismatch under `value_type_kind_matches` and
                         // raise a runtime `TypeKindMismatch` (design decision
                         // D6/D7). `math_fn_result_type` therefore NEVER returns
                         // the first-arg type — it degrades to the correct
-                        // Vector/Tensor variant with a best-effort `n` when the
-                        // shape is not statically determinable. The MATH family
-                        // is pinned disjoint from the geometry/dynamics families
-                        // (units.rs `math_typed_fn_names_are_disjoint_from_other_families`),
+                        // variant with a best-effort `n` when the shape is not
+                        // statically determinable. Both slices are pinned disjoint
+                        // from the geometry/dynamics families AND from each other
+                        // (units.rs `math_typed_fn_names_are_disjoint_from_other_families`
+                        // + `math_operation_fn_names_are_disjoint_from_other_families`),
                         // so this arm's position in the ladder is unobservable.
+                        // NOTE: `determinant(AffineMap)` → Real is served by the
+                        // earlier `affine_map_algebra_result_type` arm above, so
+                        // only Tensor/Matrix determinant args reach here.
                         math_fn_result_type(name, &compiled_args)
                     } else {
                         compiled_args
