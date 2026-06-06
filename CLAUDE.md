@@ -25,6 +25,31 @@ If the `reify` binary is already built, two equivalent CLI entry points work wit
 - **`reify gui --debug <file.ri>`** — `--mcp` is accepted as an alias for `--debug`.
 - **`reify gui-debug <file.ri>`** — sugar for `gui --debug`; both route through the same code path and propagate `REIFY_DEBUG=1` to the spawned `reify-gui` subprocess.
 
+### Per-worktree debug-port wiring for dispatched agents
+
+A dispatched agent (factory-launched Claude in a worktree) reads the static `<worktree>/.mcp.json` for its MCP server URLs. Without intervention the `reify-debug` entry is hard-pinned to `:3939`, so the agent's MCP client connects to whichever foreign GUI holds that port (the bug described in esc-4202-61). `scripts/setup-worktree-debug-port.sh` fixes this at provisioning time:
+
+```bash
+# Factory tooling runs this once per worktree before dispatching the agent:
+port=$(scripts/setup-worktree-debug-port.sh [worktree_dir])
+export REIFY_DEBUG_PORT=$port
+# Then: scripts/run-gui-dev.sh binds $REIFY_DEBUG_PORT → agent's .mcp.json targets the same port.
+```
+
+**Stdout contract:** the script prints only the resolved port integer (a bare decimal, `^[0-9]+$`, 1–65535) to stdout; all diagnostics go to stderr. This makes `port=$(...)` safe.
+
+**Port resolution** (mirrors `parse_debug_port` / `resolveDebugPort` / `resolveReifyDebugUrl`):
+- If `REIFY_DEBUG_PORT` is already a valid port (strict `^[0-9]+$`, value 1–65535, no whitespace), it is used verbatim.
+- Otherwise (unset, empty, non-digit, whitespace-padded, 0, or > 65535) a free ephemeral port is allocated via `allocate_free_port()` in `scripts/lib_portable.sh`.
+
+**Single-allocation invariant:** the port is written to BOTH `.mcp.json` (so the agent's MCP client targets the right GUI) AND stdout (so the caller can `export REIFY_DEBUG_PORT=$port` and `run-gui-dev.sh` binds the same port). These two consumers MUST agree — splitting the allocation would recreate esc-4202-61.
+
+**git skip-worktree hygiene:** after patching `.mcp.json`, the script runs `git update-index --skip-worktree .mcp.json` (guarded by `git rev-parse --is-inside-work-tree`) so the per-worktree ephemeral port is invisible to `git status`/diffs and never lands in a task commit or trips `land.sh`'s clean-tree gate. The committed `.mcp.json` default (`:3939`) is unchanged.
+- Undo with: `git update-index --no-skip-worktree .mcp.json`
+- Outside a git work tree the git step is a guarded no-op — the script succeeds normally.
+
+**G4 provisioning seam:** the *trigger* for this script lives upstream in factory tooling (a separate task for Leo). The reify-side deliverable is the script itself; factory tooling invokes it and injects the printed port into the dispatched agent's environment.
+
 ## Landing on main
 
 Prefer the orchestrator's merge queue (`/merge-queue`) to land a task branch. When the orchestrator is congested or down and you must land directly, use **`scripts/land.sh <task-branch>`** — the *only* sanctioned manual-landing path:
