@@ -1181,4 +1181,79 @@ mod tests {
             "complex_eigenvalues must be a Type::List, not the first-arg Tensor"
         );
     }
+
+    // ── Operation result-type: complex fns ───────────────────────────────────
+    // (task 4182 δ, step-11 RED / step-12 GREEN)
+
+    /// `complex(re, im)` wraps the operand type in Complex:
+    /// complex(Scalar<Length>, Scalar<Length>) → Complex<Scalar<Length>>.
+    #[test]
+    fn complex_of_scalars_is_complex_scalar() {
+        let re = typed(sca(DimensionVector::LENGTH));
+        let im = typed(sca(DimensionVector::LENGTH));
+        assert_eq!(
+            math_fn_result_type("complex", &[re, im]),
+            Type::Complex(Box::new(sca(DimensionVector::LENGTH)))
+        );
+    }
+
+    /// complex(Real, Real) → Complex<Real> (dimensionless operands preserved,
+    /// NOT lifted to Scalar{DIMENSIONLESS}).
+    #[test]
+    fn complex_of_reals_is_complex_real() {
+        assert_eq!(
+            math_fn_result_type("complex", &[real_elem(1.0), real_elem(2.0)]),
+            Type::Complex(Box::new(Type::Real))
+        );
+    }
+
+    /// real strips the Complex to its inner quantity:
+    /// real(Complex<Length>) → Scalar<Length>.
+    #[test]
+    fn real_strips_complex_to_inner() {
+        let z = typed(Type::Complex(Box::new(sca(DimensionVector::LENGTH))));
+        assert_eq!(
+            math_fn_result_type("real", &[z]),
+            sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// imag strips the Complex to its inner quantity:
+    /// imag(Complex<Length>) → Scalar<Length>.
+    #[test]
+    fn imag_strips_complex_to_inner() {
+        let z = typed(Type::Complex(Box::new(sca(DimensionVector::LENGTH))));
+        assert_eq!(
+            math_fn_result_type("imag", &[z]),
+            sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// conjugate is identity over the Complex type:
+    /// conjugate(Complex<Length>) → Complex<Length>.
+    #[test]
+    fn conjugate_is_identity_over_complex() {
+        let z = Type::Complex(Box::new(sca(DimensionVector::LENGTH)));
+        assert_eq!(math_fn_result_type("conjugate", &[typed(z.clone())]), z);
+    }
+
+    /// complex_magnitude collapses a Complex to its inner quantity scalar:
+    /// complex_magnitude(Complex<Length>) → Scalar<Length>.
+    #[test]
+    fn complex_magnitude_is_inner_scalar() {
+        let z = typed(Type::Complex(Box::new(sca(DimensionVector::LENGTH))));
+        assert_eq!(
+            math_fn_result_type("complex_magnitude", &[z]),
+            sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// phase / arg return an Angle (== Type::angle() == Scalar{ANGLE}) regardless
+    /// of the operand quantity.
+    #[test]
+    fn phase_and_arg_are_angle() {
+        let z = typed(Type::Complex(Box::new(sca(DimensionVector::LENGTH))));
+        assert_eq!(math_fn_result_type("phase", &[z.clone()]), Type::angle());
+        assert_eq!(math_fn_result_type("arg", &[z]), Type::angle());
+    }
 }
