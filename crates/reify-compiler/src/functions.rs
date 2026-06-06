@@ -247,7 +247,7 @@ pub(crate) fn compile_function(
         content_hash,
         annotations,
         optimized_target: opt_target,
-        type_params: Vec::new(), // TODO step-2: flip to convert_type_params(&fn_def.type_params)
+        type_params: convert_type_params(&fn_def.type_params),
     })
 }
 
@@ -406,7 +406,7 @@ pub(crate) fn compile_assoc_function(
         content_hash,
         annotations,
         optimized_target: opt_target,
-        type_params: Vec::new(), // TODO step-2: flip to convert_type_params(&fn_def.type_params)
+        type_params: convert_type_params(&fn_def.type_params),
     })
 }
 
