@@ -1967,3 +1967,136 @@ structure def ProbeInvSym {
         result_sym.constraint_results
     );
 }
+
+// ── task #3116: feature/datum_refs type-contract assertions ───────────────────
+
+/// RED (step-3): stdlib type-contract for `feature` and `datum_refs` members.
+///
+/// After the step-4 stdlib flip:
+/// - `GeometricTolerance.feature` required member must be `Type::Geometry`
+/// - `Flatness.feature` param cell must be `Type::Geometry`
+/// - `OrientationTolerance.datum_refs` required member must be `Type::Geometry`
+/// - `LocationTolerance.datum_refs` required member must be `Type::Geometry`
+///
+/// Fails before step-4 because all four sites still resolve to `Type::Real`.
+#[test]
+fn stdlib_feature_datum_refs_have_geometry_type() {
+    let module = load_stdlib_module();
+
+    // GeometricTolerance.feature must be Param(Type::Geometry)
+    let gt = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "GeometricTolerance")
+        .expect("expected 'GeometricTolerance' trait");
+    let gt_feature = gt
+        .required_members
+        .iter()
+        .find(|r| r.name == "feature")
+        .expect("GeometricTolerance must have a 'feature' required member");
+    match &gt_feature.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Geometry,
+            "GeometricTolerance.feature must be Type::Geometry (not {:?})",
+            ty
+        ),
+        other => panic!(
+            "GeometricTolerance.feature must be RequirementKind::Param, got {:?}",
+            other
+        ),
+    }
+
+    // Flatness.feature cell_type must be Type::Geometry
+    let flatness = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Flatness")
+        .expect("expected 'Flatness' template");
+    let flatness_feature = flatness
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "feature")
+        .expect("Flatness must have a 'feature' value cell");
+    assert_eq!(
+        flatness_feature.cell_type,
+        Type::Geometry,
+        "Flatness.feature must be Type::Geometry (not {:?})",
+        flatness_feature.cell_type
+    );
+
+    // OrientationTolerance.datum_refs must be Param(Type::Geometry)
+    let ot = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "OrientationTolerance")
+        .expect("expected 'OrientationTolerance' trait");
+    let ot_datum = ot
+        .required_members
+        .iter()
+        .find(|r| r.name == "datum_refs")
+        .expect("OrientationTolerance must have a 'datum_refs' required member");
+    match &ot_datum.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Geometry,
+            "OrientationTolerance.datum_refs must be Type::Geometry (not {:?})",
+            ty
+        ),
+        other => panic!(
+            "OrientationTolerance.datum_refs must be RequirementKind::Param, got {:?}",
+            other
+        ),
+    }
+
+    // LocationTolerance.datum_refs must be Param(Type::Geometry)
+    let lt = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "LocationTolerance")
+        .expect("expected 'LocationTolerance' trait");
+    let lt_datum = lt
+        .required_members
+        .iter()
+        .find(|r| r.name == "datum_refs")
+        .expect("LocationTolerance must have a 'datum_refs' required member");
+    match &lt_datum.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Geometry,
+            "LocationTolerance.datum_refs must be Type::Geometry (not {:?})",
+            ty
+        ),
+        other => panic!(
+            "LocationTolerance.datum_refs must be RequirementKind::Param, got {:?}",
+            other
+        ),
+    }
+}
+
+/// GREEN (step-3 resolver contract): `param feature : Geometry` and
+/// `param datum_refs : DatumRef` in an inline source must compile with
+/// zero "unresolved type" diagnostics.
+///
+/// Should pass immediately after step-2 adds the `DatumRef` resolver arm.
+#[test]
+fn geometry_and_datum_ref_type_names_compile_in_inline_source() {
+    let source = r#"
+structure def GeomProbe {
+    param feature : Geometry
+    param datum_refs : DatumRef
+}
+"#;
+    let module = parse_and_compile_with_stdlib(source);
+    let unresolved_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("unresolved"))
+        .collect();
+    assert!(
+        unresolved_errors.is_empty(),
+        "`param feature : Geometry` and `param datum_refs : DatumRef` must produce \
+         no unresolved-type errors; got: {:?}",
+        unresolved_errors
+    );
+}
