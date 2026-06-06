@@ -7162,4 +7162,58 @@ mod tests {
             "error kind must be InvalidData"
         );
     }
+
+    #[test]
+    fn write_3mf_materials_gate_emits_w_3mf_no_materials() {
+        use std::io::Cursor;
+        let mesh = unit_cube_mesh();
+
+        // (a) include_materials: true → warning emitted, geometry still written
+        {
+            let mut buf = Vec::new();
+            let warnings = write_3mf(
+                &mesh,
+                ThreeMfOptions { include_materials: true, include_colors: false },
+                &mut buf,
+            )
+            .expect("write_3mf with include_materials should succeed");
+
+            assert_eq!(warnings, vec![ThreeMfWarning::NoMaterials],
+                "include_materials:true must emit NoMaterials warning");
+            assert_eq!(warnings[0].code(), "W_3MF_NO_MATERIALS",
+                "NoMaterials.code() must return 'W_3MF_NO_MATERIALS'");
+
+            // Geometry must still be present
+            let mut archive = zip::ZipArchive::new(Cursor::new(&buf)).unwrap();
+            let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+            let mut xml = String::new();
+            std::io::Read::read_to_string(&mut model_file, &mut xml).unwrap();
+            assert!(xml.matches("<triangle ").count() > 0,
+                "geometry must be written even when include_materials:true");
+        }
+
+        // (b) include_colors: true → warning emitted
+        {
+            let mut buf = Vec::new();
+            let warnings = write_3mf(
+                &mesh,
+                ThreeMfOptions { include_materials: false, include_colors: true },
+                &mut buf,
+            )
+            .expect("write_3mf with include_colors should succeed");
+
+            assert_eq!(warnings, vec![ThreeMfWarning::NoMaterials],
+                "include_colors:true must emit NoMaterials warning");
+        }
+
+        // (c) default (both false) → no warnings
+        {
+            let mut buf = Vec::new();
+            let warnings = write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+                .expect("write_3mf with defaults should succeed");
+
+            assert!(warnings.is_empty(),
+                "default ThreeMfOptions (both flags false) must produce no warnings");
+        }
+    }
 }
