@@ -2123,6 +2123,155 @@ mod tests {
         );
     }
 
+    // ── step-11 RED: snapshot_for_sample non-driving-body regression ──────────
+    //
+    // Pin the couplings/fixed + dynamics scenario the new L1 bind-guard
+    // (steps 5-6) broke (reviewer_comprehensive robustness_regression).
+    // `snapshot_for_sample` (eval.rs) reuses `bind` INTERNALLY to bind every
+    // mechanism body's `at` joint, including non-driving (coupling/fixed) bodies
+    // — a supported dynamics scenario (`body()` accepts couplings/fixed at
+    // mechanism.rs:93; `value_for` derives a coupling's motion from its parent
+    // at snapshot.rs:961-977 and maps `fixed` to a sentinel at snapshot.rs:991).
+    // After steps 5-6, `bind(coupling, v)` / `bind(fixed, v)` return a
+    // "nondriving_joint" error Map (the L1 USER-input guard), which fails
+    // `snapshot()`'s kind=="binding" validation loop (snapshot.rs:109-125),
+    // collapsing the snapshot to `Undef` so `snapshot_for_sample` returns `None`
+    // and trajectory dynamics through non-driving bodies silently break.
+    //
+    // Step-12 fixes this by assembling the per-body FK bindings via the internal
+    // `crate::snapshot::make_binding` (the same constructor loop-closure
+    // free-joint synthesis already calls at snapshot.rs:384), bypassing the
+    // user-facing guard.
+    //
+    // Two mechanisms, because the assertions split by joint kind:
+    //   • COUPLING body → snapshot-level (a)/(b). A coupling has NO single motion
+    //     subspace (`motion_subspace_columns` → None, joints.rs:1019, "out of
+    //     scope for v0.3"), so the end-to-end RNEA cannot run for it — assertion
+    //     (c) lives on the fixed mechanism instead.
+    //   • FIXED body → end-to-end (c). `fixed` is 0-DOF and RNEA-supported
+    //     (`motion_subspace_columns` → Some(empty), joints.rs:1018), so the full
+    //     per-sample seam recovers to `Some`. It is still non-driving, so the
+    //     same pre-step-12 bind-guard regression collapses its snapshot.
+    //
+    // Key on `Some` + kind=="binding" structure, not torque magnitudes (avoids
+    // coupling-RNEA numeric fragility). RED today: `snapshot_for_sample` binds
+    // via `eval_builtin("bind", ...)`, so the non-driving body's binding is a
+    // "nondriving_joint" error Map → snapshot `Undef` → `snapshot_for_sample`
+    // `None` → assertion (a) `.expect()` panics.
+    #[test]
+    fn snapshot_for_sample_with_coupled_body_does_not_regress() {
+        use crate::eval_builtin;
+
+        let axis_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range_0_1m = || Value::Range {
+            lower: Some(Box::new(Value::length(0.0))),
+            upper: Some(Box::new(Value::length(1.0))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+
+        // Distinct MassProperties solids: append_body rejects duplicate solids.
+        let mp1 = mass_properties_fixture(
+            1.0,
+            [0.0, 0.0, 0.0],
+            [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
+        );
+        let mp2 = mass_properties_fixture(
+            2.0,
+            [0.0, 0.0, 0.0],
+            [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]],
+        );
+
+        // ── Mechanism A: driving prismatic body1 + COUPLING body2 ─────────────
+        // body2's `at` is couple(prismatic(+y, 0-1m), -1.0): a non-driving joint
+        // whose parent axis (+y) differs from body1's (+x). `couple()` rejects
+        // coupling parents, so the parent is a bare prismatic. Distinct parent
+        // axis + distinct solid ⇒ append_body accepts the second body.
+        let drive_a = eval_builtin("prismatic", &[axis_x.clone(), range_0_1m()]);
+        let coupling_parent = eval_builtin("prismatic", &[axis_y, range_0_1m()]);
+        let coupling = eval_builtin("couple", &[coupling_parent, Value::Real(-1.0)]);
+
+        let mech_a0 = eval_builtin("mechanism", &[]);
+        let mech_a1 = eval_builtin("body", &[mech_a0, mp1.clone(), drive_a]);
+        let mech_a = eval_builtin("body", &[mech_a1, mp2.clone(), coupling]);
+
+        // One joint position per body (snapshot_for_sample requires
+        // values.len() == bodies.len() == 2).
+        let values_a = [Value::length(0.3), Value::length(0.2)];
+
+        // (a) snapshot_for_sample returns Some with a non-Undef snapshot.
+        let (snapshot_a, bindings_a) = snapshot_for_sample(&mech_a, &values_a).expect(
+            "snapshot_for_sample must return Some for a 2-body mechanism with a coupled body \
+             (RED until step-12 routes internal FK bindings through make_binding instead of \
+             the user-facing bind guard)",
+        );
+        assert!(
+            !snapshot_a.is_undef(),
+            "the coupled-body snapshot must not collapse to Undef"
+        );
+
+        // (b) every per-body binding is a kind=="binding" Map (coupled body included).
+        assert_eq!(bindings_a.len(), 2, "one binding per body");
+        for (i, b) in bindings_a.iter().enumerate() {
+            let bm = match b {
+                Value::Map(m) => m,
+                other => panic!("binding[{i}] must be a Value::Map, got {other:?}"),
+            };
+            assert_eq!(
+                bm.get(&Value::String("kind".to_string())),
+                Some(&Value::String("binding".to_string())),
+                "binding[{i}] must carry kind==\"binding\", NOT a \"nondriving_joint\" error Map"
+            );
+        }
+
+        // ── Mechanism B: driving prismatic body1 + FIXED body2 ────────────────
+        // `fixed` is 0-DOF and RNEA-supported, so the full per-sample seam runs
+        // end-to-end (assertion c). It is still non-driving, so pre-step-12 the
+        // same bind-guard regression collapses its snapshot to Undef.
+        let drive_b = eval_builtin("prismatic", &[axis_x, range_0_1m()]);
+        let fixed = eval_builtin("fixed", &[]);
+
+        let mech_b0 = eval_builtin("mechanism", &[]);
+        let mech_b1 = eval_builtin("body", &[mech_b0, mp1, drive_b]);
+        let mech_b = eval_builtin("body", &[mech_b1, mp2, fixed]);
+
+        // values: one per body (length 2). vels/accels: flat per-DOF lists whose
+        // total length = Σ dof = prismatic(1) + fixed(0) = 1.
+        let sample_b = mint_instance(
+            "TrajectorySample",
+            vec![
+                (
+                    "t".to_string(),
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::TIME,
+                    },
+                ),
+                (
+                    "values".to_string(),
+                    Value::List(vec![Value::length(0.3), Value::length(0.0)]),
+                ),
+                ("vels".to_string(), Value::List(vec![Value::Real(0.0)])),
+                ("accels".to_string(), Value::List(vec![Value::Real(0.0)])),
+            ],
+        );
+
+        // (c) end-to-end inverse_dynamics_sample returns Some (a finite
+        // List<JointForce>), exercising the make_binding bypass through the
+        // shared snapshot_for_sample seam (eval.rs:862) that both open- and
+        // closed-chain routing pass through.
+        let forces_b = inverse_dynamics_sample(&mech_b, &sample_b).expect(
+            "inverse_dynamics_sample must return Some for a 2-body open chain whose second body \
+             is a fixed (0-DOF, RNEA-supported) non-driving joint (RED until step-12)",
+        );
+        assert_eq!(
+            forces_b.len(),
+            2,
+            "two bodies ⇒ two JointForce entries (prismatic ScalarForce + fixed ZeroForce)"
+        );
+    }
+
     // ── step-1 RED: joint_compliance unit tests ───────────────────────────────
     //
     // Tests for `joint_compliance(joint: &Value, position: Option<f64>)`
