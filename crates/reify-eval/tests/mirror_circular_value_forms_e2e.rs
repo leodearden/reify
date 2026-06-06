@@ -203,3 +203,181 @@ fn mirror_wrong_variant_axis_rejected_with_error_diagnostic() {
         mirror_ops.len()
     );
 }
+
+// ── step-7: circular_pattern consumer tests ───────────────────────────────────
+
+/// (a) Value form: circular_pattern(box, axis_z(point3(0,0,0)), 6, 60deg) builds
+/// with zero Error diagnostics and emits exactly one CircularPattern with
+/// axis_dir ≈ [0,0,1] (within 1e-9) and count == 6.
+///
+/// RED today: parse_and_compile panics — 4-arg circular_pattern fails compile
+/// ("expects 9 arguments"). GREEN after step-8.
+#[test]
+fn circular_pattern_value_form_axis_z_emits_correct_op() {
+    let source = r#"
+        structure def S {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 6, 60deg)
+        }
+    "#;
+
+    let compiled = parse_and_compile(source);
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+
+    let error_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        error_diags.is_empty(),
+        "expected zero Error diagnostics for circular_pattern value form, got: {:?}",
+        error_diags
+    );
+
+    let ops = ops_ref.lock().unwrap();
+    let cp_ops: Vec<_> = ops
+        .iter()
+        .filter(|r| matches!(&r.op, GeometryOp::CircularPattern { .. }))
+        .collect();
+    assert_eq!(
+        cp_ops.len(),
+        1,
+        "expected exactly one CircularPattern op, got {}",
+        cp_ops.len()
+    );
+
+    match &cp_ops[0].op {
+        GeometryOp::CircularPattern {
+            axis_origin,
+            axis_dir,
+            count,
+            ..
+        } => {
+            assert!(
+                axis_origin[0].abs() < 1e-9,
+                "axis_origin[0] should be 0, got {}",
+                axis_origin[0]
+            );
+            assert!(
+                axis_origin[1].abs() < 1e-9,
+                "axis_origin[1] should be 0, got {}",
+                axis_origin[1]
+            );
+            assert!(
+                axis_origin[2].abs() < 1e-9,
+                "axis_origin[2] should be 0, got {}",
+                axis_origin[2]
+            );
+            assert!(
+                axis_dir[0].abs() < 1e-9,
+                "axis_dir[0] should be 0, got {}",
+                axis_dir[0]
+            );
+            assert!(
+                axis_dir[1].abs() < 1e-9,
+                "axis_dir[1] should be 0, got {}",
+                axis_dir[1]
+            );
+            assert!(
+                (axis_dir[2] - 1.0).abs() < 1e-9,
+                "axis_dir[2] should be 1.0 (Z-axis), got {}",
+                axis_dir[2]
+            );
+            assert_eq!(*count, 6, "count should be 6, got {}", count);
+        }
+        other => panic!("expected GeometryOp::CircularPattern, got {:?}", other),
+    }
+}
+
+/// (b) Back-compat: legacy 9-arg scalar form circular_pattern(box, 0,0,0, 0,0,1, 6, 60deg)
+/// still builds without errors and emits CircularPattern with count==6.
+///
+/// GREEN before and after step-8 (back-compat must hold).
+#[test]
+fn circular_pattern_scalar_back_compat_emits_correct_op() {
+    let source = r#"
+        structure def S {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, 0, 0, 0, 0, 0, 1, 6, 60deg)
+        }
+    "#;
+
+    let compiled = parse_and_compile(source);
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+
+    let error_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        error_diags.is_empty(),
+        "expected zero Error diagnostics for back-compat scalar circular_pattern, got: {:?}",
+        error_diags
+    );
+
+    let ops = ops_ref.lock().unwrap();
+    let cp_ops: Vec<_> = ops
+        .iter()
+        .filter(|r| matches!(&r.op, GeometryOp::CircularPattern { .. }))
+        .collect();
+    assert_eq!(cp_ops.len(), 1, "expected exactly one CircularPattern op");
+
+    match &cp_ops[0].op {
+        GeometryOp::CircularPattern { count, .. } => {
+            assert_eq!(*count, 6, "count should be 6, got {}", count);
+        }
+        other => panic!("expected GeometryOp::CircularPattern, got {:?}", other),
+    }
+}
+
+/// (c) Wrong-variant rejection: circular_pattern(box, plane_xy(0mm), 6, 60deg) must
+/// produce an Error diagnostic because plane_xy yields Value::Plane, not Value::Axis.
+/// No CircularPattern op should be emitted.
+///
+/// RED today: parse_and_compile panics — 4-arg circular_pattern fails compile.
+/// GREEN after step-8: 4-arg compiles; eval rejects Plane → Error diagnostic.
+#[test]
+fn circular_pattern_wrong_variant_plane_rejected_with_error_diagnostic() {
+    let source = r#"
+        structure def S {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, plane_xy(0mm), 6, 60deg)
+        }
+    "#;
+
+    let compiled = parse_and_compile(source);
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+
+    let error_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "expected at least one Error diagnostic for wrong-variant plane→circular_pattern, got: {:?}",
+        result.diagnostics
+    );
+
+    let ops = ops_ref.lock().unwrap();
+    let cp_ops: Vec<_> = ops
+        .iter()
+        .filter(|r| matches!(&r.op, GeometryOp::CircularPattern { .. }))
+        .collect();
+    assert!(
+        cp_ops.is_empty(),
+        "expected NO CircularPattern op when Plane is passed where Axis is required, got {} op(s)",
+        cp_ops.len()
+    );
+}
