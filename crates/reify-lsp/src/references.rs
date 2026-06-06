@@ -125,6 +125,19 @@ fn collect_references_at(
     let enclosing = enclosing_decl_at(&parsed.declarations, offset)?;
     let members = entity_members(enclosing)?;
 
+    // AST-aware member-segment guard (task-4346): if the cursor sits on the
+    // `.member` segment of a `MemberAccess` expression (e.g. the `.diameter` in
+    // `h.diameter`), refuse — do NOT resolve to a same-named local binding.
+    // `find_word_at_offset` is byte-based and returns the bare word even on a
+    // member segment; this guard layers the AST-aware refusal at the shared
+    // chokepoint so all four producers (find-references, prepare_rename,
+    // compute_rename, compute_document_highlights) inherit it consistently.
+    // See `cursor_on_member_segment` for the detection logic (depth-bounded
+    // member walk mirroring `collect_uses` + `for_each_child_scope`).
+    if cursor_on_member_segment(members, offset as u32, 0) {
+        return None;
+    }
+
     // Collect every binding of `word` reachable in this entity — the flat body and
     // every nested `where`/`else` branch — each tagged with its scope region and
     // depth. Registration mirrors CompilationScope (params before lets before
@@ -182,6 +195,264 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
         _ => None,
     }
 }
+
+// ─── Member-segment detection helpers ────────────────────────────────────────
+//
+// These two helpers implement the AST-aware guard in `collect_references_at`
+// that refuses to resolve the cursor when it sits on the `.member` segment of a
+// `MemberAccess` expression (e.g. the `.diameter` in `h.diameter`).
+//
+// Design mirrors the existing traversal pair: `expr_member_segment_hit` mirrors
+// `collect_idents_in_expr` (exhaustive, no-wildcard ExprKind recursion) and
+// `cursor_on_member_segment` mirrors `collect_uses` (member-kind dispatch +
+// nested-scope descent, depth-bounded by `MAX_MEMBER_NESTING_DEPTH`). Keeping
+// the two scanners symmetric ensures the detection scan never drifts from the
+// use-collection scan.
+
+/// Return `true` when the cursor byte offset `off` falls on the `.member`
+/// segment of a `MemberAccess` node anywhere in `expr`.
+///
+/// The `.member` segment is exactly `[object.span.end, expr.span.end)`: the
+/// `.`, optional whitespace, and the member name. The cursor is on the SEGMENT
+/// iff `off >= object.span.end && off < expr.span.end`. When `off` is below
+/// `object.span.end` the cursor is on the BASE, which must stay renameable, so
+/// we recurse into `object` only.
+///
+/// The match is exhaustive (no wildcard) so a new `ExprKind` variant is a
+/// compile error that forces a deliberate decision here, keeping this walker
+/// symmetric with `collect_idents_in_expr`.
+fn expr_member_segment_hit(expr: &Expr, off: u32) -> bool {
+    match &expr.kind {
+        ExprKind::MemberAccess { object, .. } => {
+            // Cursor on the member segment (past the object's span end)?
+            if off >= object.span.end && off < expr.span.end {
+                return true;
+            }
+            // Cursor may be on the base object or inside it — recurse.
+            expr_member_segment_hit(object, off)
+        }
+        ExprKind::BinOp { left, right, .. } => {
+            expr_member_segment_hit(left, off) || expr_member_segment_hit(right, off)
+        }
+        ExprKind::UnOp { operand, .. } => expr_member_segment_hit(operand, off),
+        ExprKind::FunctionCall { args, .. } => {
+            args.iter().any(|a| expr_member_segment_hit(a, off))
+        }
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expr_member_segment_hit(condition, off)
+                || expr_member_segment_hit(then_branch, off)
+                || expr_member_segment_hit(else_branch, off)
+        }
+        ExprKind::ListLiteral(items) | ExprKind::SetLiteral(items) => {
+            items.iter().any(|i| expr_member_segment_hit(i, off))
+        }
+        ExprKind::MapLiteral(entries) => entries
+            .iter()
+            .any(|(k, v)| expr_member_segment_hit(k, off) || expr_member_segment_hit(v, off)),
+        ExprKind::IndexAccess { object, index } => {
+            expr_member_segment_hit(object, off) || expr_member_segment_hit(index, off)
+        }
+        ExprKind::Match { discriminant, arms } => {
+            expr_member_segment_hit(discriminant, off)
+                || arms.iter().any(|a| expr_member_segment_hit(&a.body, off))
+        }
+        ExprKind::Lambda { body, .. } => expr_member_segment_hit(body, off),
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            expr_member_segment_hit(collection, off) || expr_member_segment_hit(predicate, off)
+        }
+        ExprKind::AdHocSelector { base, args, .. } => {
+            expr_member_segment_hit(base, off) || args.iter().any(|a| expr_member_segment_hit(a, off))
+        }
+        ExprKind::QualifiedAccess { qualifier, .. } => expr_member_segment_hit(qualifier, off),
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            expr_member_segment_hit(object, off) || expr_member_segment_hit(qualified, off)
+        }
+        ExprKind::Range { lower, upper, .. } => {
+            lower.as_ref().is_some_and(|l| expr_member_segment_hit(l, off))
+                || upper.as_ref().is_some_and(|u| expr_member_segment_hit(u, off))
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            expr_member_segment_hit(object, off)
+                || args.iter().any(|a| expr_member_segment_hit(a, off))
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            args.iter().any(|a| expr_member_segment_hit(a, off))
+        }
+        ExprKind::VariantConstruct { fields, .. } => fields
+            .iter()
+            .any(|(_, v)| expr_member_segment_hit(v, off)),
+        ExprKind::InterpolatedString(parts) => parts.iter().any(|p| {
+            if let StringPart::Hole(e) = p {
+                expr_member_segment_hit(e, off)
+            } else {
+                false
+            }
+        }),
+        // Leaves with no sub-expressions.
+        ExprKind::Ident(_)
+        | ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Auto { .. }
+        | ExprKind::Undef => false,
+    }
+}
+
+/// Return `true` when the cursor byte offset `off` falls on the `.member`
+/// segment of a `MemberAccess` expression anywhere within `members` at any
+/// nesting depth up to `MAX_MEMBER_NESTING_DEPTH`.
+///
+/// Mirrors the member-kind dispatch of `collect_uses` (470-566) AND the
+/// nested-scope descent of `for_each_child_scope` (335-357): for each member,
+/// runs `expr_member_segment_hit` over its direct expressions, then recurses
+/// into its child member lists (GuardedGroup where/else bodies, Port body, Sub
+/// specialization body / keyed-block overrides, MatchArmDeclGroup per-arm
+/// members) at `depth + 1`. Returns `true` on the first hit.
+///
+/// The public guard in `collect_references_at` calls this with `depth = 0`.
+fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> bool {
+    // Mirror collect_uses' recursion bound so the detection scan and the use-
+    // collection scan share the same depth limit (same stack-overflow backstop).
+    if depth > MAX_MEMBER_NESTING_DEPTH {
+        return false;
+    }
+    for member in members {
+        let direct_hit = match member {
+            MemberDecl::Param(p) => {
+                p.default.as_ref().is_some_and(|d| expr_member_segment_hit(d, off))
+                    || p.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::Let(l) => {
+                expr_member_segment_hit(&l.value, off)
+                    || l.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::Constraint(c) => {
+                expr_member_segment_hit(&c.expr, off)
+                    || c.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::ConstraintInst(c) => {
+                c.args.iter().any(|(_, a)| expr_member_segment_hit(a, off))
+                    || c.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::Sub(s) => {
+                s.args.iter().any(|(_, a)| expr_member_segment_hit(a, off))
+                    || s.spec_param_overrides
+                        .iter()
+                        .any(|(_, o)| expr_member_segment_hit(o, off))
+                    || s.pose_expr
+                        .as_ref()
+                        .is_some_and(|p| expr_member_segment_hit(p, off))
+                    || s.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::Minimize(m) => {
+                expr_member_segment_hit(&m.expr, off)
+                    || m.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::Maximize(m) => {
+                expr_member_segment_hit(&m.expr, off)
+                    || m.where_clause
+                        .as_ref()
+                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+            }
+            MemberDecl::GuardedGroup(g) => {
+                // Guard condition is an outer-scope expression; child bodies are
+                // recursed below via for_each_child_scope.
+                expr_member_segment_hit(&g.condition, off)
+            }
+            MemberDecl::Port(p) => {
+                // Frame expr is an outer-scope expression; port body is recursed below.
+                p.frame_expr
+                    .as_ref()
+                    .is_some_and(|f| expr_member_segment_hit(f, off))
+            }
+            MemberDecl::Connect(c) => {
+                expr_member_segment_hit(&c.left.expr, off)
+                    || expr_member_segment_hit(&c.right.expr, off)
+                    || c.params.iter().any(|(_, p)| expr_member_segment_hit(p, off))
+            }
+            MemberDecl::Chain(c) => {
+                c.elements.iter().any(|e| expr_member_segment_hit(e, off))
+            }
+            MemberDecl::ForallConnect(f) => {
+                expr_member_segment_hit(&f.collection, off)
+                    || match &f.body {
+                        ForallConnectBody::Connect(c) => {
+                            expr_member_segment_hit(&c.left.expr, off)
+                                || expr_member_segment_hit(&c.right.expr, off)
+                                || c.params.iter().any(|(_, p)| expr_member_segment_hit(p, off))
+                        }
+                        ForallConnectBody::Chain(c) => {
+                            c.elements.iter().any(|e| expr_member_segment_hit(e, off))
+                        }
+                    }
+            }
+            MemberDecl::ForallConstraint(f) => {
+                expr_member_segment_hit(&f.collection, off)
+                    || match &f.body {
+                        ForallConstraintBody::Constraint(c) => {
+                            expr_member_segment_hit(&c.expr, off)
+                                || c.where_clause
+                                    .as_ref()
+                                    .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+                        }
+                        ForallConstraintBody::Instantiation(c) => {
+                            c.args.iter().any(|(_, a)| expr_member_segment_hit(a, off))
+                                || c.where_clause
+                                    .as_ref()
+                                    .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+                        }
+                    }
+            }
+            MemberDecl::MatchArmDeclGroup(g) => {
+                // Discriminant is outer-scope; arm member bodies are recursed below.
+                expr_member_segment_hit(&g.discriminant, off)
+            }
+            // Not walked by `collect_uses` — no tracked binding.
+            MemberDecl::Fn(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => false,
+        };
+        if direct_hit {
+            return true;
+        }
+        // Recurse into nested member-list scopes exactly as for_each_child_scope
+        // (335-357) and collect_uses do: GuardedGroup where/else bodies, Port body,
+        // Sub specialization body / keyed-block overrides, MatchArmDeclGroup
+        // per-arm members. This mirrors `collect_bindings_in_scope`'s recursion.
+        let mut child_hit = false;
+        for_each_child_scope(member, |child| {
+            if !child_hit {
+                child_hit = cursor_on_member_segment(child, off, depth + 1);
+            }
+        });
+        if child_hit {
+            return true;
+        }
+    }
+    false
+}
+
+// ─── End member-segment detection helpers ────────────────────────────────────
 
 /// One value-member binding of a target name, tagged with the scope region in
 /// which it is visible.
@@ -2076,6 +2347,232 @@ structure S {
         assert!(
             compute_document_highlights(source, &parsed, kw_pos).is_none(),
             "a keyword is not resolvable, so it produces no highlights"
+        );
+    }
+
+    // --- step-3 (task-4346): nested-scope refusal + control ---
+
+    #[test]
+    fn member_access_field_segment_refusal_descends_into_nested_scopes() {
+        // (a) The member access lives inside a guarded `where` block; the colliding
+        // binding is top-level. The flat scan (step-2) does NOT descend into the
+        // where-block member list, so the guard fires only after the walker gains
+        // nested-scope descent (step-4). This part is RED after step-2.
+        let source_nested = "\
+structure S {
+    param diameter: Scalar = 5mm
+    param enabled: Bool = true
+    sub h = Hole(bore: 3mm)
+    where enabled {
+        let x = h.diameter
+    }
+}";
+        let parsed_nested = reify_syntax::parse(source_nested, ModulePath::single("nested"));
+        assert!(
+            parsed_nested.errors.is_empty(),
+            "nested fixture must parse clean: {:?}",
+            parsed_nested.errors
+        );
+
+        // d[0]=`param diameter` decl, d[1]=`.diameter` inside the where-block let.
+        let d = occurrences(source_nested, "diameter");
+        assert_eq!(d.len(), 2, "1 param decl + 1 nested member-access segment");
+
+        let member_pos = offset_to_position(source_nested, d[1] as u32);
+        let uri = Url::parse("file:///nested.ri").unwrap();
+
+        // All four producers must refuse the nested member-access segment.
+        assert!(
+            prepare_rename(source_nested, &parsed_nested, member_pos).is_none(),
+            "(a) prepare_rename must refuse nested .field segment"
+        );
+        assert!(
+            compute_rename(source_nested, &parsed_nested, &uri, member_pos, "renamed").is_none(),
+            "(a) compute_rename must refuse nested .field segment"
+        );
+        assert!(
+            compute_document_highlights(source_nested, &parsed_nested, member_pos).is_none(),
+            "(a) compute_document_highlights must refuse nested .field segment"
+        );
+        assert!(
+            collect_references(source_nested, &parsed_nested, member_pos, true).is_none(),
+            "(a) collect_references must refuse nested .field segment"
+        );
+
+        // Over-refusal guard: the base `h` inside the where-block still resolves.
+        let h_off = source_nested.find("h.diameter").expect("h.diameter present");
+        let h_pos = offset_to_position(source_nested, h_off as u32);
+        assert!(
+            collect_references(source_nested, &parsed_nested, h_pos, false).is_some(),
+            "(a) base `h` inside where-block must still resolve"
+        );
+
+        // (b) Control: no `param diameter` — the guard is still correct (None)
+        // because there is no local binding to mis-resolve to.  This was already
+        // None before the fix; it locks the contrast that None is the right
+        // answer for a member segment regardless of whether a collision exists.
+        let source_no_local = "\
+structure S {
+    sub h = Hole(bore: 3mm)
+    let x = h.diameter
+}";
+        let parsed_no_local = reify_syntax::parse(source_no_local, ModulePath::single("nolocal"));
+        assert!(
+            parsed_no_local.errors.is_empty(),
+            "(b) no-local fixture must parse clean: {:?}",
+            parsed_no_local.errors
+        );
+
+        let seg_off = source_no_local.find("h.diameter").expect("h.diameter present")
+            + "h.".len(); // point at `diameter`
+        let seg_pos = offset_to_position(source_no_local, seg_off as u32);
+
+        assert!(
+            prepare_rename(source_no_local, &parsed_no_local, seg_pos).is_none(),
+            "(b) prepare_rename must return None for .field when no local binding"
+        );
+        assert!(
+            collect_references(source_no_local, &parsed_no_local, seg_pos, true).is_none(),
+            "(b) collect_references must return None for .field when no local binding"
+        );
+    }
+
+    // --- amendment (task-4346): non-GuardedGroup nested-scope coverage ---
+
+    #[test]
+    fn member_access_field_segment_refusal_descends_into_port_body() {
+        // Complements `member_access_field_segment_refusal_descends_into_nested_scopes`,
+        // which only exercises the GuardedGroup (`where`) descent arm.  This fixture
+        // places `h.diameter` inside a Port body, exercising the `Port` arm of
+        // `for_each_child_scope` in `cursor_on_member_segment`.  A regression that
+        // dropped the Port arm while keeping GuardedGroup would pass the existing
+        // nested-scope test but fail here.
+        //
+        // Note: Sub specialization bodies (`body: Some(...)` on `SubDecl`) are not
+        // producible by the current parser (grammar update pending), so the Port arm
+        // is the closest parser-reachable sibling to cover the child-scope descent.
+        let source = "\
+structure S {
+    param diameter: Scalar = 5mm
+    sub h = Hole(bore: 3mm)
+    port out : Flange {
+        param width: Scalar = h.diameter
+    }
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("portbody"));
+        assert!(
+            parsed.errors.is_empty(),
+            "port-body fixture must parse clean: {:?}",
+            parsed.errors
+        );
+
+        // d[0]=`param diameter` decl (top-level), d[1]=`.diameter` in port-body param default.
+        let d = occurrences(source, "diameter");
+        assert_eq!(d.len(), 2, "1 param decl + 1 port-body member-access segment");
+
+        let member_pos = offset_to_position(source, d[1] as u32);
+        let uri = Url::parse("file:///portbody.ri").unwrap();
+
+        // All four producers must refuse the port-body member-access .field segment.
+        assert!(
+            prepare_rename(source, &parsed, member_pos).is_none(),
+            "prepare_rename must refuse .field segment inside port body"
+        );
+        assert!(
+            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
+            "compute_rename must refuse .field segment inside port body"
+        );
+        assert!(
+            compute_document_highlights(source, &parsed, member_pos).is_none(),
+            "compute_document_highlights must refuse .field segment inside port body"
+        );
+        assert!(
+            collect_references(source, &parsed, member_pos, true).is_none(),
+            "collect_references must refuse .field segment inside port body"
+        );
+
+        // Over-refusal guard: the base `h` inside the port body still resolves as a Sub.
+        let h_off = source.find("h.diameter").expect("h.diameter present");
+        let h_pos = offset_to_position(source, h_off as u32);
+        assert!(
+            collect_references(source, &parsed, h_pos, false).is_some(),
+            "base `h` inside port body must still resolve"
+        );
+    }
+
+    // --- step-1 (task-4346): member-access .field segment refuses all four producers ---
+
+    #[test]
+    fn member_access_field_segment_refuses_when_colliding_with_local() {
+        // Fixture: `param diameter` names a local binding; `h.diameter` is a
+        // member-access where the `.diameter` segment shares the same text.
+        // When the cursor sits on the `.diameter` segment (NOT the base `h`),
+        // all four producers must refuse (return None / empty) — they must NOT
+        // mis-resolve to the unrelated `param diameter` binding.
+        let source = "\
+structure S {
+    param diameter: Scalar = 5mm
+    sub h = Hole(bore: 3mm)
+    let x = h.diameter
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("s"));
+        assert!(
+            parsed.errors.is_empty(),
+            "member-access fixture must parse clean: {:?}",
+            parsed.errors
+        );
+
+        // d[0] = `param diameter` decl token; d[1] = `.diameter` segment in `h.diameter`.
+        let d = occurrences(source, "diameter");
+        assert_eq!(d.len(), 2, "1 param decl + 1 member-access segment");
+
+        let member_pos = offset_to_position(source, d[1] as u32);
+        let uri = Url::parse("file:///s.ri").unwrap();
+
+        // All four producers must refuse the member-access segment.
+        assert!(
+            prepare_rename(source, &parsed, member_pos).is_none(),
+            "prepare_rename must refuse cursor on .field segment"
+        );
+        assert!(
+            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
+            "compute_rename must refuse cursor on .field segment"
+        );
+        assert!(
+            compute_document_highlights(source, &parsed, member_pos).is_none(),
+            "compute_document_highlights must refuse cursor on .field segment"
+        );
+        assert!(
+            collect_references(source, &parsed, member_pos, true).is_none(),
+            "collect_references must refuse cursor on .field segment"
+        );
+
+        // Over-refusal guard: the BASE `h` (cursor at the start of `h.diameter`) must
+        // still resolve as a Sub binding.
+        let h_off = source.find("h.diameter").expect("h.diameter present");
+        let h_pos = offset_to_position(source, h_off as u32);
+        let h_set = collect_references(source, &parsed, h_pos, false)
+            .expect("cursor on base `h` must resolve to a ReferenceSet");
+        assert_eq!(
+            h_set.kind,
+            RefSymbolKind::Sub,
+            "base `h` resolves as Sub binding"
+        );
+        let prepare_h = prepare_rename(source, &parsed, h_pos)
+            .expect("prepare_rename on base `h` must return Some");
+        assert_eq!(
+            prepare_h.placeholder, "h",
+            "prepare_rename placeholder is the base name `h`"
+        );
+
+        // Over-refusal guard: the `param diameter` DECL token (cursor at d[0]) must
+        // still be renameable.
+        let decl_pos = offset_to_position(source, d[0] as u32);
+        let prepare_decl = prepare_rename(source, &parsed, decl_pos)
+            .expect("prepare_rename on param diameter decl must return Some");
+        assert_eq!(
+            prepare_decl.placeholder, "diameter",
+            "prepare_rename placeholder is `diameter` when on the decl"
         );
     }
 }
