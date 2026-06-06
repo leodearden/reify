@@ -2371,10 +2371,10 @@ fn std_ports_fluid_loads_with_no_errors_and_fluid_port_trait() {
     );
 }
 
-/// std/ports/fluid cardinality lock: exactly 1 enum (FluidType),
-/// 1 trait (FluidPort), 0 structures.
+/// std/ports/fluid cardinality lock: exactly 2 enums (FluidType, PipeConnectionType),
+/// 2 traits (FluidPort, PipedFluidPort), 0 structures.
 ///
-/// Updated incrementally per task ζ step-1: FluidType enum added.
+/// Updated incrementally per task ζ step-3: PipeConnectionType + PipedFluidPort added.
 #[test]
 fn std_ports_fluid_module_cardinality_locked() {
     let module = load_module("std/ports/fluid");
@@ -2382,13 +2382,18 @@ fn std_ports_fluid_module_cardinality_locked() {
     let enum_names: Vec<&str> = module.enum_defs.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
         module.enum_defs.len(),
-        1,
-        "std/ports/fluid should declare exactly 1 enum (FluidType), got: {:?}",
+        2,
+        "std/ports/fluid should declare exactly 2 enums (FluidType, PipeConnectionType), got: {:?}",
         enum_names
     );
     assert!(
         enum_names.contains(&"FluidType"),
         "std/ports/fluid enum_defs should contain 'FluidType'; got: {:?}",
+        enum_names
+    );
+    assert!(
+        enum_names.contains(&"PipeConnectionType"),
+        "std/ports/fluid enum_defs should contain 'PipeConnectionType'; got: {:?}",
         enum_names
     );
 
@@ -2399,8 +2404,18 @@ fn std_ports_fluid_module_cardinality_locked() {
         .collect();
     assert_eq!(
         module.trait_defs.len(),
-        1,
-        "std/ports/fluid should declare exactly 1 trait (FluidPort), got: {:?}",
+        2,
+        "std/ports/fluid should declare exactly 2 traits (FluidPort, PipedFluidPort), got: {:?}",
+        trait_names
+    );
+    assert!(
+        trait_names.contains(&"FluidPort"),
+        "std/ports/fluid trait_defs should contain 'FluidPort'; got: {:?}",
+        trait_names
+    );
+    assert!(
+        trait_names.contains(&"PipedFluidPort"),
+        "std/ports/fluid trait_defs should contain 'PipedFluidPort'; got: {:?}",
         trait_names
     );
 
@@ -2461,6 +2476,146 @@ structure def FluidProbe {
         errors.is_empty(),
         "structure using FluidType.Liquid as default should compile without errors; got: {:?}",
         errors
+    );
+}
+
+// ─── task ζ step-3: PipeConnectionType enum + PipedFluidPort trait surface ────
+
+/// PipeConnectionType enum must declare exactly 5 variants in order:
+/// [Threaded, Flanged, Compression, PushFit, Welded].
+///
+/// RED: PipeConnectionType is absent → find_enum panics.
+#[test]
+fn pipe_connection_type_enum_surface() {
+    let e = find_enum("std/ports/fluid", "PipeConnectionType");
+    assert_eq!(
+        e.variants.as_slice(),
+        ["Threaded", "Flanged", "Compression", "PushFit", "Welded"].as_slice(),
+        "PipeConnectionType variants should be \
+         [Threaded, Flanged, Compression, PushFit, Welded] in order; got: {:?}",
+        e.variants
+    );
+}
+
+/// PipedFluidPort refines exactly [FluidPort, LocatedPort] (multi-supertrait,
+/// order not guaranteed) and has exactly 2 own required members:
+/// inner_diameter : Length, connection_type : PipeConnectionType.
+///
+/// RED: PipedFluidPort is absent → find_trait panics.
+#[test]
+fn piped_fluid_port_trait_surface() {
+    let t = find_trait("std/ports/fluid", "PipedFluidPort");
+
+    assert_eq!(
+        t.refinements.len(),
+        2,
+        "PipedFluidPort should refine exactly 2 supertraits \
+         (FluidPort, LocatedPort), got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"FluidPort".to_string()),
+        "PipedFluidPort refinements should contain 'FluidPort', got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"LocatedPort".to_string()),
+        "PipedFluidPort refinements should contain 'LocatedPort', got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        2,
+        "PipedFluidPort should have exactly 2 own required members \
+         (inner_diameter, connection_type); got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        param_type("std/ports/fluid", "PipedFluidPort", "inner_diameter"),
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
+        "PipedFluidPort.inner_diameter must be Scalar<LENGTH>"
+    );
+    assert_eq!(
+        param_type("std/ports/fluid", "PipedFluidPort", "connection_type"),
+        Type::Enum("PipeConnectionType".into()),
+        "PipedFluidPort.connection_type must be Type::Enum(\"PipeConnectionType\")"
+    );
+}
+
+/// Behavioral: a concrete port that conforms to PipedFluidPort must compile with
+/// zero Severity::Error diagnostics when ALL inherited + own params are supplied.
+///
+/// PipedFluidPort diamond:
+///
+///          Port  (direction : Directionality = Bidi — defaulted, can omit)
+///         /    \
+///   FluidPort  LocatedPort
+///   (pressure,  (frame : Frame3)
+///    flow_rate,
+///    medium,
+///    fluid_type)
+///         \    /
+///       PipedFluidPort
+///       (inner_diameter, connection_type)
+///
+/// This is the PRD §7 ζ signal: "reify check accepts a PipedFluidPort
+/// (connection_type: PipeConnectionType.Threaded)".
+///
+/// RED: PipedFluidPort absent → compile error on unknown trait.
+#[test]
+fn piped_fluid_port_concrete_conformer_diamond_merge_compiles() {
+    let source = r#"
+import std.ports.fluid
+
+structure def PipeConformer {
+    port p : in PipedFluidPort {
+        param pressure : Pressure = 101325Pa
+        param flow_rate : VolumetricFlowRate = 0.001m3/s
+        param medium : String = "water"
+        param fluid_type : FluidType = FluidType.Liquid
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1mm, 0mm, 0mm),
+            y_axis: vec3(0mm, 1mm, 0mm),
+            z_axis: vec3(0mm, 0mm, 1mm),
+        )
+        param inner_diameter : Length = 25mm
+        param connection_type : PipeConnectionType = PipeConnectionType.Threaded
+    }
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "PipedFluidPort concrete conformer (diamond: FluidPort+LocatedPort both refine Port) \
+         should compile without errors when all inherited+own params are supplied; got: {:?}",
+        errors
+    );
+
+    assert!(
+        compiled
+            .templates
+            .iter()
+            .any(|t| t.name == "PipeConformer" && t.entity_kind == EntityKind::Structure),
+        "PipeConformer should be declared as a Structure template; found: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.entity_kind))
+            .collect::<Vec<_>>()
     );
 }
 
