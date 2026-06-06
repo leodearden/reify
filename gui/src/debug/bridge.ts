@@ -12,6 +12,8 @@ import type { Mesh, BufferGeometry } from 'three';
 import { testMode, setTestMode } from './testMode';
 import { getConsoleErrors, clearConsoleErrors } from './consoleErrors';
 import { toPng } from 'html-to-image';
+import { createLspClient, extractHoverMarkdown } from '../editor/lspClient';
+import { pathToUri } from '../utils/pathUtils';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
 // 16 MB ceiling is empirical: html-to-image silently truncates output above the
@@ -998,7 +1000,63 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       return { ok: true, idle_after_ms: Math.round(performance.now() - start) };
     },
+
+    // --- F2 LSP probe tools (task-4304) ---
+    // One lspClient instance shared across all three probe handlers; it calls
+    // the in-process LSP via the Tauri lsp_request command, reusing its
+    // response normalisation (completion list→array, null-handling).
+
+    hover_at: async (params) => {
+      const target = resolveActiveProbeTarget(ctx, params);
+      if ('error' in target) return target;
+      const { uri, line, col } = target;
+      const lsp = createLspClient();
+      const hover = await lsp.hover(uri, line, col);
+      if (!hover) {
+        return { markdown: '', markdownLength: 0, contents: null, range: null };
+      }
+      const markdown = extractHoverMarkdown(hover.contents);
+      return {
+        markdown,
+        markdownLength: markdown.length,
+        contents: hover.contents,
+        range: hover.range ?? null,
+      };
+    },
   };
+}
+
+/**
+ * Validate probe params and derive the LSP document URI from the active file.
+ * Returns `{ uri, line, col }` on success or `{ error }` on failure.
+ *
+ * Guards:
+ * - ctx.stores.editor.state.activeFile must be non-null ('no active file')
+ * - line and col must be present, non-negative, finite integers
+ *   ('line and col must be non-negative integers')
+ *
+ * col maps to LSP position.character (mirrors bridge.ts convention).
+ */
+function resolveActiveProbeTarget(
+  ctx: ReifyDebugContext,
+  params: Record<string, unknown>,
+): { uri: string; line: number; col: number } | { error: string } {
+  const activeFile = ctx.stores.editor.state.activeFile;
+  if (!activeFile) return { error: 'no active file' };
+
+  const { line, col } = params as { line: unknown; col: unknown };
+  if (
+    typeof line !== 'number' ||
+    !Number.isInteger(line) ||
+    line < 0 ||
+    typeof col !== 'number' ||
+    !Number.isInteger(col) ||
+    col < 0
+  ) {
+    return { error: 'line and col must be non-negative integers' };
+  }
+
+  return { uri: pathToUri(activeFile), line, col };
 }
 
 interface DebugRequest {
