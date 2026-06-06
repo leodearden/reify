@@ -101,7 +101,13 @@ pub(crate) const KNOWN_BLOCK_PRAGMAS: &[&str] = &["precision", "solver", "kernel
 /// this list also reuses the existing "module-only pragma on block" warning
 /// from `validate_pragmas` for free if a user misplaces `#cfg` inside a
 /// structure or other block-level declaration.
-pub(crate) const MODULE_ONLY_PRAGMAS: &[&str] = &["no_prelude", "version", "cfg"];
+///
+/// `#deterministic` (PRD task #18) is module-scoped in v0.3: it lowers to the
+/// `CompiledModule.deterministic` flag. Block-/call-site scoping is deferred to
+/// a follow-up (mirroring the deferred per-block `#precision`/`#solver`/`#kernel`
+/// scoping); a misplaced `#deterministic` on a block falls through to the
+/// existing "only valid at module level" warning for free.
+pub(crate) const MODULE_ONLY_PRAGMAS: &[&str] = &["no_prelude", "version", "cfg", "deterministic"];
 
 /// Returns `true` if `name` is a known block-level pragma.
 pub(crate) fn is_known_block_pragma(name: &str) -> bool {
