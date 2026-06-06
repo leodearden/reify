@@ -3,6 +3,7 @@
 
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import type { DebugStores, DebugViewport, ReifyDebugContext } from './types';
 import { convertRawGuiState } from '../types';
 import type { RawGuiState, DiagnosticInfo } from '../types';
@@ -894,6 +895,18 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       }
 
       return { ok: true, layout: { ...ctx.stores.layout.state } };
+    },
+
+    set_window_size: async (params) => {
+      const { width, height } = params as { width: unknown; height: unknown };
+      if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0) {
+        return { error: 'width must be a positive finite number' };
+      }
+      if (typeof height !== 'number' || !Number.isFinite(height) || height <= 0) {
+        return { error: 'height must be a positive finite number' };
+      }
+      await getCurrentWindow().setSize(new LogicalSize(width, height));
+      return { ok: true, width, height };
     },
 
     wait_for_idle: async (params) => {
