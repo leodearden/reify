@@ -52,6 +52,7 @@ The `sync_comments_test.sh` entry is kept separate because that script lives in
 | `test_portable_timeout.sh` | Tests `portable_timeout()` from `scripts/lib_portable.sh` |
 | `test_release_mode_in_test_command.sh` | Tests orchestrator.yaml runs cargo test --release for release-only tests |
 | `test_run_all.sh` | Tests this `run_all.sh` discovery runner |
+| `test_setup_worktree_debug_port.sh` | Tests `allocate_free_port()` and `scripts/setup-worktree-debug-port.sh` |
 | `test_sync_comments_grep.sh` | Tests sync_comments grep pattern correctness |
 | `test_test_helpers.sh` | Tests the `test_helpers.sh` shared library |
 | `test_tree_sitter_pipeline.sh` | Integration tests for `scripts/tree-sitter-generate.sh` |
