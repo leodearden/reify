@@ -763,6 +763,26 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { ok: true, target: { tagName: el.tagName.toLowerCase(), testId: el.getAttribute('data-testid') } };
     },
 
+    drag: (params) => {
+      if (!validXY(params.from)) return { error: 'from must be an object with finite x and y' };
+      if (!validXY(params.to)) return { error: 'to must be an object with finite x and y' };
+      const from = params.from as { x: number; y: number };
+      const to = params.to as { x: number; y: number };
+      const elFrom = document.elementFromPoint(from.x, from.y);
+      if (!elFrom) return { error: `no element at from point (${from.x}, ${from.y})` };
+      // elTo falls back to elFrom when the destination resolves to null (e.g. off-canvas).
+      const elTo = document.elementFromPoint(to.x, to.y) ?? elFrom;
+      // Synthetic pointer-move drag: pointerdown+mousedown at from, pointermove at to,
+      // pointerup+mouseup at to (all with matching clientX/clientY).
+      // Contract §4: NO native HTML5 drag-and-drop — dragstart/drop are NOT fired.
+      dispatchPointer(elFrom, 'pointerdown', from.x, from.y);
+      dispatchPointer(elFrom, 'mousedown', from.x, from.y);
+      dispatchPointer(elTo, 'pointermove', to.x, to.y);
+      dispatchPointer(elTo, 'pointerup', to.x, to.y);
+      dispatchPointer(elTo, 'mouseup', to.x, to.y);
+      return { ok: true, from, to };
+    },
+
     select_entity: (params) => {
       const entityPath = (params.entityPath as string) ?? null;
       ctx.stores.selection.selectEntity(entityPath);
