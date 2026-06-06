@@ -458,7 +458,14 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
 /// **Algorithm:**
 /// 1. Filter `values` for `Value::Map` entries whose `error` field equals
 ///    `discriminator` (the cross-crate contract string produced by the
-///    corresponding `make_*_error` function in `reify-stdlib`).
+///    corresponding `make_*_error` function in `reify-stdlib`).  When `kind`
+///    is `Some(k)`, the Map's `"kind"` field must additionally equal `k`.
+///    This distinguishes producers that decorate a typed Map (e.g.
+///    `make_duplicate_solid_error` clones a `kind="mechanism"` Map and stamps
+///    `error="duplicate_solid"`) from producers that build a fresh, kind-less
+///    error Map (`make_nondriving_joint_error`, which passes `None`).  Without
+///    the guard a future error-Map type that happened to reuse a discriminator
+///    string would be misattributed to the wrong detector.
 /// 2. Sort by [`ValueCellId`] for deterministic ordering across hash-based
 ///    [`ValueMap`] iteration.
 /// 3. Dedup by structural [`Value`] equality — one diagnostic per distinct
@@ -474,6 +481,7 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
 /// `{entity, member}` strings with no source-span, so no label is attached.
 fn detect_error_map_diagnostics(
     values: &ValueMap,
+    kind: Option<&str>,
     discriminator: &str,
     code: DiagnosticCode,
     fallback_msg: &str,
@@ -482,6 +490,16 @@ fn detect_error_map_diagnostics(
         .iter()
         .filter(|(_, v)| {
             let Value::Map(m) = v else { return false; };
+            // Optional kind guard: when the producing `make_*_error` decorates
+            // a typed Map (duplicate_solid clones a `kind="mechanism"` Map),
+            // require the kind to match so an unrelated Map that happens to
+            // reuse the `error` discriminator is not picked up by this detector.
+            if let Some(kind) = kind {
+                let kind_key = Value::String("kind".to_string());
+                if !matches!(m.get(&kind_key), Some(Value::String(k)) if k == kind) {
+                    return false;
+                }
+            }
             let error_key = Value::String("error".to_string());
             matches!(m.get(&error_key), Some(Value::String(e)) if e == discriminator)
         })
@@ -515,9 +533,11 @@ fn detect_error_map_diagnostics(
 /// discipline) OUTSIDE the solver gate so the error surfaces on kernel-less
 /// `reify check` and in the GUI panel.
 ///
-/// Delegates to [`detect_error_map_diagnostics`] with `discriminator =
-/// "duplicate_solid"` — the `error` field value produced by
-/// `make_duplicate_solid_error` in `mechanism.rs`.
+/// Delegates to [`detect_error_map_diagnostics`] with `kind = Some("mechanism")`
+/// and `discriminator = "duplicate_solid"`.  `make_duplicate_solid_error`
+/// (mechanism.rs) clones a `kind="mechanism"` Map and stamps
+/// `error="duplicate_solid"`, so BOTH fields are required to match — preserving
+/// the original `is_duplicate_solid_mechanism` predicate's two-field contract.
 ///
 /// **No source span:** [`ValueCellId`] carries no source-span; the `error_path1`
 /// / `error_path2` fields in the error Map are empty `Value::List`s by the v0.1
@@ -526,6 +546,7 @@ fn detect_error_map_diagnostics(
 fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
     detect_error_map_diagnostics(
         values,
+        Some("mechanism"),
         "duplicate_solid",
         DiagnosticCode::MechanismDuplicateSolid,
         "duplicate solid in mechanism",
@@ -537,12 +558,15 @@ fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
 ///
 /// Called in both `eval` and `eval_cached` outside the solver gate, mirroring
 /// [`detect_mechanism_errors`].  Delegates to [`detect_error_map_diagnostics`]
-/// with `discriminator = "nondriving_joint"` — the `error` field value produced
-/// by `make_nondriving_joint_error` in `joints.rs` and returned by
-/// `bind`/`dim`/`sweep`/`sweep_grid` when a coupling or fixed joint is passed.
+/// with `kind = None` and `discriminator = "nondriving_joint"` — the `error`
+/// field value produced by `make_nondriving_joint_error` in `joints.rs` and
+/// returned by `bind`/`dim`/`sweep`/`sweep_grid` when a coupling or fixed joint
+/// is passed.  `kind` is `None` because that producer builds a fresh error Map
+/// with no `"kind"` field (only `error`/`error_message`/`joint`).
 fn detect_nondriving_joint_errors(values: &ValueMap) -> Vec<Diagnostic> {
     detect_error_map_diagnostics(
         values,
+        None,
         "nondriving_joint",
         DiagnosticCode::MechanismNonDrivingJoint,
         "joint has no free motion variable (coupling or fixed)",
