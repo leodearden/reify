@@ -2074,4 +2074,35 @@ mod tests {
             "STL byte length must equal 84 + 50*count"
         );
     }
+
+    /// Mirrors `export_stl_of_unit_cube_writes_valid_binary` for 3MF.
+    /// Because Stored=uncompressed, OPC part names and model XML appear
+    /// literally in raw bytes — no zip reader needed.
+    ///
+    /// RED before step-8: Manifold export() routes ThreeMF to `_ => Err(STUB_MSG)`.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn export_3mf_of_unit_cube_writes_valid_package() {
+        let mut kernel = ManifoldKernel::new();
+        let h = kernel
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
+
+        let mut buf = Vec::new();
+        kernel
+            .export(h, ExportFormat::ThreeMF, &mut buf)
+            .expect("ManifoldKernel ThreeMF export of a unit cube must succeed");
+
+        // Stored/uncompressed: OPC part names appear literally in raw bytes.
+        assert!(
+            buf.windows(b"3D/3dmodel.model".len())
+                .any(|w| w == b"3D/3dmodel.model"),
+            "raw bytes must contain '3D/3dmodel.model'"
+        );
+
+        let raw_str = std::str::from_utf8(&buf).unwrap_or("");
+        let tri_count = raw_str.matches("<triangle ").count();
+        assert!(tri_count > 0, "ManifoldKernel 3MF export must contain at least one <triangle>");
+    }
 }
