@@ -483,6 +483,75 @@ fn tool_defs() -> Vec<ToolDef> {
                 }
             }),
         },
+        // --- C2 layout-control tools (task-4302) — frontend-mediated ---
+        ToolDef {
+            name: "resize_panes",
+            description: "Resize one or more layout panes by setting their pixel dimensions. \
+                          All five dimensions are optional; omit any to leave them unchanged. \
+                          Accepts non-negative finite numbers. Returns { ok, layout } on success.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "editorWidth":       { "type": "number", "description": "Width of the editor pane in pixels." },
+                    "sideWidth":         { "type": "number", "description": "Width of the side panel in pixels." },
+                    "designTreeHeight":  { "type": "number", "description": "Height of the design tree panel in pixels." },
+                    "propertyHeight":    { "type": "number", "description": "Height of the property panel in pixels." },
+                    "constraintHeight":  { "type": "number", "description": "Height of the constraint panel in pixels." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "set_window_size",
+            description: "Resize the application window to the specified logical-pixel dimensions. \
+                          Both width and height must be positive finite numbers. \
+                          Returns { ok, width, height } on success.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "width":  { "type": "number", "description": "Target window width in logical pixels (must be > 0)." },
+                    "height": { "type": "number", "description": "Target window height in logical pixels (must be > 0)." }
+                },
+                "required": ["width", "height"]
+            }),
+        },
+        ToolDef {
+            name: "expand_tree_node",
+            description: "Expand a node in the design tree or constraint panel by clicking its toggle control. \
+                          Idempotent: if the node is already expanded, no click is dispatched. \
+                          panel defaults to 'design'; pass panel:'constraint' for the constraint panel. \
+                          Returns { ok, path, expanded } where expanded reflects the post-operation state.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path":  { "type": "string", "description": "Entity path or node id to expand." },
+                    "panel": {
+                        "type": "string",
+                        "enum": ["design", "constraint"],
+                        "description": "Which panel's tree to operate on (default: 'design')."
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDef {
+            name: "collapse_tree_node",
+            description: "Collapse a node in the design tree or constraint panel by clicking its toggle control. \
+                          Idempotent: if the node is already collapsed, no click is dispatched. \
+                          panel defaults to 'design'; pass panel:'constraint' for the constraint panel. \
+                          Returns { ok, path, expanded } where expanded reflects the post-operation state.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path":  { "type": "string", "description": "Entity path or node id to collapse." },
+                    "panel": {
+                        "type": "string",
+                        "enum": ["design", "constraint"],
+                        "description": "Which panel's tree to operate on (default: 'design')."
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
     ]
 }
 
