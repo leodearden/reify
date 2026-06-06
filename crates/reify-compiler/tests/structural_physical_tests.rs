@@ -81,7 +81,7 @@ fn assert_constraint_op(template: &TopologyTemplate, member: &str, expected: Bin
 ///
 ///   `BinOp { op: Gt, left: IndexAccess { object: ValueRef(material),
 ///                                        index: Literal(String("density")) },
-///            right: Literal(Int(0) | Real(~0) | Scalar{si_value≈0, ..}) }`
+///            right: Literal(Scalar{si_value≈0, dimension=MASS_DENSITY}) }`
 ///
 /// This is the shape produced by SIR-α's struct-member access lowering
 /// (`expr.rs:1948-1964`), which turns `material.density` into
@@ -90,6 +90,12 @@ fn assert_constraint_op(template: &TopologyTemplate, member: &str, expected: Bin
 /// would slip past the `constraints.len() == 2` count assertions used by
 /// the TC/EC inheritance tests and the `!constraints.is_empty()` check used
 /// by `physical_constraint_injected_into_conforming_structure`.
+///
+/// The RHS arm is intentionally narrow: only the dimensioned Scalar form is
+/// accepted. Int(0) and Real(~0) are NOT accepted — silently tolerating them
+/// would hide a regression where the source reverts to a bare `0`, which
+/// produces Indeterminate at runtime (per esc-3115-112) and defeats the
+/// entire purpose of the #3111 tightening.
 fn assert_density_positive_constraint_present(template: &TopologyTemplate) {
     let matches: Vec<_> = template
         .constraints
@@ -117,14 +123,16 @@ fn assert_density_positive_constraint_present(template: &TopologyTemplate) {
             if key != "density" {
                 return false;
             }
-            // Right side: zero literal — Int(0), Real(~0), or Scalar{si_value≈0}
-            // (the last form is produced after task #3111 tightened the RHS to
-            // `0kg/m^3` so that `eval_cmp` dim-equality succeeds at runtime).
+            // Right side: must be a dimensioned Scalar with si_value≈0 and
+            // MASS_DENSITY dimension. After task #3111 tightened the RHS to
+            // `0kg/m^3`, the only correct lowering is
+            // Scalar{si_value=0, dimension=MASS_DENSITY}.
+            // Int(0) and Real(~0) are NOT accepted — tolerating them would hide
+            // a regression where the RHS reverts to bare `0` (Indeterminate at
+            // runtime per esc-3115-112), defeating the test's stated purpose.
             match &right.kind {
-                CompiledExprKind::Literal(Value::Int(v)) => *v == 0,
-                CompiledExprKind::Literal(Value::Real(v)) => v.abs() < 1e-9,
-                CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => {
-                    si_value.abs() < 1e-9
+                CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+                    si_value.abs() < 1e-9 && *dimension == DimensionVector::MASS_DENSITY
                 }
                 _ => false,
             }

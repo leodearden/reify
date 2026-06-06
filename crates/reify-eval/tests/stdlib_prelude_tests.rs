@@ -519,6 +519,83 @@ structure S {
     );
 }
 
+// ─── task-3111: density-positivity constraint eval-time satisfaction ─────────
+
+/// Eval-time pin: the injected `material.density > 0kg/m^3` constraint from
+/// `Physical` evaluates to `Satisfied` (not `Indeterminate`) for a conforming
+/// structure that supplies a dimensioned Density value.
+///
+/// Before task #3111 tightened `Material.density` from `Real` to `Density`
+/// (materials_mechanical.ri) and the Physical constraint RHS from bare `0` to
+/// `0kg/m^3` (structural_physical.ri), `eval_cmp` would compare a Real LHS
+/// against a Scalar RHS (or vice-versa), detect a dimension mismatch, and
+/// return `Indeterminate` (esc-3115-112). This test locks the post-#3111
+/// behavior: both sides are now Scalar{MASS_DENSITY} so `eval_cmp` succeeds
+/// and the constraint evaluates to `Satisfied`.
+///
+/// The IR-shape pin in `structural_physical_tests::assert_density_positive_constraint_present`
+/// guards the compiled RHS form; this test guards the runtime payoff.
+#[test]
+fn physical_density_constraint_evaluates_to_satisfied_not_indeterminate() {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_ir::Satisfaction;
+
+    // Minimal Physical conformer: geometry + material with a positive
+    // dimensioned density. The injected constraint is `material.density > 0kg/m^3`.
+    let source = r#"
+structure def Bracket : Physical {
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let check_result = engine.check(&compiled);
+
+    let check_errors = collect_errors(&check_result.diagnostics);
+    assert!(
+        check_errors.is_empty(),
+        "check() should produce no error diagnostics, got: {:?}",
+        check_errors
+    );
+
+    // Physical injects exactly one constraint: `material.density > 0kg/m^3`.
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "Bracket : Physical should have exactly 1 constraint result \
+         (material.density > 0kg/m^3), got {}: {:?}",
+        check_result.constraint_results.len(),
+        check_result
+            .constraint_results
+            .iter()
+            .map(|cr| &cr.satisfaction)
+            .collect::<Vec<_>>()
+    );
+    let cr = &check_result.constraint_results[0];
+    assert_eq!(
+        cr.satisfaction,
+        Satisfaction::Satisfied,
+        "material.density > 0kg/m^3 should evaluate to Satisfied \
+         (7850kg/m^3 > 0kg/m^3 — both sides are Scalar{{MASS_DENSITY}} after #3111), \
+         but got {:?}. Indeterminate here means a dimension mismatch at eval_cmp \
+         (esc-3115-112 regression). All diagnostics: {:?}",
+        cr.satisfaction,
+        check_result.diagnostics
+    );
+}
+
 // ─── step-9: End-to-end prelude pipeline ─────────────────────────────
 
 /// Full pipeline: .ri source → compile_with_prelude → Engine::eval.
