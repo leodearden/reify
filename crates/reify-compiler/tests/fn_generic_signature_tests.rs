@@ -223,9 +223,17 @@ fn generic_fn_undeclared_signature_param_emits_fn_unknown_type_param() {
     );
 
     let diag = fn_unknown_diag.unwrap();
+    // Assert on the quoted form so the check is pinned to the intended diagnostic
+    // shape ("type 'U' in the signature of generic function 'f' …") rather than
+    // matching any coincidental uppercase U in the message.
     assert!(
-        diag.message.contains('U'),
-        "FnUnknownTypeParam diagnostic message should mention 'U', got: {:?}",
+        diag.message.contains("'U'"),
+        "FnUnknownTypeParam diagnostic message should mention \"'U'\" (quoted), got: {:?}",
+        diag.message
+    );
+    assert!(
+        diag.message.contains("'f'"),
+        "FnUnknownTypeParam diagnostic message should name the generic function 'f', got: {:?}",
         diag.message
     );
 }
