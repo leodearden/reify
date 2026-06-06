@@ -34,9 +34,13 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "bind" => {
             // Validation surface (each guard short-circuits to
-            // Value::Undef BEFORE constructing the binding Map):
+            // Value::Undef or an error Map BEFORE constructing the
+            // binding Map):
             //   args.len() == 2          → arity guard
-            //   is_joint_value(args[0])  → joint-arg guard
+            //   is_joint_value(args[0])  → joint-arg guard (non-joints → Undef)
+            //   is_driving_joint(args[0])→ driving-joint guard (coupling/
+            //                              fixed → E_MECHANISM_NONDRIVING_JOINT
+            //                              error Map, not Undef)
             // The motion value (args[1]) is stored verbatim and
             // accepted lazily — downstream `transform_at` is the
             // single point of dimension/finite-value validation when
@@ -51,6 +55,9 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             }
             if !is_joint_value(&args[0]) {
                 return Some(Value::Undef);
+            }
+            if !is_driving_joint(&args[0]) {
+                return Some(make_nondriving_joint_error(args[0].clone()));
             }
             make_binding(args[0].clone(), args[1].clone())
         }
