@@ -761,10 +761,10 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::PatternKind::Circular => {
-                    // Missing-arg coverage: build_circular_pattern_missing_{count,axis}_no_kernel_error
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
+                    if args.iter().any(|(n, _)| n == "axis") {
+                        // Value form: circular_pattern(target, axis_value, count, angle)
+                        let axis_val = eval_named_arg(
+                            "axis",
                             kind,
                             args,
                             values,
@@ -773,48 +773,121 @@ pub(crate) fn compile_geometry_op(
                             diagnostics,
                         )
                         .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                            format!("missing required argument 'axis' for {}", kind)
+                        })?;
+                        let (axis_origin, axis_dir) = decode_axis(&axis_val)
+                            .map_err(|e| format!("circular_pattern: {}", e))?;
+                        let count_raw = eval_named_arg_f64(
+                            "count",
+                            kind,
+                            args,
+                            values,
+                            functions,
+                            meta_map,
+                            diagnostics,
+                        )
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument 'count' for {}", kind)
+                        })?;
+                        let count =
+                            validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+                        let raw_angle = eval_named_arg(
+                            "angle",
+                            kind,
+                            args,
+                            values,
+                            functions,
+                            meta_map,
+                            diagnostics,
+                        )
+                        .ok_or_else(|| {
+                            format!("missing required argument 'angle' for {}", kind)
+                        })?;
+                        // CAD convention: a bare numeric angle (no unit suffix) is
+                        // interpreted as degrees and converted to radians.  Values
+                        // that already carry an ANGLE dimension (from `deg`/`rad`
+                        // suffixes in source) pass through unchanged.
+                        let mut convert_bare_angle = |deg: f64| -> reify_ir::Value {
+                            let rad = deg * std::f64::consts::PI / 180.0;
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
+                                 use `{}deg` or `{:.6}rad` for explicit units",
+                                deg, deg, deg, rad
+                            )));
+                            reify_ir::Value::angle(rad)
+                        };
+                        let angle = match raw_angle {
+                            reify_ir::Value::Real(v) => convert_bare_angle(v),
+                            reify_ir::Value::Int(i) => convert_bare_angle(i as f64),
+                            other => other,
+                        };
+                        Ok(reify_ir::GeometryOp::CircularPattern {
+                            target: target_id,
+                            axis_origin,
+                            axis_dir,
+                            count,
+                            angle,
                         })
-                    };
-                    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
-                    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
-                    let count_raw = f64_arg("count")?;
-                    let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-                    let raw_angle = eval_named_arg(
-                        "angle",
-                        kind,
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
-                    // CAD convention: a bare numeric angle (no unit suffix) is
-                    // interpreted as degrees and converted to radians.  Values
-                    // that already carry an ANGLE dimension (from `deg`/`rad`
-                    // suffixes in source) pass through unchanged.
-                    let mut convert_bare_angle = |deg: f64| -> reify_ir::Value {
-                        let rad = deg * std::f64::consts::PI / 180.0;
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
-                             use `{}deg` or `{:.6}rad` for explicit units",
-                            deg, deg, deg, rad
-                        )));
-                        reify_ir::Value::angle(rad)
-                    };
-                    let angle = match raw_angle {
-                        reify_ir::Value::Real(v) => convert_bare_angle(v),
-                        reify_ir::Value::Int(i) => convert_bare_angle(i as f64),
-                        other => other,
-                    };
-                    Ok(reify_ir::GeometryOp::CircularPattern {
-                        target: target_id,
-                        axis_origin,
-                        axis_dir,
-                        count,
-                        angle,
-                    })
+                    } else {
+                        // Scalar form (back-compat): ox, oy, oz, ax, ay, az, count, angle
+                        // Missing-arg coverage: build_circular_pattern_missing_{count,axis}_no_kernel_error
+                        let mut f64_arg = |name: &str| -> Result<f64, String> {
+                            eval_named_arg_f64(
+                                name,
+                                kind,
+                                args,
+                                values,
+                                functions,
+                                meta_map,
+                                diagnostics,
+                            )
+                            .ok_or_else(|| {
+                                format!(
+                                    "missing or non-finite argument '{}' for {}",
+                                    name, kind
+                                )
+                            })
+                        };
+                        let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
+                        let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
+                        let count_raw = f64_arg("count")?;
+                        let count =
+                            validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+                        let raw_angle = eval_named_arg(
+                            "angle",
+                            kind,
+                            args,
+                            values,
+                            functions,
+                            meta_map,
+                            diagnostics,
+                        )
+                        .ok_or_else(|| {
+                            format!("missing required argument 'angle' for {}", kind)
+                        })?;
+                        // CAD convention: same bare-angle path as the value form above.
+                        let mut convert_bare_angle = |deg: f64| -> reify_ir::Value {
+                            let rad = deg * std::f64::consts::PI / 180.0;
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
+                                 use `{}deg` or `{:.6}rad` for explicit units",
+                                deg, deg, deg, rad
+                            )));
+                            reify_ir::Value::angle(rad)
+                        };
+                        let angle = match raw_angle {
+                            reify_ir::Value::Real(v) => convert_bare_angle(v),
+                            reify_ir::Value::Int(i) => convert_bare_angle(i as f64),
+                            other => other,
+                        };
+                        Ok(reify_ir::GeometryOp::CircularPattern {
+                            target: target_id,
+                            axis_origin,
+                            axis_dir,
+                            count,
+                            angle,
+                        })
+                    }
                 }
                 reify_compiler::PatternKind::Mirror => {
                     if args.iter().any(|(n, _)| n == "plane") {
