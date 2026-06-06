@@ -1484,8 +1484,26 @@ mod tests {
     /// (which pins the construction family); the converse asserts added to the
     /// geometry / dynamics / construction disjointness tests above pin the other
     /// direction.
+    ///
+    /// Also pins disjointness from the two EARLIER arms in the same
+    /// `NoUserFunctions` ladder that this six-family set didn't cover (amendment:
+    /// reviewer test_coverage): the affine constructor/algebra families
+    /// (`AFFINE_MAP_CONSTRUCTOR_NAMES` + `affine_map_algebra_result_type`'s arms)
+    /// and the list-helper family (`infer_list_helper_return_type`'s arms). A
+    /// math op sharing a name with an earlier arm would be silently shadowed and
+    /// produce a wrong cell type with no failing test. `determinant` is the one
+    /// DELIBERATE overlap with affine-algebra — the affine arm fires only for an
+    /// `AffineMap` first arg and otherwise falls through to the math arm (arg-type
+    /// disambiguated), so it is the documented exception.
     #[test]
     fn math_operation_fn_names_are_disjoint_from_other_families() {
+        // Affine ALGEBRA free-fn names (`affine_map_algebra_result_type`'s match
+        // arms) and list-helper names (`infer_list_helper_return_type`'s match
+        // arms) have no public single-source slice — they are hardcoded match
+        // arms — so these local fixtures mirror them. Keep in sync with those fns.
+        const AFFINE_ALGEBRA_NAMES: &[&str] = &["affine_compose", "affine_inverse", "determinant"];
+        const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
+
         for name in MATH_OPERATION_NAMES {
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
@@ -1522,6 +1540,33 @@ mod tests {
                 "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
                  MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179 — \
                  operations and constructors are disjoint slices)"
+            );
+            // Affine constructor family — an EARLIER arm in expr.rs's
+            // NoUserFunctions ladder; a same-named math op would be shadowed.
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family — earlier \
+                 arm in the NoUserFunctions ladder would shadow it)"
+            );
+            // Affine ALGEBRA free-fns — also an earlier arm. `determinant` is the
+            // ONE intentional overlap (arg-type disambiguated: the affine arm
+            // fires only for an AffineMap first arg, else falls through to the
+            // math arm), so it is the documented exception; every other
+            // affine-algebra name would UNCONDITIONALLY shadow a same-named math op.
+            assert!(
+                !AFFINE_ALGEBRA_NAMES.contains(name) || *name == "determinant",
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be an affine-algebra \
+                 free-fn (except the intentional, arg-type-disambiguated `determinant` \
+                 overlap)"
+            );
+            // List-helper family — also an earlier ladder arm; a collision would
+            // shadow the math arm.
+            assert!(
+                !LIST_HELPER_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be a list-helper \
+                 (`single` / `flat_map` — earlier arm in the NoUserFunctions ladder \
+                 would shadow it)"
             );
         }
     }

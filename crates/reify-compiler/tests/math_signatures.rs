@@ -60,6 +60,9 @@ structure def MathBoundary {
     let crs     = cross(vec([1.0m, 0.0m, 0.0m]), vec([0.0m, 1.0m, 0.0m]))
     let det4    = determinant(m4)
     let inv4    = inverse(m4)
+    let outp    = outer(vec([1.0m, 2.0m]), vec([3.0m, 4.0m, 5.0m]))
+    let trp     = transpose(m4)
+    let trc     = trace(m4)
     let eigs    = eigenvalues(diag([3.0m^2, 5.0m^2, 7.0m^2, 9.0m^2]))
     let ceigs   = complex_eigenvalues(matrix([[0.0, -1.0], [1.0, 0.0]]))
     let z       = complex(3.0m, 4.0m)
@@ -304,6 +307,99 @@ fn inverse_two_way_is_inverse_length_tensor() {
             }
         }
         other => panic!("inverse eval should be Value::Tensor, got {other:?}"),
+    }
+}
+
+/// `outer(vec([1m,2m]), vec([3m,4m,5m]))` ⟺ `Tensor<rank 2, n 3, Scalar<Area>>` /
+/// eval `Value::Tensor` (2 rows × 3 cols) whose cells carry `Area` (= the L·L
+/// outer product [[3,4,5],[6,8,10]] m²). The forward `n` is the column count =
+/// second-arg N (3). `outer`/`transpose`/`trace` were forward-only before this
+/// amendment — they produce a Tensor/Scalar, exactly the D6/D7 kind+dimension
+/// runtime hazard the two-way suite exists to lock down.
+#[test]
+fn outer_two_way_is_tensor_area() {
+    let (ty, val) = two_way("outp");
+    assert_eq!(
+        ty,
+        Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity: Box::new(sca(DimensionVector::AREA))
+        },
+        "outer forward type"
+    );
+    match val {
+        Value::Tensor(rows) => {
+            assert_eq!(rows.len(), 2, "outer eval row count");
+            match &rows[0] {
+                Value::Tensor(cells) => {
+                    assert_eq!(cells.len(), 3, "outer eval column count");
+                    for (i, c) in cells.iter().enumerate() {
+                        assert_eq!(
+                            value_dim(c),
+                            DimensionVector::AREA,
+                            "outer eval cell {i} dimension"
+                        );
+                    }
+                }
+                other => panic!("outer eval row should be a nested Value::Tensor, got {other:?}"),
+            }
+        }
+        other => panic!("outer eval should be Value::Tensor, got {other:?}"),
+    }
+}
+
+/// `transpose(m4)` of the dimensioned 4×4 `Length` matrix ⟺ `Tensor<rank 2,
+/// n 4, Scalar<Length>>` (identity kind+shape+dimension) / eval `Value::Tensor`
+/// (4×4) whose cells carry `Length` (transpose of a diagonal = the diagonal).
+#[test]
+fn transpose_two_way_is_length_tensor() {
+    let (ty, val) = two_way("trp");
+    assert_eq!(
+        ty,
+        Type::Tensor {
+            rank: 2,
+            n: 4,
+            quantity: Box::new(sca(DimensionVector::LENGTH))
+        },
+        "transpose forward type"
+    );
+    match val {
+        Value::Tensor(rows) => {
+            assert_eq!(rows.len(), 4, "transpose eval row count");
+            match &rows[0] {
+                Value::Tensor(cells) => {
+                    assert_eq!(cells.len(), 4, "transpose eval column count");
+                    assert_eq!(
+                        value_dim(&cells[0]),
+                        DimensionVector::LENGTH,
+                        "transpose eval cell dimension"
+                    );
+                }
+                other => {
+                    panic!("transpose eval row should be a nested Value::Tensor, got {other:?}")
+                }
+            }
+        }
+        other => panic!("transpose eval should be Value::Tensor, got {other:?}"),
+    }
+}
+
+/// `trace(m4)` of the dimensioned 4×4 `Length` matrix ⟺ `Scalar<Length>` / eval
+/// `Scalar { 14.0, LENGTH }` (sum of the diagonal 2+3+4+5).
+#[test]
+fn trace_two_way_is_length_scalar() {
+    let (ty, val) = two_way("trc");
+    assert_eq!(ty, sca(DimensionVector::LENGTH), "trace forward type");
+    match val {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(dimension, DimensionVector::LENGTH, "trace eval dimension");
+            assert!(
+                (si_value - 14.0).abs() < EPS,
+                "trace eval value (2+3+4+5), got {si_value}"
+            );
+        }
+        other => panic!("trace eval should be Value::Scalar, got {other:?}"),
     }
 }
 

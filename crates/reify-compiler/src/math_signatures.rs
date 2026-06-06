@@ -220,9 +220,27 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // `determinant` of an N×N matrix scales as Q^N. N is read from the
         // matrix shape (capped into the i8 domain `pow` accepts); a dimensionless
         // result routes back to Real.
-        "determinant" => scalar_or_real(
-            arg_matrix_quantity(args, 0).pow(clamp_i8(arg_matrix_n(args, 0))),
-        ),
+        //
+        // Kind-preserving degrade (D7): when the matrix shape N is NOT statically
+        // known (`arg_matrix_n` degrades to 0 — a non-Tensor/Matrix arg or a
+        // shape-erased `Tensor{n:0}` from `matrix(non_literal_rows)`) but the
+        // quantity IS dimensioned, `Q.pow(0)` collapses to DIMENSIONLESS and
+        // `scalar_or_real` would route to `Type::Real` — a KIND flip, since eval
+        // operates on the concrete matrix and yields a dimensioned
+        // `Value::Scalar<Q^N>` (risking a runtime `TypeKindMismatch`). Unlike the
+        // other dim-changing arms (dot / magnitude / inverse), determinant's
+        // Scalar-vs-Real choice depends on N, so an unknown N must NOT silently
+        // demote the kind: carry the un-powered Q as a best-effort dimension
+        // (correct KIND; the exponent is unrecoverable without N) rather than Real.
+        "determinant" => {
+            let q = arg_matrix_quantity(args, 0);
+            let n = arg_matrix_n(args, 0);
+            if n == 0 && !q.is_dimensionless() {
+                Type::Scalar { dimension: q }
+            } else {
+                scalar_or_real(q.pow(clamp_i8(n)))
+            }
+        }
         // `inverse` negates the quantity dimension (Q⁻¹) and preserves the shape.
         // ALWAYS a rank-2 Tensor variant — never the first-arg type (D7).
         "inverse" => Type::Tensor {
@@ -1093,6 +1111,45 @@ mod tests {
             math_fn_result_type("determinant", &[m]),
             sca(DimensionVector::LENGTH.pow(5)),
             "determinant must read N from Type::Tensor.n (5×5 → Length⁵)"
+        );
+    }
+
+    /// `determinant`, kind-preserving degrade (amendment: reviewer robustness).
+    /// When the matrix shape N is NOT statically known (`arg_matrix_n` → 0, e.g.
+    /// a shape-erased `Tensor{n:0}` from `matrix(non_literal_rows)`) but the
+    /// quantity IS dimensioned, the result must stay a `Type::Scalar` variant —
+    /// NEVER collapse to `Type::Real` via `Q.pow(0)` = DIMENSIONLESS. Eval
+    /// operates on the concrete matrix and yields a dimensioned
+    /// `Value::Scalar<Q^N>`, so a `Real` cell type would kind-flip and risk a
+    /// runtime `TypeKindMismatch` (the D7 hazard). The exponent is unrecoverable
+    /// without N; the KIND is what the two-way boundary requires.
+    #[test]
+    fn determinant_unknown_n_dimensioned_q_degrades_to_scalar_not_real() {
+        // A shape-erased rank-2 Tensor of Length (n = 0 ⇒ N unknown).
+        let m = typed(Type::Tensor {
+            rank: 2,
+            n: 0,
+            quantity: Box::new(sca(DimensionVector::LENGTH)),
+        });
+        let result = math_fn_result_type("determinant", &[m]);
+        assert!(
+            matches!(result, Type::Scalar { .. }),
+            "determinant with unknown N but dimensioned Q must stay a Scalar variant \
+             (D7 kind-preserving degrade), got {result:?}"
+        );
+    }
+
+    /// The dimensionless companion to the degrade case: unknown N AND a
+    /// dimensionless matrix must stay `Type::Real` (eval yields `Value::Real` for
+    /// a dimensionless determinant), so the degrade must NOT over-correct EVERY
+    /// unknown-N case to Scalar — only the dimensioned one.
+    #[test]
+    fn determinant_unknown_n_dimensionless_stays_real() {
+        let m = typed(ten_real(0));
+        assert_eq!(
+            math_fn_result_type("determinant", &[m]),
+            Type::Real,
+            "determinant with unknown N and dimensionless Q must stay Real"
         );
     }
 
