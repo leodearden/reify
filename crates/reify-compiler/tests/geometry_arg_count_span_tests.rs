@@ -129,11 +129,12 @@ fn circular_pattern_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn mirror_arg_count_diagnostic_has_span_label() {
-    // mirror() expects 7 arguments — passing 2 should produce a labeled diagnostic
+    // mirror() expects 7 arguments — passing 3 should produce a labeled diagnostic
+    // (2 args is now valid as the plane-value form: mirror(target, plane_value))
     assert_arg_count_label(
         r#"
             structure S {
-                let m = mirror(box(10mm, 10mm, 10mm), 1.0)
+                let m = mirror(box(10mm, 10mm, 10mm), 1.0, 2.0)
             }
         "#,
         "mirror() expects 7 arguments",

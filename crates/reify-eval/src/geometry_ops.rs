@@ -817,10 +817,10 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::PatternKind::Mirror => {
-                    // Missing-arg coverage: build_mirror_pattern_missing_plane_origin_no_kernel_error
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
+                    if args.iter().any(|(n, _)| n == "plane") {
+                        // Value form: mirror(target, plane_value)
+                        let plane_val = eval_named_arg(
+                            "plane",
                             kind,
                             args,
                             values,
@@ -829,14 +829,41 @@ pub(crate) fn compile_geometry_op(
                             diagnostics,
                         )
                         .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                            format!("missing required argument 'plane' for {}", kind)
+                        })?;
+                        let (plane_origin, plane_normal) = decode_plane(&plane_val)
+                            .map_err(|e| format!("mirror: {}", e))?;
+                        Ok(reify_ir::GeometryOp::Mirror {
+                            target: target_id,
+                            plane_origin,
+                            plane_normal,
                         })
-                    };
-                    Ok(reify_ir::GeometryOp::Mirror {
-                        target: target_id,
-                        plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
-                        plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
-                    })
+                    } else {
+                        // Scalar form (back-compat): ox, oy, oz, nx, ny, nz
+                        // Missing-arg coverage: build_mirror_pattern_missing_plane_origin_no_kernel_error
+                        let mut f64_arg = |name: &str| -> Result<f64, String> {
+                            eval_named_arg_f64(
+                                name,
+                                kind,
+                                args,
+                                values,
+                                functions,
+                                meta_map,
+                                diagnostics,
+                            )
+                            .ok_or_else(|| {
+                                format!(
+                                    "missing or non-finite argument '{}' for {}",
+                                    name, kind
+                                )
+                            })
+                        };
+                        Ok(reify_ir::GeometryOp::Mirror {
+                            target: target_id,
+                            plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
+                            plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
+                        })
+                    }
                 }
                 reify_compiler::PatternKind::Linear2D => {
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
