@@ -2665,7 +2665,7 @@ where
 | 11 | No `Date` type | v0.1 | ISO 8601 strings used for timestamps |
 | 12 | No `priv` modifier | Deferred | Hidden parameters on public definitions not yet justified |
 | 13 | Conditional compilation | Deferred | Conditional imports, platform-specific module variants |
-| 14 | String interpolation | Deferred | Display/templating concern |
+| 14 | String interpolation | Realized (v0.6) | `{ expr }` holes, `{{`/`}}` literal-brace escapes, and `format_display` render rules (bare strings, engineering-unit scalars, `undef`→`"undef"`) shipped in v0.6. See docs/prds/v0_6/string-interpolation.md. |
 | 15 | Complex number literal syntax | Deferred | `3.2 + 4.1j` sugar |
 | 16 | `AffineMap` type for non-rigid transforms | Deferred | Scaling, shearing transforms |
 | 17 | Differential operators full implementation | v0.1+ | `@optimized`; may be partial in early versions |
