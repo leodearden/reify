@@ -1635,6 +1635,71 @@ mod tests {
         assert!(empty_specs.is_empty(), "empty list should return empty Vec");
     }
 
+    /// step-9 RED (task 2926): extract_execution_params reads `deterministic`
+    /// (Value::Bool, default false) and `threads` (Option<Int>, default None)
+    /// from an ElasticOptions-shaped StructureInstance, mirroring
+    /// `extract_shell_route_params`' missing-field fallback discipline.
+    ///
+    /// `threads : Option<Int>` materialises at runtime as a `Value::Option`, so
+    /// the helper must unwrap `Value::Option(Some(Value::Int))` in addition to
+    /// accepting a bare `Value::Int`. Missing fields (or a non-StructureInstance)
+    /// fall back to the stdlib defaults `(deterministic = false, threads = none)`.
+    ///
+    /// RED: `extract_execution_params` does not exist yet → compile-fail.
+    #[test]
+    fn extract_execution_params_reads_deterministic_and_threads() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        // Wrap a field map as an ElasticOptions-shaped StructureInstance.
+        let make_options = |fields: PersistentMap<String, Value>| {
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "ElasticOptions".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        };
+
+        // (a) deterministic = true, threads = 4 (bare Int) → (true, Some(4)).
+        let opts_a = make_options(
+            [
+                ("deterministic".to_string(), Value::Bool(true)),
+                ("threads".to_string(), Value::Int(4)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(extract_execution_params(&opts_a), (true, Some(4)));
+
+        // (b) deterministic = false, threads stored in the real runtime
+        //     Option<Int> representation `Value::Option(Some(Int(8)))` → (false, Some(8)).
+        let opts_b = make_options(
+            [
+                ("deterministic".to_string(), Value::Bool(false)),
+                ("threads".to_string(), Value::Option(Some(Box::new(Value::Int(8))))),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(extract_execution_params(&opts_b), (false, Some(8)));
+
+        // (c) threads = none (`Value::Option(None)`), `deterministic` field absent
+        //     → both fall back to defaults (false, None).
+        let opts_c =
+            make_options([("threads".to_string(), Value::Option(None))].into_iter().collect());
+        assert_eq!(extract_execution_params(&opts_c), (false, None));
+
+        // (d) instance carrying only an unrelated field (neither `deterministic`
+        //     nor `threads` present) → defaults (false, None).
+        let opts_d = make_options(
+            [("require_hex_wedge".to_string(), Value::Bool(false))].into_iter().collect(),
+        );
+        assert_eq!(extract_execution_params(&opts_d), (false, None));
+
+        // (e) non-StructureInstance → defaults (false, None).
+        assert_eq!(extract_execution_params(&Value::Real(1.0)), (false, None));
+    }
+
     /// step-3 RED (task 4264): box_face_pressure_conserves_resultant.
     ///
     /// Build a unit-cube [0,1]^3 mesh with 8 corner nodes and the standard
