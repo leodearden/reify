@@ -11757,6 +11757,51 @@ mod mixed_region_tests {
     /// fails this test until consciously classified, making silent omission
     /// impossible.
     ///
+    /// Mirrors `compute_demanded_reprs_mesh_terminal_and_fillet_consumer` for
+    /// `ExportFormat::ThreeMF` (task 4286 step-5).  The terminal realization
+    /// must demand `ReprKind::Mesh` for any mesh-sink format.
+    ///
+    /// RED before step-6: `ExportFormat::ThreeMF` does not exist.
+    #[test]
+    fn compute_demanded_reprs_three_mf_demands_mesh() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::ModulePath;
+        use reify_ir::{ExportFormat, ReprKind};
+        use reify_test_support::{CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder};
+
+        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        let prim_box = || CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: vec![] };
+
+        // One template: Box × Box → BooleanUnion (terminal).
+        let template = TopologyTemplateBuilder::new("T3mf")
+            .realization_named("T3mf_a", 0, "a", vec![prim_box()])
+            .realization_named("T3mf_b", 1, "b", vec![prim_box()])
+            .realization_named(
+                "T3mf_u",
+                2,
+                "u",
+                vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("a".to_string()),
+                    right: GeomRef::Sub("b".to_string()),
+                }],
+            )
+            .build();
+        let module = CompiledModuleBuilder::new(ModulePath::single("test_demanded_reprs_3mf"))
+            .template(template)
+            .build();
+
+        let result = engine.compute_demanded_reprs(&module, ExportFormat::ThreeMF);
+        assert_eq!(result.len(), 1, "one template → one outer entry");
+        assert_eq!(result[0].len(), 3, "three realizations");
+        assert_eq!(
+            result[0][2],
+            ReprKind::Mesh,
+            "terminal BooleanUnion under ThreeMF (mesh sink) must demand Mesh"
+        );
+    }
+
     /// RED before step-4: `PrimitiveBox/Cylinder/Sphere/Tube` and
     /// `CurveLineSegment/Arc/Helix/InterpCurve/BezierCurve/NurbsCurve`
     /// hit the `_ => None` catch-all in step-2's impl.
