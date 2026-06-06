@@ -94,7 +94,7 @@ No implicit coercion from `Real` to `Int`. `Int` promotes to `Real` implicitly (
 
 **Brace escapes:** `{{` and `}}` produce the literal characters `{` and `}` without opening an interpolation hole. These are distinct from the backslash escapes listed above; `\{` is **not** a valid escape.
 
-**Render rules (value → text):** hole contents are rendered via `format_display`:
+**Render rules (value → text):** hole contents are rendered via the `__interp_render` builtin (`interp_render` in `crates/reify-expr/src/lib.rs`), not raw `format_display` (which discards units and renders `Undef` as `"undefined"`):
 - Plain strings render bare with no surrounding quotes: `"hi"` → `hi`
 - Dimensioned scalars render as `value unit` in engineering form: `5mm` → `5 mm`
 - `undef` renders as the literal text `undef` and does not poison the rest of the string
