@@ -1128,7 +1128,20 @@ fn wrap_jointvalue_for_joint(
 /// `kind`, `joint`, `value` (alphabetical, matching `BTreeMap` iteration).
 /// Mirrors `make_joint`/`make_coupling` in `joints.rs` and the kind-
 /// discriminated Map convention used across the stdlib value types.
-fn make_binding(joint: Value, value: Value) -> Value {
+///
+/// This is the INTERNAL binding constructor. It produces the identical Map
+/// that the public `bind` builtin's happy path returns, but WITHOUT `bind`'s
+/// user-input validation surface — notably the L1 non-driving-joint guard
+/// (`is_driving_joint`, snapshot.rs `bind` arm), which rejects `coupling`/
+/// `fixed` joints supplied by `.ri` authors. Internal callers that assemble
+/// per-body / per-free-joint FK bindings (loop-closure free-joint synthesis at
+/// [`snapshot`]'s closed-chain arm above, and `snapshot_for_sample` in
+/// `dynamics::eval`) bind joints already validated upstream and MUST bypass
+/// that guard — those joints legitimately include non-driving kinds, and
+/// routing them through `bind` would yield `nondriving_joint` error Maps that
+/// fail the `kind=="binding"` validation loop and collapse the snapshot to
+/// `Undef`. `pub(crate)` so `dynamics::eval` can reach it.
+pub(crate) fn make_binding(joint: Value, value: Value) -> Value {
     let mut m = BTreeMap::new();
     m.insert(
         Value::String("kind".to_string()),

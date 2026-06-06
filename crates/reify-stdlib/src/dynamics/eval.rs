@@ -935,7 +935,23 @@ fn snapshot_for_sample(mechanism: &Value, values: &[Value]) -> Option<(Value, Ve
             _ => return None,
         };
         let at = map_get(bm, "at")?;
-        bindings.push(crate::eval_builtin("bind", &[at.clone(), value.clone()]));
+        // Assemble each per-body FK binding via the INTERNAL
+        // `crate::snapshot::make_binding`, NOT the public `bind` builtin. The L1
+        // non-driving-joint guard added to `bind` (task 4309 α, steps 5-6) is a
+        // USER-input check: it rejects `coupling`/`fixed` joints passed by `.ri`
+        // authors. But these per-body `at` joints were already validated as
+        // joints by `body()` (mechanism.rs:93), and couplings/fixed ARE supported
+        // in dynamics (`value_for` derives a coupling's motion from its parent at
+        // snapshot.rs:961-977; `fixed` maps to a sentinel at snapshot.rs:991-994).
+        // Routing them through `bind` would return a `nondriving_joint` error Map
+        // for non-driving bodies, which fails `snapshot()`'s `kind=="binding"`
+        // validation loop (snapshot.rs:109-125), collapsing the snapshot to
+        // `Undef` and silently breaking trajectory dynamics for any mechanism
+        // with a coupled/fixed body. `make_binding` emits the identical Map
+        // `bind`'s happy path returns for driving joints, so driving-joint
+        // behaviour is unchanged. This is the same internal constructor that
+        // loop-closure free-joint synthesis already calls at snapshot.rs:384.
+        bindings.push(crate::snapshot::make_binding(at.clone(), value.clone()));
     }
     let snapshot =
         crate::eval_builtin("snapshot", &[mechanism.clone(), Value::List(bindings.clone())]);
