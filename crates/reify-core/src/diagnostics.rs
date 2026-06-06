@@ -2982,6 +2982,37 @@ mod tests {
             assert_eq!(s, expected, "serde mismatch for {code:?}");
         }
     }
+
+    // --- MechanismNonDrivingJoint tests (task 4309 — E_MECHANISM_NONDRIVING_JOINT) ---
+    // Pairs with the L1 eval guard in reify-stdlib snapshot.rs (bind arm) and
+    // sweep.rs (dim/sweep/sweep_grid arms), and reserves the variant for the
+    // L2 compile guard in reify-compiler (task γ). Per PRD D6: one code, two
+    // emission sites. Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
+    // derives are already covered by `diagnostic_code_derives` above; only the
+    // variant-specific round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::MechanismNonDrivingJoint` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_unresolved_name_with_code_round_trips`
+    /// (which targets a different variant); a future enum reorganisation that
+    /// drops `MechanismNonDrivingJoint` is caught here.
+    #[test]
+    fn diagnostic_code_mechanism_nondriving_joint_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::MechanismNonDrivingJoint);
+        assert_eq!(d.code, Some(DiagnosticCode::MechanismNonDrivingJoint));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::MechanismNonDrivingJoint`
+    /// serializes as `"MechanismNonDrivingJoint"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_mechanism_nondriving_joint_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::MechanismNonDrivingJoint).unwrap();
+        assert_eq!(s, "\"MechanismNonDrivingJoint\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
