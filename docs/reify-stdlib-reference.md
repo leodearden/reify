@@ -147,9 +147,21 @@ fn eigenvalues<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> List<Scalar<Q>>
 // Added in v0.6 (task γ)
 fn complex_eigenvalues<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> List<Complex<Q>>
                                                   // general complex spectrum, any N (matrix.rs:248-287)
+
+// Added in v0.6 (task α) — construction
+fn vec<N: Nat, Q: Dimension>(list: List<Scalar<Q>>) -> Vector<N,Q>
+                                                  // N inferred from list length
+fn matrix<M: Nat, N: Nat, Q: Dimension>(rows: List<List<Scalar<Q>>>) -> Tensor<2,M×N,Q>
+                                                  // rank-2 (M×N) only; construct.rs:40-43
+fn diag<N: Nat, Q: Dimension>(list: List<Scalar<Q>>) -> Tensor<2,N,Q>
+                                                  // N×N diagonal matrix; N inferred from list length
+fn identity(n: Int) -> Tensor<2,N,Dimensionless>
+                                                  // N×N identity matrix; N = n
 ```
 
 `determinant` and `inverse` evaluate for any N via dense linear algebra (nalgebra, task β); they are not limited to 2×2 or 3×3. `eigenvalues` returns the real spectrum `List<Scalar<Q>>` for symmetric or near-real matrices; if any eigenvalue has a non-negligible imaginary part the function returns `Undef` (not a silent projection). Use `complex_eigenvalues` (v0.6) for the full complex spectrum.
+
+`vec`, `matrix`, `diag`, and `identity` (v0.6, task α) build `Vector`/`Tensor` values from list literals (see `construct.rs`). `matrix` is rank-2 only (M×N); use `vec` for rank-1 vectors. Type signatures follow the frozen contract in PRD §3.
 
 ### 1.4 `std.math.complex`
 
