@@ -234,6 +234,96 @@ mod tests {
         }
     }
 
+    // ── Operation name-family contract (task 4182 δ, step-1 RED / step-2 GREEN) ──
+
+    /// The math-linalg **operation** names frozen by the task-4182 pre-1 probe:
+    /// every §3 operation/function name that currently DRIFTS to the first-arg
+    /// default (confirmed empirically — all are pure eval-builtins with no
+    /// pub-fn signature, so they reach the `NoUserFunctions` first-arg
+    /// fallback). Local fixture so a drift in `MATH_OPERATION_NAMES` is caught
+    /// against an independent list rather than against itself (mirrors
+    /// `EXPECTED_NAMES` for the construction family). §1.2 trig is deliberately
+    /// EXCLUDED — see task-4182 / esc-4182-74.
+    const EXPECTED_OPERATION_NAMES: [&str; 26] = [
+        // scalar / element-wise
+        "sqrt", "abs", "sign", "pow", "min", "max", "clamp", "lerp",
+        // vector ops
+        "dot", "cross", "normalize", "magnitude", "outer",
+        // matrix ops
+        "determinant", "inverse", "transpose", "trace",
+        // spectral
+        "eigenvalues", "complex_eigenvalues",
+        // complex
+        "complex", "real", "imag", "conjugate", "complex_magnitude", "phase", "arg",
+    ];
+
+    /// `is_math_typed_fn` recognises every math-linalg OPERATION name (the
+    /// task-4182 δ scope-extension over α's construction-only family).
+    #[test]
+    fn is_math_typed_fn_recognises_all_operation_names() {
+        for name in EXPECTED_OPERATION_NAMES {
+            assert!(
+                is_math_typed_fn(name),
+                "is_math_typed_fn({name:?}) must be true (math-linalg δ §3 operation family)"
+            );
+        }
+    }
+
+    /// `MATH_OPERATION_NAMES` is exactly the pre-1 frozen operation set —
+    /// membership both ways plus an exact count (so neither a missing nor an
+    /// extra name slips through), mirroring
+    /// `math_construction_names_are_exactly_the_four`.
+    #[test]
+    fn math_operation_names_are_exactly_the_frozen_set() {
+        assert_eq!(
+            MATH_OPERATION_NAMES.len(),
+            EXPECTED_OPERATION_NAMES.len(),
+            "MATH_OPERATION_NAMES must hold exactly {} names, got {:?}",
+            EXPECTED_OPERATION_NAMES.len(),
+            MATH_OPERATION_NAMES
+        );
+        for name in EXPECTED_OPERATION_NAMES {
+            assert!(
+                MATH_OPERATION_NAMES.contains(&name),
+                "MATH_OPERATION_NAMES must contain {name:?}"
+            );
+        }
+        // Converse: no extra name beyond the frozen fixture.
+        for name in MATH_OPERATION_NAMES {
+            assert!(
+                EXPECTED_OPERATION_NAMES.contains(name),
+                "MATH_OPERATION_NAMES has unexpected entry {name:?} not in the frozen set"
+            );
+        }
+    }
+
+    /// Both families are recognised by `is_math_typed_fn`, but they remain
+    /// distinct slices — δ ORs them rather than merging (so α's
+    /// `math_construction_names_are_exactly_the_four` stays valid).
+    #[test]
+    fn is_math_typed_fn_recognises_construction_and_operation_alike() {
+        for name in EXPECTED_NAMES {
+            assert!(
+                is_math_typed_fn(name),
+                "construction name {name:?} must still resolve"
+            );
+        }
+        for name in EXPECTED_OPERATION_NAMES {
+            assert!(is_math_typed_fn(name), "operation name {name:?} must resolve");
+        }
+    }
+
+    /// Case-sensitivity invariant for the operation family: Reify function
+    /// names are snake_case, so PascalCase forms must not match (mirrors
+    /// `is_math_typed_fn_is_case_sensitive` for the construction family).
+    #[test]
+    fn is_math_typed_fn_operation_names_are_case_sensitive() {
+        assert!(!is_math_typed_fn("Sqrt"));
+        assert!(!is_math_typed_fn("Determinant"));
+        assert!(!is_math_typed_fn("Eigenvalues"));
+        assert!(!is_math_typed_fn("Complex"));
+    }
+
     // ── Result-type resolution (step-11 RED / step-12 GREEN) ─────────────────
 
     use reify_core::DimensionVector;
