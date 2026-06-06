@@ -183,7 +183,63 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
             first.map(|a| a.result_type.clone()).unwrap_or(Type::Real)
         }
 
+        // Vector ops.
+        // `dot` multiplies the operand quantity dimensions → a scalar (Real iff
+        // both dimensionless).
+        "dot" => scalar_or_real(arg_vector_quantity(args, 0).mul(&arg_vector_quantity(args, 1))),
+        // `cross` stays a 3-vector whose quantity is Q1·Q2.
+        "cross" => Type::Vector {
+            n: 3,
+            quantity: Box::new(scalar_or_real(
+                arg_vector_quantity(args, 0).mul(&arg_vector_quantity(args, 1)),
+            )),
+        },
+        // `normalize` is dimensionless and preserves N (degrade n→0 if unknown,
+        // but STILL a Vector variant — never the first-arg type, D7).
+        "normalize" => Type::Vector {
+            n: first.map_or(0, |a| vector_n(&a.result_type)),
+            quantity: Box::new(Type::Real),
+        },
+        // `magnitude` collapses a vector to its quantity scalar.
+        "magnitude" => scalar_or_real(arg_vector_quantity(args, 0)),
+        // `outer` is a rank-2 Tensor; n = column count = second-arg N (degrade
+        // →0 if unknown), quantity = Q1·Q2. NEVER the first-arg Vector type (D7).
+        "outer" => Type::Tensor {
+            rank: 2,
+            n: args.get(1).map_or(0, |a| vector_n(&a.result_type)),
+            quantity: Box::new(scalar_or_real(
+                arg_vector_quantity(args, 0).mul(&arg_vector_quantity(args, 1)),
+            )),
+        },
+
         _ => Type::Real,
+    }
+}
+
+/// The quantity dimension of a `Vector` operand (its `quantity` Scalar's
+/// dimension, or `DIMENSIONLESS` for a `Real`/unknown quantity or a non-Vector).
+fn vector_quantity_dimension(t: &Type) -> DimensionVector {
+    match t {
+        Type::Vector { quantity, .. } => arg_dimension(quantity),
+        _ => DimensionVector::DIMENSIONLESS,
+    }
+}
+
+/// The vector quantity dimension of `args[i]` (or `DIMENSIONLESS` if absent).
+fn arg_vector_quantity(args: &[CompiledExpr], i: usize) -> DimensionVector {
+    args.get(i)
+        .map_or(DimensionVector::DIMENSIONLESS, |a| {
+            vector_quantity_dimension(&a.result_type)
+        })
+}
+
+/// The element count `n` of a `Vector` operand, or `0` when not statically
+/// known (the D7 degrade — the result still uses the correct VARIANT with a
+/// best-effort `n`).
+fn vector_n(t: &Type) -> usize {
+    match t {
+        Type::Vector { n, .. } => *n,
+        _ => 0,
     }
 }
 
