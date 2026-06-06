@@ -1861,13 +1861,16 @@ fn std_ports_electrical_module_cardinality_locked() {
 // ─── step-3 (thermal): std/ports/thermal surface ─────────────────────────────
 
 /// std/ports/thermal must load with zero Severity::Error diagnostics.
-/// ThermalPort refines exactly [Port] with required members [temperature,
-/// heat_flow] in order, resolving to Scalar<TEMPERATURE> and Scalar<POWER>.
+/// After task ε expansion:
+///   - ThermalPort refines exactly [Port]
+///   - required_members == [heat_flow] (len 1; only the required through-variable)
+///   - temperature, heat_flux, thermal_resistance are OPTIONAL (= none) in defaults
 ///
-/// Implements the Modelica HeatPort convention: temperature (potential across
-/// variable) + heat_flow (through variable Q̇).  Resolves PRD open Q3.
-/// See design decision in plan.json: deviation from PRD's heat-transfer-
-/// coefficient suggestion — both params are named dims, no alias needed.
+/// Extended Modelica HeatPort convention: temperature (optional potential across
+/// variable, K) + heat_flow (required through variable Q̇, W) + heat_flux
+/// (optional W/m² surface flux, HeatFlux alias = Power/Area) + thermal_resistance
+/// (optional K/W, ThermalResistance alias = Temperature/Power).
+/// See plan design decisions: heat_flow stays required; temperature gains optionality.
 #[test]
 fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
     let module = load_module("std/ports/thermal");
@@ -1891,10 +1894,11 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
         thermal_port.refinements
     );
 
+    // heat_flow is the only required through-variable (no default).
     assert_eq!(
         thermal_port.required_members.len(),
-        2,
-        "ThermalPort should have exactly 2 required members; got: {:?}",
+        1,
+        "ThermalPort should have exactly 1 required member (heat_flow); got: {:?}",
         thermal_port
             .required_members
             .iter()
@@ -1903,21 +1907,8 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
     );
     assert_eq!(
         thermal_port.required_members[0].name,
-        "temperature",
-        "ThermalPort required_members[0] should be 'temperature'"
-    );
-    assert_eq!(
-        thermal_port.required_members[1].name,
         "heat_flow",
-        "ThermalPort required_members[1] should be 'heat_flow'"
-    );
-
-    assert_eq!(
-        param_type("std/ports/thermal", "ThermalPort", "temperature"),
-        Type::Scalar {
-            dimension: DimensionVector::TEMPERATURE
-        },
-        "ThermalPort.temperature must be Scalar<TEMPERATURE>"
+        "ThermalPort required_members[0] should be 'heat_flow'"
     );
     assert_eq!(
         param_type("std/ports/thermal", "ThermalPort", "heat_flow"),
@@ -1926,6 +1917,92 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
         },
         "ThermalPort.heat_flow must be Scalar<POWER>"
     );
+
+    // temperature : Option<Temperature> = none
+    let temp_default = thermal_port
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("temperature"))
+        .expect("ThermalPort.defaults should contain 'temperature' (= none)");
+    match &temp_default.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: DimensionVector::TEMPERATURE
+                })),
+                "ThermalPort.temperature default cell_type must be \
+                 Type::Option(Scalar<TEMPERATURE>)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "ThermalPort.temperature default_decl must have a default expression (none)"
+            );
+        }
+        other => panic!(
+            "ThermalPort.temperature default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
+
+    // heat_flux : Option<HeatFlux> = none  (HeatFlux = Power / Area)
+    let expected_heat_flux_dim = DimensionVector::POWER.div(&DimensionVector::AREA);
+    let heat_flux_default = thermal_port
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("heat_flux"))
+        .expect("ThermalPort.defaults should contain 'heat_flux' (= none)");
+    match &heat_flux_default.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: expected_heat_flux_dim
+                })),
+                "ThermalPort.heat_flux default cell_type must be \
+                 Type::Option(Scalar<POWER/AREA>) (HeatFlux alias = Power/Area)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "ThermalPort.heat_flux default_decl must have a default expression (none)"
+            );
+        }
+        other => panic!(
+            "ThermalPort.heat_flux default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
+
+    // thermal_resistance : Option<ThermalResistance> = none  (ThermalResistance = Temperature / Power)
+    let expected_thermal_resistance_dim =
+        DimensionVector::TEMPERATURE.div(&DimensionVector::POWER);
+    let thermal_resistance_default = thermal_port
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("thermal_resistance"))
+        .expect("ThermalPort.defaults should contain 'thermal_resistance' (= none)");
+    match &thermal_resistance_default.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: expected_thermal_resistance_dim
+                })),
+                "ThermalPort.thermal_resistance default cell_type must be \
+                 Type::Option(Scalar<TEMPERATURE/POWER>) (ThermalResistance alias = \
+                 Temperature/Power)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "ThermalPort.thermal_resistance default_decl must have a \
+                 default expression (none)"
+            );
+        }
+        other => panic!(
+            "ThermalPort.thermal_resistance default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
 }
 
 /// std/ports/thermal cardinality lock: exactly 1 trait (ThermalPort),
