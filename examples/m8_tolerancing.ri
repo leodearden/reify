@@ -13,7 +13,9 @@
 // in the output module and available at eval time.
 //
 // The local declarations mirror the stdlib tolerancing.ri definitions exactly,
-// so type-compatibility with stdlib-compiled code is preserved.  The duplicate
+// including the task #3116 tightening of `feature : Geometry` and
+// `datum_refs : DatumRef` (away from the old `Real = 0.0` placeholder).
+// Type-compatibility with stdlib-compiled code is preserved.  The duplicate
 // enum declarations are harmless: the compiler merges prelude + local enum
 // definitions during resolution; the local structure declarations shadow the
 // stdlib ones in the user module's template list without causing errors.
@@ -44,19 +46,22 @@ enum SurfaceDirection { Parallel, Perpendicular, Crossed, Multidirectional, Circ
 // ── Local structure definitions (eval-time availability) ─────────────────────
 // These must appear before Flange so compiled_templates contains them when
 // the sub declarations in Flange are resolved.
+//
+// feature and datum_refs: real geometry handles — tightened from Real by task #3116.
+// Mirrors the stdlib tolerancing.ri definitions (Type::Geometry / DatumRef alias).
 
 // GD&T position tolerance (location)
 structure def Position {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature        : Geometry = box(1mm, 1mm, 1mm)
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs : Real = 0.0
+    param datum_refs     : DatumRef = box(1mm, 1mm, 1mm)
 }
 
 // GD&T flatness tolerance (form)
 structure def Flatness {
     param tolerance_value : Length = 0mm
-    param feature : Real = 0.0
+    param feature        : Geometry = box(1mm, 1mm, 1mm)
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
@@ -83,18 +88,20 @@ structure def DimensionalTolerance {
 
 structure def Flange {
     // Position tolerance — ⌀0.1mm tolerance zone at MMC
+    // feature and datum_refs: real geometry handles (tightened from Real — task #3116)
     sub pos = Position(
         tolerance_value:    0.1mm,
         material_condition: MaterialCondition.MMC,
-        datum_refs:         0.0,
-        feature:            0.0
+        datum_refs:         box(1mm, 1mm, 1mm),
+        feature:            box(1mm, 1mm, 1mm)
     )
 
     // Flatness form tolerance — 0.05mm flatness zone
+    // feature: real geometry handle (tightened from Real — task #3116)
     sub flat = Flatness(
         tolerance_value:    0.05mm,
         material_condition: MaterialCondition.RFS,
-        feature:            0.0
+        feature:            box(1mm, 1mm, 1mm)
     )
 
     // Surface finish — Ra 1.6 μm, parallel lay, turning process
