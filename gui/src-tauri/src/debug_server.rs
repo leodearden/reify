@@ -2021,6 +2021,124 @@ mod tests {
         );
     }
 
+    // task-4299 step-1 RED → step-2 GREEN: five synthetic-interaction tools must be
+    // registered in tool_defs() with the correct schema shapes.
+    // Schema-shape-only — NO description-prose pinning (convention at :1668-1670).
+    #[test]
+    fn tool_defs_registers_synthetic_interaction_tools() {
+        let defs = tool_defs();
+
+        // click_at and hover both require exactly ["x", "y"]
+        for tool_name in ["click_at", "hover"] {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("x")),
+                "{tool_name}: 'x' must be listed in required"
+            );
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("y")),
+                "{tool_name}: 'y' must be listed in required"
+            );
+        }
+
+        // drag requires ["from", "to"]
+        {
+            let tool_name = "drag";
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("from")),
+                "{tool_name}: 'from' must be listed in required"
+            );
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("to")),
+                "{tool_name}: 'to' must be listed in required"
+            );
+        }
+
+        // focus_element requires ["testId"]
+        {
+            let tool_name = "focus_element";
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("testId")),
+                "{tool_name}: 'testId' must be listed in required"
+            );
+        }
+
+        // scroll has no required array or an empty one
+        {
+            let tool_name = "scroll";
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{tool_name}: required array must be empty; got {required:?}"
+                );
+            }
+        }
+    }
+
     // F2 step-5 RED → step-6 GREEN: hover_at / completion_at / definition_at must be
     // registered in tool_defs() with an object schema that requires integer line + col.
     // Mirroring viewport_aware_tools_expose_optional_viewport_id (table-driven so adding
