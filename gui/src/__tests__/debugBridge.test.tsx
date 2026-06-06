@@ -2718,3 +2718,62 @@ describe('debug bridge tree-node expand/collapse', () => {
     expect(result.error).toContain('constraint');
   });
 });
+
+// ─── F2 LSP probe handlers (steps 7-14) ─────────────────────────────────────
+
+describe('debug bridge hover_at', () => {
+  // F2 step-7 RED → step-8 GREEN: hover_at handler returns structured hover result.
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('returns { markdown, markdownLength, range } and calls lsp_request with correct method/uri/position', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    // Configure invoke: lsp_request → hover JSON; debug_response → undefined
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify({
+          contents: { kind: 'markdown', value: '**size**: Scalar' },
+          range: { start: { line: 9, character: 15 }, end: { line: 9, character: 19 } },
+        });
+      }
+      return undefined;
+    });
+    vi.mocked(invoke).mockClear();
+
+    await capturedHandler!({ payload: { id: 1001, command: 'hover_at', params: { line: 9, col: 19 } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const result = JSON.parse((responseCall![1] as { result: string }).result);
+
+    // Structured hover result
+    expect(result.markdown).toBe('**size**: Scalar');
+    expect(result.markdownLength).toBeGreaterThanOrEqual(1);
+    expect(result.range).toBeDefined();
+
+    // lsp_request called with correct method / uri / position
+    const lspCall = calls.find((c) => c[0] === 'lsp_request');
+    expect(lspCall).toBeDefined();
+    expect((lspCall![1] as { method: string }).method).toBe('textDocument/hover');
+    const lspParams = JSON.parse((lspCall![1] as { params: string }).params);
+    expect(lspParams.textDocument.uri).toBe('file:///tmp/cube.ri');
+    expect(lspParams.position).toEqual({ line: 9, character: 19 });
+  });
+});
