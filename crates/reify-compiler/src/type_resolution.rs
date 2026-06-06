@@ -803,6 +803,7 @@ pub(crate) fn resolve_type_alias_expr(
                     &mut tmp_diags,
                     &HashSet::new(),
                     &HashSet::new(),
+                    &HashSet::new(),
                 ) {
                     diagnostics.extend(tmp_diags);
                     return Some(ty);
@@ -990,6 +991,7 @@ pub(crate) fn resolve_type_expr_with_aliases(
             diagnostics,
             structure_names,
             trait_names,
+            type_param_names,
         )
     {
         return Some(ty);
@@ -1332,14 +1334,14 @@ pub(crate) fn resolve_parameterized_builtin_type(
     diagnostics: &mut Vec<Diagnostic>,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    type_param_names: &HashSet<String>,
 ) -> Option<Type> {
-    let empty_type_params = HashSet::new();
     let pre_diag_len = diagnostics.len();
     let result = match name {
         "List" if type_args.len() == 1 => {
             let inner = resolve_type_expr_with_aliases(
                 &type_args[0],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1350,7 +1352,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
         "Set" if type_args.len() == 1 => {
             let inner = resolve_type_expr_with_aliases(
                 &type_args[0],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1361,7 +1363,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
         "Map" if type_args.len() == 2 => {
             let key = resolve_type_expr_with_aliases(
                 &type_args[0],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1369,7 +1371,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             let val = resolve_type_expr_with_aliases(
                 &type_args[1],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1380,7 +1382,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
         "Keyed" if type_args.len() == 1 => {
             let inner = resolve_type_expr_with_aliases(
                 &type_args[0],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1391,7 +1393,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
         "Option" if type_args.len() == 1 => {
             let inner = resolve_type_expr_with_aliases(
                 &type_args[0],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1424,7 +1426,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
             let n = expect_integer_literal_type_arg(&type_args[1], "Tensor", "n", diagnostics)?;
             let quantity = resolve_type_expr_with_aliases(
                 &type_args[2],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1438,7 +1440,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
             let n = expect_integer_literal_type_arg(&type_args[1], "Matrix", "n", diagnostics)?;
             let quantity = resolve_type_expr_with_aliases(
                 &type_args[2],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1452,7 +1454,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
             // rather than resolve_type_alias_expr_to_dimension. Mirrors Map's two-arg shape.
             let domain = resolve_type_expr_with_aliases(
                 &type_args[0],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1460,7 +1462,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             let codomain = resolve_type_expr_with_aliases(
                 &type_args[1],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -2311,6 +2313,7 @@ mod tests {
             &mut diags,
             &structure_names,
             &trait_names,
+            &HashSet::new(),
         );
         assert_eq!(
             keyed,
@@ -2328,6 +2331,7 @@ mod tests {
             &mut list_diags,
             &structure_names,
             &trait_names,
+            &HashSet::new(),
         );
         assert_eq!(
             list,
@@ -2417,6 +2421,7 @@ mod tests {
             &mut diags,
             &structure_names,
             &trait_names,
+            &HashSet::new(),
         );
         assert_eq!(
             keyed,
