@@ -2931,3 +2931,68 @@ describe('debug bridge completion_at', () => {
     expect(result.items.map((i: { label: string }) => i.label)).toContain('sphere');
   });
 });
+
+// ─── F2 input-guard suite (step-13 RED → step-14 GREEN) ─────────────────────
+// resolveActiveProbeTarget was included in step-8 so these are immediately GREEN.
+
+describe('debug bridge LSP probe input guards', () => {
+  const PROBES = ['hover_at', 'completion_at', 'definition_at'] as const;
+
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchProbe(
+    stores: ReturnType<typeof makeStores>,
+    command: string,
+    params: Record<string, unknown>,
+  ) {
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 4001, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    return {
+      result: JSON.parse((responseCall![1] as { result: string }).result),
+      calls,
+    };
+  }
+
+  for (const probe of PROBES) {
+    it(`${probe}: activeFile=null returns {error} and does NOT call lsp_request`, async () => {
+      const stores = makeStores();
+      // activeFile stays null (default)
+      const { result, calls } = await dispatchProbe(stores, probe, { line: 0, col: 0 });
+      expect(result).toHaveProperty('error');
+      expect(calls.find((c) => c[0] === 'lsp_request')).toBeUndefined();
+    });
+
+    it(`${probe}: line=-1 returns {error} and does NOT call lsp_request`, async () => {
+      const stores = makeStores();
+      stores.editor.state.activeFile = '/tmp/cube.ri';
+      const { result, calls } = await dispatchProbe(stores, probe, { line: -1, col: 0 });
+      expect(result).toHaveProperty('error');
+      expect(calls.find((c) => c[0] === 'lsp_request')).toBeUndefined();
+    });
+
+    it(`${probe}: missing col returns {error} and does NOT call lsp_request`, async () => {
+      const stores = makeStores();
+      stores.editor.state.activeFile = '/tmp/cube.ri';
+      const { result, calls } = await dispatchProbe(stores, probe, { line: 0 });
+      expect(result).toHaveProperty('error');
+      expect(calls.find((c) => c[0] === 'lsp_request')).toBeUndefined();
+    });
+  }
+});
