@@ -151,12 +151,12 @@ fn complex_eigenvalues<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> List<Complex<Q
 // Added in v0.6 (task α) — construction
 fn vec<N: Nat, Q: Dimension>(list: List<Scalar<Q>>) -> Vector<N,Q>
                                                   // N inferred from list length
-fn matrix<M: Nat, N: Nat, Q: Dimension>(rows: List<List<Scalar<Q>>>) -> Tensor<2,M×N,Q>
-                                                  // rank-2 (M×N) only; construct.rs:40-43
-fn diag<N: Nat, Q: Dimension>(list: List<Scalar<Q>>) -> Tensor<2,N,Q>
+fn matrix<M: Nat, N: Nat, Q: Dimension>(rows: List<List<Scalar<Q>>>) -> Tensor<2,M,N,Q>
+                                                  // rank-2 (M rows × N cols) only; construct.rs:40-43
+fn diag<N: Nat, Q: Dimension>(list: List<Scalar<Q>>) -> Tensor<2,N,N,Q>
                                                   // N×N diagonal matrix; N inferred from list length
-fn identity(n: Int) -> Tensor<2,N,Dimensionless>
-                                                  // N×N identity matrix; N = n
+fn identity(n: Int) -> Tensor<2,N,N,Dimensionless>  // N = n (runtime value)
+                                                  // N×N identity matrix
 ```
 
 `determinant` and `inverse` evaluate for any N via dense linear algebra (nalgebra, task β); they are not limited to 2×2 or 3×3. `eigenvalues` returns the real spectrum `List<Scalar<Q>>` for symmetric or near-real matrices; if any eigenvalue has a non-negligible imaginary part the function returns `Undef` (not a silent projection). Use `complex_eigenvalues` (v0.6) for the full complex spectrum.
