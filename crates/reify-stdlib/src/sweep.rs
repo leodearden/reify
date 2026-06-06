@@ -20,6 +20,7 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use crate::eval_builtin;
+use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_error};
 
 /// Evaluate a sweep stdlib function by name.
 ///
@@ -28,13 +29,18 @@ use crate::eval_builtin;
 pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "dim" => {
-            // Validation surface (each guard short-circuits to
-            // Value::Undef BEFORE constructing the SweepDim Map):
+            // Validation surface:
             //   args.len() == 3                        → arity guard
-            //   is_driving_joint(args[0])              → joint kind
-            //                                            (coupling/fixed/
-            //                                            world/non-Map all
-            //                                            rejected per §13.4)
+            //   is_joint_value(args[0]) &&
+            //     !is_driving_joint(args[0])           → non-driving guard:
+            //                                            coupling/fixed →
+            //                                            E_MECHANISM_NONDRIVING_JOINT
+            //                                            error Map (not Undef)
+            //   driving_joint_kind(args[0]).is_some()  → joint kind guard:
+            //                                            non-joints and multi-DOF
+            //                                            driving joints (planar/
+            //                                            spherical/cylindrical) →
+            //                                            Undef
             //   args[1] is Value::Range with both
             //     lower/upper bounds present, both
             //     SI-finite, and dimension == joint
@@ -43,6 +49,9 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
             //   args[2] is Value::Int(n) with n >= 0   → steps guard
             if args.len() != 3 {
                 return Some(Value::Undef);
+            }
+            if is_joint_value(&args[0]) && !is_driving_joint(&args[0]) {
+                return Some(make_nondriving_joint_error(args[0].clone()));
             }
             let expected_dim = match driving_joint_kind(&args[0]) {
                 Some(d) => d,
@@ -93,6 +102,9 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
             // guard, not this short-circuit.
             if mech_map.contains_key(&Value::String("error".to_string())) {
                 return Some(Value::Undef);
+            }
+            if is_joint_value(&args[1]) && !is_driving_joint(&args[1]) {
+                return Some(make_nondriving_joint_error(args[1].clone()));
             }
             let expected_dim = match driving_joint_kind(&args[1]) {
                 Some(d) => d,
@@ -183,6 +195,9 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
                     Some(j) => j.clone(),
                     None => return Some(Value::Undef),
                 };
+                if is_joint_value(&joint) && !is_driving_joint(&joint) {
+                    return Some(make_nondriving_joint_error(joint));
+                }
                 let range = match emap.get(&Value::String("range".to_string())) {
                     Some(r) => r,
                     None => return Some(Value::Undef),
