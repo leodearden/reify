@@ -82,6 +82,16 @@ const CG_TOL: f64 = 1e-10;
 /// (O(1) or NaN), which manifests orders of magnitude above this threshold.
 const EQUIV_TOL: f64 = 1e-3;
 
+/// Thread counts exercised by the harness.
+///
+/// `SolverMode::Parallel{threads}` spawns exactly `threads` workers via
+/// `std::thread::scope` (chunk = n.div_ceil(threads)) regardless of physical
+/// CPU count, so {1, 4, 16} is portable across all CI machines (16 merely
+/// oversubscribes a 4-core box). `resolve_execution_modes(_, 1, _)` →
+/// Deterministic (threads ≤ 1 policy), so the t=1 entry is bit-identical
+/// to a deterministic solve.
+const THREAD_COUNTS: [usize; 3] = [1, 4, 16];
+
 // ─── material constant ────────────────────────────────────────────────────────
 
 /// Material for the ~50K-DOF cantilever fixture.
@@ -436,59 +446,67 @@ fn assert_tolerance_equivalent(reference: &SolveOutput, candidate: &SolveOutput,
     );
 }
 
+// ─── sweep helper (step-8 GREEN) ──────────────────────────────────────────────
+
+/// Run `solve_box_cantilever` for each thread count in `threads` and collect
+/// the outputs.
+///
+/// Note: `SolverMode::Parallel{threads}` spawns exactly the requested worker
+/// count via `std::thread::scope` regardless of physical cores — {1, 4, 16}
+/// is portable across all CI machines.
+fn solve_sweep(deterministic: bool, threads: &[usize]) -> Vec<SolveOutput> {
+    threads.iter().map(|&t| solve_box_cantilever(deterministic, t)).collect()
+}
+
 // ─── step-1 GREEN / tests ─────────────────────────────────────────────────────
 
 /// Byte-identical displacement across repeated runs and thread counts in
 /// deterministic mode.
 ///
 /// `resolve_execution_modes(true, t, ndof)` → `(Deterministic, Deterministic)`
-/// for ALL t, so threads ∈ {1, 4, 16} simultaneously exercises "repeated runs"
-/// and "across thread counts". Bit-identical u implies an identical FP-op
-/// sequence — the exactness guarantee of the pairwise-tree Deterministic path.
+/// for ALL t, so `THREAD_COUNTS = {1, 4, 16}` simultaneously exercises
+/// "repeated runs" and "across thread counts". Bit-identical u implies an
+/// identical FP-op sequence — the exactness guarantee of the pairwise-tree
+/// Deterministic path.
 #[test]
 fn deterministic_displacement_bit_stable_across_repeats_and_thread_counts() {
     // Verify the fixture builder is callable.
     let _ = box_cantilever_fixture();
 
-    let out1 = solve_box_cantilever(true, 1);
-    let out4 = solve_box_cantilever(true, 4);
-    let out16 = solve_box_cantilever(true, 16);
+    // Sweep: t ∈ THREAD_COUNTS — all map to Deterministic mode.
+    let outs = solve_sweep(true, &THREAD_COUNTS);
+    let ref_out = &outs[0]; // t=1 is the reference
 
-    // All runs must converge.
-    assert!(out1.converged, "deterministic t=1 did not converge (iter={})", out1.iterations);
-    assert!(out4.converged, "deterministic t=4 did not converge (iter={})", out4.iterations);
-    assert!(out16.converged, "deterministic t=16 did not converge (iter={})", out16.iterations);
+    for (i, out) in outs.iter().enumerate() {
+        let t = THREAD_COUNTS[i];
 
-    // Iteration counts must be equal (same FP sequence → same convergence step).
-    assert_eq!(
-        out1.iterations, out4.iterations,
-        "deterministic iteration count differs between t=1 ({}) and t=4 ({})",
-        out1.iterations, out4.iterations,
-    );
-    assert_eq!(
-        out1.iterations, out16.iterations,
-        "deterministic iteration count differs between t=1 ({}) and t=16 ({})",
-        out1.iterations, out16.iterations,
-    );
-
-    // Displacement vector must be byte-identical (f64::to_bits slot-wise).
-    assert_eq!(out1.u.len(), out4.u.len(), "u length differs between t=1 and t=4");
-    assert_eq!(out1.u.len(), out16.u.len(), "u length differs between t=1 and t=16");
-    for i in 0..out1.u.len() {
-        assert_eq!(
-            out1.u[i].to_bits(), out4.u[i].to_bits(),
-            "u[{i}] differs between t=1 ({}) and t=4 ({})",
-            out1.u[i], out4.u[i],
+        // Each run must converge.
+        assert!(
+            out.converged,
+            "deterministic t={t} did not converge (iter={})",
+            out.iterations,
         );
+
+        // Iteration counts must equal the reference (same FP sequence).
         assert_eq!(
-            out1.u[i].to_bits(), out16.u[i].to_bits(),
-            "u[{i}] differs between t=1 ({}) and t=16 ({})",
-            out1.u[i], out16.u[i],
+            ref_out.iterations, out.iterations,
+            "deterministic iteration count differs between t=1 ({}) and t={t} ({})",
+            ref_out.iterations, out.iterations,
         );
+
+        // Displacement vector must be byte-identical.
+        assert_eq!(ref_out.u.len(), out.u.len(), "u length differs for t={t}");
+        for j in 0..ref_out.u.len() {
+            assert_eq!(
+                ref_out.u[j].to_bits(), out.u[j].to_bits(),
+                "u[{j}] differs between t=1 ({}) and t={t} ({})",
+                ref_out.u[j], out.u[j],
+            );
+        }
     }
 }
 
-// ─── step-7 RED ──────────────────────────────────────────────────────────────
+// ─── step-7 / step-8 ─────────────────────────────────────────────────────────
 
 /// Tolerance-equivalent results across thread counts {1, 4, 16} in default mode.
 ///
@@ -501,9 +519,6 @@ fn deterministic_displacement_bit_stable_across_repeats_and_thread_counts() {
 /// Iteration count equality is explicitly NOT asserted: in parallel mode
 /// different thread counts use different FP reduction orders, which shifts the
 /// convergence step (within a few iterations).
-///
-/// Note: `solve_sweep` and `THREAD_COUNTS` are not yet defined — this test
-/// fails to compile (RED).
 #[test]
 fn default_parallel_tolerance_equivalent_across_thread_counts() {
     // Deterministic reference: bit-stable baseline.
@@ -525,7 +540,7 @@ fn default_parallel_tolerance_equivalent_across_thread_counts() {
     }
 }
 
-// ─── step-5 RED ──────────────────────────────────────────────────────────────
+// ─── step-5 ───────────────────────────────────────────────────────────────────
 
 /// Tolerance-equivalent displacement and von Mises across 3 repeated runs in
 /// default / parallel mode at fixed threads=4.
@@ -539,9 +554,6 @@ fn default_parallel_tolerance_equivalent_across_thread_counts() {
 ///
 /// Iteration count equality is NOT asserted — in parallel mode round-off can
 /// shift the convergence step across runs (within a few iterations).
-///
-/// Note: `assert_tolerance_equivalent` is not yet defined — this test fails
-/// to compile (RED).
 #[test]
 fn default_parallel_tolerance_equivalent_across_repeated_runs() {
     // Three repeated runs at fixed threads=4 in parallel mode.
@@ -558,7 +570,7 @@ fn default_parallel_tolerance_equivalent_across_repeated_runs() {
     assert_tolerance_equivalent(&run1, &run3, "run3_vs_run1");
 }
 
-// ─── step-3 RED ──────────────────────────────────────────────────────────────
+// ─── step-3 ───────────────────────────────────────────────────────────────────
 
 /// Byte-identical recovered stress field and max von Mises across thread counts
 /// in deterministic mode.
@@ -568,59 +580,61 @@ fn default_parallel_tolerance_equivalent_across_repeated_runs() {
 /// and max von Mises. In Deterministic mode the fixed pairwise-tree reductions
 /// produce an identical FP sequence → byte-identical output at every level.
 ///
-/// Note: `recover_stress_field` and `max_von_mises` are not yet defined —
-/// this test fails to compile (RED).
+/// Uses `solve_sweep(true, &THREAD_COUNTS)` to run all three thread counts in
+/// one call. Max von Mises is taken from `SolveOutput.max_von_mises` (already
+/// computed inside `solve_box_cantilever`); the per-component stress field is
+/// recovered separately (not stored in `SolveOutput`) for the byte-wise check.
 #[test]
 fn deterministic_stress_field_and_von_mises_bit_stable_across_thread_counts() {
-    // Get the fixture geometry so we can recover stress from the displacement.
+    // Sweep deterministic-mode solves across THREAD_COUNTS = {1, 4, 16}.
+    let outs = solve_sweep(true, &THREAD_COUNTS);
+    // Get fixture geometry for stress recovery (nodes/conns are identical across
+    // calls — box_cantilever_fixture is deterministic and pure).
     let (nodes, conns, _, _) = box_cantilever_fixture();
 
-    let out1 = solve_box_cantilever(true, 1);
-    let out4 = solve_box_cantilever(true, 4);
-    let out16 = solve_box_cantilever(true, 16);
+    // All runs must converge.
+    for (i, out) in outs.iter().enumerate() {
+        let t = THREAD_COUNTS[i];
+        assert!(out.converged, "deterministic t={t} did not converge");
+    }
 
-    // All converged.
-    assert!(out1.converged, "deterministic t=1 did not converge");
-    assert!(out4.converged, "deterministic t=4 did not converge");
-    assert!(out16.converged, "deterministic t=16 did not converge");
+    // Recover nodal stress fields for each thread count.
+    let stress_fields: Vec<Vec<[[f64; 3]; 3]>> = outs
+        .iter()
+        .map(|out| recover_stress_field(&nodes, &conns, &out.u, &MAT))
+        .collect();
 
-    // Recover nodal stress fields (missing helper → RED).
-    let stress1 = recover_stress_field(&nodes, &conns, &out1.u, &MAT);
-    let stress4 = recover_stress_field(&nodes, &conns, &out4.u, &MAT);
-    let stress16 = recover_stress_field(&nodes, &conns, &out16.u, &MAT);
-
-    // Compute max von Mises (missing helper → RED).
-    let vm1 = max_von_mises(&stress1);
-    let vm4 = max_von_mises(&stress4);
-    let vm16 = max_von_mises(&stress16);
+    // Max von Mises is already stored in SolveOutput (computed in solve_box_cantilever).
+    let vms: Vec<f64> = outs.iter().map(|out| out.max_von_mises).collect();
 
     // Nodal stress field must be byte-identical across all thread counts.
-    assert_eq!(stress1.len(), stress4.len(), "stress field length differs t=1 vs t=4");
-    assert_eq!(stress1.len(), stress16.len(), "stress field length differs t=1 vs t=16");
-    for ni in 0..stress1.len() {
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_eq!(
-                    stress1[ni][i][j].to_bits(), stress4[ni][i][j].to_bits(),
-                    "stress[{ni}][{i}][{j}] differs between t=1 ({}) and t=4 ({})",
-                    stress1[ni][i][j], stress4[ni][i][j],
-                );
-                assert_eq!(
-                    stress1[ni][i][j].to_bits(), stress16[ni][i][j].to_bits(),
-                    "stress[{ni}][{i}][{j}] differs between t=1 ({}) and t=16 ({})",
-                    stress1[ni][i][j], stress16[ni][i][j],
-                );
+    let ref_stress = &stress_fields[0];
+    for (k, stress) in stress_fields.iter().enumerate().skip(1) {
+        let t = THREAD_COUNTS[k];
+        assert_eq!(
+            ref_stress.len(), stress.len(),
+            "stress field length differs t=1 vs t={t}",
+        );
+        for ni in 0..ref_stress.len() {
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert_eq!(
+                        ref_stress[ni][i][j].to_bits(), stress[ni][i][j].to_bits(),
+                        "stress[{ni}][{i}][{j}] differs between t=1 ({}) and t={t} ({})",
+                        ref_stress[ni][i][j], stress[ni][i][j],
+                    );
+                }
             }
         }
     }
 
-    // Max von Mises must be byte-identical.
-    assert_eq!(
-        vm1.to_bits(), vm4.to_bits(),
-        "max_von_mises differs between t=1 ({vm1}) and t=4 ({vm4})",
-    );
-    assert_eq!(
-        vm1.to_bits(), vm16.to_bits(),
-        "max_von_mises differs between t=1 ({vm1}) and t=16 ({vm16})",
-    );
+    // Max von Mises must be byte-identical across all thread counts.
+    let vm_ref = vms[0];
+    for (k, &vm) in vms.iter().enumerate().skip(1) {
+        let t = THREAD_COUNTS[k];
+        assert_eq!(
+            vm_ref.to_bits(), vm.to_bits(),
+            "max_von_mises differs between t=1 ({vm_ref}) and t={t} ({vm})",
+        );
+    }
 }
