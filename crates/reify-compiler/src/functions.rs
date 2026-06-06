@@ -40,11 +40,25 @@ pub(crate) fn compile_function(
         ) {
             Some(t) => (t, true),
             None => {
-                diagnostics.push(
-                    Diagnostic::error(format!("unresolved type: {}", p.type_expr))
-                        .with_code(DiagnosticCode::UnresolvedType)
+                // Generic fns get a type-param-aware diagnostic; non-generic fns
+                // keep UnresolvedType + the "unresolved type" message bit-for-bit
+                // (INV-6 regression pin — see fn_generic_signature_tests.rs).
+                if !type_param_names.is_empty() {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "type '{}' in the signature of generic function '{}' is not a declared type parameter or a known type",
+                            p.type_expr, fn_def.name
+                        ))
+                        .with_code(DiagnosticCode::FnUnknownTypeParam)
                         .with_label(DiagnosticLabel::new(p.type_expr.span, "unknown type name")),
-                );
+                    );
+                } else {
+                    diagnostics.push(
+                        Diagnostic::error(format!("unresolved type: {}", p.type_expr))
+                            .with_code(DiagnosticCode::UnresolvedType)
+                            .with_label(DiagnosticLabel::new(p.type_expr.span, "unknown type name")),
+                    );
+                }
                 (Type::Real, false) // fallback; `resolved` flag prevents cascade in default check
             }
         };
@@ -137,11 +151,25 @@ pub(crate) fn compile_function(
             ) {
                 Some(t) => t,
                 None => {
-                    diagnostics.push(
-                        Diagnostic::error(format!("unresolved return type: {}", te))
-                            .with_code(DiagnosticCode::UnresolvedType)
+                    // Generic fns get a type-param-aware diagnostic; non-generic fns
+                    // keep UnresolvedType + the "unresolved return type" message bit-for-bit
+                    // (INV-6 regression pin).
+                    if !type_param_names.is_empty() {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "type '{}' in the signature of generic function '{}' is not a declared type parameter or a known type",
+                                te, fn_def.name
+                            ))
+                            .with_code(DiagnosticCode::FnUnknownTypeParam)
                             .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
-                    );
+                        );
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(format!("unresolved return type: {}", te))
+                                .with_code(DiagnosticCode::UnresolvedType)
+                                .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                        );
+                    }
                     Type::Real
                 }
             }

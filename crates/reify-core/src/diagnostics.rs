@@ -1109,6 +1109,26 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_UNRESOLVED_TYPE`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     UnresolvedType,
+    /// A generic function signature references a type name that is neither a
+    /// declared type parameter of that function nor a known type alias, builtin,
+    /// or structure.
+    ///
+    /// Origin site: `crates/reify-compiler/src/functions.rs::compile_function`
+    /// (param-type and return-type resolution failure arms, gated on
+    /// `!type_param_names.is_empty()`).
+    ///
+    /// Only emitted when the enclosing function IS generic (`<T, …>`). Non-generic
+    /// functions with an unknown type name continue to emit `UnresolvedType` so
+    /// that the existing "unresolved type: <name>" message and code are preserved
+    /// bit-for-bit (INV-6 regression pin — see `fn_generic_signature_tests.rs`
+    /// `nongeneric_unknown_type_keeps_unresolved_type`).
+    ///
+    /// Canonical message form:
+    /// `"type '<expr>' in the signature of generic function '<name>' is not a declared type parameter or a known type"`
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FN_UNKNOWN_TYPE_PARAM`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FnUnknownTypeParam,
     /// An expression references an unbound identifier at compile time.
     ///
     /// Origin sites (all carry this code):
