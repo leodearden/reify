@@ -1062,6 +1062,54 @@ mod tests {
         );
     }
 
+    // --- ElasticOptions execution-mode resolution (PRD task #16) ---
+
+    /// `resolve_execution_modes` maps `(deterministic, threads, n_dofs)` to a
+    /// matched `(AssemblyMode, SolverMode)` pair per the ElasticOptions
+    /// resolution policy: `deterministic` forces single-threaded execution;
+    /// otherwise tiny problems (`n_dofs < PARALLEL_DOF_THRESHOLD`) and
+    /// `threads <= 1` fall back to Deterministic; everything else runs
+    /// `Parallel { threads }`. Assembly and solve modes always agree, mirroring
+    /// each other byte-for-byte.
+    #[test]
+    fn resolve_execution_modes_policy() {
+        use super::resolve_execution_modes;
+        use crate::assembly::AssemblyMode;
+
+        // (a) deterministic=true forces single-threaded execution even with a
+        // high thread count and a large problem.
+        assert_eq!(
+            resolve_execution_modes(true, 8, 50_000),
+            (AssemblyMode::Deterministic, SolverMode::Deterministic),
+            "deterministic=true must force both modes to Deterministic regardless of threads/n_dofs"
+        );
+
+        // (b) non-deterministic, multi-threaded, large problem → Parallel on both.
+        assert_eq!(
+            resolve_execution_modes(false, 4, 50_000),
+            (
+                AssemblyMode::Parallel { threads: 4 },
+                SolverMode::Parallel { threads: 4 }
+            ),
+            "large non-deterministic problem must run Parallel with the requested thread count"
+        );
+
+        // (c) tiny-problem short-circuit: n_dofs < PARALLEL_DOF_THRESHOLD (10_000)
+        // resolves to Deterministic regardless of thread count.
+        assert_eq!(
+            resolve_execution_modes(false, 8, 84),
+            (AssemblyMode::Deterministic, SolverMode::Deterministic),
+            "tiny problems (n_dofs < threshold) must fall back to Deterministic"
+        );
+
+        // (d) threads <= 1 is equivalent to Deterministic even for a large problem.
+        assert_eq!(
+            resolve_execution_modes(false, 1, 50_000),
+            (AssemblyMode::Deterministic, SolverMode::Deterministic),
+            "threads <= 1 must resolve to Deterministic"
+        );
+    }
+
     // --- Contract panics ---
 
     /// `SolverMode::Parallel { threads: 0 }` must panic with a message
