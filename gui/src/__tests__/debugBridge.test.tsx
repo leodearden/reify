@@ -38,6 +38,19 @@ import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
 
+// jsdom 25 does not implement document.elementFromPoint — the method is simply
+// absent from the document prototype. vi.spyOn requires the property to exist
+// before it can be overridden per test. Define a stub that returns null (matching
+// jsdom's layout-less behaviour) so that vi.spyOn/.mockReturnValue works and
+// vi.restoreAllMocks() reverts to this stub after each test.
+if (typeof document.elementFromPoint !== 'function') {
+  Object.defineProperty(document, 'elementFromPoint', {
+    configurable: true,
+    writable: true,
+    value: (): Element | null => null,
+  });
+}
+
 function makeStores(selectedEntities: string[] = [], anchorEntity: string | null = null): DebugStores {
   return {
     engine: {

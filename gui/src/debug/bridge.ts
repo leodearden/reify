@@ -40,6 +40,36 @@ function validVec3(v: unknown): v is [number, number, number] {
   );
 }
 
+/** Returns true iff n is a finite number (not NaN, not ±Infinity). */
+function isFiniteNumber(n: unknown): n is number {
+  return typeof n === 'number' && Number.isFinite(n);
+}
+
+/** Returns true iff v is a plain object with finite x and y. */
+function validXY(v: unknown): v is { x: number; y: number } {
+  if (v === null || typeof v !== 'object') return false;
+  const o = v as Record<string, unknown>;
+  return isFiniteNumber(o.x) && isFiniteNumber(o.y);
+}
+
+/**
+ * Dispatch a synthetic pointer/mouse event on `target` carrying clientX/clientY.
+ *
+ * Uses PointerEvent when available (real browser), falls back to MouseEvent in
+ * jsdom (which lacks the PointerEvent constructor). The event TYPE string —
+ * not the constructor class — determines which listeners fire, so a MouseEvent
+ * dispatched as 'pointerdown' still triggers pointerdown listeners (debugContract
+ * .test.ts:340 / selection.test.ts pattern). Both PointerEvent and MouseEvent
+ * accept clientX/clientY in their init dict, so coordinates propagate correctly.
+ */
+function dispatchPointer(target: Element, type: string, x: number, y: number): void {
+  const init = { clientX: x, clientY: y, bubbles: true, cancelable: true };
+  const evt: Event = typeof PointerEvent === 'function'
+    ? new PointerEvent(type, init)
+    : new MouseEvent(type, init);
+  target.dispatchEvent(evt);
+}
+
 /**
  * Resolve which DebugViewport to target for a given command invocation.
  *
@@ -698,6 +728,27 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       });
       (document.activeElement ?? document.body).dispatchEvent(event);
       return { ok: true };
+    },
+
+    // --- I1: Synthetic pointer/scroll/focus tools (task-4299) ---
+    // NOTE (contract §4 fidelity): these tools fire JS handlers (onClick,
+    // onPointerDown, etc.) but do NOT apply CSS :hover/:active pseudo-classes
+    // and do NOT trigger native OS hit-testing. document.elementFromPoint is
+    // used for target resolution. See docs/debug-mcp-contract.md §4 for the
+    // full fidelity-gaps table.
+
+    click_at: (params) => {
+      if (!validXY(params)) return { error: 'x and y must be finite numbers' };
+      const { x, y } = params as { x: number; y: number };
+      const el = document.elementFromPoint(x, y);
+      if (!el) return { error: `no element at point (${x}, ${y})` };
+      // Dispatch synthetic pointer sequence: pointerdown → pointerup → click.
+      // Each event carries clientX/clientY (contract §3 coordinate convention).
+      // Contract §4: fires JS handlers; CSS :hover/:active NOT applied.
+      dispatchPointer(el, 'pointerdown', x, y);
+      dispatchPointer(el, 'pointerup', x, y);
+      dispatchPointer(el, 'click', x, y);
+      return { ok: true, target: { tagName: el.tagName.toLowerCase(), testId: el.getAttribute('data-testid') } };
     },
 
     select_entity: (params) => {
