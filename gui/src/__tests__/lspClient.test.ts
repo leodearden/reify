@@ -10,7 +10,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import { invoke } from '@tauri-apps/api/core';
-import { createLspClient } from '../editor/lspClient';
+import { createLspClient, extractHoverMarkdown } from '../editor/lspClient';
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -376,5 +376,63 @@ describe('createLspClient', () => {
     const result = await client.documentHighlight('file:///test.ri', 7, 17);
 
     expect(result).toEqual([]);
+  });
+});
+
+// --- F2 step-3: extractHoverMarkdown ---
+
+describe('extractHoverMarkdown', () => {
+  it('passes a string contents through unchanged', () => {
+    expect(extractHoverMarkdown('**size**: Scalar')).toBe('**size**: Scalar');
+  });
+
+  it('returns value from a MarkupContent { kind, value } object', () => {
+    expect(extractHoverMarkdown({ kind: 'markdown', value: '**size**: Scalar' })).toBe(
+      '**size**: Scalar',
+    );
+  });
+
+  it('returns value from a MarkupContent { kind, value } with plaintext kind', () => {
+    expect(extractHoverMarkdown({ kind: 'plaintext', value: 'size: Scalar' })).toBe(
+      'size: Scalar',
+    );
+  });
+
+  it('joins an array of strings with newlines', () => {
+    expect(extractHoverMarkdown(['line one', 'line two'])).toBe('line one\nline two');
+  });
+
+  it('joins a mixed array of strings and { language, value } objects', () => {
+    expect(
+      extractHoverMarkdown([
+        { language: 'reify', value: 'param size: Scalar' },
+        'Some documentation text',
+      ]),
+    ).toBe('param size: Scalar\nSome documentation text');
+  });
+
+  it('joins an array of { language, value } objects by extracting values', () => {
+    expect(
+      extractHoverMarkdown([
+        { language: 'reify', value: 'param size: Scalar' },
+        { language: 'text', value: 'a scalar value' },
+      ]),
+    ).toBe('param size: Scalar\na scalar value');
+  });
+
+  it('returns empty string for null', () => {
+    expect(extractHoverMarkdown(null)).toBe('');
+  });
+
+  it('returns empty string for undefined', () => {
+    expect(extractHoverMarkdown(undefined)).toBe('');
+  });
+
+  it('returns empty string for an object without a value property', () => {
+    expect(extractHoverMarkdown({ something: 'else' })).toBe('');
+  });
+
+  it('returns empty string for an empty array', () => {
+    expect(extractHoverMarkdown([])).toBe('');
   });
 });
