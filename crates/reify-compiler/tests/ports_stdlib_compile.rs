@@ -2006,7 +2006,11 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
 }
 
 /// std/ports/thermal cardinality lock: exactly 2 traits (ThermalPort +
-/// ThermalContactPort), 0 enums, 0 structures.
+/// ThermalContactPort), 2 type aliases (HeatFlux + ThermalResistance),
+/// 0 enums, 0 structures.
+///
+/// Type-alias count is asserted so that spuriously added aliases are caught
+/// (consistent with locking the module's full public surface).
 #[test]
 fn std_ports_thermal_module_cardinality_locked() {
     let module = load_module("std/ports/thermal");
@@ -2043,6 +2047,29 @@ fn std_ports_thermal_module_cardinality_locked() {
         trait_names.contains(&"ThermalContactPort"),
         "std/ports/thermal trait list should contain 'ThermalContactPort', got: {:?}",
         trait_names
+    );
+
+    let alias_names: Vec<&str> = module
+        .type_aliases
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    assert_eq!(
+        module.type_aliases.len(),
+        2,
+        "std/ports/thermal should declare exactly 2 type aliases \
+         (HeatFlux + ThermalResistance), got: {:?}",
+        alias_names
+    );
+    assert!(
+        alias_names.contains(&"HeatFlux"),
+        "std/ports/thermal alias list should contain 'HeatFlux', got: {:?}",
+        alias_names
+    );
+    assert!(
+        alias_names.contains(&"ThermalResistance"),
+        "std/ports/thermal alias list should contain 'ThermalResistance', got: {:?}",
+        alias_names
     );
 
     let structure_names: Vec<&str> = module
@@ -2184,6 +2211,62 @@ structure def ContactInterface<C: ThermalContactPort> { port contact : C }
         "ContactInterface<C: ThermalContactPort> should compile without errors; \
          got: {:?}",
         errors
+    );
+}
+
+// ─── amend (thermal): ThermalContactPort concrete conformer ──────────────────
+
+/// Conformer instantiation: a concrete structure that satisfies every required
+/// member of ThermalContactPort compiles clean.
+///
+/// Required members supplied:
+///   frame         : Frame3    (from LocatedPort)  — zero-origin identity frame
+///   region        : Geometry  (from RegionPort)   — box geometry (Geometry alias
+///                                                    == Solid, box() returns Geometry)
+///   heat_flow     : Power     (from ThermalPort)  — 1N * 1m / 1s (= 1 W)
+///   contact_area  : Area      (own ThermalContactPort) — 1m * 1m (= 1 m²)
+///
+/// Optional members (temperature, heat_flux, thermal_resistance,
+/// contact_conductance) are intentionally omitted — they default to none and
+/// must NOT be required by the conformance checker.
+///
+/// Complements `reify_check_accepts_thermal_contact_port` (which only checks
+/// that the trait bound resolves with no errors in a generic context) by
+/// driving the strict `structure def X : Trait` conformance checker against
+/// the full inherited + own member set.  A structural change that broke
+/// conformance while keeping the bound resolvable would be caught here.
+///
+/// Mirrors the `rotary_port_concrete_conformer_compiles` pattern (~line 701).
+#[test]
+fn thermal_contact_port_concrete_conformer_compiles() {
+    let source = r#"
+import std.ports.thermal
+
+structure def ContactPatch : ThermalContactPort {
+    param frame : Frame3 = Frame3(
+        origin: vec3(0mm, 0mm, 0mm),
+        x_axis: vec3(1mm, 0mm, 0mm),
+        y_axis: vec3(0mm, 1mm, 0mm),
+        z_axis: vec3(0mm, 0mm, 1mm),
+    )
+    param region : Geometry = box(10mm, 10mm, 1mm)
+    param heat_flow : Power = 1N * 1m / 1s
+    param contact_area : Area = 1m * 1m
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a structure conforming to ThermalContactPort and supplying \
+         frame/region/heat_flow/contact_area should compile without errors; \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
