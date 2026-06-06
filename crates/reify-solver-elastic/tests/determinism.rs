@@ -64,6 +64,24 @@ use reify_solver_elastic::{
     resolve_execution_modes, PARALLEL_DOF_THRESHOLD,
 };
 
+// ─── constants ────────────────────────────────────────────────────────────────
+
+/// CG solver tolerance for the determinism harness.
+///
+/// `1e-10` is tight enough to ensure the solver has converged well before
+/// round-off between parallel and deterministic paths becomes relevant. The
+/// gap between `CG_TOL = 1e-10` and `EQUIV_TOL = 1e-3` gives ≥ 2 orders of
+/// headroom even at cond(K) ~ 1e6.
+const CG_TOL: f64 = 1e-10;
+
+/// Tolerance-equivalence bound for parallel-mode comparisons.
+///
+/// Basis: ‖Δu‖/‖u‖ ≲ cond(K)·`CG_TOL`. For the stocky ~50K-DOF box
+/// cond(K) ~ O(1e3–1e4) → expected difference ≲ 1e-6–1e-5, giving ≥ 2 orders
+/// headroom below 1e-3. The bound still detects any real non-determinism leak
+/// (O(1) or NaN), which manifests orders of magnitude above this threshold.
+const EQUIV_TOL: f64 = 1e-3;
+
 // ─── material constant ────────────────────────────────────────────────────────
 
 /// Material for the ~50K-DOF cantilever fixture.
@@ -301,7 +319,7 @@ fn solve_box_cantilever(deterministic: bool, threads: usize) -> SolveOutput {
 
     apply_dirichlet_row_elimination(&mut k, &mut f, &clamp_bcs);
 
-    let opts = CgSolverOptions { tolerance: 1e-10, max_iter: 5000 };
+    let opts = CgSolverOptions { tolerance: CG_TOL, max_iter: 5000 };
     let result: CgResult = solve_cg(&k, &f, opts, smode);
 
     let u_vec = result.u().to_vec();
@@ -373,6 +391,49 @@ fn recover_stress_field(
 /// Maximum von Mises stress over all nodes in the recovered stress field.
 fn max_von_mises(field: &[[[f64; 3]; 3]]) -> f64 {
     field.iter().map(|s| von_mises_of_tensor(s)).fold(0.0_f64, f64::max)
+}
+
+// ─── comparison helpers (step-6 GREEN) ───────────────────────────────────────
+
+/// Relative L2 norm of the difference between two equal-length vectors.
+///
+/// `‖a − b‖₂ / max(‖a‖₂, FLOOR)` where `FLOOR = 1e-30` prevents division
+/// by zero when the reference is the zero vector (degenerate fixture).
+fn rel_l2(a: &[f64], b: &[f64]) -> f64 {
+    assert_eq!(a.len(), b.len(), "rel_l2: vectors must have equal length");
+    let norm_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let diff_norm: f64 = a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f64>().sqrt();
+    const FLOOR: f64 = 1e-30;
+    diff_norm / norm_a.max(FLOOR)
+}
+
+/// Assert that `reference` and `candidate` solve outputs are tolerance-equivalent.
+///
+/// Checks:
+/// 1. Relative-L2 of the displacement difference ≤ `EQUIV_TOL`.
+/// 2. Relative difference of max von Mises ≤ `EQUIV_TOL`.
+///
+/// `label` is embedded in panic messages for identification.
+/// Iteration counts are deliberately NOT compared here — in parallel mode
+/// round-off can shift the convergence step across runs/thread counts.
+fn assert_tolerance_equivalent(reference: &SolveOutput, candidate: &SolveOutput, label: &str) {
+    let u_err = rel_l2(&reference.u, &candidate.u);
+    assert!(
+        u_err <= EQUIV_TOL,
+        "{label}: displacement rel-L2 error {u_err:.3e} > EQUIV_TOL={EQUIV_TOL:.3e}",
+    );
+
+    const VM_FLOOR: f64 = 1e-30;
+    let vm_ref = reference.max_von_mises.max(VM_FLOOR);
+    let vm_diff = (reference.max_von_mises - candidate.max_von_mises).abs();
+    let vm_err = vm_diff / vm_ref;
+    assert!(
+        vm_err <= EQUIV_TOL,
+        "{label}: max von Mises rel error {vm_err:.3e} > EQUIV_TOL={EQUIV_TOL:.3e} \
+         (ref={:.6e}, cand={:.6e})",
+        reference.max_von_mises,
+        candidate.max_von_mises,
+    );
 }
 
 // ─── step-1 GREEN / tests ─────────────────────────────────────────────────────
