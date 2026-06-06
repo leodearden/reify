@@ -15,6 +15,57 @@
 //! - `new_warm_state` — the `CgWarmState` serialised as `OpaqueState`
 //! - `cost_per_byte`  — crude estimate for cache eviction
 //!
+//! # Determinism contract (PRD task #18)
+//!
+//! The `ElasticOptions.deterministic : Bool = false` field (read here via
+//! `extract_execution_params`, alongside the runtime `threads` knob) selects the
+//! assembly + solve execution modes inside `solve_cantilever_fea` through the
+//! pure policy fn `reify_solver_elastic::resolve_execution_modes`:
+//!
+//! - `deterministic == true` forces **single-threaded execution with
+//!   fixed-order pairwise-tree reductions** for both `AssemblyMode::Deterministic`
+//!   and `SolverMode::Deterministic`, yielding **bit-stable, cross-machine
+//!   reproducible** results at a ~4–8× wallclock cost.
+//! - `deterministic == false` (the default) lets the resolver pick
+//!   `Parallel{threads}` once the problem clears `PARALLEL_DOF_THRESHOLD`
+//!   (10_000 DOFs); tiny problems (`n_dofs < threshold`) or `threads <= 1`
+//!   still collapse to the Deterministic modes.
+//!
+//! ## Cache key & determinism
+//!
+//! `deterministic` (like `threads`) is **excluded from the FEA cache key** by
+//! design — it changes the result bit-pattern, not its engineering value. The
+//! compute-node key is composed by [`crate::compute_cache_key::compute_cache_key`],
+//! whose *exclusion contract* mandates that thread count, determinism mode, and
+//! any future "execution profile" flag be filtered out by the upstream
+//! `options_hash` producer (`ElasticOptions::cacheable_hash`, deferred to P3.4).
+//! Today that producer is not yet wired: the FEA node's `options_hash` is a
+//! `ContentHash(0)` placeholder, and the per-call `ElasticOptions(...)` literal
+//! is not lowered into the node's `value_inputs` (the γ-slice shallow walk in
+//! `engine_eval.rs` captures only direct `ValueRef` args). So *no* `ElasticOptions`
+//! field — neither `deterministic` nor `shell_force` — participates in the key
+//! yet. This mirrors the mesher's treatment of `MeshingOptions.deterministic`.
+//!
+//! **Consequence (cache hit vs. bit-stability):** because `deterministic` is not
+//! in the key, a `deterministic: true` request can be served a previously-cached
+//! result that was produced by a *non-deterministic / parallel* solve. The
+//! bit-stability guarantee therefore holds for a **fresh (cold-cache) solve**,
+//! not necessarily for a cache hit. A consumer needing a guaranteed bit-stable
+//! baseline (e.g. a golden / regression run) must evaluate on a cold cache
+//! (fresh engine) rather than expect the flag to invalidate a cached result.
+//!
+//! ## Default-behavior change (PRD task #16)
+//!
+//! Before this wiring every elastostatic solve ran unconditionally in the
+//! `Deterministic` assembly/solve modes. With the new default `deterministic:
+//! false` and `threads: none` (→ host CPU count), any solve that clears
+//! `PARALLEL_DOF_THRESHOLD` (10_000 DOFs) now runs `Parallel` and is no longer
+//! bit-stable across runs/machines by default. All in-tree FEA solves use the
+//! coarse cantilever mesh (≈2.5K DOFs < threshold) and so still resolve to
+//! Deterministic; no existing golden/regression test depends on bit-stable
+//! output for a >10K-DOF default-options solve. A large-mesh consumer that needs
+//! reproducibility must pass `ElasticOptions(deterministic: true)`.
+//!
 //! # Analytical reference
 //!
 //! For a cantilever of length L, width b, height h under tip load P:
@@ -30,6 +81,13 @@
 //! Prior warm state (if any) is recovered via `CgWarmState::from_opaque_state`;
 //! a type mismatch silently falls back to cold start. The fresh `CgWarmState`
 //! (wrapping the new displacement vector u) is donated back as `new_warm_state`.
+//!
+//! A `deterministic == true` solve **ignores any recovered warm state** and
+//! starts cold (zero initial guess): a warm state produced by an earlier
+//! parallel / run-varying solve would otherwise perturb the CG iteration count
+//! and break the bit-stability guarantee (see the Determinism contract above).
+//! It still donates a fresh `CgWarmState` back for any later non-deterministic
+//! solve to reuse.
 //!
 //! # Cache-hit contract (§3 + significance_filter.rs)
 //!
@@ -124,13 +182,13 @@ use reify_ir::{
 
 use crate::persistent_cache::ShellChannels;
 use reify_solver_elastic::{
-    AnisotropicMaterial, AssemblyElement, AssemblyMode, CgSolverOptions, CgWarmState,
+    AnisotropicMaterial, AssemblyElement, CgSolverOptions, CgWarmState,
     ConstantField, DirichletBc, ElementOrder, FaceOrder, GridSpec, IsotropicElastic,
-    OrthotropicMaterial, SolverMode, StressElement, TransverseIsotropicMaterial,
+    OrthotropicMaterial, StressElement, TransverseIsotropicMaterial,
     apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
     assemble_global_stiffness, element_stiffness, element_stiffness_p1_with_field,
     element_stress_p1, recover_nodal_stress_p1, resample_multi_nodal_to_grid,
-    solve_cg_with_warm_state, tet_volume_p1,
+    resolve_execution_modes, solve_cg_with_warm_state, tet_volume_p1,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -463,8 +521,15 @@ pub fn solve_elastic_static_trampoline(
     let prior_cg = prior_warm_state.and_then(|s| s.downcast_ref::<CgWarmState>().cloned());
 
     // ── (6) Delegate to shared FEA helper ────────────────────────────────────
-    let (fea, fresh_warm) =
-        solve_cantilever_fea(&model, length, width, height, tip_force, prior_cg, &pressures);
+    //
+    // Execution-mode knobs (task 2926): `ElasticOptions.deterministic` + `threads`
+    // (value_inputs[6]) select the assembly/CG SolverMode inside the helper via
+    // `resolve_execution_modes`. The flag is intentionally excluded from the FEA
+    // cache key (the trampoline does not hash ElasticOptions).
+    let (deterministic, threads_opt) = extract_execution_params(&value_inputs[6]);
+    let (fea, fresh_warm) = solve_cantilever_fea(
+        &model, length, width, height, tip_force, prior_cg, &pressures, deterministic, threads_opt,
+    );
 
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
     //
@@ -731,6 +796,10 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 ///   `aniso.d_matrix_global()`.
 ///
 /// Returns `(CantileverFeaSolve, CgWarmState)`.
+// 9 args: the helper threads mesh geometry, tip load, pressures, CG warm-state,
+// and the task-2926 execution-mode knobs (`deterministic`, `threads`) into a
+// single cohesive solve; splitting them into a struct would not aid clarity.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_cantilever_fea(
     model: &MaterialModel,
     length: f64,
@@ -739,6 +808,8 @@ pub(crate) fn solve_cantilever_fea(
     tip_force: [f64; 3],
     prior_cg: Option<CgWarmState>,
     pressures: &[PressureSpec],
+    deterministic: bool,
+    threads: Option<usize>,
 ) -> (CantileverFeaSolve, CgWarmState) {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
@@ -860,6 +931,20 @@ pub(crate) fn solve_cantilever_fea(
         }
     }
 
+    // ── Execution-mode selection (task 2926) ─────────────────────────────────
+    //
+    // `ElasticOptions.deterministic` + `threads` resolve into the assembly and
+    // CG-solve modes via the single policy fn `resolve_execution_modes`
+    // (reify-solver-elastic): `deterministic ⇒ both Deterministic`; else a tiny
+    // problem (`n_dofs < PARALLEL_DOF_THRESHOLD`) or `threads <= 1` also forces
+    // Deterministic; otherwise both run `Parallel{threads}`. `threads` defaults
+    // to the host CPU count when the caller leaves it `None`. `n_dofs = 3·n_nodes`
+    // is only known here, so the resolver must be called inside this helper.
+    let threads =
+        threads.unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+    let n_dofs = 3 * n_nodes;
+    let (assembly_mode, solver_mode) = resolve_execution_modes(deterministic, threads, n_dofs);
+
     // ── Assemble global stiffness matrix ──────────────────────────────────────
     let assembly_elements: Vec<AssemblyElement<'_>> = tet_connectivity
         .iter()
@@ -872,7 +957,7 @@ pub(crate) fn solve_cantilever_fea(
         })
         .collect();
 
-    let mut k = assemble_global_stiffness(n_nodes, &assembly_elements, AssemblyMode::Deterministic);
+    let mut k = assemble_global_stiffness(n_nodes, &assembly_elements, assembly_mode);
 
     // ── Build load vector; distribute tip load to tip-face nodes ─────────────
     //
@@ -915,8 +1000,18 @@ pub(crate) fn solve_cantilever_fea(
         tolerance: 1e-6,
         max_iter: 2000,
     };
+    // Determinism contract (task 2926): bit-stability requires a *fixed* CG
+    // starting vector. CG converges to the same solution from any initial guess,
+    // but the iteration count — and thus the exact bit-pattern of the converged
+    // result — depends on it. A warm state carried over from an earlier solve
+    // (which may have run in `Parallel`, or simply varied run-to-run) would
+    // defeat the cross-run/cross-machine reproducibility guarantee. So a
+    // deterministic solve discards any prior warm state and starts cold (zero
+    // initial guess), trading a few extra CG iterations for reproducibility;
+    // bit-stability then holds for warm- and cold-lineage solves alike.
+    let warm_start = if deterministic { None } else { prior_cg.as_ref() };
     let (cg_result, fresh_warm) =
-        solve_cg_with_warm_state(&k, &f, prior_cg.as_ref(), opts, SolverMode::Deterministic);
+        solve_cg_with_warm_state(&k, &f, warm_start, opts, solver_mode);
 
     // ── Stress recovery: max von Mises across all elements ────────────────────
     //
@@ -1575,6 +1670,44 @@ pub(crate) fn extract_shell_route_params(options: &Value) -> (ShellForce, f64) {
     (shell_force, shell_threshold)
 }
 
+/// Read the execution-mode knobs from an `ElasticOptions`-shaped `Value`
+/// (`value_inputs[6]`), mirroring [`extract_shell_route_params`]' missing-field
+/// fallback discipline (task 2926).
+///
+/// Returns `(deterministic, threads)`:
+/// - `deterministic` — `ElasticOptions.deterministic` (`Value::Bool`). When
+///   `true`, the FEA assembly + CG solve are forced single-threaded with
+///   fixed-order pairwise-tree reductions for bit-stable, cross-machine results
+///   (PRD task #18). Defaults to `false` (stdlib `solver_elastic.ri:193`).
+/// - `threads` — `ElasticOptions.threads : Option<Int>`. `none` (the default)
+///   materialises at runtime as `Value::Option(None)` → `None`, and the caller
+///   then resolves it to the host CPU count; an explicit value arrives as
+///   `Value::Option(Some(Value::Int))`, while a bare `Value::Int` is also
+///   accepted defensively. Only a positive count is honoured — `0`, negative,
+///   or a mis-typed cell falls back to the `none`/auto default.
+///
+/// A non-`StructureInstance` (or one missing both fields) yields the stdlib
+/// defaults `(false, None)`.
+pub(crate) fn extract_execution_params(options: &Value) -> (bool, Option<usize>) {
+    let mut deterministic = false;
+    let mut threads: Option<usize> = None;
+    if let Value::StructureInstance(data) = options {
+        if let Some(Value::Bool(b)) = data.fields.get("deterministic") {
+            deterministic = *b;
+        }
+        // Unwrap the runtime `Option<Int>` representation, tolerating a bare Int.
+        let threads_value = match data.fields.get("threads") {
+            Some(Value::Option(inner)) => inner.as_deref(),
+            other => other,
+        };
+        if let Some(Value::Int(n)) = threads_value {
+            // `usize::try_from` rejects negatives; `filter` rejects 0 → auto.
+            threads = usize::try_from(*n).ok().filter(|&n| n > 0);
+        }
+    }
+    (deterministic, threads)
+}
+
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1633,6 +1766,71 @@ mod tests {
         // Also assert that a bare empty list → empty Vec.
         let empty_specs = extract_pressure_loads(&Value::List(vec![]));
         assert!(empty_specs.is_empty(), "empty list should return empty Vec");
+    }
+
+    /// step-9 RED (task 2926): extract_execution_params reads `deterministic`
+    /// (Value::Bool, default false) and `threads` (Option<Int>, default None)
+    /// from an ElasticOptions-shaped StructureInstance, mirroring
+    /// `extract_shell_route_params`' missing-field fallback discipline.
+    ///
+    /// `threads : Option<Int>` materialises at runtime as a `Value::Option`, so
+    /// the helper must unwrap `Value::Option(Some(Value::Int))` in addition to
+    /// accepting a bare `Value::Int`. Missing fields (or a non-StructureInstance)
+    /// fall back to the stdlib defaults `(deterministic = false, threads = none)`.
+    ///
+    /// RED: `extract_execution_params` does not exist yet → compile-fail.
+    #[test]
+    fn extract_execution_params_reads_deterministic_and_threads() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        // Wrap a field map as an ElasticOptions-shaped StructureInstance.
+        let make_options = |fields: PersistentMap<String, Value>| {
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "ElasticOptions".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        };
+
+        // (a) deterministic = true, threads = 4 (bare Int) → (true, Some(4)).
+        let opts_a = make_options(
+            [
+                ("deterministic".to_string(), Value::Bool(true)),
+                ("threads".to_string(), Value::Int(4)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(extract_execution_params(&opts_a), (true, Some(4)));
+
+        // (b) deterministic = false, threads stored in the real runtime
+        //     Option<Int> representation `Value::Option(Some(Int(8)))` → (false, Some(8)).
+        let opts_b = make_options(
+            [
+                ("deterministic".to_string(), Value::Bool(false)),
+                ("threads".to_string(), Value::Option(Some(Box::new(Value::Int(8))))),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(extract_execution_params(&opts_b), (false, Some(8)));
+
+        // (c) threads = none (`Value::Option(None)`), `deterministic` field absent
+        //     → both fall back to defaults (false, None).
+        let opts_c =
+            make_options([("threads".to_string(), Value::Option(None))].into_iter().collect());
+        assert_eq!(extract_execution_params(&opts_c), (false, None));
+
+        // (d) instance carrying only an unrelated field (neither `deterministic`
+        //     nor `threads` present) → defaults (false, None).
+        let opts_d = make_options(
+            [("require_hex_wedge".to_string(), Value::Bool(false))].into_iter().collect(),
+        );
+        assert_eq!(extract_execution_params(&opts_d), (false, None));
+
+        // (e) non-StructureInstance → defaults (false, None).
+        assert_eq!(extract_execution_params(&Value::Real(1.0)), (false, None));
     }
 
     /// step-3 RED (task 4264): box_face_pressure_conserves_resultant.
@@ -1749,7 +1947,9 @@ mod tests {
         }];
 
         let (result, _warm) =
-            solve_cantilever_fea(&model, length, width, height, [0.0, 0.0, 0.0], None, &pressures);
+            solve_cantilever_fea(
+                &model, length, width, height, [0.0, 0.0, 0.0], None, &pressures, true, None,
+            );
 
         assert!(result.converged, "FEA must converge under x_max pressure");
 
@@ -1817,6 +2017,8 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            true,
+            None,
         );
 
         // Tip deflection = max |u_z| over tip-face nodes.
@@ -1895,6 +2097,8 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            true,
+            None,
         );
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
@@ -1905,6 +2109,8 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            true,
+            None,
         );
 
         // Both must converge.
@@ -2015,6 +2221,8 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            true,
+            None,
         );
 
         // Analytic σ_max = 6·P·L / (b·h²) — independent of material stiffness.
@@ -2173,6 +2381,8 @@ mod tests {
             [0.0, 0.0, -1000.0],
             None,
             &[],
+            true,
+            None,
         );
 
         // Expected mesh counts: nz=6, nx=round(0.8/0.1*6)=48, ny=1
@@ -2696,7 +2906,9 @@ mod tests {
         let model = MaterialModel::Isotropic(iso);
 
         let (result, _) =
-            solve_cantilever_fea(&model, 1.0, 0.1, 0.1, [0.0, -1000.0, 0.0], None, &[]);
+            solve_cantilever_fea(
+                &model, 1.0, 0.1, 0.1, [0.0, -1000.0, 0.0], None, &[], true, None,
+            );
 
         assert!(result.converged, "directional Y-load solve must converge");
 

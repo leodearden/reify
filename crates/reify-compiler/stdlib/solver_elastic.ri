@@ -72,7 +72,7 @@ enum ShellForce { Off, Auto, On }
 // ── ElasticOptions ───────────────────────────────────────────────────────────
 
 // `ElasticOptions` is the configuration object passed to the FEA solver.
-// All eleven params have sensible defaults so a bare `ElasticOptions()`
+// All twelve params have sensible defaults so a bare `ElasticOptions()`
 // instantiation compiles and yields the standard solver setup; callers
 // override individual fields at construction (e.g.,
 // `ElasticOptions(element_order: ElementOrder.P2, max_iter: 5000)`).
@@ -164,6 +164,20 @@ enum ShellForce { Off, Auto, On }
 //                            v0_3/hex-wedge-meshing.md` task #9, §"Two opposing
 //                            escape hatches". Mutual exclusion: same constraint
 //                            as `force_tet` above.
+//   deterministic          — when `true`, forces single-threaded execution with
+//                            fixed-order pairwise-tree reductions in both global
+//                            stiffness assembly and the CG solve, yielding
+//                            bit-stable results that are reproducible across runs
+//                            AND across machines (independent of CPU count). The
+//                            cost is a 4–8× wallclock slowdown on large problems,
+//                            since the multi-threaded fast path is disabled.
+//                            Default `false` (the solver picks threads/modes by
+//                            problem size: tiny problems run single-threaded;
+//                            large problems parallelise). The flag is NOT part of
+//                            the FEA cache key — it changes the result's bit
+//                            pattern, not its engineering value. Use for golden
+//                            tests, regression baselines, and cross-machine
+//                            result comparison. PRD task #18.
 structure def ElasticOptions {
     param element_order : ElementOrder = ElementOrder.P1
     param mesh_size : Option<Length> = none
@@ -176,6 +190,7 @@ structure def ElasticOptions {
     param shell_force : ShellForce = ShellForce.Auto
     param force_tet : Bool = false
     param require_hex_wedge : Bool = false
+    param deterministic : Bool = false
 
     // A non-positive `max_iter` would let the solver exit before doing any
     // work; declaring the lower bound at the structure-def level makes the

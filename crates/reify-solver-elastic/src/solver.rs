@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 use faer::sparse::SparseRowMat;
 
+use crate::assembly::AssemblyMode;
+
 /// How [`solve_cg`] parallelises the SpMV and dot-product reductions.
 ///
 /// Mirrors [`crate::assembly::AssemblyMode`] byte-for-byte so the caller-side
@@ -81,6 +83,55 @@ pub enum SolverMode {
         /// Worker thread count.
         threads: usize,
     },
+}
+
+/// DOF count at or above which a non-deterministic solve is eligible to run
+/// multi-threaded. Below this threshold the thread-spawn + cross-thread-combine
+/// overhead dominates the arithmetic, so [`resolve_execution_modes`] forces the
+/// single-threaded [`Deterministic`][SolverMode::Deterministic] path regardless
+/// of the requested thread count. This is the "tiny problems run
+/// single-threaded under 10K DOFs" policy that the [`SolverMode`] /
+/// [`AssemblyMode`] primitive docs explicitly defer to the `ElasticOptions`
+/// resolution layer (PRD task #16).
+pub const PARALLEL_DOF_THRESHOLD: usize = 10_000;
+
+/// Resolve the matched `(AssemblyMode, SolverMode)` pair for an elastostatic
+/// solve from the caller's determinism preference, requested thread count, and
+/// problem size. This is the single policy seam for PRD task #16 / #18: the
+/// assembly and CG primitives stay mode-agnostic, and this pure function decides
+/// how they run.
+///
+/// Policy:
+/// - `deterministic == true` ⇒ both modes
+///   [`Deterministic`][SolverMode::Deterministic]. Forces single-threaded
+///   execution + fixed-order pairwise-tree reductions for bit-stable,
+///   cross-machine reproducible results, at a 4–8× wallclock cost (PRD task #18).
+/// - otherwise `n_dofs < PARALLEL_DOF_THRESHOLD` (tiny-problem short-circuit)
+///   **or** `threads <= 1` ⇒ both modes Deterministic. (`Parallel { threads: 1 }`
+///   is bit-equivalent to Deterministic, so the single-threaded path is chosen
+///   directly; tiny problems avoid thread-spawn overhead.)
+/// - otherwise ⇒ both modes `Parallel { threads }`.
+///
+/// [`AssemblyMode`] and [`SolverMode`] mirror each other byte-for-byte (see
+/// their module docs), so returning a matched pair from one resolver keeps the
+/// two stages in lockstep.
+///
+/// Pure: takes a concrete `threads: usize`, so the caller owns the
+/// `None`→cpu-count fallback and this function never calls
+/// `std::thread::available_parallelism`.
+pub fn resolve_execution_modes(
+    deterministic: bool,
+    threads: usize,
+    n_dofs: usize,
+) -> (AssemblyMode, SolverMode) {
+    if deterministic || n_dofs < PARALLEL_DOF_THRESHOLD || threads <= 1 {
+        (AssemblyMode::Deterministic, SolverMode::Deterministic)
+    } else {
+        (
+            AssemblyMode::Parallel { threads },
+            SolverMode::Parallel { threads },
+        )
+    }
 }
 
 /// Tuning parameters for [`solve_cg`].
@@ -1060,6 +1111,136 @@ mod tests {
             "Default max_iter must be > 0, got {}",
             opts.max_iter
         );
+    }
+
+    // --- ElasticOptions execution-mode resolution (PRD task #16) ---
+
+    /// `resolve_execution_modes` maps `(deterministic, threads, n_dofs)` to a
+    /// matched `(AssemblyMode, SolverMode)` pair per the ElasticOptions
+    /// resolution policy: `deterministic` forces single-threaded execution;
+    /// otherwise tiny problems (`n_dofs < PARALLEL_DOF_THRESHOLD`) and
+    /// `threads <= 1` fall back to Deterministic; everything else runs
+    /// `Parallel { threads }`. Assembly and solve modes always agree, mirroring
+    /// each other byte-for-byte.
+    #[test]
+    fn resolve_execution_modes_policy() {
+        use super::resolve_execution_modes;
+        use crate::assembly::AssemblyMode;
+
+        // (a) deterministic=true forces single-threaded execution even with a
+        // high thread count and a large problem.
+        assert_eq!(
+            resolve_execution_modes(true, 8, 50_000),
+            (AssemblyMode::Deterministic, SolverMode::Deterministic),
+            "deterministic=true must force both modes to Deterministic regardless of threads/n_dofs"
+        );
+
+        // (b) non-deterministic, multi-threaded, large problem → Parallel on both.
+        assert_eq!(
+            resolve_execution_modes(false, 4, 50_000),
+            (
+                AssemblyMode::Parallel { threads: 4 },
+                SolverMode::Parallel { threads: 4 }
+            ),
+            "large non-deterministic problem must run Parallel with the requested thread count"
+        );
+
+        // (c) tiny-problem short-circuit: n_dofs < PARALLEL_DOF_THRESHOLD (10_000)
+        // resolves to Deterministic regardless of thread count.
+        assert_eq!(
+            resolve_execution_modes(false, 8, 84),
+            (AssemblyMode::Deterministic, SolverMode::Deterministic),
+            "tiny problems (n_dofs < threshold) must fall back to Deterministic"
+        );
+
+        // (d) threads <= 1 is equivalent to Deterministic even for a large problem.
+        assert_eq!(
+            resolve_execution_modes(false, 1, 50_000),
+            (AssemblyMode::Deterministic, SolverMode::Deterministic),
+            "threads <= 1 must resolve to Deterministic"
+        );
+    }
+
+    /// Integration of `resolve_execution_modes` with the actual CG solve: proves
+    /// the *behavioral* determinism guarantee, not just the policy mapping
+    /// (`resolve_execution_modes_policy`) or the field plumbing (the e2e test).
+    ///
+    /// The resolver is fed a large `n_dofs` (50_000, a stand-in for a real
+    /// `>PARALLEL_DOF_THRESHOLD` problem) so it returns genuinely distinct mode
+    /// pairs for `deterministic ∈ {true, false}`; the resolved modes then drive a
+    /// solve of the cheap fan-mesh SPD system — no slow large mesh needed for CI.
+    ///
+    /// (1) `deterministic = true` → resolver returns `SolverMode::Deterministic`;
+    ///     two solves through the resolved mode are **bit-identical** — the
+    ///     cross-run reproducibility guarantee, exercised end-to-end through the
+    ///     resolver rather than by hand-passing the mode.
+    /// (2) `deterministic = false`, `threads = 4` → resolver returns
+    ///     `SolverMode::Parallel { threads: 4 }`; that solve converges and is
+    ///     tolerance-equivalent to the deterministic solve (same engineering
+    ///     result, so the default fast path stays correct).
+    #[test]
+    fn resolve_execution_modes_drives_bit_stable_and_equivalent_solves() {
+        use super::resolve_execution_modes;
+
+        let (k, f) = fan_mesh_k_spd_and_f();
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+
+        // Large n_dofs stand-in so the resolver does not short-circuit to
+        // Deterministic via the tiny-problem rule; the solved system is the cheap
+        // fan-mesh K regardless.
+        let n_dofs_large = 50_000;
+
+        // (1) deterministic = true → Deterministic mode → bit-stable across runs.
+        let (_, det_mode) = resolve_execution_modes(true, 4, n_dofs_large);
+        assert_eq!(
+            det_mode,
+            SolverMode::Deterministic,
+            "deterministic=true must resolve to Deterministic"
+        );
+        let det_a = solve_cg(&k, &f, opts.clone(), det_mode);
+        let det_b = solve_cg(&k, &f, opts.clone(), det_mode);
+        assert!(
+            det_a.converged && det_b.converged,
+            "resolver-driven deterministic solves must converge"
+        );
+        assert_eq!(
+            det_a.iterations, det_b.iterations,
+            "deterministic iterations must be bit-stable through the resolver"
+        );
+        for i in 0..f.len() {
+            assert_eq!(
+                det_a.u()[i].to_bits(),
+                det_b.u()[i].to_bits(),
+                "deterministic u[{i}] not bit-stable through the resolver: a={} b={}",
+                det_a.u()[i],
+                det_b.u()[i],
+            );
+        }
+
+        // (2) deterministic = false, threads = 4, large problem → Parallel mode →
+        //     converges and is tolerance-equivalent to the deterministic result.
+        let (_, par_mode) = resolve_execution_modes(false, 4, n_dofs_large);
+        assert_eq!(
+            par_mode,
+            SolverMode::Parallel { threads: 4 },
+            "non-deterministic large problem must resolve to Parallel"
+        );
+        let par = solve_cg(&k, &f, opts, par_mode);
+        assert!(par.converged, "resolver-driven parallel solve must converge");
+        for i in 0..f.len() {
+            let tol = 1e-9 * det_a.u()[i].abs().max(1.0);
+            let diff = (par.u()[i] - det_a.u()[i]).abs();
+            assert!(
+                diff < tol,
+                "resolver-driven parallel result not equivalent at i={i}: \
+                 u_par={}, u_det={}, |diff|={diff} ≥ tol={tol}",
+                par.u()[i],
+                det_a.u()[i],
+            );
+        }
     }
 
     // --- Contract panics ---

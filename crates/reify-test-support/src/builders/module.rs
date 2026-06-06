@@ -150,6 +150,7 @@ impl CompiledModuleBuilder {
             declared_version: None,
             solver_pragma: None,
             kernel_pragma: None,
+            deterministic: false,
             auto_type_substitution: AutoTypeSubstitution::default(),
             diagnostics: self.diagnostics,
             content_hash,

@@ -26,6 +26,7 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
     apply_solver_pragma(parsed, module);
     apply_kernel_pragma(parsed, module);
     apply_cfg_pragma(parsed, module);
+    apply_deterministic_pragma(parsed, module);
     warn_block_level_precision(module);
     warn_block_level_solver(module);
     warn_block_level_kernel(module);
@@ -838,5 +839,38 @@ fn apply_cfg_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
                     .with_label(DiagnosticLabel::new(pragma.span, "malformed #cfg")),
             );
         }
+    }
+}
+
+/// Process the module-level `#deterministic` pragma (PRD task #18): set
+/// `module.deterministic = true` when a `#deterministic` pragma is present.
+///
+/// First-wins — the first occurrence sets the flag; any subsequent
+/// `#deterministic` emits a "subsequent #deterministic pragma ignored; first
+/// one wins" warning, mirroring `#precision`/`#solver`/`#kernel`. `#deterministic`
+/// is a bare flag in v0.3: it carries no args (the `validate_module_pragmas`
+/// pre-pass already recognises the name via `MODULE_ONLY_PRAGMAS`, so no
+/// unknown-pragma warning fires), and a single occurrence is the whole signal.
+///
+/// This records the flag at module scope only. The runtime determinism channel
+/// that actually reaches the solver is the per-call `ElasticOptions.deterministic`
+/// struct field (block-/call-site pragma scoping is deferred to a follow-up).
+fn apply_deterministic_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
+    let mut first_seen = false;
+    for pragma in &parsed.pragmas {
+        if pragma.name != "deterministic" {
+            continue;
+        }
+
+        if first_seen {
+            module.diagnostics.push(
+                Diagnostic::warning("subsequent #deterministic pragma ignored; first one wins")
+                    .with_label(DiagnosticLabel::new(pragma.span, "ignored")),
+            );
+            continue;
+        }
+
+        module.deterministic = true;
+        first_seen = true;
     }
 }

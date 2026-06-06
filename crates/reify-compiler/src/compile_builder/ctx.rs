@@ -201,6 +201,8 @@ impl CompilationCtx {
             solver_pragma: None,
             // Filled in by `module_pragmas::apply_module_pragmas` after assembly.
             kernel_pragma: None,
+            // Filled in by `module_pragmas::apply_module_pragmas` after assembly.
+            deterministic: false,
             // Written by `auto_type_param_phase::phase_auto_type_param_resolution`
             // from each `sub x = Foo<auto: Bound>()` use-site; empty when the
             // module declares no `auto:` type-args (see AutoTypeSubstitution).

@@ -164,7 +164,7 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
 // ─── step-5: ElasticOptions param shape ──────────────────────────────────────
 
 /// `ElasticOptions` is the FEA solver-input knob structure. It must declare
-/// exactly eleven params with the canonical names and types:
+/// exactly twelve params with the canonical names and types:
 ///
 ///   - `element_order          : ElementOrder`   (selects P1 / P2 elements)
 ///   - `mesh_size              : Option<Length>`  (none = solver derives from tolerance)
@@ -182,6 +182,8 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
 ///     default false; PRD hex-wedge-meshing.md task #9)
 ///   - `require_hex_wedge      : Bool`            (upgrade tet fall-back to hard error;
 ///     default false; PRD hex-wedge-meshing.md task #9)
+///   - `deterministic          : Bool`            (force single-threaded + fixed-order
+///     reductions for bit-stable cross-machine results; default false; PRD task #18)
 ///
 /// `mesh_size`, `threads`, and `shell_voxel_size` are encoded as `Option<T> = none`
 /// rather than PRD-style sentinels (e.g., `auto`, `num_cpus::get()`) because the
@@ -196,8 +198,8 @@ fn elastic_options_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        11,
-        "ElasticOptions should have exactly 11 param cells, got: {:?}",
+        12,
+        "ElasticOptions should have exactly 12 param cells, got: {:?}",
         names
     );
 
@@ -223,6 +225,7 @@ fn elastic_options_struct_has_correct_param_shape() {
         ("shell_force", Type::Enum("ShellForce".to_string())),
         ("force_tet", Type::Bool),
         ("require_hex_wedge", Type::Bool),
+        ("deterministic", Type::Bool),
     ];
 
     for (member, expected_ty) in expected {
@@ -386,6 +389,21 @@ fn elastic_options_param_defaults_match_spec() {
         }
         other => panic!(
             "require_hex_wedge default should be Literal(Value::Bool(false)), got: {:?}",
+            other
+        ),
+    }
+
+    // deterministic = false (PRD task #18). Default false keeps the standard
+    // performance path (multi-threaded for large problems); deterministic = true
+    // is an opt-in that forces single-threaded + fixed-order reductions for
+    // bit-stable cross-machine reproducibility.
+    let deterministic_default = require_default(template, "deterministic");
+    match &deterministic_default.kind {
+        CompiledExprKind::Literal(Value::Bool(v)) => {
+            assert!(!v, "deterministic default should be false, got: {}", v)
+        }
+        other => panic!(
+            "deterministic default should be Literal(Value::Bool(false)), got: {:?}",
             other
         ),
     }
