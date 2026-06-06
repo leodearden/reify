@@ -47,21 +47,31 @@ const STUB_MSG: &str = "Manifold query/export not yet implemented for v0.2; \
     boolean ops and tessellate are wired via manifold3d 0.1, but query/export \
     are follow-up work (see docs/prds/v0_2/multi-kernel.md).";
 
-/// A sub-element (face triangle or edge segment) extracted from a parent
+/// A sub-element (planar face or edge segment) extracted from a parent
 /// Manifold mesh by [`GeometryKernel::extract_faces`] /
 /// [`GeometryKernel::extract_edges`].
 ///
-/// A single triangle or edge is **not** a closed [`Manifold`] and cannot live
+/// A planar face or edge is **not** a closed [`Manifold`] and cannot live
 /// in the [`ManifoldKernel::shapes`] store, so extracted sub-elements are
 /// persisted in a parallel typed store ([`ManifoldKernel::sub_shapes`]) keyed
 /// by the same id space. `query()` distinguishes a sub-handle from a full-mesh
 /// handle by store membership: an id present in `sub_shapes` answers
 /// per-element property queries (`SurfaceArea`, `FaceNormal`, `EdgeTangent`,
 /// `BoundingBox`); an id present in `shapes` answers whole-mesh queries.
-#[derive(Debug, Clone, Copy)]
+///
+/// # SubShape::Face semantics (post-task-4262 coplanar coalescing)
+///
+/// A `Face` now holds **all coplanar triangles** of a planar face as a
+/// `Vec<[[f64;3];3]>`.  Before coalescing, each `Face` held a single
+/// triangle (1-element Vec); after coalescing one `Face` covers a whole
+/// planar patch (e.g. a cube face = 2 coplanar triangles). `Copy` is
+/// dropped because `Vec` is not `Copy`; `Clone` is retained.
+#[derive(Debug, Clone)]
 pub(crate) enum SubShape {
-    /// A mesh triangle: three xyz corner points in winding order.
-    Face([[f64; 3]; 3]),
+    /// A planar face: all coplanar triangles (each is `[v0, v1, v2]` in winding
+    /// order). Area = sum of triangle areas; normal = shared coplanar normal;
+    /// bbox = over all corners.
+    Face(Vec<[[f64; 3]; 3]>),
     /// A mesh edge: two xyz endpoints.
     Edge([[f64; 3]; 2]),
 }
@@ -88,6 +98,24 @@ pub struct ManifoldKernel {
     /// Monotonic id counter; first allocated handle is `1` (matches OCCT).
     /// `0` and `u64::MAX` are reserved (the latter is `GeometryHandleId::INVALID`).
     next_id: u64,
+    /// Per-parent-handle memoization cache for `extract_faces` results.
+    ///
+    /// Mirrors `OcctKernel`'s `extracted_faces` field
+    /// (`crates/reify-kernel-occt/src/lib.rs:460-461` + the cache-first /
+    /// mint-then-insert pattern at `:677-710`).  Maps parent handle id →
+    /// the `Vec<GeometryHandleId>` returned by the first `extract_faces` call
+    /// for that parent; subsequent calls return `cached.clone()` so ids are
+    /// stable across calls (required for `resolve_unique_by_attribute` to
+    /// match seeded attributes to candidate handles).
+    ///
+    /// # No invalidation needed
+    ///
+    /// Unlike OCCT (which invalidates on `with_warm_state` when its shape table
+    /// is swapped), `ManifoldKernel` has no warm-state/reset path and mints
+    /// handle ids monotonically over an **append-only** `shapes` store.  A
+    /// given parent handle's mesh is immutable for the kernel's lifetime, so
+    /// its coalesced faces never change — caching once is always correct.
+    extracted_faces: HashMap<u64, Vec<GeometryHandleId>>,
 }
 
 impl ManifoldKernel {
@@ -97,6 +125,7 @@ impl ManifoldKernel {
             shapes: HashMap::new(),
             sub_shapes: HashMap::new(),
             next_id: 1,
+            extracted_faces: HashMap::new(),
         }
     }
 
@@ -329,13 +358,13 @@ impl GeometryKernel for ManifoldKernel {
                 Ok(Value::Bool(crate::queries::geo_equiv(l, r, *tolerance)))
             }
             // Surface area. Mirrors OCCT's SurfaceArea -> Value::Real
-            // (KGQ-π / task 3625). A face sub-handle answers with its single
-            // triangle's area; a whole-mesh handle answers with the
-            // Manifold's total surface area.
+            // (KGQ-π / task 3625). A face sub-handle answers with the sum
+            // of its coplanar triangles' areas; a whole-mesh handle answers
+            // with the Manifold's total surface area.
             GeometryQuery::SurfaceArea(id) => {
                 if let Some(sub) = self.sub_shapes.get(&id.0) {
                     match sub {
-                        SubShape::Face(tri) => Ok(Value::Real(crate::queries::tri_area(tri))),
+                        SubShape::Face(tris) => Ok(Value::Real(crate::queries::face_area(tris))),
                         SubShape::Edge(_) => Err(QueryError::QueryFailed(
                             "SurfaceArea: handle names an edge sub-shape, which has no area"
                                 .into(),
@@ -350,11 +379,11 @@ impl GeometryKernel for ManifoldKernel {
             // Face normal as the OCCT-compatible {"x","y","z"} JSON string.
             // Only a face sub-handle has a single normal; a whole mesh or an
             // edge sub-shape has none (matches OCCT, which answers FaceNormal
-            // only for a Face). Sign follows triangle winding — the contract
-            // is sign-agnostic.
+            // only for a Face). Normal is the shared coplanar normal of the
+            // planar face's triangles — sign follows winding, contract is sign-agnostic.
             GeometryQuery::FaceNormal(id) => match self.sub_shapes.get(&id.0) {
-                Some(SubShape::Face(tri)) => Ok(Value::String(crate::queries::json_xyz(
-                    crate::queries::tri_unit_normal(tri),
+                Some(SubShape::Face(tris)) => Ok(Value::String(crate::queries::json_xyz(
+                    crate::queries::face_unit_normal(tris),
                 ))),
                 Some(SubShape::Edge(_)) => Err(QueryError::QueryFailed(
                     "FaceNormal: handle names an edge sub-shape (no face normal)".into(),
@@ -397,11 +426,12 @@ impl GeometryKernel for ManifoldKernel {
             // Bounding box as the OCCT-compatible {"xmin"..."zmax"} JSON
             // string. A sub-shape (face/edge) bounds its stored points; a
             // whole mesh delegates to Manifold::bounding_box() (None =>
-            // empty/degenerate => QueryError).
+            // empty/degenerate => QueryError). For a planar face, the bbox
+            // spans all corners of all its coplanar triangles.
             GeometryQuery::BoundingBox(id) => {
                 if let Some(sub) = self.sub_shapes.get(&id.0) {
                     let (min, max) = match sub {
-                        SubShape::Face(tri) => crate::queries::points_bbox(tri),
+                        SubShape::Face(tris) => crate::queries::face_points_bbox(tris),
                         SubShape::Edge(edge) => crate::queries::points_bbox(edge),
                     };
                     Ok(Value::String(crate::queries::json_bbox(min, max)))
@@ -433,6 +463,12 @@ impl GeometryKernel for ManifoldKernel {
             // `face_index`, self excluded, ascending — Value::List<Value::Int>
             // mirroring OCCT's AdjacentFaces wire format. On the closed cube
             // each triangle has exactly 3 such neighbours. (KGQ-π / task 3625.)
+            //
+            // NOTE: `face_index` is a raw mesh-triangle index (0..num_triangles),
+            // NOT an index into the coalesced planar-face handles returned by
+            // `extract_faces`. These two index spaces are disjoint. A unit cube
+            // has 12 raw triangles (face_index in 0..12) and 6 planar-face
+            // handles from extract_faces; the two cannot be used interchangeably.
             GeometryQuery::AdjacentFaces { shape, face_index } => {
                 let (_verts, tris) = {
                     let m = self
@@ -457,6 +493,10 @@ impl GeometryKernel for ManifoldKernel {
             // face_b` yields an empty list (design decision). Edge indices are
             // into the same canonical_edges enumeration extract_edges exposes,
             // so SharedEdges and extract_edges agree. (KGQ-π / task 3625.)
+            //
+            // NOTE: `face_a` and `face_b` are raw mesh-triangle indices
+            // (0..num_triangles), NOT handles or indices from extract_faces'
+            // coalesced planar-face space. These two index spaces are disjoint.
             GeometryQuery::SharedEdges {
                 shape,
                 face_a,
@@ -632,27 +672,46 @@ impl GeometryKernel for ManifoldKernel {
             normals: None,
         })
     }
-    /// Extract the mesh triangles of the stored Manifold as face sub-handles.
+    /// Extract the mesh faces of the stored Manifold as coalesced planar-face
+    /// sub-handles (task-4262 steps 2 + 4).
     ///
-    /// # Manifold-face = mesh triangle (semantic gap)
+    /// # Coplanar-triangle coalescing
     ///
-    /// Unlike a B-rep kernel (where a "face" is a smooth parametric surface
-    /// patch), `manifold-csg` has no coalesced-surface concept — only mesh
-    /// facets. So this returns **one sub-handle per triangle**: the unit cube
-    /// yields 12 face handles, not the 6 a BRep box reports. See the
-    /// `queries` module-doc and PRD Open Question §10.5; `AdjacentFaces` /
-    /// `SharedEdges` therefore operate on triangle indices.
+    /// Triangles are grouped into planar faces by their supporting **plane key**
+    /// — a quantised `(unit_normal, signed_offset)` pair — via
+    /// [`crate::queries::coalesce_coplanar_faces`].  Degenerate (zero-area)
+    /// triangles are skipped; groups are sorted by their plane key so the
+    /// returned face order is deterministic across calls.
     ///
-    /// Each triangle's three xyz corners (in mesh winding order) are stored as
-    /// a [`SubShape::Face`] via [`Self::store_sub_shape`]; the returned
-    /// `Vec<GeometryHandleId>` is in triangle order, so `result[i]` names
-    /// triangle `i` of `to_mesh_f64`'s index list. An empty or degenerate mesh
-    /// (e.g. the empty `Manifold` from a disjoint intersection) yields
-    /// `Ok(empty vec)`.
+    /// For a unit cube (12 mesh triangles, 6 planar faces of 2 triangles each)
+    /// this yields **6** sub-handles — matching OCCT's BRep box face count and
+    /// resolving PRD Open Question §10.5 (`12 ≠ 6` semantic gap).
+    ///
+    /// # Per-parent memoization (idempotency contract)
+    ///
+    /// The first call for a given `handle` mints fresh ids for the coalesced
+    /// faces and caches them in [`Self::extracted_faces`].  Subsequent calls
+    /// with the same `handle` return `cached.clone()` immediately — the ids
+    /// and their order are **identical** across calls (same contract as OCCT's
+    /// `extracted_faces` cache, `crates/reify-kernel-occt/src/lib.rs:677-710`).
+    /// This stability is required for `resolve_unique_by_attribute` to match
+    /// seeded attributes (recorded against the first-call ids) to the candidate
+    /// ids produced at selector-eval time.
+    ///
+    /// No cache invalidation is needed: `ManifoldKernel` has no warm-state
+    /// swap and mints ids monotonically over an append-only `shapes` store, so
+    /// a parent handle's coalesced faces never change.
+    ///
+    /// An empty or degenerate mesh yields `Ok(empty vec)`.
     fn extract_faces(
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        // Cache-first: return the previously-minted ids if available.
+        if let Some(cached) = self.extracted_faces.get(&handle.0) {
+            return Ok(cached.clone());
+        }
+
         // Read the parent mesh, dropping the immutable borrow before the
         // mutable store_sub_shape calls below.
         let (verts, tris) = {
@@ -662,15 +721,19 @@ impl GeometryKernel for ManifoldKernel {
             crate::queries::mesh_geometry(m)
         };
         if verts.is_empty() || tris.is_empty() {
+            // Memoize the empty result so the cache-first branch covers
+            // this path too, keeping the contract uniform: every code path
+            // through extract_faces inserts into extracted_faces before returning.
+            self.extracted_faces.insert(handle.0, Vec::new());
             return Ok(Vec::new());
         }
-        let mut faces = Vec::with_capacity(tris.len() / 3);
-        for tri in tris.chunks_exact(3) {
-            let v0 = verts[tri[0] as usize];
-            let v1 = verts[tri[1] as usize];
-            let v2 = verts[tri[2] as usize];
-            faces.push(self.store_sub_shape(SubShape::Face([v0, v1, v2])));
+        let groups = crate::queries::coalesce_coplanar_faces(&verts, &tris);
+        let mut faces = Vec::with_capacity(groups.len());
+        for group in groups {
+            faces.push(self.store_sub_shape(SubShape::Face(group)));
         }
+        // Memoize: subsequent calls return the cached ids unchanged.
+        self.extracted_faces.insert(handle.0, faces.clone());
         Ok(faces)
     }
 

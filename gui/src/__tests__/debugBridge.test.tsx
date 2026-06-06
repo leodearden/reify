@@ -26,6 +26,7 @@ import { toPng } from 'html-to-image';
 import { initDebugBridge } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
+import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
 
@@ -37,6 +38,8 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
         values: {} as any,
         constraints: {} as any,
         evalStatus: { phase: 'idle' },
+        compileDiagnostics: [],
+        tessellationDiagnostics: [],
       },
       initFromState: vi.fn(),
     },
@@ -61,6 +64,8 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
       } as any,
       selectEntity: vi.fn(),
       hoverEntity: vi.fn(),
+      clearSelection: vi.fn(),
+      toggleSelect: vi.fn(),
     },
     claude: {
       state: {
@@ -69,7 +74,7 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
         currentMessageId: null,
       },
     },
-    viewState: { resetToDefaultView: vi.fn() },
+    viewState: makeViewStateStoreMock(),
     layout: {
       state: {
         editorWidth: 300,
@@ -976,6 +981,101 @@ describe('debug bridge editor_content', () => {
   });
 });
 
+describe('debug bridge editor_content live buffer', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchEditorContentWithView(
+    stores: DebugStores,
+    editorView?: unknown,
+  ) {
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+    if (editorView !== undefined) {
+      window.__REIFY_DEBUG__!.editorView = editorView as any;
+    }
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 601, command: 'editor_content', params: {} } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('primary: editorView present → content is live doc, not stale store snapshot', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'PRE-EDIT' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    const liveView = { state: { doc: { toString: () => 'POST-EDIT live', length: 14 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, liveView);
+    expect(result.content).toBe('POST-EDIT live');
+  });
+
+  it('guard (i): no editorView → content falls back to store snapshot', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'PRE-EDIT' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    const result = await dispatchEditorContentWithView(stores);
+    expect(result.content).toBe('PRE-EDIT');
+  });
+
+  it('guard (ii): activeFile null with editorView present → content is null', async () => {
+    const stores = makeStores();
+    // activeFile stays null (default makeStores)
+    const liveView = { state: { doc: { toString: () => 'x', length: 1 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, liveView);
+    expect(result.content).toBeNull();
+  });
+
+  it('active openFiles[] length reflects live buffer, non-active entries stay store-derived', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [
+      { path: 'bracket.ri', content: 'PRE-EDIT' },  // stale length 8
+      { path: 'other.ri',   content: 'OTHER' },      // store-derived length 5
+    ];
+    stores.editor.state.activeFile = 'bracket.ri';
+    // editorView has 'POST-EDIT live' (length 14, not 8)
+    const liveView = { state: { doc: { toString: () => 'POST-EDIT live', length: 14 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, liveView);
+    const activeEntry = result.openFiles.find((f: any) => f.path === 'bracket.ri');
+    const otherEntry  = result.openFiles.find((f: any) => f.path === 'other.ri');
+    // active entry must use live length
+    expect(activeEntry.length).toBe('POST-EDIT live'.length);  // 14, not 8
+    // non-active entry must stay store-derived
+    expect(otherEntry.length).toBe('OTHER'.length);            // 5
+  });
+
+  it('empty live buffer (\'\') is returned verbatim, not replaced by store snapshot', async () => {
+    // Guards against a regression where `??` is simplified to `||` or the
+    // liveContent !== undefined guard is changed to a truthiness check:
+    // an empty live doc ('') is a valid post-edit state and must NOT fall
+    // back to the stale store content.
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'PRE-EDIT' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    const emptyView = { state: { doc: { toString: () => '', length: 0 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, emptyView);
+    // content must be '' (live), not 'PRE-EDIT' (stale store)
+    expect(result.content).toBe('');
+    // active openFiles entry length must be 0 (live), not 8 (stale store)
+    const activeEntry = result.openFiles.find((f: any) => f.path === 'bracket.ri');
+    expect(activeEntry.length).toBe(0);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // debug bridge pickViewport selection (step-3 — RED)
 // Verifies that the five viewport-mediated handlers (viewport_state, screenshot,
@@ -1347,6 +1447,226 @@ describe('debug bridge dual-viewport binding regression', () => {
     expect(designMain._fitToView).toHaveBeenCalledTimes(1);
     // def-preview's fitToView must NOT have been called
     expect(defPreview.fitToView).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge get_diagnostics (task-4297 step-1 RED → step-2 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge get_diagnostics', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(stores: ReturnType<typeof makeStores>, id: number, command: string, params: Record<string, unknown> = {}) {
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('returns shaped compile and tessellation diagnostics from stores', async () => {
+    const stores = makeStores();
+    stores.engine.state.compileDiagnostics = [
+      { file_path: 'broken.ri', line: 8, column: 5, end_line: 8, end_column: 6,
+        severity: 'Error', message: 'unexpected EOF', code: 'parse-error' },
+    ];
+    stores.engine.state.tessellationDiagnostics = [
+      { file_path: 'broken.ri', line: 12, column: 1, end_line: 12, end_column: 10,
+        severity: 'Warning', message: 'mesh degenerate', code: 'tess-warn' },
+    ];
+
+    const result = await dispatch(stores, 2000, 'get_diagnostics');
+
+    // compile array
+    expect(Array.isArray(result.compile)).toBe(true);
+    expect(result.compile).toHaveLength(1);
+    const c = result.compile[0];
+    expect(c.severity).toBe('Error');
+    expect(c.message).toBe('unexpected EOF');
+    expect(c.code).toBe('parse-error');
+    expect(c.file_path).toBe('broken.ri');
+    expect(c.range).toEqual({ line: 8, column: 5, end_line: 8, end_column: 6 });
+
+    // tessellation array
+    expect(Array.isArray(result.tessellation)).toBe(true);
+    expect(result.tessellation).toHaveLength(1);
+    const t = result.tessellation[0];
+    expect(t.severity).toBe('Warning');
+    expect(t.message).toBe('mesh degenerate');
+    expect(t.code).toBe('tess-warn');
+    expect(t.range).toEqual({ line: 12, column: 1, end_line: 12, end_column: 10 });
+
+    // counts
+    expect(result.compileCount).toBe(1);
+    expect(result.tessellationCount).toBe(1);
+  });
+
+  it('returns empty arrays and zero counts when diagnostics are absent', async () => {
+    const stores = makeStores();
+    // compileDiagnostics/tessellationDiagnostics seeded as [] by makeStores
+
+    const result = await dispatch(stores, 2001, 'get_diagnostics');
+
+    expect(result.compile).toEqual([]);
+    expect(result.tessellation).toEqual([]);
+    expect(result.compileCount).toBe(0);
+    expect(result.tessellationCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge ui_outline (task-4297 step-3 RED → step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge ui_outline', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Build a small semantic DOM for the test
+    const runBtn = document.createElement('button');
+    runBtn.setAttribute('data-testid', 'run-btn');
+    runBtn.textContent = 'Run';
+    document.body.appendChild(runBtn);
+
+    const stopBtn = document.createElement('button');
+    stopBtn.setAttribute('data-testid', 'stop-btn');
+    stopBtn.setAttribute('disabled', '');
+    stopBtn.textContent = 'Stop';
+    document.body.appendChild(stopBtn);
+
+    const designTree = document.createElement('div');
+    designTree.setAttribute('role', 'tree');
+    designTree.setAttribute('data-testid', 'design-tree');
+    designTree.textContent = 'Tree';
+    document.body.appendChild(designTree);
+
+    const hiddenBtn = document.createElement('button');
+    hiddenBtn.setAttribute('data-testid', 'hidden-btn');
+    hiddenBtn.style.display = 'none';
+    hiddenBtn.textContent = 'Hidden';
+    document.body.appendChild(hiddenBtn);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+  });
+
+  async function dispatchUiOutline(id: number) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command: 'ui_outline', params: {} } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('returns outline array with count === outline.length', async () => {
+    const result = await dispatchUiOutline(3000);
+    expect(Array.isArray(result.outline)).toBe(true);
+    expect(result.count).toBe(result.outline.length);
+    expect(typeof result.truncated).toBe('boolean');
+  });
+
+  it('every entry has required fields with correct types', async () => {
+    const result = await dispatchUiOutline(3001);
+    for (const entry of result.outline) {
+      expect(typeof entry.tagName).toBe('string');
+      expect(typeof entry.text).toBe('string');
+      expect(typeof entry.enabled).toBe('boolean');
+      // role may be string or null
+      expect(entry.role === null || typeof entry.role === 'string').toBe(true);
+      // testId may be string or null
+      expect(entry.testId === null || typeof entry.testId === 'string').toBe(true);
+    }
+  });
+
+  it('run-btn entry has enabled:true and testId:run-btn and text containing Run', async () => {
+    const result = await dispatchUiOutline(3002);
+    const runEntry = result.outline.find((e: any) => e.testId === 'run-btn');
+    expect(runEntry).toBeDefined();
+    expect(runEntry.enabled).toBe(true);
+    expect(runEntry.text).toMatch(/Run/);
+  });
+
+  it('stop-btn entry has enabled:false', async () => {
+    const result = await dispatchUiOutline(3003);
+    const stopEntry = result.outline.find((e: any) => e.testId === 'stop-btn');
+    expect(stopEntry).toBeDefined();
+    expect(stopEntry.enabled).toBe(false);
+  });
+
+  it('design-tree entry has role:tree', async () => {
+    const result = await dispatchUiOutline(3004);
+    const treeEntry = result.outline.find((e: any) => e.testId === 'design-tree');
+    expect(treeEntry).toBeDefined();
+    expect(treeEntry.role).toBe('tree');
+  });
+
+  it('hidden-btn (display:none) is excluded from outline', async () => {
+    const result = await dispatchUiOutline(3005);
+    const hiddenEntry = result.outline.find((e: any) => e.testId === 'hidden-btn');
+    expect(hiddenEntry).toBeUndefined();
+  });
+
+  it('button nested inside a display:none div is excluded from outline', async () => {
+    // Ancestor-hidden case: the button itself has no inline style, but its parent
+    // container has display:none — ui_outline must walk ancestors to detect this.
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'none';
+    const innerBtn = document.createElement('button');
+    innerBtn.setAttribute('data-testid', 'inner-hidden-btn');
+    innerBtn.textContent = 'Inner';
+    wrapper.appendChild(innerBtn);
+    document.body.appendChild(wrapper);
+
+    const result = await dispatchUiOutline(3006);
+    const innerEntry = result.outline.find((e: any) => e.testId === 'inner-hidden-btn');
+    expect(innerEntry).toBeUndefined();
+    // afterEach cleans up document.body.innerHTML
+  });
+
+  it('truncates at MAX=500: truncated===true, outline.length===500, count===total-visible', async () => {
+    // beforeEach adds 3 visible (run-btn, stop-btn, design-tree) + 1 hidden (hidden-btn).
+    // Adding 500 more visible buttons brings total visible to 503, which exceeds MAX=500.
+    for (let i = 0; i < 500; i++) {
+      const btn = document.createElement('button');
+      btn.setAttribute('data-testid', `extra-${i}`);
+      btn.textContent = `Extra ${i}`;
+      document.body.appendChild(btn);
+    }
+    const result = await dispatchUiOutline(3007);
+    expect(result.truncated).toBe(true);
+    expect(result.outline.length).toBe(500);
+    expect(result.count).toBe(503); // 3 from beforeEach + 500 extra
+    expect(result.count).toBeGreaterThan(result.outline.length);
   });
 });
 

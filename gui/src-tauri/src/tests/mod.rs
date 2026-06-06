@@ -1,5 +1,6 @@
 mod claude_bridge_tests;
 mod commands_tests;
+mod debug_boundary_tests;
 mod diff_tests;
 mod engine_lock_tests;
 mod engine_tests;

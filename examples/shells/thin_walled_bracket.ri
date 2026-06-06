@@ -1,0 +1,76 @@
+// Thin-walled bracket end-to-end example for the shell-extract engine bridge.
+//
+// PRD reference: docs/prds/v0_4/shell-extract-engine-bridge.md task ι (§9 Phase 7).
+//
+// Geometry: flat thin-walled cantilever plate, 100 mm × 20 mm × 2 mm.
+//   thickness/extent = h/L = 0.002/0.1 = 0.02 < shell_threshold 0.2
+//   → auto-classified as a SHELL solve under bare ElasticOptions().
+//
+// Analytical reference (Euler–Bernoulli bending, rectangular cross-section):
+//
+//   σ_max = 6 · P · L / (b · h²)
+//         = 6 × 20 × 0.1 / (0.02 × 0.002²)
+//         = 12 / (0.02 × 4e-6)
+//         = 12 / 8e-8
+//         = 1.5×10⁸ Pa = 150 MPa
+//
+// Accuracy contract (bare-MITC3 honest band, esc-3594-10):
+//   Integration tests assert max_von_mises ∈ [1.5×10⁷, 1.5×10⁹] Pa
+//   (one order of magnitude around 150 MPa).  A flat-facet cantilever is the
+//   benign MITC3 case (no curvature → no membrane locking), so this wide band
+//   is deterministically met.
+//
+// CLI evaluation:
+//   reify eval examples/shells/thin_walled_bracket.ri
+//
+// Printed output (reify eval prints cells via Value::Display):
+//   ThinWalledBracket.max_von_mises = <si_value> kg·m^-1·s^-2
+//   (si_value is base-SI Pascals; dimension is DimensionVector Display for PRESSURE,
+//    which renders as "kg·m^-1·s^-2" — not the human-friendly unit "Pa")
+//
+// GUI dev harness:
+//   scripts/run-gui-dev.sh examples/shells/thin_walled_bracket.ri
+//   (renders mid-surface mesh with vonMises_top colormap)
+
+structure ThinWalledBracket {
+    // Geometry: 100 mm long bracket with a 20 mm × 2 mm cross-section.
+    // thickness/extent = 2/100 = 0.02 < shell_threshold 0.2 → shell-classified.
+    param length : Length = 100mm
+    param width  : Length = 20mm
+    param height : Length = 2mm
+
+    // Material: AISI 1045 hot-rolled medium-carbon steel (E = 205 GPa, ν = 0.29).
+    let material = Steel_AISI_1045()
+
+    // Loads: 20 N point load applied at the bracket tip.
+    let tip_load = PointLoad(point: "tip", force: 20.0)
+
+    // Supports: fully clamped (fixed) at the bracket root.
+    let mount = FixedSupport(target: "root")
+
+    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
+    // has compile-time type `List<Real>` (matching the fn param type).
+    let lc = LoadCase(name: "bracket", loads: [tip_load], supports: [mount])
+
+    // Wrap material in ConstitutiveLawInput so that member-access .law has
+    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
+    let ci = ConstitutiveLawInput(law: material)
+
+    // FEA solve: the @optimized dispatcher routes this call to the
+    // `solver::elastic_static` trampoline.
+    //
+    // Bare `ElasticOptions()` uses all solver defaults (shell_force=Auto,
+    // shell_threshold=0.2); the 0.02 aspect ratio auto-classifies this as a
+    // shell solve end-to-end.
+    let result = solve_elastic_static(
+        ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
+    )
+
+    // Expose the peak von Mises as a top-level cell for `reify eval` output.
+    let max_von_mises = result.max_von_mises
+
+    // Geometry realization: provides the surface mesh the GUI stress contour
+    // renders onto.  Deferred Value::GeometryHandle (GHR-β) — no kernel call
+    // at eval, so exit 0 holds in stub mode (OCCT-independent).
+    let body = box(length, width, height)
+}

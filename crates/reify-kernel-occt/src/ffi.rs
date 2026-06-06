@@ -170,6 +170,8 @@ pub mod ffi {
         fn make_box(width: f64, height: f64, depth: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_sphere(radius: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_cone(bottom_r: f64, top_r: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_wedge(width: f64, depth: f64, height: f64, top_width: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Boolean operations ---
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
@@ -591,6 +593,11 @@ pub mod ffi {
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_rectangle_face(
+            width: f64,
+            height: f64,
+            z_height: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
         fn make_line_wire(
             x1: f64,
             y1: f64,

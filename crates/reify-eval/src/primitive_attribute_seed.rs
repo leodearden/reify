@@ -9,14 +9,17 @@
 //!   This module covers the *seeding* phase — originating attributes for the
 //!   leaves of the feature tree (primitives), which have no parent.
 //!
-//! Scope of this task (#2574):
-//! - `GeometryOp::Box` / `GeometryOp::Sphere` — every face seeded
-//!   `Role::Side`; every edge seeded `Role::NewEdge`. `local_index` is
-//!   the construction-order (TopExp) position within `(feature_id, role)`.
-//! - `GeometryOp::Cylinder` — faces classified into `Cap(Top)`, `Cap(Bottom)`,
-//!   or `Side` via `GeometryQuery::FaceNormal`'s z-component (each role
-//!   appears exactly once, so `local_index` is always 0); every edge seeded
-//!   `Role::NewEdge`.
+//! Scope of this task (#2574), extended by task #4156 (Cone), task #4158 (Wedge):
+//! - `GeometryOp::Box` / `GeometryOp::Sphere` / `GeometryOp::Wedge` — every
+//!   face seeded `Role::Side`; every edge seeded `Role::NewEdge`. `local_index`
+//!   is the construction-order (TopExp) position within `(feature_id, role)`.
+//!   (Wedge uses the same generic path — its planar faces have no Cap/Side
+//!   distinction in the current selector vocabulary; task #4158 PRD δ step 7.)
+//! - `GeometryOp::Cylinder` / `GeometryOp::Cone` — faces classified into
+//!   `Cap(Top)`, `Cap(Bottom)`, or `Side` via `GeometryQuery::FaceNormal`'s
+//!   z-component; every edge seeded `Role::NewEdge`. A pointed cone
+//!   (top_radius == 0) emits only 2 faces (no top cap), so `Cap(Top)` count
+//!   is 0 in that case.
 //! - All other variants are intentional no-ops; the dispatch is widened in
 //!   subsequent tasks.
 //!
@@ -37,10 +40,8 @@
 //! - `GeometryOp::Tube` — composed via `boolean_cut` at the kernel layer; its
 //!   per-result attribute attachment lands with task 8 (booleans) or a Tube-
 //!   specific follow-up.
-//! - `GeometryOp::Cone` / `GeometryOp::Torus` — not yet present in
-//!   `GeometryOp` (no FFI, no compiler `PrimitiveKind`); these primitives
-//!   will be added end-to-end as a separate task before their seeding arms
-//!   are wired here.
+//! - `GeometryOp::Torus` — not yet present in `GeometryOp` (no FFI, no
+//!   compiler `PrimitiveKind`); will be added end-to-end as a separate task.
 //! - Sweep / local-feature / boolean variants — tasks 5, 7, 8.
 //!
 //! ## Why pre-extracted face/edge handle slices?
@@ -176,7 +177,11 @@ pub fn seed_primitive_attributes_for_handle(
 fn is_seedable_primitive(op: &GeometryOp) -> bool {
     matches!(
         op,
-        GeometryOp::Box { .. } | GeometryOp::Cylinder { .. } | GeometryOp::Sphere { .. }
+        GeometryOp::Box { .. }
+            | GeometryOp::Cylinder { .. }
+            | GeometryOp::Sphere { .. }
+            | GeometryOp::Cone { .. }
+            | GeometryOp::Wedge { .. }
     )
 }
 
@@ -242,10 +247,37 @@ pub fn seed_primitive_attributes(
             record_all_edges_as_new_edge(table, edge_handles, feature_id);
             Ok(())
         }
-        GeometryOp::Cylinder { .. } => {
+        GeometryOp::Wedge { .. } => {
+            // Wedge uses the same generic seeding path as Box/Sphere: every
+            // face gets Role::Side and every edge Role::NewEdge with
+            // construction-order local_index. A wedge's planar faces have no
+            // Cap/Side distinction in the current selector vocabulary (PRD δ
+            // step 7). No vertex seeding — vertex_handles is intentionally
+            // ignored (non-Box ops carry no analytic vertex attributes).
+            record_all_faces_as_side(table, face_handles, feature_id);
+            record_all_edges_as_new_edge(table, edge_handles, feature_id);
+            Ok(())
+        }
+        GeometryOp::Cylinder { .. } | GeometryOp::Cone { .. } => {
             // A cylinder emits 3 faces in OCCT's TopExp order: side, top
             // cap, bottom cap (order varies by OCCT version). Classify
             // each via `GeometryQuery::FaceNormal`'s z-component.
+            //
+            // A cone (frustum) similarly emits 3 faces (slanted side +
+            // top cap + bottom cap). A pointed cone (top_radius == 0)
+            // emits 2 faces (slanted side + bottom cap, no top face).
+            // The FaceNormal-z classification handles both transparently:
+            // nz ≈ +1 → Cap(Top), nz ≈ -1 → Cap(Bottom), |nz| ≈ 0 → Side.
+            //
+            // Limitation (Cone only): this assumes the lateral face has a
+            // near-horizontal normal (|nz| well below 1 - 1e-6).  A very
+            // steep frustum — large radius delta over a small height — drives
+            // the slanted-face normal toward the z-axis, risking
+            // misclassification of the Side face as Cap(Top/Bottom).
+            // Steep cones are uncommon in practice and out of scope for this
+            // task; a future improvement should classify by planar-vs-conical
+            // surface type (BRep surface type query) rather than an absolute
+            // nz threshold to handle the degenerate regime correctly.
             //
             // For the canonical 3-face case each role appears exactly
             // once and `local_index` is 0 for every entry. Per-role
@@ -864,5 +896,98 @@ mod tests {
             inner_r: Value::Real(0.003),
             height: Value::Real(0.010),
         });
+    }
+
+    // ─── step-9 — Wedge generic seeding (task-4158) ──────────────────────────
+    //
+    // RED until step-10 adds:
+    //   - GeometryOp::Wedge to `is_seedable_primitive`
+    //   - A Wedge arm in `seed_primitive_attributes` using the generic
+    //     `record_all_faces_as_side` / `record_all_edges_as_new_edge` helpers.
+
+    fn wedge_op() -> GeometryOp {
+        GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.010),
+            height: Value::Real(0.015),
+            top_width: Value::Real(0.005),
+        }
+    }
+
+    /// `is_seedable_primitive` must return `true` for a Wedge op.
+    ///
+    /// RED until step-10 adds `GeometryOp::Wedge { .. }` to the OR-list in
+    /// `is_seedable_primitive`.
+    #[test]
+    fn is_seedable_primitive_wedge_returns_true() {
+        assert!(
+            is_seedable_primitive(&wedge_op()),
+            "GeometryOp::Wedge must be recognised as a seedable primitive"
+        );
+    }
+
+    /// `seed_primitive_attributes` must write exactly N_faces + N_edges entries
+    /// for a Wedge, all faces as `Role::Side` and all edges as `Role::NewEdge`.
+    ///
+    /// Uses pre-supplied fake `GeometryHandleId` values — no kernel call
+    /// needed (the Wedge arm only uses the provided handles, not the kernel).
+    ///
+    /// RED until step-10 adds the Wedge arm that calls
+    /// `record_all_faces_as_side` + `record_all_edges_as_new_edge`.
+    #[test]
+    fn seed_primitive_attributes_wedge_records_role_side_and_new_edge() {
+        let face_handles: Vec<GeometryHandleId> = (10..16).map(GeometryHandleId).collect(); // 6 fake faces
+        let edge_handles: Vec<GeometryHandleId> = (20..32).map(GeometryHandleId).collect(); // 12 fake edges
+
+        let fid = feature_id();
+        let mut table = TopologyAttributeTable::default();
+        let mut kernel = MockKernel;
+
+        seed_primitive_attributes(
+            &mut table,
+            &mut kernel,
+            &face_handles,
+            &edge_handles,
+            &[], // no vertex seeding for wedge
+            &fid,
+            &wedge_op(),
+        )
+        .expect("seed_primitive_attributes for wedge must return Ok(())");
+
+        assert_eq!(
+            table.len(),
+            face_handles.len() + edge_handles.len(),
+            "wedge: must record one entry per face + one per edge"
+        );
+
+        for (idx, &fh) in face_handles.iter().enumerate() {
+            let attr = table
+                .lookup(fh)
+                .unwrap_or_else(|| panic!("wedge face #{idx} (handle {:?}) must have an entry", fh));
+            assert_eq!(
+                attr.role,
+                Role::Side,
+                "wedge face #{idx} must be Role::Side (no Cap classification)"
+            );
+            assert_eq!(
+                attr.local_index, idx as u32,
+                "wedge face #{idx} local_index must be construction-order position"
+            );
+        }
+
+        for (idx, &eh) in edge_handles.iter().enumerate() {
+            let attr = table
+                .lookup(eh)
+                .unwrap_or_else(|| panic!("wedge edge #{idx} (handle {:?}) must have an entry", eh));
+            assert_eq!(
+                attr.role,
+                Role::NewEdge,
+                "wedge edge #{idx} must be Role::NewEdge"
+            );
+            assert_eq!(
+                attr.local_index, idx as u32,
+                "wedge edge #{idx} local_index must be construction-order position"
+            );
+        }
     }
 }

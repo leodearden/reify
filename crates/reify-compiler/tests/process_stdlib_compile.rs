@@ -588,3 +588,140 @@ structure def IncompleteMilled : Subtracting {
         error_msg
     );
 }
+
+// ─── step-5 (task-4274): FeatureManufacturable compile-clean ─────────────────
+
+/// γ compile-clean lock — `FeatureManufacturable` over a full Subtracting conformer.
+///
+/// A `MilledBracket` conformer (all five Subtracting params supplied) is bound
+/// via `let proc = MilledBracket()` inside `CheckedPart`, which applies
+/// `constraint FeatureManufacturable(proc: proc, feature: wall)`.
+/// Since `FeatureManufacturable` reads `proc.min_feature_size` (a Length on
+/// Subtracting), the compiler must resolve the member access on a trait-typed
+/// let-binding — the test confirms this type-checks with zero Error diagnostics.
+///
+/// Compile-only (no kernel/eval) because `MilledBracket.tool_access` is a Solid
+/// and `check_source_with_stdlib` uses a no-kernel engine — the runtime
+/// OK→VIOLATED flip for `feature >= proc.min_feature_size` is left to δ.
+///
+/// RED: `FeatureManufacturable` does not exist yet → "unknown constraint def" error.
+#[test]
+fn feature_manufacturable_over_subtracting_conformer_compiles_clean() {
+    let source = r#"
+import std.process
+
+structure def MilledBracket : Subtracting {
+    param duration         : Time   = 30min
+    param cost             : Money  = 50USD
+    param tool_access      : Solid  = box(10mm, 20mm, 30mm)
+    param min_feature_size : Length = 1mm
+    param achievable_finish: Length = 0.01mm
+}
+
+structure def CheckedPart {
+    let proc  = MilledBracket()
+    param wall : Length = 0.5mm
+    constraint FeatureManufacturable(proc: proc, feature: wall)
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "FeatureManufacturable over Subtracting conformer should compile clean; errors: {:?}",
+        errors
+    );
+}
+
+// ─── step-7 (task-4274): FitsBuildVolume compile-clean + cardinality lock ─────
+
+/// γ compile-clean lock — `FitsBuildVolume` over a full Adding conformer.
+///
+/// An `FdmPrinter` conformer (all five Adding params supplied, including
+/// `build_volume : Solid`) is bound via `let proc = FdmPrinter()` inside
+/// `SmallPart`, which applies
+/// `constraint FitsBuildVolume(proc: proc, part: part)`.
+/// The predicate `fits_build_volume(bounding_box(part), bounding_box(proc.build_volume))`
+/// is geometry-backed (both args are Solids resolved to BoundingBox by
+/// `bounding_box(...)`); compile-clean means the type-checker accepts it.
+///
+/// Compile-only (no kernel/eval) — runtime OK→VIOLATED flip is δ's.
+///
+/// RED: `FitsBuildVolume` does not exist yet → "unknown constraint def" error.
+#[test]
+fn fits_build_volume_over_adding_conformer_compiles_clean() {
+    let source = r#"
+import std.process
+
+structure def FdmPrinter : Adding {
+    param duration        : Time   = 60min
+    param cost            : Money  = 10USD
+    param layer_thickness : Length = 0.2mm
+    param min_feature_size: Length = 0.4mm
+    param build_volume    : Solid  = box(200mm, 200mm, 200mm)
+}
+
+structure def SmallPart {
+    let proc = FdmPrinter()
+    param part : Solid = box(50mm, 50mm, 50mm)
+    constraint FitsBuildVolume(proc: proc, part: part)
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "FitsBuildVolume over Adding conformer should compile clean; errors: {:?}",
+        errors
+    );
+}
+
+/// γ name-presence lock — the std/process module must contain each of the six
+/// named DFM constraint defs:
+/// Manufacturable, FeatureManufacturable, BendManufacturable,
+/// DrawManufacturable, DraftManufacturable, FitsBuildVolume.
+///
+/// Presence is checked by name (not by exact count) so that future tasks adding
+/// additional DFM constraint defs do not spuriously fail this test.
+///
+/// RED (before step-8): `FitsBuildVolume` absent → the name check fails.
+#[test]
+fn process_module_has_exactly_six_dfm_constraint_defs() {
+    let module = load_stdlib_module();
+
+    let expected_names = [
+        "Manufacturable",
+        "FeatureManufacturable",
+        "BendManufacturable",
+        "DrawManufacturable",
+        "DraftManufacturable",
+        "FitsBuildVolume",
+    ];
+
+    let found_names: Vec<&str> = module
+        .constraint_defs
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+
+    for name in &expected_names {
+        assert!(
+            found_names.contains(name),
+            "std/process constraint_defs should contain '{}'; found: {:?}",
+            name,
+            found_names
+        );
+    }
+}

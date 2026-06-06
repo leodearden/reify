@@ -42,10 +42,13 @@ structure def DimensionalTolerance {
 // Base trait for all geometric tolerance types.
 // feature uses Real pending a dedicated Geometry type.
 // material_condition specifies MMC, LMC, or RFS modifier.
+// nominal_zone: the tolerance zone width at zero bonus departure (departure=0mm),
+//   equivalent to tolerance_value for all condition modifiers.
 trait GeometricTolerance {
     param tolerance_value : Length
     param feature : Real
-    param material_condition : MaterialCondition
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    let nominal_zone = effective_tolerance_zone(tolerance_value, material_condition, 0mm)
 }
 
 // Form tolerances constrain shape without a datum reference.
@@ -181,22 +184,23 @@ structure def Datum {
 structure def SurfaceFinish {
     param parameter : SurfaceParameter
     param value : Length
-    param direction : SurfaceDirection
-    param process : String
+    param direction : SurfaceDirection = SurfaceDirection.Multidirectional
+    param process : String = ""
 }
 
 // ── Fit ───────────────────────────────────────────────────────────────────────
 
 // Shaft-and-hole fit per ISO 286.
-// Clearances are derived: positive = clearance, negative = interference.
+// hole_tolerance and shaft_tolerance carry the full DimensionalTolerance band for
+// each feature.  Clearances are derived: positive = clearance, negative = interference.
+//   max_clearance = hole upper limit − shaft lower limit
+//   min_clearance = hole lower limit − shaft upper limit  (negative → interference fit)
 structure def Fit {
-    param hole_upper : Length
-    param hole_lower : Length
-    param shaft_upper : Length
-    param shaft_lower : Length
-    param fit_type : FitCategory
-    let max_clearance = hole_upper - shaft_lower
-    let min_clearance = hole_lower - shaft_upper
+    param hole_tolerance  : DimensionalTolerance
+    param shaft_tolerance : DimensionalTolerance
+    param fit_type        : FitCategory
+    let max_clearance = hole_tolerance.upper_limit - shaft_tolerance.lower_limit
+    let min_clearance = hole_tolerance.lower_limit - shaft_tolerance.upper_limit
 }
 
 // ── ISO Tolerance Grade ───────────────────────────────────────────────────────
@@ -204,31 +208,44 @@ structure def Fit {
 // ISO 286-1 tolerance grade entry.
 // grade: IT number (IT01, IT0, IT1..IT18 encoded as integer).
 // nominal_min / nominal_max: diameter range for which this grade applies.
-// tolerance_value: the actual tolerance width for this grade and range.
+// tolerance_value: derived from the ISO 286-1 table via iso_it_tolerance builtin.
 structure def ISOToleranceGrade {
     param grade : Int
     param nominal_min : Length
     param nominal_max : Length
-    param tolerance_value : Length
+    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)
 }
 
 // ── Conforms constraint def ───────────────────────────────────────────────────
 
-// Asserts that a tolerance_value is positive (a meaningful tolerance).
-constraint def Conforms {
-    param tolerance_value : Length
-    tolerance_value > 0
+// GD&T conformance check: asserts that the effective tolerance zone
+// (expanded by feature_departure under MMC/LMC) encompasses the measured_deviation.
+// `pub` is required for cross-module instantiation (registry folds only is_pub prelude defs).
+pub constraint def Conforms {
+    param tolerance : GeometricTolerance
+    param measured_deviation : Length = 0mm
+    param feature_departure : Length = 0mm
+    effective_tolerance_zone(tolerance.tolerance_value, tolerance.material_condition, feature_departure) >= measured_deviation
 }
 
 // ── Constructor Functions ─────────────────────────────────────────────────────
 
-// Creates a symmetric tolerance band around nominal.
-// Returns the upper limit (nominal + deviation).
-fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {
-    nominal + deviation
+// Creates a symmetric DimensionalTolerance centered at nominal with ±deviation.
+// upper_limit = nominal + deviation; lower_limit = nominal − deviation.
+fn symmetric_tolerance(nominal: Length, deviation: Length) -> DimensionalTolerance {
+    DimensionalTolerance(nominal: nominal, upper_deviation: deviation, lower_deviation: -deviation)
 }
 
-// Computes the tolerance band width from upper and lower limits.
-fn limit_tolerance(upper: Length, lower: Length) -> Length {
-    upper - lower
+// Creates a DimensionalTolerance from explicit upper and lower limits.
+// Nominal is set to lower; upper_deviation = upper − lower; lower_deviation = 0mm.
+// Consequently .upper_limit == upper and .lower_limit == lower, realising the [lower, upper] band.
+// The inherited constraint (upper_deviation >= lower_deviation) reduces to upper >= lower.
+fn limit_tolerance(upper: Length, lower: Length) -> DimensionalTolerance {
+    DimensionalTolerance(nominal: lower, upper_deviation: upper - lower, lower_deviation: 0mm)
+}
+
+// Asserts that a surface finish specification is non-trivial (value > 0mm).
+// feature is a Real placeholder for the feature geometry; δ/#3116 will flip to Geometry.
+fn require_finish(feature: Real, finish: SurfaceFinish) -> Bool {
+    finish.value > 0mm
 }

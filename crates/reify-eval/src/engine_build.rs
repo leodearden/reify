@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CompiledModule, CurveKind, GeomRef, ModifyKind, PatternKind,
-    PrimitiveKind, SubComponentDecl, SweepKind, TopologyTemplate, TransformKind,
+    PrimitiveKind, ProfileKind, SubComponentDecl, SweepKind, TopologyTemplate, TransformKind,
 };
 use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
 use reify_ir::{
@@ -1082,7 +1082,9 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         GeometryOp::Box { .. }
         | GeometryOp::Cylinder { .. }
         | GeometryOp::Sphere { .. }
-        | GeometryOp::Tube { .. } => ParentHandles::Inline([z, z], 0),
+        | GeometryOp::Tube { .. }
+        | GeometryOp::Cone { .. }
+        | GeometryOp::Wedge { .. } => ParentHandles::Inline([z, z], 0),
 
         // Curve constructors — no parent handles.
         GeometryOp::LineSegment { .. }
@@ -1091,6 +1093,11 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         | GeometryOp::InterpCurve { .. }
         | GeometryOp::BezierCurve { .. }
         | GeometryOp::NurbsCurve { .. } => ParentHandles::Inline([z, z], 0),
+
+        // Profile face producers — no parent handles.
+        GeometryOp::RectangleProfile { .. } | GeometryOp::CircleProfile { .. } => {
+            ParentHandles::Inline([z, z], 0)
+        }
 
         // Pipe — kernel-internal circle profile; no user-facing parent.
         GeometryOp::Pipe { .. } => ParentHandles::Inline([z, z], 0),
@@ -1196,18 +1203,22 @@ fn substitute_op_parents(
             }
         }
 
-        // Parent-less ops: primitives, curve constructors, Pipe — nothing to
-        // substitute.
+        // Parent-less ops: primitives, curve constructors, profile producers,
+        // Pipe — nothing to substitute.
         GeometryOp::Box { .. }
         | GeometryOp::Cylinder { .. }
         | GeometryOp::Sphere { .. }
         | GeometryOp::Tube { .. }
+        | GeometryOp::Cone { .. }
+        | GeometryOp::Wedge { .. }
         | GeometryOp::LineSegment { .. }
         | GeometryOp::Arc { .. }
         | GeometryOp::Helix { .. }
         | GeometryOp::InterpCurve { .. }
         | GeometryOp::BezierCurve { .. }
         | GeometryOp::NurbsCurve { .. }
+        | GeometryOp::RectangleProfile { .. }
+        | GeometryOp::CircleProfile { .. }
         | GeometryOp::Pipe { .. } => {}
     }
 }
@@ -1291,6 +1302,8 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Cylinder { .. } => Operation::PrimitiveCylinder,
         GeometryOp::Sphere { .. } => Operation::PrimitiveSphere,
         GeometryOp::Tube { .. } => Operation::PrimitiveTube,
+        GeometryOp::Cone { .. } => Operation::PrimitiveCone,
+        GeometryOp::Wedge { .. } => Operation::PrimitiveWedge,
 
         // Booleans
         GeometryOp::Union { .. } => Operation::BooleanUnion,
@@ -1337,6 +1350,10 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::InterpCurve { .. } => Operation::CurveInterpCurve,
         GeometryOp::BezierCurve { .. } => Operation::CurveBezierCurve,
         GeometryOp::NurbsCurve { .. } => Operation::CurveNurbsCurve,
+
+        // Profile face producers
+        GeometryOp::RectangleProfile { .. } => Operation::ProfileRectangle,
+        GeometryOp::CircleProfile { .. } => Operation::ProfileCircle,
     }
 }
 
@@ -1408,11 +1425,17 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // Primitives — sources (no geometric input); classified as BRep to
         // document the conscious 'not a Mesh-accepting consumer' decision and
         // satisfy the strum-completeness test (test d, step-3).
-        PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube => Some(BREP_ONLY),
+        PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube | PrimitiveCone
+        | PrimitiveWedge => {
+            Some(BREP_ONLY)
+        }
 
         // Curves — sources (no geometric input); same rationale as Primitives.
         CurveLineSegment | CurveArc | CurveHelix | CurveInterpCurve | CurveBezierCurve
         | CurveNurbsCurve => Some(BREP_ONLY),
+
+        // Profile face producers — sources (no geometric input); same rationale.
+        ProfileRectangle | ProfileCircle => Some(BREP_ONLY),
 
         // Catch-all: genuinely-new future variants → conservative (None).
         // Unreachable for all current variants (strum test above enforces this).
@@ -1444,6 +1467,8 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             PrimitiveKind::Cylinder => Operation::PrimitiveCylinder,
             PrimitiveKind::Sphere => Operation::PrimitiveSphere,
             PrimitiveKind::Tube => Operation::PrimitiveTube,
+            PrimitiveKind::Cone => Operation::PrimitiveCone,
+            PrimitiveKind::Wedge => Operation::PrimitiveWedge,
         },
         CompiledGeometryOp::Boolean { op, .. } => match op {
             BooleanOp::Union => Operation::BooleanUnion,
@@ -1488,6 +1513,10 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             CurveKind::BezierCurve => Operation::CurveBezierCurve,
             CurveKind::NurbsCurve => Operation::CurveNurbsCurve,
         },
+        CompiledGeometryOp::Profile { kind, .. } => match kind {
+            ProfileKind::Rectangle => Operation::ProfileRectangle,
+            ProfileKind::Circle => Operation::ProfileCircle,
+        },
     }
 }
 
@@ -1518,7 +1547,9 @@ fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
                 }
             }
         }
-        CompiledGeometryOp::Primitive { .. } | CompiledGeometryOp::Curve { .. } => {}
+        CompiledGeometryOp::Primitive { .. }
+        | CompiledGeometryOp::Curve { .. }
+        | CompiledGeometryOp::Profile { .. } => {}
     }
     refs
 }
@@ -4896,6 +4927,7 @@ impl Engine {
                         reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
                     };
                     for (arg_name, expr) in args {
@@ -4983,6 +5015,7 @@ impl Engine {
                         reify_compiler::CompiledGeometryOp::Pattern { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Sweep { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Curve { args, .. } => args,
+                        reify_compiler::CompiledGeometryOp::Profile { args, .. } => args,
                         reify_compiler::CompiledGeometryOp::Boolean { .. } => &[],
                     };
                     for (arg_name, expr) in args {
@@ -6165,6 +6198,8 @@ mod tests {
                 (Operation::PrimitiveCylinder, ReprKind::BRep),
                 (Operation::PrimitiveSphere, ReprKind::BRep),
                 (Operation::PrimitiveTube, ReprKind::BRep),
+                (Operation::PrimitiveCone, ReprKind::BRep),
+                (Operation::PrimitiveWedge, ReprKind::BRep),
                 (Operation::BooleanUnion, ReprKind::BRep),
                 (Operation::BooleanDifference, ReprKind::BRep),
                 (Operation::BooleanIntersection, ReprKind::BRep),
@@ -9535,6 +9570,25 @@ mod tests {
                 expected: Operation::PrimitiveTube,
                 label: "Tube → PrimitiveTube",
             },
+            Case {
+                op: GeometryOp::Cone {
+                    bottom_radius: r(0.01),
+                    top_radius: r(0.005),
+                    height: r(0.02),
+                },
+                expected: Operation::PrimitiveCone,
+                label: "Cone → PrimitiveCone",
+            },
+            Case {
+                op: GeometryOp::Wedge {
+                    width: r(0.020),
+                    depth: r(0.010),
+                    height: r(0.015),
+                    top_width: r(0.005),
+                },
+                expected: Operation::PrimitiveWedge,
+                label: "Wedge → PrimitiveWedge",
+            },
             // Booleans
             Case {
                 op: GeometryOp::Union {
@@ -9817,6 +9871,20 @@ mod tests {
                 },
                 expected: Operation::CurveNurbsCurve,
                 label: "NurbsCurve → CurveNurbsCurve",
+            },
+            // Profiles (task-4160)
+            Case {
+                op: GeometryOp::RectangleProfile {
+                    width: r(0.02),
+                    height: r(0.01),
+                },
+                expected: Operation::ProfileRectangle,
+                label: "RectangleProfile → ProfileRectangle",
+            },
+            Case {
+                op: GeometryOp::CircleProfile { radius: r(0.008) },
+                expected: Operation::ProfileCircle,
+                label: "CircleProfile → ProfileCircle",
             },
         ];
 

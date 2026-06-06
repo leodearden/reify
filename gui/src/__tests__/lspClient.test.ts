@@ -312,4 +312,69 @@ describe('createLspClient', () => {
 
     expect(result).toBeNull();
   });
+
+  // --- task 4204 δ: documentHighlight ---
+
+  it('createLspClient() exposes a documentHighlight function', () => {
+    const client = createLspClient();
+    expect(typeof client.documentHighlight).toBe('function');
+  });
+
+  it('documentHighlight sends textDocument/documentHighlight with the position', async () => {
+    mockInvoke.mockResolvedValue('[]');
+
+    const client = createLspClient();
+    await client.documentHighlight('file:///test.ri', 7, 17);
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'textDocument/documentHighlight',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({
+      textDocument: { uri: 'file:///test.ri' },
+      position: { line: 7, character: 17 },
+    });
+  });
+
+  it('documentHighlight returns the DocumentHighlight[] from an array response', async () => {
+    const mockHighlights = [
+      {
+        range: { start: { line: 1, character: 10 }, end: { line: 1, character: 15 } },
+        kind: 1,
+      },
+      {
+        range: { start: { line: 7, character: 17 }, end: { line: 7, character: 22 } },
+        kind: 1,
+      },
+    ];
+    mockInvoke.mockResolvedValue(JSON.stringify(mockHighlights));
+
+    const client = createLspClient();
+    const result = await client.documentHighlight('file:///test.ri', 7, 17);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].kind).toBe(1);
+    expect(result[0].range.start).toEqual({ line: 1, character: 10 });
+    expect(result[1].range.start).toEqual({ line: 7, character: 17 });
+  });
+
+  it('documentHighlight returns [] when the response is null (no occurrences)', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    const result = await client.documentHighlight('file:///unknown.ri', 0, 0);
+
+    expect(result).toEqual([]);
+  });
+
+  it('documentHighlight returns [] when the response is not an array', async () => {
+    mockInvoke.mockResolvedValue(JSON.stringify({ foo: 'bar' }));
+
+    const client = createLspClient();
+    const result = await client.documentHighlight('file:///test.ri', 7, 17);
+
+    expect(result).toEqual([]);
+  });
 });

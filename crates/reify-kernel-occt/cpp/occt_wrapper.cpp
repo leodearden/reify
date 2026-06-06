@@ -16,6 +16,8 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
+#include <BRepPrimAPI_MakeWedge.hxx>
 
 // OCCT booleans
 #include <BRepAlgoAPI_BooleanOperation.hxx>
@@ -50,6 +52,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 
@@ -333,6 +336,32 @@ std::unique_ptr<OcctShape> make_sphere(double radius) {
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepPrimAPI_MakeSphere failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_cone(double bottom_r, double top_r, double height) {
+    return wrap_occt_call("make_cone", [&]() {
+        BRepPrimAPI_MakeCone maker(bottom_r, top_r, height);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeCone failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_wedge(double dx, double dy, double dz, double ltx) {
+    return wrap_occt_call("make_wedge", [&]() {
+        BRepPrimAPI_MakeWedge maker(dx, dy, dz, ltx);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeWedge failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
@@ -2135,6 +2164,38 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
         BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
         if (!faceBuilder.IsDone()) {
             throw std::runtime_error("make_circle_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = faceBuilder.Face();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_rectangle_face(double width, double height, double z_height) {
+    return wrap_occt_call("make_rectangle_face", [&]() {
+        if (!(std::isfinite(width) && width > 0.0)) {
+            throw std::runtime_error("make_rectangle_face: width must be finite and positive");
+        }
+        if (!(std::isfinite(height) && height > 0.0)) {
+            throw std::runtime_error("make_rectangle_face: height must be finite and positive");
+        }
+        double hw = width / 2.0;
+        double hh = height / 2.0;
+        // Build a closed rectangular wire with corners (±hw, ±hh, z_height)
+        // in counter-clockwise order (normal = +Z).
+        BRepBuilderAPI_MakePolygon polyBuilder;
+        polyBuilder.Add(gp_Pnt(-hw, -hh, z_height));
+        polyBuilder.Add(gp_Pnt( hw, -hh, z_height));
+        polyBuilder.Add(gp_Pnt( hw,  hh, z_height));
+        polyBuilder.Add(gp_Pnt(-hw,  hh, z_height));
+        polyBuilder.Close();
+        if (!polyBuilder.IsDone()) {
+            throw std::runtime_error("make_rectangle_face: MakePolygon failed");
+        }
+        TopoDS_Wire wire = polyBuilder.Wire();
+        BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_rectangle_face: MakeFace failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = faceBuilder.Face();

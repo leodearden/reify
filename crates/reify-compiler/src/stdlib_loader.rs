@@ -132,6 +132,19 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.trajectory",
                 include_str!("../stdlib/trajectory.ri"),
             ),
+            // `std.trajectory.fns` MUST follow `std.trajectory` — the
+            // `@optimized simulate_trajectory` body constructs `EndEffectorTrack()`
+            // (a no-arg ctor — like `ModalResult()`, which also has no per-field
+            // defaults), which requires `EndEffectorTrack` to already be in the
+            // prelude template registry when
+            // `phase_functions` runs. Same split + rationale as `std.modal.analysis`
+            // / `std.modal.analysis.fns` (modal_analysis_fns.ri:6-20). Placed before
+            // the later `std.dynamics` / `std.kinematic`, which themselves depend on
+            // `std.trajectory`, so order is safe (task π, prereq-2).
+            (
+                "std.trajectory.fns",
+                include_str!("../stdlib/trajectory_fns.ri"),
+            ),
             ("std.fdm", include_str!("../stdlib/fdm.ri")),
             // `std.fdm.correlations` (task β) MUST follow `std.fdm` — its
             // structures reference `InfillPattern` (from std.fdm) and

@@ -427,6 +427,62 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {}
             }),
         },
+        // --- R2 inspection tools (task-4297) — frontend-mediated, dispatched via query_frontend ---
+        ToolDef {
+            name: "get_diagnostics",
+            description: "Structured dump of the engine's compile and tessellation diagnostics (severity, message, code, source range) read from the real engineStore.compileDiagnostics + tessellationDiagnostics. Returns { compile: Diag[], tessellation: Diag[], compileCount, tessellationCount } where Diag = { severity, message, code, file_path, range: { line, column, end_line, end_column } }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "ui_outline",
+            description: "DOM-derived semantic text snapshot of visible UI elements in document order. Returns { outline: Node[], count, truncated } where Node = { tagName, role, testId, text, enabled }. Captures buttons, inputs, [role], [data-testid], and other interactive elements visible in the render tree (computed display != none && visibility != hidden). This is a pragmatic DOM APPROXIMATION — NOT a true accessibility tree (true AX tree support deferred to tracker AX-1). Capped at 500 elements.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        // --- R3 tools (task-4298) — console-error capture + wait_for/wait_for_selector ---
+        ToolDef {
+            name: "list_console_errors",
+            description: "Return captured console.error/console.warn/window.onerror/unhandledrejection entries from the always-on ring buffer installed at app startup. Returns { errors: ConsoleErrorEntry[], count: number }. Optional { clear: true } drains the buffer after returning. Useful for detecting JS errors that occurred before or after the debug bridge initialized.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "clear": { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "wait_for",
+            description: "Poll until a predicate is satisfied or a timeout elapses. Returns { ok: true, waited_ms: number } on success or { error: 'timeout' } when the deadline expires. Predicate is a tagged union: { kind: 'selector', testId, state: 'visible'|'gone', text? } for DOM presence checks, or { kind: 'store', path, equals } for store dotted-path equality checks. Optional timeout_ms (default 5000, must be positive).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "predicate": {
+                        "type": "object",
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text? } or { kind: 'store', path, equals }"
+                    },
+                    "timeout_ms": { "type": "integer" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "wait_for_selector",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional timeout_ms (default 5000, must be positive).",
+            input_schema: json!({
+                "type": "object",
+                "required": ["testId"],
+                "properties": {
+                    "testId": { "type": "string" },
+                    "state": { "type": "string", "enum": ["visible", "gone"] },
+                    "text": { "type": "string" },
+                    "timeout_ms": { "type": "integer" }
+                }
+            }),
+        },
     ]
 }
 
@@ -517,8 +573,12 @@ async fn dispatch_tool(
         "mesh_stats" => handle_mesh_stats(state).await,
         "open_file" => handle_open_file(state, params).await,
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
+        "wait_for" => handle_wait_for(state, params).await,
+        "wait_for_selector" => handle_wait_for_selector(state, params).await,
         _ => {
-            // Frontend-mediated: delegate to DebugBridge
+            // Frontend-mediated: delegate to DebugBridge.
+            // list_console_errors falls through here — it returns instantly so
+            // the default 5s query_frontend timeout is more than sufficient.
             state.debug_bridge.query_frontend(name, params).await
         }
     }
@@ -904,6 +964,86 @@ async fn handle_wait_for_idle(state: &DebugServerState, params: Value) -> Result
         .await
 }
 
+async fn handle_wait_for(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    // Validate and canonicalize timeout_ms. Default 5000ms (matching the frontend default).
+    let timeout_ms: u64 = match params.get("timeout_ms") {
+        None => 5_000,
+        Some(v) => match v.as_u64().filter(|&n| n > 0) {
+            Some(n) => n,
+            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
+        },
+    };
+
+    // Build canonical params: pass predicate through as-is so the frontend parses it.
+    let canonical_params = json!({
+        "predicate": params.get("predicate").cloned().unwrap_or(Value::Null),
+        "timeout_ms": timeout_ms
+    });
+    // Add a 5-second buffer so the Rust oneshot fires *after* the frontend
+    // has had a chance to return its own {error: "timeout"} response.
+    let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
+    state
+        .debug_bridge
+        .query_frontend_with_timeout("wait_for", canonical_params, rust_timeout)
+        .await
+}
+
+async fn handle_wait_for_selector(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    // Validate and canonicalize timeout_ms. Default 5000ms.
+    let timeout_ms: u64 = match params.get("timeout_ms") {
+        None => 5_000,
+        Some(v) => match v.as_u64().filter(|&n| n > 0) {
+            Some(n) => n,
+            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
+        },
+    };
+
+    // Build canonical params and pass through to the frontend.
+    let mut canonical_params = serde_json::Map::new();
+    canonical_params.insert("timeout_ms".to_string(), json!(timeout_ms));
+    if let Some(v) = params.get("testId") {
+        canonical_params.insert("testId".to_string(), v.clone());
+    }
+    if let Some(v) = params.get("state") {
+        canonical_params.insert("state".to_string(), v.clone());
+    }
+    if let Some(v) = params.get("text") {
+        canonical_params.insert("text".to_string(), v.clone());
+    }
+    let canonical_params = Value::Object(canonical_params);
+
+    let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
+    state
+        .debug_bridge
+        .query_frontend_with_timeout("wait_for_selector", canonical_params, rust_timeout)
+        .await
+}
+
+// --- Port resolution ---
+
+pub const DEFAULT_DEBUG_PORT: u16 = 3939;
+
+/// Parse a raw env-var value into a valid port (1..=65535), falling back to
+/// DEFAULT_DEBUG_PORT for unset, empty, non-numeric, zero, or out-of-range input.
+/// Whitespace is NOT stripped; " 4500 " falls back to 3939.
+pub fn parse_debug_port(raw: Option<&str>) -> u16 {
+    raw.and_then(|s| s.parse::<u32>().ok())
+        .and_then(|n| u16::try_from(n).ok())
+        .filter(|&p| p >= 1)
+        .unwrap_or(DEFAULT_DEBUG_PORT)
+}
+
+pub fn resolve_debug_port() -> u16 {
+    parse_debug_port(std::env::var("REIFY_DEBUG_PORT").ok().as_deref())
+}
+
+pub fn debug_endpoint_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/mcp")
+}
+
 // --- Server spawn ---
 
 pub async fn spawn_debug_server(
@@ -927,11 +1067,12 @@ pub async fn spawn_debug_server(
         .route("/debug/{command}", post(handle_rest))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3939")
+    let port = resolve_debug_port();
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
         .await
-        .map_err(|e| format!("failed to bind debug server on :3939: {e}"))?;
+        .map_err(|e| format!("failed to bind debug server on :{port}: {e}"))?;
 
-    tracing::info!("Debug server listening on http://127.0.0.1:3939");
+    tracing::info!("Debug server listening on {}", debug_endpoint_url(port));
 
     axum::serve(listener, app.into_make_service())
         .await
@@ -1407,6 +1548,142 @@ mod tests {
         }
     }
 
+    // task-4297 step-5 RED → step-6 GREEN: R2 tools get_diagnostics and ui_outline
+    // must be registered in tool_defs() with correct schema shape.
+    // Note: the ui_outline DOM-approximation / not-an-AX-tree label lives in the
+    // ToolDef source description (see debug_server.rs:402); it is not substring-pinned
+    // here to avoid brittle wording-pin failures on harmless rewording (step-9).
+    #[test]
+    fn tool_defs_registers_r2_inspection_tools() {
+        let defs = tool_defs();
+
+        // Both R2 tools take no required params.
+        let r2_tools = ["get_diagnostics", "ui_outline"];
+        for tool_name in r2_tools {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{tool_name}: required array must be empty; got {required:?}"
+                );
+            }
+        }
+    }
+
+    // task-4298 step-9 RED → step-10 GREEN: R3 tools list_console_errors, wait_for,
+    // wait_for_selector must be registered in tool_defs() with correct schema shapes.
+    // Schema-shape-only assertions — NO prose/substring pinning of descriptions (step-9 convention).
+    #[test]
+    fn tool_defs_includes_list_console_errors() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "list_console_errors")
+            .expect("list_console_errors must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "list_console_errors must have a non-empty description"
+        );
+        // 'clear' is optional — if a required array exists it must NOT force 'clear'
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("clear")),
+                "'clear' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_defs_includes_wait_for() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "wait_for")
+            .expect("wait_for must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "wait_for must have a non-empty description"
+        );
+        // Must have a 'predicate' property
+        assert!(
+            schema["properties"]["predicate"].is_object(),
+            "properties.predicate must be present and an object"
+        );
+        // timeout_ms is optional — if a required array exists it must NOT force timeout_ms
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("timeout_ms")),
+                "'timeout_ms' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_defs_includes_wait_for_selector() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "wait_for_selector")
+            .expect("wait_for_selector must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "wait_for_selector must have a non-empty description"
+        );
+        // testId must be a string property
+        assert_eq!(
+            schema["properties"]["testId"]["type"].as_str(),
+            Some("string"),
+            "properties.testId.type must be 'string'"
+        );
+        // testId IS required
+        let required = schema["required"]
+            .as_array()
+            .expect("input_schema.required must be an array for wait_for_selector");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("testId")),
+            "'testId' must be listed in required"
+        );
+        // timeout_ms is optional — must NOT be required
+        assert!(
+            !required.iter().any(|v| v.as_str() == Some("timeout_ms")),
+            "'timeout_ms' must NOT be listed in required (it is optional)"
+        );
+    }
+
     // step-5 RED → GREEN: all five viewport-aware tools must expose an optional
     // viewportId property in their schemas. Consolidated into one table-driven test
     // so adding a sixth tool is a one-line change (amend: suggestion-4).
@@ -1490,5 +1767,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── parse_debug_port ────────────────────────────────────────────────────
+    #[test]
+    fn parse_debug_port_known_good_values() {
+        assert_eq!(parse_debug_port(Some("3939")), 3939u16);
+        assert_eq!(parse_debug_port(Some("4500")), 4500u16);
+        assert_eq!(parse_debug_port(Some("1")), 1u16);
+        assert_eq!(parse_debug_port(Some("65535")), 65535u16);
+    }
+
+    #[test]
+    fn parse_debug_port_fallback_to_default() {
+        assert_eq!(parse_debug_port(None), 3939u16);
+        assert_eq!(parse_debug_port(Some("")), 3939u16);
+        assert_eq!(parse_debug_port(Some("abc")), 3939u16);
+        assert_eq!(parse_debug_port(Some("0")), 3939u16);
+        // 70000 is out of u16 range (> 65535) — must fall back
+        assert_eq!(parse_debug_port(Some("70000")), 3939u16);
+        // leading/trailing whitespace is NOT stripped — falls back
+        assert_eq!(parse_debug_port(Some(" 4500 ")), 3939u16);
+    }
+
+    // ── debug_endpoint_url ──────────────────────────────────────────────────
+    #[test]
+    fn debug_endpoint_url_formats_correctly() {
+        assert_eq!(debug_endpoint_url(3939), "http://127.0.0.1:3939/mcp");
+        assert_eq!(debug_endpoint_url(51000), "http://127.0.0.1:51000/mcp");
     }
 }

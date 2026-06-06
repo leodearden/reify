@@ -277,6 +277,10 @@ pub enum Operation {
     PrimitiveSphere,
     /// Tube primitive (hollow cylinder).
     PrimitiveTube,
+    /// Cone (or frustum) primitive along Z axis.
+    PrimitiveCone,
+    /// Wedge (trapezoidal prism) primitive with bbox corner at origin.
+    PrimitiveWedge,
 
     // ── Modify (local edits to a single shape) ──────────────────────────────
     /// Fillet (round) edges by radius.
@@ -347,6 +351,12 @@ pub enum Operation {
     CurveBezierCurve,
     /// NURBS curve.
     CurveNurbsCurve,
+
+    // ── Profile (2D face producers) ─────────────────────────────────────────
+    /// Axis-aligned rectangular face centred at origin in the XY plane.
+    ProfileRectangle,
+    /// Circular face (disk) centred at origin in the XY plane.
+    ProfileCircle,
 
     // ── Convert (representation change) ─────────────────────────────────────
     /// Convert geometry from one [`ReprKind`] family to another. The pair
@@ -533,6 +543,28 @@ pub enum GeometryOp {
         outer_r: Value,
         inner_r: Value,
         height: Value,
+    },
+    /// Create a cone or frustum primitive along Z axis.
+    ///
+    /// `bottom_radius` is the radius at Z=0; `top_radius` at Z=height.
+    /// Setting `top_radius == 0` yields a pointed cone (apex at top).
+    /// Requires at least one radius > 0 (both-zero is a degenerate line).
+    Cone {
+        bottom_radius: Value,
+        top_radius: Value,
+        height: Value,
+    },
+    /// Create a wedge (trapezoidal prism) with bbox corner at origin.
+    ///
+    /// The cross-section is a trapezoid with parallel sides `width` (at y=0)
+    /// and `top_width` (at y=depth), separated by `depth`, extruded by `height`.
+    /// `top_width == 0` is valid (degenerate triangular-prism wedge).
+    /// Volume = depth * height * (width + top_width) / 2.
+    Wedge {
+        width: Value,
+        depth: Value,
+        height: Value,
+        top_width: Value,
     },
     /// Boolean union.
     Union {
@@ -768,6 +800,19 @@ pub enum GeometryOp {
         thickness: Value,
         faces_to_remove: Vec<usize>,
     },
+
+    // ── Profile (2-D face producers) ─────────────────────────────────────
+    /// Axis-aligned rectangular face centred at origin in the XY plane at z=0.
+    ///
+    /// Corners at (±width/2, ±height/2, 0).  The resulting `BRep` face is
+    /// consumable by `Extrude`, `Revolve`, `Loft`, and any other sweep that
+    /// expects a `Surface`-dimension profile.
+    RectangleProfile { width: Value, height: Value },
+    /// Circular face (disk) centred at origin in the XY plane at z=0.
+    ///
+    /// The resulting `BRep` face is consumable by `Extrude`, `Revolve`,
+    /// `Loft`, and any other sweep that expects a `Surface`-dimension profile.
+    CircleProfile { radius: Value },
 }
 
 impl GeometryOp {
@@ -785,6 +830,8 @@ impl GeometryOp {
             GeometryOp::Cylinder { .. } => "Cylinder",
             GeometryOp::Sphere { .. } => "Sphere",
             GeometryOp::Tube { .. } => "Tube",
+            GeometryOp::Cone { .. } => "Cone",
+            GeometryOp::Wedge { .. } => "Wedge",
             GeometryOp::Union { .. } => "Union",
             GeometryOp::Difference { .. } => "Difference",
             GeometryOp::Intersection { .. } => "Intersection",
@@ -817,6 +864,8 @@ impl GeometryOp {
             GeometryOp::Draft { .. } => "Draft",
             GeometryOp::Thicken { .. } => "Thicken",
             GeometryOp::Shell { .. } => "Shell",
+            GeometryOp::RectangleProfile { .. } => "RectangleProfile",
+            GeometryOp::CircleProfile { .. } => "CircleProfile",
         }
     }
 }
@@ -2137,6 +2186,8 @@ pub enum StepKind {
     Sweep,
     /// A curve construction op (line_segment, arc, helix, …).
     Curve,
+    /// A 2-D face profile op (rectangle, circle).
+    Profile,
 }
 
 /// A feature tag attached to a compiler-generated geometry op.
@@ -5182,11 +5233,13 @@ mod tests {
             Operation::BooleanUnion,
             Operation::BooleanDifference,
             Operation::BooleanIntersection,
-            // Primitives (4)
+            // Primitives (6)
             Operation::PrimitiveBox,
             Operation::PrimitiveCylinder,
             Operation::PrimitiveSphere,
             Operation::PrimitiveTube,
+            Operation::PrimitiveCone,
+            Operation::PrimitiveWedge,
             // Modify (5)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
@@ -5287,6 +5340,8 @@ mod tests {
             Operation::PrimitiveCylinder => {}
             Operation::PrimitiveSphere => {}
             Operation::PrimitiveTube => {}
+            Operation::PrimitiveCone => {}
+            Operation::PrimitiveWedge => {}
             Operation::ModifyFillet => {}
             Operation::ModifyChamfer => {}
             Operation::ModifyShell => {}
@@ -5316,6 +5371,8 @@ mod tests {
             Operation::CurveInterpCurve => {}
             Operation::CurveBezierCurve => {}
             Operation::CurveNurbsCurve => {}
+            Operation::ProfileRectangle => {}
+            Operation::ProfileCircle => {}
             Operation::Convert { from: _ } => {}
         }
     }
@@ -5753,6 +5810,23 @@ mod tests {
                 },
             ),
             (
+                "Cone",
+                GeometryOp::Cone {
+                    bottom_radius: Value::Real(0.01),
+                    top_radius: Value::Real(0.005),
+                    height: Value::Real(0.02),
+                },
+            ),
+            (
+                "Wedge",
+                GeometryOp::Wedge {
+                    width: Value::Real(0.02),
+                    depth: Value::Real(0.01),
+                    height: Value::Real(0.015),
+                    top_width: Value::Real(0.005),
+                },
+            ),
+            (
                 "Union",
                 GeometryOp::Union {
                     left: GeometryHandleId(1),
@@ -6005,12 +6079,26 @@ mod tests {
                     faces_to_remove: vec![0],
                 },
             ),
+            // task-4160: 2-D profile face producers
+            (
+                "RectangleProfile",
+                GeometryOp::RectangleProfile {
+                    width: Value::Real(0.02),
+                    height: Value::Real(0.01),
+                },
+            ),
+            (
+                "CircleProfile",
+                GeometryOp::CircleProfile {
+                    radius: Value::Real(0.008),
+                },
+            ),
         ];
         // Changing this constant forces the test to be updated whenever a
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 36;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 40;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
@@ -6023,6 +6111,19 @@ mod tests {
                 "kind_name() mismatch for GeometryOp::{expected}"
             );
         }
+    }
+
+    /// Standalone pin for GeometryOp::Wedge.kind_name() == "Wedge".
+    /// RED until step-4 adds GeometryOp::Wedge.
+    #[test]
+    fn geometry_op_wedge_kind_name_is_wedge() {
+        let op = GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.010),
+            height: Value::Real(0.015),
+            top_width: Value::Real(0.005),
+        };
+        assert_eq!(op.kind_name(), "Wedge");
     }
 
     #[test]

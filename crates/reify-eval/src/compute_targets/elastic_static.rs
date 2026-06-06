@@ -382,8 +382,29 @@ pub fn solve_elastic_static_trampoline(
     }
 
     if let (ShellRoute::Shell, MaterialModel::Isotropic(iso)) = (shell_route, &model) {
+        // Shell kernel takes a scalar transverse force; X/Y components are
+        // ignored on the shell route (in-plane directional shell loading is
+        // out of scope — task 4245 cylinder/PressureLoad exclusion).
+        //
+        // Warn when directional PointLoad(s) carry non-negligible in-plane
+        // (X/Y) force so the silent discard is visible to the caller.
+        // Threshold: XY magnitude > 1 ppm of Z magnitude (or 1 pN absolute),
+        // which avoids noise from floating-point rounding near exact-zero.
+        let xy_mag = (tip_force[0] * tip_force[0] + tip_force[1] * tip_force[1]).sqrt();
+        let z_ref = tip_force[2].abs().max(1e-12);
+        if xy_mag > z_ref * 1e-6 {
+            route_diagnostics.push(Diagnostic::warning(format!(
+                "PointLoad has non-negligible in-plane force components \
+                 (fx={:.3e}, fy={:.3e}) on the shell route; only the \
+                 transverse -Z component (fz={:.3e}) is applied. \
+                 In-plane shell loading is out of scope in this release \
+                 (task 4245). Use the tet/solid path for in-plane loads.",
+                tip_force[0], tip_force[1], tip_force[2],
+            )));
+        }
+        let shell_tip_force = -tip_force[2];
         let (channels, mid_field, max_von_mises, converged, iterations) =
-            super::shell_solve::solve_shell_static(length, width, height, iso, tip_force);
+            super::shell_solve::solve_shell_static(length, width, height, iso, shell_tip_force);
 
         // `shell_channels_to_value` clones `mid_field` into the ShellStress.mid
         // field, so the same field becomes BOTH `result.stress` and
@@ -424,11 +445,12 @@ pub fn solve_elastic_static_trampoline(
 
         // One-shot shell solve: the shell kernel runs its own cold CG, so no
         // `CgWarmState` is donated back (warm-state caching is tet-only in v0.4).
+        // `route_diagnostics` carries any XY-force-on-shell warning emitted above.
         return ComputeOutcome::Completed {
             result,
             new_warm_state: None,
             cost_per_byte: None,
-            diagnostics: vec![],
+            diagnostics: route_diagnostics,
         };
     }
 
@@ -548,9 +570,11 @@ pub fn solve_elastic_static_trampoline(
     //
     // `diagnostics`   — `route_diagnostics`: empty on the normal tet path (CG
     //                   convergence failures are reflected in `converged =
-    //                   Bool(false)`), or a single Warning when a Shell-
-    //                   classified non-isotropic body soft-fell-back to tet
-    //                   under `Auto`/`Off` (esc-3594 suggestion 3).
+    //                   Bool(false)`), or a Warning when a Shell-classified
+    //                   non-isotropic body soft-fell-back to tet under
+    //                   `Auto`/`Off` (esc-3594 suggestion 3).  The shell path
+    //                   also carries `route_diagnostics` (XY-force warning
+    //                   emitted by task-4245 esc amendment).
     ComputeOutcome::Completed {
         result,
         new_warm_state,
@@ -712,7 +736,7 @@ pub(crate) fn solve_cantilever_fea(
     length: f64,
     width: f64,
     height: f64,
-    tip_force: f64,
+    tip_force: [f64; 3],
     prior_cg: Option<CgWarmState>,
     pressures: &[PressureSpec],
 ) -> (CantileverFeaSolve, CgWarmState) {
@@ -859,10 +883,10 @@ pub(crate) fn solve_cantilever_fea(
     let tip_nodes: Vec<usize> = (0..nz1)
         .flat_map(|iz| (0..ny1).map(move |iy| node_idx(nx, iy, iz)))
         .collect();
-    let n_tip = tip_nodes.len().max(1);
-    let force_per_tip = tip_force / n_tip as f64;
+    let n_tip = tip_nodes.len().max(1) as f64;
+    let force_per_tip = [tip_force[0] / n_tip, tip_force[1] / n_tip, tip_force[2] / n_tip];
     for &tn in &tip_nodes {
-        apply_point_load(&mut f, tn, [0.0, 0.0, -force_per_tip]);
+        apply_point_load(&mut f, tn, force_per_tip);
     }
 
     // ── Face pressure loads (task 4264) ───────────────────────────────────────
@@ -1264,16 +1288,19 @@ fn extract_scalar_si(val: &Value) -> f64 {
 /// Extract all load contributions from a `Value::List` of load `StructureInstance`s
 /// in a **single pass**, returning `(tip_force, pressures)`.
 ///
-/// - `tip_force` — sum of the `force: Value::Real` fields from all `PointLoad`
-///   items (distributed as -Z point loads across the tip face by
-///   `solve_cantilever_fea`).
+/// - `tip_force` — per-axis `[f64; 3]` sum of `force * direction` over all
+///   `PointLoad` items.  Direction magnitude is significant: supplying a
+///   non-unit direction (e.g. `[0, 0, -2]`) silently scales the applied force
+///   by `|direction|`; callers are expected to pass unit vectors.  A missing
+///   or malformed `direction` defaults to `[0.0, 0.0, -1.0]` (-Z).
+///   Passed as-is to `solve_cantilever_fea`.
 /// - `pressures` — one `PressureSpec` per `PressureLoad` item; items of any
 ///   other type (e.g. `FixedSupport`) are silently skipped.
 ///
 /// Panics with a descriptive message if `val` is not a `Value::List`.
 /// A scene may mix `PointLoad` and `PressureLoad`; both accumulate into
 /// the same force vector `f` via their respective kernel primitives.
-fn extract_loads(val: &Value) -> (f64, Vec<PressureSpec>) {
+fn extract_loads(val: &Value) -> ([f64; 3], Vec<PressureSpec>) {
     let items = match val {
         Value::List(v) => v,
         other => panic!(
@@ -1281,13 +1308,34 @@ fn extract_loads(val: &Value) -> (f64, Vec<PressureSpec>) {
             other
         ),
     };
-    let mut tip_force = 0.0f64;
+    let mut tip_force_vec = [0.0f64; 3];
     let mut pressures = Vec::new();
     for item in items {
         if let Value::StructureInstance(data) = item {
             if data.type_name == "PointLoad" {
                 if let Some(Value::Real(f)) = data.fields.get(&"force".to_string()) {
-                    tip_force += f;
+                    let dir = match data.fields.get(&"direction".to_string()) {
+                        Some(Value::List(elems)) if elems.len() == 3 => {
+                            let mut d = [0.0f64; 3];
+                            for (i, e) in elems.iter().enumerate() {
+                                // List<Real> elements materialize as either
+                                // `Value::Real` (scene literals) or dimensionless
+                                // `Value::Scalar` (structure-def default values),
+                                // mirroring the `magnitude` parse below. Handle
+                                // both so the default [0,0,-1] is honoured.
+                                match e {
+                                    Value::Real(v) => d[i] = *v,
+                                    Value::Scalar { si_value, .. } => d[i] = *si_value,
+                                    _ => {}
+                                }
+                            }
+                            d
+                        }
+                        _ => [0.0, 0.0, -1.0],
+                    };
+                    for axis in 0..3 {
+                        tip_force_vec[axis] += f * dir[axis];
+                    }
                 }
             } else if data.type_name == "PressureLoad" {
                 let magnitude = match data.fields.get(&"magnitude".to_string()) {
@@ -1307,7 +1355,7 @@ fn extract_loads(val: &Value) -> (f64, Vec<PressureSpec>) {
             }
         }
     }
-    (tip_force, pressures)
+    (tip_force_vec, pressures)
 }
 
 /// A single pressure load parsed from a `PressureLoad` StructureInstance.
@@ -1694,7 +1742,6 @@ mod tests {
         let length = 1.0_f64;
         let width = 0.1_f64;
         let height = 0.1_f64;
-        let tip_force = 0.0_f64;
         let pressures = [PressureSpec {
             magnitude: 1.0e6,
             face: "x_max".to_string(),
@@ -1702,7 +1749,7 @@ mod tests {
         }];
 
         let (result, _warm) =
-            solve_cantilever_fea(&model, length, width, height, tip_force, None, &pressures);
+            solve_cantilever_fea(&model, length, width, height, [0.0, 0.0, 0.0], None, &pressures);
 
         assert!(result.converged, "FEA must converge under x_max pressure");
 
@@ -1759,7 +1806,7 @@ mod tests {
         let length = 0.8_f64; // m — beam length (x-axis)
         let width = 0.1_f64; // m — cross-section width (y-axis)
         let height = 0.1_f64; // m — cross-section height (z-axis, bending direction)
-        let tip_force = 1000.0_f64; // N (distributed to tip-face nodes by trampoline)
+        let tip_force = 1000.0_f64; // N — scalar kept for Euler–Bernoulli reference below
 
         // Call the new pub(crate) helper (doesn't exist yet → compile-fail RED).
         let (result, _fresh_warm) = solve_cantilever_fea(
@@ -1767,7 +1814,7 @@ mod tests {
             length,
             width,
             height,
-            tip_force,
+            [0.0, 0.0, -tip_force],
             None,
             &[],
         );
@@ -1845,7 +1892,7 @@ mod tests {
             length,
             width,
             height,
-            tip_force,
+            [0.0, 0.0, -tip_force],
             None,
             &[],
         );
@@ -1855,7 +1902,7 @@ mod tests {
             length,
             width,
             height,
-            tip_force,
+            [0.0, 0.0, -tip_force],
             None,
             &[],
         );
@@ -1958,14 +2005,14 @@ mod tests {
         let length = 0.8_f64;
         let width = 0.1_f64;
         let height = 0.1_f64;
-        let tip_force = 1000.0_f64;
+        let tip_force = 1000.0_f64; // scalar kept for analytic-sigma reference below
 
         let (result, _) = solve_cantilever_fea(
             &MaterialModel::Anisotropic(aniso_mat),
             length,
             width,
             height,
-            tip_force,
+            [0.0, 0.0, -tip_force],
             None,
             &[],
         );
@@ -2123,7 +2170,7 @@ mod tests {
             length,
             width,
             height,
-            1000.0,
+            [0.0, 0.0, -1000.0],
             None,
             &[],
         );
@@ -2470,5 +2517,201 @@ mod tests {
                 "tet stress must be a populated Value::Field (4084/α baseline), got {other:?}"
             ),
         }
+    }
+
+    // ── task 4245 — directional PointLoad ──────────────────────────────────────
+
+    /// step-3 RED (task 4245): `extract_loads` must return a per-axis [f64;3]
+    /// force vector instead of a scalar f64.
+    ///
+    /// Cases:
+    ///   (a) PointLoad{force:1000, direction:[0,-1,0]}  → [0,-1000,0]
+    ///   (b) PointLoad{force:500}  (no direction field) → [0,0,-500] (default -Z)
+    ///   (c) two orthogonal loads: [0,0,-1]*1000 + [0,-1,0]*500 → [0,-500,-1000]
+    ///
+    /// RED: `extract_loads` currently returns `(f64, Vec<PressureSpec>)`;
+    /// destructuring as `([fx,fy,fz], _)` is a compile-fail until step-4.
+    #[test]
+    fn extract_loads_accumulates_per_axis_force_vector() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        fn make_point_load_with_dir(force: f64, dir: [f64; 3]) -> Value {
+            let fields: PersistentMap<String, Value> = [
+                ("force".to_string(), Value::Real(force)),
+                (
+                    "direction".to_string(),
+                    Value::List(vec![Value::Real(dir[0]), Value::Real(dir[1]), Value::Real(dir[2])]),
+                ),
+            ]
+            .into_iter()
+            .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "PointLoad".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        }
+
+        fn make_point_load_no_dir(force: f64) -> Value {
+            let fields: PersistentMap<String, Value> =
+                [("force".to_string(), Value::Real(force))].into_iter().collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "PointLoad".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        }
+
+        // (a) explicit direction [0,-1,0] with force 1000 → [0,-1000,0]
+        let loads_a = Value::List(vec![make_point_load_with_dir(1000.0, [0.0, -1.0, 0.0])]);
+        let ([fx, fy, fz], _) = extract_loads(&loads_a);
+        assert!((fx).abs() < 1e-9, "(a) expected fx≈0, got {fx}");
+        assert!((fy - (-1000.0)).abs() < 1e-9, "(a) expected fy=-1000, got {fy}");
+        assert!((fz).abs() < 1e-9, "(a) expected fz≈0, got {fz}");
+
+        // (b) no direction field → default [0,0,-1]; force 500 → [0,0,-500]
+        let loads_b = Value::List(vec![make_point_load_no_dir(500.0)]);
+        let ([fx, fy, fz], _) = extract_loads(&loads_b);
+        assert!((fx).abs() < 1e-9, "(b) expected fx≈0, got {fx}");
+        assert!((fy).abs() < 1e-9, "(b) expected fy≈0, got {fy}");
+        assert!((fz - (-500.0)).abs() < 1e-9, "(b) expected fz=-500, got {fz}");
+
+        // (c) two orthogonal loads: [0,0,-1]*1000 + [0,-1,0]*500 → [0,-500,-1000]
+        let loads_c = Value::List(vec![
+            make_point_load_with_dir(1000.0, [0.0, 0.0, -1.0]),
+            make_point_load_with_dir(500.0, [0.0, -1.0, 0.0]),
+        ]);
+        let ([fx, fy, fz], _) = extract_loads(&loads_c);
+        assert!((fx).abs() < 1e-9, "(c) expected fx≈0, got {fx}");
+        assert!((fy - (-500.0)).abs() < 1e-9, "(c) expected fy=-500, got {fy}");
+        assert!((fz - (-1000.0)).abs() < 1e-9, "(c) expected fz=-1000, got {fz}");
+    }
+
+    /// amendment (task 4245 esc): `extract_loads` direction elements carried as
+    /// `Value::Scalar` (e.g. structure-def defaults materialising as dimensionless
+    /// scalars) are handled by the `Value::Scalar { si_value, .. }` branch.
+    ///
+    /// This test covers suggestion-3 from the code-review: the Scalar branch was
+    /// claimed as the path for structure-def defaults, but had no dedicated
+    /// regression test.  A PointLoad whose direction list contains `Value::Scalar`
+    /// elements must behave identically to one with `Value::Real` elements.
+    #[test]
+    fn extract_loads_direction_scalar_elements_handled() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        // Build a PointLoad where direction elements are Value::Scalar
+        // (dimensionless), mirroring structure-def default materialisation.
+        let dir_scalars: Vec<Value> = [-0.0_f64, -1.0_f64, 0.0_f64]
+            .iter()
+            .map(|&v| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS })
+            .collect();
+        let fields: PersistentMap<String, Value> = [
+            ("force".to_string(), Value::Real(800.0)),
+            ("direction".to_string(), Value::List(dir_scalars)),
+        ]
+        .into_iter()
+        .collect();
+        let point_load = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "PointLoad".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }));
+
+        let loads = Value::List(vec![point_load]);
+        let ([fx, fy, fz], _) = extract_loads(&loads);
+        // force=800, direction=[0,-1,0] → tip_force_vec=[0,-800,0]
+        assert!((fx).abs() < 1e-9, "expected fx≈0, got {fx}");
+        assert!((fy - (-800.0)).abs() < 1e-9, "expected fy=-800, got {fy}");
+        assert!((fz).abs() < 1e-9, "expected fz≈0, got {fz}");
+    }
+
+    /// amendment (task 4245 esc): malformed `direction` values silently fall back
+    /// to `[0, 0, -1]` — this is the intentional forward-compatibility contract
+    /// (design_decision[4] in plan.json).  This test pins the contract so the
+    /// silent-default behaviour is a deliberate, regression-tested choice rather
+    /// than dead code.
+    ///
+    /// Cases:
+    ///   (a) direction list has only 2 elements (length ≠ 3) → fallback to -Z.
+    ///   (b) direction field is a `Value::String` (entirely wrong type, e.g. typo
+    ///       in a Rust-constructed test fixture) → fallback to -Z.
+    #[test]
+    fn extract_loads_malformed_direction_defaults_to_neg_z() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        fn make_point_load(force: f64, direction: Value) -> Value {
+            let fields: PersistentMap<String, Value> = [
+                ("force".to_string(), Value::Real(force)),
+                ("direction".to_string(), direction),
+            ]
+            .into_iter()
+            .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "PointLoad".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        }
+
+        // (a) too-short list [0.0, -1.0] → fallback to [0,0,-1]; force=300
+        let short_dir = Value::List(vec![Value::Real(0.0), Value::Real(-1.0)]);
+        let loads_a = Value::List(vec![make_point_load(300.0, short_dir)]);
+        let ([fx, fy, fz], _) = extract_loads(&loads_a);
+        assert!((fx).abs() < 1e-9, "(a) fx: expected 0, got {fx}");
+        assert!((fy).abs() < 1e-9, "(a) fy: expected 0, got {fy}");
+        assert!(
+            (fz - (-300.0)).abs() < 1e-9,
+            "(a) fz: expected -300 (default -Z fallback), got {fz}"
+        );
+
+        // (b) direction is a String (entirely wrong type) → fallback to [0,0,-1]
+        let str_dir = Value::String("neg_z".to_string());
+        let loads_b = Value::List(vec![make_point_load(400.0, str_dir)]);
+        let ([fx, fy, fz], _) = extract_loads(&loads_b);
+        assert!((fx).abs() < 1e-9, "(b) fx: expected 0, got {fx}");
+        assert!((fy).abs() < 1e-9, "(b) fy: expected 0, got {fy}");
+        assert!(
+            (fz - (-400.0)).abs() < 1e-9,
+            "(b) fz: expected -400 (default -Z fallback), got {fz}"
+        );
+    }
+
+    /// step-3 RED (task 4245): `solve_cantilever_fea` honours a -Y tip_force.
+    ///
+    /// tip_force = [0.0, -1000.0, 0.0] on a 1 m × 0.1 m × 0.1 m beam.
+    /// Expected (sign/dominance only — ny=1 mesh is coarse in Y):
+    ///   - result.converged
+    ///   - mean tip u_y < 0   (load applied in −Y)
+    ///   - |mean u_y| > 2 × |mean u_z|  (direction is honoured, not hardcoded -Z)
+    ///
+    /// RED: `solve_cantilever_fea` currently takes `tip_force: f64`; passing
+    /// `[f64;3]` is a compile-fail until step-4.
+    #[test]
+    fn solve_cantilever_fea_directional_y_load() {
+        let iso = IsotropicElastic { youngs_modulus: 200e9, poisson_ratio: 0.3 };
+        let model = MaterialModel::Isotropic(iso);
+
+        let (result, _) =
+            solve_cantilever_fea(&model, 1.0, 0.1, 0.1, [0.0, -1000.0, 0.0], None, &[]);
+
+        assert!(result.converged, "directional Y-load solve must converge");
+
+        let n = result.tip_nodes.len().max(1) as f64;
+        let mean_uy: f64 =
+            result.tip_nodes.iter().map(|&nd| result.u[3 * nd + 1]).sum::<f64>() / n;
+        let mean_uz: f64 =
+            result.tip_nodes.iter().map(|&nd| result.u[3 * nd + 2]).sum::<f64>() / n;
+
+        assert!(mean_uy < 0.0, "tip mean u_y must be < 0 under −Y load, got {mean_uy}");
+        assert!(
+            mean_uy.abs() > mean_uz.abs() * 2.0,
+            "−Y load must dominate: |u_y|={:.4e} must be > 2×|u_z|={:.4e}",
+            mean_uy.abs(),
+            mean_uz.abs(),
+        );
     }
 }

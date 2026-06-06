@@ -109,6 +109,20 @@ std::unique_ptr<OcctShape> make_cylinder(double radius, double height);
 /// Create a sphere centered at origin (in meters).
 std::unique_ptr<OcctShape> make_sphere(double radius);
 
+/// Create a cone/frustum along Z axis (in meters).
+/// bottom_r is the base radius (Z=0), top_r is the apex radius (Z=height).
+/// top_r==0 produces a pointed cone; both non-zero produces a frustum.
+std::unique_ptr<OcctShape> make_cone(double bottom_r, double top_r, double height);
+
+/// Create a wedge (trapezoidal prism) with bbox corner at origin (in meters).
+/// dx=width  — X-extent at the y=0 face.
+/// dy=depth  — Y-extent (distance between the two trapezoidal end-caps).
+/// dz=height — Z-extent.
+/// ltx=top_width — X-extent at the y=dy face (0 = degenerate triangular prism;
+///               ltx > dx produces an inverted/wider-top taper, which is valid).
+/// Volume = dy * dz * (dx + ltx) / 2.
+std::unique_ptr<OcctShape> make_wedge(double dx, double dy, double dz, double ltx);
+
 // --- Compound assembly ---
 
 /// Assemble N solid shapes into a single TopoDS_Compound for multi-body STEP
@@ -705,6 +719,12 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 
 /// Create a flat circular face (disk) at a given Z height (for extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
+
+/// Create a flat axis-aligned rectangular face centred at origin in the XY plane
+/// at the given Z height (for extrude profiles).
+/// Corners: (±width/2, ±height/2, z_height).  Both width and height must be
+/// finite and positive.
+std::unique_ptr<OcctShape> make_rectangle_face(double width, double height, double z_height);
 
 /// Create a straight line wire between two 3D points (for sweep paths).
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,

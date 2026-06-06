@@ -59,7 +59,7 @@ structure def DimensionalTolerance {
 //   poissons_ratio = 0.29
 //   shear_modulus  ≈ 77.5e9 Pa
 //   yield_strength = 207e6 Pa
-//   uts            = 380e6 Pa
+//   ultimate_tensile_strength = 380e6 Pa
 //
 // Geometry: 100mm × 50mm × 10mm box (post-GHR-α: geometry is a first-class
 // struct slot, not flat-scalar volume/centroid params).
@@ -86,7 +86,7 @@ structure def ExportPart : Physical + Elastic + Strong {
 
     // ── Strong ────────────────────────────────────────────────────────────
     param yield_strength      : Real = 207000000.0
-    param uts                 : Real = 380000000.0
+    param ultimate_tensile_strength : Real = 380000000.0
     param compressive_strength : Real = 207000000.0
 
     // ── GD&T sub-components ───────────────────────────────────────────────

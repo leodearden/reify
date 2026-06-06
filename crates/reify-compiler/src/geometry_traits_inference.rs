@@ -224,6 +224,23 @@ impl InferredTraits {
         }
     }
 
+    /// A 2-D profile face (`rectangle`/`circle`). Bounded/connected/convex are
+    /// all true (a rectangle or circle face is finite, single-component, and
+    /// convex). `dimension == GeomDim::Surface`, `planar == true`,
+    /// `closed == true` — satisfying `violates_profile_requirement`'s
+    /// Surface+closed+planar contract so extrude/revolve/loft accept them, and
+    /// `violates_path_requirement`'s Curve contract rejects them as sweep paths.
+    pub const fn surface() -> Self {
+        Self {
+            bounded: true,
+            connected: true,
+            convex: true,
+            dimension: GeomDim::Surface,
+            planar: true,
+            closed: true,
+        }
+    }
+
     /// Look up the flag for a [`GeometryTrait`] kind. Used by the
     /// conformance walker's diagnostic emit path so the same enum kind drives
     /// both the inference table and the call-site check.
@@ -238,7 +255,7 @@ impl InferredTraits {
 
 /// Look up the inferred traits for a primitive geometry kind.
 ///
-/// All four current variants (`Box`, `Cylinder`, `Sphere`, `Tube`) are
+/// All five current variants (`Box`, `Cylinder`, `Sphere`, `Tube`, `Cone`) are
 /// fully Bounded+Connected+Convex.
 ///
 /// # Future variants
@@ -253,7 +270,9 @@ pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
         PrimitiveKind::Box
         | PrimitiveKind::Cylinder
         | PrimitiveKind::Sphere
-        | PrimitiveKind::Tube => InferredTraits::all(),
+        | PrimitiveKind::Tube
+        | PrimitiveKind::Cone
+        | PrimitiveKind::Wedge => InferredTraits::all(),
     }
 }
 
@@ -552,6 +571,9 @@ fn infer_op(
         // Curve constructors are 1-D primitives → GeomDim::Curve (preserving
         // the all()-equivalent bounded/connected/convex flags).
         CompiledGeometryOp::Curve { .. } => InferredTraits::curve(),
+
+        // 2-D profile face constructors → GeomDim::Surface (planar, closed).
+        CompiledGeometryOp::Profile { .. } => InferredTraits::surface(),
     }
 }
 
@@ -643,7 +665,7 @@ pub fn try_infer_traits_for_function_call_in_env(
 ) -> Option<InferredTraits> {
     match name {
         // ─── Primitive constructors → all() ─────────────────────────────
-        "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" => Some(InferredTraits::all()),
+        "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" | "cone" | "wedge" => Some(InferredTraits::all()),
 
         // ─── Boolean combinators → recurse + combine_* ──────────────────
         "union" => {
@@ -704,6 +726,9 @@ pub fn try_infer_traits_for_function_call_in_env(
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
             Some(InferredTraits::curve())
         }
+
+        // ─── Profile face constructors → surface() (2-D faces) ──────────
+        "rectangle" | "circle" => Some(InferredTraits::surface()),
 
         // Unknown function name → None. The private wrapper maps this to
         // `InferredTraits::all()` (default-Bounded). This is the single
@@ -773,4 +798,39 @@ fn first_two_geometry_args_in_env(
         .map(|a| infer_traits_for_expr_in_env(a, env))
         .unwrap_or(InferredTraits::all());
     (a, b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- wedge inference (task-4158, step-7 RED) ---
+
+    /// `infer_primitive(PrimitiveKind::Wedge)` must return `InferredTraits::all()` —
+    /// dimension=Solid, bounded, connected, convex (PRD δ spec).
+    ///
+    /// Already implemented in step-4; this test pins the behaviour.
+    #[test]
+    fn infer_primitive_wedge_returns_all() {
+        assert_eq!(
+            infer_primitive(PrimitiveKind::Wedge),
+            InferredTraits::all(),
+            "wedge must have all traits (bounded, connected, convex)"
+        );
+    }
+
+    /// `try_infer_traits_for_function_call("wedge", &[])` must return
+    /// `Some(InferredTraits::all())`.
+    ///
+    /// RED until step-8 adds "wedge" to the name arm in
+    /// `try_infer_traits_for_function_call_in_env`.
+    #[test]
+    fn try_infer_traits_for_function_call_wedge_returns_some_all() {
+        let result = try_infer_traits_for_function_call("wedge", &[]);
+        assert_eq!(
+            result,
+            Some(InferredTraits::all()),
+            "try_infer_traits_for_function_call(\"wedge\", ..) must return Some(all())"
+        );
+    }
 }

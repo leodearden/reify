@@ -403,6 +403,17 @@ pub(crate) fn compile_geometry_op(
                     inner_r: eval_arg("inner_r")?,
                     height: eval_arg("height")?,
                 }),
+                PrimitiveKind::Cone => Ok(reify_ir::GeometryOp::Cone {
+                    bottom_radius: eval_arg("bottom_radius")?,
+                    top_radius: eval_arg("top_radius")?,
+                    height: eval_arg("height")?,
+                }),
+                PrimitiveKind::Wedge => Ok(reify_ir::GeometryOp::Wedge {
+                    width: eval_arg("width")?,
+                    depth: eval_arg("depth")?,
+                    height: eval_arg("height")?,
+                    top_width: eval_arg("top_width")?,
+                }),
             }
         }
         CompiledGeometryOp::Boolean { op, left, right } => {
@@ -1285,6 +1296,22 @@ pub(crate) fn compile_geometry_op(
                         degree,
                     })
                 }
+            }
+        }
+        CompiledGeometryOp::Profile { kind, args } => {
+            use reify_compiler::ProfileKind;
+            let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+                eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+                    .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+            };
+            match kind {
+                ProfileKind::Rectangle => Ok(reify_ir::GeometryOp::RectangleProfile {
+                    width: eval_arg("width")?,
+                    height: eval_arg("height")?,
+                }),
+                ProfileKind::Circle => Ok(reify_ir::GeometryOp::CircleProfile {
+                    radius: eval_arg("radius")?,
+                }),
             }
         }
     }

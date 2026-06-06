@@ -1404,12 +1404,47 @@ pub(crate) fn compile_expr_guarded(
                     .skip(covered)
                     .filter_map(|(n, d)| d.map(|e| ((*n).to_string(), e.clone())))
                     .collect();
+                // Collect the template's Let cells in declaration order (task-4342):
+                // each Let's compiled expr is stored in `default_expr`; the ctor
+                // carries them so eval can eagerly materialize derived members.
+                //
+                // Which Let kinds are intentionally included / excluded (suggestion 3):
+                //   INCLUDED:  all source-declared Let cells, whether Public or Private.
+                //     Private lets are included because they may be intermediate helpers
+                //     referenced by later Public lets (`priv let x = a*2; let y = x+1mm`).
+                //     Excluding them would silently break the Public let's evaluation.
+                //   EXCLUDED:  auto-synthesized `__count_<coll>` lets generated from
+                //     Constraint members (entity.rs:1483-1489).  These are compiler-internal
+                //     collection-count cells keyed by a private naming convention; they are
+                //     used by the engine's collection elaboration, not by ctor-path member
+                //     access, and their RHS may reference sub-component values unavailable
+                //     at ctor time.
+                //   EXCLUDED:  geometry-typed lets — already filtered out before they reach
+                //     `value_cells` by `is_geometry_let` (entity.rs:1411-1413), so the
+                //     `starts_with("__count_")` guard below is the only runtime filter needed.
+                let lets: Vec<(String, CompiledExpr)> = template
+                    .value_cells
+                    .iter()
+                    .filter(|vc| {
+                        matches!(vc.kind, ValueCellKind::Let)
+                            // Exclude auto-synthesized collection-count lets (entity.rs:1482-1493).
+                            // These are compiler-internal cells whose RHS may reference
+                            // sub-component values that are unavailable at ctor construction time.
+                            && !vc.id.member.starts_with("__count_")
+                    })
+                    .filter_map(|vc| {
+                        vc.default_expr
+                            .as_ref()
+                            .map(|e| (vc.id.member.clone(), e.clone()))
+                    })
+                    .collect();
                 return CompiledExpr::structure_instance_ctor(
                     reify_ir::StructureTypeId(0),
                     name.clone(),
                     template.version(),
                     ordered_args,
                     defaults,
+                    lets,
                     Type::StructureRef(name.clone()),
                 );
             }
@@ -3608,16 +3643,60 @@ pub(crate) fn compile_expr_guarded(
                 "not yet supported",
             )),
         ),
-        reify_ast::ExprKind::InterpolatedString(_) => make_poison_literal(
-            diagnostics,
-            Diagnostic::error(
-                "string interpolation is not yet supported (task γ)".to_string(),
-            )
-            .with_label(DiagnosticLabel::new(
-                expr.span,
-                "not yet supported",
-            )),
-        ),
+        reify_ast::ExprKind::InterpolatedString(parts) => {
+            // Render-then-concat fold (PRD §3 + §9.1).
+            //
+            // Each Hole is wrapped in __interp_render (std::__interp_render) so
+            // that ANY Value maps to String before the String+String concat.
+            // Without the render step, String + non-String falls through
+            // eval_add to Value::Undef (reify-expr/src/lib.rs:2718).
+            let part_exprs: Vec<CompiledExpr> = parts
+                .iter()
+                .map(|part| match part {
+                    reify_ast::StringPart::Literal(s) => {
+                        CompiledExpr::literal(Value::String(s.clone()), Type::String)
+                    }
+                    reify_ast::StringPart::Hole(e) => {
+                        let compiled = compile_expr_guarded(
+                            e,
+                            scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            current_guard,
+                            lambda_counter,
+                        );
+                        let content_hash = ContentHash::of(&[TAG_FUNCTION_CALL])
+                            .combine(ContentHash::of_str("std::__interp_render"))
+                            .combine(compiled.content_hash);
+                        CompiledExpr {
+                            kind: CompiledExprKind::FunctionCall {
+                                function: ResolvedFunction {
+                                    name: "__interp_render".to_string(),
+                                    qualified_name: "std::__interp_render".to_string(),
+                                },
+                                args: vec![compiled],
+                            },
+                            result_type: Type::String,
+                            content_hash,
+                        }
+                    }
+                })
+                .collect();
+
+            // No-seed left fold: first part seeds acc, then concat the rest.
+            // A single-hole "{x}" lowers to render(x) with no spurious "" +.
+            let mut iter = part_exprs.into_iter();
+            match iter.next() {
+                // Defensive: the parser always emits ≥1 part for InterpolatedString
+                // (empty `""` stays ExprKind::StringLiteral), so this is unreachable
+                // in practice.
+                None => CompiledExpr::literal(Value::String(String::new()), Type::String),
+                Some(first) => iter.fold(first, |acc, next| {
+                    CompiledExpr::binop(BinOp::Add, acc, next, Type::String)
+                }),
+            }
+        }
     }
 }
 
@@ -4656,5 +4735,136 @@ pub structure Rack {
              got: {:?}",
             compiled_arms[1].patterns,
         );
+    }
+
+    // ── task-4342 step-3a: StructureInstanceCtor.lets collected at lowering ───
+
+    /// Build a `TopologyTemplate` with both Param and Let value_cells.
+    /// Params: nominal (Real), upper_deviation (Real), lower_deviation (Real).
+    /// Lets:   upper_limit = ValueRef("nominal") + ValueRef("upper_deviation")
+    ///         lower_limit = ValueRef("nominal") - ValueRef("lower_deviation")
+    fn sct_template_with_lets(
+        name: &str,
+        params: &[(&str, Option<CompiledExpr>)],
+        lets: &[(&str, CompiledExpr)],
+    ) -> crate::types::TopologyTemplate {
+        let mut value_cells: Vec<crate::types::ValueCellDecl> = params
+            .iter()
+            .map(|(pname, default)| crate::types::ValueCellDecl {
+                id: ValueCellId::new(name, *pname),
+                kind: crate::types::ValueCellKind::Param,
+                visibility: crate::types::Visibility::Public,
+                is_aux: false,
+                cell_type: Type::Real,
+                default_expr: default.clone(),
+                solver_hints: vec![],
+                span: SourceSpan::prelude(),
+            })
+            .collect();
+        for (lname, let_expr) in lets {
+            value_cells.push(crate::types::ValueCellDecl {
+                id: ValueCellId::new(name, *lname),
+                kind: crate::types::ValueCellKind::Let,
+                visibility: crate::types::Visibility::Public,
+                is_aux: false,
+                cell_type: let_expr.result_type.clone(),
+                default_expr: Some(let_expr.clone()),
+                solver_hints: vec![],
+                span: SourceSpan::prelude(),
+            });
+        }
+        crate::types::TopologyTemplate {
+            name: name.to_string(),
+            doc: None,
+            entity_kind: crate::types::EntityKind::Structure,
+            visibility: crate::types::Visibility::Public,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells,
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: std::collections::HashSet::new(),
+            objective: None,
+            meta: std::collections::HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+            assoc_fns: vec![],
+            assoc_types: vec![],
+        }
+    }
+
+    /// step_3a RED: compiling a FunctionCall to a template with Let cells must
+    /// produce a StructureInstanceCtor whose `lets` list the Let members in
+    /// declaration order with non-empty compiled exprs.
+    ///
+    /// RED on current base: `lets` is Vec::new() (step_4 will populate it).
+    #[test]
+    fn structure_def_with_let_cells_lowering_emits_lets_in_ctor() {
+        // Build a DimensionalTolerance-shaped template:
+        //   param nominal, param upper_deviation
+        //   let upper_limit = ValueRef(nominal) + ValueRef(upper_deviation)
+        let ref_nominal =
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "nominal"), Type::Real);
+        let ref_upper_dev =
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "upper_deviation"), Type::Real);
+        let upper_limit_expr =
+            CompiledExpr::binop(BinOp::Add, ref_nominal.clone(), ref_upper_dev.clone(), Type::Real);
+
+        let tmpl = sct_template_with_lets(
+            "DimTol",
+            &[
+                ("nominal", None),
+                ("upper_deviation", None),
+            ],
+            &[("upper_limit", upper_limit_expr.clone())],
+        );
+
+        let mut registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        registry.insert("DimTol".to_string(), &tmpl);
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        // Call DimTol(5.0, 0.02) — both params supplied as positional args.
+        let result = compile_expr(
+            &call_expr("DimTol", vec![num_expr(5.0), num_expr(0.02)]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        // Must lower to StructureInstanceCtor.
+        match &result.kind {
+            CompiledExprKind::StructureInstanceCtor { ordered_args, defaults, lets, .. } => {
+                assert_eq!(ordered_args.len(), 2, "both params supplied as ordered_args");
+                assert!(defaults.is_empty(), "no uncovered defaults");
+                // RED: currently lets is Vec::new() because step_4 is not yet done.
+                assert_eq!(
+                    lets.len(), 1,
+                    "one Let cell (upper_limit) must be present in the ctor; got {} lets: {:?}",
+                    lets.len(),
+                    lets.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                );
+                assert_eq!(lets[0].0, "upper_limit", "Let member name must be upper_limit");
+                // The let expr must be non-trivial (not just Undef or Error).
+                assert_ne!(
+                    lets[0].1.result_type,
+                    Type::Error,
+                    "let expr result_type must not be Error (should be Real)"
+                );
+            }
+            other => panic!("expected StructureInstanceCtor, got {:?}", other),
+        }
     }
 }

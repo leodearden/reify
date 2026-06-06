@@ -21,13 +21,15 @@ import { decideOutcome } from "./diff.js";
 import type { ImageData } from "./diff.js";
 import { resolveRepoRoot, assertRepoRootStructure } from "./paths.js";
 import { FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions.js";
+import { resolveDebugPort, debugUrlForPort, allocateFreePort } from "./endpoint.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const PIXEL_THRESHOLD = 0.1;
 const MISMATCH_PCT_LIMIT = 0.01;
 const UPDATE_BASELINES = process.env.UPDATE_BASELINES === "1";
-const DEBUG_URL = "http://127.0.0.1:3939/mcp";
+// Resolved once at startup (see bottom entry dispatcher). Default port: 3939.
+let DEBUG_URL = "";
 const POLL_INTERVAL_MS = 1_000;
 const SERVER_TIMEOUT_MS = 600_000;
 
@@ -36,30 +38,10 @@ assertRepoRootStructure(REPO_ROOT);
 const SCREENSHOTS_DIR = path.join(REPO_ROOT, "gui", "test", "screenshots");
 
 // ─── Scenario definitions ─────────────────────────────────────────────────────
+// Catalogue lives in scenarios.ts (unit-tested headlessly via scenarios.test.ts).
+// SCENARIOS[0] is the bootstrap fixture used to start the GUI process below.
 
-interface Camera {
-  position: [number, number, number];
-  target: [number, number, number];
-  up?: [number, number, number];
-  zoom?: number;
-}
-
-interface Scenario {
-  name: string;
-  fixture: string;
-  camera: Camera;
-}
-
-const SCENARIOS: Scenario[] = [
-  {
-    name: "m5_geometry_flange",
-    fixture: "examples/m5_geometry_flange.ri",
-    camera: {
-      position: [0.15, 0.1, 0.15],
-      target: [0, 0, 0],
-    },
-  },
-];
+import { SCENARIOS, type Scenario, type Camera } from "./scenarios.js";
 
 // ─── RPC client ───────────────────────────────────────────────────────────────
 
@@ -128,13 +110,14 @@ function spawnGui(launchFixture: string): void {
     throw new Error(`Fixture not found: ${fixturePath}`);
   }
   console.log(`[harness] spawning reify-gui with ${launchFixture}`);
+  const resolvedPort = resolveDebugPort(process.env);
   guiProcess = child_process.spawn(
     "scripts/run-gui-dev.sh",
     [fixturePath],
     {
       cwd: REPO_ROOT,
       stdio: ["ignore", "inherit", "inherit"],
-      env: process.env,
+      env: { ...process.env, REIFY_DEBUG_PORT: String(resolvedPort) },
     },
   );
   guiProcess.on("error", (err) => {
@@ -379,11 +362,22 @@ function shutdown(exitCode: number): void {
 }
 
 // Ensure the spawned reify-gui + vite tree is reaped on Ctrl-C / CI cancellation.
-// Without these handlers the child processes leak and leave ports 1420/3939 bound.
+// Without these handlers the child processes leak and leave the vite dev port and
+// the debug server port bound.
 process.on("SIGINT", () => shutdown(130));
 process.on("SIGTERM", () => shutdown(143));
 
+// Resolve the debug endpoint once before either harness runs.
+// If REIFY_DEBUG_PORT is set, use it; otherwise allocate a free ephemeral port so
+// concurrent runs (or a long-lived interactive GUI on 3939) do not collide.
 const MODE = process.argv[2] === "value" ? "value" : "visual";
+const _resolvedDebugPort = process.env["REIFY_DEBUG_PORT"]
+  ? resolveDebugPort(process.env)
+  : await allocateFreePort();
+DEBUG_URL = debugUrlForPort(_resolvedDebugPort);
+// Propagate the chosen port so the child GUI binds the same port we target.
+process.env["REIFY_DEBUG_PORT"] = String(_resolvedDebugPort);
+
 const harness = MODE === "value" ? runValueScenarios() : main();
 
 harness

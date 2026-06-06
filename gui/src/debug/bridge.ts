@@ -5,10 +5,11 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import type { DebugStores, DebugViewport, ReifyDebugContext } from './types';
 import { convertRawGuiState } from '../types';
-import type { RawGuiState } from '../types';
+import type { RawGuiState, DiagnosticInfo } from '../types';
 import { Box3, Vector3 } from 'three';
 import type { Mesh, BufferGeometry } from 'three';
 import { testMode, setTestMode } from './testMode';
+import { getConsoleErrors, clearConsoleErrors } from './consoleErrors';
 import { toPng } from 'html-to-image';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
@@ -93,6 +94,99 @@ function describeElement(el: HTMLElement) {
   };
 }
 
+// Helper for ui_outline: returns true if el or any ancestor up to <html> is hidden.
+// CSS `display` is NOT an inherited property, so getComputedStyle(el).display==='none'
+// only catches the element itself — not elements inside a hidden parent container
+// (e.g. collapsed panels, closed modals, hidden tabs). Walk the ancestor chain so that
+// subtrees whose parent has display:none or visibility:hidden are correctly excluded.
+// (visibility IS inherited, so the child check would already catch it, but walking
+// ancestors handles both uniformly and is the correct render-tree-presence criterion.)
+function isEffectivelyHidden(el: Element): boolean {
+  let node: Element | null = el;
+  while (node && node !== document.documentElement) {
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden') return true;
+    node = node.parentElement;
+  }
+  return false;
+}
+
+// Reshape a DiagnosticInfo into the get_diagnostics wire format.
+// Groups the flat line/column/end_line/end_column quad into a `range` object
+// matching PRD §3, with no field loss.
+function shapeDiagnostic(d: DiagnosticInfo) {
+  return {
+    severity: d.severity,
+    message: d.message,
+    code: d.code,
+    file_path: d.file_path,
+    range: { line: d.line, column: d.column, end_line: d.end_line, end_column: d.end_column },
+  };
+}
+
+/**
+ * Returns true iff the element is visible in the render tree.
+ * Reuses the existing isEffectivelyHidden() ancestor walk (so collapsed/hidden
+ * panels count as not-visible) plus the rect.width>0 convention shared with
+ * describeElement/dom_query/list_elements.
+ */
+function isElementVisible(el: Element): boolean {
+  return !isEffectivelyHidden(el) && (el as HTMLElement).getBoundingClientRect().width > 0;
+}
+
+/**
+ * Poll predicate at ~60Hz until it returns true or the deadline passes.
+ * No final requestAnimationFrame tick (DOM/store predicates are satisfied
+ * by current state and need no paint flush; avoids rAF stubbing in tests).
+ */
+async function pollUntil(
+  predicate: () => boolean,
+  timeoutMs: number,
+): Promise<{ ok: true; waited_ms: number } | { error: 'timeout' }> {
+  const start = performance.now();
+  while (true) {
+    if (predicate()) {
+      return { ok: true, waited_ms: Math.round(performance.now() - start) };
+    }
+    if (performance.now() - start >= timeoutMs) {
+      return { error: 'timeout' };
+    }
+    await new Promise((r) => setTimeout(r, 16));
+  }
+}
+
+/**
+ * Build a selector predicate for wait_for_selector / the selector arm of wait_for.
+ * Resolves el = document.querySelector(`[data-testid="${CSS.escape(testId)}"]`).
+ * 'visible': el exists AND isElementVisible AND (text===undefined OR textContent.trim()===text)
+ * 'gone':    el===null OR !isElementVisible(el)
+ */
+function buildSelectorPredicate(opts: {
+  testId: string;
+  state: 'visible' | 'gone';
+  text?: string;
+}): () => boolean {
+  const { testId, state, text } = opts;
+  // CSS.escape is not available in all environments (e.g. jsdom); fall back to
+  // a minimal escape that handles the most common testId characters safely.
+  const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(testId)
+    : testId.replace(/["\\]/g, '\\$&');
+  const sel = `[data-testid="${escaped}"]`;
+  return () => {
+    const el = document.querySelector(sel);
+    if (state === 'gone') {
+      return el === null || !isElementVisible(el);
+    }
+    // state === 'visible'
+    if (!el || !isElementVisible(el)) return false;
+    if (text !== undefined) {
+      return (el as HTMLElement).textContent?.trim() === text;
+    }
+    return true;
+  };
+}
+
 // Validates selector param, queries the DOM, and returns either an error, the
 // matched element, or null (no match). Handlers map null → {exists:false}.
 function resolveElement(params: Record<string, unknown>): { error: string } | { el: Element | null } {
@@ -159,6 +253,20 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
           messageCount: claude.state.messages.length,
           currentMessageId: claude.state.currentMessageId,
         },
+      };
+    },
+
+    // --- R2: get_diagnostics (frontend-mediated, reads engineStore) ---
+
+    get_diagnostics: () => {
+      const { engine } = ctx.stores;
+      const compile = (engine.state.compileDiagnostics ?? []).map(shapeDiagnostic);
+      const tessellation = (engine.state.tessellationDiagnostics ?? []).map(shapeDiagnostic);
+      return {
+        compile,
+        tessellation,
+        compileCount: compile.length,
+        tessellationCount: tessellation.length,
       };
     },
 
@@ -243,16 +351,44 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         ? editor.state.openFiles.find((f) => f.path === activeFile)
         : undefined;
 
+      // The editorStore snapshot (file?.content) is stale-by-design on every
+      // keystroke — Editor.tsx's docChanged handler deliberately never calls
+      // updateFileContent (the "anti-loop invariant", Editor.tsx:493-497) so
+      // that typing does not re-fire the store→view sync and compile-diagnostics
+      // effects on each keystroke.  The live buffer lives on ctx.editorView,
+      // the same handle that type_in_editor reads (bridge.ts:509).
+      // Guard: substitute live content only when an active file is open AND
+      // the EditorView is present; otherwise fall back to the store snapshot.
+      // When there is no active file we must NOT use editorView (it holds ''
+      // for the untitled buffer), so content stays null.
+      const liveContent = activeFile && ctx.editorView
+        ? ctx.editorView.state.doc.toString()
+        : undefined;
+
       return {
         activeFile,
-        content: file?.content ?? null,
+        content: liveContent ?? file?.content ?? null,
+        // cursorPosition is intentionally kept store-derived (not read from
+        // ctx.editorView.state.selection.main.head).  The store updates
+        // cursorPosition on the cursor-changed transaction listener, which
+        // fires on every selection change — it is not subject to the
+        // anti-loop invariant that prevents calling updateFileContent on
+        // typing.  A consumer mapping cursorPosition as a byte offset into
+        // the live `content` field should be aware that the two values may
+        // briefly diverge mid-keystroke if the cursor moves with the edit.
         cursorPosition: editor.state.cursorPosition,
         activeFileOutOfSyncWithDisk: activeFile !== null && activeFile !== undefined
           ? editor.state.externallyChanged.includes(activeFile)
           : false,
         openFiles: editor.state.openFiles.map((f) => ({
           path: f.path,
-          length: f.content.length,
+          // Reflect the live buffer length for the active entry so that
+          // openFiles[active].length agrees with the top-level content field.
+          // Non-active entries stay store-derived (only the active file has a
+          // live EditorView handle).
+          length: f.path === activeFile && liveContent !== undefined
+            ? liveContent.length
+            : f.content.length,
           dirty: editor.state.dirtyFiles.includes(f.path),
           externallyChanged: editor.state.externallyChanged.includes(f.path),
         })),
@@ -429,6 +565,35 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
 
     tab_order: () => ({ order: collectTabbables().map(describeActive) }),
 
+    // --- R2: ui_outline (frontend-mediated, reads live DOM) ---
+    // Returns a flat ordered list of visible semantic elements (tagName, role,
+    // data-testid, text, enabled-state). This is a pragmatic DOM APPROXIMATION —
+    // NOT a true accessibility tree (deferred to tracker AX-1).
+    // Visibility is determined by computed display/visibility (NOT getBoundingClientRect
+    // geometry, which is all-zero under jsdom) — the correct render-tree criterion.
+    ui_outline: () => {
+      const MAX = 500;
+      const nodes = document.querySelectorAll(
+        '[data-testid], [role], button, a[href], input, select, textarea, [tabindex]',
+      );
+      const all = Array.from(nodes);
+      const outline: Array<Record<string, unknown>> = [];
+      for (const el of all) {
+        if (isEffectivelyHidden(el)) continue;
+        const h = el as HTMLElement & { disabled?: boolean };
+        outline.push({
+          tagName: el.tagName.toLowerCase(),
+          role: el.getAttribute('role'),
+          testId: el.getAttribute('data-testid'),
+          text: ((h.innerText ?? el.textContent ?? '').slice(0, 200)),
+          enabled: !h.disabled && el.getAttribute('aria-disabled') !== 'true',
+        });
+      }
+      const truncated = outline.length > MAX;
+      const sliced = outline.slice(0, MAX);
+      return { outline: sliced, count: outline.length, truncated };
+    },
+
     // --- Write commands (frontend-mediated) ---
 
     click_element: (params) => {
@@ -478,25 +643,14 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
     },
 
     clear_selection: () => {
-      // clearSelection is exposed on the store if available, else fall back to selectEntity(null)
-      const sel = ctx.stores.selection as any;
-      if (typeof sel.clearSelection === 'function') {
-        sel.clearSelection();
-      } else {
-        ctx.stores.selection.selectEntity(null);
-      }
+      ctx.stores.selection.clearSelection();
       return { ok: true };
     },
 
     toggle_select: (params) => {
       const entityPath = params.entityPath as string;
       if (!entityPath) return { error: 'entityPath is required' };
-      const sel = ctx.stores.selection as any;
-      if (typeof sel.toggleSelect === 'function') {
-        sel.toggleSelect(entityPath);
-      } else {
-        ctx.stores.selection.selectEntity(entityPath);
-      }
+      ctx.stores.selection.toggleSelect(entityPath);
       return { ok: true };
     },
 
@@ -596,6 +750,115 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       }
 
       return { ok: true, path };
+    },
+
+    wait_for: async (params) => {
+      const predicate = params.predicate;
+      if (predicate === null || typeof predicate !== 'object' || Array.isArray(predicate)) {
+        return { error: 'predicate {kind} required' };
+      }
+      const pred = predicate as Record<string, unknown>;
+      const kind = pred.kind;
+      let timeoutMs = 5000;
+      if (params.timeout_ms !== undefined) {
+        if (
+          typeof params.timeout_ms !== 'number' ||
+          !Number.isInteger(params.timeout_ms) ||
+          params.timeout_ms <= 0
+        ) {
+          return { error: 'timeout_ms must be a positive integer' };
+        }
+        timeoutMs = params.timeout_ms;
+      }
+
+      if (kind === 'selector') {
+        const testId = pred.testId;
+        if (typeof testId !== 'string' || testId === '') {
+          return { error: 'predicate.testId is required for selector kind' };
+        }
+        const state = (pred.state ?? 'visible') as 'visible' | 'gone';
+        const text = typeof pred.text === 'string' ? pred.text : undefined;
+        return pollUntil(buildSelectorPredicate({ testId, state, text }), timeoutMs);
+      }
+
+      if (kind === 'store') {
+        const path = pred.path;
+        const equals = pred.equals;
+        if (typeof path !== 'string' || path === '') {
+          return { error: 'predicate.path is required for store kind' };
+        }
+        // equals is required: Object.is uses primitive-identity (object/array values
+        // can never match), and an omitted equals silently matches any undefined path.
+        if (equals === undefined) {
+          return { error: 'predicate.equals is required for store kind' };
+        }
+        // Guard against unknown roots so a typo'd path surfaces a clear error
+        // instead of silently timing out. layout.state is included; viewState has no .state.
+        const knownStoreRoots = new Set(['engine', 'editor', 'selection', 'claude', 'layout']);
+        const rootKey = path.split('.')[0];
+        if (!knownStoreRoots.has(rootKey)) {
+          return {
+            error: `unknown store root '${rootKey}'; addressable roots: engine, editor, selection, claude, layout`,
+          };
+        }
+        // Build a snapshot object and walk a dotted path against it.
+        // Snapshot is re-evaluated each poll tick via closure.
+        const getByPath = (root: Record<string, unknown>, dotted: string): unknown => {
+          return dotted.split('.').reduce<unknown>((acc, key) => {
+            if (acc !== null && typeof acc === 'object') {
+              return (acc as Record<string, unknown>)[key];
+            }
+            return undefined;
+          }, root);
+        };
+        return pollUntil(() => {
+          const snapshot: Record<string, unknown> = {
+            engine: ctx.stores.engine.state,
+            editor: ctx.stores.editor.state,
+            selection: ctx.stores.selection.state,
+            claude: ctx.stores.claude.state,
+            layout: ctx.stores.layout.state,
+          };
+          return Object.is(getByPath(snapshot, path), equals);
+        }, timeoutMs);
+      }
+
+      return { error: `unknown predicate kind: ${String(kind)}` };
+    },
+
+    wait_for_selector: async (params) => {
+      const testId = params.testId;
+      if (typeof testId !== 'string' || testId === '') {
+        return { error: 'testId is required' };
+      }
+      const stateParam = params.state ?? 'visible';
+      if (stateParam !== 'visible' && stateParam !== 'gone') {
+        return { error: 'state must be visible|gone' };
+      }
+      const text = typeof params.text === 'string' ? params.text : undefined;
+      let timeoutMs = 5000;
+      if (params.timeout_ms !== undefined) {
+        if (
+          typeof params.timeout_ms !== 'number' ||
+          !Number.isInteger(params.timeout_ms) ||
+          params.timeout_ms <= 0
+        ) {
+          return { error: 'timeout_ms must be a positive integer' };
+        }
+        timeoutMs = params.timeout_ms;
+      }
+      return pollUntil(
+        buildSelectorPredicate({ testId, state: stateParam as 'visible' | 'gone', text }),
+        timeoutMs,
+      );
+    },
+
+    list_console_errors: (params) => {
+      const errors = getConsoleErrors();
+      if (params.clear === true) {
+        clearConsoleErrors();
+      }
+      return { errors, count: errors.length };
     },
 
     wait_for_idle: async (params) => {

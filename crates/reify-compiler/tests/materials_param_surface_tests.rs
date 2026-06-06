@@ -306,15 +306,15 @@ fn elastic_omits_shear_modulus_is_clean() {
 
 /// Conforming structure that omits compressive_strength from Strong.
 /// Once compressive_strength gains `= undef`, this should compile cleanly.
-/// uts=400.0 >= yield_strength=250.0 keeps the uts>=yield_strength constraint satisfied.
+/// ultimate_tensile_strength=400.0 >= yield_strength=250.0 keeps the constraint satisfied.
 ///
 /// RED: compressive_strength is still required (no default) → MissingRequiredMember error.
 #[test]
 fn strong_omits_compressive_strength_is_clean() {
     let src = r#"
         structure def StrongNoCompr : Strong {
-            param yield_strength : Real = 250.0
-            param uts            : Real = 400.0
+            param yield_strength            : Real = 250.0
+            param ultimate_tensile_strength : Real = 400.0
         }
     "#;
     let compiled = compile_source_with_stdlib(src);
@@ -339,7 +339,7 @@ fn strong_omits_compressive_strength_is_clean() {
 fn ductile_omits_reduction_of_area_is_clean() {
     let src = r#"
         structure def DuctileNoROA : Ductile {
-            param elongation : Real = 0.2
+            param elongation_at_break : Real = 0.2
         }
     "#;
     let compiled = compile_source_with_stdlib(src);
@@ -354,4 +354,383 @@ fn ductile_omits_reduction_of_area_is_clean() {
          (should default to undef), got: {:?}",
         errors
     );
+}
+
+// ── §6.2 Ductile — elongation_at_break rename (β task #4240) ─────────────────
+
+/// Ductile conformer declaring only old name `elongation` (no elongation_at_break)
+/// must produce a MissingRequiredMember error for `elongation_at_break`.
+///
+/// RED: stdlib Ductile still declares `elongation`, so supplying `elongation` succeeds
+/// rather than emitting a MissingRequiredMember error for `elongation_at_break`.
+#[test]
+fn ductile_old_elongation_name_is_missing_required_member() {
+    let src = r#"
+        structure def DuctileOldName : Ductile {
+            param elongation : Real = 0.2
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected MissingRequiredMember error for 'elongation_at_break' when \
+         only old 'elongation' is supplied, but got no errors"
+    );
+    assert!(
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::MissingRequiredMember)
+                && d.message.contains("elongation_at_break")
+        }),
+        "expected MissingRequiredMember error mentioning 'elongation_at_break', \
+         got errors: {:?}",
+        errors
+    );
+}
+
+// ── §6.2 Strong — ultimate_tensile_strength rename (β task #4240) ─────────────
+
+/// Strong conformer declaring ultimate_tensile_strength >= yield_strength compiles clean.
+///
+/// RED: stdlib Strong still declares `uts` (not `ultimate_tensile_strength`), so
+/// `ultimate_tensile_strength` is unknown and `uts` is missing → MissingRequiredMember.
+#[test]
+fn strong_ultimate_tensile_strength_valid_is_clean() {
+    let src = r#"
+        structure def StrongRenameOk : Strong {
+            param yield_strength             : Real = 250.0
+            param ultimate_tensile_strength  : Real = 400.0
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics for Strong with ultimate_tensile_strength \
+         >= yield_strength, got: {:?}",
+        errors
+    );
+}
+
+/// Strong conformer where ultimate_tensile_strength (250) < yield_strength (400)
+/// should produce a Violated constraint result and a ConstraintViolated diagnostic.
+///
+/// RED: stdlib Strong still declares `uts`; the structure misses `uts` → compile error,
+/// not a constraint-Violated, so the assertion for Violated fails.
+#[test]
+fn strong_ultimate_tensile_strength_below_yield_is_violated() {
+    let src = r#"
+        structure def StrongRenameViolated : Strong {
+            param yield_strength             : Real = 400.0
+            param ultimate_tensile_strength  : Real = 250.0
+        }
+    "#;
+    let result: CheckResult = check_source_with_stdlib(src);
+    let has_violated = result
+        .constraint_results
+        .iter()
+        .any(|e| e.satisfaction == Satisfaction::Violated);
+    assert!(
+        has_violated,
+        "expected at least one Violated constraint for ultimate_tensile_strength=250 < \
+         yield_strength=400, got: {:?}",
+        result.constraint_results
+    );
+    let constraint_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::ConstraintViolated)
+        })
+        .collect();
+    assert!(
+        !constraint_errors.is_empty(),
+        "expected at least one Severity::Error with code ConstraintViolated for \
+         ultimate_tensile_strength < yield_strength, got diagnostics: {:?}",
+        result.diagnostics
+    );
+}
+
+/// Strong conformer declaring only the old name `uts` (no ultimate_tensile_strength)
+/// must produce a MissingRequiredMember error for `ultimate_tensile_strength`.
+///
+/// RED: stdlib Strong still declares `uts`, so supplying `uts` succeeds rather than
+/// emitting a MissingRequiredMember error for `ultimate_tensile_strength`.
+#[test]
+fn strong_old_uts_name_is_missing_required_member() {
+    let src = r#"
+        structure def StrongOldName : Strong {
+            param yield_strength : Real = 250.0
+            param uts            : Real = 400.0
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected MissingRequiredMember error for 'ultimate_tensile_strength' when \
+         only old 'uts' is supplied, but got no errors"
+    );
+    assert!(
+        errors.iter().any(|d| {
+            d.code == Some(DiagnosticCode::MissingRequiredMember)
+                && d.message.contains("ultimate_tensile_strength")
+        }),
+        "expected MissingRequiredMember error mentioning 'ultimate_tensile_strength', \
+         got errors: {:?}",
+        errors
+    );
+}
+
+// ── §6.2 FatigueRated — endurance_limit → optional params (β task #4240) ───────
+
+/// FatigueRated conformer supplying only inherited MaterialSpec params (density + name)
+/// with no fatigue-specific params at all should compile cleanly (all new params optional).
+///
+/// RED: stdlib FatigueRated still has required `endurance_limit` → MissingRequiredMember.
+#[test]
+fn fatigue_rated_no_fatigue_params_is_clean() {
+    let src = r#"
+        structure def FatigueNone : FatigueRated {
+            param density : Real = 7850.0
+            param name    : String = "steel"
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics when supplying no optional fatigue params \
+         (all should default to undef), got: {:?}",
+        errors
+    );
+}
+
+/// FatigueRated conformer supplying a subset of the optional params (only fatigue_limit)
+/// should compile cleanly.
+///
+/// RED: stdlib FatigueRated still has required `endurance_limit` → MissingRequiredMember.
+#[test]
+fn fatigue_rated_subset_fatigue_limit_only_is_clean() {
+    let src = r#"
+        structure def FatigueSubset : FatigueRated {
+            param density      : Real   = 7850.0
+            param name         : String = "steel"
+            param fatigue_limit : Real  = 300.0
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(src);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics when supplying only fatigue_limit \
+         (subset of optional params), got: {:?}",
+        errors
+    );
+}
+
+/// FatigueRated trait shape: fatigue_limit and fatigue_strength_at must live in
+/// defaults with type Real; fatigue_cycles must live in defaults with type Int;
+/// none of the three appear in required_members.
+///
+/// RED: stdlib FatigueRated still has required `endurance_limit` — new params absent.
+#[test]
+fn fatigue_rated_optional_params_in_defaults() {
+    let module = load_stdlib_module();
+
+    let fatigue = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "FatigueRated")
+        .expect("expected 'FatigueRated' trait in compiled module");
+
+    // None of the three new params should be required.
+    for param_name in &["fatigue_limit", "fatigue_strength_at", "fatigue_cycles"] {
+        assert!(
+            !fatigue.required_members.iter().any(|r| r.name == *param_name),
+            "'{}' should be optional (= undef), not a required member",
+            param_name
+        );
+    }
+
+    // fatigue_limit must be in defaults with Type::Real.
+    let fl = fatigue
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("fatigue_limit"))
+        .expect("expected 'fatigue_limit' in FatigueRated.defaults");
+    match &fl.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Real,
+            "fatigue_limit should have type Real, got {:?}",
+            cell_type
+        ),
+        other => panic!("expected DefaultKind::Param for fatigue_limit, got {:?}", other),
+    }
+
+    // fatigue_strength_at must be in defaults with Type::Real.
+    let fsa = fatigue
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("fatigue_strength_at"))
+        .expect("expected 'fatigue_strength_at' in FatigueRated.defaults");
+    match &fsa.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Real,
+            "fatigue_strength_at should have type Real, got {:?}",
+            cell_type
+        ),
+        other => panic!(
+            "expected DefaultKind::Param for fatigue_strength_at, got {:?}",
+            other
+        ),
+    }
+
+    // fatigue_cycles must be in defaults with Type::Int.
+    let fc = fatigue
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("fatigue_cycles"))
+        .expect("expected 'fatigue_cycles' in FatigueRated.defaults");
+    match &fc.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Int,
+            "fatigue_cycles should have type Int, got {:?}",
+            cell_type
+        ),
+        other => panic!("expected DefaultKind::Param for fatigue_cycles, got {:?}", other),
+    }
+}
+
+// ── §6.2 ImpactResistant — impact_energy → optional params (β task #4240) ───────
+
+/// ImpactResistant conformer supplying only inherited MaterialSpec params (density + name)
+/// with neither impact param compiles cleanly (both new params optional).
+///
+/// RED: stdlib ImpactResistant still has required `impact_energy` → MissingRequiredMember.
+#[test]
+fn impact_resistant_no_impact_params_is_clean() {
+    let source = r#"
+        structure def ImpactNone : ImpactResistant {
+            param density : Real = 7850.0
+            param name : String = "steel"
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics when supplying no optional impact params \
+         (both charpy_impact and izod_impact are optional), got: {:?}",
+        errors
+    );
+}
+
+/// ImpactResistant conformer supplying both optional params compiles cleanly.
+///
+/// RED: stdlib ImpactResistant still has required `impact_energy` — charpy_impact/izod_impact unknown.
+#[test]
+fn impact_resistant_both_impact_params_is_clean() {
+    let source = r#"
+        structure def ImpactBoth : ImpactResistant {
+            param density : Real = 7850.0
+            param name : String = "steel"
+            param charpy_impact : Real = 80.0
+            param izod_impact : Real = 60.0
+        }
+    "#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Severity::Error diagnostics when supplying both charpy_impact and izod_impact, \
+         got: {:?}",
+        errors
+    );
+}
+
+/// ImpactResistant trait shape: charpy_impact and izod_impact must live in defaults
+/// with type Real; neither in required_members; impact_energy absent.
+///
+/// RED: stdlib ImpactResistant still has required `impact_energy` — new params absent.
+#[test]
+fn impact_resistant_optional_params_in_defaults() {
+    let module = load_stdlib_module();
+    let impact = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "ImpactResistant")
+        .expect("expected 'ImpactResistant' trait in compiled module");
+
+    for param_name in &["charpy_impact", "izod_impact"] {
+        assert!(
+            !impact.required_members.iter().any(|r| r.name == *param_name),
+            "'{}' must NOT be a required member of ImpactResistant (optional = undef)",
+            param_name
+        );
+    }
+
+    // charpy_impact must be in defaults with Type::Real.
+    let ci = impact
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("charpy_impact"))
+        .expect("expected 'charpy_impact' in ImpactResistant.defaults");
+    match &ci.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Real,
+            "charpy_impact should have type Real, got {:?}",
+            cell_type
+        ),
+        other => panic!("expected DefaultKind::Param for charpy_impact, got {:?}", other),
+    }
+
+    // izod_impact must be in defaults with Type::Real.
+    let ii = impact
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("izod_impact"))
+        .expect("expected 'izod_impact' in ImpactResistant.defaults");
+    match &ii.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Real,
+            "izod_impact should have type Real, got {:?}",
+            cell_type
+        ),
+        other => panic!("expected DefaultKind::Param for izod_impact, got {:?}", other),
+    }
 }

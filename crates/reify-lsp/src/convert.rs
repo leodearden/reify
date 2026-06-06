@@ -112,7 +112,11 @@ pub fn find_word_at_offset(source: &str, offset: usize) -> Option<(usize, &str)>
 }
 
 /// Check if a byte is an identifier character (alphanumeric or underscore).
-fn is_ident_byte(b: u8) -> bool {
+///
+/// This is the crate-internal predicate shared by [`find_word_at_offset`]
+/// (which uses it for word-boundary scanning) and the `analysis` name-search
+/// helpers (`find_name_offset_in_span` / `name_token_span`).
+pub(crate) fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
@@ -796,5 +800,16 @@ mod tests {
                  counter must remain 6 after the non-AutoTypeParam code is processed"
             );
         });
+    }
+
+    #[test]
+    fn is_ident_byte_classifies_bytes() {
+        assert!(is_ident_byte(b'a'));
+        assert!(is_ident_byte(b'Z'));
+        assert!(is_ident_byte(b'0'));
+        assert!(is_ident_byte(b'_'));
+        assert!(!is_ident_byte(b' '));
+        assert!(!is_ident_byte(b'>'));
+        assert!(!is_ident_byte(b'.'));
     }
 }

@@ -131,6 +131,37 @@ pub fn update_source_impl(
 ///   `constraints`, `files`.
 /// * New staleness keys: `compile_diagnostics`, `tessellation_diagnostics`,
 ///   `stale` (bool), `reload_error` (string or null).
+///
+/// # One-snapshot invariant (task 4258)
+///
+/// `files[].content` and `compile_diagnostics` are computed from the **same**
+/// source snapshot, with one precision:
+///
+/// - **On a failed edit** (`stale == true`, `compile_diagnostics` non-empty):
+///   `files[file_key].content` equals `CompileFailure.source` — the exact
+///   buffer the failing compile was run against.  **Error** diagnostics from
+///   the failing compile have `line`/`col` positions that correctly index into
+///   that content.  **Warning/Info** diagnostics that were carried over from
+///   the _last-good_ compile retain their last-good positions — those may not
+///   correctly index into the (overridden) `files[].content` if the edit
+///   shifted lines.  Consumers should key on `severity == "Error"` to get
+///   positions that are guaranteed consistent with the current content.
+/// - **On success** (`stale == false`): `files[].content` reflects the
+///   last-good committed source (`source_map`), and `compile_diagnostics`
+///   carries only warnings/info from that same committed compile — all
+///   positions correctly index into their respective `files[]` entry.
+///
+/// **Deliberate split**: `meshes` and `values` intentionally remain last-good
+/// on a failed edit — they describe the last successfully compiled module so
+/// the viewport stays populated.  Only `files[].content` is retargeted to the
+/// failing buffer so the diagnostic source is consistent.
+///
+/// **`get_source_location` spans**: the MCP `get_source_location` tool returns
+/// spans resolved against the last-good compiled source (`source_map`).  During
+/// a stale (failed-edit) snapshot, `files[].content` is the _failing_ buffer —
+/// applying last-good `get_source_location` spans as indices into
+/// `files[].content` will produce incorrect positions.  Use `get_source_location`
+/// spans only when `stale == false`.
 pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
     let gui_state = session
         .build_gui_state()

@@ -156,6 +156,9 @@ impl LanguageServer for ReifyLanguageServer {
                 definition_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions::default()),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                // Occurrence highlight (task 4204 δ): the editor requests
+                // textDocument/documentHighlight on cursor-idle.
+                document_highlight_provider: Some(OneOf::Left(true)),
                 // Advertise rename with prepareProvider so the editor issues
                 // prepareRename (the Invariant-4 refusal gate) before rename.
                 rename_provider: Some(OneOf::Right(RenameOptions {
@@ -266,13 +269,18 @@ impl LanguageServer for ReifyLanguageServer {
         let position = params.text_document_position_params.position;
 
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         drop(state);
 
-        Ok(crate::hover::compute_hover(&text, &uri, position))
+        // Reuse the per-document cached parse (one parse per edit) instead of
+        // re-parsing inside AnalysisContext::new; compile+check stay per-request.
+        // The parse uses the document's own module path (no per-call argument).
+        let text = doc.text.clone();
+        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
+        Ok(crate::hover::compute_hover_in_context(&ctx, &text, position))
     }
 
     async fn goto_definition(
@@ -283,8 +291,8 @@ impl LanguageServer for ReifyLanguageServer {
         let position = params.text_document_position_params.position;
 
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         let workspace_root = state.workspace_root.clone();
@@ -298,8 +306,13 @@ impl LanguageServer for ReifyLanguageServer {
         // Move all CPU-bound parsing and blocking filesystem I/O
         // (ModuleResolver::resolve_import_path calls .exists(), and
         // std::fs::read_to_string) to Tokio's blocking thread pool so the
-        // async worker thread stays free for other LSP requests.
+        // async worker thread stays free for other LSP requests. The primary
+        // document's parse comes from its per-document cache (one parse per
+        // edit): the Arc<DocumentState> moves into the blocking task and the
+        // parse — cache-filling on the first request after an edit — runs there.
         let location = match tokio::task::spawn_blocking(move || {
+            let parsed = doc.parsed_module();
+            let primary_source = doc.text.as_str();
             if let Some(root) = workspace_root {
                 // Build a resolver closure using ModuleResolver for cross-file navigation.
                 // Use explicit stdlib_path if configured; fall back to the dev-mode path
@@ -318,15 +331,21 @@ impl LanguageServer for ReifyLanguageServer {
                     let target_uri = Url::from_file_path(&path).ok()?;
                     Some((target_uri, source))
                 };
-                crate::goto_def::compute_goto_definition_cross_file(
-                    &text,
+                crate::goto_def::compute_goto_definition_cross_file_with_parsed(
+                    &parsed,
+                    primary_source,
                     &uri,
                     position,
                     &resolve_import,
                 )
             } else {
                 // No workspace root — fall back to single-file resolution.
-                crate::goto_def::compute_goto_definition(&text, &uri, position)
+                crate::goto_def::compute_goto_definition_with_parsed(
+                    &parsed,
+                    primary_source,
+                    &uri,
+                    position,
+                )
             }
         })
         .await
@@ -348,13 +367,16 @@ impl LanguageServer for ReifyLanguageServer {
         let position = params.text_document_position.position;
 
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         drop(state);
 
-        let items = crate::completion::compute_completions(&text, &uri, position);
+        // Reuse the per-document cached parse (one parse per edit).
+        let text = doc.text.clone();
+        let ctx = crate::analysis::AnalysisContext::from_parsed(doc.parsed_module());
+        let items = crate::completion::compute_completions_in_context(&ctx, &text, position);
         Ok(Some(CompletionResponse::Array(items)))
     }
 
@@ -367,14 +389,47 @@ impl LanguageServer for ReifyLanguageServer {
         // Brief read lock: snapshot the document text, then release before the
         // (pure, CPU-only) symbol walk — mirrors the hover/completion handlers.
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         drop(state);
 
-        let symbols = crate::analysis::compute_document_symbols(&text, &uri);
+        // Reuse the per-document cached parse (one parse per edit).
+        let text = doc.text.clone();
+        let parsed = doc.parsed_module();
+        let symbols = crate::analysis::compute_document_symbols_from_parsed(&parsed, &text);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        // Brief read lock: snapshot the document text, then drop it before the
+        // (CPU-only) parse + scope walk — mirrors document_symbol/prepare_rename.
+        let state = self.state.read().await;
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+        drop(state);
+
+        // Reuse the per-document cached parse (one parse per edit) — prelude-aware
+        // for AST-shape consistency with goto_def/rename.
+        let text = doc.text.clone();
+        let parsed = doc.parsed_module();
+
+        // The δ producer returns None for non-resolvable positions (keywords/
+        // literals/types/declaration names), which the editor renders as "no
+        // occurrences". Its spans are inherently in-document (boundary row 7),
+        // so no active-doc filtering is needed.
+        Ok(crate::references::compute_document_highlights(
+            &text, &parsed, position,
+        ))
     }
 
     async fn prepare_rename(
@@ -387,17 +442,16 @@ impl LanguageServer for ReifyLanguageServer {
         // Brief read lock: snapshot the document text, then drop it before the
         // (CPU-only) parse + scope walk — mirrors hover/document_symbol.
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         drop(state);
 
-        // Prelude-aware parse for AST-shape consistency with the rest of reify-lsp
-        // (goto_def/document_symbol use the same pattern).
-        let module_name = crate::analysis::module_name_from_uri(&uri);
-        let parsed =
-            reify_compiler::parse_with_stdlib(&text, reify_core::ModulePath::single(module_name));
+        // Reuse the per-document cached parse (one parse per edit) — prelude-aware
+        // for AST-shape consistency with the rest of reify-lsp.
+        let text = doc.text.clone();
+        let parsed = doc.parsed_module();
 
         // Forward to the α producer: it returns None for every non-renameable
         // position (keywords/literals/builtins/types/declaration names/cross-module
@@ -419,15 +473,15 @@ impl LanguageServer for ReifyLanguageServer {
         let new_name = params.new_name;
 
         let state = self.state.read().await;
-        let text = match state.documents.get(&uri) {
-            Some(doc) => doc.text.clone(),
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
             None => return Ok(None),
         };
         drop(state);
 
-        let module_name = crate::analysis::module_name_from_uri(&uri);
-        let parsed =
-            reify_compiler::parse_with_stdlib(&text, reify_core::ModulePath::single(module_name));
+        // Reuse the per-document cached parse (one parse per edit).
+        let text = doc.text.clone();
+        let parsed = doc.parsed_module();
 
         // compute_rename validates new_name and guarantees a re-parse-clean edit
         // (Invariant 5); it returns None for unknown/non-renameable positions and
@@ -984,6 +1038,200 @@ mod tests {
         }
     }
 
+    // --- task 4250 step-13: single parse per edit, shared & invalidated ---
+
+    /// A single parse is cached per document version, shared across the store's
+    /// `get()` path, and structurally invalidated by an edit (did_change).
+    ///
+    /// Cache reuse is proven with `Arc::ptr_eq` (same allocation = no re-parse);
+    /// invalidation is proven by a fresh allocation reflecting the new text after
+    /// a version bump. The test also guards that every primary-document provider
+    /// (hover/goto-def/completion/document_symbol) still returns correct results
+    /// once the per-document cache is the parse source — output-equivalence
+    /// across the cache-wiring refactor.
+    #[tokio::test]
+    async fn single_parse_per_edit_shared_and_invalidated() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await; // v1 = bracket_source
+
+        // v1: the cached parse is stable across repeated store lookups — two
+        // get()+parsed_module() calls return the SAME Arc allocation (a cache
+        // hit, i.e. a single parse per version).
+        let a = {
+            let state = server.state().read().await;
+            let doc = state.documents.get(&uri).expect("doc present at v1");
+            doc.parsed_module()
+        };
+        let b = {
+            let state = server.state().read().await;
+            let doc = state.documents.get(&uri).expect("doc present at v1");
+            doc.parsed_module()
+        };
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "same document version must reuse one cached parse (no re-parse)"
+        );
+        assert_eq!(
+            a.declarations.len(),
+            1,
+            "bracket_source has a single top-level declaration"
+        );
+
+        // Providers must return correct results with the cache as the parse source.
+        assert!(
+            server
+                .hover(HoverParams {
+                    text_document_position_params: TextDocumentPositionParams {
+                        text_document: TextDocumentIdentifier { uri: uri.clone() },
+                        position: Position::new(1, 10), // 'width'
+                    },
+                    work_done_progress_params: Default::default(),
+                })
+                .await
+                .unwrap()
+                .is_some(),
+            "hover should resolve 'width' after did_open"
+        );
+        assert!(
+            server
+                .goto_definition(GotoDefinitionParams {
+                    text_document_position_params: TextDocumentPositionParams {
+                        text_document: TextDocumentIdentifier { uri: uri.clone() },
+                        position: Position::new(9, 15), // 'thickness' in constraint
+                    },
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                })
+                .await
+                .unwrap()
+                .is_some(),
+            "goto-def should resolve 'thickness' after did_open"
+        );
+        let comp = server
+            .completion(CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: Position::new(1, 0),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert!(comp.is_some(), "completion should return items after did_open");
+        match server
+            .document_symbol(DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap()
+        {
+            Some(DocumentSymbolResponse::Nested(syms)) => {
+                assert_eq!(syms.len(), 1, "bracket_source has one top-level symbol");
+                assert_eq!(syms[0].name, "Bracket");
+            }
+            other => panic!("expected Some(Nested(..)), got {other:?}"),
+        }
+
+        // Edit (did_change) to a different valid source bumps the version and
+        // structurally invalidates the cache: the new document owns a fresh,
+        // empty cache, so its parse is a DIFFERENT Arc reflecting the new text.
+        let v2 = "structure A {\n    param x: Scalar = 1mm\n}\nstructure B {\n    param y: Scalar = 2mm\n}";
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: v2.to_string(),
+                }],
+            })
+            .await;
+
+        let c = {
+            let state = server.state().read().await;
+            let doc = state.documents.get(&uri).expect("doc present at v2");
+            doc.parsed_module()
+        };
+        assert!(
+            !Arc::ptr_eq(&a, &c),
+            "an edit must invalidate the cache (a fresh parse allocation)"
+        );
+        assert_eq!(
+            c.declarations.len(),
+            2,
+            "the post-edit cached parse must reflect the new text (two declarations)"
+        );
+    }
+
+    /// A provider handler must CONSUME the per-document parse cache — i.e. fill
+    /// it as a side effect — rather than re-parsing the document internally.
+    ///
+    /// The big integration test above proves the cache mechanism and that the
+    /// providers return correct results, but those are independent: a provider
+    /// that ignored the cache and re-parsed via `AnalysisContext::new` would
+    /// still pass every assertion there. This test ties the wiring to the cache:
+    /// on a freshly-opened document whose cache is cold, running hover must leave
+    /// the cache populated. A regression that reverted hover to internal parsing
+    /// would leave the cache cold here and fail — guarding the refactor's core
+    /// performance goal (one parse per edit shared across providers).
+    #[tokio::test]
+    async fn hover_handler_consumes_per_document_parse_cache() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        // After did_open the per-document cache is cold: diagnostics parse via a
+        // separate path and the cache fills lazily on the first provider request.
+        // `doc` is an Arc clone of the same DocumentState the handler will fetch,
+        // so it observes the interior-mutable cache the handler fills.
+        let doc = {
+            let state = server.state().read().await;
+            state
+                .documents
+                .get(&uri)
+                .expect("doc present after did_open")
+        };
+        assert!(
+            doc.peek_cached_parse().is_none(),
+            "cache must be cold before any provider runs"
+        );
+
+        // Exercise a provider through the real handler.
+        server
+            .hover(HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: Position::new(1, 10), // 'width'
+                },
+                work_done_progress_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // The handler must have populated the cache (consumed it) — not re-parsed
+        // internally and discarded the result.
+        let filled = doc.peek_cached_parse();
+        assert!(
+            filled.is_some(),
+            "the hover handler must populate the per-document parse cache, not re-parse internally"
+        );
+
+        // And the parse the handler cached is exactly what later reads reuse —
+        // a single shared allocation per edit.
+        assert!(
+            Arc::ptr_eq(filled.as_ref().unwrap(), &doc.parsed_module()),
+            "subsequent parsed_module() must reuse the handler-populated cache (one parse per edit)"
+        );
+    }
+
     // --- task 4207 η: document_symbol handler tests ---
 
     #[tokio::test]
@@ -1228,6 +1476,102 @@ mod tests {
         assert!(
             result.is_none(),
             "rename for an unknown URI should return Ok(None)"
+        );
+    }
+
+    // --- task 4204 δ: document_highlight handler tests ---
+    //
+    // Positions reference the canonical bracket fixture (0-based); line 7 is
+    // `    let volume = width * height * thickness` with the `width` use at col 17.
+
+    fn document_highlight_params(uri: Url, line: u32, character: u32) -> DocumentHighlightParams {
+        DocumentHighlightParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position::new(line, character),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn document_highlight_handler_returns_text_highlights_for_width() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        let result = server
+            .document_highlight(document_highlight_params(uri, 7, 17))
+            .await
+            .unwrap();
+
+        let highlights = result.expect("a width use should produce document highlights");
+        assert_eq!(
+            highlights.len(),
+            4,
+            "bracket fixture: 1 decl + 3 uses of width"
+        );
+        assert!(
+            highlights
+                .iter()
+                .all(|h| h.kind == Some(DocumentHighlightKind::TEXT)),
+            "every occurrence highlight is kind TEXT, got {highlights:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn document_highlight_on_keyword_returns_none() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        // 'structure' keyword at line 0, col 0 — not a resolvable value symbol.
+        let result = server
+            .document_highlight(document_highlight_params(uri, 0, 0))
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "document_highlight on a keyword should return Ok(None), got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn document_highlight_unknown_uri_returns_none() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Never opened — not in the document store.
+        let result = server
+            .document_highlight(document_highlight_params(
+                Url::parse("file:///never_opened.ri").unwrap(),
+                7,
+                17,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "document_highlight for an unknown URI should return Ok(None)"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_document_highlight_provider() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let init_result = server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+
+        assert!(
+            init_result
+                .capabilities
+                .document_highlight_provider
+                .is_some(),
+            "should advertise document_highlight_provider (task 4204 δ)"
         );
     }
 

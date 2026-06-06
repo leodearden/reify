@@ -160,8 +160,16 @@ fn abs_plastic_field_read_round_trip() {
 /// `REIFY_REGENERATE_GOLDEN=1`.
 ///
 /// `CARGO_BIN_EXE_reify` is only injected for `reify-cli`'s own integration
-/// tests, so this cross-crate test drives the binary through `cargo run`
-/// (mirroring the established pattern from `structure_instance_e2e.rs`).
+/// tests, so this cross-crate test drives the pre-built `reify` binary
+/// directly. It deliberately does NOT use `cargo run`: even when the binary
+/// is already compiled, `cargo run` re-fingerprints the entire workspace
+/// before exec, and under high build concurrency that overhead can push the
+/// test suite past its time budget (esc-4340-32, exit 124). `cargo test -p
+/// reify-cli` builds all `[[bin]]` targets, including `reify`, so the binary
+/// is present at `<target>/debug/reify`. The cargo runner
+/// (`.cargo/run-with-occt.sh`) exports `LD_LIBRARY_PATH` into this test
+/// process's environment, which the spawned child inherits, so OCCT shared
+/// libraries resolve without going through cargo.
 #[test]
 fn cli_reify_eval_prints_inspectable_material_values() {
     let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
@@ -173,21 +181,22 @@ fn cli_reify_eval_prints_inspectable_material_values() {
     let example = workspace_root.join("examples/materials_starter_library.ri");
     let golden = std::path::Path::new(manifest).join("tests/golden/materials_starter_library.txt");
 
-    let output = std::process::Command::new(env!("CARGO"))
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| workspace_root.join("target"));
+    let reify_bin = target_dir.join("debug").join("reify");
+    let output = std::process::Command::new(&reify_bin)
         .current_dir(&workspace_root)
-        .args([
-            "run",
-            "-q",
-            "-p",
-            "reify-cli",
-            "--bin",
-            "reify",
-            "--",
-            "eval",
-        ])
+        .arg("eval")
         .arg(&example)
         .output()
-        .expect("failed to spawn `cargo run -p reify-cli -- eval`");
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn pre-built reify binary at {}: {e}; \
+                 is it built? run `cargo test -p reify-cli`",
+                reify_bin.display()
+            )
+        });
 
     assert!(
         output.status.success(),

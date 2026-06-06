@@ -15,12 +15,15 @@
 //! Cells are built with [`Value::from_real_scalar`] (Real if dimensionless,
 //! else Scalar) and sanitized via [`crate::helpers::sanitize_value`]. Any
 //! shape / dimension / numeric violation collapses to [`Value::Undef`] with no
-//! new diagnostic code, mirroring `matrix_components_f64`'s shape-guards.
+//! new diagnostic code.
 //!
-//! Built inline (a construct.rs-local `Value::List` extractor, local Tensor
-//! assembly) rather than editing `matrix.rs` / `helpers.rs`, which are owned by
-//! sibling tasks β/γ — avoids narrow-file-lock contention and merge
-//! serialization (PRD §7).
+//! List extraction delegates to the canonical shared cores:
+//! - rank-1 (`vec`, `diag`): [`crate::helpers::list_components_f64`], which
+//!   delegates to the private `uniform_components_f64` core shared with
+//!   `tensor_components_f64`.
+//! - rank-2 (`matrix`): [`crate::matrix::list_matrix_components_f64`], which
+//!   delegates to the private `rank2_components` core shared with
+//!   `matrix_components_f64`.
 
 use reify_core::DimensionVector;
 use reify_ir::Value;
@@ -49,11 +52,15 @@ pub(crate) fn eval_construct(name: &str, args: &[Value]) -> Option<Value> {
 /// dimensionless, else Scalar) wrapped in [`sanitize_value`]. Wrong arity, a
 /// non-`List` arg, or a malformed list (empty / mixed-dimension / non-numeric)
 /// collapses to [`Value::Undef`].
+///
+/// Extraction delegates to [`crate::helpers::list_components_f64`], the
+/// canonical List-accepting entry point that shares the `uniform_components_f64`
+/// core with `tensor_components_f64`.
 fn eval_vec(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
-    let (vals, dim) = match list_components_f64(&args[0]) {
+    let (vals, dim) = match crate::helpers::list_components_f64(&args[0]) {
         Some(c) => c,
         None => return Value::Undef,
     };
@@ -71,11 +78,15 @@ fn eval_vec(args: &[Value]) -> Value {
 /// numeric) and builds the nested `Tensor`. Wrong arity, a non-`List` arg, or
 /// any shape / dimension violation (ragged / empty / non-list row / mixed
 /// dimension / non-numeric) collapses to [`Value::Undef`].
+///
+/// Extraction delegates to [`crate::matrix::list_matrix_components_f64`], the
+/// canonical List-accepting entry point that shares the `rank2_components` core
+/// with `matrix_components_f64`.
 fn eval_matrix(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
-    let (nrows, ncols, data, dim) = match list_matrix_components_f64(&args[0]) {
+    let (nrows, ncols, data, dim) = match crate::matrix::list_matrix_components_f64(&args[0]) {
         Some(c) => c,
         None => return Value::Undef,
     };
@@ -92,11 +103,15 @@ fn eval_matrix(args: &[Value]) -> Value {
 /// (Real when dimensionless, dimensioned `Scalar` otherwise). Wrong arity, a
 /// non-`List` arg, or a malformed list (empty / mixed-dimension / non-numeric)
 /// collapses to [`Value::Undef`].
+///
+/// Extraction delegates to [`crate::helpers::list_components_f64`], the
+/// canonical List-accepting entry point that shares the `uniform_components_f64`
+/// core with `tensor_components_f64`.
 fn eval_diag(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
-    let (vals, dim) = match list_components_f64(&args[0]) {
+    let (vals, dim) = match crate::helpers::list_components_f64(&args[0]) {
         Some(c) => c,
         None => return Value::Undef,
     };
@@ -125,77 +140,6 @@ fn eval_identity(args: &[Value]) -> Value {
         data[i * n + i] = 1.0;
     }
     build_tensor_rank2(n, n, &data, DimensionVector::DIMENSIONLESS)
-}
-
-/// Extract uniform numeric components from a `Value::List` into
-/// `(values, element_dim)`.
-///
-/// Returns `None` (→ caller yields `Undef`) when the list is empty, mixes
-/// dimensions, or contains a non-numeric element. This is the `Value::List`
-/// analogue of `helpers::tensor_components_f64`, which deliberately rejects
-/// `Value::List` (it accepts only Vector/Tensor/Point) — the construction
-/// builtins receive their argument as an already-evaluated list literal, so a
-/// List-accepting extractor is required. Kept local to construct.rs rather than
-/// widening the shared `helpers.rs` surface (β/γ own that file).
-fn list_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
-    let items = match v {
-        Value::List(items) if !items.is_empty() => items,
-        _ => return None,
-    };
-    let first_dim = items[0].dimension();
-    let mut vals = Vec::with_capacity(items.len());
-    for item in items {
-        if item.dimension() != first_dim {
-            return None; // mixed dimensions
-        }
-        match item.as_f64() {
-            Some(x) => vals.push(x),
-            None => return None, // non-numeric component
-        }
-    }
-    Some((vals, first_dim))
-}
-
-/// Extract a depth-2 `Value::List` of `Value::List` into
-/// `(nrows, ncols, row_major_data, element_dim)`.
-///
-/// Mirrors `matrix::matrix_components_f64`'s shape guards (non-empty outer,
-/// every row a `List` with the same non-zero column count, uniform dimension,
-/// all numeric) but accepts the `Value::List`-of-`Value::List` that
-/// `matrix(rows)` receives (that helper accepts only Matrix/Tensor). Returns
-/// `None` (→ `Undef`) on any shape / dimension / numeric violation.
-fn list_matrix_components_f64(
-    v: &Value,
-) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
-    let rows = match v {
-        Value::List(rows) if !rows.is_empty() => rows,
-        _ => return None,
-    };
-    // Column count and element dimension are fixed by the first row, which
-    // must itself be a non-empty `List`.
-    let (ncols, first_dim) = match &rows[0] {
-        Value::List(first) if !first.is_empty() => (first.len(), first[0].dimension()),
-        _ => return None,
-    };
-    let mut data = Vec::with_capacity(rows.len() * ncols);
-    for row in rows {
-        // Reject non-list rows AND ragged rows (a row whose length differs
-        // from ncols — including an empty row, since ncols >= 1).
-        let cells = match row {
-            Value::List(cells) if cells.len() == ncols => cells,
-            _ => return None,
-        };
-        for elem in cells {
-            if elem.dimension() != first_dim {
-                return None; // mixed dimension across cells
-            }
-            match elem.as_f64() {
-                Some(x) => data.push(x),
-                None => return None, // non-numeric cell
-            }
-        }
-    }
-    Some((rows.len(), ncols, data, first_dim))
 }
 
 /// Build a rank-2 nested [`Value::Tensor`] (rows of `Tensor` cells) from flat
@@ -609,6 +553,57 @@ mod tests {
             eval_builtin("identity", &[Value::Int(2), Value::Int(2)]),
             Value::Undef,
             "identity(2, 2) with two args should be Undef"
+        );
+    }
+
+    // ── Delegation-seam guards ────────────────────────────────────────────────
+    //
+    // These tests explicitly lock the boundary between `eval_vec`/`eval_diag`
+    // → `crate::helpers::list_components_f64` and `eval_matrix`
+    // → `crate::matrix::list_matrix_components_f64`.
+    //
+    // They use `Value::Tensor` inputs — a container that is NOT `Value::List` —
+    // to confirm that the delegation rejects non-List values end-to-end, not
+    // just inside the helpers/matrix modules.  This case is distinct from the
+    // `Value::Real` non-list cases already tested above.
+
+    /// `vec(tensor)` must collapse to `Undef`; the delegation target
+    /// `list_components_f64` rejects anything that is not a `Value::List`.
+    #[test]
+    fn eval_vec_tensor_arg_collapses_to_undef() {
+        let tensor_arg = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert_eq!(
+            eval_builtin("vec", &[tensor_arg]),
+            Value::Undef,
+            "vec(Tensor) should be Undef — delegation rejects non-List"
+        );
+    }
+
+    /// `matrix([[1,2],[Tensor]])` must collapse to `Undef`; the delegation
+    /// target `list_matrix_components_f64` / `rank2_components` rejects a
+    /// `Value::Tensor` row that appears inside an otherwise-valid outer List.
+    #[test]
+    fn eval_matrix_tensor_row_collapses_to_undef() {
+        let input = Value::List(vec![
+            list_row(&[1.0, 2.0]),
+            Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0)]),
+        ]);
+        assert_eq!(
+            eval_builtin("matrix", &[input]),
+            Value::Undef,
+            "matrix([[1,2], Tensor]) should be Undef — delegation rejects Tensor rows"
+        );
+    }
+
+    /// `diag(tensor)` must collapse to `Undef`; the delegation target
+    /// `list_components_f64` rejects anything that is not a `Value::List`.
+    #[test]
+    fn eval_diag_tensor_arg_collapses_to_undef() {
+        let tensor_arg = Value::Tensor(vec![Value::Real(3.0), Value::Real(5.0)]);
+        assert_eq!(
+            eval_builtin("diag", &[tensor_arg]),
+            Value::Undef,
+            "diag(Tensor) should be Undef — delegation rejects non-List"
         );
     }
 }

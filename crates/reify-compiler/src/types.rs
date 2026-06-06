@@ -1135,6 +1135,14 @@ pub enum CompiledGeometryOp {
         kind: CurveKind,
         args: Vec<(String, CompiledExpr)>,
     },
+    /// 2-D profile face construction (rectangle, circle).
+    ///
+    /// Produces a planar face in the XY plane at z=0 (Surface-dimension).
+    /// Consumable by extrude/revolve/loft/sweep as a profile operand.
+    Profile {
+        kind: ProfileKind,
+        args: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Primitive geometry kinds.
@@ -1146,6 +1154,14 @@ pub enum PrimitiveKind {
     /// Hollow cylinder: `tube(outer_r, inner_r, height)`. Composed at the
     /// kernel layer as `boolean_cut` between two cylinders.
     Tube,
+    /// Cone or frustum: `cone(bottom_radius, top_radius, height)`.
+    /// Setting `top_radius == 0` yields a pointed apex natively via
+    /// `BRepPrimAPI_MakeCone`. Both radii zero is invalid (degenerate line).
+    Cone,
+    /// Wedge (trapezoidal prism): `wedge(width, depth, height, top_width)`.
+    /// Bbox corner at origin; top_width=0 degenerates to a triangular prism.
+    /// Implemented via `BRepPrimAPI_MakeWedge(dx=width, dy=depth, dz=height, ltx=top_width)`.
+    Wedge,
 }
 
 impl std::fmt::Display for PrimitiveKind {
@@ -1155,6 +1171,8 @@ impl std::fmt::Display for PrimitiveKind {
             PrimitiveKind::Cylinder => f.write_str("cylinder"),
             PrimitiveKind::Sphere => f.write_str("sphere"),
             PrimitiveKind::Tube => f.write_str("tube"),
+            PrimitiveKind::Cone => f.write_str("cone"),
+            PrimitiveKind::Wedge => f.write_str("wedge"),
         }
     }
 }
@@ -1325,6 +1343,29 @@ impl std::fmt::Display for CurveKind {
             CurveKind::InterpCurve => f.write_str("interp_curve"),
             CurveKind::BezierCurve => f.write_str("bezier_curve"),
             CurveKind::NurbsCurve => f.write_str("nurbs_curve"),
+        }
+    }
+}
+
+/// 2-D profile face kinds.
+///
+/// Each variant produces a planar closed face in the XY plane at z=0.
+/// Used by [`CompiledGeometryOp::Profile`] and mapped to
+/// [`reify_ir::GeometryOp::RectangleProfile`] / [`reify_ir::GeometryOp::CircleProfile`]
+/// at eval time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProfileKind {
+    /// Axis-aligned centred rectangle: `rectangle(width, height)`.
+    Rectangle,
+    /// Circle in the XY plane: `circle(radius)`.
+    Circle,
+}
+
+impl std::fmt::Display for ProfileKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProfileKind::Rectangle => f.write_str("rectangle"),
+            ProfileKind::Circle => f.write_str("circle"),
         }
     }
 }
@@ -1506,6 +1547,8 @@ mod kind_display_tests {
             (PrimitiveKind::Cylinder, "cylinder"),
             (PrimitiveKind::Sphere, "sphere"),
             (PrimitiveKind::Tube, "tube"),
+            (PrimitiveKind::Cone, "cone"),
+            (PrimitiveKind::Wedge, "wedge"),
         ]);
     }
 

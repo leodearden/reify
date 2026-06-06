@@ -39,7 +39,7 @@ pub use engine_eval::is_representable_cell_type;
 mod engine_purposes;
 mod engine_tolerance;
 mod geometry_ops;
-mod trajectory_ops;
+pub mod trajectory_ops;
 pub mod graph;
 pub mod journal;
 pub mod primitive_attribute_seed;

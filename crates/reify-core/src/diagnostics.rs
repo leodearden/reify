@@ -765,27 +765,24 @@ pub enum DiagnosticCode {
     /// it; out of scope for the v0.2 closed-chain → loop-closure migration.
     KinematicClosedChain,
     /// Origin: `crates/reify-stdlib/src/mechanism.rs` (task 2528 — `mechanism().body(...)`
-    /// builder). Reserved for the duplicate-solid detector that rejects a `body()` call
-    /// whose `solid` argument equals (by structural `Value::Eq`) the `solid` of an
-    /// already-recorded body in the same Mechanism.
+    /// builder). Emitted when a `body()` call attaches a solid that is already recorded
+    /// in the same Mechanism (detected by structural `Value::Eq`; the docs spec says
+    /// referential identity — gap documented in mechanism.rs and tracked in task 2538).
     ///
-    /// Canonical message form:
-    /// `"duplicate solid in mechanism: solid already bound to body <id>"`.
+    /// Canonical message form (sourced verbatim from the Map's `error_message` field,
+    /// as produced by `make_duplicate_solid_error` in `mechanism.rs`):
+    /// `"duplicate solid: solid value already attached to a body in this mechanism"`.
     ///
     /// The PRD-prose mnemonic for this code is `E_MECHANISM_DUPLICATE_SOLID`
     /// (see `docs/prds/kinematic-constraints.md` task 3 and
-    /// `docs/reify-stdlib-reference.md` §13.2). Note: v0.1 detects duplicates by
-    /// structural `Value::Eq` rather than by referential identity (the docs spec) —
-    /// a code-comment in `mechanism.rs` documents the gap; the docs note will be
-    /// updated in the follow-on docs task (2538).
+    /// `docs/reify-stdlib-reference.md` §13.2).
     ///
-    /// TODO: wired by the snapshot/eval-pipeline integration in the task family covering
-    /// 2585+. The v0.1 mechanism builder records the error condition on the returned
-    /// Mechanism `Value::Map` (`error`, `error_message` fields); a follow-on integration
-    /// translates the errored Map into a real `Diagnostic` carrying this code via
-    /// `EvalResult.diagnostics`. The variant is reserved now so that downstream tooling
-    /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from the
-    /// moment the diagnostic is emitted, with no further enum churn at integration time.
+    /// **Emitted** at the `reify-eval` eval boundary by
+    /// `detect_mechanism_errors` in `engine_eval.rs` (task 4308), which scans
+    /// the evaluated `ValueMap` for mechanism Maps carrying `error="duplicate_solid"`
+    /// and maps each distinct errored Map to one `Severity::Error` diagnostic.
+    /// Wired into both `Engine::eval` and `Engine::eval_cached` so the error
+    /// surfaces on `reify check` (no kernel) and in the GUI diagnostics panel.
     MechanismDuplicateSolid,
     /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`

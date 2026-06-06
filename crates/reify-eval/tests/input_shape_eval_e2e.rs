@@ -86,13 +86,22 @@ fn compiled() -> &'static CompiledModule {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// `InputShapeE2E.shaped` must evaluate to a `Value::StructureInstance` whose
-/// `type_name` is `PiecewisePolynomialProfile` — the shaped Profile produced by
-/// `eval_input_shape` echoing the input profile's structure (ζ defers the
-/// command-waveform resampling to θ, so the echo is the type-correct stand-in).
+/// `type_name` is `PiecewisePolynomialProfile`. With the compute fns registered
+/// (above), the @optimized `input_shape` dispatches through the π trampoline
+/// (`input_shape_value`), which does real impulse shaping (resampling the
+/// convolved command into new waypoints); real shaping changes only `waypoints`
+/// and preserves `type_name`, so this assertion holds. On the unregistered /
+/// body-inline path the body echoes the profile — same `type_name` either way.
 #[test]
 fn input_shape_shaped_is_profile_structure_instance() {
     let compiled = compiled();
     let mut engine = make_simple_engine();
+    // input_shape is @optimized("trajectory::input_shape") (task π): register the
+    // compute fns so the call dispatches through the real trampoline rather than
+    // the unregistered-target body-inline fallback (make_simple_engine registers
+    // none — design-decision-10). Real shaping changes only `waypoints` and
+    // preserves `type_name`, so the assertion below holds on either path.
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
     let result = engine.eval(compiled);
 
     let id = ValueCellId::new("InputShapeE2E", "shaped");
@@ -128,7 +137,13 @@ fn input_shape_shaped_is_profile_structure_instance() {
 /// 1. `InputShapeE2E.shaped` compiles to
 ///    `CompiledExprKind::UserFunctionCall { function_name: "input_shape" }` —
 ///    the `.ri` declaration shadows the builtin name (so the evaluator runs the
-///    body and the call site gets the `-> Profile` result type).
+///    body and the call site gets the `-> Profile` result type). NOTE: task π
+///    made `input_shape` `@optimized("trajectory::input_shape")`, but `@optimized`
+///    does NOT change the static call-site kind — it stays `UserFunctionCall`;
+///    the engine reads `optimized_target` and inserts the ComputeNode at eval
+///    time (only when the trampoline is registered, `engine_eval.rs:3346/3405`).
+///    The eval-time ComputeNode presence is asserted in
+///    `simulate_trajectory_eval_e2e.rs` / `input_shape_tots_compute_node.rs`.
 ///
 /// 2. the stdlib `input_shape` function body's result expression compiles to
 ///    `CompiledExprKind::FunctionCall { function: "input_shape_apply" }` —
@@ -263,17 +278,24 @@ fn compiled_tots() -> &'static CompiledModule {
 }
 
 /// `InputShapeTOTSE2E.shaped` must evaluate to a `Value::StructureInstance`
-/// whose `type_name` is `PiecewisePolynomialProfile` — the TOTS arm echoes the
-/// input profile (λ defers command re-waypointing to θ, identical to ζ's echo
-/// contract for impulse shapers).
+/// whose `type_name` is `PiecewisePolynomialProfile`. With the compute fns
+/// registered (above), the @optimized `input_shape` dispatches through the π
+/// trampoline whose `TOTSShaper` arm re-times the move via `solve_tots`; the
+/// re-timing changes only `waypoints` and preserves `type_name`, so this
+/// assertion holds (on the unregistered / body-inline path the body echoes the
+/// profile — same `type_name` either way).
 ///
 /// Before λ, a `TOTSShaper` fell through to `build_train_for_shaper` → None →
-/// `Value::Undef`. This test pins that the TOTS arm is now wired and the full
-/// `.ri` → shim → delegate → TOTS-arm path produces a real Profile echo.
+/// `Value::Undef`. This test pins that the full `.ri` → shim → delegate /
+/// trampoline → TOTS-arm path produces a real `PiecewisePolynomialProfile`.
 #[test]
 fn input_shape_tots_shaper_echoes_profile() {
     let compiled = compiled_tots();
     let mut engine = make_simple_engine();
+    // See input_shape_shaped_is_profile_structure_instance: register the compute
+    // fns so input_shape (now @optimized) dispatches through the real trampoline
+    // (the TOTS arm re-times the move) rather than the body-inline echo fallback.
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
     let result = engine.eval(compiled);
 
     let id = ValueCellId::new("InputShapeTOTSE2E", "shaped");

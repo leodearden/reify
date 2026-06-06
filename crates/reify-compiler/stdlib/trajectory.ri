@@ -296,11 +296,18 @@ structure def PiecewisePolynomialProfile : Profile {
 //   t_samples        : List<Time>    — the sampling instants used by the
 //                                      forward-pass simulator.
 //   nominal_pose     : List<List<Pose3>>    — nominal rigid-body poses:
-//                                      outer index = time, inner = location.
+//                                      outer index = location, inner = time.
 //   vibration_offset : List<List<Vec3>>     — vibration displacement offsets:
-//                                      outer index = time, inner = location.
+//                                      outer index = location, inner = time.
 //   combined_pose    : List<List<Pose3>>    — nominal_pose + vibration_offset:
-//                                      outer index = time, inner = location.
+//                                      outer index = location, inner = time.
+//
+// Index order: outer = location, inner = time — matching the `[location][time]`
+// matrices the π trampoline marshals (`reify-stdlib/src/trajectory/trampoline.rs`
+// `track_data_to_value`) and the `end_effector_track` / `deviation_from_nominal`
+// / `peak_deviation` accessors read (`*_at` impls index `matrix[location]` to
+// get a per-time series). The forward-pass core indexes its track the same way
+// (`simulate.rs` EndEffectorTrackData `[location_idx][time_idx]`).
 //
 // No trait bound: plain value-type output, not a Profile/BoundaryCondition
 // variant. No structure-level constraint: simulator output — every field is
@@ -398,19 +405,21 @@ pub fn profile_duration(p: Profile) -> Time { 0.0 * 1s }
 // ── EndEffectorTrack lazy accessor fns ───────────────────────────────────────
 //
 // Three lazy accessor fns for the EndEffectorTrack output type (PRD §6.2).
-// Real lazy-evaluation logic (per-time index into combined_pose / per-time
-// Euclidean distance / max over time) belongs to task θ
-// (`reify-stdlib/src/trajectory/simulate.rs`, intra-batch consumer). Each
-// stub body below is a type-correct placeholder satisfying the grammar's
-// fn_body requirement (same rationale as the α evaluator stubs above).
+// The real lazy-evaluation logic (per-time index into combined_pose / per-time
+// Euclidean distance / max over time) is implemented by task π in
+// `reify-stdlib/src/trajectory/trampoline.rs` (`end_effector_track_at` /
+// `deviation_from_nominal_at` / `peak_deviation_at`), reading the marshalled
+// `[location][time]` matrices that `track_data_to_value` emits.
 //
-// η-phase hazard: if a call to any of these three fns reaches the evaluator
-// before θ lands, it will silently return the stub value (`[]`, `[0mm]`, or
-// `0mm` respectively) rather than a real result. In the case of
-// `deviation_from_nominal`, callers that iterate expecting one value per
-// `t_samples` element will see a length-1 list silently. No η-phase consumer
-// is expected to invoke these fns at runtime; the risk is low. θ closes the
-// hazard by replacing each stub body with the real lazy-evaluation dispatch.
+// Each body below delegates to its undeclared `*_at` intrinsic via the same
+// delegate-to-undeclared-name pattern `gcode_import` / `input_shape` use: the
+// `.ri` declaration shadows the builtin name (so the evaluator runs this body),
+// and the `*_at` name has NO `.ri` declaration, so it resolves
+// `NoUserFunctions` → `FunctionCall` → `eval_builtin` →
+// `eval_trajectory("*_at", …)` → the `trampoline::*_at` impl. The `*_at` names
+// are distinct from the declared accessors, so the body never recurses back into
+// itself. Every malformed track / out-of-range location yields an empty list /
+// 0 — never a panic.
 
 // end_effector_track — extract the combined pose time-series for a single
 // named location from an EndEffectorTrack (PRD §6.2).
@@ -420,36 +429,23 @@ pub fn profile_duration(p: Profile) -> Time { 0.0 * 1s }
 //                              selecting the inner slice at each time step.
 //
 // Returns `List<Pose3>` (= List<Real> via the Pose3 alias) — one pose per
-// time sample in `track.t_samples`.
+// time sample in `track.t_samples` (the combined_pose Z column at `location`).
 //
-// Stub body `[]` is an empty list literal; Pose3 = Real carries no dimension,
-// so the empty literal types as List<Real> without a dimensional hint
-// (contrast with `[0mm]` needed for List<Length> in deviation_from_nominal).
-//
-// TODO(θ): replace stub body with real lazy eval:
-//   `track.combined_pose.map(|row| row[location])`
-// once θ (`reify-stdlib/src/trajectory/simulate.rs`) lands.
-pub fn end_effector_track(track: EndEffectorTrack, location: LocationId) -> List<Pose3> { [] }
+// Body delegates to the `end_effector_track_at` intrinsic (task π); see the
+// section header above for the delegate-to-undeclared-name dispatch path.
+pub fn end_effector_track(track: EndEffectorTrack, location: LocationId) -> List<Pose3> { end_effector_track_at(track, location) }
 
 // deviation_from_nominal — compute the per-time-sample Euclidean distance
 // between combined_pose and nominal_pose at a single named location
 // (PRD §6.2).
 //
 // Returns `List<Length>` — one Length scalar per time sample in
-// `track.t_samples`.
+// `track.t_samples` (the per-time `|combined − nominal|` at `location`, which
+// equals `|vibration|` under the core's scalar→Z mapping).
 //
-// Stub body `[0mm]` is a one-element List<Length> literal. The single
-// Length-dimensioned element provides the dimensional hint the compiler needs
-// to infer the list's element type (avoids the "cannot infer element type of
-// empty list literal" diagnostic at `reify-compiler/src/expr.rs:2082` that
-// an empty `[]` would trigger for a Length-typed list). Precedent:
-// `standard_stock.ri::standard_bolt_lengths() -> List<Length> { [8mm, ...] }`.
-//
-// TODO(θ): replace stub body with real lazy eval:
-//   `track.combined_pose.zip(track.nominal_pose)
-//    .map(|(comb_row, nom_row)| distance(comb_row[location], nom_row[location]))`
-// once θ (`reify-stdlib/src/trajectory/simulate.rs`) lands.
-pub fn deviation_from_nominal(track: EndEffectorTrack, location: LocationId) -> List<Length> { [0mm] }
+// Body delegates to the `deviation_from_nominal_at` intrinsic (task π); see the
+// section header above for the delegate-to-undeclared-name dispatch path.
+pub fn deviation_from_nominal(track: EndEffectorTrack, location: LocationId) -> List<Length> { deviation_from_nominal_at(track, location) }
 
 // peak_deviation — compute the maximum Euclidean deviation from nominal
 // across all time samples at a single named location (PRD §6.2).
@@ -458,14 +454,10 @@ pub fn deviation_from_nominal(track: EndEffectorTrack, location: LocationId) -> 
 // (contrast with `deviation_from_nominal` which returns one value per time
 // sample as a `List<Length>`).
 //
-// Stub body `0mm` is the canonical Length-zero literal (precedent:
-// `tolerancing.ri:68` `tolerance_value : Length = 0mm`). Type-correct for
-// the scalar `Length` return without any dimensional-hint ceremony.
-//
-// TODO(θ): replace stub body with real lazy eval:
-//   `deviation_from_nominal(track, location).max()`
-// once θ (`reify-stdlib/src/trajectory/simulate.rs`) lands.
-pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length { 0mm }
+// Body delegates to the `peak_deviation_at` intrinsic (task π), which maxes the
+// `deviation_from_nominal_at` series (0 for an out-of-range location / malformed
+// track); see the section header above for the delegate dispatch path.
+pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length { peak_deviation_at(track, location) }
 // ── Shaper marker trait (PRD §5) ──────────────────────────────────────────────
 
 // Shaper — marker trait for every input-shaper variant (PRD §5).
@@ -868,8 +860,19 @@ pub structure def GcodeDialectInput {
 // `(StructureInstance, StructureInstance)` arguments, builds the shaper's
 // impulse train (the Hz→rad/s `ω_n = 2π·f` conversion happens at this
 // marshalling boundary), and returns the shaped profile as a
-// `Value::StructureInstance`. Command-waveform resampling to new waypoints is
-// deferred to task θ; an unrecognised / unsupported shaper ⇒ `Value::Undef`.
+// `Value::StructureInstance`.
+//
+// `@optimized("trajectory::input_shape")`: on the registered ComputeNode path
+// the engine dispatches to the π trampoline (`reify-eval/src/trajectory_ops.rs`
+// → reify-stdlib `trampoline::input_shape_value`), which does the REAL command
+// shaping — the impulse arm resamples the convolved command (`convolve_at`) into
+// new waypoints; the `TOTSShaper` arm re-times the move via `solve_tots`. The
+// body below (`input_shape_apply` → `eval_input_shape`) is the echo fallback,
+// reached only on the UNregistered / body-inline path and by a direct
+// `eval_builtin("input_shape", …)` test. Real shaping changes only `waypoints`
+// and preserves `type_name` / `mechanism` / `boundary` / `spline_kind`, so the
+// echo-era assertions still hold. An unrecognised / unsupported shaper ⇒
+// `Value::Undef`.
 //
 // The body delegates to the `input_shape_apply` intrinsic via the identical
 // pattern `gcode_import` (above) uses. Because this fn has a `.ri` declaration,
@@ -884,7 +887,11 @@ pub structure def GcodeDialectInput {
 // delegate body produces zero Error diagnostics. The IR dispatch contract
 // (UserFunctionCall at the call site, FunctionCall inside the body) is pinned by
 // `input_shape_dispatch_ir_contract` in
-// `crates/reify-eval/tests/input_shape_eval_e2e.rs`.
+// `crates/reify-eval/tests/input_shape_eval_e2e.rs`. NOTE: `@optimized` does NOT
+// change the call site's static kind — it stays `UserFunctionCall`; the engine
+// reads `optimized_target` and inserts the ComputeNode at eval time (only when
+// the trampoline is registered), so the IR contract above is unchanged.
+@optimized("trajectory::input_shape")
 pub fn input_shape(profile: Profile, shaper: Shaper) -> Profile { input_shape_apply(profile, shaper) }
 
 // ── ProfileInput / ShaperInput ───────────────────────────────────────────────

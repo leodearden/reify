@@ -174,7 +174,7 @@ fn materials_bracket_mass_computed() {
 /// Asserts the compiled AluminumBracket template has trait_bounds including
 /// Physical, Elastic, and Strong (from the `: Physical + Elastic + Strong`
 /// declaration), and at least 2 constraints injected by trait refinement
-/// (Physical.volume > 0, Strong.uts >= yield_strength).
+/// (Physical.volume > 0, Strong.ultimate_tensile_strength >= yield_strength).
 #[test]
 fn materials_trait_conformance_checks() {
     let compiled: CompiledModule = compiled_ri(PATH_MATERIALS);
@@ -204,7 +204,7 @@ fn materials_trait_conformance_checks() {
 
     // At least 2 constraints injected by trait refinement:
     //   Physical: constraint volume > 0
-    //   Strong:   constraint uts >= yield_strength
+    //   Strong:   constraint ultimate_tensile_strength >= yield_strength
     assert!(
         template.constraints.len() >= 2,
         "AluminumBracket should have >= 2 constraints (from Physical + Strong trait refinements), got: {}",

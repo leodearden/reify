@@ -10,7 +10,10 @@
 //! Tests use the production-path `load_stdlib()` helper, modeled on
 //! `process_stdlib_compile.rs`.
 
-use reify_compiler::{CompiledTrait, EntityKind, RequirementKind, stdlib_loader};
+use reify_compiler::{
+    CompiledTrait, DefaultKind, EntityKind, RequirementKind, ValueCellDecl, ValueCellKind,
+    stdlib_loader,
+};
 use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::EnumDef;
 use reify_test_support::compile_source_with_stdlib;
@@ -131,10 +134,19 @@ fn std_ports_loads_with_no_errors_and_directionality_enum() {
     );
 }
 
-// ─── step-3: Port base trait ──────────────────────────────────────────────────
+// ─── step-1 (task α): Port.direction=Bidi default ────────────────────────────
 
-/// Port base trait has no refinements and exactly one required param:
-/// direction : Directionality.
+/// Port base trait has no refinements.  After the Bidi-default lands (task α
+/// step-2), `direction` moves from `required_members` (no default) to
+/// `defaults` (DefaultKind::Param with Directionality.Bidi).
+///
+/// Asserts:
+///   (a) Port has no refinements.
+///   (b) Port.required_members is EMPTY — `direction` is no longer required.
+///   (c) Port.defaults contains an entry `name == Some("direction")` with
+///       `DefaultKind::Param { cell_type: Type::Enum("Directionality"), .. }`
+///       whose `default_decl.default` is
+///       `ExprKind::EnumAccess { type_name: "Directionality", variant: "Bidi" }`.
 #[test]
 fn port_base_trait_requires_direction_directionality() {
     let t = find_trait("std/ports", "Port");
@@ -145,29 +157,94 @@ fn port_base_trait_requires_direction_directionality() {
         t.refinements
     );
 
-    assert_eq!(
-        t.required_members.len(),
-        1,
-        "Port should have exactly 1 required member (direction); got: {:?}",
+    // direction now has a default (= Directionality.Bidi), so it is absent from
+    // required_members (which only holds members that have no default).
+    assert!(
+        t.required_members.is_empty(),
+        "Port should have 0 required members after Bidi default lands; got: {:?}",
         t.required_members
             .iter()
             .map(|r| &r.name)
             .collect::<Vec<_>>()
     );
-    assert_eq!(
-        t.required_members[0].name, "direction",
-        "Port required_members[0] should be 'direction', got '{}'",
-        t.required_members[0].name
-    );
-    assert_eq!(
-        param_type("std/ports", "Port", "direction"),
-        Type::Enum("Directionality".into()),
-        "Port.direction must be Type::Enum(\"Directionality\")"
+
+    // direction must be in defaults with the correct type and Bidi variant.
+    let dir_default = t
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("direction"))
+        .expect("Port.defaults should contain an entry named 'direction' (= Directionality.Bidi)");
+
+    match &dir_default.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Enum("Directionality".into()),
+                "Port.direction default cell_type must be Type::Enum(\"Directionality\")"
+            );
+            let expr = default_decl
+                .default
+                .as_ref()
+                .expect("Port.direction default_decl must have a default expression");
+            match &expr.kind {
+                reify_ast::ExprKind::EnumAccess { type_name, variant } => {
+                    assert_eq!(
+                        type_name, "Directionality",
+                        "Port.direction default expr type_name should be \"Directionality\""
+                    );
+                    assert_eq!(
+                        variant, "Bidi",
+                        "Port.direction default expr variant should be \"Bidi\""
+                    );
+                }
+                other => panic!(
+                    "Port.direction default expr should be \
+                     EnumAccess {{ type_name: \"Directionality\", variant: \"Bidi\" }}, \
+                     got: {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!(
+            "Port.direction default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
+}
+
+/// Positive compile test: a structure whose port conforms to Port WITHOUT
+/// specifying `direction` must compile with zero Severity::Error diagnostics.
+///
+/// This directly pins the 'omit direction → defaults to Bidi' behavioural
+/// contract that motivated the Port.direction default change.  If the default
+/// machinery is broken, a missing-required-param error would fire here.
+#[test]
+fn port_conforms_without_direction_compiles_clean() {
+    let source = r#"
+structure def Sender {
+    port out_p : out Port {}
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a Port conformer that omits 'direction' should compile without errors \
+         (direction defaults to Directionality.Bidi); got: {:?}",
+        errors
     );
 }
 
 /// std/ports cardinality lock: exactly 1 trait (Port), 1 enum (Directionality),
-/// 0 structures.
+/// 1 structure (Frame3). Updated incrementally by task α steps:
+///   step-4: structures 0→1 (Frame3)
+///   step-6: traits 1→2 (+ LocatedPort)
+///   step-8: traits 2→3 (+ RegionPort)
 #[test]
 fn std_ports_module_cardinality_locked() {
     let module = load_module("std/ports");
@@ -192,8 +269,9 @@ fn std_ports_module_cardinality_locked() {
         .collect();
     assert_eq!(
         module.trait_defs.len(),
-        1,
-        "std/ports should declare exactly 1 trait (Port), got: {:?}",
+        3,
+        "std/ports should declare exactly 3 traits (Port, LocatedPort, RegionPort) \
+         after step-8, got: {:?}",
         trait_names
     );
 
@@ -205,9 +283,127 @@ fn std_ports_module_cardinality_locked() {
         .collect();
     assert_eq!(
         structure_names.len(),
-        0,
-        "std/ports should declare 0 structures, got: {:?}",
+        1,
+        "std/ports should declare exactly 1 structure (Frame3), got: {:?}",
         structure_names
+    );
+    assert!(
+        module
+            .templates
+            .iter()
+            .any(|t| t.name == "Frame3" && t.entity_kind == EntityKind::Structure),
+        "std/ports should contain 'Frame3' structure, got: {:?}",
+        structure_names
+    );
+}
+
+// ─── step-3 (task α): Frame3 structure surface ───────────────────────────────
+
+/// std/ports should contain a `structure def Frame3` with exactly 4 Param-kind
+/// value cells (origin, x_axis, y_axis, z_axis), each resolving to
+/// `Type::Vector { n: 3, quantity: Scalar[LENGTH] }`.
+///
+/// Frame3 is the port-frame structure added by task α, step-4.
+/// RED on current main (no Frame3 in std/ports → template lookup fails).
+#[test]
+fn frame3_structure_surface() {
+    let module = load_module("std/ports");
+
+    let frame3 = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Frame3" && t.entity_kind == EntityKind::Structure)
+        .expect(
+            "std/ports should contain 'structure def Frame3'; \
+             check ports.ri for the Frame3 definition"
+        );
+
+    // Collect Param-kind value cells (excluding Let/Auto).
+    let param_cells: Vec<&ValueCellDecl> = frame3
+        .value_cells
+        .iter()
+        .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
+        .collect();
+
+    let param_names: Vec<&str> = param_cells
+        .iter()
+        .map(|vc| vc.id.member.as_str())
+        .collect();
+
+    assert_eq!(
+        param_cells.len(),
+        4,
+        "Frame3 should have exactly 4 param cells \
+         (origin, x_axis, y_axis, z_axis), got: {:?}",
+        param_names
+    );
+
+    // All 4 params must resolve to Vector3<Length>.
+    let expected_type = Type::Vector {
+        n: 3,
+        quantity: Box::new(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        }),
+    };
+    for expected_name in &["origin", "x_axis", "y_axis", "z_axis"] {
+        let cell = param_cells
+            .iter()
+            .find(|vc| vc.id.member == *expected_name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Frame3 missing param '{}'; got: {:?}",
+                    expected_name, param_names
+                )
+            });
+        assert_eq!(
+            cell.cell_type,
+            expected_type,
+            "Frame3.{} must be Type::Vector{{n:3, quantity:Scalar[LENGTH]}}, got {:?}",
+            expected_name,
+            cell.cell_type
+        );
+    }
+}
+
+// ─── step-5 (task α): LocatedPort trait surface ──────────────────────────────
+
+/// LocatedPort refines exactly ["Port"] and has exactly one required member:
+/// `frame : Frame3`.  Proves:
+///   - LocatedPort.refinements == ["Port"]
+///   - LocatedPort.required_members == [{ name: "frame", kind: Param(StructureRef("Frame3")) }]
+///   - param_type helper finds "frame" as Type::StructureRef("Frame3")
+///
+/// RED on current main (LocatedPort absent → find_trait panics).
+#[test]
+fn located_port_trait_surface() {
+    let t = find_trait("std/ports", "LocatedPort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["Port".to_string()].as_slice(),
+        "LocatedPort should refine exactly [Port], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        1,
+        "LocatedPort should have exactly 1 required member (frame); got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name, "frame",
+        "LocatedPort required_members[0] should be 'frame', got '{}'",
+        t.required_members[0].name
+    );
+
+    assert_eq!(
+        param_type("std/ports", "LocatedPort", "frame"),
+        Type::StructureRef("Frame3".into()),
+        "LocatedPort.frame must be Type::StructureRef(\"Frame3\")"
     );
 }
 
@@ -440,9 +636,10 @@ fn std_ports_electrical_loads_with_no_errors_and_signal_kind_enum() {
         vec![
             "Analog".to_string(),
             "Digital".to_string(),
+            "PWM".to_string(),
             "Differential".to_string(),
         ],
-        "SignalKind variants must be [Analog, Digital, Differential] in order; got: {:?}",
+        "SignalKind variants must be [Analog, Digital, PWM, Differential] in order; got: {:?}",
         enum_def.variants
     );
 
@@ -453,19 +650,73 @@ fn std_ports_electrical_loads_with_no_errors_and_signal_kind_enum() {
         "ElectricalPort should refine exactly [Port], got: {:?}",
         electrical_port.refinements
     );
-    assert!(
-        electrical_port.required_members.is_empty(),
-        "ElectricalPort should have no own required_members, got: {:?}",
+    assert_eq!(
+        electrical_port.required_members.len(),
+        2,
+        "ElectricalPort should have exactly 2 required members \
+         (voltage_rating, current_rating); got: {:?}",
         electrical_port
             .required_members
             .iter()
             .map(|r| &r.name)
             .collect::<Vec<_>>()
     );
+    assert_eq!(
+        electrical_port.required_members[0].name,
+        "voltage_rating",
+        "ElectricalPort required_members[0] should be 'voltage_rating'"
+    );
+    assert_eq!(
+        electrical_port.required_members[1].name,
+        "current_rating",
+        "ElectricalPort required_members[1] should be 'current_rating'"
+    );
+    assert_eq!(
+        param_type("std/ports/electrical", "ElectricalPort", "voltage_rating"),
+        Type::Scalar { dimension: DimensionVector::VOLTAGE },
+        "ElectricalPort.voltage_rating must be Scalar<VOLTAGE>"
+    );
+    assert_eq!(
+        param_type("std/ports/electrical", "ElectricalPort", "current_rating"),
+        Type::Scalar { dimension: DimensionVector::CURRENT },
+        "ElectricalPort.current_rating must be Scalar<CURRENT>"
+    );
 }
 
-/// PowerPort refines [ElectricalPort] with required members [voltage, max_current]
-/// in order, resolving to Scalar<VOLTAGE> and Scalar<CURRENT>.
+/// Behavioral: `SignalKind.PWM` must resolve as an enum-access default in user
+/// source.  A structure that uses `SignalKind.PWM` as a param default must
+/// compile with zero Severity::Error diagnostics.
+///
+/// RED: SignalKind currently lacks the PWM variant — the default expression
+/// would resolve to Undef and emit an error.
+#[test]
+fn signal_kind_pwm_resolves_in_user_source() {
+    let source = r#"
+import std.ports.electrical
+
+structure def PwmProbe {
+    param k : SignalKind = SignalKind.PWM
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "structure using SignalKind.PWM as default should compile without errors; got: {:?}",
+        errors
+    );
+}
+
+/// PowerPort refines [ElectricalPort] with exactly 1 own required member:
+/// `power_rating : Power`.  voltage_rating/current_rating are inherited from
+/// ElectricalPort and must NOT appear in PowerPort.required_members.
+///
+/// RED: PowerPort currently has [voltage, max_current], not power_rating.
 #[test]
 fn power_port_trait_surface() {
     let t = find_trait("std/ports/electrical", "PowerPort");
@@ -479,8 +730,8 @@ fn power_port_trait_surface() {
 
     assert_eq!(
         t.required_members.len(),
-        2,
-        "PowerPort should have exactly 2 required members; got: {:?}",
+        1,
+        "PowerPort should have exactly 1 own required member (power_rating); got: {:?}",
         t.required_members
             .iter()
             .map(|r| &r.name)
@@ -488,35 +739,39 @@ fn power_port_trait_surface() {
     );
     assert_eq!(
         t.required_members[0].name,
-        "voltage",
-        "PowerPort required_members[0] should be 'voltage'"
-    );
-    assert_eq!(
-        t.required_members[1].name,
-        "max_current",
-        "PowerPort required_members[1] should be 'max_current'"
+        "power_rating",
+        "PowerPort required_members[0] should be 'power_rating'"
     );
 
     assert_eq!(
-        param_type("std/ports/electrical", "PowerPort", "voltage"),
+        param_type("std/ports/electrical", "PowerPort", "power_rating"),
         Type::Scalar {
-            dimension: DimensionVector::VOLTAGE
+            dimension: DimensionVector::POWER
         },
-        "PowerPort.voltage must be Scalar<VOLTAGE>"
+        "PowerPort.power_rating must be Scalar<POWER>"
     );
-    assert_eq!(
-        param_type("std/ports/electrical", "PowerPort", "max_current"),
-        Type::Scalar {
-            dimension: DimensionVector::CURRENT
-        },
-        "PowerPort.max_current must be Scalar<CURRENT>"
+
+    // Regression guards: voltage/max_current moved to ElectricalPort.
+    assert!(
+        !t.required_members.iter().any(|r| r.name == "voltage"),
+        "PowerPort must not have 'voltage' in own required_members \
+         (it moved to ElectricalPort as voltage_rating)"
+    );
+    assert!(
+        !t.required_members.iter().any(|r| r.name == "max_current"),
+        "PowerPort must not have 'max_current' in own required_members \
+         (it moved to ElectricalPort as current_rating)"
     );
 }
 
-/// SignalPort refines [ElectricalPort] with required members [signal_kind, impedance]
-/// in order, resolving to Enum("SignalKind") and Scalar<RESISTANCE>.
+/// SignalPort refines [ElectricalPort] with exactly 1 own required member:
+/// `signal_kind : SignalKind`.  `impedance` is now optional (= none) and lives
+/// in `defaults` as DefaultKind::Param with cell_type Option<Scalar<RESISTANCE>>.
+///
 /// impedance uses the Resistance/Ω dimension (no distinct Impedance named dim;
 /// dimensionally identical — documented deviation in ports_electrical.ri header).
+///
+/// RED: impedance is currently a required Scalar<RESISTANCE> member.
 #[test]
 fn signal_port_trait_surface() {
     let t = find_trait("std/ports/electrical", "SignalPort");
@@ -528,10 +783,11 @@ fn signal_port_trait_surface() {
         t.refinements
     );
 
+    // Only signal_kind is required; impedance has a default (= none).
     assert_eq!(
         t.required_members.len(),
-        2,
-        "SignalPort should have exactly 2 required members; got: {:?}",
+        1,
+        "SignalPort should have exactly 1 required member (signal_kind); got: {:?}",
         t.required_members
             .iter()
             .map(|r| &r.name)
@@ -543,28 +799,210 @@ fn signal_port_trait_surface() {
         "SignalPort required_members[0] should be 'signal_kind'"
     );
     assert_eq!(
-        t.required_members[1].name,
-        "impedance",
-        "SignalPort required_members[1] should be 'impedance'"
-    );
-
-    assert_eq!(
         param_type("std/ports/electrical", "SignalPort", "signal_kind"),
         Type::Enum("SignalKind".into()),
         "SignalPort.signal_kind must be Type::Enum(\"SignalKind\")"
     );
+
+    // impedance must NOT be in required_members.
+    assert!(
+        !t.required_members.iter().any(|r| r.name == "impedance"),
+        "SignalPort.impedance must be absent from required_members \
+         (it is now Option<Resistance> = none); got required: {:?}",
+        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+
+    // impedance must be in defaults as DefaultKind::Param with Option<Resistance>.
+    let imp_default = t
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("impedance"))
+        .expect("SignalPort.defaults should contain an entry named 'impedance' (= none)");
+
+    match &imp_default.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar { dimension: DimensionVector::RESISTANCE })),
+                "SignalPort.impedance default cell_type must be \
+                 Type::Option(Scalar<RESISTANCE>)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "SignalPort.impedance default_decl must have a default expression (none)"
+            );
+        }
+        other => panic!(
+            "SignalPort.impedance default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
+}
+
+/// PinPort refines exactly [ElectricalPort, LocatedPort] and has exactly 1 own
+/// required member: `pin_id : String`.
+///
+/// RED: PinPort is absent — find_trait panics; cardinality is 3.
+#[test]
+fn pin_port_trait_surface() {
+    let t = find_trait("std/ports/electrical", "PinPort");
+
     assert_eq!(
-        param_type("std/ports/electrical", "SignalPort", "impedance"),
-        Type::Scalar {
-            dimension: DimensionVector::RESISTANCE
-        },
-        "SignalPort.impedance must be Scalar<RESISTANCE> \
-         (no distinct Impedance dimension; electrically identical to Resistance)"
+        t.refinements.len(),
+        2,
+        "PinPort should refine exactly 2 supertraits \
+         (ElectricalPort, LocatedPort), got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"ElectricalPort".to_string()),
+        "PinPort refinements should contain 'ElectricalPort', got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"LocatedPort".to_string()),
+        "PinPort refinements should contain 'LocatedPort', got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        1,
+        "PinPort should have exactly 1 own required member (pin_id); got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name,
+        "pin_id",
+        "PinPort required_members[0] should be 'pin_id'"
+    );
+    assert_eq!(
+        param_type("std/ports/electrical", "PinPort", "pin_id"),
+        Type::String,
+        "PinPort.pin_id must be Type::String"
     );
 }
 
-/// std/ports/electrical cardinality lock: exactly 3 traits (ElectricalPort,
-/// PowerPort, SignalPort), 1 enum (SignalKind), 0 structures.
+/// Behavioral: `PinPort` must be usable as a generic trait bound in user source.
+/// A generic structure `PinHeader<P: PinPort>` must compile with zero
+/// Severity::Error diagnostics.
+///
+/// RED: PinPort is absent → compile error on unknown trait bound.
+#[test]
+fn pin_port_usable_as_trait_bound() {
+    let source = r#"
+import std.ports.electrical
+
+structure def PinHeader<P: PinPort> {
+    port pin : P
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "generic structure PinHeader<P: PinPort> should compile without errors; got: {:?}",
+        errors
+    );
+
+    assert!(
+        compiled
+            .templates
+            .iter()
+            .any(|t| t.name == "PinHeader" && t.entity_kind == EntityKind::Structure),
+        "PinHeader should be declared as a Structure template; found: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.entity_kind))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Behavioral: a concrete conformer that supplies ALL inherited+own members of
+/// PinPort (the diamond hierarchy) must compile with zero Severity::Error diagnostics.
+///
+/// PinPort's inheritance diamond:
+///
+///         Port  (direction : Directionality = Bidi — defaulted, can omit)
+///        /    \
+///  ElectrPort  LocatedPort
+///   (voltage_  (frame : Frame3)
+///    current_)
+///        \    /
+///        PinPort
+///         (pin_id : String)
+///
+/// Required supplied here:
+///   voltage_rating : Voltage  (from ElectricalPort)
+///   current_rating : Current  (from ElectricalPort)
+///   frame          : Frame3   (from LocatedPort)
+///   pin_id         : String   (own PinPort)
+///   direction                 (omitted — Port default = Directionality.Bidi)
+///
+/// A diamond-merge bug in inherited-member resolution that still leaves the
+/// trait declarable would not be caught by the trait-surface or bound-usage
+/// tests alone.  This conformer drives the full merged requirement set through
+/// the conformance-checking path.
+#[test]
+fn pin_port_concrete_conformer_diamond_merge_compiles() {
+    let source = r#"
+import std.ports.electrical
+
+structure def PinConformer {
+    port p : in PinPort {
+        param voltage_rating : Voltage = 3.3V
+        param current_rating : Current = 0.1A
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1mm, 0mm, 0mm),
+            y_axis: vec3(0mm, 1mm, 0mm),
+            z_axis: vec3(0mm, 0mm, 1mm),
+        )
+        param pin_id : String = "A1"
+    }
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "PinPort concrete conformer (diamond: ElectricalPort+LocatedPort both refine Port) \
+         should compile without errors when all inherited+own params are supplied; got: {:?}",
+        errors
+    );
+
+    assert!(
+        compiled
+            .templates
+            .iter()
+            .any(|t| t.name == "PinConformer" && t.entity_kind == EntityKind::Structure),
+        "PinConformer should be declared as a Structure template; found: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.entity_kind))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// std/ports/electrical cardinality lock: exactly 4 traits (ElectricalPort,
+/// PowerPort, SignalPort, PinPort), 1 enum (SignalKind), 0 structures.
+///
+/// RED: PinPort absent → trait count is 3.
 #[test]
 fn std_ports_electrical_module_cardinality_locked() {
     let module = load_module("std/ports/electrical");
@@ -589,11 +1027,19 @@ fn std_ports_electrical_module_cardinality_locked() {
         .collect();
     assert_eq!(
         module.trait_defs.len(),
-        3,
-        "std/ports/electrical should declare exactly 3 traits \
-         (ElectricalPort, PowerPort, SignalPort), got: {:?}",
+        4,
+        "std/ports/electrical should declare exactly 4 traits \
+         (ElectricalPort, PowerPort, SignalPort, PinPort), got: {:?}",
         trait_names
     );
+    for expected in &["ElectricalPort", "PowerPort", "SignalPort", "PinPort"] {
+        assert!(
+            module.trait_defs.iter().any(|t| t.name == *expected),
+            "std/ports/electrical should contain trait '{}', got: {:?}",
+            expected,
+            trait_names
+        );
+    }
 
     let structure_names: Vec<&str> = module
         .templates
@@ -902,6 +1348,98 @@ fn example_ports_domains_ri_compiles_clean() {
             .iter()
             .map(|t| (&t.name, &t.entity_kind))
             .collect::<Vec<_>>()
+    );
+}
+
+// ─── step-7 (task α): RegionPort trait surface + asymmetric-LocatedPort warning ─
+
+/// RegionPort refines exactly ["LocatedPort"] and has exactly one required member:
+/// `region : Geometry`.  Proves dep-4253 Geometry alias resolves in param position.
+///
+///   - RegionPort.refinements == ["LocatedPort"]
+///   - RegionPort.required_members == [{ name: "region", kind: Param(Type::Geometry) }]
+///   - param_type helper finds "region" as Type::Geometry
+///
+/// RED on current main (RegionPort absent → find_trait panics).
+#[test]
+fn region_port_trait_surface() {
+    let t = find_trait("std/ports", "RegionPort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["LocatedPort".to_string()].as_slice(),
+        "RegionPort should refine exactly [LocatedPort], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        1,
+        "RegionPort should have exactly 1 required member (region); got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name, "region",
+        "RegionPort required_members[0] should be 'region', got '{}'",
+        t.required_members[0].name
+    );
+
+    assert_eq!(
+        param_type("std/ports", "RegionPort", "region"),
+        Type::Geometry,
+        "RegionPort.region must be Type::Geometry \
+         (Geometry alias from dep 4253 / task G)"
+    );
+}
+
+/// Proves that a `RegionPort` → `Port` connection fires the asymmetric-LocatedPort
+/// warning from connect.rs when the stdlib RegionPort trait is in the prelude
+/// trait registry.
+///
+/// Rationale for using RegionPort (not LocatedPort directly): `trait_satisfies`
+/// (entity.rs:3747) is REFLEXIVE — a port typed `LocatedPort` matches by name
+/// alone, even without the stdlib trait.  `RegionPort` satisfies LocatedPort ONLY
+/// via its declared refinement chain (RegionPort→LocatedPort), which requires
+/// RegionPort to be in the prelude registry (build_trait_registry merges prelude
+/// traits, traits_phase.rs:39-43).  This makes the warning a true behavioral
+/// signal of the step-8 edit.
+///
+/// The fixture deliberately omits frame/region — errors are expected.  We assert
+/// only the warning (do NOT assert zero-errors).
+///
+/// RED on current main: RegionPort absent → not in prelude registry →
+/// trait_satisfies("RegionPort","LocatedPort")==false → no asymmetric warning.
+#[test]
+fn asymmetric_located_port_warning_fires_for_stdlib_region_port() {
+    let source = r#"
+structure def S {
+    port a : out RegionPort {}
+    port b : in Port {}
+    connect a -> b
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let located_warnings: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("LocatedPort")
+                && d.message.contains("asymmetric")
+        })
+        .collect();
+
+    assert!(
+        !located_warnings.is_empty(),
+        "expected at least one asymmetric-LocatedPort warning when connecting \
+         a RegionPort (satisfies LocatedPort via stdlib refinement) to a plain Port; \
+         got diagnostics: {:?}",
+        compiled.diagnostics
     );
 }
 

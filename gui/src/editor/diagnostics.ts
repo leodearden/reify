@@ -5,6 +5,7 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { Text } from '@codemirror/state';
 import type { DiagnosticInfo } from '../types';
+import { lspRangeToCmRange, lspPositionToOffset } from './lspRange';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -52,22 +53,25 @@ function lspSeverityToCm(severity?: number): 'error' | 'warning' | 'info' {
 }
 
 /**
- * Convert an LSP diagnostic to a CodeMirror lint Diagnostic.
+ * Convert an LSP diagnostic to a CodeMirror lint Diagnostic, or null when the
+ * diagnostic's line range is outside the current document (version skew).
  *
- * Requires a document (or doc-like object with `line(n)`) to convert
- * LSP line/character positions to absolute offsets.
+ * Uses `lspRangeToCmRange` for the offset mapping, which clamps over-long
+ * characters to `line.to` and returns null on out-of-range lines.  The sole
+ * caller (the diagnostics-event listener in `Editor.tsx`) already filters null
+ * values with `.filter((d): d is CmDiagnostic => d !== null)`, so null is
+ * transparently absorbed without a caller change.
  */
 export function lspDiagnosticToCodeMirror(
   diag: LspDiagnostic,
   doc: { line(n: number): { from: number; to: number } },
-): CmDiagnostic {
-  // LSP lines are 0-based, CodeMirror doc.line() is 1-based
-  const startLine = doc.line(diag.range.start.line + 1);
-  const endLine = doc.line(diag.range.end.line + 1);
+): CmDiagnostic | null {
+  const r = lspRangeToCmRange(doc, diag.range);
+  if (!r) return null;
 
   return {
-    from: startLine.from + diag.range.start.character,
-    to: endLine.from + diag.range.end.character,
+    from: r.from,
+    to: r.to,
     severity: lspSeverityToCm(diag.severity),
     message: diag.message,
     source: diag.source,
@@ -103,11 +107,10 @@ export function diagnosticInfoToCmDiagnostic(
     return null;
   }
   try {
-    const startLine = doc.line(diag.line);
-    const from = Math.min(startLine.from + (diag.column - 1), startLine.to);
-
-    const endLine = doc.line(diag.end_line);
-    const to = Math.min(endLine.from + (diag.end_column - 1), endLine.to);
+    // DiagnosticInfo uses 1-based line/column; lspPositionToOffset expects 0-based.
+    // doc.line((line-1)+1) == doc.line(line), so the arithmetic is identical.
+    const from = lspPositionToOffset(doc, diag.line - 1, diag.column - 1);
+    const to = lspPositionToOffset(doc, diag.end_line - 1, diag.end_column - 1);
 
     return {
       from,

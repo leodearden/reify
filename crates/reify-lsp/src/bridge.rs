@@ -94,7 +94,8 @@ impl InProcessLsp {
     /// - **`Ok(Value)`** — A JSON-serialized response payload for successful *requests*:
     ///   `initialize`, `textDocument/completion`, `textDocument/hover`,
     ///   `textDocument/definition`, `textDocument/documentSymbol`,
-    ///   `textDocument/prepareRename`, `textDocument/rename`.
+    ///   `textDocument/documentHighlight`, `textDocument/prepareRename`,
+    ///   `textDocument/rename`.
     /// - **`Ok(Value::Null)`** — For successfully processed *notifications* and `shutdown`:
     ///   `initialized`, `textDocument/didOpen`, `textDocument/didChange`,
     ///   `textDocument/didClose`, `shutdown`.
@@ -205,6 +206,17 @@ impl InProcessLsp {
                     .map_err(|e| format!("documentSymbol error: {e}"))?;
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
+            "textDocument/documentHighlight" => {
+                let p = parse_params::<DocumentHighlightParams>(
+                    params,
+                    error_prefix::DOCUMENT_HIGHLIGHT_PARAMS,
+                )?;
+                let result = server
+                    .document_highlight(p)
+                    .await
+                    .map_err(|e| format!("documentHighlight error: {e}"))?;
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+            }
             "textDocument/prepareRename" => {
                 let p = parse_params::<TextDocumentPositionParams>(
                     params,
@@ -255,7 +267,7 @@ impl Default for InProcessLsp {
 /// import reflects the change automatically, turning any stale assertion into
 /// a compile error or immediate test failure.
 ///
-/// All nine deserializing arms of `handle_request` thread their error prefix
+/// Every deserializing arm of `handle_request` threads its error prefix
 /// through a constant defined here. There are no remaining hardcoded strings
 /// in the implementation.
 pub mod error_prefix {
@@ -285,6 +297,9 @@ pub mod error_prefix {
 
     /// Prefix for deserialization failures on `textDocument/documentSymbol` params.
     pub const DOCUMENT_SYMBOL_PARAMS: &str = "documentSymbol params error";
+
+    /// Prefix for deserialization failures on `textDocument/documentHighlight` params.
+    pub const DOCUMENT_HIGHLIGHT_PARAMS: &str = "documentHighlight params error";
 
     /// Prefix for deserialization failures on `textDocument/prepareRename` params.
     pub const PREPARE_RENAME_PARAMS: &str = "prepareRename params error";
@@ -562,6 +577,65 @@ fn area(w : Scalar) -> Scalar { w }
         assert!(
             edits.iter().all(|e| e.new_text == "girth"),
             "every edit writes the new name"
+        );
+    }
+
+    // --- task 4204 δ: SIGNAL TEST — documentHighlight through the bridge ---
+    //
+    // The GUI reaches the occurrence-highlight provider ONLY through the Tauri
+    // `lsp_request` command -> `InProcessLsp::handle_request`, dispatched strictly
+    // by method name. Without the "textDocument/documentHighlight" arm the GUI
+    // would get Err("unsupported LSP method: …"); this drives the canonical
+    // bracket fixture through that exact path. Positions match the server-handler
+    // tests (width use at line 7 col 17; `structure` keyword at line 0 col 0).
+
+    #[tokio::test]
+    async fn handle_request_document_highlight_returns_text_highlights() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///highlight.ri";
+        open_bracket(&lsp, uri).await;
+
+        let value = lsp
+            .handle_request(
+                "textDocument/documentHighlight",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 7, "character": 17 }
+                }),
+            )
+            .await
+            .expect("documentHighlight request should reach the provider via the bridge");
+
+        let highlights: Vec<DocumentHighlight> = serde_json::from_value(value)
+            .expect("response should deserialize as Vec<DocumentHighlight>");
+        assert_eq!(
+            highlights.len(),
+            4,
+            "bracket fixture: 1 decl + 3 uses of width"
+        );
+        assert!(
+            highlights
+                .iter()
+                .all(|h| h.kind == Some(DocumentHighlightKind::TEXT)),
+            "every occurrence highlight is kind TEXT, got {highlights:?}"
+        );
+
+        // A non-resolvable position (the `structure` keyword at line 0 col 0)
+        // yields Ok(None), which serializes to JSON null (no occurrences).
+        let null_value = lsp
+            .handle_request(
+                "textDocument/documentHighlight",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 0 }
+                }),
+            )
+            .await
+            .expect("documentHighlight on a keyword should succeed with a null payload");
+        assert_eq!(
+            null_value,
+            Value::Null,
+            "a non-resolvable position serializes to null (no occurrences)"
         );
     }
 }
