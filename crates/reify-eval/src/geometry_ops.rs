@@ -16134,4 +16134,136 @@ mod tests {
             "single-element chain == transform_compose(identity, t)"
         );
     }
+
+    // ── decode_plane unit tests (task η, step-1) ─────────────────────────────
+
+    /// True producer→decode round-trip for plane_xy: the real stdlib producer
+    /// is used so the test exercises the full Plane value shape that consumers
+    /// will encounter at eval time.
+    #[test]
+    fn decode_plane_producer_round_trip_plane_xy() {
+        // plane_xy(3mm) → Plane at z=0.003 m, normal=[0,0,1]
+        let z_si = 0.003_f64;
+        let val = reify_stdlib::eval_builtin("plane_xy", &[reify_ir::Value::length(z_si)]);
+        let (origin, normal) = decode_plane(&val).expect("plane_xy should decode cleanly");
+        assert!((origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", origin[0]);
+        assert!((origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", origin[1]);
+        assert!((origin[2] - z_si).abs() < 1e-12, "oz must be {z_si}, got {}", origin[2]);
+        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
+        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
+        assert!((normal[2] - 1.0).abs() < 1e-12, "nz must be 1.0, got {}", normal[2]);
+    }
+
+    /// True producer→decode round-trip for plane_xz: offset lands in Y
+    /// (index 1) and the normal is [0,1,0].
+    #[test]
+    fn decode_plane_producer_round_trip_plane_xz() {
+        // plane_xz(5mm) → Plane at y=0.005 m, normal=[0,1,0]
+        let z_si = 0.005_f64;
+        let val = reify_stdlib::eval_builtin("plane_xz", &[reify_ir::Value::length(z_si)]);
+        let (origin, normal) = decode_plane(&val).expect("plane_xz should decode cleanly");
+        assert!((origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", origin[0]);
+        assert!((origin[1] - z_si).abs() < 1e-12, "oy must be {z_si}, got {}", origin[1]);
+        assert!((origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", origin[2]);
+        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
+        assert!((normal[1] - 1.0).abs() < 1e-12, "ny must be 1.0, got {}", normal[1]);
+        assert!((normal[2] - 0.0).abs() < 1e-12, "nz must be 0.0, got {}", normal[2]);
+    }
+
+    /// True producer→decode round-trip for plane_yz: offset lands in X
+    /// (index 0) and the normal is [1,0,0].
+    #[test]
+    fn decode_plane_producer_round_trip_plane_yz() {
+        // plane_yz(7mm) → Plane at x=0.007 m, normal=[1,0,0]
+        let z_si = 0.007_f64;
+        let val = reify_stdlib::eval_builtin("plane_yz", &[reify_ir::Value::length(z_si)]);
+        let (origin, normal) = decode_plane(&val).expect("plane_yz should decode cleanly");
+        assert!((origin[0] - z_si).abs() < 1e-12, "ox must be {z_si}, got {}", origin[0]);
+        assert!((origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", origin[1]);
+        assert!((origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", origin[2]);
+        assert!((normal[0] - 1.0).abs() < 1e-12, "nx must be 1.0, got {}", normal[0]);
+        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
+        assert!((normal[2] - 0.0).abs() < 1e-12, "nz must be 0.0, got {}", normal[2]);
+    }
+
+    /// A Plane whose normal vector has magnitude 2 (non-unit) must be
+    /// normalized to a unit normal by decode_plane — never returned as-is.
+    #[test]
+    fn decode_plane_normalizes_non_unit_normal() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let non_unit_normal = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(2.0),
+        ]);
+        let plane = reify_ir::Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(non_unit_normal),
+        };
+        let (_, normal) =
+            decode_plane(&plane).expect("non-unit normal [0,0,2] should normalize without error");
+        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
+        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
+        assert!((normal[2] - 1.0).abs() < 1e-12, "nz must be 1.0 after normalization, got {}", normal[2]);
+    }
+
+    /// Value::Axis must be rejected by decode_plane — wrong variant.
+    #[test]
+    fn decode_plane_rejects_axis_value() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let dir = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(1.0),
+        ]);
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(dir),
+        };
+        assert!(
+            decode_plane(&axis).is_err(),
+            "Value::Axis must be rejected by decode_plane (wrong variant)"
+        );
+    }
+
+    /// Value::Undef must be rejected by decode_plane — never silently pass through.
+    #[test]
+    fn decode_plane_rejects_undef() {
+        assert!(
+            decode_plane(&reify_ir::Value::Undef).is_err(),
+            "Value::Undef must be rejected by decode_plane"
+        );
+    }
+
+    /// A Plane with a zero-magnitude normal must be rejected — the decoder
+    /// must never return (0,0,0) as the unit normal.
+    #[test]
+    fn decode_plane_rejects_zero_magnitude_normal() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let zero_normal = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+        ]);
+        let plane = reify_ir::Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(zero_normal),
+        };
+        assert!(
+            decode_plane(&plane).is_err(),
+            "zero-magnitude normal must be rejected by decode_plane (never pass through as [0,0,0])"
+        );
+    }
 }
