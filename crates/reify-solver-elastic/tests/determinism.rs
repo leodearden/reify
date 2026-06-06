@@ -54,14 +54,13 @@
 //! → Deterministic (policy: `threads <= 1`), so the t=1 sweep entry is
 //! bit-identical to the deterministic reference.
 
-#[allow(unused_imports)]
 use reify_solver_elastic::{
-    AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness,
+    AssemblyElement, ElementOrder, ElementStiffness,
     assemble_global_stiffness, apply_dirichlet_row_elimination,
     DirichletBc, IsotropicElastic,
     StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1,
-    solve_cg, CgSolverOptions, CgResult, SolverMode,
-    resolve_execution_modes, PARALLEL_DOF_THRESHOLD,
+    solve_cg, CgSolverOptions, CgResult,
+    resolve_execution_modes,
 };
 
 // ─── constants ────────────────────────────────────────────────────────────────
@@ -279,9 +278,10 @@ struct SolveOutput {
     iterations: usize,
     /// Whether CG met the residual tolerance before `max_iter`.
     converged: bool,
-    /// Maximum von Mises stress over all nodes; computed via stress recovery
-    /// (step-4 GREEN adds `recover_stress_field` and populates this).
-    /// Placeholder 0.0 until step-4 updates `solve_box_cantilever`.
+    /// Maximum nodal von Mises stress recovered from the computed displacement `u`.
+    ///
+    /// Computed via `recover_stress_field` + `max_von_mises` inside
+    /// `solve_box_cantilever`.
     max_von_mises: f64,
 }
 
@@ -291,9 +291,6 @@ struct SolveOutput {
 /// Both assembly and solve use the matched `(AssemblyMode, SolverMode)` pair
 /// from `resolve_execution_modes`, faithfully exercising PRD task #18's full
 /// end-to-end contract (assembly determinism included).
-///
-/// `SolveOutput.max_von_mises` is 0.0 until step-4 adds the stress helpers
-/// and updates this function to compute the real value.
 fn solve_box_cantilever(deterministic: bool, threads: usize) -> SolveOutput {
     let (nodes, conns, clamp_bcs, tip_loads) = box_cantilever_fixture();
     let n_nodes = nodes.len();
@@ -335,7 +332,7 @@ fn solve_box_cantilever(deterministic: bool, threads: usize) -> SolveOutput {
 
     let u_vec = result.u().to_vec();
 
-    // Recover nodal stress field and compute max von Mises (step-4 GREEN).
+    // Recover nodal stress field and compute max von Mises.
     let stress = recover_stress_field(&nodes, &conns, &u_vec, &MAT);
     let vm = max_von_mises(&stress);
 
@@ -347,7 +344,7 @@ fn solve_box_cantilever(deterministic: bool, threads: usize) -> SolveOutput {
     }
 }
 
-// ─── stress helpers (step-4 GREEN) ───────────────────────────────────────────
+// ─── stress helpers ───────────────────────────────────────────────────────────
 
 /// Compute von Mises stress from a 3×3 Cauchy stress tensor.
 ///
@@ -459,7 +456,7 @@ fn solve_sweep(deterministic: bool, threads: &[usize]) -> Vec<SolveOutput> {
     threads.iter().map(|&t| solve_box_cantilever(deterministic, t)).collect()
 }
 
-// ─── step-1 GREEN / tests ─────────────────────────────────────────────────────
+// ─── deterministic mode: displacement ────────────────────────────────────────
 
 /// Byte-identical displacement across repeated runs and thread counts in
 /// deterministic mode.
@@ -477,6 +474,15 @@ fn deterministic_displacement_bit_stable_across_repeats_and_thread_counts() {
     // Sweep: t ∈ THREAD_COUNTS — all map to Deterministic mode.
     let outs = solve_sweep(true, &THREAD_COUNTS);
     let ref_out = &outs[0]; // t=1 is the reference
+
+    // Sanity: verify the fixture produced a non-trivial solve. If the tip load is
+    // accidentally zeroed, solve_cg short-circuits to u = 0 with iterations == 0
+    // and converged == true — all determinism checks would then pass trivially.
+    assert!(
+        ref_out.u.iter().any(|&x| x != 0.0),
+        "reference displacement is all zero — tip load may be missing",
+    );
+    assert!(ref_out.iterations > 0, "CG returned 0 iterations — RHS may be zero");
 
     for (i, out) in outs.iter().enumerate() {
         let t = THREAD_COUNTS[i];
@@ -507,7 +513,7 @@ fn deterministic_displacement_bit_stable_across_repeats_and_thread_counts() {
     }
 }
 
-// ─── step-7 / step-8 ─────────────────────────────────────────────────────────
+// ─── default mode: thread counts ─────────────────────────────────────────────
 
 /// Tolerance-equivalent results across thread counts {1, 4, 16} in default mode.
 ///
@@ -525,8 +531,18 @@ fn default_parallel_tolerance_equivalent_across_thread_counts() {
     // Deterministic reference: bit-stable baseline.
     let det_ref = solve_box_cantilever(true, 1);
     assert!(det_ref.converged, "deterministic reference did not converge");
+    // Sanity: a zeroed tip load would produce a trivial solve (u = 0, iters = 0,
+    // converged = true), making all tolerance-equivalence checks pass spuriously.
+    assert!(
+        det_ref.u.iter().any(|&x| x != 0.0),
+        "deterministic reference displacement is all zero — tip load may be missing",
+    );
+    assert!(
+        det_ref.max_von_mises > 0.0,
+        "deterministic reference max von Mises is zero — stress is unphysical",
+    );
 
-    // Sweep parallel-mode solves across THREAD_COUNTS (missing → RED).
+    // Sweep parallel-mode solves across THREAD_COUNTS.
     let outputs = solve_sweep(false, &THREAD_COUNTS);
     for (i, out) in outputs.iter().enumerate() {
         let t = THREAD_COUNTS[i];
@@ -541,7 +557,7 @@ fn default_parallel_tolerance_equivalent_across_thread_counts() {
     }
 }
 
-// ─── step-5 ───────────────────────────────────────────────────────────────────
+// ─── default mode: repeated runs ─────────────────────────────────────────────
 
 /// Tolerance-equivalent displacement and von Mises across 3 repeated runs in
 /// default / parallel mode at fixed threads=4.
@@ -565,13 +581,20 @@ fn default_parallel_tolerance_equivalent_across_repeated_runs() {
     assert!(run1.converged, "parallel t=4 run1 did not converge (iter={})", run1.iterations);
     assert!(run2.converged, "parallel t=4 run2 did not converge (iter={})", run2.iterations);
     assert!(run3.converged, "parallel t=4 run3 did not converge (iter={})", run3.iterations);
+    // Sanity: a zeroed tip load would yield a trivial all-zero solve, making all
+    // three repeated runs trivially equivalent.
+    assert!(
+        run1.u.iter().any(|&x| x != 0.0),
+        "parallel run1 displacement is all zero — tip load may be missing",
+    );
+    assert!(run1.max_von_mises > 0.0, "parallel run1 max von Mises is zero");
 
-    // Tolerance-equivalence (missing helper → RED).
+    // Tolerance-equivalence.
     assert_tolerance_equivalent(&run1, &run2, "run2_vs_run1");
     assert_tolerance_equivalent(&run1, &run3, "run3_vs_run1");
 }
 
-// ─── step-3 ───────────────────────────────────────────────────────────────────
+// ─── deterministic mode: stress and von Mises ────────────────────────────────
 
 /// Byte-identical recovered stress field and max von Mises across thread counts
 /// in deterministic mode.
@@ -585,6 +608,14 @@ fn default_parallel_tolerance_equivalent_across_repeated_runs() {
 /// one call. Max von Mises is taken from `SolveOutput.max_von_mises` (already
 /// computed inside `solve_box_cantilever`); the per-component stress field is
 /// recovered separately (not stored in `SolveOutput`) for the byte-wise check.
+///
+/// NOTE: This test calls `solve_sweep(true, &THREAD_COUNTS)` independently from
+/// `deterministic_displacement_bit_stable_across_repeats_and_thread_counts`.
+/// The 3 deterministic solves are byte-identical to those in the displacement
+/// test; the duplication keeps each test self-contained so they can fail
+/// independently. The stress-recovery step (`recover_stress_field`) is pure
+/// computation over the already-computed `u` vectors — no extra linear solves
+/// are incurred beyond the 3-solve sweep itself.
 #[test]
 fn deterministic_stress_field_and_von_mises_bit_stable_across_thread_counts() {
     // Sweep deterministic-mode solves across THREAD_COUNTS = {1, 4, 16}.
@@ -607,6 +638,9 @@ fn deterministic_stress_field_and_von_mises_bit_stable_across_thread_counts() {
 
     // Max von Mises is already stored in SolveOutput (computed in solve_box_cantilever).
     let vms: Vec<f64> = outs.iter().map(|out| out.max_von_mises).collect();
+    // Sanity: a zeroed tip load would produce trivial all-zero stress, making all
+    // byte-identity checks pass spuriously.
+    assert!(vms[0] > 0.0, "reference max von Mises is zero — stress is unphysical or load is missing");
 
     // Nodal stress field must be byte-identical across all thread counts.
     let ref_stress = &stress_fields[0];
