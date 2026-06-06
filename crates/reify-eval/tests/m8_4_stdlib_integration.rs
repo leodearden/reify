@@ -799,6 +799,9 @@ fn linalg_4x4_symmetric_eigenvalues() {
                 .enumerate()
                 .map(|(i, item)| expect_real_or_int(item, &format!("eig4[{i}]")))
                 .collect();
+            // Intentional defensive sort: eigenvalues() already returns sorted-ascending
+            // for the symmetric path, but we don't rely on that contract here so the
+            // test stays valid if the ordering guarantee is ever relaxed.
             actuals.sort_by(|a, b| a.total_cmp(b));
             let expected = [1.0_f64, 2.0, 3.0, 8.0];
             for (i, (&actual, &exp)) in actuals.iter().zip(expected.iter()).enumerate() {

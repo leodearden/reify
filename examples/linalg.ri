@@ -78,6 +78,8 @@ structure def LinalgDemo {
 
     let det4 = determinant(m4)
     let inv4 = inverse(m4)
+    // det(A⁻¹) = 1/det(A) = 1/209 ≈ 0.004784689; self-checks the inverse path.
+    let inv4_det = determinant(inv4)
 
     // ── 4×4 block-diagonal symmetric matrix ──────────────────────────────────
     //   sym4 = [[2,1,0,0],[1,2,0,0],[0,0,5,3],[0,0,3,5]]
@@ -114,4 +116,7 @@ structure def LinalgDemo {
     constraint z_mag < 5.001
     constraint det4 > 208.999
     constraint det4 < 209.001
+    // det(inv4) = 1/det(m4) = 1/209 ≈ 0.004785; catches inv4 regressing to Undef.
+    constraint inv4_det > 0.00478
+    constraint inv4_det < 0.00479
 }
