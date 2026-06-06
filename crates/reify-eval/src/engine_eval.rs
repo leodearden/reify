@@ -531,6 +531,66 @@ fn mechanism_error_message(v: &Value) -> String {
     }
 }
 
+/// Scan top-level eval cells for `E_MECHANISM_NONDRIVING_JOINT` errors (task 4309 — α).
+///
+/// Mirrors `detect_mechanism_errors` exactly: filter → sort by `ValueCellId` →
+/// dedup by structural `Value` equality → emit one `Diagnostic` per distinct
+/// error Map.
+///
+/// **Predicate:** a `Value::Map` whose `error` field equals `"nondriving_joint"`.
+/// This matches the error-Map shape produced by `make_nondriving_joint_error` in
+/// `reify-stdlib/joints.rs` and returned by `bind`/`dim`/`sweep`/`sweep_grid`
+/// when a coupling or fixed joint is passed.
+///
+/// **Known v0.1 limitation:** the scan is over top-level cells only — a
+/// nondriving-joint error that propagates into a downstream cell (e.g. a binding
+/// Map embedded in a list) produces a separate copy that may collapse to one
+/// diagnostic via Value-equality dedup.  The δ seam does not walk nested
+/// structures.  Matches the duplicate-solid detector's documented limitation.
+fn detect_nondriving_joint_errors(values: &ValueMap) -> Vec<Diagnostic> {
+    let mut hits: Vec<(&ValueCellId, &Value)> = values
+        .iter()
+        .filter(|(_, v)| is_nondriving_joint_error(v))
+        .collect();
+    hits.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut diagnostics = Vec::new();
+    for (_, value) in hits {
+        if seen.insert(value.clone()) {
+            let msg = nondriving_joint_error_message(value);
+            diagnostics.push(
+                Diagnostic::error(msg)
+                    .with_code(DiagnosticCode::MechanismNonDrivingJoint),
+            );
+        }
+    }
+    diagnostics
+}
+
+/// Returns `true` when `v` is a `Value::Map` with `error="nondriving_joint"`.
+/// Matches the shape produced by `make_nondriving_joint_error` in joints.rs.
+fn is_nondriving_joint_error(v: &Value) -> bool {
+    let Value::Map(m) = v else {
+        return false;
+    };
+    let error_key = Value::String("error".to_string());
+    matches!(m.get(&error_key), Some(Value::String(e)) if e == "nondriving_joint")
+}
+
+/// Extract the `error_message` string from a nondriving-joint error Map,
+/// falling back to a constant if the field is absent or not a string.
+fn nondriving_joint_error_message(v: &Value) -> String {
+    let Value::Map(m) = v else {
+        return "joint has no free motion variable (coupling or fixed)".to_string();
+    };
+    let msg_key = Value::String("error_message".to_string());
+    match m.get(&msg_key) {
+        Some(Value::String(msg)) => msg.clone(),
+        _ => "joint has no free motion variable (coupling or fixed)".to_string(),
+    }
+}
+
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
 /// auto-param cells and constraints, returning `None` when there are no auto
 /// cells (signalling "skip solver invocation").
@@ -2582,6 +2642,9 @@ impl Engine {
         // `reify check` (no kernel needed — duplicate-solid detection is at
         // mechanism-builder eval).  Mirrors the detect_scope_coupling seam.
         diagnostics.extend(detect_mechanism_errors(&values));
+        // Non-driving-joint diagnostics (task 4309 — E_MECHANISM_NONDRIVING_JOINT).
+        // Same gate placement and rationale as detect_mechanism_errors above.
+        diagnostics.extend(detect_nondriving_joint_errors(&values));
 
         EvalResult {
             values,
@@ -3145,6 +3208,9 @@ impl Engine {
         // is the incremental LSP path; without this call the GUI/LSP would drop the
         // MechanismDuplicateSolid diagnostic on every incremental re-evaluation.
         diagnostics.extend(detect_mechanism_errors(&values));
+        // Non-driving-joint diagnostics (task 4309 — E_MECHANISM_NONDRIVING_JOINT).
+        // Mirrors eval() call site; eval_cached is the LSP/GUI incremental path.
+        diagnostics.extend(detect_nondriving_joint_errors(&values));
 
         CachedEvalResult {
             eval_result: EvalResult {
