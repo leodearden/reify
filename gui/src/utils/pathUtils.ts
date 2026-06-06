@@ -76,6 +76,27 @@ export function canonicalizeKey(path: string): string {
 }
 
 /**
+ * Convert a bare file-system path to a `file://` URI for use with the LSP server.
+ *
+ * - An already-`file://`-prefixed string is returned unchanged.
+ * - An absolute path (`/a/b.ri`) becomes `file:///a/b.ri`.
+ * - A relative path (no leading `/`) gets a slash inserted: `b.ri` → `file:///b.ri`.
+ *
+ * This is extracted from the private `pathToUri` closure in Editor.tsx so that
+ * `bridge.ts` LSP probe handlers can derive the byte-identical URI that the editor
+ * registered with the LSP via `lspClient.didOpen`.
+ *
+ * @example
+ * pathToUri('/a/b.ri')          // → 'file:///a/b.ri'
+ * pathToUri('file:///a/b.ri')   // → 'file:///a/b.ri' (unchanged)
+ * pathToUri('b.ri')             // → 'file:///b.ri'
+ */
+export function pathToUri(path: string): string {
+  if (path.startsWith('file://')) return path;
+  return `file://${path.startsWith('/') ? '' : '/'}${path}`;
+}
+
+/**
  * Returns true if two file identifiers refer to the same file, normalizing
  * `file://` URI scheme vs bare path differences before comparison.
  *

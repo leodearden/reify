@@ -21,7 +21,7 @@ import type { NavEntry } from '../hooks/useNavHistory';
 import type { createEditorStore } from '../stores/editorStore';
 import type { FileData, SourceLocation, DiagnosticInfo } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
-import { isSameFile, normalizePath } from '../utils/pathUtils';
+import { isSameFile, normalizePath, pathToUri } from '../utils/pathUtils';
 import styles from './Editor.module.css';
 
 // Intentionally shared by both the backend source-sync debounce (updateSource)
@@ -125,12 +125,6 @@ export function Editor(props: EditorProps) {
 
   // Create LSP client for communicating with the in-process LSP server
   const lspClient = createLspClient();
-
-  /** Convert active file path to a file:// URI for LSP. */
-  function pathToUri(path: string): string {
-    if (path.startsWith('file://')) return path;
-    return `file://${path.startsWith('/') ? '' : '/'}${path}`;
-  }
 
   onMount(() => {
     const activeFile = props.store.state.activeFile;
