@@ -363,3 +363,70 @@ fn deterministic_displacement_bit_stable_across_repeats_and_thread_counts() {
         );
     }
 }
+
+// ─── step-3 RED ──────────────────────────────────────────────────────────────
+
+/// Byte-identical recovered stress field and max von Mises across thread counts
+/// in deterministic mode.
+///
+/// Extends the deterministic comparison to the other "ElasticResult" fields:
+/// the nodal stress field (volume-weighted averaging via `recover_nodal_stress_p1`)
+/// and max von Mises. In Deterministic mode the fixed pairwise-tree reductions
+/// produce an identical FP sequence → byte-identical output at every level.
+///
+/// Note: `recover_stress_field` and `max_von_mises` are not yet defined —
+/// this test fails to compile (RED).
+#[test]
+fn deterministic_stress_field_and_von_mises_bit_stable_across_thread_counts() {
+    // Get the fixture geometry so we can recover stress from the displacement.
+    let (nodes, conns, _, _) = box_cantilever_fixture();
+
+    let out1 = solve_box_cantilever(true, 1);
+    let out4 = solve_box_cantilever(true, 4);
+    let out16 = solve_box_cantilever(true, 16);
+
+    // All converged.
+    assert!(out1.converged, "deterministic t=1 did not converge");
+    assert!(out4.converged, "deterministic t=4 did not converge");
+    assert!(out16.converged, "deterministic t=16 did not converge");
+
+    // Recover nodal stress fields (missing helper → RED).
+    let stress1 = recover_stress_field(&nodes, &conns, &out1.u, &MAT);
+    let stress4 = recover_stress_field(&nodes, &conns, &out4.u, &MAT);
+    let stress16 = recover_stress_field(&nodes, &conns, &out16.u, &MAT);
+
+    // Compute max von Mises (missing helper → RED).
+    let vm1 = max_von_mises(&stress1);
+    let vm4 = max_von_mises(&stress4);
+    let vm16 = max_von_mises(&stress16);
+
+    // Nodal stress field must be byte-identical across all thread counts.
+    assert_eq!(stress1.len(), stress4.len(), "stress field length differs t=1 vs t=4");
+    assert_eq!(stress1.len(), stress16.len(), "stress field length differs t=1 vs t=16");
+    for ni in 0..stress1.len() {
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(
+                    stress1[ni][i][j].to_bits(), stress4[ni][i][j].to_bits(),
+                    "stress[{ni}][{i}][{j}] differs between t=1 ({}) and t=4 ({})",
+                    stress1[ni][i][j], stress4[ni][i][j],
+                );
+                assert_eq!(
+                    stress1[ni][i][j].to_bits(), stress16[ni][i][j].to_bits(),
+                    "stress[{ni}][{i}][{j}] differs between t=1 ({}) and t=16 ({})",
+                    stress1[ni][i][j], stress16[ni][i][j],
+                );
+            }
+        }
+    }
+
+    // Max von Mises must be byte-identical.
+    assert_eq!(
+        vm1.to_bits(), vm4.to_bits(),
+        "max_von_mises differs between t=1 ({vm1}) and t=4 ({vm4})",
+    );
+    assert_eq!(
+        vm1.to_bits(), vm16.to_bits(),
+        "max_von_mises differs between t=1 ({vm1}) and t=16 ({vm16})",
+    );
+}
