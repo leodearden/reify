@@ -82,3 +82,48 @@ fn generic_fn_lowers_type_params_and_nongeneric_is_empty() {
         plain.type_params
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Step-3 / Step-4: bare type-param name resolves in param and return position
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Bare type-param name `T` resolves to `Type::TypeParam("T")` in both the
+/// parameter and the return-type positions of a generic fn, with zero Error
+/// diagnostics.
+///
+/// RED until step-4: `compile_function` passes `empty_params` to
+/// `resolve_type_expr_with_aliases`, so `T` is unknown → "unresolved type" Error +
+/// `Type::Real` fallback.
+#[test]
+fn bare_type_param_resolves_in_param_and_return() {
+    let source = r#"fn id<T>(x: T) -> T { x }"#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for fn id<T>, got: {:?}",
+        errors
+    );
+
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "id")
+        .expect("function 'id' should be compiled");
+
+    assert_eq!(
+        func.params[0].1,
+        Type::TypeParam("T".to_string()),
+        "param x should resolve to Type::TypeParam(\"T\")"
+    );
+    assert_eq!(
+        func.return_type,
+        Type::TypeParam("T".to_string()),
+        "return type should resolve to Type::TypeParam(\"T\")"
+    );
+}
