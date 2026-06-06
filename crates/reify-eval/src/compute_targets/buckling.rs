@@ -671,7 +671,7 @@ fn extract_material(val: &Value) -> IsotropicElastic {
             other
         ),
     };
-    let youngs_modulus = match data.fields.get(&"youngs_modulus".to_string()) {
+    let youngs_modulus = match data.fields.get("youngs_modulus") {
         Some(Value::Scalar { si_value, .. }) => *si_value,
         other => panic!(
             "solve_buckling_trampoline: expected youngs_modulus to be \
@@ -679,7 +679,7 @@ fn extract_material(val: &Value) -> IsotropicElastic {
             other
         ),
     };
-    let poisson_ratio = match data.fields.get(&"poisson_ratio".to_string()) {
+    let poisson_ratio = match data.fields.get("poisson_ratio") {
         Some(Value::Real(r)) => *r,
         other => panic!(
             "solve_buckling_trampoline: expected poisson_ratio to be \
@@ -718,11 +718,11 @@ fn extract_total_load(val: &Value) -> f64 {
     for item in items {
         if let Value::StructureInstance(data) = item {
             // PointLoad.force : Real (magnitude)
-            if let Some(Value::Real(f)) = data.fields.get(&"force".to_string()) {
+            if let Some(Value::Real(f)) = data.fields.get("force") {
                 total += f;
             }
             // Also handle Scalar forces (in case units are carried through)
-            if let Some(Value::Scalar { si_value, .. }) = data.fields.get(&"force".to_string()) {
+            if let Some(Value::Scalar { si_value, .. }) = data.fields.get("force") {
                 total += si_value;
             }
         }
@@ -770,11 +770,11 @@ fn extract_buckling_options(val: &Value) -> (usize, f64, usize, ElementOrder) {
         }
     };
 
-    let n_modes = match data.fields.get(&"n_modes".to_string()) {
+    let n_modes = match data.fields.get("n_modes") {
         Some(Value::Int(n)) => (*n).max(1) as usize,
         _ => default_n_modes,
     };
-    let eigen_tol = match data.fields.get(&"tol".to_string()) {
+    let eigen_tol = match data.fields.get("tol") {
         Some(Value::Real(r)) => {
             let v = *r;
             if v.is_finite() && v > 0.0 {
@@ -785,7 +785,7 @@ fn extract_buckling_options(val: &Value) -> (usize, f64, usize, ElementOrder) {
         }
         _ => default_tol,
     };
-    let eigen_max_iters = match data.fields.get(&"max_iters".to_string()) {
+    let eigen_max_iters = match data.fields.get("max_iters") {
         Some(Value::Int(n)) => (*n).max(1) as usize,
         _ => default_max_iters,
     };

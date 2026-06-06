@@ -2457,7 +2457,7 @@ impl Engine {
                         if let Value::StructureInstance(data) = val
                             && data.type_name == "MassProperties"
                         {
-                            let result = match data.fields.get(&"inertia".to_string()) {
+                            let result = match data.fields.get("inertia") {
                                 None | Some(Value::Undef) => InertiaResult::Skip,
                                 Some(v) => match crate::dynamics_psd::inertia_3x3_from_value(v) {
                                     Some(m) => InertiaResult::Valid(m),

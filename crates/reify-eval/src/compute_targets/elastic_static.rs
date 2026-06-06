@@ -1219,7 +1219,7 @@ fn classify_material(val: &Value) -> MaterialModel {
 
 /// Read a `Value::Scalar { si_value, .. }` field from a StructureInstance.
 fn scalar_si_field(data: &StructureInstanceData, key: &str) -> f64 {
-    match data.fields.get(&key.to_string()) {
+    match data.fields.get(key) {
         Some(Value::Scalar { si_value, .. }) => *si_value,
         other => panic!(
             "solve_elastic_static_trampoline: expected field {:?} to be \
@@ -1231,7 +1231,7 @@ fn scalar_si_field(data: &StructureInstanceData, key: &str) -> f64 {
 
 /// Read a `Value::Real` field from a StructureInstance.
 fn real_field(data: &StructureInstanceData, key: &str) -> f64 {
-    match data.fields.get(&key.to_string()) {
+    match data.fields.get(key) {
         Some(Value::Real(r)) => *r,
         other => panic!(
             "solve_elastic_static_trampoline: expected field {:?} to be \
@@ -1252,7 +1252,7 @@ fn extract_material(val: &Value) -> IsotropicElastic {
             other
         ),
     };
-    let youngs_modulus = match data.fields.get(&"youngs_modulus".to_string()) {
+    let youngs_modulus = match data.fields.get("youngs_modulus") {
         Some(Value::Scalar { si_value, .. }) => *si_value,
         other => panic!(
             "solve_elastic_static_trampoline: expected youngs_modulus to be \
@@ -1260,7 +1260,7 @@ fn extract_material(val: &Value) -> IsotropicElastic {
             other
         ),
     };
-    let poisson_ratio = match data.fields.get(&"poisson_ratio".to_string()) {
+    let poisson_ratio = match data.fields.get("poisson_ratio") {
         Some(Value::Real(r)) => *r,
         other => panic!(
             "solve_elastic_static_trampoline: expected poisson_ratio to be \
@@ -1313,8 +1313,8 @@ fn extract_loads(val: &Value) -> ([f64; 3], Vec<PressureSpec>) {
     for item in items {
         if let Value::StructureInstance(data) = item {
             if data.type_name == "PointLoad" {
-                if let Some(Value::Real(f)) = data.fields.get(&"force".to_string()) {
-                    let dir = match data.fields.get(&"direction".to_string()) {
+                if let Some(Value::Real(f)) = data.fields.get("force") {
+                    let dir = match data.fields.get("direction") {
                         Some(Value::List(elems)) if elems.len() == 3 => {
                             let mut d = [0.0f64; 3];
                             for (i, e) in elems.iter().enumerate() {
@@ -1338,16 +1338,16 @@ fn extract_loads(val: &Value) -> ([f64; 3], Vec<PressureSpec>) {
                     }
                 }
             } else if data.type_name == "PressureLoad" {
-                let magnitude = match data.fields.get(&"magnitude".to_string()) {
+                let magnitude = match data.fields.get("magnitude") {
                     Some(Value::Real(m)) => *m,
                     Some(Value::Scalar { si_value, .. }) => *si_value,
                     _ => continue,
                 };
-                let face = match data.fields.get(&"face".to_string()) {
+                let face = match data.fields.get("face") {
                     Some(Value::String(s)) => s.clone(),
                     _ => continue,
                 };
-                let direction = match data.fields.get(&"direction".to_string()) {
+                let direction = match data.fields.get("direction") {
                     Some(Value::String(s)) => s.clone(),
                     _ => "normal".to_string(),
                 };
@@ -1392,16 +1392,16 @@ pub(crate) fn extract_pressure_loads(val: &Value) -> Vec<PressureSpec> {
         if let Value::StructureInstance(data) = item
             && data.type_name == "PressureLoad"
         {
-            let magnitude = match data.fields.get(&"magnitude".to_string()) {
+            let magnitude = match data.fields.get("magnitude") {
                 Some(Value::Real(m)) => *m,
                 Some(Value::Scalar { si_value, .. }) => *si_value,
                 _ => continue,
             };
-            let face = match data.fields.get(&"face".to_string()) {
+            let face = match data.fields.get("face") {
                 Some(Value::String(s)) => s.clone(),
                 _ => continue,
             };
-            let direction = match data.fields.get(&"direction".to_string()) {
+            let direction = match data.fields.get("direction") {
                 Some(Value::String(s)) => s.clone(),
                 _ => "normal".to_string(),
             };
@@ -1551,14 +1551,14 @@ pub(crate) fn extract_shell_route_params(options: &Value) -> (ShellForce, f64) {
     let mut shell_force = ShellForce::Auto;
     let mut shell_threshold = 0.2_f64;
     if let Value::StructureInstance(data) = options {
-        if let Some(Value::Enum { variant, .. }) = data.fields.get(&"shell_force".to_string()) {
+        if let Some(Value::Enum { variant, .. }) = data.fields.get("shell_force") {
             shell_force = match variant.as_str() {
                 "Off" => ShellForce::Off,
                 "On" => ShellForce::On,
                 _ => ShellForce::Auto, // "Auto" or any unknown variant
             };
         }
-        match data.fields.get(&"shell_threshold".to_string()) {
+        match data.fields.get("shell_threshold") {
             Some(Value::Real(r)) => shell_threshold = *r,
             // `shell_threshold` is a dimensionless ratio: only accept a
             // `Value::Scalar` that is actually DIMENSIONLESS. A scalar carrying a
@@ -2373,7 +2373,7 @@ mod tests {
 
         // shell_channels must be a "ShellStress" StructureInstance (NOT Undef).
         let sc = fields
-            .get(&"shell_channels".to_string())
+            .get("shell_channels")
             .expect("ElasticResult must carry a shell_channels field");
         let sc_data = match sc {
             Value::StructureInstance(d) => {
@@ -2393,19 +2393,19 @@ mod tests {
         let top = shell9_field_data(
             sc_data
                 .fields
-                .get(&"top".to_string())
+                .get("top")
                 .expect("ShellStress.top"),
         );
         let mid = shell9_field_data(
             sc_data
                 .fields
-                .get(&"mid".to_string())
+                .get("mid")
                 .expect("ShellStress.mid"),
         );
         let bottom = shell9_field_data(
             sc_data
                 .fields
-                .get(&"bottom".to_string())
+                .get("bottom")
                 .expect("ShellStress.bottom"),
         );
         assert!(
@@ -2423,7 +2423,7 @@ mod tests {
 
         // stress must be populated and bit-equal shell_channels.mid (I-2 alias).
         let stress = fields
-            .get(&"stress".to_string())
+            .get("stress")
             .expect("ElasticResult must carry a stress field");
         assert!(
             !matches!(stress, Value::Undef),
@@ -2478,19 +2478,19 @@ mod tests {
         // 4084/α tet baseline: shell_channels + frame remain Undef.
         assert!(
             matches!(
-                fields.get(&"shell_channels".to_string()),
+                fields.get("shell_channels"),
                 Some(Value::Undef)
             ),
             "tet path must keep shell_channels=Undef (4084/α baseline)"
         );
         assert!(
-            matches!(fields.get(&"frame".to_string()), Some(Value::Undef)),
+            matches!(fields.get("frame"), Some(Value::Undef)),
             "tet path must keep frame=Undef (4084/α baseline)"
         );
 
         // BUT stress is a populated Regular3D Sampled Field (4084/α, NOT Undef).
         let stress = fields
-            .get(&"stress".to_string())
+            .get("stress")
             .expect("ElasticResult must carry a stress field");
         match stress {
             Value::Field { source, lambda, .. } => {
