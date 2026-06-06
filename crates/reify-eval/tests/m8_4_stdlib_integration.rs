@@ -712,6 +712,48 @@ fn linalg_4x4_determinant() {
     }
 }
 
+// ── step-5: linalg_4x4_symmetric_eigenvalues ─────────────────────────────────
+
+/// Asserts LinalgDemo.eig4 = eigenvalues(sym4) has exactly 4 entries,
+/// sorted ≈ [1.0, 2.0, 3.0, 8.0] within 1e-9.
+/// sym4 = block-diagonal [[2,1,0,0],[1,2,0,0],[0,0,5,3],[0,0,3,5]];
+/// block spectra: top {2-1,2+1}={1,3}, bottom {5-3,5+3}={2,8}.
+#[test]
+fn linalg_4x4_symmetric_eigenvalues() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let eig4_id = ValueCellId::new("LinalgDemo", "eig4");
+    let eig4_val = result
+        .values
+        .get(&eig4_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.eig4 not found in eval result"));
+
+    match eig4_val {
+        Value::List(items) => {
+            assert_eq!(
+                items.len(),
+                4,
+                "eig4 should have 4 entries, got {}",
+                items.len()
+            );
+            let mut actuals: Vec<f64> = items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| expect_real_or_int(item, &format!("eig4[{i}]")))
+                .collect();
+            actuals.sort_by(|a, b| a.total_cmp(b));
+            let expected = [1.0_f64, 2.0, 3.0, 8.0];
+            for (i, (&actual, &exp)) in actuals.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    (actual - exp).abs() < 1e-9,
+                    "eig4[{i}] (sorted): expected {exp}, got {actual}"
+                );
+            }
+        }
+        other => panic!("LinalgDemo.eig4 should be Value::List, got {other:?}"),
+    }
+}
+
 // ── step-3: linalg_4x4_inverse_roundtrip ─────────────────────────────────────
 
 /// Asserts m4 · inv4 ≈ I₄ (all 16 entries, tolerance 1e-9).
