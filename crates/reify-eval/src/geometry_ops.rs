@@ -283,6 +283,157 @@ fn validate_pattern_count(
     Ok(raw as usize)
 }
 
+/// Extract three SI-valued `f64` components from a [`reify_ir::Value::Point`]
+/// or [`reify_ir::Value::Vector`] with exactly 3 numeric, finite components.
+///
+/// Returns `None` if:
+/// - the value is not a `Point` or `Vector`;
+/// - it does not have exactly 3 components;
+/// - any component does not yield a finite `f64` via [`reify_ir::Value::as_f64`].
+///
+/// Both `Point` (with LENGTH-dimensioned `Scalar` components — SI metres) and
+/// `Vector` (with dimensionless `Real` components) pass through correctly
+/// because `Value::as_f64` extracts `si_value` from `Scalar` and the raw
+/// float from `Real`.
+fn point3_components(value: &reify_ir::Value) -> Option<[f64; 3]> {
+    let comps = match value {
+        reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
+        _ => return None,
+    };
+    let a = comps[0].as_f64().filter(|v| v.is_finite())?;
+    let b = comps[1].as_f64().filter(|v| v.is_finite())?;
+    let c = comps[2].as_f64().filter(|v| v.is_finite())?;
+    Some([a, b, c])
+}
+
+/// Normalize a 3-component direction vector to unit length.
+///
+/// Returns `Err` when the vector magnitude is below [`GEOMETRY_EPSILON`]
+/// (zero or near-zero), preventing a degenerate `[0,0,0]` normal from
+/// propagating silently to the kernel.  The caller maps `Err(String)` to a
+/// `Diagnostic::error` via the standard `Err(String)` → diagnostic idiom
+/// (see `engine_build.rs`).
+fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
+    let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if mag < GEOMETRY_EPSILON {
+        return Err(format!(
+            "zero-magnitude vector [{:.6e}, {:.6e}, {:.6e}] cannot be normalized \
+             to a unit direction",
+            v[0], v[1], v[2]
+        ));
+    }
+    Ok([v[0] / mag, v[1] / mag, v[2] / mag])
+}
+
+/// Decode a [`Value::Plane`] into `(origin, unit_normal)` — a pair of SI
+/// metre triples returned as `([f64; 3], [f64; 3])`.
+///
+/// The normal is normalized to unit length.  Non-unit normals are accepted and
+/// normalized silently (the plane equation is invariant to normal scale).
+/// Zero-magnitude normals are always rejected.
+///
+/// # Returns
+/// - `Ok((origin, unit_normal))` — origin in metres, normal dimensionless unit vector.
+/// - `Err(message)` — for any of:
+///   - wrong value variant (not `Value::Plane`), including `Value::Undef`;
+///   - origin or normal with non-numeric / non-finite components;
+///   - zero-magnitude normal.
+///
+/// # Visibility
+/// `pub(crate)` — co-located with the mirror/circular_pattern eval consumers
+/// and available to sibling modules in `reify-eval`.  Widened to `pub` only
+/// when a cross-crate consumer lands (task 3465, design open).
+pub(crate) fn decode_plane(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3]), String> {
+    let (origin_val, normal_val) = match value {
+        reify_ir::Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
+        other => {
+            return Err(format!(
+                "expected a Plane value, got {}",
+                other
+            ));
+        }
+    };
+    let origin_arr = point3_components(origin_val).ok_or_else(|| {
+        "Plane origin is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let normal_raw = point3_components(normal_val).ok_or_else(|| {
+        "Plane normal is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let unit_normal = unit_vector3(normal_raw)
+        .map_err(|e| format!("Plane has a degenerate normal: {e}"))?;
+    Ok((origin_arr, unit_normal))
+}
+
+/// Decode a [`Value::Axis`] into `(origin, unit_direction)` — a pair of SI
+/// metre triples returned as `([f64; 3], [f64; 3])`.
+///
+/// The direction vector is normalized to unit length.  Non-unit directions are
+/// accepted and normalized silently.  Zero-magnitude directions are rejected.
+///
+/// # Returns
+/// - `Ok((origin, unit_direction))` — origin in metres, direction a
+///   dimensionless unit vector.
+/// - `Err(message)` — for any of:
+///   - wrong value variant (not `Value::Axis`), including `Value::Undef`;
+///   - origin or direction with non-numeric / non-finite components;
+///   - zero-magnitude direction.
+///
+/// Reuses the private helpers [`point3_components`] and [`unit_vector3`] from
+/// [`decode_plane`] — the single canonical decode surface for Axis values
+/// (task η, design decision A).
+///
+/// # Visibility
+/// `pub(crate)` — widened to `pub` only when a cross-crate consumer lands
+/// (task 3465, design open).
+pub(crate) fn decode_axis(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3]), String> {
+    let (origin_val, dir_val) = match value {
+        reify_ir::Value::Axis { origin, direction } => (origin.as_ref(), direction.as_ref()),
+        other => {
+            return Err(format!(
+                "expected an Axis value, got {}",
+                other
+            ));
+        }
+    };
+    let origin_arr = point3_components(origin_val).ok_or_else(|| {
+        "Axis origin is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let dir_raw = point3_components(dir_val).ok_or_else(|| {
+        "Axis direction is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let unit_dir = unit_vector3(dir_raw)
+        .map_err(|e| format!("Axis has a degenerate direction: {e}"))?;
+    Ok((origin_arr, unit_dir))
+}
+
+/// Convert a bare-numeric angle [`reify_ir::Value`] to radians, emitting a
+/// deprecation warning diagnostic.
+///
+/// CAD convention: a bare `Real` or `Int` angle (no unit suffix in source) is
+/// interpreted as degrees and converted to radians.  Values that already carry
+/// an `ANGLE` dimension (from `deg` / `rad` suffixes) pass through unchanged.
+///
+/// Extracted to a shared free function to prevent verbatim duplication between
+/// the value-form and scalar-form branches of the `circular_pattern` eval arm.
+fn resolve_bare_angle(raw: reify_ir::Value, diagnostics: &mut Vec<Diagnostic>) -> reify_ir::Value {
+    let as_deg: Option<f64> = match &raw {
+        reify_ir::Value::Real(v) => Some(*v),
+        reify_ir::Value::Int(i) => Some(*i as f64),
+        _ => None,
+    };
+    if let Some(deg) = as_deg {
+        let rad = deg * std::f64::consts::PI / 180.0;
+        diagnostics.push(Diagnostic::warning(format!(
+            "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
+             use `{}deg` or `{:.6}rad` for explicit units",
+            deg, deg, deg, rad
+        )));
+        reify_ir::Value::angle(rad)
+    } else {
+        raw
+    }
+}
+
 /// Translate a compiled geometry operation into a runtime `GeometryOp` by
 /// evaluating its argument expressions against the current value environment.
 ///
@@ -638,10 +789,10 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::PatternKind::Circular => {
-                    // Missing-arg coverage: build_circular_pattern_missing_{count,axis}_no_kernel_error
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
+                    if args.iter().any(|(n, _)| n == "axis") {
+                        // Value form: circular_pattern(target, axis_value, count, angle)
+                        let axis_val = eval_named_arg(
+                            "axis",
                             kind,
                             args,
                             values,
@@ -650,54 +801,98 @@ pub(crate) fn compile_geometry_op(
                             diagnostics,
                         )
                         .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                            format!("missing required argument 'axis' for {}", kind)
+                        })?;
+                        let (axis_origin, axis_dir) = decode_axis(&axis_val)
+                            .map_err(|e| format!("circular_pattern: {}", e))?;
+                        let count_raw = eval_named_arg_f64(
+                            "count",
+                            kind,
+                            args,
+                            values,
+                            functions,
+                            meta_map,
+                            diagnostics,
+                        )
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument 'count' for {}", kind)
+                        })?;
+                        let count =
+                            validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+                        let raw_angle = eval_named_arg(
+                            "angle",
+                            kind,
+                            args,
+                            values,
+                            functions,
+                            meta_map,
+                            diagnostics,
+                        )
+                        .ok_or_else(|| {
+                            format!("missing required argument 'angle' for {}", kind)
+                        })?;
+                        // CAD convention: bare numeric angle → degrees → radians with warning.
+                        let angle = resolve_bare_angle(raw_angle, diagnostics);
+                        Ok(reify_ir::GeometryOp::CircularPattern {
+                            target: target_id,
+                            axis_origin,
+                            axis_dir,
+                            count,
+                            angle,
                         })
-                    };
-                    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
-                    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
-                    let count_raw = f64_arg("count")?;
-                    let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-                    let raw_angle = eval_named_arg(
-                        "angle",
-                        kind,
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
-                    // CAD convention: a bare numeric angle (no unit suffix) is
-                    // interpreted as degrees and converted to radians.  Values
-                    // that already carry an ANGLE dimension (from `deg`/`rad`
-                    // suffixes in source) pass through unchanged.
-                    let mut convert_bare_angle = |deg: f64| -> reify_ir::Value {
-                        let rad = deg * std::f64::consts::PI / 180.0;
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
-                             use `{}deg` or `{:.6}rad` for explicit units",
-                            deg, deg, deg, rad
-                        )));
-                        reify_ir::Value::angle(rad)
-                    };
-                    let angle = match raw_angle {
-                        reify_ir::Value::Real(v) => convert_bare_angle(v),
-                        reify_ir::Value::Int(i) => convert_bare_angle(i as f64),
-                        other => other,
-                    };
-                    Ok(reify_ir::GeometryOp::CircularPattern {
-                        target: target_id,
-                        axis_origin,
-                        axis_dir,
-                        count,
-                        angle,
-                    })
+                    } else {
+                        // Scalar form (back-compat): ox, oy, oz, ax, ay, az, count, angle
+                        // Missing-arg coverage: build_circular_pattern_missing_{count,axis}_no_kernel_error
+                        let mut f64_arg = |name: &str| -> Result<f64, String> {
+                            eval_named_arg_f64(
+                                name,
+                                kind,
+                                args,
+                                values,
+                                functions,
+                                meta_map,
+                                diagnostics,
+                            )
+                            .ok_or_else(|| {
+                                format!(
+                                    "missing or non-finite argument '{}' for {}",
+                                    name, kind
+                                )
+                            })
+                        };
+                        let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
+                        let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
+                        let count_raw = f64_arg("count")?;
+                        let count =
+                            validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+                        let raw_angle = eval_named_arg(
+                            "angle",
+                            kind,
+                            args,
+                            values,
+                            functions,
+                            meta_map,
+                            diagnostics,
+                        )
+                        .ok_or_else(|| {
+                            format!("missing required argument 'angle' for {}", kind)
+                        })?;
+                        // CAD convention: same bare-angle path as the value form above.
+                        let angle = resolve_bare_angle(raw_angle, diagnostics);
+                        Ok(reify_ir::GeometryOp::CircularPattern {
+                            target: target_id,
+                            axis_origin,
+                            axis_dir,
+                            count,
+                            angle,
+                        })
+                    }
                 }
                 reify_compiler::PatternKind::Mirror => {
-                    // Missing-arg coverage: build_mirror_pattern_missing_plane_origin_no_kernel_error
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
+                    if args.iter().any(|(n, _)| n == "plane") {
+                        // Value form: mirror(target, plane_value)
+                        let plane_val = eval_named_arg(
+                            "plane",
                             kind,
                             args,
                             values,
@@ -706,14 +901,41 @@ pub(crate) fn compile_geometry_op(
                             diagnostics,
                         )
                         .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                            format!("missing required argument 'plane' for {}", kind)
+                        })?;
+                        let (plane_origin, plane_normal) = decode_plane(&plane_val)
+                            .map_err(|e| format!("mirror: {}", e))?;
+                        Ok(reify_ir::GeometryOp::Mirror {
+                            target: target_id,
+                            plane_origin,
+                            plane_normal,
                         })
-                    };
-                    Ok(reify_ir::GeometryOp::Mirror {
-                        target: target_id,
-                        plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
-                        plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
-                    })
+                    } else {
+                        // Scalar form (back-compat): ox, oy, oz, nx, ny, nz
+                        // Missing-arg coverage: build_mirror_pattern_missing_plane_origin_no_kernel_error
+                        let mut f64_arg = |name: &str| -> Result<f64, String> {
+                            eval_named_arg_f64(
+                                name,
+                                kind,
+                                args,
+                                values,
+                                functions,
+                                meta_map,
+                                diagnostics,
+                            )
+                            .ok_or_else(|| {
+                                format!(
+                                    "missing or non-finite argument '{}' for {}",
+                                    name, kind
+                                )
+                            })
+                        };
+                        Ok(reify_ir::GeometryOp::Mirror {
+                            target: target_id,
+                            plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
+                            plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
+                        })
+                    }
                 }
                 reify_compiler::PatternKind::Linear2D => {
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
@@ -16132,6 +16354,274 @@ mod tests {
         assert_eq!(
             got, expected,
             "single-element chain == transform_compose(identity, t)"
+        );
+    }
+
+    // ── decode_plane unit tests (task η, step-1) ─────────────────────────────
+
+    /// True producer→decode round-trip for plane_xy: the real stdlib producer
+    /// is used so the test exercises the full Plane value shape that consumers
+    /// will encounter at eval time.
+    #[test]
+    fn decode_plane_producer_round_trip_plane_xy() {
+        // plane_xy(3mm) → Plane at z=0.003 m, normal=[0,0,1]
+        let z_si = 0.003_f64;
+        let val = reify_stdlib::eval_builtin("plane_xy", &[reify_ir::Value::length(z_si)]);
+        let (origin, normal) = decode_plane(&val).expect("plane_xy should decode cleanly");
+        assert!((origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", origin[0]);
+        assert!((origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", origin[1]);
+        assert!((origin[2] - z_si).abs() < 1e-12, "oz must be {z_si}, got {}", origin[2]);
+        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
+        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
+        assert!((normal[2] - 1.0).abs() < 1e-12, "nz must be 1.0, got {}", normal[2]);
+    }
+
+    /// True producer→decode round-trip for plane_xz: offset lands in Y
+    /// (index 1) and the normal is [0,1,0].
+    #[test]
+    fn decode_plane_producer_round_trip_plane_xz() {
+        // plane_xz(5mm) → Plane at y=0.005 m, normal=[0,1,0]
+        let z_si = 0.005_f64;
+        let val = reify_stdlib::eval_builtin("plane_xz", &[reify_ir::Value::length(z_si)]);
+        let (origin, normal) = decode_plane(&val).expect("plane_xz should decode cleanly");
+        assert!((origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", origin[0]);
+        assert!((origin[1] - z_si).abs() < 1e-12, "oy must be {z_si}, got {}", origin[1]);
+        assert!((origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", origin[2]);
+        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
+        assert!((normal[1] - 1.0).abs() < 1e-12, "ny must be 1.0, got {}", normal[1]);
+        assert!((normal[2] - 0.0).abs() < 1e-12, "nz must be 0.0, got {}", normal[2]);
+    }
+
+    /// True producer→decode round-trip for plane_yz: offset lands in X
+    /// (index 0) and the normal is [1,0,0].
+    #[test]
+    fn decode_plane_producer_round_trip_plane_yz() {
+        // plane_yz(7mm) → Plane at x=0.007 m, normal=[1,0,0]
+        let z_si = 0.007_f64;
+        let val = reify_stdlib::eval_builtin("plane_yz", &[reify_ir::Value::length(z_si)]);
+        let (origin, normal) = decode_plane(&val).expect("plane_yz should decode cleanly");
+        assert!((origin[0] - z_si).abs() < 1e-12, "ox must be {z_si}, got {}", origin[0]);
+        assert!((origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", origin[1]);
+        assert!((origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", origin[2]);
+        assert!((normal[0] - 1.0).abs() < 1e-12, "nx must be 1.0, got {}", normal[0]);
+        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
+        assert!((normal[2] - 0.0).abs() < 1e-12, "nz must be 0.0, got {}", normal[2]);
+    }
+
+    /// A Plane whose normal vector has magnitude 2 (non-unit) must be
+    /// normalized to a unit normal by decode_plane — never returned as-is.
+    #[test]
+    fn decode_plane_normalizes_non_unit_normal() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let non_unit_normal = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(2.0),
+        ]);
+        let plane = reify_ir::Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(non_unit_normal),
+        };
+        let (_, normal) =
+            decode_plane(&plane).expect("non-unit normal [0,0,2] should normalize without error");
+        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
+        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
+        assert!((normal[2] - 1.0).abs() < 1e-12, "nz must be 1.0 after normalization, got {}", normal[2]);
+    }
+
+    /// Value::Axis must be rejected by decode_plane — wrong variant.
+    #[test]
+    fn decode_plane_rejects_axis_value() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let dir = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(1.0),
+        ]);
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(dir),
+        };
+        assert!(
+            decode_plane(&axis).is_err(),
+            "Value::Axis must be rejected by decode_plane (wrong variant)"
+        );
+    }
+
+    /// Value::Undef must be rejected by decode_plane — never silently pass through.
+    #[test]
+    fn decode_plane_rejects_undef() {
+        assert!(
+            decode_plane(&reify_ir::Value::Undef).is_err(),
+            "Value::Undef must be rejected by decode_plane"
+        );
+    }
+
+    /// A Plane with a zero-magnitude normal must be rejected — the decoder
+    /// must never return (0,0,0) as the unit normal.
+    #[test]
+    fn decode_plane_rejects_zero_magnitude_normal() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let zero_normal = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+        ]);
+        let plane = reify_ir::Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(zero_normal),
+        };
+        assert!(
+            decode_plane(&plane).is_err(),
+            "zero-magnitude normal must be rejected by decode_plane (never pass through as [0,0,0])"
+        );
+    }
+
+    // ── decode_axis unit tests (task η, step-3) ─────────────────────────────
+
+    /// Helper: build a Value::Point with three LENGTH-dimensioned components
+    /// (metres), as produced by point3() in the stdlib.
+    fn make_point3_length_val(x: f64, y: f64, z: f64) -> reify_ir::Value {
+        reify_ir::Value::Point(vec![
+            reify_ir::Value::length(x),
+            reify_ir::Value::length(y),
+            reify_ir::Value::length(z),
+        ])
+    }
+
+    /// True producer→decode round-trip for axis_z with origin at (0,0,0).
+    /// decode_axis must return origin=[0,0,0] and direction=[0,0,1].
+    #[test]
+    fn decode_axis_producer_round_trip_axis_z_origin() {
+        let origin = make_point3_length_val(0.0, 0.0, 0.0);
+        let val = reify_stdlib::eval_builtin("axis_z", std::slice::from_ref(&origin));
+        let (got_origin, got_dir) = decode_axis(&val).expect("axis_z should decode cleanly");
+        assert!((got_origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", got_origin[0]);
+        assert!((got_origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", got_origin[1]);
+        assert!((got_origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", got_origin[2]);
+        assert!((got_dir[0] - 0.0).abs() < 1e-12, "dx must be 0.0, got {}", got_dir[0]);
+        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy must be 0.0, got {}", got_dir[1]);
+        assert!((got_dir[2] - 1.0).abs() < 1e-12, "dz must be 1.0, got {}", got_dir[2]);
+    }
+
+    /// axis_x round-trip: direction=[1,0,0], origin passes through in SI metres.
+    #[test]
+    fn decode_axis_producer_round_trip_axis_x_with_offset_origin() {
+        // 1mm=0.001m, 2mm=0.002m, 3mm=0.003m
+        let origin = make_point3_length_val(0.001, 0.002, 0.003);
+        let val = reify_stdlib::eval_builtin("axis_x", std::slice::from_ref(&origin));
+        let (got_origin, got_dir) = decode_axis(&val).expect("axis_x with offset origin should decode");
+        assert!((got_origin[0] - 0.001).abs() < 1e-12, "ox must be 0.001, got {}", got_origin[0]);
+        assert!((got_origin[1] - 0.002).abs() < 1e-12, "oy must be 0.002, got {}", got_origin[1]);
+        assert!((got_origin[2] - 0.003).abs() < 1e-12, "oz must be 0.003, got {}", got_origin[2]);
+        assert!((got_dir[0] - 1.0).abs() < 1e-12, "dx must be 1.0, got {}", got_dir[0]);
+        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy must be 0.0, got {}", got_dir[1]);
+        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz must be 0.0, got {}", got_dir[2]);
+    }
+
+    /// axis_y round-trip: direction=[0,1,0].
+    #[test]
+    fn decode_axis_producer_round_trip_axis_y() {
+        let origin = make_point3_length_val(0.0, 0.0, 0.0);
+        let val = reify_stdlib::eval_builtin("axis_y", std::slice::from_ref(&origin));
+        let (got_origin, got_dir) = decode_axis(&val).expect("axis_y should decode cleanly");
+        assert!((got_dir[0] - 0.0).abs() < 1e-12, "dx must be 0.0, got {}", got_dir[0]);
+        assert!((got_dir[1] - 1.0).abs() < 1e-12, "dy must be 1.0, got {}", got_dir[1]);
+        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz must be 0.0, got {}", got_dir[2]);
+        // origin must be [0,0,0]
+        assert!((got_origin[0] - 0.0).abs() < 1e-12, "ox");
+        assert!((got_origin[1] - 0.0).abs() < 1e-12, "oy");
+        assert!((got_origin[2] - 0.0).abs() < 1e-12, "oz");
+    }
+
+    /// A non-unit direction (magnitude 2) must be normalized to unit length.
+    #[test]
+    fn decode_axis_normalizes_non_unit_direction() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let non_unit_dir = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(2.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+        ]);
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(non_unit_dir),
+        };
+        let (_, got_dir) =
+            decode_axis(&axis).expect("non-unit direction [2,0,0] should normalize without error");
+        assert!((got_dir[0] - 1.0).abs() < 1e-12, "dx must be 1.0 after normalization, got {}", got_dir[0]);
+        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy");
+        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz");
+    }
+
+    /// Value::Plane must be rejected by decode_axis — wrong variant.
+    #[test]
+    fn decode_axis_rejects_plane_value() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let normal = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(1.0),
+        ]);
+        let plane = reify_ir::Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(normal),
+        };
+        assert!(
+            decode_axis(&plane).is_err(),
+            "Value::Plane must be rejected by decode_axis (wrong variant)"
+        );
+    }
+
+    /// Value::Undef must be rejected by decode_axis.
+    #[test]
+    fn decode_axis_rejects_undef() {
+        assert!(
+            decode_axis(&reify_ir::Value::Undef).is_err(),
+            "Value::Undef must be rejected by decode_axis"
+        );
+    }
+
+    /// An Axis with a zero-magnitude direction must be rejected.
+    #[test]
+    fn decode_axis_rejects_zero_magnitude_direction() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let zero_dir = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+        ]);
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(zero_dir),
+        };
+        assert!(
+            decode_axis(&axis).is_err(),
+            "zero-magnitude direction must be rejected by decode_axis"
         );
     }
 }

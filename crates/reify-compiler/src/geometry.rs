@@ -1147,58 +1147,97 @@ pub(crate) fn compile_geometry_call(
             Some(sub_ops)
         }
         // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)
+        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle) — scalar form (9 args)
+        // circular_pattern(target, axis_value, count, angle)              — value form  (4 args)
         "circular_pattern" => {
-            if !check_arg_count_exact(
-                "circular_pattern",
-                compiled_args.len(),
-                9,
-                expr.span,
-                diagnostics,
-            ) {
-                return None;
+            let n = compiled_args.len();
+            if n == 9 {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Circular,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("ox".to_string(), it.next().unwrap()),
+                        ("oy".to_string(), it.next().unwrap()),
+                        ("oz".to_string(), it.next().unwrap()),
+                        ("ax".to_string(), it.next().unwrap()),
+                        ("ay".to_string(), it.next().unwrap()),
+                        ("az".to_string(), it.next().unwrap()),
+                        ("count".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else if n == 4 {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Circular,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("axis".to_string(), it.next().unwrap()),
+                        ("count".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else {
+                push_labeled_arg_count_error(
+                    format!("circular_pattern() expects 9 arguments (scalar) or 4 (axis-value), got {n}"),
+                    expr.span,
+                    diagnostics,
+                );
+                None
             }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Pattern {
-                kind: PatternKind::Circular,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("ox".to_string(), it.next().unwrap()),
-                    ("oy".to_string(), it.next().unwrap()),
-                    ("oz".to_string(), it.next().unwrap()),
-                    ("ax".to_string(), it.next().unwrap()),
-                    ("ay".to_string(), it.next().unwrap()),
-                    ("az".to_string(), it.next().unwrap()),
-                    ("count".to_string(), it.next().unwrap()),
-                    ("angle".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
         }
-        // mirror(target, ox, oy, oz, nx, ny, nz)
+        // mirror(target, ox, oy, oz, nx, ny, nz) — scalar form (7 args)
+        // mirror(target, plane_value)            — value form  (2 args)
         "mirror" => {
-            if !check_arg_count_exact("mirror", compiled_args.len(), 7, expr.span, diagnostics) {
-                return None;
+            let n = compiled_args.len();
+            if n == 7 {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Mirror,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("ox".to_string(), it.next().unwrap()),
+                        ("oy".to_string(), it.next().unwrap()),
+                        ("oz".to_string(), it.next().unwrap()),
+                        ("nx".to_string(), it.next().unwrap()),
+                        ("ny".to_string(), it.next().unwrap()),
+                        ("nz".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else if n == 2 {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Mirror,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("plane".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else {
+                push_labeled_arg_count_error(
+                    format!("mirror() expects 7 arguments (scalar) or 2 (plane-value), got {n}"),
+                    expr.span,
+                    diagnostics,
+                );
+                None
             }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Pattern {
-                kind: PatternKind::Mirror,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("ox".to_string(), it.next().unwrap()),
-                    ("oy".to_string(), it.next().unwrap()),
-                    ("oz".to_string(), it.next().unwrap()),
-                    ("nx".to_string(), it.next().unwrap()),
-                    ("ny".to_string(), it.next().unwrap()),
-                    ("nz".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
         }
         // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1, dx2, dy2, dz2, count2, spacing2)
         "linear_pattern_2d" => {
