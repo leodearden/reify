@@ -562,6 +562,7 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "Scalar" => Some(Type::length()), // Default scalar is length-dimensioned in M1
         "Solid" => Some(Type::Geometry),  // Surface-syntax alias for the geometry-handle type
         "Geometry" => Some(Type::Geometry), // Canonical surface spelling of the geometry-handle type (Solid is the legacy alias)
+        "DatumRef" => Some(Type::Geometry), // datum-reference handle aliases the geometry-handle type (PRD §8 Q1 / task #3116)
         // Topology-selector builtin type names (PRD §4.4 / task 4117 β).
         // Fully-qualified path required: `use super::*` brings the *reify_ir* SelectorKind
         // (Face/Point/Edge) into scope, but Type::Selector requires *reify_core::ty::SelectorKind*
