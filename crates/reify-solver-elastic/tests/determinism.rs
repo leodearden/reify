@@ -304,12 +304,75 @@ fn solve_box_cantilever(deterministic: bool, threads: usize) -> SolveOutput {
     let opts = CgSolverOptions { tolerance: 1e-10, max_iter: 5000 };
     let result: CgResult = solve_cg(&k, &f, opts, smode);
 
+    let u_vec = result.u().to_vec();
+
+    // Recover nodal stress field and compute max von Mises (step-4 GREEN).
+    let stress = recover_stress_field(&nodes, &conns, &u_vec, &MAT);
+    let vm = max_von_mises(&stress);
+
     SolveOutput {
-        u: result.u().to_vec(),
+        u: u_vec,
         iterations: result.iterations,
         converged: result.converged,
-        max_von_mises: 0.0, // updated in step-4 GREEN
+        max_von_mises: vm,
     }
+}
+
+// ─── stress helpers (step-4 GREEN) ───────────────────────────────────────────
+
+/// Compute von Mises stress from a 3×3 Cauchy stress tensor.
+///
+/// `σ_vm = √{ ½[(σ₁₁−σ₂₂)²+(σ₂₂−σ₃₃)²+(σ₃₃−σ₁₁)²] + 3(σ₁₂²+σ₂₃²+σ₁₃²) }`.
+///
+/// Reproduced from `analytical_validation.rs` (module-private there).
+fn von_mises_of_tensor(s: &[[f64; 3]; 3]) -> f64 {
+    let (s11, s22, s33) = (s[0][0], s[1][1], s[2][2]);
+    let (s12, s23, s13) = (s[0][1], s[1][2], s[0][2]);
+    let v = 0.5 * ((s11 - s22).powi(2) + (s22 - s33).powi(2) + (s33 - s11).powi(2))
+        + 3.0 * (s12.powi(2) + s23.powi(2) + s13.powi(2));
+    v.sqrt()
+}
+
+/// Gather the 12 element DOFs (`[u_x,u_y,u_z]` per corner) for a P1 tet.
+fn gather_u_p1(u: &[f64], conn: &[usize; 4]) -> [f64; 12] {
+    let mut ue = [0.0_f64; 12];
+    for (k, &node) in conn.iter().enumerate() {
+        ue[3 * k]     = u[3 * node];
+        ue[3 * k + 1] = u[3 * node + 1];
+        ue[3 * k + 2] = u[3 * node + 2];
+    }
+    ue
+}
+
+/// Recover the continuous nodal stress field of a P1 tet mesh.
+///
+/// Builds one `StressElement` per element (constant Cauchy tensor via
+/// `element_stress_p1`, volume via `tet_volume_p1`), then folds into nodal
+/// averages via `recover_nodal_stress_p1` (volume-weighted, connectivity-shape
+/// agnostic).
+fn recover_stress_field(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 4]],
+    u: &[f64],
+    mat: &IsotropicElastic,
+) -> Vec<[[f64; 3]; 3]> {
+    let elems: Vec<StressElement<'_>> = conns
+        .iter()
+        .map(|conn| {
+            let en = [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]], nodes[conn[3]]];
+            StressElement {
+                connectivity: conn.as_slice(),
+                stress: element_stress_p1(&en, mat, &gather_u_p1(u, conn)),
+                volume: tet_volume_p1(&en),
+            }
+        })
+        .collect();
+    recover_nodal_stress_p1(nodes.len(), &elems)
+}
+
+/// Maximum von Mises stress over all nodes in the recovered stress field.
+fn max_von_mises(field: &[[[f64; 3]; 3]]) -> f64 {
+    field.iter().map(|s| von_mises_of_tensor(s)).fold(0.0_f64, f64::max)
 }
 
 // ─── step-1 GREEN / tests ─────────────────────────────────────────────────────
