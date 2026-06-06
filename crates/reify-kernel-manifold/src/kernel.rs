@@ -593,9 +593,14 @@ impl GeometryKernel for ManifoldKernel {
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
             ExportFormat::ThreeMF => {
+                // Manifold tessellate ignores tolerance (exact meshes); pass 0.0.
                 let mesh = self
                     .tessellate(handle, 0.0)
                     .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                // default() → include_materials/include_colors both false → no warnings.
+                // Warnings are intentionally discarded: export() has no warning channel.
+                // Task δ wires include_materials/include_colors via occurrence params
+                // and surfaces W_3MF_NO_MATERIALS as a build diagnostic.
                 write_3mf(&mesh, ThreeMfOptions::default(), writer)
                     .map(|_warnings| ())
                     .map_err(|e| ExportError::IoError(e.to_string()))

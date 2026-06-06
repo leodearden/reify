@@ -1729,6 +1729,13 @@ pub fn write_stl_ascii(
 // ── 3MF serializer ───────────────────────────────────────────────────────────
 
 /// Options for [`write_3mf`].
+///
+/// **Kernel wiring status (γ):** both `ManifoldKernel::export` and
+/// `OcctKernel::export` call `write_3mf` with `ThreeMfOptions::default()`
+/// (both flags `false`) and discard the returned warnings.  The kernel
+/// `export()` trait has no warning channel; wiring these options through
+/// occurrence parameters and surfacing warnings as build diagnostics is
+/// task δ's responsibility.
 #[derive(Debug, Clone, Default)]
 pub struct ThreeMfOptions {
     /// Embed per-body material data in the output (γ: not yet implemented;
@@ -1777,9 +1784,14 @@ impl ThreeMfWarning {
 /// same `Mesh` with the same `ThreeMfOptions` are byte-identical.
 ///
 /// Returns `Err(io::Error(InvalidData))` if `indices.len()` is not a
-/// multiple of 3 or if any triangle index is out of bounds.
+/// multiple of 3, if `vertices.len()` is not a multiple of 3, or if any
+/// triangle index is out of bounds.
 /// Returns [`ThreeMfWarning::NoMaterials`] when either `include_materials` or
 /// `include_colors` is set (geometry is still written).
+///
+/// **NaN/Inf coordinates:** non-finite `f32` values are written as-is via
+/// `{}` formatting (matching `write_stl_ascii` behavior).  3MF consumers
+/// that require IEEE-finite coordinates will reject such packages.
 pub fn write_3mf(
     mesh: &Mesh,
     opts: ThreeMfOptions,
@@ -1796,6 +1808,18 @@ pub fn write_3mf(
             format!(
                 "index buffer length {} is not a multiple of 3",
                 mesh.indices.len()
+            ),
+        ));
+    }
+    // Mirror the index check: a partial vertex triple would be silently
+    // truncated by `len() / 3`, producing a mesh with a dropped float.
+    // Reject it symmetrically so both buffers fail loudly on malformed input.
+    if !mesh.vertices.len().is_multiple_of(3) {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "vertex buffer length {} is not a multiple of 3",
+                mesh.vertices.len()
             ),
         ));
     }
@@ -7157,6 +7181,25 @@ mod tests {
         let mut buf = Vec::new();
         let result = write_3mf(&mesh, ThreeMfOptions::default(), &mut buf);
         assert!(result.is_err(), "non-multiple-of-3 index buffer must return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
+        );
+    }
+
+    #[test]
+    fn write_3mf_malformed_vertex_buffer_returns_err() {
+        // 7 floats — not a multiple of 3; the trailing dangling float must be
+        // rejected rather than silently truncated (asymmetric-validation fix).
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5],
+            indices: vec![],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_3mf(&mesh, ThreeMfOptions::default(), &mut buf);
+        assert!(result.is_err(), "non-multiple-of-3 vertex buffer must return Err");
         assert_eq!(
             result.unwrap_err().kind(),
             std::io::ErrorKind::InvalidData,
