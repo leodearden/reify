@@ -342,7 +342,7 @@ fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
 fn sub_component_arg_for_trait_typed_param_accepts_conforming_struct() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def Host { param m : MaterialSpec }
@@ -484,21 +484,21 @@ fn sub_component_arg_real_literal_for_trait_typed_param_emits_conformance_error(
 }
 
 /// Acceptance for task 2039: a sub arg value may itself be a struct-instantiation
-/// call with named arguments (e.g. `Host(m: Steel(density: 1000.0))`), and the
+/// call with named arguments (e.g. `Host(m: Steel(density: 1000kg/m^3))`), and the
 /// inner call's callee participates in trait conformance as a `StructureRef`.
 /// The discriminator vs. the existing `...accepts_conforming_struct` test is
-/// the inner call's named args: `Steel(density: 1000.0)` rather than `Steel()`.
+/// the inner call's named args: `Steel(density: 1000kg/m^3)` rather than `Steel()`.
 /// Zero Error-severity diagnostics expected.
 #[test]
 fn sub_component_arg_structure_instantiation_with_args_accepted() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def Host { param m : MaterialSpec }
         structure def Top {
-            sub x = Host(m: Steel(density: 1000.0))
+            sub x = Host(m: Steel(density: 1000kg/m^3))
         }
     "#;
     let module = compile_source_with_stdlib(source);
@@ -561,7 +561,7 @@ fn option_trait_typed_param_rejects_some_with_non_conforming_struct() {
 fn option_trait_typed_param_accepts_some_with_conforming_struct() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def Host { param m : Option<MaterialSpec> }
@@ -615,7 +615,7 @@ fn option_trait_typed_param_accepts_none() {
 fn list_trait_typed_param_rejects_non_conforming_element() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def NotAMaterial { param density : Real = 1.0 }
@@ -647,12 +647,12 @@ fn list_trait_typed_param_rejects_non_conforming_element() {
 fn list_trait_typed_param_accepts_all_conforming_elements() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def Host { param ms : List<MaterialSpec> }
         structure def Top {
-            sub x = Host(ms: [Steel(), Steel(density: 1000.0)])
+            sub x = Host(ms: [Steel(), Steel(density: 1000kg/m^3)])
         }
     "#;
     let module = compile_source_with_stdlib(source);
@@ -664,7 +664,7 @@ fn list_trait_typed_param_accepts_all_conforming_elements() {
         .collect();
     assert!(
         errors.is_empty(),
-        "expected no errors for [Steel(), Steel(density: 1000.0)] passed to List<MaterialSpec> param, got: {:?}",
+        "expected no errors for [Steel(), Steel(density: 1000kg/m^3)] passed to List<MaterialSpec> param, got: {:?}",
         errors
     );
 }
@@ -702,7 +702,7 @@ fn list_trait_typed_param_accepts_empty_list() {
 fn set_trait_typed_param_rejects_non_conforming_element() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def NotAMaterial { param density : Real = 1.0 }
@@ -734,12 +734,12 @@ fn set_trait_typed_param_rejects_non_conforming_element() {
 fn set_trait_typed_param_accepts_all_conforming_elements() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def Host { param ms : Set<MaterialSpec> }
         structure def Top {
-            sub x = Host(ms: set{Steel(), Steel(density: 1000.0)})
+            sub x = Host(ms: set{Steel(), Steel(density: 1000kg/m^3)})
         }
     "#;
     let module = compile_source_with_stdlib(source);
@@ -751,7 +751,7 @@ fn set_trait_typed_param_accepts_all_conforming_elements() {
         .collect();
     assert!(
         errors.is_empty(),
-        "expected no errors for set{{Steel(), Steel(density: 1000.0)}} passed to Set<MaterialSpec> param, got: {:?}",
+        "expected no errors for set{{Steel(), Steel(density: 1000kg/m^3)}} passed to Set<MaterialSpec> param, got: {:?}",
         errors
     );
 }
@@ -764,7 +764,7 @@ fn set_trait_typed_param_accepts_all_conforming_elements() {
 fn map_trait_typed_param_rejects_non_conforming_value() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def NotAMaterial { param density : Real = 1.0 }
@@ -796,12 +796,12 @@ fn map_trait_typed_param_rejects_non_conforming_value() {
 fn map_trait_typed_param_accepts_all_conforming_values() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def Host { param ms : Map<String, MaterialSpec> }
         structure def Top {
-            sub x = Host(ms: map{"a" => Steel(), "b" => Steel(density: 1000.0)})
+            sub x = Host(ms: map{"a" => Steel(), "b" => Steel(density: 1000kg/m^3)})
         }
     "#;
     let module = compile_source_with_stdlib(source);
@@ -1091,7 +1091,7 @@ fn option_trait_typed_param_rejects_valueref_of_non_conforming_trait() {
 fn nested_wrapper_list_option_rejects_non_conforming_inner_element() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def NotAMaterial { param density : Real = 1.0 }
@@ -1124,12 +1124,12 @@ fn nested_wrapper_list_option_rejects_non_conforming_inner_element() {
 fn nested_wrapper_list_option_accepts_all_conforming_inner_elements() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def Host { param ms : List<Option<MaterialSpec>> }
         structure def Top {
-            sub x = Host(ms: [some(Steel()), none, some(Steel(density: 1000.0))])
+            sub x = Host(ms: [some(Steel()), none, some(Steel(density: 1000kg/m^3))])
         }
     "#;
     let module = compile_source_with_stdlib(source);
@@ -1256,7 +1256,7 @@ fn nested_wrapper_type_level_list_option_accepts_valueref_of_conforming_subtrait
 fn bare_struct_call_passed_to_option_trait_param_emits_shape_mismatch() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def Host { param m : Option<MaterialSpec> }
@@ -1316,7 +1316,7 @@ fn bare_struct_call_passed_to_option_trait_param_emits_shape_mismatch() {
 fn list_literal_passed_to_option_trait_param_emits_shape_mismatch() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def Host { param m : Option<MaterialSpec> }
@@ -1361,7 +1361,7 @@ fn list_literal_passed_to_option_trait_param_emits_shape_mismatch() {
 fn map_literal_passed_to_list_trait_param_emits_shape_mismatch() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def Host { param ms : List<MaterialSpec> }
@@ -1547,7 +1547,7 @@ fn valueref_of_list_passed_to_map_trait_param_emits_shape_mismatch() {
 fn map_trait_typed_param_rejects_non_conforming_key() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def NotAMaterial { param density : Real = 1.0 }
@@ -1590,7 +1590,7 @@ fn map_trait_typed_param_rejects_non_conforming_key() {
 fn option_list_trait_typed_param_rejects_non_conforming_inner_element() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def NotAMaterial { param density : Real = 1.0 }
@@ -1630,12 +1630,12 @@ fn option_list_trait_typed_param_rejects_non_conforming_inner_element() {
 fn option_list_trait_typed_param_accepts_all_conforming_inner_elements() {
     let source = r#"
         structure def Steel : MaterialSpec {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
         structure def Host { param ms : Option<List<MaterialSpec>> }
         structure def Top {
-            sub x = Host(ms: some([Steel(), Steel(density: 1000.0)]))
+            sub x = Host(ms: some([Steel(), Steel(density: 1000kg/m^3)]))
         }
     "#;
     let module = compile_source_with_stdlib(source);
@@ -1647,7 +1647,7 @@ fn option_list_trait_typed_param_accepts_all_conforming_inner_elements() {
         .collect();
     assert!(
         errors.is_empty(),
-        "expected no errors for some([Steel(), Steel(density: 1000.0)]) passed to Option<List<MaterialSpec>> param, got: {:?}",
+        "expected no errors for some([Steel(), Steel(density: 1000kg/m^3)]) passed to Option<List<MaterialSpec>> param, got: {:?}",
         errors
     );
 }

@@ -1,6 +1,6 @@
 # Stdlib `param X : Real` Placeholder Audit
 
-**Status:** Open — classification complete; dimensionless annotations applied (step-2); follow-up tasks filed (step-3); composite-dim task-E (#3115) resolved 2026-05-15 → all 11 blocked-composite sites tightened to named-dimension aliases
+**Status:** Open — classification complete; dimensionless annotations applied (step-2); follow-up tasks filed (step-3); composite-dim task-E (#3115) resolved 2026-05-15 → all 11 blocked-composite sites tightened to named-dimension aliases; mechanical task-A (#3111) resolved 2026-06-05 → all 12 materials_mechanical.ri tightenable-now sites tightened
 **Date:** 2026-05-07 (audit), 2026-05-15 (task-E close-out)
 **Source:** Task 3090 (origin tasks: 2354 stdlib design, 2696 Density type, 2759 tensor literals)
 **Audit doc parallel:** `docs/notes/stdlib-trait-breadth-audit-v01.md` (trait-breadth audit, task 2347; refreshed 2026-05-14 via task 3529, formerly named `stdlib-trait-audit.md`)
@@ -71,40 +71,53 @@ so readers know it was not overlooked.
 
 ---
 
-### `materials_mechanical.ri` — 17 sites
+### `materials_mechanical.ri` — 19 sites (post-β, tightened by #3111)
 
 Source: `crates/reify-compiler/stdlib/materials_mechanical.ri`
 
+Line numbers reflect the post-β surface after task #4240 renamed `uts` →
+`ultimate_tensile_strength`, split `endurance_limit` → `fatigue_limit` +
+`fatigue_strength_at` (both Pressure = undef), and split `impact_energy` →
+`charpy_impact` + `izod_impact` (both Energy = undef). Task #3111 tightened all
+10 pre-β tightenable-now sites plus the 2 new post-β sites.
+
 | Line | Owner | Param | Current Type | Spec / Intent Type | Classification | Follow-up |
 |------|-------|-------|-------------|-------------------|----------------|-----------|
-| 48 | `MaterialSpec` trait | `density` | `Real` | `Density` | tightenable-now | task-A |
-| 61 | `Material` struct | `density` | `Real` | `Density` | tightenable-now | task-A |
-| 62 | `Material` struct | `youngs_modulus` | `Real` | `Pressure` | tightenable-now | task-A |
-| 70 | `Elastic` trait | `youngs_modulus` | `Real` | `Pressure` | tightenable-now | task-A |
-| 71 | `Elastic` trait | `poissons_ratio` | `Real` | `Real` | genuine-dimensionless | — |
-| 72 | `Elastic` trait | `shear_modulus` | `Real` | `Pressure` | tightenable-now | task-A |
-| 81 | `Strong` trait | `yield_strength` | `Real` | `Pressure` | tightenable-now | task-A |
-| 82 | `Strong` trait | `uts` | `Real` | `Pressure` | tightenable-now | task-A |
-| 83 | `Strong` trait | `compressive_strength` | `Real` | `Pressure` | tightenable-now | task-A |
-| 93 | `Hard` trait | `hardness_value` | `Real` | `Real` | genuine-dimensionless | — |
-| 101 | `FatigueRated` trait | `endurance_limit` | `Real` | `Pressure` | tightenable-now | task-A |
-| 108 | `FractureTough` trait | `fracture_toughness` | `FractureToughness` ✓ | `Pressure·√Length` (K_Ic) | tightened-by-#3115 | task-E ✓ |
-| 116 | `Ductile` trait | `elongation` | `Real` | `Real` | genuine-dimensionless | — |
-| 117 | `Ductile` trait | `reduction_of_area` | `Real` | `Real` | genuine-dimensionless | — |
-| 124 | `ImpactResistant` trait | `impact_energy` | `Real` | `Energy` | tightenable-now | task-A |
-| 132 | `Damping` trait | `damping_ratio` | `Real` | `Real` | genuine-dimensionless | — |
-| 133 | `Damping` trait | `loss_factor` | `Real` | `Real` | genuine-dimensionless | — |
+| 62 | `MaterialSpec` trait | `density` | `Density` ✓ | `Density` | tightened-by-#3111 | task-A ✓ |
+| 75 | `Material` struct | `density` | `Density` ✓ | `Density` | tightened-by-#3111 | task-A ✓ |
+| 76 | `Material` struct | `youngs_modulus` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 88 | `Elastic` trait | `youngs_modulus` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 89 | `Elastic` trait | `poissons_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+| 90 | `Elastic` trait | `shear_modulus` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 102 | `Strong` trait | `yield_strength` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 103 | `Strong` trait | `ultimate_tensile_strength` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 104 | `Strong` trait | `compressive_strength` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 115 | `Hard` trait | `hardness_value` | `Real` | `Real` | genuine-dimensionless | — |
+| 133 | `FatigueRated` trait | `fatigue_limit` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 134 | `FatigueRated` trait | `fatigue_strength_at` | `Pressure` ✓ | `Pressure` | tightened-by-#3111 | task-A ✓ |
+| 143 | `FractureTough` trait | `fracture_toughness` | `FractureToughness` ✓ | `Pressure·√Length` (K_Ic) | tightened-by-#3115 | task-E ✓ |
+| 153 | `Ductile` trait | `elongation_at_break` | `Real` | `Real` | genuine-dimensionless | — |
+| 154 | `Ductile` trait | `reduction_of_area` | `Real` | `Real` | genuine-dimensionless | — |
+| 165 | `ImpactResistant` trait | `charpy_impact` | `Energy` ✓ | `Energy` | tightened-by-#3111 | task-A ✓ |
+| 166 | `ImpactResistant` trait | `izod_impact` | `Energy` ✓ | `Energy` | tightened-by-#3111 | task-A ✓ |
+| 174 | `Damping` trait | `damping_ratio` | `Real` | `Real` | genuine-dimensionless | — |
+| 175 | `Damping` trait | `loss_factor` | `Real` | `Real` | genuine-dimensionless | — |
 
 **Notes:**
 - `poissons_ratio` is a dimensionless elastic ratio; `Real` is correct.
 - `hardness_value` is a scale-dependent numeric reading (Rockwell, Brinell, Vickers
   etc. use incommensurable scales); `Real` is correct.
-- `elongation` and `reduction_of_area` are fractional percentages; `Real` is correct.
+- `elongation_at_break` (renamed from `elongation` by #4240) and `reduction_of_area`
+  are fractional percentages; `Real` is correct.
 - `damping_ratio` and `loss_factor` are energy ratios; `Real` is correct.
 - `fracture_toughness` (K_Ic) has SI units Pa·√m = Pressure × Length^(1/2); tightened
   to the named-dimension alias `FractureToughness` by task #3115. The blocker was the
   const-eval helper `from_exps(...)` (denominator=1 only); #3115 added a sibling
   `from_rational_exps(...)` that admits fractional Length exponents (1/2 here).
+- `fatigue_cycles : Int = undef` (FatigueRated) is an integer cycle count — not a Real
+  placeholder; it was added by #4240 and is correctly typed as Int.
+- All 10 pre-β `tightenable-now` sites plus 2 new post-β sites tightened by #3111
+  (2026-06-05).
 
 ---
 
@@ -358,19 +371,23 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 
 | Classification | Count | Action |
 |----------------|-------|--------|
-| `tightenable-now` | 30 | Filed per-module follow-up tasks (task-A … task-D) |
+| `tightenable-now` | 20 | tasks-B/C/A resolved; task-D (#3114) pending |
 | `genuine-dimensionless` | 21 | Annotated `// dimensionless` in-place |
+| `tightened-by-#3111` | 12 | task-A ✓ resolved 2026-06-05 — 10 pre-β + 2 post-β (#4240) sites in materials_mechanical.ri: density→Density, youngs_modulus/shear_modulus/yield_strength/ultimate_tensile_strength/compressive_strength/fatigue_limit/fatigue_strength_at→Pressure, charpy_impact/izod_impact→Energy |
 | `tightened-by-#3115` | 11 | Composite-dim alias task-E ✓ resolved 2026-05-15 — all 11 sites now use named-dimension aliases (ThermalConductivity, SpecificHeat, ThermalExpansion, ElectricResistivity, ElectricalConductivity, DielectricStrength, Stiffness, AbsorptionCoeff, FractureToughness) |
 | `blocked-composite` | 0 | All 11 previous blocked-composite sites tightened by #3115 |
 | `blocked-geometry-type` | 24 | Filed geometry-type follow-up task (task-F) |
 | `blocked-field-in-param` | 0 | Resolved by task 3117; both sites tightened to Field types |
 | `structural-contract` | 7 | Rationale recorded; no tightening needed or intended |
-| **Total** | **99** | |
+| **Total** | **101** | |
 
-> Note: the total (99) exceeds the 88 unique `param X : Real` source lines because
-> `tightenable-now` rows that share the same param across a trait declaration and its
-> conforming structures are counted separately by line. The trait + 4-struct pattern
-> in `materials_fea.ri::poisson_ratio` (5 rows, 5 lines) is the clearest example.
+> Note: the original audit counted 99 rows across all tables (88 unique `param X : Real`
+> source lines, plus 11 extra because some params appear in both a trait declaration and
+> conforming structures — e.g. `materials_fea.ri::poisson_ratio` appears 5× across
+> ElasticMaterial + 4 concrete structs). Task #4240 (post-β) added 2 new Real sites
+> (fatigue_strength_at, izod_impact) that were immediately tightened by #3111, bringing
+> the total to 101. The `tightenable-now` count falls from 30 to 20 as tasks A (#3111),
+> B (#3112), and C (#3113) resolve; each per-module table shows the resolved rows inline.
 
 ---
 
@@ -381,7 +398,7 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 
 | Label | Title | Scope | Task ID |
 |-------|-------|-------|---------|
-| task-A | Tighten `materials_mechanical.ri` dimensioned params | density→Density, youngs_modulus/shear_modulus→Pressure, yield_strength/uts/compressive_strength→Pressure, endurance_limit→Pressure, impact_energy→Energy; update conforming structures in examples/ and tests/ | #3111 |
+| task-A ✓ | Tighten `materials_mechanical.ri` dimensioned params | density→Density, youngs_modulus/shear_modulus/yield_strength/ultimate_tensile_strength/compressive_strength/fatigue_limit/fatigue_strength_at→Pressure, charpy_impact/izod_impact→Energy; update conforming structures in examples/ and tests/ (post-β names from #4240) | #3111 (resolved 2026-06-05) |
 | task-B ✓ | Tighten `materials_thermal.ri` Temperature params | melting_point / max_service_temperature / glass_transition → Temperature; Refractory constraint updated to `>= 1500.0K`; call sites in examples/ and tests/ updated. | #3112 (resolved) |
 | task-C ✓ | Tighten `materials_optical.ri` `reference_thickness` | reference_thickness → Length; update call sites | #3113 (resolved) |
 | task-D | Tighten `structural_physical.ri` dimensioned params | volume→Volume, centroid_x/y/z→Length, moment_of_inertia→MomentOfInertia, max_deflection→Length, hardening_modulus→Pressure, max_service_temp→Temperature, seal_pressure_rating→Pressure; update call sites | #3114 |

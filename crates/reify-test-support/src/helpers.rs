@@ -894,7 +894,7 @@ mod tests {
         // Source referencing stdlib trait MaterialSpec — should compile without errors
         // only when stdlib is loaded.
         let source = r#"structure Steel : MaterialSpec {
-            param density: Real = 7850
+            param density : Density = 7850kg/m^3
             param name: String = "Steel"
         }"#;
         let compiled = super::compile_source_with_stdlib(source);
@@ -921,7 +921,7 @@ mod tests {
     #[test]
     fn compile_source_with_stdlib_resolves_prelude_enum_access() {
         let source = r#"structure def CorrTest : CorrosionResistant {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "test_steel"
             param corrosion_class : CorrosionClass = CorrosionClass.C5
         }"#;
@@ -1088,7 +1088,7 @@ mod tests {
     fn test_check_source_with_stdlib() {
         // Source referencing stdlib trait MaterialSpec with a constraint.
         let source = r#"structure Steel : MaterialSpec {
-            param density: Real = 7850
+            param density : Density = 7850kg/m^3
             param name: String = "Steel"
             constraint density > 0
         }"#;
@@ -1191,7 +1191,7 @@ mod tests {
         // Use a simple source that requires stdlib (MaterialSpec trait) without
         // coupling to specific stdlib field values or shape details.
         let source = r#"structure S : MaterialSpec {
-            param density: Real = 1
+            param density : Density = 1kg/m^3
             param name: String = "S"
         }"#;
         // parse_and_compile_with_stdlib panics on errors, so reaching here means success.

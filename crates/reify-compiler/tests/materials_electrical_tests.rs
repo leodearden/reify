@@ -277,7 +277,7 @@ fn copper_conforms_to_conductive_with_constraint_injection() {
     // Avoids scientific notation with negative exponent which the parser mishandles.
     let source = r#"
 structure def Copper : Conductive {
-    param density : Real = 8960.0
+    param density : Density = 8960kg/m^3
     param name : String = "copper"
     param resistivity : ElectricResistivity = 0.000000017 * 1ohm * 1m
     param dielectric_constant : Real = 1.0
@@ -385,7 +385,7 @@ fn glass_conforms_to_insulating_with_constraint_injection() {
     // Decimal form avoids the parser's scientific-notation edge cases.
     let source = r#"
 structure def Glass : Insulating {
-    param density : Real = 2500.0
+    param density : Density = 2500kg/m^3
     param name : String = "glass"
     param resistivity : ElectricResistivity = 1000000000.0 * 1ohm * 1m
     param dielectric_constant : Real = 7.0

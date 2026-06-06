@@ -36,7 +36,7 @@ use reify_test_support::{check_source_with_stdlib, compile_source_with_stdlib};
 fn thermal_omit_optional_params_compiles_cleanly() {
     let source = r#"
 structure def ThermalOmit : ThermallyCharacterized {
-    param density : Real = 3900.0
+    param density : Density = 3900kg/m^3
     param name : String = "alumina_partial"
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
@@ -79,7 +79,7 @@ structure def ThermalOmit : ThermallyCharacterized {
 fn refractory_omit_max_service_temperature_is_indeterminate() {
     let source = r#"
 structure RefractoryOmit : Refractory {
-    param density : Real = 3900.0
+    param density : Density = 3900kg/m^3
     param name : String = "refractory_partial"
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
@@ -154,7 +154,7 @@ structure RefractoryOmit : Refractory {
 fn optical_omit_optional_params_compiles_cleanly() {
     let source = r#"
 structure def OpticalOmit : OpticallyCharacterized {
-    param density : Real = 2500.0
+    param density : Density = 2500kg/m^3
     param name : String = "glass_partial"
     param refractive_index : Real = 1.52
 }

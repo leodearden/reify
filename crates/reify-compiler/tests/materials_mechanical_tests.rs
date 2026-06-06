@@ -59,11 +59,12 @@ fn stdlib_file_parses_and_compiles_without_errors() {
 
 // ─── step-3: Elastic trait ───────────────────────────────────────────────────
 
-/// Step 3: Elastic trait exists with 2 required members: youngs_modulus and
-/// poissons_ratio — both typed as Real. (task α #4239: shear_modulus is now
-/// `= undef` optional, so it lives in `defaults`, not `required_members`.)
+/// Step 3: Elastic trait has 2 required members: youngs_modulus (Pressure)
+/// and poissons_ratio (Real, dimensionless). (task α #4239: shear_modulus is
+/// now `= undef` optional, so it lives in `defaults`, not `required_members`.)
+/// (task #3111: youngs_modulus tightened from Real to Pressure.)
 #[test]
-fn elastic_trait_has_three_real_members() {
+fn elastic_trait_required_members_have_correct_types() {
     let module = load_stdlib_module();
 
     let elastic = module
@@ -106,22 +107,38 @@ fn elastic_trait_has_three_real_members() {
         member_names
     );
 
-    for req in &elastic.required_members {
-        match &req.kind {
-            RequirementKind::Param(ty) => {
-                assert_eq!(
-                    *ty,
-                    Type::Real,
-                    "Elastic member '{}' should be Real, got {:?}",
-                    req.name,
-                    ty
-                );
-            }
-            other => panic!(
-                "Elastic member '{}' should be Param, got {:?}",
-                req.name, other
-            ),
-        }
+    // youngs_modulus must be Pressure (dimensioned), not Real — task #3111.
+    let youngs = elastic
+        .required_members
+        .iter()
+        .find(|r| r.name == "youngs_modulus")
+        .expect("expected 'youngs_modulus' required member");
+    match &youngs.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+            "youngs_modulus should be Scalar{{PRESSURE}}, got {:?}",
+            ty
+        ),
+        other => panic!("youngs_modulus should be Param, got {:?}", other),
+    }
+
+    // poissons_ratio must stay Real (genuinely dimensionless).
+    let poissons = elastic
+        .required_members
+        .iter()
+        .find(|r| r.name == "poissons_ratio")
+        .expect("expected 'poissons_ratio' required member");
+    match &poissons.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Real,
+            "poissons_ratio should remain Real (dimensionless), got {:?}",
+            ty
+        ),
+        other => panic!("poissons_ratio should be Param, got {:?}", other),
     }
 }
 
@@ -180,6 +197,67 @@ fn strong_trait_has_members_and_constraint_default() {
         !constraint_defaults.is_empty(),
         "Strong trait should have at least 1 constraint default (ultimate_tensile_strength >= yield_strength)"
     );
+
+    // Type assertions: yield_strength and ultimate_tensile_strength should be
+    // Pressure (dimensioned) after task #3111 tightening.
+    for name in &["yield_strength", "ultimate_tensile_strength"] {
+        let req = strong
+            .required_members
+            .iter()
+            .find(|r| r.name == *name)
+            .unwrap_or_else(|| panic!("Strong missing required member '{}'", name));
+        match &req.kind {
+            RequirementKind::Param(ty) => assert_eq!(
+                *ty,
+                Type::Scalar {
+                    dimension: DimensionVector::PRESSURE,
+                },
+                "Strong member '{}' should be Scalar{{PRESSURE}}, got {:?}",
+                name,
+                ty
+            ),
+            other => panic!(
+                "Strong member '{}' should be Param, got {:?}",
+                name, other
+            ),
+        }
+    }
+}
+
+// ─── MaterialSpec.density type pin ───────────────────────────────────────────
+
+/// MaterialSpec.density must be typed as Density (DimensionVector::MASS_DENSITY),
+/// not plain Real, after task #3111 tightening.
+#[test]
+fn material_spec_density_member_is_density_type() {
+    let module = load_stdlib_module();
+
+    let spec = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "MaterialSpec")
+        .expect("expected 'MaterialSpec' trait in compiled module");
+
+    let density_req = spec
+        .required_members
+        .iter()
+        .find(|r| r.name == "density")
+        .expect("MaterialSpec should have 'density' as a required member");
+
+    match &density_req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+            "MaterialSpec.density should be Scalar{{MASS_DENSITY}} (Density type), got {:?}",
+            ty
+        ),
+        other => panic!(
+            "MaterialSpec.density should be a Param requirement, got {:?}",
+            other
+        ),
+    }
 }
 
 // ─── step-7: HardnessScale enum and Hard trait ───────────────────────────────
@@ -678,12 +756,12 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
 fn four_refining_traits_with_all_material_members_conform_cleanly() {
     // (trait_name, trait-specific params to include alongside inherited density/name)
     let cases: &[(&str, &str)] = &[
-        ("FatigueRated", "    param fatigue_limit : Real = 500.0"),
+        ("FatigueRated", "    param fatigue_limit : Pressure = 500MPa"),
         (
             "FractureTough",
             "    param fracture_toughness : FractureToughness = 50.0 * 1Pa * sqrt(1m)",
         ),
-        ("ImpactResistant", "    param charpy_impact : Real = 30.0"),
+        ("ImpactResistant", "    param charpy_impact : Energy = 30J"),
         (
             "Damping",
             "    param damping_ratio : Real = 0.05\n    param loss_factor : Real = 0.1",
@@ -692,7 +770,7 @@ fn four_refining_traits_with_all_material_members_conform_cleanly() {
 
     for (trait_name, own_members) in cases {
         let source = format!(
-            "structure def Test{} : {} {{\n    param density : Real = 7850.0\n    param name : String = \"steel\"\n{}\n}}\n",
+            "structure def Test{} : {} {{\n    param density : Density = 7850kg/m^3\n    param name : String = \"steel\"\n{}\n}}\n",
             trait_name, trait_name, own_members
         );
         let compiled = compile_source_with_stdlib(&source);

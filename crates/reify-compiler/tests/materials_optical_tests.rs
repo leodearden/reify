@@ -175,7 +175,7 @@ fn optically_characterized_has_one_required_and_three_optional_members() {
 fn borosilicate_glass_conforms_to_optically_characterized() {
     let source = r#"
 structure def BorosilicateGlass : OpticallyCharacterized {
-    param density : Real = 2230.0
+    param density : Density = 2230kg/m^3
     param name : String = "borosilicate_glass"
     param refractive_index : Real = 1.52
     param absorption_coefficient : AbsorptionCoeff = 0.001 / 1m

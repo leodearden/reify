@@ -164,9 +164,9 @@ fn temperature_dependent_has_reference_temperature_default_with_temperature_type
 fn elastic_poissons_ratio_high_is_violated() {
     let src = r#"
         structure def StiffMat : Elastic {
-            param youngs_modulus : Real = 200.0
+            param youngs_modulus : Pressure = 200GPa
             param poissons_ratio : Real = 0.7
-            param shear_modulus  : Real = 77.0
+            param shear_modulus  : Pressure = 77GPa
         }
     "#;
     let result: CheckResult = check_source_with_stdlib(src);
@@ -206,9 +206,9 @@ fn elastic_poissons_ratio_high_is_violated() {
 fn elastic_poissons_ratio_negative_is_violated() {
     let src = r#"
         structure def AuxeticMat : Elastic {
-            param youngs_modulus : Real = 100.0
+            param youngs_modulus : Pressure = 100GPa
             param poissons_ratio : Real = -0.1
-            param shear_modulus  : Real = 40.0
+            param shear_modulus  : Pressure = 40GPa
         }
     "#;
     let result: CheckResult = check_source_with_stdlib(src);
@@ -246,9 +246,9 @@ fn elastic_poissons_ratio_negative_is_violated() {
 fn elastic_poissons_ratio_valid_is_clean() {
     let src = r#"
         structure def NormalMat : Elastic {
-            param youngs_modulus : Real = 200.0
+            param youngs_modulus : Pressure = 200GPa
             param poissons_ratio : Real = 0.3
-            param shear_modulus  : Real = 77.0
+            param shear_modulus  : Pressure = 77GPa
         }
     "#;
     let result: CheckResult = check_source_with_stdlib(src);
@@ -286,7 +286,7 @@ fn elastic_poissons_ratio_valid_is_clean() {
 fn elastic_omits_shear_modulus_is_clean() {
     let src = r#"
         structure def ElasticNoShear : Elastic {
-            param youngs_modulus : Real = 200.0
+            param youngs_modulus : Pressure = 200GPa
             param poissons_ratio : Real = 0.3
         }
     "#;
@@ -313,8 +313,8 @@ fn elastic_omits_shear_modulus_is_clean() {
 fn strong_omits_compressive_strength_is_clean() {
     let src = r#"
         structure def StrongNoCompr : Strong {
-            param yield_strength            : Real = 250.0
-            param ultimate_tensile_strength : Real = 400.0
+            param yield_strength            : Pressure = 250MPa
+            param ultimate_tensile_strength : Pressure = 400MPa
         }
     "#;
     let compiled = compile_source_with_stdlib(src);
@@ -402,8 +402,8 @@ fn ductile_old_elongation_name_is_missing_required_member() {
 fn strong_ultimate_tensile_strength_valid_is_clean() {
     let src = r#"
         structure def StrongRenameOk : Strong {
-            param yield_strength             : Real = 250.0
-            param ultimate_tensile_strength  : Real = 400.0
+            param yield_strength             : Pressure = 250MPa
+            param ultimate_tensile_strength  : Pressure = 400MPa
         }
     "#;
     let compiled = compile_source_with_stdlib(src);
@@ -429,8 +429,8 @@ fn strong_ultimate_tensile_strength_valid_is_clean() {
 fn strong_ultimate_tensile_strength_below_yield_is_violated() {
     let src = r#"
         structure def StrongRenameViolated : Strong {
-            param yield_strength             : Real = 400.0
-            param ultimate_tensile_strength  : Real = 250.0
+            param yield_strength             : Pressure = 400MPa
+            param ultimate_tensile_strength  : Pressure = 250MPa
         }
     "#;
     let result: CheckResult = check_source_with_stdlib(src);
@@ -505,7 +505,7 @@ fn strong_old_uts_name_is_missing_required_member() {
 fn fatigue_rated_no_fatigue_params_is_clean() {
     let src = r#"
         structure def FatigueNone : FatigueRated {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name    : String = "steel"
         }
     "#;
@@ -531,9 +531,9 @@ fn fatigue_rated_no_fatigue_params_is_clean() {
 fn fatigue_rated_subset_fatigue_limit_only_is_clean() {
     let src = r#"
         structure def FatigueSubset : FatigueRated {
-            param density      : Real   = 7850.0
-            param name         : String = "steel"
-            param fatigue_limit : Real  = 300.0
+            param density      : Density = 7850kg/m^3
+            param name         : String  = "steel"
+            param fatigue_limit : Pressure = 300MPa
         }
     "#;
     let compiled = compile_source_with_stdlib(src);
@@ -551,8 +551,9 @@ fn fatigue_rated_subset_fatigue_limit_only_is_clean() {
 }
 
 /// FatigueRated trait shape: fatigue_limit and fatigue_strength_at must live in
-/// defaults with type Real; fatigue_cycles must live in defaults with type Int;
+/// defaults with type Pressure; fatigue_cycles must live in defaults with type Int;
 /// none of the three appear in required_members.
+/// (task #3111: fatigue_limit and fatigue_strength_at tightened from Real to Pressure.)
 ///
 /// RED: stdlib FatigueRated still has required `endurance_limit` — new params absent.
 #[test]
@@ -574,7 +575,7 @@ fn fatigue_rated_optional_params_in_defaults() {
         );
     }
 
-    // fatigue_limit must be in defaults with Type::Real.
+    // fatigue_limit must be in defaults with Pressure type (task #3111).
     let fl = fatigue
         .defaults
         .iter()
@@ -583,14 +584,16 @@ fn fatigue_rated_optional_params_in_defaults() {
     match &fl.kind {
         DefaultKind::Param { cell_type, .. } => assert_eq!(
             *cell_type,
-            Type::Real,
-            "fatigue_limit should have type Real, got {:?}",
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+            "fatigue_limit should have Pressure type, got {:?}",
             cell_type
         ),
         other => panic!("expected DefaultKind::Param for fatigue_limit, got {:?}", other),
     }
 
-    // fatigue_strength_at must be in defaults with Type::Real.
+    // fatigue_strength_at must be in defaults with Pressure type (task #3111).
     let fsa = fatigue
         .defaults
         .iter()
@@ -599,8 +602,10 @@ fn fatigue_rated_optional_params_in_defaults() {
     match &fsa.kind {
         DefaultKind::Param { cell_type, .. } => assert_eq!(
             *cell_type,
-            Type::Real,
-            "fatigue_strength_at should have type Real, got {:?}",
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+            "fatigue_strength_at should have Pressure type, got {:?}",
             cell_type
         ),
         other => panic!(
@@ -609,7 +614,7 @@ fn fatigue_rated_optional_params_in_defaults() {
         ),
     }
 
-    // fatigue_cycles must be in defaults with Type::Int.
+    // fatigue_cycles must remain in defaults with Type::Int (not a Real placeholder).
     let fc = fatigue
         .defaults
         .iter()
@@ -636,7 +641,7 @@ fn fatigue_rated_optional_params_in_defaults() {
 fn impact_resistant_no_impact_params_is_clean() {
     let source = r#"
         structure def ImpactNone : ImpactResistant {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
         }
     "#;
@@ -661,10 +666,10 @@ fn impact_resistant_no_impact_params_is_clean() {
 fn impact_resistant_both_impact_params_is_clean() {
     let source = r#"
         structure def ImpactBoth : ImpactResistant {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "steel"
-            param charpy_impact : Real = 80.0
-            param izod_impact : Real = 60.0
+            param charpy_impact : Energy = 80J
+            param izod_impact : Energy = 60J
         }
     "#;
     let compiled = compile_source_with_stdlib(source);
@@ -682,7 +687,8 @@ fn impact_resistant_both_impact_params_is_clean() {
 }
 
 /// ImpactResistant trait shape: charpy_impact and izod_impact must live in defaults
-/// with type Real; neither in required_members; impact_energy absent.
+/// with type Energy; neither in required_members; impact_energy absent.
+/// (task #3111: charpy_impact and izod_impact tightened from Real to Energy.)
 ///
 /// RED: stdlib ImpactResistant still has required `impact_energy` — new params absent.
 #[test]
@@ -702,7 +708,7 @@ fn impact_resistant_optional_params_in_defaults() {
         );
     }
 
-    // charpy_impact must be in defaults with Type::Real.
+    // charpy_impact must be in defaults with Energy type (task #3111).
     let ci = impact
         .defaults
         .iter()
@@ -711,14 +717,16 @@ fn impact_resistant_optional_params_in_defaults() {
     match &ci.kind {
         DefaultKind::Param { cell_type, .. } => assert_eq!(
             *cell_type,
-            Type::Real,
-            "charpy_impact should have type Real, got {:?}",
+            Type::Scalar {
+                dimension: DimensionVector::ENERGY,
+            },
+            "charpy_impact should have Energy type, got {:?}",
             cell_type
         ),
         other => panic!("expected DefaultKind::Param for charpy_impact, got {:?}", other),
     }
 
-    // izod_impact must be in defaults with Type::Real.
+    // izod_impact must be in defaults with Energy type (task #3111).
     let ii = impact
         .defaults
         .iter()
@@ -727,10 +735,104 @@ fn impact_resistant_optional_params_in_defaults() {
     match &ii.kind {
         DefaultKind::Param { cell_type, .. } => assert_eq!(
             *cell_type,
-            Type::Real,
-            "izod_impact should have type Real, got {:?}",
+            Type::Scalar {
+                dimension: DimensionVector::ENERGY,
+            },
+            "izod_impact should have Energy type, got {:?}",
             cell_type
         ),
         other => panic!("expected DefaultKind::Param for izod_impact, got {:?}", other),
+    }
+}
+
+// ── §6.2 Optional param type pins — Elastic.shear_modulus and Strong.compressive_strength ──
+
+/// Pin that Elastic.shear_modulus optional default has Pressure type after task #3111.
+/// Mirrors the temperature_dependent_has_reference_temperature_default_with_temperature_type
+/// pattern (Type::Scalar{DimensionVector::TEMPERATURE}).
+///
+/// RED: stdlib Elastic still has shear_modulus : Real → cell_type is Real, not PRESSURE.
+#[test]
+fn elastic_shear_modulus_default_is_pressure_type() {
+    let module = load_stdlib_module();
+
+    let elastic = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Elastic")
+        .expect("expected 'Elastic' trait in compiled module");
+
+    // shear_modulus must be in defaults (optional = undef), not required_members.
+    assert!(
+        !elastic
+            .required_members
+            .iter()
+            .any(|r| r.name == "shear_modulus"),
+        "shear_modulus should be optional (= undef), not a required member"
+    );
+
+    let shear = elastic
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("shear_modulus"))
+        .expect("expected 'shear_modulus' in Elastic.defaults");
+    match &shear.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+            "shear_modulus should have Pressure type (task #3111), got {:?}",
+            cell_type
+        ),
+        other => panic!(
+            "expected DefaultKind::Param for shear_modulus, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Pin that Strong.compressive_strength optional default has Pressure type after task #3111.
+/// Mirrors the temperature_dependent_has_reference_temperature_default_with_temperature_type
+/// pattern (Type::Scalar{DimensionVector::TEMPERATURE}).
+///
+/// RED: stdlib Strong still has compressive_strength : Real → cell_type is Real, not PRESSURE.
+#[test]
+fn strong_compressive_strength_default_is_pressure_type() {
+    let module = load_stdlib_module();
+
+    let strong = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "Strong")
+        .expect("expected 'Strong' trait in compiled module");
+
+    // compressive_strength must be in defaults (optional = undef), not required_members.
+    assert!(
+        !strong
+            .required_members
+            .iter()
+            .any(|r| r.name == "compressive_strength"),
+        "compressive_strength should be optional (= undef), not a required member"
+    );
+
+    let compr = strong
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("compressive_strength"))
+        .expect("expected 'compressive_strength' in Strong.defaults");
+    match &compr.kind {
+        DefaultKind::Param { cell_type, .. } => assert_eq!(
+            *cell_type,
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+            "compressive_strength should have Pressure type (task #3111), got {:?}",
+            cell_type
+        ),
+        other => panic!(
+            "expected DefaultKind::Param for compressive_strength, got {:?}",
+            other
+        ),
     }
 }

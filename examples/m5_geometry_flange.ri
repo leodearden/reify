@@ -13,7 +13,7 @@ structure def BoltFlange : Rigid {
 
     // Canonical Material struct — concrete default supplied here, callers may
     // override at instantiation by passing a different `Material(...)` value.
-    param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
     constraint outer_radius > bolt_circle_radius
     constraint hole_count > 0

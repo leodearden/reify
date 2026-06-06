@@ -43,11 +43,11 @@
 //   max_elastic_strain > 0 (ElasticallyDeformable)
 //
 // stiffness uses the tightened Stiffness alias (N/m) introduced by task #3115;
-// other values are raw SI numerics (Real) — density in kg/m³, deflection in m,
-// energy in J, ratios dimensionless.
+// density uses Density (kg/m³), charpy_impact uses Energy (J) — both tightened
+// by task #3111; deflection in m, strain and ratios remain dimensionless (Real).
 structure def DriveBelt : ElasticallyDeformable + ImpactResistant + Damping {
     // MaterialSpec (shared root via ImpactResistant and Damping)
-    param density : Real = 1100.0          // kg/m³ — typical SBR/EPDM elastomer
+    param density : Density = 1100kg/m^3   // typical SBR/EPDM elastomer
     param name : String = "elastomer_belt"
 
     // Flexible (via ElasticallyDeformable) — stiffness > 0, max_deflection > 0
@@ -58,7 +58,7 @@ structure def DriveBelt : ElasticallyDeformable + ImpactResistant + Damping {
     param max_elastic_strain : Real = 0.1  // 10% recoverable strain limit
 
     // ImpactResistant
-    param charpy_impact : Real = 500.0     // J — Charpy impact energy
+    param charpy_impact : Energy = 500J    // Charpy impact energy
 
     // Damping
     param damping_ratio : Real = 0.15      // 15% of critical damping (typical rubber)
@@ -78,7 +78,7 @@ structure def DriveBelt : ElasticallyDeformable + ImpactResistant + Damping {
 // type by task #3112.
 structure def CeramicLiner : Refractory {
     // MaterialSpec
-    param density : Real = 3900.0              // kg/m³ — alumina (Al₂O₃)
+    param density : Density = 3900kg/m^3       // alumina (Al₂O₃)
     param name : String = "alumina_ceramic"
 
     // ThermallyCharacterized
@@ -105,7 +105,7 @@ structure def CeramicLiner : Refractory {
 // resistivity / dielectric_strength use named-dim aliases introduced by #3115.
 structure def Copper : Conductive {
     // MaterialSpec
-    param density : Real = 8960.0               // kg/m³ — pure copper
+    param density : Density = 8960kg/m^3        // pure copper
     param name : String = "copper"
 
     // ElectricallyCharacterized
@@ -124,7 +124,7 @@ structure def Copper : Conductive {
 // parameter-carrying trait.
 structure def BorosilicateGlass : OpticallyCharacterized {
     // MaterialSpec
-    param density : Real = 2230.0               // kg/m³ — Borosilicate 33 glass
+    param density : Density = 2230kg/m^3        // Borosilicate 33 glass
     param name : String = "borosilicate_glass"
 
     // OpticallyCharacterized — absorption_coefficient uses the AbsorptionCoeff
@@ -149,7 +149,7 @@ structure def BorosilicateGlass : OpticallyCharacterized {
 // they are classification traits, not contractual bound traits.
 structure def TitaniumImplant : Biocompatible + CorrosionResistant {
     // MaterialSpec (shared via diamond merge)
-    param density : Real = 4500.0               // kg/m³ — Ti-6Al-4V
+    param density : Density = 4500kg/m^3        // Ti-6Al-4V
     param name : String = "titanium"
 
     // Biocompatible

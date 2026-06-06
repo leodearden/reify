@@ -967,9 +967,9 @@ pub const EXPECTED_GEOMETRY_TRAITS: &[&str] = &[
 pub fn steel_elastic_source() -> &'static str {
     r#"
 structure def Steel : Elastic {
-    param youngs_modulus : Real = 200.0
+    param youngs_modulus : Pressure = 200GPa
     param poissons_ratio : Real = 0.3
-    param shear_modulus : Real = 77.0
+    param shear_modulus : Pressure = 77GPa
 }
 "#
 }
@@ -978,9 +978,9 @@ structure def Steel : Elastic {
 pub fn steel_strong_source() -> &'static str {
     r#"
 structure def Steel : Strong {
-    param yield_strength : Real = 250.0
-    param ultimate_tensile_strength : Real = 400.0
-    param compressive_strength : Real = 250.0
+    param yield_strength : Pressure = 250MPa
+    param ultimate_tensile_strength : Pressure = 400MPa
+    param compressive_strength : Pressure = 250MPa
 }
 "#
 }
@@ -989,11 +989,11 @@ structure def Steel : Strong {
 pub fn steel_material_elastic_source() -> &'static str {
     r#"
 structure def Steel : MaterialSpec + Elastic {
-    param density : Real = 7800.0
+    param density : Density = 7800kg/m^3
     param name : String = "A36"
-    param youngs_modulus : Real = 200.0
+    param youngs_modulus : Pressure = 200GPa
     param poissons_ratio : Real = 0.3
-    param shear_modulus : Real = 77.0
+    param shear_modulus : Pressure = 77GPa
 }
 "#
 }

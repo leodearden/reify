@@ -15,25 +15,26 @@
 //   Strong    — yield_strength, ultimate_tensile_strength, compressive_strength
 //               (+ constraint ultimate_tensile_strength >= yield_strength)
 //
-// Mechanical-property fields use Real (raw SI numerics) per the stdlib
-// convention: moduli in Pa.
+// Mechanical-property fields use dimensioned named types: youngs_modulus/
+// shear_modulus/yield_strength/uts/compressive_strength → Pressure (Pa);
+// density → Density (kg/m³). Tightened by task #3111.
 
 structure def AluminumBracket : Physical + Elastic + Strong {
     // Physical (spec shape: geometry + material slots)
     param geometry : Solid = box(20mm, 20mm, 10mm)
     param material : Material = Material(
         name: "Aluminium 6061-T6",
-        density: 2700.0,
-        youngs_modulus: 69000000000.0
+        density: 2700kg/m^3,
+        youngs_modulus: 69GPa
     )
 
-    // Elastic params (Young's modulus, Poisson's ratio, shear modulus — all in Pa)
-    param youngs_modulus : Real = 69000000000.0
+    // Elastic params (tightened to Pressure; poissons_ratio remains dimensionless)
+    param youngs_modulus : Pressure = 69GPa
     param poissons_ratio : Real = 0.33
-    param shear_modulus : Real = 26000000000.0
+    param shear_modulus : Pressure = 26GPa
 
-    // Strong params (in Pa; ultimate_tensile_strength >= yield_strength satisfies the trait constraint)
-    param yield_strength : Real = 276000000.0
-    param ultimate_tensile_strength : Real = 310000000.0
-    param compressive_strength : Real = 276000000.0
+    // Strong params (ultimate_tensile_strength >= yield_strength satisfies the trait constraint)
+    param yield_strength : Pressure = 276MPa
+    param ultimate_tensile_strength : Pressure = 310MPa
+    param compressive_strength : Pressure = 276MPa
 }

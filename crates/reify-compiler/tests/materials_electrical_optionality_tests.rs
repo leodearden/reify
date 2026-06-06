@@ -49,7 +49,7 @@ fn conductive_conformer_omitting_optionals_checks_clean() {
     // resistivity = 1.7e-8 Ω·m < 0.0001 Ω·m → satisfies Conductive constraint.
     let source = r#"
 structure def CopperLike : Conductive {
-    param density : Real = 8960.0
+    param density : Density = 8960kg/m^3
     param name : String = "copper"
     param resistivity : ElectricResistivity = 0.000000017 * 1ohm * 1m
 }
@@ -120,7 +120,7 @@ fn insulating_conformer_omitting_dielectric_strength_warns_indeterminate() {
     // resistivity = 1e9 Ω·m > 1e6 Ω·m → Satisfied.
     let source = r#"
 structure def GlassLike : Insulating {
-    param density : Real = 2500.0
+    param density : Density = 2500kg/m^3
     param name : String = "glass"
     param resistivity : ElectricResistivity = 1000000000.0 * 1ohm * 1m
 }
@@ -211,7 +211,7 @@ fn insulating_conformer_zero_dielectric_strength_violates() {
     // resistivity = 1e9 Ω·m > 1e6 Ω·m → Satisfied.
     let source = r#"
 structure def GlassLike : Insulating {
-    param density : Real = 2500.0
+    param density : Density = 2500kg/m^3
     param name : String = "glass"
     param resistivity : ElectricResistivity = 1000000000.0 * 1ohm * 1m
     param dielectric_constant : Real = 7.0

@@ -83,9 +83,9 @@ structure def Foo : Watertight {
 fn non_geometry_trait_emits_no_user_asserted_warning() {
     let source = r#"
 structure def MyMaterial : Elastic {
-    param youngs_modulus : Real = 200.0
+    param youngs_modulus : Pressure = 200GPa
     param poissons_ratio : Real = 0.3
-    param shear_modulus : Real = 77.0
+    param shear_modulus : Pressure = 77GPa
 }
 "#;
     let module = compile_source_with_stdlib(source);
@@ -225,9 +225,9 @@ fn mixed_geometry_and_non_geometry_bounds_emit_one_warning_for_geometry_only() {
     let source = r#"
 structure def Hybrid : Watertight + Elastic {
     param x : Real = 1.0
-    param youngs_modulus : Real = 200.0
+    param youngs_modulus : Pressure = 200GPa
     param poissons_ratio : Real = 0.3
-    param shear_modulus : Real = 77.0
+    param shear_modulus : Pressure = 77GPa
 }
 "#;
     let module = compile_source_with_stdlib(source);
