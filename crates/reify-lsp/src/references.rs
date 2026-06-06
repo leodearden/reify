@@ -132,9 +132,9 @@ fn collect_references_at(
     // member segment; this guard layers the AST-aware refusal at the shared
     // chokepoint so all four producers (find-references, prepare_rename,
     // compute_rename, compute_document_highlights) inherit it consistently.
-    // See `cursor_on_member_segment_flat` (and its depth-carrying successor added
-    // in task-4346 step-4) for the detection logic.
-    if cursor_on_member_segment_flat(members, offset as u32) {
+    // See `cursor_on_member_segment` for the detection logic (depth-bounded
+    // member walk mirroring `collect_uses` + `for_each_child_scope`).
+    if cursor_on_member_segment(members, offset as u32, 0) {
         return None;
     }
 
@@ -309,17 +309,25 @@ fn expr_member_segment_hit(expr: &Expr, off: u32) -> bool {
 }
 
 /// Return `true` when the cursor byte offset `off` falls on the `.member`
-/// segment of a `MemberAccess` expression anywhere within `members` (FLAT scan
-/// — top-level expressions only; nested member-list scopes are added in
-/// step-4).
+/// segment of a `MemberAccess` expression anywhere within `members` at any
+/// nesting depth up to `MAX_MEMBER_NESTING_DEPTH`.
 ///
-/// Mirrors the member-kind dispatch of `collect_uses` (470-566): for each
-/// member, runs `expr_member_segment_hit` over its direct expressions (param
-/// default + where, let value + where, constraint expr + where, etc.). Returns
-/// `true` on the first hit; does NOT descend into nested member lists yet.
-fn cursor_on_member_segment_flat(members: &[MemberDecl], off: u32) -> bool {
+/// Mirrors the member-kind dispatch of `collect_uses` (470-566) AND the
+/// nested-scope descent of `for_each_child_scope` (335-357): for each member,
+/// runs `expr_member_segment_hit` over its direct expressions, then recurses
+/// into its child member lists (GuardedGroup where/else bodies, Port body, Sub
+/// specialization body / keyed-block overrides, MatchArmDeclGroup per-arm
+/// members) at `depth + 1`. Returns `true` on the first hit.
+///
+/// The public guard in `collect_references_at` calls this with `depth = 0`.
+fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> bool {
+    // Mirror collect_uses' recursion bound so the detection scan and the use-
+    // collection scan share the same depth limit (same stack-overflow backstop).
+    if depth > MAX_MEMBER_NESTING_DEPTH {
+        return false;
+    }
     for member in members {
-        let hit = match member {
+        let direct_hit = match member {
             MemberDecl::Param(p) => {
                 p.default.as_ref().is_some_and(|d| expr_member_segment_hit(d, off))
                     || p.where_clause
@@ -369,12 +377,12 @@ fn cursor_on_member_segment_flat(members: &[MemberDecl], off: u32) -> bool {
                         .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
             }
             MemberDecl::GuardedGroup(g) => {
-                // Scan the guard condition (outer scope) only — nested member
-                // bodies are deferred to the depth-carrying walker in step-4.
+                // Guard condition is an outer-scope expression; child bodies are
+                // recursed below via for_each_child_scope.
                 expr_member_segment_hit(&g.condition, off)
             }
             MemberDecl::Port(p) => {
-                // Scan the frame expr (outer scope) only — port body is deferred.
+                // Frame expr is an outer-scope expression; port body is recursed below.
                 p.frame_expr
                     .as_ref()
                     .is_some_and(|f| expr_member_segment_hit(f, off))
@@ -418,13 +426,26 @@ fn cursor_on_member_segment_flat(members: &[MemberDecl], off: u32) -> bool {
                     }
             }
             MemberDecl::MatchArmDeclGroup(g) => {
-                // Scan the discriminant (outer scope) — arm bodies deferred.
+                // Discriminant is outer-scope; arm member bodies are recursed below.
                 expr_member_segment_hit(&g.discriminant, off)
             }
             // Not walked by `collect_uses` — no tracked binding.
             MemberDecl::Fn(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => false,
         };
-        if hit {
+        if direct_hit {
+            return true;
+        }
+        // Recurse into nested member-list scopes exactly as for_each_child_scope
+        // (335-357) and collect_uses do: GuardedGroup where/else bodies, Port body,
+        // Sub specialization body / keyed-block overrides, MatchArmDeclGroup
+        // per-arm members. This mirrors `collect_bindings_in_scope`'s recursion.
+        let mut child_hit = false;
+        for_each_child_scope(member, |child| {
+            if !child_hit {
+                child_hit = cursor_on_member_segment(child, off, depth + 1);
+            }
+        });
+        if child_hit {
             return true;
         }
     }
