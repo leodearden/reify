@@ -15,6 +15,27 @@
 //! - `new_warm_state` — the `CgWarmState` serialised as `OpaqueState`
 //! - `cost_per_byte`  — crude estimate for cache eviction
 //!
+//! # Determinism contract (PRD task #18)
+//!
+//! The `ElasticOptions.deterministic : Bool = false` field (read here via
+//! `extract_execution_params`, alongside the runtime `threads` knob) selects the
+//! assembly + solve execution modes inside `solve_cantilever_fea` through the
+//! pure policy fn `reify_solver_elastic::resolve_execution_modes`:
+//!
+//! - `deterministic == true` forces **single-threaded execution with
+//!   fixed-order pairwise-tree reductions** for both `AssemblyMode::Deterministic`
+//!   and `SolverMode::Deterministic`, yielding **bit-stable, cross-machine
+//!   reproducible** results at a ~4–8× wallclock cost.
+//! - `deterministic == false` (the default) lets the resolver pick
+//!   `Parallel{threads}` once the problem clears `PARALLEL_DOF_THRESHOLD`
+//!   (10_000 DOFs); tiny problems (`n_dofs < threshold`) or `threads <= 1`
+//!   still collapse to the Deterministic modes.
+//!
+//! `deterministic` is **excluded from the FEA cache key** — it changes the
+//! result bit-pattern, not its engineering value, so two solves differing only
+//! in `deterministic` are cache-equivalent. (The trampoline does not hash
+//! `ElasticOptions` at all, so this exclusion needs no cache-key code.)
+//!
 //! # Analytical reference
 //!
 //! For a cantilever of length L, width b, height h under tip load P:
