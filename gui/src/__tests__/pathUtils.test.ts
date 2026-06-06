@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isSameFile, normalizePath, canonicalizeKey } from '../utils/pathUtils';
+import { isSameFile, normalizePath, canonicalizeKey, pathToUri } from '../utils/pathUtils';
 
 describe('normalizePath', () => {
   it('strips file:// prefix from a URI', () => {
@@ -109,5 +109,20 @@ describe('canonicalizeKey', () => {
   });
   it('leaves the root "/" unchanged', () => {
     expect(canonicalizeKey('/')).toBe('/');
+  });
+});
+
+describe('pathToUri', () => {
+  it('converts an absolute path to a file:// URI', () => {
+    expect(pathToUri('/a/b.ri')).toBe('file:///a/b.ri');
+  });
+
+  it('returns an already-file:// input unchanged', () => {
+    expect(pathToUri('file:///a/b.ri')).toBe('file:///a/b.ri');
+  });
+
+  it('inserts a leading slash for a path without one', () => {
+    // 'b.ri' → 'file:///b.ri' (mirrors Editor.tsx private closure semantics)
+    expect(pathToUri('b.ri')).toBe('file:///b.ri');
   });
 });

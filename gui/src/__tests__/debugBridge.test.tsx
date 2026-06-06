@@ -2718,3 +2718,307 @@ describe('debug bridge tree-node expand/collapse', () => {
     expect(result.error).toContain('constraint');
   });
 });
+
+// ─── F2 LSP probe handlers (steps 7-14) ─────────────────────────────────────
+
+describe('debug bridge hover_at', () => {
+  // F2 step-7 RED → step-8 GREEN: hover_at handler returns structured hover result.
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('returns { markdown, markdownLength, range } and calls lsp_request with correct method/uri/position', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    // Configure invoke: lsp_request → hover JSON; debug_response → undefined
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify({
+          contents: { kind: 'markdown', value: '**size**: Scalar' },
+          range: { start: { line: 9, character: 15 }, end: { line: 9, character: 19 } },
+        });
+      }
+      return undefined;
+    });
+    vi.mocked(invoke).mockClear();
+
+    await capturedHandler!({ payload: { id: 1001, command: 'hover_at', params: { line: 9, col: 19 } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const result = JSON.parse((responseCall![1] as { result: string }).result);
+
+    // Structured hover result
+    expect(result.markdown).toBe('**size**: Scalar');
+    expect(result.markdownLength).toBeGreaterThanOrEqual(1);
+    expect(result.range).toBeDefined();
+
+    // lsp_request called with correct method / uri / position
+    const lspCall = calls.find((c) => c[0] === 'lsp_request');
+    expect(lspCall).toBeDefined();
+    expect((lspCall![1] as { method: string }).method).toBe('textDocument/hover');
+    const lspParams = JSON.parse((lspCall![1] as { params: string }).params);
+    expect(lspParams.textDocument.uri).toBe('file:///tmp/cube.ri');
+    expect(lspParams.position).toEqual({ line: 9, character: 19 });
+  });
+
+  it('returns null-hover shape when lsp_request returns null (no hover at position)', async () => {
+    // Covers the hover_at null branch: { markdown:'', markdownLength:0, contents:null, range:null }
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') return JSON.stringify(null);
+      return undefined;
+    });
+    vi.mocked(invoke).mockClear();
+
+    await capturedHandler!({ payload: { id: 1002, command: 'hover_at', params: { line: 0, col: 0 } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const result = JSON.parse((responseCall![1] as { result: string }).result);
+
+    expect(result.markdown).toBe('');
+    expect(result.markdownLength).toBe(0);
+    expect(result.contents).toBeNull();
+    expect(result.range).toBeNull();
+  });
+});
+
+// ─── F2 definition_at handler (step-11 RED → step-12 GREEN) ─────────────────
+
+describe('debug bridge definition_at', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchDefinition(stores: ReturnType<typeof makeStores>, params: Record<string, unknown>) {
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 3001, command: 'definition_at', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    return {
+      result: JSON.parse((responseCall![1] as { result: string }).result),
+      calls,
+    };
+  }
+
+  it('returns { found:true, uri, range } and calls lsp_request with correct method/uri/position', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify({
+          uri: 'file:///tmp/cube.ri',
+          range: { start: { line: 7, character: 10 }, end: { line: 7, character: 14 } },
+        });
+      }
+      return undefined;
+    });
+
+    const { result, calls } = await dispatchDefinition(stores, { line: 9, col: 19 });
+
+    expect(result.found).toBe(true);
+    expect(result.uri).toBe('file:///tmp/cube.ri');
+    expect(result.range.start.line).toBe(7);
+
+    const lspCall = calls.find((c) => c[0] === 'lsp_request');
+    expect(lspCall).toBeDefined();
+    expect((lspCall![1] as { method: string }).method).toBe('textDocument/definition');
+    const lspParams = JSON.parse((lspCall![1] as { params: string }).params);
+    expect(lspParams.textDocument.uri).toBe('file:///tmp/cube.ri');
+    expect(lspParams.position).toEqual({ line: 9, character: 19 });
+  });
+
+  it('returns { found:false, uri:null, range:null } when LSP returns null', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') return JSON.stringify(null);
+      return undefined;
+    });
+
+    const { result } = await dispatchDefinition(stores, { line: 0, col: 0 });
+
+    expect(result.found).toBe(false);
+    expect(result.uri).toBeNull();
+    expect(result.range).toBeNull();
+  });
+});
+
+// ─── F2 completion_at handler (step-9 RED → step-10 GREEN) ──────────────────
+
+describe('debug bridge completion_at', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCompletion(stores: ReturnType<typeof makeStores>, params: Record<string, unknown>) {
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 2001, command: 'completion_at', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    return {
+      result: JSON.parse((responseCall![1] as { result: string }).result),
+      calls,
+    };
+  }
+
+  it('bare array response: returns { items, itemCount } and calls lsp_request with correct method/uri/position', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify([{ label: 'box' }, { label: 'size' }]);
+      }
+      return undefined;
+    });
+
+    const { result, calls } = await dispatchCompletion(stores, { line: 9, col: 21 });
+
+    expect(result.itemCount).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('box');
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('size');
+
+    const lspCall = calls.find((c) => c[0] === 'lsp_request');
+    expect(lspCall).toBeDefined();
+    expect((lspCall![1] as { method: string }).method).toBe('textDocument/completion');
+    const lspParams = JSON.parse((lspCall![1] as { params: string }).params);
+    expect(lspParams.textDocument.uri).toBe('file:///tmp/cube.ri');
+    expect(lspParams.position).toEqual({ line: 9, character: 21 });
+  });
+
+  it('CompletionList response: normalizes items via lspClient.completion', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify({ items: [{ label: 'box' }, { label: 'sphere' }] });
+      }
+      return undefined;
+    });
+
+    const { result } = await dispatchCompletion(stores, { line: 9, col: 21 });
+
+    expect(result.itemCount).toBe(2);
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('box');
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('sphere');
+  });
+});
+
+// ─── F2 input-guard suite (step-13 RED → step-14 GREEN) ─────────────────────
+// resolveActiveProbeTarget was included in step-8 so these are immediately GREEN.
+
+describe('debug bridge LSP probe input guards', () => {
+  const PROBES = ['hover_at', 'completion_at', 'definition_at'] as const;
+
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchProbe(
+    stores: ReturnType<typeof makeStores>,
+    command: string,
+    params: Record<string, unknown>,
+  ) {
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 4001, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    return {
+      result: JSON.parse((responseCall![1] as { result: string }).result),
+      calls,
+    };
+  }
+
+  for (const probe of PROBES) {
+    it(`${probe}: activeFile=null returns {error} and does NOT call lsp_request`, async () => {
+      const stores = makeStores();
+      // activeFile stays null (default)
+      const { result, calls } = await dispatchProbe(stores, probe, { line: 0, col: 0 });
+      expect(result).toHaveProperty('error');
+      expect(calls.find((c) => c[0] === 'lsp_request')).toBeUndefined();
+    });
+
+    it(`${probe}: line=-1 returns {error} and does NOT call lsp_request`, async () => {
+      const stores = makeStores();
+      stores.editor.state.activeFile = '/tmp/cube.ri';
+      const { result, calls } = await dispatchProbe(stores, probe, { line: -1, col: 0 });
+      expect(result).toHaveProperty('error');
+      expect(calls.find((c) => c[0] === 'lsp_request')).toBeUndefined();
+    });
+
+    it(`${probe}: missing col returns {error} and does NOT call lsp_request`, async () => {
+      const stores = makeStores();
+      stores.editor.state.activeFile = '/tmp/cube.ri';
+      const { result, calls } = await dispatchProbe(stores, probe, { line: 0 });
+      expect(result).toHaveProperty('error');
+      expect(calls.find((c) => c[0] === 'lsp_request')).toBeUndefined();
+    });
+  }
+});

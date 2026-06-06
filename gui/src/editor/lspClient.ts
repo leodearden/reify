@@ -115,7 +115,42 @@ export interface LspClient {
   ): Promise<WorkspaceEdit | null>;
 }
 
-// ── Private helpers ────────────────────────────────────────────────────
+// ── Shared helpers ─────────────────────────────────────────────────────
+
+/**
+ * Extract plain markdown text from LSP hover `contents`.
+ *
+ * Handles the three shapes the LSP spec allows:
+ * - `string` — returned as-is
+ * - `{ kind, value }` (MarkupContent) — returns `value`
+ * - `Array<string | { language, value }>` — joins extracted values with `\n`
+ * - anything else (null, undefined, unknown object) — returns `''`
+ *
+ * Extracted from the private `extractHoverText` in hover.ts so that
+ * bridge.ts's hover_at probe and hover.ts's tooltip cannot diverge.
+ */
+export function extractHoverMarkdown(
+  contents: unknown,
+): string {
+  if (contents === null || contents === undefined) return '';
+  if (typeof contents === 'string') return contents;
+  if (Array.isArray(contents)) {
+    return (contents as Array<unknown>)
+      .map((c) =>
+        typeof c === 'string'
+          ? c
+          : c !== null && typeof c === 'object' && 'value' in c
+            ? (c as { value: string }).value
+            : '',
+      )
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (typeof contents === 'object' && 'value' in (contents as object)) {
+    return (contents as { value: string }).value;
+  }
+  return '';
+}
 
 async function lspRequest(method: string, params: unknown): Promise<string> {
   return invoke<string>('lsp_request', {
