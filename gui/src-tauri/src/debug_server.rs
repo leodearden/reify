@@ -1974,4 +1974,59 @@ mod tests {
              (regression: do not replace it with core:window:allow-set-size)."
         );
     }
+
+    // F2 step-5 RED → step-6 GREEN: hover_at / completion_at / definition_at must be
+    // registered in tool_defs() with an object schema that requires integer line + col.
+    // Mirroring viewport_aware_tools_expose_optional_viewport_id (table-driven so adding
+    // a fourth probe is a one-line change).
+    #[test]
+    fn lsp_probe_tools_expose_required_integer_line_col() {
+        let defs = tool_defs();
+        let probes = ["hover_at", "completion_at", "definition_at"];
+        for probe_name in probes {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == probe_name)
+                .unwrap_or_else(|| panic!("{probe_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+
+            // input_schema.type must be "object"
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{probe_name}: input_schema.type must be 'object'"
+            );
+
+            // must have a non-empty description
+            assert!(
+                !entry.description.is_empty(),
+                "{probe_name}: description must be non-empty"
+            );
+
+            // properties.line.type and properties.col.type must be "integer"
+            assert_eq!(
+                schema["properties"]["line"]["type"].as_str(),
+                Some("integer"),
+                "{probe_name}: properties.line.type must be 'integer'"
+            );
+            assert_eq!(
+                schema["properties"]["col"]["type"].as_str(),
+                Some("integer"),
+                "{probe_name}: properties.col.type must be 'integer'"
+            );
+
+            // both line and col must appear in required
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{probe_name}: input_schema.required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("line")),
+                "{probe_name}: 'line' must be listed in required"
+            );
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("col")),
+                "{probe_name}: 'col' must be listed in required"
+            );
+        }
+    }
 }
