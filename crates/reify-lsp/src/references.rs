@@ -2078,4 +2078,80 @@ structure S {
             "a keyword is not resolvable, so it produces no highlights"
         );
     }
+
+    // --- step-1 (task-4346): member-access .field segment refuses all four producers ---
+
+    #[test]
+    fn member_access_field_segment_refuses_when_colliding_with_local() {
+        // Fixture: `param diameter` names a local binding; `h.diameter` is a
+        // member-access where the `.diameter` segment shares the same text.
+        // When the cursor sits on the `.diameter` segment (NOT the base `h`),
+        // all four producers must refuse (return None / empty) — they must NOT
+        // mis-resolve to the unrelated `param diameter` binding.
+        let source = "\
+structure S {
+    param diameter: Scalar = 5mm
+    sub h = Hole(bore: 3mm)
+    let x = h.diameter
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("s"));
+        assert!(
+            parsed.errors.is_empty(),
+            "member-access fixture must parse clean: {:?}",
+            parsed.errors
+        );
+
+        // d[0] = `param diameter` decl token; d[1] = `.diameter` segment in `h.diameter`.
+        let d = occurrences(source, "diameter");
+        assert_eq!(d.len(), 2, "1 param decl + 1 member-access segment");
+
+        let member_pos = offset_to_position(source, d[1] as u32);
+        let uri = Url::parse("file:///s.ri").unwrap();
+
+        // All four producers must refuse the member-access segment.
+        assert!(
+            prepare_rename(source, &parsed, member_pos).is_none(),
+            "prepare_rename must refuse cursor on .field segment"
+        );
+        assert!(
+            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
+            "compute_rename must refuse cursor on .field segment"
+        );
+        assert!(
+            compute_document_highlights(source, &parsed, member_pos).is_none(),
+            "compute_document_highlights must refuse cursor on .field segment"
+        );
+        assert!(
+            collect_references(source, &parsed, member_pos, true).is_none(),
+            "collect_references must refuse cursor on .field segment"
+        );
+
+        // Over-refusal guard: the BASE `h` (cursor at the start of `h.diameter`) must
+        // still resolve as a Sub binding.
+        let h_off = source.find("h.diameter").expect("h.diameter present");
+        let h_pos = offset_to_position(source, h_off as u32);
+        let h_set = collect_references(source, &parsed, h_pos, false)
+            .expect("cursor on base `h` must resolve to a ReferenceSet");
+        assert_eq!(
+            h_set.kind,
+            RefSymbolKind::Sub,
+            "base `h` resolves as Sub binding"
+        );
+        let prepare_h = prepare_rename(source, &parsed, h_pos)
+            .expect("prepare_rename on base `h` must return Some");
+        assert_eq!(
+            prepare_h.placeholder, "h",
+            "prepare_rename placeholder is the base name `h`"
+        );
+
+        // Over-refusal guard: the `param diameter` DECL token (cursor at d[0]) must
+        // still be renameable.
+        let decl_pos = offset_to_position(source, d[0] as u32);
+        let prepare_decl = prepare_rename(source, &parsed, decl_pos)
+            .expect("prepare_rename on param diameter decl must return Some");
+        assert_eq!(
+            prepare_decl.placeholder, "diameter",
+            "prepare_rename placeholder is `diameter` when on the decl"
+        );
+    }
 }
