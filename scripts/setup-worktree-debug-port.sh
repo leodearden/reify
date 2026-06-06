@@ -10,9 +10,9 @@
 # Stdout: the resolved port integer (bare, no trailing newline except from echo).
 # Stderr: all diagnostics and progress messages.
 #
-# If REIFY_DEBUG_PORT is already set to a valid port (strict ^[0-9]+$, 1..65535,
-# no whitespace), that port is used verbatim.  Otherwise a free ephemeral port is
-# allocated via allocate_free_port() from scripts/lib_portable.sh.
+# If REIFY_DEBUG_PORT is already set to a valid port (leading-zero-free integer,
+# 1..65535, no whitespace — regex ^[1-9][0-9]*$), it is used verbatim.  Otherwise
+# a free ephemeral port is allocated via allocate_free_port() from lib_portable.sh.
 #
 # The resolved port is written to BOTH:
 #   - .mcp.json .mcpServers["reify-debug"] URL  (so the agent's MCP client targets it)
@@ -77,8 +77,8 @@ fi
 source "$_LIB_PORTABLE"
 
 # ── resolve port ──────────────────────────────────────────────────────────────
-# Honor REIFY_DEBUG_PORT only when it is a strict decimal integer in 1..65535
-# (no whitespace, no leading zeros that push it out of range).
+# Honor REIFY_DEBUG_PORT only when it is a leading-zero-free decimal integer in
+# 1..65535 (no whitespace, no leading zeros — all rejected by ^[1-9][0-9]*$).
 # Mirrors the contract of:
 #   debug_server.rs   parse_debug_port / DEFAULT_DEBUG_PORT
 #   endpoint.ts       resolveDebugPort / debugUrlForPort
@@ -87,9 +87,12 @@ source "$_LIB_PORTABLE"
 _resolve_port() {
     local env_val="${REIFY_DEBUG_PORT:-}"
 
-    # Strict validation: digits only, no whitespace, value in 1..65535.
-    if [[ "$env_val" =~ ^[0-9]+$ ]] && \
-       [ "$env_val" -ge 1 ] && [ "$env_val" -le 65535 ]; then
+    # Strict validation: leading-zero-free positive integer in 1..65535.
+    # ^[1-9][0-9]*$ rejects empty, "0", whitespace-padded values, and
+    # leading-zero inputs like "08" (which would otherwise produce URL :08/mcp
+    # rather than the canonical :8/mcp).  Values > 65535 are rejected below.
+    if [[ "$env_val" =~ ^[1-9][0-9]*$ ]] && \
+       [ "$env_val" -le 65535 ]; then
         echo "$env_val"
         return 0
     fi
@@ -114,6 +117,11 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 _MCP_TMP="$(mktemp "$WORKTREE_DIR/.mcp.json.XXXXXX")"
+# Ensure the temp file is removed on any exit (normal or error).  Under
+# set -euo pipefail a jq failure aborts the script, leaving _MCP_TMP as
+# an untracked file in the worktree — exactly the kind of dirt that trips
+# land.sh's clean-tree gate.  The trap cleans it up automatically.
+trap 'rm -f "$_MCP_TMP"' EXIT
 jq \
     --arg url "http://127.0.0.1:${PORT}/mcp" \
     '.mcpServers["reify-debug"] = {"type": "http", "url": $url}' \

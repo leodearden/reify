@@ -23,6 +23,36 @@ portable_sha256() {
     fi
 }
 
+# Allocate a free ephemeral TCP port by binding to port 0 and letting the OS
+# choose.  Prints the port number (an integer in 1..65535) to stdout.
+#
+# Uses python3 socket bind-to-0, the same OS mechanism node uses in
+# allocateFreePort() (gui/test/visual/endpoint.ts) and the exact one-liner
+# already used in tests/infra/test_run_gui_scripts.sh Test 25.
+#
+# Returns non-zero with an error on stderr if python3 is unavailable.
+#
+# TOCTOU note: the socket is bound to port 0, the OS assigns a free port, then
+# the socket is closed before returning.  A concurrent process can claim that
+# port in the gap between close and the consumer's bind.  This mirrors the
+# existing node allocateFreePort() behavior and is acceptable for the v1
+# use-case; if stronger guarantees are needed, hold the socket open until the
+# consumer binds, or retry on bind failure in run-gui-dev.sh.
+allocate_free_port() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "ERROR: python3 not found on PATH; cannot allocate a free port." >&2
+        return 1
+    fi
+    python3 -c '
+import socket
+s = socket.socket()
+s.bind(("", 0))
+port = s.getsockname()[1]
+s.close()
+print(port)
+'
+}
+
 # Portable timeout: run a command with a wall-clock time limit.
 #
 # Usage: portable_timeout <seconds> <cmd> [args...]
@@ -55,29 +85,6 @@ portable_sha256() {
 #   _PORTABLE_TIMEOUT_TIMED_OUT is only fully reliable on the POSIX
 #   flag-file fallback path, where the flag is created by the timer process
 #   and the command's exit code is additionally required to be 143 (SIGTERM).
-# Allocate a free ephemeral TCP port by binding to port 0 and letting the OS
-# choose.  Prints the port number (an integer in 1..65535) to stdout.
-#
-# Uses python3 socket bind-to-0, the same OS mechanism node uses in
-# allocateFreePort() (gui/test/visual/endpoint.ts) and the exact one-liner
-# already used in tests/infra/test_run_gui_scripts.sh Test 25.
-#
-# Returns non-zero with an error on stderr if python3 is unavailable.
-allocate_free_port() {
-    if ! command -v python3 >/dev/null 2>&1; then
-        echo "ERROR: python3 not found on PATH; cannot allocate a free port." >&2
-        return 1
-    fi
-    python3 -c '
-import socket
-s = socket.socket()
-s.bind(("", 0))
-port = s.getsockname()[1]
-s.close()
-print(port)
-'
-}
-
 portable_timeout() {
     local seconds="$1"
     shift
