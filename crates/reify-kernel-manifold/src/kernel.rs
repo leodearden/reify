@@ -2034,4 +2034,36 @@ mod tests {
             ),
         }
     }
+
+    /// Pins that `export(handle, Stl, buf)` on a stored `unit_cube_mesh`
+    /// writes a valid binary STL: 84+50*count bytes, count > 0.
+    ///
+    /// Manifold meshes carry `normals: None`, so this also exercises the
+    /// geometric-facet-normal path inside `write_stl_binary`.
+    ///
+    /// RED: currently fails because `ManifoldKernel::export` returns
+    /// `Err(FormatError(STUB_MSG))` unconditionally. Step
+    /// `impl-manifold-export-stl` wires the Stl arm.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn export_stl_of_unit_cube_writes_valid_binary() {
+        let mut kernel = ManifoldKernel::new();
+        let h = kernel
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
+
+        let mut buf = Vec::new();
+        kernel
+            .export(h, ExportFormat::Stl, &mut buf)
+            .expect("ManifoldKernel Stl export of a unit cube must succeed");
+
+        let count = u32::from_le_bytes(buf[80..84].try_into().unwrap());
+        assert!(count > 0, "STL triangle count must be > 0 for a solid cube");
+        assert_eq!(
+            buf.len(),
+            84 + 50 * count as usize,
+            "STL byte length must equal 84 + 50*count"
+        );
+    }
 }
