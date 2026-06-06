@@ -1032,6 +1032,15 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       const items = await lsp.completion(uri, line, col);
       return { items, itemCount: items.length };
     },
+
+    definition_at: async (params) => {
+      const target = resolveActiveProbeTarget(ctx, params);
+      if ('error' in target) return target;
+      const { uri, line, col } = target;
+      const lsp = createLspClient();
+      const loc = await lsp.gotoDefinition(uri, line, col);
+      return { uri: loc?.uri ?? null, range: loc?.range ?? null, found: loc !== null };
+    },
   };
 }
 
