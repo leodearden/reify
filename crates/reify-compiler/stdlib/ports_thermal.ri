@@ -1,33 +1,70 @@
-// Stdlib: Thermal Port Interface — ThermalPort
+// Stdlib: Thermal Port Interface — ThermalPort, ThermalContactPort
 // Provides the trait surface for thermal connection interfaces using the
 // lumped-thermal-port model (Modelica HeatPort convention).
 //
-// Reference: docs/prds/v0_6/stdlib-reconstruction.md task β, §11.5.
-// Resolves PRD open question Q3.
+// Reference: docs/prds/v0_6/ports-breadth-expansion.md task ε.
 //
-// Deviations from §11 spec (forced by current language scope):
-//   1. Across/through variable choice: `temperature` (potential, K) +
-//      `heat_flow` (Q̇, W). This is the canonical Modelica HeatPort
-//      abstraction: temperature is the across variable (potential difference
-//      drives flow) and heat_flow is the through variable (power transferred).
-//      The PRD Q3 suggestion (heat-transfer-coefficient h = Power/(Area·Temp))
-//      was not adopted: h is a material/geometry property rather than a port-
-//      interface quantity, and would require a 3-way composite type alias not
-//      admissible in param position. Temperature and Power are both NAMED_DIMENSIONS
-//      (reify-core/src/dimension.rs:124,148) — no alias indirection needed.
-//   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
-//   3. No `#no_prelude` pragma. std.ports.thermal refines Port from std.ports
-//      (inter-stdlib dependency), so the growing-prelude sequence in
-//      stdlib_loader.rs must include std.ports before this module. Adding
-//      `#no_prelude` would break both the refinement resolution and the
-//      stdlib_loader_tests bidirectional invariant test.
+// Deviations from spec (forced by current language scope):
+//   1. Across/through variable choice: `heat_flow` (Q̇, W) is the required
+//      through variable. `temperature` (K) is now optional (= none) per doc
+//      optionality — made optional in task ε. heat_flow stays required as the
+//      primary through variable matching the Modelica HeatPort convention.
+//   2. HeatFlux (W/m²) and ThermalResistance (K/W) require type alias
+//      indirection because binary dim-ops (Power/Area, Temperature/Power)
+//      are not admissible directly in param position — only on a type-alias RHS.
+//      Both are absent from NAMED_DIMENSIONS in reify-core/src/dimension.rs
+//      (unlike Area, Power, Temperature which are registered there). Precedent:
+//      `pub type Torque = Force * Length / Angle` in ports_mechanical.ri:29,
+//      `pub type VolumetricFlowRate = Volume / Time` in ports_fluid.ri:31.
+//   3. ThermalContactPort.contact_conductance uses ThermalConductivity (W/m·K)
+//      even though contact conductance is physically W/m²·K — the resolvable
+//      choice since W/m²·K is absent from NAMED_DIMENSIONS (per PRD ε §5.4).
+//   4. Traits are NOT `pub`, matching the io.ri/process.ri convention.
+//   5. No `#no_prelude` pragma. std.ports.thermal refines Port (std.ports) and
+//      ThermalContactPort refines RegionPort (also std.ports), so stdlib_loader.rs
+//      must include std.ports before this module. Adding `#no_prelude` would
+//      break refinement resolution and the stdlib_loader_tests bidirectional
+//      invariant test.
+
+// ── Type aliases ──────────────────────────────────────────────────────────────
+
+// Heat flux (W/m²): surface heat flow per unit area.
+// Binary dim-op alias required: Power/Area not admissible directly in param
+// position (alias indirection rule, per ports_mechanical.ri:28 Torque precedent).
+pub type HeatFlux = Power / Area
+
+// Thermal resistance (K/W): temperature difference per unit heat flow rate.
+// Binary dim-op alias required: Temperature/Power not admissible directly in
+// param position.
+pub type ThermalResistance = Temperature / Power
 
 // ── Thermal port ──────────────────────────────────────────────────────────────
 
-// Lumped thermal connection port (Modelica HeatPort convention).
-// temperature : Temperature — port temperature potential (K).
-// heat_flow   : Power      — heat flow rate through the port (W, Q̇).
+// Lumped thermal connection port (extended Modelica HeatPort convention).
+// heat_flow         : Power                   — required through variable Q̇ (W).
+// temperature       : Option<Temperature>     — optional potential across variable (K).
+// heat_flux         : Option<HeatFlux>        — optional surface heat flux (W/m²).
+// thermal_resistance: Option<ThermalResistance> — optional K/W thermal resistance.
 trait ThermalPort : Port {
-    param temperature : Temperature
+    param temperature : Option<Temperature> = none
     param heat_flow : Power
+    param heat_flux : Option<HeatFlux> = none
+    param thermal_resistance : Option<ThermalResistance> = none
+}
+
+// ── Thermal contact port ──────────────────────────────────────────────────────
+
+// Thermal port for conductive contact interfaces; adds geometric contact area
+// and optional contact conductance to the ThermalPort surface.
+// Inherits temperature, heat_flow, heat_flux, thermal_resistance from ThermalPort
+// and frame, region from RegionPort → LocatedPort.
+//
+// contact_area        : Area                       — contact patch area (m²).
+// contact_conductance : Option<ThermalConductivity> — bulk conductivity W/m·K
+//   (approximation: physical contact conductance is W/m²·K, but that dimension
+//    is absent from NAMED_DIMENSIONS; ThermalConductivity is the resolvable
+//    choice per PRD ε §5.4).
+trait ThermalContactPort : ThermalPort + RegionPort {
+    param contact_area : Area
+    param contact_conductance : Option<ThermalConductivity> = none
 }
