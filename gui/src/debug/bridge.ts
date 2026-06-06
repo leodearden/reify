@@ -796,6 +796,29 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { ok: true };
     },
 
+    scroll: (params) => {
+      if (params.target === 'editor') {
+        // Editor mode: scroll the CodeMirror EditorView's scrollDOM.
+        const view = ctx.editorView;
+        if (!view) return { error: 'editor view not ready' };
+        const sd = view.scrollDOM;
+        if (typeof params.top === 'number') sd.scrollTop = params.top;
+        if (typeof params.left === 'number') sd.scrollLeft = params.left;
+        return { ok: true, scrollTop: sd.scrollTop, scrollLeft: sd.scrollLeft };
+      }
+      // DOM mode: scroll an element resolved by data-testid.
+      const testId = params.testId as string;
+      if (!testId) return { error: 'testId or target:"editor" is required' };
+      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(testId)
+        : testId.replace(/["\\]/g, '\\$&');
+      const el = document.querySelector(`[data-testid="${escaped}"]`) as HTMLElement | null;
+      if (!el) return { error: `element with data-testid="${testId}" not found` };
+      if (typeof params.top === 'number') el.scrollTop = params.top;
+      if (typeof params.left === 'number') el.scrollLeft = params.left;
+      return { ok: true, scrollTop: el.scrollTop, scrollLeft: el.scrollLeft };
+    },
+
     select_entity: (params) => {
       const entityPath = (params.entityPath as string) ?? null;
       ctx.stores.selection.selectEntity(entityPath);
