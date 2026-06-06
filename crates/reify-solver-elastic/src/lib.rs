@@ -585,8 +585,8 @@ pub use mass_matrix::consistent_element_mass_tet_p1;
 // `K φ = λ M φ`; assembled via the same `assemble_global_stiffness` scatter.
 pub use p2_tet::consistent_element_mass_tet_p2;
 pub use solver::{
-    CgIterationControl, CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm,
-    solve_cg_with_progress,
+    CgIterationControl, CgResult, CgSolverOptions, PARALLEL_DOF_THRESHOLD, SolverMode,
+    resolve_execution_modes, solve_cg, solve_cg_warm, solve_cg_with_progress,
 };
 pub use warm_state::{CgWarmState, solve_cg_with_warm_state};
 // Task 2987: 2D cross-section meshing surface for the hex/wedge swept-body

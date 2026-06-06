@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 use faer::sparse::SparseRowMat;
 
+use crate::assembly::AssemblyMode;
+
 /// How [`solve_cg`] parallelises the SpMV and dot-product reductions.
 ///
 /// Mirrors [`crate::assembly::AssemblyMode`] byte-for-byte so the caller-side
@@ -81,6 +83,55 @@ pub enum SolverMode {
         /// Worker thread count.
         threads: usize,
     },
+}
+
+/// DOF count at or above which a non-deterministic solve is eligible to run
+/// multi-threaded. Below this threshold the thread-spawn + cross-thread-combine
+/// overhead dominates the arithmetic, so [`resolve_execution_modes`] forces the
+/// single-threaded [`Deterministic`][SolverMode::Deterministic] path regardless
+/// of the requested thread count. This is the "tiny problems run
+/// single-threaded under 10K DOFs" policy that the [`SolverMode`] /
+/// [`AssemblyMode`] primitive docs explicitly defer to the `ElasticOptions`
+/// resolution layer (PRD task #16).
+pub const PARALLEL_DOF_THRESHOLD: usize = 10_000;
+
+/// Resolve the matched `(AssemblyMode, SolverMode)` pair for an elastostatic
+/// solve from the caller's determinism preference, requested thread count, and
+/// problem size. This is the single policy seam for PRD task #16 / #18: the
+/// assembly and CG primitives stay mode-agnostic, and this pure function decides
+/// how they run.
+///
+/// Policy:
+/// - `deterministic == true` ⇒ both modes
+///   [`Deterministic`][SolverMode::Deterministic]. Forces single-threaded
+///   execution + fixed-order pairwise-tree reductions for bit-stable,
+///   cross-machine reproducible results, at a 4–8× wallclock cost (PRD task #18).
+/// - otherwise `n_dofs < PARALLEL_DOF_THRESHOLD` (tiny-problem short-circuit)
+///   **or** `threads <= 1` ⇒ both modes Deterministic. (`Parallel { threads: 1 }`
+///   is bit-equivalent to Deterministic, so the single-threaded path is chosen
+///   directly; tiny problems avoid thread-spawn overhead.)
+/// - otherwise ⇒ both modes `Parallel { threads }`.
+///
+/// [`AssemblyMode`] and [`SolverMode`] mirror each other byte-for-byte (see
+/// their module docs), so returning a matched pair from one resolver keeps the
+/// two stages in lockstep.
+///
+/// Pure: takes a concrete `threads: usize`, so the caller owns the
+/// `None`→cpu-count fallback and this function never calls
+/// `std::thread::available_parallelism`.
+pub fn resolve_execution_modes(
+    deterministic: bool,
+    threads: usize,
+    n_dofs: usize,
+) -> (AssemblyMode, SolverMode) {
+    if deterministic || n_dofs < PARALLEL_DOF_THRESHOLD || threads <= 1 {
+        (AssemblyMode::Deterministic, SolverMode::Deterministic)
+    } else {
+        (
+            AssemblyMode::Parallel { threads },
+            SolverMode::Parallel { threads },
+        )
+    }
 }
 
 /// Tuning parameters for [`solve_cg`].
