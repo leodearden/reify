@@ -94,8 +94,8 @@ pub fn position_to_offset(source: &str, position: Position) -> usize {
 /// specifically rename / document-highlight / find-references — layer an
 /// AST-aware guard in [`references::collect_references_at`]
 /// (`cursor_on_member_segment`) immediately after the entity's member list is
-/// obtained. The three other callers (`hover`, `goto_def`) are byte-based by
-/// design and are unaffected by this seam.
+/// obtained. The byte-based callers (`hover`, `goto_def`) are unaffected by
+/// this seam.
 pub fn find_word_at_offset(source: &str, offset: usize) -> Option<(usize, &str)> {
     if offset >= source.len() {
         return None;

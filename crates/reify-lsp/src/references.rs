@@ -2437,6 +2437,69 @@ structure S {
         );
     }
 
+    // --- amendment (task-4346): non-GuardedGroup nested-scope coverage ---
+
+    #[test]
+    fn member_access_field_segment_refusal_descends_into_port_body() {
+        // Complements `member_access_field_segment_refusal_descends_into_nested_scopes`,
+        // which only exercises the GuardedGroup (`where`) descent arm.  This fixture
+        // places `h.diameter` inside a Port body, exercising the `Port` arm of
+        // `for_each_child_scope` in `cursor_on_member_segment`.  A regression that
+        // dropped the Port arm while keeping GuardedGroup would pass the existing
+        // nested-scope test but fail here.
+        //
+        // Note: Sub specialization bodies (`body: Some(...)` on `SubDecl`) are not
+        // producible by the current parser (grammar update pending), so the Port arm
+        // is the closest parser-reachable sibling to cover the child-scope descent.
+        let source = "\
+structure S {
+    param diameter: Scalar = 5mm
+    sub h = Hole(bore: 3mm)
+    port out : Flange {
+        param width: Scalar = h.diameter
+    }
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("portbody"));
+        assert!(
+            parsed.errors.is_empty(),
+            "port-body fixture must parse clean: {:?}",
+            parsed.errors
+        );
+
+        // d[0]=`param diameter` decl (top-level), d[1]=`.diameter` in port-body param default.
+        let d = occurrences(source, "diameter");
+        assert_eq!(d.len(), 2, "1 param decl + 1 port-body member-access segment");
+
+        let member_pos = offset_to_position(source, d[1] as u32);
+        let uri = Url::parse("file:///portbody.ri").unwrap();
+
+        // All four producers must refuse the port-body member-access .field segment.
+        assert!(
+            prepare_rename(source, &parsed, member_pos).is_none(),
+            "prepare_rename must refuse .field segment inside port body"
+        );
+        assert!(
+            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
+            "compute_rename must refuse .field segment inside port body"
+        );
+        assert!(
+            compute_document_highlights(source, &parsed, member_pos).is_none(),
+            "compute_document_highlights must refuse .field segment inside port body"
+        );
+        assert!(
+            collect_references(source, &parsed, member_pos, true).is_none(),
+            "collect_references must refuse .field segment inside port body"
+        );
+
+        // Over-refusal guard: the base `h` inside the port body still resolves as a Sub.
+        let h_off = source.find("h.diameter").expect("h.diameter present");
+        let h_pos = offset_to_position(source, h_off as u32);
+        assert!(
+            collect_references(source, &parsed, h_pos, false).is_some(),
+            "base `h` inside port body must still resolve"
+        );
+    }
+
     // --- step-1 (task-4346): member-access .field segment refuses all four producers ---
 
     #[test]
