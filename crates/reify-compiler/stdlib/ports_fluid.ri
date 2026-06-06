@@ -41,6 +41,12 @@ pub type VolumetricFlowRate = Volume / Time
 //           TwoPhase (two-phase liquid/vapour mixture).
 enum FluidType { Liquid, Gas, TwoPhase }
 
+// Mechanical pipe connection method at the port fitting.
+// Variants: Threaded (threaded pipe fitting), Flanged (bolted flange connection),
+//           Compression (compression sleeve fitting), PushFit (push-fit/snap fitting),
+//           Welded (welded or brazed joint).
+enum PipeConnectionType { Threaded, Flanged, Compression, PushFit, Welded }
+
 // ── Fluid port ────────────────────────────────────────────────────────────────
 
 // Fluid connection port — pressure-flow interface.
@@ -55,4 +61,16 @@ trait FluidPort : Port {
     param flow_rate : VolumetricFlowRate
     param medium : String
     param fluid_type : FluidType
+}
+
+// ── §5.5 Piped fluid port ─────────────────────────────────────────────────────
+
+// Piped fluid connection port — refines FluidPort (pressure/flow/medium/fluid_type)
+// and LocatedPort (frame), adding the pipe bore geometry and the mechanical
+// connection method at the fitting.
+// inner_diameter  : Length              — internal bore diameter of the pipe (m).
+// connection_type : PipeConnectionType  — fitting connection method.
+trait PipedFluidPort : FluidPort + LocatedPort {
+    param inner_diameter : Length
+    param connection_type : PipeConnectionType
 }

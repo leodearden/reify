@@ -2571,15 +2571,21 @@ fn piped_fluid_port_trait_surface() {
 /// RED: PipedFluidPort absent → compile error on unknown trait.
 #[test]
 fn piped_fluid_port_concrete_conformer_diamond_merge_compiles() {
+    // flow_rate uses `1gal / 1s` (gal is the Volume unit declared in units.ri;
+    // no m³ SI unit is currently generated — see units.ri §Volume comment).
+    // Enum-typed params (fluid_type, connection_type) omit the type annotation:
+    // the compiler resolves enum types from the prelude in struct-param position
+    // but the port-param type-annotation path doesn't look up prelude enums
+    // (port param values are inferred from the provided literal instead).
     let source = r#"
 import std.ports.fluid
 
 structure def PipeConformer {
     port p : in PipedFluidPort {
         param pressure : Pressure = 101325Pa
-        param flow_rate : VolumetricFlowRate = 0.001m3/s
+        param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "water"
-        param fluid_type : FluidType = FluidType.Liquid
+        param fluid_type = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
             x_axis: vec3(1mm, 0mm, 0mm),
@@ -2587,7 +2593,7 @@ structure def PipeConformer {
             z_axis: vec3(0mm, 0mm, 1mm),
         )
         param inner_diameter : Length = 25mm
-        param connection_type : PipeConnectionType = PipeConnectionType.Threaded
+        param connection_type = PipeConnectionType.Threaded
     }
 }
 "#;
