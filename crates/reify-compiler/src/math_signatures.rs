@@ -933,4 +933,89 @@ mod tests {
             }
         );
     }
+
+    // ── Operation result-type: matrix ops ────────────────────────────────────
+    // (task 4182 δ, step-7 RED / step-8 GREEN)
+
+    /// `Type::Tensor { rank: 2, n, quantity: Scalar<dim> }` shorthand for tests
+    /// (a square N×N matrix with a dimensioned quantity).
+    fn tenq(n: usize, dim: DimensionVector) -> Type {
+        Type::Tensor {
+            rank: 2,
+            n,
+            quantity: Box::new(sca(dim)),
+        }
+    }
+
+    /// determinant of an N×N matrix raises the quantity to the Nth power:
+    /// determinant(Tensor<2,4,Length>) → Scalar<Length⁴> (`Q.pow(4)`).
+    #[test]
+    fn determinant_of_4x4_length_is_length_pow4() {
+        let m = typed(tenq(4, DimensionVector::LENGTH));
+        assert_eq!(
+            math_fn_result_type("determinant", &[m]),
+            sca(DimensionVector::LENGTH.pow(4))
+        );
+    }
+
+    /// determinant of a 2×2 Length matrix → Scalar<Area> (`Q.pow(2)` == AREA).
+    #[test]
+    fn determinant_of_2x2_length_is_area() {
+        let m = typed(tenq(2, DimensionVector::LENGTH));
+        assert_eq!(
+            math_fn_result_type("determinant", &[m]),
+            sca(DimensionVector::AREA),
+            "determinant of a 2x2 Length matrix must be Scalar<Area> (Length²)"
+        );
+    }
+
+    /// N is read from `Type::Tensor{n}`: a 5×5 Length matrix → Scalar<Length⁵>.
+    #[test]
+    fn determinant_reads_n_from_tensor_shape() {
+        let m = typed(tenq(5, DimensionVector::LENGTH));
+        assert_eq!(
+            math_fn_result_type("determinant", &[m]),
+            sca(DimensionVector::LENGTH.pow(5)),
+            "determinant must read N from Type::Tensor.n (5×5 → Length⁵)"
+        );
+    }
+
+    /// inverse negates the quantity dimension: inverse(Tensor<2,3,Length>) →
+    /// Tensor<2,3,Scalar<Length⁻¹>> (`DIMENSIONLESS.div(Q)`), shape preserved.
+    #[test]
+    fn inverse_of_length_matrix_is_inverse_length_tensor() {
+        let m = typed(tenq(3, DimensionVector::LENGTH));
+        assert_eq!(
+            math_fn_result_type("inverse", &[m]),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(sca(
+                    DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH)
+                ))
+            }
+        );
+    }
+
+    /// transpose is identity over the Tensor type (shape + quantity preserved).
+    #[test]
+    fn transpose_is_identity_over_tensor() {
+        let m = tenq(3, DimensionVector::LENGTH);
+        assert_eq!(
+            math_fn_result_type("transpose", &[typed(m.clone())]),
+            m,
+            "transpose(Tensor<2,N,Q>) must be the identical Tensor<2,N,Q>"
+        );
+    }
+
+    /// trace sums the diagonal → a single quantity scalar:
+    /// trace(Tensor<2,N,Q>) → Scalar<Q>.
+    #[test]
+    fn trace_is_quantity_scalar() {
+        let m = typed(tenq(3, DimensionVector::LENGTH));
+        assert_eq!(
+            math_fn_result_type("trace", &[m]),
+            sca(DimensionVector::LENGTH)
+        );
+    }
 }
