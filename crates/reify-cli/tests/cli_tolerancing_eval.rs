@@ -1,6 +1,8 @@
 //! End-to-end CLI tests for the §7 tolerancing example CI gate.
 //!
-//! Tests are RED until step-2 creates `examples/tolerancing/std_tolerancing_surface.ri`.
+//! Gates `examples/tolerancing/std_tolerancing_surface.ri`: the example must
+//! compile cleanly, expose the MMC-vs-RFS conformance FLIP as observable Bool
+//! value cells, and have all satisfiable constraints pass under `reify check`.
 //!
 //! A benign compiler Warning (e.g. unused symbol) may appear on stderr —
 //! we do NOT assert stderr is empty (mirror of cli_stackup_eval.rs pattern).
@@ -82,6 +84,13 @@ fn check_std_tolerancing_surface_example_succeeds() {
     assert!(
         status.success(),
         "reify check std_tolerancing_surface.ri should exit 0 (all constraints satisfied);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // Positive assertion: constraints were actually evaluated and all passed.
+    // Without this, a silent "no constraints registered" regression would still
+    // exit 0 and the negative assertion below would be vacuously true.
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "stdout should contain 'All constraints satisfied.' (confirms constraints were evaluated);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
         !stdout.contains("Some constraints violated"),
