@@ -37,7 +37,7 @@
 use std::collections::HashMap;
 
 use manifold3d::Manifold;
-use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value, write_stl_binary};
+use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, ThreeMfOptions, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
 
 /// Error message used by the v0.2 stub paths (`query`/`export`) that
 /// have not yet been wired to real FFI. Boolean ops (`Union`,
@@ -590,6 +590,14 @@ impl GeometryKernel for ManifoldKernel {
                     .tessellate(handle, 0.0)
                     .map_err(|e| ExportError::FormatError(e.to_string()))?;
                 write_stl_binary(&mesh, writer)
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            ExportFormat::ThreeMF => {
+                let mesh = self
+                    .tessellate(handle, 0.0)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                write_3mf(&mesh, ThreeMfOptions::default(), writer)
+                    .map(|_warnings| ())
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
             _ => Err(ExportError::FormatError(STUB_MSG.into())),
@@ -2094,15 +2102,15 @@ mod tests {
             .export(h, ExportFormat::ThreeMF, &mut buf)
             .expect("ManifoldKernel ThreeMF export of a unit cube must succeed");
 
-        // Stored/uncompressed: OPC part names appear literally in raw bytes.
+        // Stored/uncompressed: OPC part names and model XML appear literally in raw bytes.
         assert!(
             buf.windows(b"3D/3dmodel.model".len())
                 .any(|w| w == b"3D/3dmodel.model"),
             "raw bytes must contain '3D/3dmodel.model'"
         );
 
-        let raw_str = std::str::from_utf8(&buf).unwrap_or("");
-        let tri_count = raw_str.matches("<triangle ").count();
+        let tri_needle = b"<triangle ";
+        let tri_count = buf.windows(tri_needle.len()).filter(|w| *w == tri_needle).count();
         assert!(tri_count > 0, "ManifoldKernel 3MF export must contain at least one <triangle>");
     }
 }

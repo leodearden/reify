@@ -9300,9 +9300,8 @@ mod tests {
             .export(box_h.id, ExportFormat::ThreeMF, &mut buf)
             .expect("OCCT ThreeMF export of a 10x10x10 box must succeed");
 
-        // Stored/uncompressed: OPC part names appear literally in raw bytes.
+        // Stored/uncompressed: OPC part names and model XML appear literally in raw bytes.
         let raw = &buf;
-        let raw_str = std::str::from_utf8(raw).unwrap_or("");
 
         // The ZIP local-file-header entry for 3D/3dmodel.model must be present.
         assert!(
@@ -9312,7 +9311,8 @@ mod tests {
         );
 
         // At least one <triangle element must appear in the model XML.
-        let tri_count = raw_str.matches("<triangle ").count();
+        let tri_needle = b"<triangle ";
+        let tri_count = raw.windows(tri_needle.len()).filter(|w| *w == tri_needle).count();
         assert!(tri_count > 0, "OCCT 3MF export must contain at least one <triangle>");
     }
 
