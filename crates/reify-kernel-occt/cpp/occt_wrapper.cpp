@@ -4399,6 +4399,11 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
 
         for (TopExp_Explorer ex(shape.shape, TopAbs_FACE); ex.More(); ex.Next()) {
             TopoDS_Face face = TopoDS::Face(ex.Current());
+            // Emit triangles in the solid-outward sense.  OCCT triangulates
+            // each face in its NATURAL (FORWARD-surface) winding, so a face
+            // flagged TopAbs_REVERSED contributes inward-wound triangles
+            // unless we swap two indices.  Idiom reused from L2716/L2990.
+            bool reversed = (face.Orientation() == TopAbs_REVERSED);
             TopLoc_Location loc;
             Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
             if (tri.IsNull()) continue;
@@ -4417,12 +4422,19 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 result.vertices.push_back(static_cast<float>(p.Z()));
             }
 
-            // Extract normals — use stored normals if available, else compute from triangles
+            // Extract normals — use stored normals if available, else compute from triangles.
+            // In both branches, flip the normal for REVERSED faces so that supplied normals
+            // remain consistent with the outward winding emitted above.
+            // Idiom mirrors `if (face.Orientation() == TopAbs_REVERSED) { n.Reverse(); }`
+            // used elsewhere in this file (L270 surface_normal, L2990 curvature_at).
             if (tri->HasNormals()) {
                 for (int i = 1; i <= nb_nodes; ++i) {
                     gp_Dir n = tri->Normal(i);
                     if (!loc.IsIdentity()) {
                         n.Transform(loc.Transformation());
+                    }
+                    if (reversed) {
+                        n.Reverse();
                     }
                     result.normals.push_back(static_cast<float>(n.X()));
                     result.normals.push_back(static_cast<float>(n.Y()));
@@ -4446,6 +4458,9 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 }
                 for (int i = 0; i < nb_nodes; ++i) {
                     gp_Vec n = vertex_normals[i];
+                    if (reversed) {
+                        n.Reverse();
+                    }
                     double mag = n.Magnitude();
                     if (mag > CPP_DIR_MAG_MIN) {
                         n /= mag;
@@ -4459,13 +4474,20 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 }
             }
 
-            // Extract indices (1-based → 0-based + offset)
+            // Extract indices (1-based → 0-based + offset).
+            // For REVERSED faces, swap n2/n3 so every emitted triangle is
+            // consistently outward-wound regardless of the face orientation flag.
             for (int i = 1; i <= nb_tris; ++i) {
                 int n1, n2, n3;
                 tri->Triangle(i).Get(n1, n2, n3);
                 result.indices.push_back(vertex_offset + static_cast<uint32_t>(n1 - 1));
-                result.indices.push_back(vertex_offset + static_cast<uint32_t>(n2 - 1));
-                result.indices.push_back(vertex_offset + static_cast<uint32_t>(n3 - 1));
+                if (reversed) {
+                    result.indices.push_back(vertex_offset + static_cast<uint32_t>(n3 - 1));
+                    result.indices.push_back(vertex_offset + static_cast<uint32_t>(n2 - 1));
+                } else {
+                    result.indices.push_back(vertex_offset + static_cast<uint32_t>(n2 - 1));
+                    result.indices.push_back(vertex_offset + static_cast<uint32_t>(n3 - 1));
+                }
             }
 
             vertex_offset += static_cast<uint32_t>(nb_nodes);
