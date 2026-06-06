@@ -1861,13 +1861,16 @@ fn std_ports_electrical_module_cardinality_locked() {
 // ─── step-3 (thermal): std/ports/thermal surface ─────────────────────────────
 
 /// std/ports/thermal must load with zero Severity::Error diagnostics.
-/// ThermalPort refines exactly [Port] with required members [temperature,
-/// heat_flow] in order, resolving to Scalar<TEMPERATURE> and Scalar<POWER>.
+/// After task ε expansion:
+///   - ThermalPort refines exactly [Port]
+///   - required_members == [heat_flow] (len 1; only the required through-variable)
+///   - temperature, heat_flux, thermal_resistance are OPTIONAL (= none) in defaults
 ///
-/// Implements the Modelica HeatPort convention: temperature (potential across
-/// variable) + heat_flow (through variable Q̇).  Resolves PRD open Q3.
-/// See design decision in plan.json: deviation from PRD's heat-transfer-
-/// coefficient suggestion — both params are named dims, no alias needed.
+/// Extended Modelica HeatPort convention: temperature (optional potential across
+/// variable, K) + heat_flow (required through variable Q̇, W) + heat_flux
+/// (optional W/m² surface flux, HeatFlux alias = Power/Area) + thermal_resistance
+/// (optional K/W, ThermalResistance alias = Temperature/Power).
+/// See plan design decisions: heat_flow stays required; temperature gains optionality.
 #[test]
 fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
     let module = load_module("std/ports/thermal");
@@ -1891,10 +1894,11 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
         thermal_port.refinements
     );
 
+    // heat_flow is the only required through-variable (no default).
     assert_eq!(
         thermal_port.required_members.len(),
-        2,
-        "ThermalPort should have exactly 2 required members; got: {:?}",
+        1,
+        "ThermalPort should have exactly 1 required member (heat_flow); got: {:?}",
         thermal_port
             .required_members
             .iter()
@@ -1903,21 +1907,8 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
     );
     assert_eq!(
         thermal_port.required_members[0].name,
-        "temperature",
-        "ThermalPort required_members[0] should be 'temperature'"
-    );
-    assert_eq!(
-        thermal_port.required_members[1].name,
         "heat_flow",
-        "ThermalPort required_members[1] should be 'heat_flow'"
-    );
-
-    assert_eq!(
-        param_type("std/ports/thermal", "ThermalPort", "temperature"),
-        Type::Scalar {
-            dimension: DimensionVector::TEMPERATURE
-        },
-        "ThermalPort.temperature must be Scalar<TEMPERATURE>"
+        "ThermalPort required_members[0] should be 'heat_flow'"
     );
     assert_eq!(
         param_type("std/ports/thermal", "ThermalPort", "heat_flow"),
@@ -1926,10 +1917,100 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
         },
         "ThermalPort.heat_flow must be Scalar<POWER>"
     );
+
+    // temperature : Option<Temperature> = none
+    let temp_default = thermal_port
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("temperature"))
+        .expect("ThermalPort.defaults should contain 'temperature' (= none)");
+    match &temp_default.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: DimensionVector::TEMPERATURE
+                })),
+                "ThermalPort.temperature default cell_type must be \
+                 Type::Option(Scalar<TEMPERATURE>)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "ThermalPort.temperature default_decl must have a default expression (none)"
+            );
+        }
+        other => panic!(
+            "ThermalPort.temperature default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
+
+    // heat_flux : Option<HeatFlux> = none  (HeatFlux = Power / Area)
+    let expected_heat_flux_dim = DimensionVector::POWER.div(&DimensionVector::AREA);
+    let heat_flux_default = thermal_port
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("heat_flux"))
+        .expect("ThermalPort.defaults should contain 'heat_flux' (= none)");
+    match &heat_flux_default.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: expected_heat_flux_dim
+                })),
+                "ThermalPort.heat_flux default cell_type must be \
+                 Type::Option(Scalar<POWER/AREA>) (HeatFlux alias = Power/Area)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "ThermalPort.heat_flux default_decl must have a default expression (none)"
+            );
+        }
+        other => panic!(
+            "ThermalPort.heat_flux default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
+
+    // thermal_resistance : Option<ThermalResistance> = none  (ThermalResistance = Temperature / Power)
+    let expected_thermal_resistance_dim =
+        DimensionVector::TEMPERATURE.div(&DimensionVector::POWER);
+    let thermal_resistance_default = thermal_port
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("thermal_resistance"))
+        .expect("ThermalPort.defaults should contain 'thermal_resistance' (= none)");
+    match &thermal_resistance_default.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: expected_thermal_resistance_dim
+                })),
+                "ThermalPort.thermal_resistance default cell_type must be \
+                 Type::Option(Scalar<TEMPERATURE/POWER>) (ThermalResistance alias = \
+                 Temperature/Power)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "ThermalPort.thermal_resistance default_decl must have a \
+                 default expression (none)"
+            );
+        }
+        other => panic!(
+            "ThermalPort.thermal_resistance default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
 }
 
-/// std/ports/thermal cardinality lock: exactly 1 trait (ThermalPort),
+/// std/ports/thermal cardinality lock: exactly 2 traits (ThermalPort +
+/// ThermalContactPort), 2 type aliases (HeatFlux + ThermalResistance),
 /// 0 enums, 0 structures.
+///
+/// Type-alias count is asserted so that spuriously added aliases are caught
+/// (consistent with locking the module's full public surface).
 #[test]
 fn std_ports_thermal_module_cardinality_locked() {
     let module = load_module("std/ports/thermal");
@@ -1952,9 +2033,43 @@ fn std_ports_thermal_module_cardinality_locked() {
         .collect();
     assert_eq!(
         module.trait_defs.len(),
-        1,
-        "std/ports/thermal should declare exactly 1 trait (ThermalPort), got: {:?}",
+        2,
+        "std/ports/thermal should declare exactly 2 traits \
+         (ThermalPort + ThermalContactPort), got: {:?}",
         trait_names
+    );
+    assert!(
+        trait_names.contains(&"ThermalPort"),
+        "std/ports/thermal trait list should contain 'ThermalPort', got: {:?}",
+        trait_names
+    );
+    assert!(
+        trait_names.contains(&"ThermalContactPort"),
+        "std/ports/thermal trait list should contain 'ThermalContactPort', got: {:?}",
+        trait_names
+    );
+
+    let alias_names: Vec<&str> = module
+        .type_aliases
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    assert_eq!(
+        module.type_aliases.len(),
+        2,
+        "std/ports/thermal should declare exactly 2 type aliases \
+         (HeatFlux + ThermalResistance), got: {:?}",
+        alias_names
+    );
+    assert!(
+        alias_names.contains(&"HeatFlux"),
+        "std/ports/thermal alias list should contain 'HeatFlux', got: {:?}",
+        alias_names
+    );
+    assert!(
+        alias_names.contains(&"ThermalResistance"),
+        "std/ports/thermal alias list should contain 'ThermalResistance', got: {:?}",
+        alias_names
     );
 
     let structure_names: Vec<&str> = module
@@ -1968,6 +2083,190 @@ fn std_ports_thermal_module_cardinality_locked() {
         0,
         "std/ports/thermal should declare 0 structures, got: {:?}",
         structure_names
+    );
+}
+
+// ─── step-3b (thermal): ThermalContactPort trait surface ──────────────────────
+
+/// ThermalContactPort refines ThermalPort + RegionPort (multi-supertrait).
+/// Own required_members == [contact_area] (len 1); inherited members excluded.
+/// contact_conductance : Option<ThermalConductivity> = none in defaults.
+///
+/// Refinement order is parser-free — asserted by containment + length, not by
+/// exact ordered slice (multi-supertrait precedent: Watertight : Closed + Manifold
+/// in geometry_traits_tests.rs:31-54).
+///
+/// Proves: ThermalContactPort resolves as a port-type with both ThermalPort and
+/// RegionPort in its inheritance chain, and alias-inside-Option in param position
+/// works for ThermalConductivity.
+///
+/// RED on current main (ThermalContactPort absent → find_trait panics).
+#[test]
+fn thermal_contact_port_trait_surface() {
+    let t = find_trait("std/ports/thermal", "ThermalContactPort");
+
+    // Multi-supertrait refinements: order is parser-free; assert by containment.
+    assert_eq!(
+        t.refinements.len(),
+        2,
+        "ThermalContactPort should have exactly 2 refinements \
+         (ThermalPort, RegionPort), got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"ThermalPort".to_string()),
+        "ThermalContactPort.refinements should contain 'ThermalPort', got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"RegionPort".to_string()),
+        "ThermalContactPort.refinements should contain 'RegionPort', got: {:?}",
+        t.refinements
+    );
+
+    // OWN required member: contact_area : Area (no default).
+    // Inherited region/frame/heat_flow are NOT in own required_members.
+    assert_eq!(
+        t.required_members.len(),
+        1,
+        "ThermalContactPort should have exactly 1 own required member \
+         (contact_area); got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name,
+        "contact_area",
+        "ThermalContactPort required_members[0] should be 'contact_area'"
+    );
+    assert_eq!(
+        param_type("std/ports/thermal", "ThermalContactPort", "contact_area"),
+        Type::Scalar {
+            dimension: DimensionVector::AREA
+        },
+        "ThermalContactPort.contact_area must be Scalar<AREA>"
+    );
+
+    // contact_conductance : Option<ThermalConductivity> = none
+    let contact_cond = t
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("contact_conductance"))
+        .expect(
+            "ThermalContactPort.defaults should contain 'contact_conductance' (= none)"
+        );
+    match &contact_cond.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: DimensionVector::THERMAL_CONDUCTIVITY
+                })),
+                "ThermalContactPort.contact_conductance default cell_type must be \
+                 Type::Option(Scalar<THERMAL_CONDUCTIVITY>)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "ThermalContactPort.contact_conductance default_decl must have \
+                 a default expression (none)"
+            );
+        }
+        other => panic!(
+            "ThermalContactPort.contact_conductance default must be \
+             DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
+}
+
+// ─── step-3c (thermal): behavioral compile signal ──────────────────────────────
+
+/// Inline compile test: a structure parameterized on ThermalContactPort compiles
+/// clean. This is the headline behavioral signal — proves ThermalContactPort
+/// resolves as a port-type/trait-bound from user source (imports std.ports.thermal),
+/// with its ThermalPort and RegionPort supertrait chains fully resolved.
+///
+/// No concrete conformer is instantiated (mirroring the ActuatorInterface<…>
+/// type-param-bound example test and task α's inline RegionPort tests).
+///
+/// RED on current main (ThermalContactPort absent → trait-bound unresolved →
+/// Severity::Error diagnostics).
+#[test]
+fn reify_check_accepts_thermal_contact_port() {
+    let source = "\
+import std.ports.thermal
+structure def ContactInterface<C: ThermalContactPort> { port contact : C }
+";
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "ContactInterface<C: ThermalContactPort> should compile without errors; \
+         got: {:?}",
+        errors
+    );
+}
+
+// ─── amend (thermal): ThermalContactPort concrete conformer ──────────────────
+
+/// Conformer instantiation: a concrete structure that satisfies every required
+/// member of ThermalContactPort compiles clean.
+///
+/// Required members supplied:
+///   frame         : Frame3    (from LocatedPort)  — zero-origin identity frame
+///   region        : Geometry  (from RegionPort)   — box geometry (Geometry alias
+///                                                    == Solid, box() returns Geometry)
+///   heat_flow     : Power     (from ThermalPort)  — 1N * 1m / 1s (= 1 W)
+///   contact_area  : Area      (own ThermalContactPort) — 1m * 1m (= 1 m²)
+///
+/// Optional members (temperature, heat_flux, thermal_resistance,
+/// contact_conductance) are intentionally omitted — they default to none and
+/// must NOT be required by the conformance checker.
+///
+/// Complements `reify_check_accepts_thermal_contact_port` (which only checks
+/// that the trait bound resolves with no errors in a generic context) by
+/// driving the strict `structure def X : Trait` conformance checker against
+/// the full inherited + own member set.  A structural change that broke
+/// conformance while keeping the bound resolvable would be caught here.
+///
+/// Mirrors the `rotary_port_concrete_conformer_compiles` pattern (~line 701).
+#[test]
+fn thermal_contact_port_concrete_conformer_compiles() {
+    let source = r#"
+import std.ports.thermal
+
+structure def ContactPatch : ThermalContactPort {
+    param frame : Frame3 = Frame3(
+        origin: vec3(0mm, 0mm, 0mm),
+        x_axis: vec3(1mm, 0mm, 0mm),
+        y_axis: vec3(0mm, 1mm, 0mm),
+        z_axis: vec3(0mm, 0mm, 1mm),
+    )
+    param region : Geometry = box(10mm, 10mm, 1mm)
+    param heat_flow : Power = 1N * 1m / 1s
+    param contact_area : Area = 1m * 1m
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a structure conforming to ThermalContactPort and supplying \
+         frame/region/heat_flow/contact_area should compile without errors; \
+         got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
