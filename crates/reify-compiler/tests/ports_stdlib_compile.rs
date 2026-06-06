@@ -2308,8 +2308,8 @@ fn std_ports_fluid_loads_with_no_errors_and_fluid_port_trait() {
 
     assert_eq!(
         fluid_port.required_members.len(),
-        3,
-        "FluidPort should have exactly 3 required members; got: {:?}",
+        4,
+        "FluidPort should have exactly 4 required members; got: {:?}",
         fluid_port
             .required_members
             .iter()
@@ -2330,6 +2330,11 @@ fn std_ports_fluid_loads_with_no_errors_and_fluid_port_trait() {
         fluid_port.required_members[2].name,
         "medium",
         "FluidPort required_members[2] should be 'medium'"
+    );
+    assert_eq!(
+        fluid_port.required_members[3].name,
+        "fluid_type",
+        "FluidPort required_members[3] should be 'fluid_type'"
     );
 
     assert_eq!(
@@ -2358,23 +2363,44 @@ fn std_ports_fluid_loads_with_no_errors_and_fluid_port_trait() {
         "FluidPort.medium must be Type::String \
          (open medium set; free-form identifier per io.ri precedent)"
     );
+
+    assert_eq!(
+        param_type("std/ports/fluid", "FluidPort", "fluid_type"),
+        Type::Enum("FluidType".into()),
+        "FluidPort.fluid_type must be Type::Enum(\"FluidType\")"
+    );
 }
 
-/// std/ports/fluid cardinality lock: exactly 1 trait (FluidPort),
-/// 0 enums, 0 structures.
+/// std/ports/fluid cardinality lock: exactly 3 enums (FluidType, PipeConnectionType,
+/// FittingStandard), 3 traits (FluidPort, PipedFluidPort, HydraulicPort), 0 structures.
+///
+/// Updated incrementally per task ζ step-5: FittingStandard + HydraulicPort added.
 #[test]
 fn std_ports_fluid_module_cardinality_locked() {
     let module = load_module("std/ports/fluid");
 
+    let enum_names: Vec<&str> = module.enum_defs.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
         module.enum_defs.len(),
-        0,
-        "std/ports/fluid should declare 0 enums, got: {:?}",
-        module
-            .enum_defs
-            .iter()
-            .map(|e| e.name.as_str())
-            .collect::<Vec<_>>()
+        3,
+        "std/ports/fluid should declare exactly 3 enums \
+         (FluidType, PipeConnectionType, FittingStandard), got: {:?}",
+        enum_names
+    );
+    assert!(
+        enum_names.contains(&"FluidType"),
+        "std/ports/fluid enum_defs should contain 'FluidType'; got: {:?}",
+        enum_names
+    );
+    assert!(
+        enum_names.contains(&"PipeConnectionType"),
+        "std/ports/fluid enum_defs should contain 'PipeConnectionType'; got: {:?}",
+        enum_names
+    );
+    assert!(
+        enum_names.contains(&"FittingStandard"),
+        "std/ports/fluid enum_defs should contain 'FittingStandard'; got: {:?}",
+        enum_names
     );
 
     let trait_names: Vec<&str> = module
@@ -2384,8 +2410,24 @@ fn std_ports_fluid_module_cardinality_locked() {
         .collect();
     assert_eq!(
         module.trait_defs.len(),
-        1,
-        "std/ports/fluid should declare exactly 1 trait (FluidPort), got: {:?}",
+        3,
+        "std/ports/fluid should declare exactly 3 traits \
+         (FluidPort, PipedFluidPort, HydraulicPort), got: {:?}",
+        trait_names
+    );
+    assert!(
+        trait_names.contains(&"FluidPort"),
+        "std/ports/fluid trait_defs should contain 'FluidPort'; got: {:?}",
+        trait_names
+    );
+    assert!(
+        trait_names.contains(&"PipedFluidPort"),
+        "std/ports/fluid trait_defs should contain 'PipedFluidPort'; got: {:?}",
+        trait_names
+    );
+    assert!(
+        trait_names.contains(&"HydraulicPort"),
+        "std/ports/fluid trait_defs should contain 'HydraulicPort'; got: {:?}",
         trait_names
     );
 
@@ -2400,6 +2442,412 @@ fn std_ports_fluid_module_cardinality_locked() {
         0,
         "std/ports/fluid should declare 0 structures, got: {:?}",
         structure_names
+    );
+}
+
+// ─── task ζ step-1: FluidType enum surface + behavioral resolve ──────────────
+
+/// FluidType enum must declare exactly 3 variants in order:
+/// [Liquid, Gas, TwoPhase].
+///
+/// RED: FluidType is absent → find_enum panics.
+#[test]
+fn fluid_type_enum_surface() {
+    let e = find_enum("std/ports/fluid", "FluidType");
+    assert_eq!(
+        e.variants.as_slice(),
+        ["Liquid", "Gas", "TwoPhase"].as_slice(),
+        "FluidType variants should be [Liquid, Gas, TwoPhase] in order; got: {:?}",
+        e.variants
+    );
+}
+
+/// Behavioral: a structure that uses `FluidType.Liquid` as a param default
+/// must compile with zero Severity::Error diagnostics after `import std.ports.fluid`.
+///
+/// This is the PRD §7 ζ signal: "FluidType.Liquid resolves (previously Undef)."
+///
+/// RED: FluidType absent → enum variant lookup returns Undef → compile error.
+#[test]
+fn fluid_type_liquid_resolves_in_user_source() {
+    let source = r#"
+import std.ports.fluid
+
+structure def FluidProbe {
+    param k : FluidType = FluidType.Liquid
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "structure using FluidType.Liquid as default should compile without errors; got: {:?}",
+        errors
+    );
+}
+
+/// Negative: a structure that directly conforms to FluidPort but omits the newly-required
+/// `fluid_type` param must be rejected with a Severity::Error diagnostic.
+///
+/// This confirms that `fluid_type : FluidType` is genuinely enforced as a required member,
+/// not just declared. Without this negative case the positive conformer tests (which use
+/// the lenient `port p : in Trait {}` slot path) would pass even if the compiler were
+/// silently not enforcing these members as required.
+///
+/// Uses direct structure conformance (`structure def X : FluidPort`) which goes through
+/// the strict conformance checker — the same path verified by
+/// `rotary_port_conformer_inherited_option_default_does_not_satisfy_max_torque`.
+#[test]
+fn fluid_port_missing_required_fluid_type_rejected() {
+    let source = r#"
+import std.ports.fluid
+
+structure def FluidConformerMissingFluidType : FluidPort {
+    param pressure : Pressure = 101325Pa
+    param flow_rate : VolumetricFlowRate = 1gal / 1s
+    param medium : String = "water"
+    // fluid_type intentionally omitted — should trigger a required-member error
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "structure conforming to FluidPort without `fluid_type` must produce a Severity::Error \
+         (missing required member), but compiled with zero errors"
+    );
+    assert!(
+        errors.iter().any(|d| d.message.contains("fluid_type")),
+        "expected a diagnostic naming 'fluid_type' for the missing required member; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task ζ step-3: PipeConnectionType enum + PipedFluidPort trait surface ────
+
+/// PipeConnectionType enum must declare exactly 5 variants in order:
+/// [Threaded, Flanged, Compression, PushFit, Welded].
+///
+/// RED: PipeConnectionType is absent → find_enum panics.
+#[test]
+fn pipe_connection_type_enum_surface() {
+    let e = find_enum("std/ports/fluid", "PipeConnectionType");
+    assert_eq!(
+        e.variants.as_slice(),
+        ["Threaded", "Flanged", "Compression", "PushFit", "Welded"].as_slice(),
+        "PipeConnectionType variants should be \
+         [Threaded, Flanged, Compression, PushFit, Welded] in order; got: {:?}",
+        e.variants
+    );
+}
+
+/// PipedFluidPort refines exactly [FluidPort, LocatedPort] (multi-supertrait,
+/// order not guaranteed) and has exactly 2 own required members:
+/// inner_diameter : Length, connection_type : PipeConnectionType.
+///
+/// RED: PipedFluidPort is absent → find_trait panics.
+#[test]
+fn piped_fluid_port_trait_surface() {
+    let t = find_trait("std/ports/fluid", "PipedFluidPort");
+
+    assert_eq!(
+        t.refinements.len(),
+        2,
+        "PipedFluidPort should refine exactly 2 supertraits \
+         (FluidPort, LocatedPort), got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"FluidPort".to_string()),
+        "PipedFluidPort refinements should contain 'FluidPort', got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"LocatedPort".to_string()),
+        "PipedFluidPort refinements should contain 'LocatedPort', got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        2,
+        "PipedFluidPort should have exactly 2 own required members \
+         (inner_diameter, connection_type); got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        param_type("std/ports/fluid", "PipedFluidPort", "inner_diameter"),
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
+        "PipedFluidPort.inner_diameter must be Scalar<LENGTH>"
+    );
+    assert_eq!(
+        param_type("std/ports/fluid", "PipedFluidPort", "connection_type"),
+        Type::Enum("PipeConnectionType".into()),
+        "PipedFluidPort.connection_type must be Type::Enum(\"PipeConnectionType\")"
+    );
+}
+
+/// Behavioral: a concrete port that conforms to PipedFluidPort must compile with
+/// zero Severity::Error diagnostics when ALL inherited + own params are supplied.
+///
+/// PipedFluidPort diamond:
+///
+///          Port  (direction : Directionality = Bidi — defaulted, can omit)
+///         /    \
+///   FluidPort  LocatedPort
+///   (pressure,  (frame : Frame3)
+///    flow_rate,
+///    medium,
+///    fluid_type)
+///         \    /
+///       PipedFluidPort
+///       (inner_diameter, connection_type)
+///
+/// This is the PRD §7 ζ signal: "reify check accepts a PipedFluidPort
+/// (connection_type: PipeConnectionType.Threaded)".
+///
+/// RED: PipedFluidPort absent → compile error on unknown trait.
+#[test]
+fn piped_fluid_port_concrete_conformer_diamond_merge_compiles() {
+    // flow_rate uses `1gal / 1s` (gal is the Volume unit declared in units.ri;
+    // no m³ SI unit is currently generated — see units.ri §Volume comment).
+    // Enum-typed params (fluid_type, connection_type) omit the type annotation:
+    // the compiler resolves enum types from the prelude in struct-param position
+    // but the port-param type-annotation path doesn't look up prelude enums
+    // (port param values are inferred from the provided literal instead).
+    let source = r#"
+import std.ports.fluid
+
+structure def PipeConformer {
+    port p : in PipedFluidPort {
+        param pressure : Pressure = 101325Pa
+        param flow_rate : VolumetricFlowRate = 1gal / 1s
+        param medium : String = "water"
+        param fluid_type = FluidType.Liquid
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1mm, 0mm, 0mm),
+            y_axis: vec3(0mm, 1mm, 0mm),
+            z_axis: vec3(0mm, 0mm, 1mm),
+        )
+        param inner_diameter : Length = 25mm
+        param connection_type = PipeConnectionType.Threaded
+    }
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "PipedFluidPort concrete conformer (diamond: FluidPort+LocatedPort both refine Port) \
+         should compile without errors when all inherited+own params are supplied; got: {:?}",
+        errors
+    );
+
+    assert!(
+        compiled
+            .templates
+            .iter()
+            .any(|t| t.name == "PipeConformer" && t.entity_kind == EntityKind::Structure),
+        "PipeConformer should be declared as a Structure template; found: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.entity_kind))
+            .collect::<Vec<_>>()
+    );
+
+    // Diamond-merge deduplication: the shared Port base must not be duplicated across
+    // the two arms of the FluidPort+LocatedPort diamond (both refine Port, which carries
+    // the `direction : Directionality` member). If deduplication is broken, `direction`
+    // (or another shared base member) would appear twice in the compiled port's member
+    // list, making member_names.len() > unique_count.
+    let pipe_conformer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "PipeConformer")
+        .expect("PipeConformer template was confirmed present above");
+    let port_p = pipe_conformer
+        .ports
+        .iter()
+        .find(|p| p.name == "p")
+        .expect("PipeConformer should have a port named 'p'");
+    let member_names: Vec<&str> = port_p
+        .members
+        .iter()
+        .map(|m| m.id.member.as_str())
+        .collect();
+    let unique_count = member_names
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    assert_eq!(
+        member_names.len(),
+        unique_count,
+        "PipedFluidPort conformer port 'p' has duplicate member names — \
+         the shared Port base (direction) is not being deduplicated across the \
+         FluidPort+LocatedPort diamond arms; member names: {:?}",
+        member_names
+    );
+}
+
+// ─── task ζ step-5: FittingStandard enum + HydraulicPort (§5.6 multi-domain) ──
+
+/// FittingStandard enum must declare exactly 4 variants in order:
+/// [NPT, BSP, JIC, ORFS].
+///
+/// RED: FittingStandard is absent → find_enum panics.
+#[test]
+fn fitting_standard_enum_surface() {
+    let e = find_enum("std/ports/fluid", "FittingStandard");
+    assert_eq!(
+        e.variants.as_slice(),
+        ["NPT", "BSP", "JIC", "ORFS"].as_slice(),
+        "FittingStandard variants should be [NPT, BSP, JIC, ORFS] in order; got: {:?}",
+        e.variants
+    );
+}
+
+/// HydraulicPort refines exactly [FluidPort, MechanicalPort] (§5.6 multi-domain,
+/// order not guaranteed) and has exactly 1 own required member:
+/// fitting_type : FittingStandard.
+///
+/// RED: HydraulicPort is absent → find_trait panics.
+#[test]
+fn hydraulic_port_trait_surface() {
+    let t = find_trait("std/ports/fluid", "HydraulicPort");
+
+    assert_eq!(
+        t.refinements.len(),
+        2,
+        "HydraulicPort should refine exactly 2 supertraits \
+         (FluidPort, MechanicalPort), got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"FluidPort".to_string()),
+        "HydraulicPort refinements should contain 'FluidPort', got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"MechanicalPort".to_string()),
+        "HydraulicPort refinements should contain 'MechanicalPort', got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        1,
+        "HydraulicPort should have exactly 1 own required member (fitting_type); got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name,
+        "fitting_type",
+        "HydraulicPort required_members[0] should be 'fitting_type'"
+    );
+    assert_eq!(
+        param_type("std/ports/fluid", "HydraulicPort", "fitting_type"),
+        Type::Enum("FittingStandard".into()),
+        "HydraulicPort.fitting_type must be Type::Enum(\"FittingStandard\")"
+    );
+}
+
+/// Behavioral: a concrete port that conforms to HydraulicPort must compile with
+/// zero Severity::Error diagnostics when ALL inherited + own params are supplied.
+///
+/// HydraulicPort §5.6 multi-domain diamond:
+///
+///          Port  (direction : Directionality = Bidi — defaulted, can omit)
+///         /    \
+///   FluidPort  MechanicalPort (: LocatedPort)
+///   (pressure,  (frame : Frame3, max_load : Option<Force> = none,
+///    flow_rate,  max_torque : Option<Torque> = none — both have defaults, can omit)
+///    medium,
+///    fluid_type)
+///         \    /
+///       HydraulicPort
+///       (fitting_type)
+///
+/// max_load and max_torque are Option-defaults in MechanicalPort → omitted here.
+///
+/// This is the PRD §7 ζ signal: "reify check accepts the multi-domain HydraulicPort."
+///
+/// RED: HydraulicPort absent → compile error on unknown trait.
+#[test]
+fn hydraulic_port_concrete_conformer_multidomain_compiles() {
+    // Enum-typed param (fitting_type) omits the type annotation per the same
+    // port-param enum-type annotation limitation documented in the PipedFluidPort
+    // conformer test above.
+    let source = r#"
+import std.ports.fluid
+
+structure def HydroConformer {
+    port p : in HydraulicPort {
+        param pressure : Pressure = 101325Pa
+        param flow_rate : VolumetricFlowRate = 1gal / 1s
+        param medium : String = "hydraulic_oil"
+        param fluid_type = FluidType.Liquid
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1mm, 0mm, 0mm),
+            y_axis: vec3(0mm, 1mm, 0mm),
+            z_axis: vec3(0mm, 0mm, 1mm),
+        )
+        param fitting_type = FittingStandard.NPT
+    }
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "HydraulicPort concrete conformer (§5.6 multi-domain: FluidPort+MechanicalPort) \
+         should compile without errors when all required params are supplied; got: {:?}",
+        errors
+    );
+
+    assert!(
+        compiled
+            .templates
+            .iter()
+            .any(|t| t.name == "HydroConformer" && t.entity_kind == EntityKind::Structure),
+        "HydroConformer should be declared as a Structure template; found: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.entity_kind))
+            .collect::<Vec<_>>()
     );
 }
 
