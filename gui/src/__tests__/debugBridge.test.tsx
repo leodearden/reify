@@ -2777,3 +2777,80 @@ describe('debug bridge hover_at', () => {
     expect(lspParams.position).toEqual({ line: 9, character: 19 });
   });
 });
+
+// ─── F2 completion_at handler (step-9 RED → step-10 GREEN) ──────────────────
+
+describe('debug bridge completion_at', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCompletion(stores: ReturnType<typeof makeStores>, params: Record<string, unknown>) {
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 2001, command: 'completion_at', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    return {
+      result: JSON.parse((responseCall![1] as { result: string }).result),
+      calls,
+    };
+  }
+
+  it('bare array response: returns { items, itemCount } and calls lsp_request with correct method/uri/position', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify([{ label: 'box' }, { label: 'size' }]);
+      }
+      return undefined;
+    });
+
+    const { result, calls } = await dispatchCompletion(stores, { line: 9, col: 21 });
+
+    expect(result.itemCount).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('box');
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('size');
+
+    const lspCall = calls.find((c) => c[0] === 'lsp_request');
+    expect(lspCall).toBeDefined();
+    expect((lspCall![1] as { method: string }).method).toBe('textDocument/completion');
+    const lspParams = JSON.parse((lspCall![1] as { params: string }).params);
+    expect(lspParams.textDocument.uri).toBe('file:///tmp/cube.ri');
+    expect(lspParams.position).toEqual({ line: 9, character: 21 });
+  });
+
+  it('CompletionList response: normalizes items via lspClient.completion', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify({ items: [{ label: 'box' }, { label: 'sphere' }] });
+      }
+      return undefined;
+    });
+
+    const { result } = await dispatchCompletion(stores, { line: 9, col: 21 });
+
+    expect(result.itemCount).toBe(2);
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('box');
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('sphere');
+  });
+});
