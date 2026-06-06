@@ -861,6 +861,41 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { errors, count: errors.length };
     },
 
+    // --- C2: layout-control tools (task-4302) ---
+
+    resize_panes: (params) => {
+      const DIMS = [
+        ['editorWidth',      'setEditorWidth'],
+        ['sideWidth',        'setSideWidth'],
+        ['designTreeHeight', 'setDesignTreeHeight'],
+        ['propertyHeight',   'setPropertyHeight'],
+        ['constraintHeight', 'setConstraintHeight'],
+      ] as const;
+
+      // Validate first pass — reject any invalid value before applying anything.
+      let anyProvided = false;
+      for (const [dim] of DIMS) {
+        const raw = params[dim];
+        if (raw === undefined) continue;
+        anyProvided = true;
+        if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
+          return { error: `${dim} must be a non-negative finite number` };
+        }
+      }
+      if (!anyProvided) return { error: 'no pane dimensions provided' };
+
+      // Apply pass — all values validated.
+      const layout = ctx.stores.layout;
+      for (const [dim, setter] of DIMS) {
+        const raw = params[dim];
+        if (raw !== undefined) {
+          (layout[setter] as (v: number) => void)(raw as number);
+        }
+      }
+
+      return { ok: true, layout: { ...ctx.stores.layout.state } };
+    },
+
     wait_for_idle: async (params) => {
       const timeoutMs =
         typeof params.timeout_ms === 'number' && params.timeout_ms > 0
