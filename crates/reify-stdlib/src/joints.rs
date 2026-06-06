@@ -6521,4 +6521,150 @@ mod tests {
         }
     }
 
+    // ── DRIVING_JOINT_KINDS / is_driving_joint / make_nondriving_joint_error ──
+
+    /// `is_driving_joint` returns true for every driving kind (prismatic,
+    /// revolute, cylindrical, planar, spherical) and false for coupling,
+    /// fixed, world(), and non-Map values.
+    #[test]
+    fn is_driving_joint_positive_and_negative_cases() {
+        use super::{DRIVING_JOINT_KINDS, is_driving_joint};
+        use std::collections::BTreeMap;
+
+        // Positive cases: all five driving kinds.
+        for &kind in DRIVING_JOINT_KINDS {
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("kind".to_string()),
+                Value::String(kind.to_string()),
+            );
+            assert!(
+                is_driving_joint(&Value::Map(m)),
+                "Map with kind='{}' (in DRIVING_JOINT_KINDS) should be a driving joint",
+                kind
+            );
+        }
+
+        // Negative cases: coupling and fixed (joints but non-driving).
+        for &kind in &["coupling", "fixed"] {
+            let mut m = BTreeMap::new();
+            m.insert(
+                Value::String("kind".to_string()),
+                Value::String(kind.to_string()),
+            );
+            assert!(
+                !is_driving_joint(&Value::Map(m)),
+                "Map with kind='{}' should NOT be a driving joint",
+                kind
+            );
+        }
+
+        // Negative: world sentinel (kind="world").
+        let world = eval_builtin("world", &[]);
+        assert!(!is_driving_joint(&world), "world() should not be a driving joint");
+
+        // Negative: non-Map values.
+        assert!(!is_driving_joint(&Value::Real(1.0)), "Real should not be a driving joint");
+        assert!(
+            !is_driving_joint(&Value::String("prismatic".to_string())),
+            "bare String 'prismatic' should not be a driving joint"
+        );
+    }
+
+    /// Drift guard: every kind in `DRIVING_JOINT_KINDS` must also be in
+    /// `JOINT_KINDS`, and `JOINT_KINDS` minus `DRIVING_JOINT_KINDS` must equal
+    /// exactly `{"coupling", "fixed"}`. Mirrors
+    /// `is_joint_value_aligns_with_joint_kinds`.
+    #[test]
+    fn driving_joint_kinds_is_subset_of_joint_kinds_and_complement_is_coupling_and_fixed() {
+        use super::DRIVING_JOINT_KINDS;
+
+        // DRIVING_JOINT_KINDS ⊆ JOINT_KINDS.
+        for &kind in DRIVING_JOINT_KINDS {
+            assert!(
+                JOINT_KINDS.contains(&kind),
+                "kind '{}' is in DRIVING_JOINT_KINDS but not in JOINT_KINDS",
+                kind
+            );
+        }
+
+        // JOINT_KINDS ∖ DRIVING_JOINT_KINDS == {"coupling", "fixed"}.
+        let complement: Vec<&&str> = JOINT_KINDS
+            .iter()
+            .filter(|k| !DRIVING_JOINT_KINDS.contains(*k))
+            .collect();
+        let mut sorted = complement.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec![&"coupling", &"fixed"],
+            "JOINT_KINDS minus DRIVING_JOINT_KINDS must be exactly {{coupling, fixed}}"
+        );
+    }
+
+    /// `make_nondriving_joint_error` on a coupling joint returns a
+    /// `Value::Map` whose `error` field is `"nondriving_joint"`, with a
+    /// non-empty `error_message` String and a `joint` field equal to the
+    /// input.
+    #[test]
+    fn make_nondriving_joint_error_shape_for_coupling() {
+        use super::make_nondriving_joint_error;
+
+        let prismatic = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let coupling = eval_builtin("couple", &[prismatic, Value::Real(-1.0)]);
+        let result = make_nondriving_joint_error(coupling.clone());
+
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("make_nondriving_joint_error: expected Value::Map, got {:?}", other),
+        };
+
+        // error field must be "nondriving_joint".
+        assert_eq!(
+            map.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "error field must be 'nondriving_joint'"
+        );
+
+        // error_message must be a non-empty string.
+        match map.get(&Value::String("error_message".to_string())) {
+            Some(Value::String(msg)) => {
+                assert!(!msg.is_empty(), "error_message must not be empty");
+            }
+            other => panic!("error_message must be a non-empty String, got {:?}", other),
+        }
+
+        // joint field must be the input joint verbatim.
+        assert_eq!(
+            map.get(&Value::String("joint".to_string())),
+            Some(&coupling),
+            "joint field must be the input joint verbatim"
+        );
+    }
+
+    /// `make_nondriving_joint_error` on a fixed joint also returns a
+    /// `Value::Map` with the canonical shape.
+    #[test]
+    fn make_nondriving_joint_error_shape_for_fixed() {
+        use super::make_nondriving_joint_error;
+
+        let fixed = eval_builtin("fixed", &[]);
+        let result = make_nondriving_joint_error(fixed.clone());
+
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("make_nondriving_joint_error(fixed): expected Value::Map, got {:?}", other),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "error field must be 'nondriving_joint'"
+        );
+        assert_eq!(
+            map.get(&Value::String("joint".to_string())),
+            Some(&fixed),
+            "joint field must be the input fixed joint verbatim"
+        );
+    }
 }
