@@ -435,4 +435,20 @@ describe('extractHoverMarkdown', () => {
   it('returns empty string for an empty array', () => {
     expect(extractHoverMarkdown([])).toBe('');
   });
+
+  it('skips array elements that are objects without a value property', () => {
+    // A malformed element (no `value` field) must not produce the literal text
+    // "undefined" — the array branch guards with an in-check and falls back to ''.
+    expect(
+      extractHoverMarkdown([
+        { language: 'reify', value: 'param size: Scalar' },
+        { malformed: true },
+        'trailing doc',
+      ]),
+    ).toBe('param size: Scalar\ntrailing doc');
+  });
+
+  it('returns empty string for an array containing only malformed elements', () => {
+    expect(extractHoverMarkdown([{ malformed: true }, { alsoMalformed: 42 }])).toBe('');
+  });
 });

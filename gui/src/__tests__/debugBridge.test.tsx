@@ -2776,6 +2776,32 @@ describe('debug bridge hover_at', () => {
     expect(lspParams.textDocument.uri).toBe('file:///tmp/cube.ri');
     expect(lspParams.position).toEqual({ line: 9, character: 19 });
   });
+
+  it('returns null-hover shape when lsp_request returns null (no hover at position)', async () => {
+    // Covers the hover_at null branch: { markdown:'', markdownLength:0, contents:null, range:null }
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') return JSON.stringify(null);
+      return undefined;
+    });
+    vi.mocked(invoke).mockClear();
+
+    await capturedHandler!({ payload: { id: 1002, command: 'hover_at', params: { line: 0, col: 0 } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const result = JSON.parse((responseCall![1] as { result: string }).result);
+
+    expect(result.markdown).toBe('');
+    expect(result.markdownLength).toBe(0);
+    expect(result.contents).toBeNull();
+    expect(result.range).toBeNull();
+  });
 });
 
 // ─── F2 definition_at handler (step-11 RED → step-12 GREEN) ─────────────────

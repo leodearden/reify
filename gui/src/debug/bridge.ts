@@ -277,6 +277,12 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
     return { ok: true, path, expanded: accessor().has(path) };
   }
 
+  // One lspClient instance shared across all three F2 probe handlers; created
+  // once per buildHandlers() call and closed over by hover_at/completion_at/
+  // definition_at.  createLspClient() returns a plain object, so hoisting is
+  // cost-free — this makes the comment below accurate.
+  const lsp = createLspClient();
+
   return {
     // --- Read commands (frontend-mediated) ---
 
@@ -1002,15 +1008,14 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
     },
 
     // --- F2 LSP probe tools (task-4304) ---
-    // One lspClient instance shared across all three probe handlers; it calls
-    // the in-process LSP via the Tauri lsp_request command, reusing its
+    // `lsp` is the single client instance hoisted before this return; see above.
+    // It calls the in-process LSP via the Tauri lsp_request command, reusing its
     // response normalisation (completion list→array, null-handling).
 
     hover_at: async (params) => {
       const target = resolveActiveProbeTarget(ctx, params);
       if ('error' in target) return target;
       const { uri, line, col } = target;
-      const lsp = createLspClient();
       const hover = await lsp.hover(uri, line, col);
       if (!hover) {
         return { markdown: '', markdownLength: 0, contents: null, range: null };
@@ -1028,7 +1033,6 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       const target = resolveActiveProbeTarget(ctx, params);
       if ('error' in target) return target;
       const { uri, line, col } = target;
-      const lsp = createLspClient();
       const items = await lsp.completion(uri, line, col);
       return { items, itemCount: items.length };
     },
@@ -1037,7 +1041,6 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       const target = resolveActiveProbeTarget(ctx, params);
       if ('error' in target) return target;
       const { uri, line, col } = target;
-      const lsp = createLspClient();
       const loc = await lsp.gotoDefinition(uri, line, col);
       return { uri: loc?.uri ?? null, range: loc?.range ?? null, found: loc !== null };
     },

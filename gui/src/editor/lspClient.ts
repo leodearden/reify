@@ -135,8 +135,15 @@ export function extractHoverMarkdown(
   if (contents === null || contents === undefined) return '';
   if (typeof contents === 'string') return contents;
   if (Array.isArray(contents)) {
-    return (contents as Array<string | { value: string }>)
-      .map((c) => (typeof c === 'string' ? c : c.value))
+    return (contents as Array<unknown>)
+      .map((c) =>
+        typeof c === 'string'
+          ? c
+          : c !== null && typeof c === 'object' && 'value' in c
+            ? (c as { value: string }).value
+            : '',
+      )
+      .filter(Boolean)
       .join('\n');
   }
   if (typeof contents === 'object' && 'value' in (contents as object)) {

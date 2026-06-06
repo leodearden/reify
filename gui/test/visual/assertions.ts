@@ -144,9 +144,15 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
     ],
   },
   // task-4304 F2: LSP probe e2e signal scenarios (live signal via npm run test:e2e,
-  // not CI-gated — per H0 harness contract).  Positions resolved against small_cube.ri:
-  //   line=7 col=10 → `size` identifier in `param size: Scalar = 10mm`
-  //   line=9 col=19 → first `size` arg in `let body = box(size, size, size)`
+  // not CI-gated — per H0 harness contract).  Positions verified against the committed
+  // gui/test/fixtures/small_cube.ri (0-based line/col, UTF-8):
+  //   line=7 col=10 → `size` identifier in `    param size: Scalar = 10mm`
+  //                   (4 spaces + "param " = 10 chars, so col 10 is start of `size`)
+  //   line=9 col=19 → first `size` arg in `    let body = box(size, size, size)`
+  //                   ("    let body = box(" = 19 chars, so col 19 is start of first `size`)
+  // If small_cube.ri is ever reformatted, re-verify with:
+  //   awk 'NR==8{print substr($0,11,4)}NR==10{print substr($0,20,4)}' gui/test/fixtures/small_cube.ri
+  //   (should print "size" twice; awk uses 1-based line/col hence NR=line+1, col+1)
   {
     name: "hover_at_markdown_small_cube",
     fixture: "small_cube",
