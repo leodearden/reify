@@ -1,0 +1,84 @@
+//! Generic-function signature tests — task 4230 (generic-user-fns α).
+//!
+//! Verifies that:
+//!   (step-1/step-2) `CompiledFunction.type_params` is correctly lowered from
+//!     `fn_def.type_params` via `convert_type_params`, and is empty for non-generic fns.
+//!   (step-3/step-4) Bare type-param names (`T`) resolve to `Type::TypeParam("T")` in
+//!     fn parameter and return-type positions.
+//!   (step-5/step-6) Type-param names resolve inside parameterised builtin types
+//!     (`Field<D, C>`, `List<T>`).
+//!   (step-7/step-8) An undeclared name in a generic-fn signature emits
+//!     `DiagnosticCode::FnUnknownTypeParam`; a non-generic fn's unknown type still emits
+//!     `DiagnosticCode::UnresolvedType` (INV-6 regression pin).
+//!
+//! All tests use `compile_source` (no stdlib) and minimal bodies (`{ value }`, `{ x }`)
+//! that reference a param. `compile_function` does NOT type-check the body against the
+//! declared return type, so trivial bodies produce no diagnostics and need no stdlib symbol.
+
+use reify_test_support::compile_source;
+use reify_core::{Severity, Type};
+
+// ────────────────────────────────────────────────────────────────────────────
+// Step-1 / Step-2: CompiledFunction.type_params lowering
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Generic fn's `type_params` is lowered from the declared `<D, C>` type-param list;
+/// non-generic fn's `type_params` is empty (INV-6).
+///
+/// RED until step-2: `compile_function` stubs `type_params: Vec::new()`, so
+/// `constant_field.type_params` is empty instead of ["D", "C"].
+#[test]
+fn generic_fn_lowers_type_params_and_nongeneric_is_empty() {
+    let source = r#"
+        fn constant_field<D, C>(value: C) -> Field<D, C> { value }
+        fn plain(x: Real) -> Real { x }
+    "#;
+    let module = compile_source(source);
+
+    // constant_field must be present (compile_function returns Some even with
+    // unresolved signature types, falling back to Type::Real).
+    let cf = module
+        .functions
+        .iter()
+        .find(|f| f.name == "constant_field")
+        .expect("function 'constant_field' should be compiled");
+
+    // type_params should be lowered from <D, C>.
+    assert_eq!(
+        cf.type_params.len(),
+        2,
+        "constant_field should have 2 type params, got {:?}",
+        cf.type_params.iter().map(|tp| &tp.name).collect::<Vec<_>>()
+    );
+    assert_eq!(cf.type_params[0].name, "D");
+    assert_eq!(cf.type_params[1].name, "C");
+    // No bounds, no default for simple type params.
+    assert!(
+        cf.type_params[0].bounds.is_empty(),
+        "D should have no bounds"
+    );
+    assert!(
+        cf.type_params[1].bounds.is_empty(),
+        "C should have no bounds"
+    );
+    assert!(
+        cf.type_params[0].default.is_none(),
+        "D should have no default"
+    );
+    assert!(
+        cf.type_params[1].default.is_none(),
+        "C should have no default"
+    );
+
+    // Non-generic fn must have empty type_params (INV-6).
+    let plain = module
+        .functions
+        .iter()
+        .find(|f| f.name == "plain")
+        .expect("function 'plain' should be compiled");
+    assert!(
+        plain.type_params.is_empty(),
+        "non-generic fn 'plain' should have empty type_params, got {:?}",
+        plain.type_params
+    );
+}
