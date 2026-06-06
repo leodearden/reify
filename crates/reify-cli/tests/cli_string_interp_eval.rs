@@ -67,8 +67,8 @@ fn eval_interpolation_undef_hole_does_not_poison() {
         .find(|l| l.contains("Demo.undef_demo"))
         .unwrap_or("");
     let rhs = undef_demo_line
-        .splitn(2, " = ")
-        .nth(1)
+        .split_once(" = ")
+        .map(|x| x.1)
         .unwrap_or("");
     assert!(
         rhs.starts_with('"'),
