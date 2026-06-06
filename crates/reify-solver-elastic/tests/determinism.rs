@@ -247,6 +247,7 @@ fn dedup_bcs(bcs: &mut Vec<DirichletBc>) {
 /// Load: shear resultant `F = 1` in −y distributed over the `x = 2` face.
 ///
 /// Returns `(nodes, connectivity, clamp_bcs, tip_loads)`.
+#[allow(clippy::type_complexity)]
 fn box_cantilever_fixture() -> (
     Vec<[f64; 3]>,
     Vec<[usize; 4]>,
@@ -400,7 +401,7 @@ fn recover_stress_field(
 
 /// Maximum von Mises stress over all nodes in the recovered stress field.
 fn max_von_mises(field: &[[[f64; 3]; 3]]) -> f64 {
-    field.iter().map(|s| von_mises_of_tensor(s)).fold(0.0_f64, f64::max)
+    field.iter().map(von_mises_of_tensor).fold(0.0_f64, f64::max)
 }
 
 // ─── comparison helpers (step-6 GREEN) ───────────────────────────────────────
