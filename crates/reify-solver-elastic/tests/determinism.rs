@@ -64,7 +64,255 @@ use reify_solver_elastic::{
     resolve_execution_modes, PARALLEL_DOF_THRESHOLD,
 };
 
-// ─── step-1 RED ──────────────────────────────────────────────────────────────
+// ─── material constant ────────────────────────────────────────────────────────
+
+/// Material for the ~50K-DOF cantilever fixture.
+///
+/// Unit Young's modulus, ν = 0.3 — matches the `analytical_validation.rs`
+/// convention for dimensionless benchmarks.
+const MAT: IsotropicElastic = IsotropicElastic {
+    youngs_modulus: 1.0,
+    poisson_ratio: 0.3,
+};
+
+// ─── mesh helpers ─────────────────────────────────────────────────────────────
+
+/// Split a hex cell into 6 tetrahedra via the Kuhn triangulation.
+///
+/// All 6 tets share the main diagonal from `c[0]` to `c[6]`. Reproduced from
+/// `analytical_validation.rs` (module-private there, so copied here per the
+/// established per-test-file pattern).
+///
+/// Corner ordering:
+/// ```text
+/// c[0]=(ix,iy,iz)     c[4]=(ix,iy,iz+1)
+/// c[1]=(ix+1,iy,iz)   c[5]=(ix+1,iy,iz+1)
+/// c[2]=(ix+1,iy+1,iz) c[6]=(ix+1,iy+1,iz+1)
+/// c[3]=(ix,iy+1,iz)   c[7]=(ix,iy+1,iz+1)
+/// ```
+fn kuhn_split_hex_to_six_tets(c: [usize; 8]) -> [[usize; 4]; 6] {
+    [
+        [c[0], c[1], c[2], c[6]], // σ=(x,y,z): 000→100→110→111
+        [c[0], c[1], c[5], c[6]], // σ=(x,z,y): 000→100→101→111
+        [c[0], c[3], c[2], c[6]], // σ=(y,x,z): 000→010→110→111
+        [c[0], c[3], c[7], c[6]], // σ=(y,z,x): 000→010→011→111
+        [c[0], c[4], c[5], c[6]], // σ=(z,x,y): 000→001→101→111
+        [c[0], c[4], c[7], c[6]], // σ=(z,y,x): 000→001→011→111
+    ]
+}
+
+/// Build a structured P1 tet mesh for `[0,Lx]×[0,Ly]×[0,Lz]` with
+/// `nx×ny×nz` hex cells, each Kuhn-split into 6 tets.
+///
+/// Node indexing: `node(ix,iy,iz) = iz*(ny+1)*(nx+1) + iy*(nx+1) + ix`.
+fn box_p1_mesh(
+    lx: f64,
+    ly: f64,
+    lz: f64,
+    nx: usize,
+    ny: usize,
+    nz: usize,
+) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+    let nnx = nx + 1;
+    let nny = ny + 1;
+    let nnz = nz + 1;
+
+    let mut nodes = Vec::with_capacity(nnx * nny * nnz);
+    for iz in 0..nnz {
+        for iy in 0..nny {
+            for ix in 0..nnx {
+                nodes.push([
+                    ix as f64 * lx / nx as f64,
+                    iy as f64 * ly / ny as f64,
+                    iz as f64 * lz / nz as f64,
+                ]);
+            }
+        }
+    }
+
+    let node_idx = |ix: usize, iy: usize, iz: usize| iz * nny * nnx + iy * nnx + ix;
+
+    let mut connectivity = Vec::with_capacity(6 * nx * ny * nz);
+    for iz in 0..nz {
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let c = [
+                    node_idx(ix,     iy,     iz),
+                    node_idx(ix + 1, iy,     iz),
+                    node_idx(ix + 1, iy + 1, iz),
+                    node_idx(ix,     iy + 1, iz),
+                    node_idx(ix,     iy,     iz + 1),
+                    node_idx(ix + 1, iy,     iz + 1),
+                    node_idx(ix + 1, iy + 1, iz + 1),
+                    node_idx(ix,     iy + 1, iz + 1),
+                ];
+                for tet in kuhn_split_hex_to_six_tets(c) {
+                    connectivity.push(tet);
+                }
+            }
+        }
+    }
+
+    (nodes, connectivity)
+}
+
+// ─── BC / load helpers ────────────────────────────────────────────────────────
+
+/// Fix all 3 DOFs on nodes with `nodes[n][axis] ≈ value` (within `tol`).
+fn dirichlet_fix_face(
+    nodes: &[[f64; 3]],
+    axis: usize,
+    value: f64,
+    tol: f64,
+) -> Vec<DirichletBc> {
+    let mut bcs = Vec::new();
+    for (node, n) in nodes.iter().enumerate() {
+        if (n[axis] - value).abs() < tol {
+            for dof_idx in 0..3_usize {
+                bcs.push(DirichletBc { dof: node * 3 + dof_idx, value: 0.0 });
+            }
+        }
+    }
+    bcs
+}
+
+/// Indices of every node on the free-end face `x = l` (within `tol`).
+fn end_face_nodes(nodes: &[[f64; 3]], l: f64, tol: f64) -> Vec<usize> {
+    nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| (n[0] - l).abs() < tol)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Distribute transverse shear `f_mag` (−y) equally over `end` nodes.
+///
+/// Returns `(global_dof_index, force_value)` pairs. The equal distribution
+/// is immaterial to the tip deflection by Saint-Venant (only the resultant
+/// matters far from the loaded face).
+fn distributed_tip_load(end: &[usize], f_mag: f64) -> Vec<(usize, f64)> {
+    let per = f_mag / end.len() as f64;
+    end.iter().map(|&n| (n * 3 + 1, -per)).collect()
+}
+
+/// Sort + dedup Dirichlet BCs by DOF index.
+///
+/// `apply_dirichlet_row_elimination` panics on duplicate DOFs in debug builds,
+/// so this must be called before BC application whenever the BC list may
+/// contain overlapping entries (corner/edge nodes shared by multiple faces).
+/// Mirrors the `dedup_bcs` helper in `analytical_validation.rs`.
+fn dedup_bcs(bcs: &mut Vec<DirichletBc>) {
+    bcs.sort_by_key(|bc| bc.dof);
+    bcs.dedup_by_key(|bc| bc.dof);
+}
+
+// ─── fixture and solve pipeline ───────────────────────────────────────────────
+
+/// Build the ~50K-DOF cantilever box fixture.
+///
+/// Geometry: `[0,2]×[0,1]×[0,1]` (stocky L/H = L/B = 2), `nx×ny×nz = 32×24×20`
+/// hex cells → 33×25×21 = 17 325 nodes → 51 975 DOFs (≥ `PARALLEL_DOF_THRESHOLD`
+/// = 10 000; ≥ 1 024 for the parallel SpMV path).
+///
+/// Boundary conditions: `x = 0` face fully clamped (all 3 DOFs zeroed).
+/// Load: shear resultant `F = 1` in −y distributed over the `x = 2` face.
+///
+/// Returns `(nodes, connectivity, clamp_bcs, tip_loads)`.
+fn box_cantilever_fixture() -> (
+    Vec<[f64; 3]>,
+    Vec<[usize; 4]>,
+    Vec<DirichletBc>,
+    Vec<(usize, f64)>,
+) {
+    const L: f64 = 2.0;
+    const H: f64 = 1.0;
+    const B: f64 = 1.0;
+    const NX: usize = 32;
+    const NY: usize = 24;
+    const NZ: usize = 20;
+    const F: f64 = 1.0;
+
+    let (nodes, conns) = box_p1_mesh(L, H, B, NX, NY, NZ);
+    let tol_x = 0.5 * L / NX as f64;
+    let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+    dedup_bcs(&mut bcs);
+    let end = end_face_nodes(&nodes, L, tol_x);
+    let loads = distributed_tip_load(&end, F);
+    (nodes, conns, bcs, loads)
+}
+
+/// Output of one full assemble + BC + CG solve cycle.
+struct SolveOutput {
+    /// Global displacement vector `u[3*n + α]`.
+    u: Vec<f64>,
+    /// CG iterations executed (see `CgResult.iterations` contract).
+    iterations: usize,
+    /// Whether CG met the residual tolerance before `max_iter`.
+    converged: bool,
+    /// Maximum von Mises stress over all nodes; computed via stress recovery
+    /// (step-4 GREEN adds `recover_stress_field` and populates this).
+    /// Placeholder 0.0 until step-4 updates `solve_box_cantilever`.
+    max_von_mises: f64,
+}
+
+/// Assemble, apply BCs, and CG-solve the ~50K-DOF cantilever in the mode
+/// resolved from `deterministic` + `threads` via `resolve_execution_modes`.
+///
+/// Both assembly and solve use the matched `(AssemblyMode, SolverMode)` pair
+/// from `resolve_execution_modes`, faithfully exercising PRD task #18's full
+/// end-to-end contract (assembly determinism included).
+///
+/// `SolveOutput.max_von_mises` is 0.0 until step-4 adds the stress helpers
+/// and updates this function to compute the real value.
+fn solve_box_cantilever(deterministic: bool, threads: usize) -> SolveOutput {
+    let (nodes, conns, clamp_bcs, tip_loads) = box_cantilever_fixture();
+    let n_nodes = nodes.len();
+    let ndof = 3 * n_nodes;
+
+    let (amode, smode) = resolve_execution_modes(deterministic, threads, ndof);
+
+    // Build per-element stiffness matrices (P1 tet).
+    let ke_list: Vec<ElementStiffness> = conns
+        .iter()
+        .map(|conn| {
+            let elem_nodes: Vec<[f64; 3]> = conn.iter().map(|&i| nodes[i]).collect();
+            reify_solver_elastic::element_stiffness(ElementOrder::P1, &elem_nodes, &MAT)
+        })
+        .collect();
+
+    let elements: Vec<AssemblyElement<'_>> = conns
+        .iter()
+        .zip(ke_list.iter())
+        .enumerate()
+        .map(|(i, (conn, ke))| AssemblyElement {
+            id: i,
+            connectivity: conn.as_slice(),
+            k_e: ke,
+        })
+        .collect();
+
+    let mut k = assemble_global_stiffness(n_nodes, &elements, amode);
+
+    let mut f = vec![0.0_f64; ndof];
+    for &(dof, val) in &tip_loads {
+        f[dof] += val;
+    }
+
+    apply_dirichlet_row_elimination(&mut k, &mut f, &clamp_bcs);
+
+    let opts = CgSolverOptions { tolerance: 1e-10, max_iter: 5000 };
+    let result: CgResult = solve_cg(&k, &f, opts, smode);
+
+    SolveOutput {
+        u: result.u().to_vec(),
+        iterations: result.iterations,
+        converged: result.converged,
+        max_von_mises: 0.0, // updated in step-4 GREEN
+    }
+}
+
+// ─── step-1 GREEN / tests ─────────────────────────────────────────────────────
 
 /// Byte-identical displacement across repeated runs and thread counts in
 /// deterministic mode.
@@ -73,13 +321,10 @@ use reify_solver_elastic::{
 /// for ALL t, so threads ∈ {1, 4, 16} simultaneously exercises "repeated runs"
 /// and "across thread counts". Bit-identical u implies an identical FP-op
 /// sequence — the exactness guarantee of the pairwise-tree Deterministic path.
-///
-/// Note: `solve_box_cantilever` and `box_cantilever_fixture` are not yet
-/// defined — this test fails to compile (RED).
 #[test]
 fn deterministic_displacement_bit_stable_across_repeats_and_thread_counts() {
-    // Verify the fixture builder is callable (missing → compile error).
-    let _fixture = box_cantilever_fixture();
+    // Verify the fixture builder is callable.
+    let _ = box_cantilever_fixture();
 
     let out1 = solve_box_cantilever(true, 1);
     let out4 = solve_box_cantilever(true, 4);
