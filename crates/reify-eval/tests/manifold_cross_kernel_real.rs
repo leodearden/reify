@@ -150,15 +150,21 @@ fn engine_routes_overlapping_box_union_to_manifold_mesh() {
     let snap = engine
         .snapshot()
         .expect("snapshot must be Some after a successful build()");
+    // The fixture has multiple named lets (box_a, box_b_raw, box_b, body).
+    // RealizationNodeId is keyed by (entity, index) in a PersistentMap
+    // (hash-ordered, not insertion-ordered).  The terminal "body" binding has
+    // the highest index, so max_by_key(index) always picks the right node
+    // regardless of map iteration order.
     let overlap_union_node = snap
         .graph
         .realizations
         .iter()
-        .find(|(id, _)| id.entity == "OverlapUnion")
+        .filter(|(id, _)| id.entity == "OverlapUnion")
+        .max_by_key(|(id, _)| id.index)
         .map(|(_, r)| r)
         .expect(
-            "OverlapUnion realization node must be present in the snapshot \
-             graph after build(ExportFormat::Stl)",
+            "OverlapUnion terminal realization node must be present in the \
+             snapshot graph after build(ExportFormat::Stl)",
         );
     assert_eq!(
         overlap_union_node.produced_repr,

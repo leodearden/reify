@@ -14,13 +14,23 @@
 // manifold_from_reify_mesh (task #4329, kernel.rs:199-243).
 //
 // Box geometry:
-//   box(10mm, 10mm, 10mm) — centered at origin, spans ±5mm in each axis.
-//   translate(box(10mm,10mm,10mm), 5mm, 0mm, 0mm) — spans 0..10mm in X
-//   (50% overlap with the first box along X, common slab x∈[0,5]mm).
+//   box_a = box(10mm, 10mm, 10mm) — first box at origin.
+//   box_b_raw = box(10mm, 10mm, 10mm) — second box before translation.
+//   box_b = translate(box_b_raw, 5mm, 0mm, 0mm) — shifted 5mm in X
+//   (50% overlap with box_a along X, common slab x∈[0,5]mm).
+//   body = union(box_a, box_b) — the terminal Mesh-demanded realization.
+//
+// Named bindings are required so compute_demanded_reprs can resolve the
+// sub-refs (GeomRef::Sub) in the union op via name_to_idx.  Without named
+// intermediate lets, inline sub-expressions compile to anonymous refs that
+// are absent from name_to_idx, triggering the conservative BRep path.
 //
 // Entity name: OverlapUnion
-// Realization let: body
+// Terminal realization let: body (highest realization index)
 
 structure OverlapUnion {
-    let body = union(box(10mm, 10mm, 10mm), translate(box(10mm, 10mm, 10mm), 5mm, 0mm, 0mm))
+    let box_a = box(10mm, 10mm, 10mm)
+    let box_b_raw = box(10mm, 10mm, 10mm)
+    let box_b = translate(box_b_raw, 5mm, 0mm, 0mm)
+    let body = union(box_a, box_b)
 }
