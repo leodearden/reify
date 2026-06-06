@@ -85,9 +85,23 @@ No implicit coercion from `Real` to `Int`. `Int` promotes to `Real` implicitly (
 ```
 "hello world"           // Standard string
 "line one\nline two"    // Escape sequences: \n \t \\ \" \uXXXX
+"thickness is {t}"      // Interpolation: { expr } hole splices rendered text
+"doubled is {2 * t}"    // Holes accept full expressions, not just identifiers
+"{{braces}}"            // Literal-brace escapes: {{ → {, }} → }
 ```
 
-No string interpolation in the core language. String interpolation is a display/templating concern.
+**String interpolation:** a `{ expr }` hole evaluates the embedded Reify expression and splices its rendered text into the surrounding string. Holes may contain any Reify expression (`{2 * t}`, `{cos(theta)}`, `{a.b}`), not just simple identifiers.
+
+**Brace escapes:** `{{` and `}}` produce the literal characters `{` and `}` without opening an interpolation hole. These are distinct from the backslash escapes listed above; `\{` is **not** a valid escape.
+
+**Render rules (value → text):** hole contents are rendered via the `__interp_render` builtin (`interp_render` in `crates/reify-expr/src/lib.rs`), not raw `format_display` (which discards units and renders `Undef` as `"undefined"`):
+- Plain strings render bare with no surrounding quotes: `"hi"` → `hi`
+- Dimensioned scalars render as `value unit` in engineering form: `5mm` → `5 mm`
+- `undef` renders as the literal text `undef` and does not poison the rest of the string
+
+An **empty hole `{}`** is a parse error.
+
+See `examples/interpolation.ri` for worked examples (`"thickness is 5 mm, doubled is 10 mm"`, `"x=2"`, `"{braces}"`, `"gap is undef"`).
 
 ### 2.5 Boolean Literals
 
@@ -2651,7 +2665,7 @@ where
 | 11 | No `Date` type | v0.1 | ISO 8601 strings used for timestamps |
 | 12 | No `priv` modifier | Deferred | Hidden parameters on public definitions not yet justified |
 | 13 | Conditional compilation | Deferred | Conditional imports, platform-specific module variants |
-| 14 | String interpolation | Deferred | Display/templating concern |
+| 14 | String interpolation | Realized (v0.6) | `{ expr }` holes, `{{`/`}}` literal-brace escapes, and `format_display` render rules (bare strings, engineering-unit scalars, `undef`→`"undef"`) shipped in v0.6. See docs/prds/v0_6/string-interpolation.md. |
 | 15 | Complex number literal syntax | Deferred | `3.2 + 4.1j` sugar |
 | 16 | `AffineMap` type for non-rigid transforms | Deferred | Scaling, shearing transforms |
 | 17 | Differential operators full implementation | v0.1+ | `@optimized`; may be partial in early versions |
