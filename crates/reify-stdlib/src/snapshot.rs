@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use reify_ir::Value;
 
 use crate::eval_builtin;
-use crate::joints::is_joint_value;
+use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_error};
 use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
 use crate::loop_closure_solver::{NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure};
 use crate::mechanism::is_world;
