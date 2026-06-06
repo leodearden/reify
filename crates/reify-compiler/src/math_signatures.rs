@@ -1198,7 +1198,7 @@ mod tests {
         let m = typed(tenq(4, DimensionVector::LENGTH));
         assert!(
             matches!(
-                math_fn_result_type("eigenvalues", &[m.clone()]),
+                math_fn_result_type("eigenvalues", std::slice::from_ref(&m)),
                 Type::List(_)
             ),
             "eigenvalues must be a Type::List, not the first-arg Tensor"
@@ -1283,7 +1283,7 @@ mod tests {
     #[test]
     fn phase_and_arg_are_angle() {
         let z = typed(Type::Complex(Box::new(sca(DimensionVector::LENGTH))));
-        assert_eq!(math_fn_result_type("phase", &[z.clone()]), Type::angle());
+        assert_eq!(math_fn_result_type("phase", std::slice::from_ref(&z)), Type::angle());
         assert_eq!(math_fn_result_type("arg", &[z]), Type::angle());
     }
 }
