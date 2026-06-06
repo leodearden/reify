@@ -106,7 +106,7 @@ pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 use std::collections::HashMap;
 
 #[cfg(has_occt)]
-use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value, WarmStartable, write_stl_binary};
+use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, ThreeMfOptions, Value, WarmStartable, write_3mf, write_stl_binary};
 
 #[cfg(has_occt)]
 /// Send-safe payload for OCCT warm-start state.
@@ -3072,6 +3072,14 @@ impl OcctKernel {
                     .tessellate(handle, Self::DEFAULT_STL_TESSELLATION_TOLERANCE)
                     .map_err(|e| ExportError::FormatError(e.to_string()))?;
                 write_stl_binary(&mesh, writer)
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            ExportFormat::ThreeMF => {
+                let mesh = self
+                    .tessellate(handle, Self::DEFAULT_STL_TESSELLATION_TOLERANCE)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                write_3mf(&mesh, ThreeMfOptions::default(), writer)
+                    .map(|_warnings| ())
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
             ExportFormat::Obj => Err(ExportError::FormatError(format!(

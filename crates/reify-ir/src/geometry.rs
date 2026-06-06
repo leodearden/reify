@@ -1529,6 +1529,7 @@ pub enum ExportFormat {
     Step,
     Stl,
     Obj,
+    ThreeMF,
 }
 
 /// Tessellated mesh for visualization.

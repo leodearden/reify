@@ -1672,7 +1672,7 @@ fn demanded_reprs_for_template(template: &TopologyTemplate, format: ExportFormat
         } else if consumer_ops[r_idx].is_empty() {
             // Terminal realization: sink determines demand.
             demand[r_idx] = match format {
-                ExportFormat::Stl | ExportFormat::Obj => ReprKind::Mesh,
+                ExportFormat::Stl | ExportFormat::Obj | ExportFormat::ThreeMF => ReprKind::Mesh,
                 ExportFormat::Step => ReprKind::BRep,
             };
         } else {
