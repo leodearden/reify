@@ -65,6 +65,7 @@ No implicit coercion from `Real` to `Int`. `Int` promotes to `Real` implicitly (
 ```
 
 No string interpolation in the core language. String interpolation is a display/templating concern, not a design language concern. If needed, it belongs in a formatting library.
+> **Superseded in v0.6** — string interpolation is now a core-language feature; see docs/prds/v0_6/string-interpolation.md and reify-language-spec.md §2.4.
 
 ### 1.5 Boolean literals
 
