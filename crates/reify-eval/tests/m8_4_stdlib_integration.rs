@@ -841,6 +841,8 @@ fn linalg_4x4_inverse_roundtrip() {
         std::array::from_fn(|r| std::array::from_fn(|c| matrix_elem(inv4_val, r, c)));
 
     // Compute product P = m4 · inv4 and assert P ≈ I₄.
+    // Cross-dimensional indexing (m4[i][k] * inv4[k][j]) requires both i and j.
+    #[allow(clippy::needless_range_loop)]
     for i in 0..4 {
         for j in 0..4 {
             let p_ij: f64 = (0..4).map(|k| m4[i][k] * inv4[k][j]).sum();
