@@ -93,12 +93,15 @@ fn marlin_dialect_value() -> Value {
 /// `input_shape` returns `Undef` fails the test immediately — instead of silently
 /// reducing to `peak_* = 0.0` via `peak_deviation_at`'s lossy `f64::max` fold.
 ///
-/// Returns 0 if `t_samples` is absent or empty (a degenerate but non-Undef track),
-/// so `assert!(nonempty_track(...) >= 2, ...)` catches empty-track regressions too.
+/// Returns 0 if `t_samples` is absent or its list is empty (a degenerate but non-Undef
+/// track); panics if `t_samples` is present but not a `Value::List` (structural corruption).
+/// `assert!(nonempty_track(...) >= 2, ...)` catches both empty-track and corrupt-track
+/// regressions.
 /// A valid 4-waypoint cubic spline yields ≥ 2 samples from `simulate_trajectory_core`.
 ///
-/// Mirrors the `EndEffectorTrack` StructureInstance field-walk in
-/// `zv_shaped_ramp_db_reduction.rs::vibration_at_loc` (lines 211-221).
+/// Follows the same `StructureInstance` field-walk pattern as `vibration_at_loc` in
+/// `zv_shaped_ramp_db_reduction.rs` (lines 211-221), but reads `t_samples` and panics
+/// (rather than returning empty) on a structural mismatch so regressions fail loudly.
 fn nonempty_track(values: &ValueMap, member: &str) -> usize {
     let cell = ValueCellId::new("PrinterPrintEnvelope", member);
     let val = values.get(&cell).unwrap_or_else(|| {
@@ -122,7 +125,11 @@ fn nonempty_track(values: &ValueMap, member: &str) -> usize {
     );
     match data.fields.get(&"t_samples".to_string()) {
         Some(Value::List(samples)) => samples.len(),
-        _ => 0,
+        None => 0,
+        Some(other) => panic!(
+            "PrinterPrintEnvelope.{member}: t_samples field has unexpected type {other:?}; \
+             expected Value::List — structural corruption in the EndEffectorTrack (regression?)"
+        ),
     }
 }
 
