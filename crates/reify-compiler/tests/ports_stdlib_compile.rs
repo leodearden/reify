@@ -2308,8 +2308,8 @@ fn std_ports_fluid_loads_with_no_errors_and_fluid_port_trait() {
 
     assert_eq!(
         fluid_port.required_members.len(),
-        3,
-        "FluidPort should have exactly 3 required members; got: {:?}",
+        4,
+        "FluidPort should have exactly 4 required members; got: {:?}",
         fluid_port
             .required_members
             .iter()
@@ -2330,6 +2330,11 @@ fn std_ports_fluid_loads_with_no_errors_and_fluid_port_trait() {
         fluid_port.required_members[2].name,
         "medium",
         "FluidPort required_members[2] should be 'medium'"
+    );
+    assert_eq!(
+        fluid_port.required_members[3].name,
+        "fluid_type",
+        "FluidPort required_members[3] should be 'fluid_type'"
     );
 
     assert_eq!(
@@ -2358,23 +2363,33 @@ fn std_ports_fluid_loads_with_no_errors_and_fluid_port_trait() {
         "FluidPort.medium must be Type::String \
          (open medium set; free-form identifier per io.ri precedent)"
     );
+
+    assert_eq!(
+        param_type("std/ports/fluid", "FluidPort", "fluid_type"),
+        Type::Enum("FluidType".into()),
+        "FluidPort.fluid_type must be Type::Enum(\"FluidType\")"
+    );
 }
 
-/// std/ports/fluid cardinality lock: exactly 1 trait (FluidPort),
-/// 0 enums, 0 structures.
+/// std/ports/fluid cardinality lock: exactly 1 enum (FluidType),
+/// 1 trait (FluidPort), 0 structures.
+///
+/// Updated incrementally per task ζ step-1: FluidType enum added.
 #[test]
 fn std_ports_fluid_module_cardinality_locked() {
     let module = load_module("std/ports/fluid");
 
+    let enum_names: Vec<&str> = module.enum_defs.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
         module.enum_defs.len(),
-        0,
-        "std/ports/fluid should declare 0 enums, got: {:?}",
-        module
-            .enum_defs
-            .iter()
-            .map(|e| e.name.as_str())
-            .collect::<Vec<_>>()
+        1,
+        "std/ports/fluid should declare exactly 1 enum (FluidType), got: {:?}",
+        enum_names
+    );
+    assert!(
+        enum_names.contains(&"FluidType"),
+        "std/ports/fluid enum_defs should contain 'FluidType'; got: {:?}",
+        enum_names
     );
 
     let trait_names: Vec<&str> = module
@@ -2400,6 +2415,52 @@ fn std_ports_fluid_module_cardinality_locked() {
         0,
         "std/ports/fluid should declare 0 structures, got: {:?}",
         structure_names
+    );
+}
+
+// ─── task ζ step-1: FluidType enum surface + behavioral resolve ──────────────
+
+/// FluidType enum must declare exactly 3 variants in order:
+/// [Liquid, Gas, TwoPhase].
+///
+/// RED: FluidType is absent → find_enum panics.
+#[test]
+fn fluid_type_enum_surface() {
+    let e = find_enum("std/ports/fluid", "FluidType");
+    assert_eq!(
+        e.variants.as_slice(),
+        ["Liquid", "Gas", "TwoPhase"].as_slice(),
+        "FluidType variants should be [Liquid, Gas, TwoPhase] in order; got: {:?}",
+        e.variants
+    );
+}
+
+/// Behavioral: a structure that uses `FluidType.Liquid` as a param default
+/// must compile with zero Severity::Error diagnostics after `import std.ports.fluid`.
+///
+/// This is the PRD §7 ζ signal: "FluidType.Liquid resolves (previously Undef)."
+///
+/// RED: FluidType absent → enum variant lookup returns Undef → compile error.
+#[test]
+fn fluid_type_liquid_resolves_in_user_source() {
+    let source = r#"
+import std.ports.fluid
+
+structure def FluidProbe {
+    param k : FluidType = FluidType.Liquid
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "structure using FluidType.Liquid as default should compile without errors; got: {:?}",
+        errors
     );
 }
 
