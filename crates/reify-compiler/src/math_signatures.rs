@@ -17,7 +17,7 @@
 //! (the `is_math_typed_fn` arm) in step-14. The family is pinned disjoint from
 //! the geometry / dynamics families by the `units.rs` disjointness tests.
 
-use reify_core::Type;
+use reify_core::{DimensionVector, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 
 /// The complete set of math-linalg **construction** builtin names recognised
@@ -153,7 +153,64 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
                 quantity: Box::new(Type::Real),
             }
         }
+
+        // ── §3 operation family (task 4182 δ) ────────────────────────────────
+        // Scalar / element-wise fns.
+
+        // `sqrt` halves the dimension exponents (`Q.root(2)`); a dimensionless
+        // result routes back to `Type::Real` (not `Scalar{DIMENSIONLESS}`) so the
+        // cell type matches the eval `Value::Real`.
+        "sqrt" => {
+            let dim = first.map_or(DimensionVector::DIMENSIONLESS, |a| {
+                arg_dimension(&a.result_type)
+            });
+            scalar_or_real(dim.root(2))
+        }
+        // `abs` is identity over the arg type, EXCEPT it strips a `Complex<Inner>`
+        // to its inner type (|z| of a complex is the real magnitude).
+        "abs" => match first.map(|a| &a.result_type) {
+            Some(Type::Complex(inner)) => (**inner).clone(),
+            Some(t) => t.clone(),
+            None => Type::Real,
+        },
+        // `sign` is dimensionless (±1); `pow` is pinned to Real (PRD §3 footnote).
+        "sign" | "pow" => Type::Real,
+        // `min` / `max` / `clamp` / `lerp` are identity over the first arg's type,
+        // PRESERVING its kind (Real stays Real, Scalar stays Scalar) — cloning the
+        // type rather than rebuilding a Scalar avoids the Real→Scalar{DIMENSIONLESS}
+        // kind drift that would diverge from eval.
+        "min" | "max" | "clamp" | "lerp" => {
+            first.map(|a| a.result_type.clone()).unwrap_or(Type::Real)
+        }
+
         _ => Type::Real,
+    }
+}
+
+/// The dimension of an arg's `result_type` for the math return-type algebra:
+/// a `Scalar` contributes its dimension; `Real` / `Int` (and any non-Scalar)
+/// contribute `DIMENSIONLESS`. Used by the dimension-CHANGING operation arms
+/// (sqrt, dot, determinant, …) to extract `Q` before applying the dim algebra.
+fn arg_dimension(t: &Type) -> DimensionVector {
+    match t {
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
+    }
+}
+
+/// Build a dimensioned-scalar result, routing the dimensionless case back to
+/// `Type::Real` (NOT `Scalar{DIMENSIONLESS}`).
+///
+/// This is the load-bearing Scalar-vs-Real boundary: eval yields `Value::Real`
+/// for a dimensionless result and `Value::Scalar` for a dimensioned one, and
+/// `value_type_kind_matches(Value::Real, Scalar{DIMENSIONLESS})` is false — so a
+/// dimensionless arm MUST return `Type::Real` to keep the two-way boundary
+/// agreeing (task 4182 δ).
+fn scalar_or_real(dim: DimensionVector) -> Type {
+    if dim.is_dimensionless() {
+        Type::Real
+    } else {
+        Type::Scalar { dimension: dim }
     }
 }
 
