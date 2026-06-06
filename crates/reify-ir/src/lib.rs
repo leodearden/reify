@@ -67,7 +67,7 @@ pub use geometry::{
     FeatureId, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
     KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LoftOpHistoryRecords,
-    Mesh, ModEntry, Operation,
+    Mesh, ModEntry, Operation, write_stl_ascii, write_stl_binary,
     QueryCapability, QueryError, ReprKind, Role, StepKind, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeMesh, debug_assert_query_many_invariant,
 };

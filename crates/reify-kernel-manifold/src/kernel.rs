@@ -37,7 +37,7 @@
 use std::collections::HashMap;
 
 use manifold3d::Manifold;
-use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value};
+use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value, write_stl_binary};
 
 /// Error message used by the v0.2 stub paths (`query`/`export`) that
 /// have not yet been wired to real FFI. Boolean ops (`Union`,
@@ -579,11 +579,21 @@ impl GeometryKernel for ManifoldKernel {
 
     fn export(
         &self,
-        _handle: GeometryHandleId,
-        _format: ExportFormat,
-        _writer: &mut dyn std::io::Write,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        Err(ExportError::FormatError(STUB_MSG.into()))
+        match format {
+            ExportFormat::Stl => {
+                // Manifold tessellate ignores tolerance (exact meshes); pass 0.0.
+                let mesh = self
+                    .tessellate(handle, 0.0)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                write_stl_binary(&mesh, writer)
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            _ => Err(ExportError::FormatError(STUB_MSG.into())),
+        }
     }
 
     /// Materialise the stored [`Manifold`] as a `reify_types::Mesh`.
@@ -2033,5 +2043,35 @@ mod tests {
                  (no shapes, no table entries); got {other:?}"
             ),
         }
+    }
+
+    /// Pins that `export(handle, Stl, buf)` on a stored `unit_cube_mesh`
+    /// writes a valid binary STL: the output is `84 + 50*count` bytes with
+    /// `count > 0`.
+    ///
+    /// Manifold meshes carry `normals: None`, so this also exercises the
+    /// geometric-facet-normal path inside `write_stl_binary` (normals are
+    /// computed from edge cross-products, not from the `Mesh::normals` field).
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn export_stl_of_unit_cube_writes_valid_binary() {
+        let mut kernel = ManifoldKernel::new();
+        let h = kernel
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
+
+        let mut buf = Vec::new();
+        kernel
+            .export(h, ExportFormat::Stl, &mut buf)
+            .expect("ManifoldKernel Stl export of a unit cube must succeed");
+
+        let count = u32::from_le_bytes(buf[80..84].try_into().unwrap());
+        assert!(count > 0, "STL triangle count must be > 0 for a solid cube");
+        assert_eq!(
+            buf.len(),
+            84 + 50 * count as usize,
+            "STL byte length must equal 84 + 50*count"
+        );
     }
 }

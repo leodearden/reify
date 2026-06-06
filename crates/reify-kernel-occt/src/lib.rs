@@ -106,7 +106,7 @@ pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 use std::collections::HashMap;
 
 #[cfg(has_occt)]
-use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value, WarmStartable};
+use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value, WarmStartable, write_stl_binary};
 
 #[cfg(has_occt)]
 /// Send-safe payload for OCCT warm-start state.
@@ -3041,6 +3041,14 @@ impl OcctKernel {
         Ok([p.x, p.y, p.z])
     }
 
+    /// Linear deflection used by the CLI `export(handle, Stl, writer)` arm.
+    ///
+    /// 0.1 mm: a reasonable general-purpose tessellation default for the
+    /// binary-STL path.  The engine's `DEFAULT_TESSELLATION_TOLERANCE` (0.0001)
+    /// lives in `reify-eval`, a higher crate that this kernel cannot import.
+    /// Demanded-tolerance plumbing into `export()` is task δ's responsibility.
+    const DEFAULT_STL_TESSELLATION_TOLERANCE: f64 = 0.1;
+
     pub fn export(
         &self,
         handle: GeometryHandleId,
@@ -3059,7 +3067,14 @@ impl OcctKernel {
                     .write_all(content.as_bytes())
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
-            _ => Err(ExportError::FormatError(format!(
+            ExportFormat::Stl => {
+                let mesh = self
+                    .tessellate(handle, Self::DEFAULT_STL_TESSELLATION_TOLERANCE)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                write_stl_binary(&mesh, writer)
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            ExportFormat::Obj => Err(ExportError::FormatError(format!(
                 "unsupported export format: {:?}",
                 format
             ))),
@@ -5690,6 +5705,64 @@ mod tests {
             content2.contains("ISO-10303-21"),
             "pattern STEP should contain ISO header"
         );
+    }
+
+    #[test]
+    fn new_ops_export_stl() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+
+        let mut buf = Vec::new();
+        kernel
+            .export(box_h.id, ExportFormat::Stl, &mut buf)
+            .expect("OCCT Stl export of a 10x10x10 box must succeed");
+
+        // Binary STL structure checks (B1/B2 from the PRD)
+        let count = u32::from_le_bytes(buf[80..84].try_into().unwrap());
+        assert!(count > 0, "STL triangle count must be > 0 for a solid box");
+        assert_eq!(
+            buf.len(),
+            84 + 50 * count as usize,
+            "STL byte length must equal 84 + 50*count"
+        );
+
+        // AABB check: parse all vertex positions from the binary body and assert
+        // each axis extent ≈ 10.0 (within 1e-2).
+        let mut min = [f32::MAX; 3];
+        let mut max = [f32::MIN; 3];
+        for tri in 0..count as usize {
+            let base = 84 + tri * 50;
+            // Skip 12-byte facet normal; each of the 3 vertices is 12 bytes
+            for v in 0..3usize {
+                let vbase = base + 12 + v * 12;
+                for axis in 0..3usize {
+                    let bytes: [u8; 4] = buf[vbase + axis * 4..vbase + axis * 4 + 4]
+                        .try_into()
+                        .unwrap();
+                    let coord = f32::from_le_bytes(bytes);
+                    if coord < min[axis] {
+                        min[axis] = coord;
+                    }
+                    if coord > max[axis] {
+                        max[axis] = coord;
+                    }
+                }
+            }
+        }
+        for axis in 0..3usize {
+            let extent = max[axis] - min[axis];
+            assert!(
+                (extent - 10.0).abs() < 1e-2,
+                "axis {} extent should be ≈10.0, got {extent}",
+                axis
+            );
+        }
     }
 
     #[test]

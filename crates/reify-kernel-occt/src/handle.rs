@@ -1607,6 +1607,8 @@ mod tests {
 
     #[test]
     fn export_unsupported_format_returns_error() {
+        // Stl is now wired; use Obj (explicitly unsupported) to pin the
+        // error-path contract for an unsupported format.
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
             width: Value::Real(10.0),
@@ -1615,7 +1617,7 @@ mod tests {
         };
         let gh = handle.execute(&op).unwrap();
         let mut buf = Vec::new();
-        let result = handle.export(gh.id, reify_ir::ExportFormat::Stl, &mut buf);
+        let result = handle.export(gh.id, reify_ir::ExportFormat::Obj, &mut buf);
         assert!(result.is_err());
     }
 
