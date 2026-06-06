@@ -63,6 +63,11 @@ trait FluidPort : Port {
     param fluid_type : FluidType
 }
 
+// Hydraulic thread-fitting standard for high-pressure connections.
+// Variants: NPT (National Pipe Tapered, US standard), BSP (British Standard Pipe),
+//           JIC (Joint Industry Council 37° flare), ORFS (O-Ring Face Seal).
+enum FittingStandard { NPT, BSP, JIC, ORFS }
+
 // ── §5.5 Piped fluid port ─────────────────────────────────────────────────────
 
 // Piped fluid connection port — refines FluidPort (pressure/flow/medium/fluid_type)
@@ -73,4 +78,17 @@ trait FluidPort : Port {
 trait PipedFluidPort : FluidPort + LocatedPort {
     param inner_diameter : Length
     param connection_type : PipeConnectionType
+}
+
+// ── §5.6 Hydraulic port (multi-domain: fluid + mechanical) ────────────────────
+
+// Hydraulic connection port — §5.6 multi-domain composition of FluidPort
+// (pressure/flow/medium/fluid_type) and MechanicalPort (frame via LocatedPort,
+// optional max_load/max_torque ratings).
+// Made possible by the growing-prelude load order: ports_fluid.ri loads after
+// ports_mechanical.ri in stdlib_loader.rs, so MechanicalPort is in the prelude
+// when this file compiles.
+// fitting_type : FittingStandard  — hydraulic thread-fitting standard (NPT/BSP/JIC/ORFS).
+trait HydraulicPort : FluidPort + MechanicalPort {
+    param fitting_type : FittingStandard
 }
