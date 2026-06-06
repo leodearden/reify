@@ -1856,4 +1856,48 @@ mod tests {
             result
         );
     }
+
+    /// collect_value_ref_members: wrong-member guard — collecting member "a" must
+    /// NOT report member "b" as present.  Locks in that the walk-backed superset
+    /// collection (item-#3 fix) does not make `.iter().any(|m| m == required)` call
+    /// sites falsely match a different member.
+    #[test]
+    fn test_collect_value_ref_members_no_false_positive() {
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
+
+        let expr = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let result = super::collect_value_ref_members(&expr);
+        assert!(
+            !result.iter().any(|m| m == "b"),
+            "did not expect \"b\" in result for a ValueRef with member \"a\"; got {:?}",
+            result
+        );
+    }
+
+    /// collect_value_ref_members: non-ValueRef leaves (Literal, OptionNone) yield
+    /// an empty result — documents that only ValueRef nodes contribute members.
+    #[test]
+    fn test_collect_value_ref_members_empty_for_non_value_ref_leaves() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        // A bare numeric literal has no ValueRef anywhere in its tree.
+        let literal = CompiledExpr::literal(Value::Int(42), Type::Int);
+        let result = super::collect_value_ref_members(&literal);
+        assert!(
+            result.is_empty(),
+            "expected empty result for a Literal; got {:?}",
+            result
+        );
+
+        // OptionNone likewise carries no ValueRef.
+        let none = CompiledExpr::option_none(Type::Real);
+        let result_none = super::collect_value_ref_members(&none);
+        assert!(
+            result_none.is_empty(),
+            "expected empty result for OptionNone; got {:?}",
+            result_none
+        );
+    }
 }
