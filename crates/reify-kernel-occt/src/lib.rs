@@ -106,7 +106,7 @@ pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 use std::collections::HashMap;
 
 #[cfg(has_occt)]
-use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value, WarmStartable};
+use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value, WarmStartable, write_stl_binary};
 
 #[cfg(has_occt)]
 /// Send-safe payload for OCCT warm-start state.
@@ -3041,6 +3041,14 @@ impl OcctKernel {
         Ok([p.x, p.y, p.z])
     }
 
+    /// Linear deflection used by the CLI `export(handle, Stl, writer)` arm.
+    ///
+    /// 0.1 mm: a reasonable general-purpose tessellation default for the
+    /// binary-STL path.  The engine's `DEFAULT_TESSELLATION_TOLERANCE` (0.0001)
+    /// lives in `reify-eval`, a higher crate that this kernel cannot import.
+    /// Demanded-tolerance plumbing into `export()` is task δ's responsibility.
+    const DEFAULT_STL_TESSELLATION_TOLERANCE: f64 = 0.1;
+
     pub fn export(
         &self,
         handle: GeometryHandleId,
@@ -3059,7 +3067,14 @@ impl OcctKernel {
                     .write_all(content.as_bytes())
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
-            _ => Err(ExportError::FormatError(format!(
+            ExportFormat::Stl => {
+                let mesh = self
+                    .tessellate(handle, Self::DEFAULT_STL_TESSELLATION_TOLERANCE)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                write_stl_binary(&mesh, writer)
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            ExportFormat::Obj => Err(ExportError::FormatError(format!(
                 "unsupported export format: {:?}",
                 format
             ))),
