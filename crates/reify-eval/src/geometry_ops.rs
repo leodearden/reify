@@ -283,6 +283,87 @@ fn validate_pattern_count(
     Ok(raw as usize)
 }
 
+/// Extract three SI-valued `f64` components from a [`reify_ir::Value::Point`]
+/// or [`reify_ir::Value::Vector`] with exactly 3 numeric, finite components.
+///
+/// Returns `None` if:
+/// - the value is not a `Point` or `Vector`;
+/// - it does not have exactly 3 components;
+/// - any component does not yield a finite `f64` via [`reify_ir::Value::as_f64`].
+///
+/// Both `Point` (with LENGTH-dimensioned `Scalar` components — SI metres) and
+/// `Vector` (with dimensionless `Real` components) pass through correctly
+/// because `Value::as_f64` extracts `si_value` from `Scalar` and the raw
+/// float from `Real`.
+fn point3_components(value: &reify_ir::Value) -> Option<[f64; 3]> {
+    let comps = match value {
+        reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
+        _ => return None,
+    };
+    let a = comps[0].as_f64().filter(|v| v.is_finite())?;
+    let b = comps[1].as_f64().filter(|v| v.is_finite())?;
+    let c = comps[2].as_f64().filter(|v| v.is_finite())?;
+    Some([a, b, c])
+}
+
+/// Normalize a 3-component direction vector to unit length.
+///
+/// Returns `Err` when the vector magnitude is below [`GEOMETRY_EPSILON`]
+/// (zero or near-zero), preventing a degenerate `[0,0,0]` normal from
+/// propagating silently to the kernel.  The caller maps `Err(String)` to a
+/// `Diagnostic::error` via the standard `Err(String)` → diagnostic idiom
+/// (see `engine_build.rs`).
+fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
+    let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if mag < GEOMETRY_EPSILON {
+        return Err(format!(
+            "zero-magnitude vector [{:.6e}, {:.6e}, {:.6e}] cannot be normalized \
+             to a unit direction",
+            v[0], v[1], v[2]
+        ));
+    }
+    Ok([v[0] / mag, v[1] / mag, v[2] / mag])
+}
+
+/// Decode a [`Value::Plane`] into `(origin, unit_normal)` — a pair of SI
+/// metre triples returned as `([f64; 3], [f64; 3])`.
+///
+/// The normal is normalized to unit length.  Non-unit normals are accepted and
+/// normalized silently (the plane equation is invariant to normal scale).
+/// Zero-magnitude normals are always rejected.
+///
+/// # Returns
+/// - `Ok((origin, unit_normal))` — origin in metres, normal dimensionless unit vector.
+/// - `Err(message)` — for any of:
+///   - wrong value variant (not `Value::Plane`), including `Value::Undef`;
+///   - origin or normal with non-numeric / non-finite components;
+///   - zero-magnitude normal.
+///
+/// # Visibility
+/// `pub(crate)` — co-located with the mirror/circular_pattern eval consumers
+/// and available to sibling modules in `reify-eval`.  Widened to `pub` only
+/// when a cross-crate consumer lands (task 3465, design open).
+pub(crate) fn decode_plane(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3]), String> {
+    let (origin_val, normal_val) = match value {
+        reify_ir::Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
+        other => {
+            return Err(format!(
+                "expected a Plane value, got {}",
+                other
+            ));
+        }
+    };
+    let origin_arr = point3_components(origin_val).ok_or_else(|| {
+        "Plane origin is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let normal_raw = point3_components(normal_val).ok_or_else(|| {
+        "Plane normal is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let unit_normal = unit_vector3(normal_raw)
+        .map_err(|e| format!("Plane has a degenerate normal: {e}"))?;
+    Ok((origin_arr, unit_normal))
+}
+
 /// Translate a compiled geometry operation into a runtime `GeometryOp` by
 /// evaluating its argument expressions against the current value environment.
 ///
