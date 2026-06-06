@@ -1221,6 +1221,71 @@ mod tests {
         assert!(eval_builtin("bind", &[world, v]).is_undef());
     }
 
+    // ── bind() non-driving joint guard ────────────────────────────────────
+
+    /// `bind(coupling, value)` and `bind(fixed, value)` must return a
+    /// `Value::Map` with `error == "nondriving_joint"` (not a binding Map
+    /// and not `Undef`). Coupling and fixed joints have no free motion
+    /// variable; attempting to bind them is an `E_MECHANISM_NONDRIVING_JOINT`
+    /// error.
+    ///
+    /// RED: today `bind(coupling, ...)` returns a `kind="binding"` Map
+    /// because coupling ∈ `JOINT_KINDS` passes `is_joint_value`; the
+    /// `error` field check below fails.
+    #[test]
+    fn bind_non_driving_joint_returns_nondriving_error() {
+        let prismatic = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let coupling = eval_builtin("couple", &[prismatic.clone(), Value::Real(-1.0)]);
+        let fixed = eval_builtin("fixed", &[]);
+        let v = Value::length(0.005);
+
+        // coupling → error map
+        let result_coupling = eval_builtin("bind", &[coupling, v.clone()]);
+        let map_c = match &result_coupling {
+            Value::Map(m) => m,
+            other => panic!("bind(coupling, v): expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map_c.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "bind(coupling, v) must return error='nondriving_joint'"
+        );
+
+        // fixed → error map
+        let result_fixed = eval_builtin("bind", &[fixed, v.clone()]);
+        let map_f = match &result_fixed {
+            Value::Map(m) => m,
+            other => panic!("bind(fixed, v): expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map_f.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "bind(fixed, v) must return error='nondriving_joint'"
+        );
+    }
+
+    /// Regression pin: `bind(prismatic, v)` still returns a `kind="binding"` Map
+    /// with no `error` key after the non-driving-joint guard is added.
+    #[test]
+    fn bind_driving_joint_happy_path_unaffected_by_nondriving_guard() {
+        let prismatic = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let v = Value::length(0.005);
+        let result = eval_builtin("bind", &[prismatic, v]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("bind(prismatic, v): expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("binding".to_string())),
+            "bind(prismatic, v) must still return kind='binding'"
+        );
+        assert!(
+            map.get(&Value::String("error".to_string())).is_none(),
+            "bind(prismatic, v) must NOT carry an 'error' key"
+        );
+    }
+
     // ── snapshot() empty case: pin canonical Snapshot Map shape ───────────
 
     /// `snapshot(empty_mechanism, [])` returns the canonical empty
