@@ -96,8 +96,8 @@ fn max<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>) -> Scalar<Q>
 fn clamp<Q: Dimension>(x: Scalar<Q>, lo: Scalar<Q>, hi: Scalar<Q>) -> Scalar<Q>
 fn lerp<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>, t: Real) -> Scalar<Q>
 fn remap(x: Real, from_lo: Real, from_hi: Real, to_lo: Real, to_hi: Real) -> Real
-fn sqrt<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q^(1/2)>   // Compiler intrinsic -- halves even exponents
-fn pow(base: Real, exp: Real) -> Real                      // Dimensionless only for non-integer exp
+fn sqrt<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q^(1/2)>   // Compiler signature (math_signatures.rs) + eval-time DimensionVector::root(2) (numeric.rs)
+fn pow(base: Real, exp: Real) -> Real                      // Dimensionless only; use the `^` operator for dimensioned integer powers
 fn log(x: Real) -> Real
 fn log10(x: Real) -> Real
 fn exp(x: Real) -> Real
@@ -108,7 +108,7 @@ fn round(x: Real) -> Int
 fn mod(x: Int, y: Int) -> Int
 ```
 
-**Dimensional `sqrt`:** `sqrt` is a compiler intrinsic that halves even exponents. `pow` with non-integer exponents is restricted to dimensionless in v0.1. `pow` with integer literal exponents on dimensioned quantities works through repeated multiplication.
+**Dimensional `sqrt`:** `sqrt` propagates dimension via a compiler signature wired in `math_signatures.rs` (halves each exponent to produce `Q^(1/2)`) plus eval-time `DimensionVector::root(2)` in `numeric.rs` — it is not a free-standing compiler intrinsic. `pow` is dimensionless-only (it always returns `Real`; see `numeric.rs:88`). Dimensioned integer powers are handled by the `^` operator (`eval_pow` in `reify-expr`, tasks 3805/4106), not by `pow`. `pow` with non-integer exponents is restricted to dimensionless in v0.1.
 
 ### 1.2 `std.math.trig`
 
