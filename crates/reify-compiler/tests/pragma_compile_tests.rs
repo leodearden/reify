@@ -185,6 +185,25 @@ fn known_module_pragma_no_warning() {
     );
 }
 
+// ── Task 2926: #deterministic module-level pragma ─────────────────────────────
+
+/// `#deterministic` is a recognized module-level pragma and must NOT emit an
+/// "unknown pragma" warning. Mirrors `known_module_pragma_no_warning` (#precision).
+///
+/// Fails on current main: "deterministic" is not in `MODULE_ONLY_PRAGMAS`, so
+/// the `validate_module_pragmas` pre-pass emits "unknown pragma #deterministic".
+/// GREENed by adding "deterministic" to `MODULE_ONLY_PRAGMAS` (step-6).
+#[test]
+fn deterministic_module_pragma_no_unknown_warning() {
+    let module = compile_source("#deterministic\nstructure S { param x : Real }");
+    let warns = pragma_warnings(&module, "unknown pragma");
+    assert!(
+        warns.is_empty(),
+        "expected no 'unknown pragma' warning for #deterministic, got: {:?}",
+        warns
+    );
+}
+
 // ── Step 9: trait-level and purpose-level pragmas propagated ─────────────────
 
 /// Block-level pragma on a trait body is propagated to CompiledTrait.pragmas.
