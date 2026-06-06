@@ -2371,10 +2371,10 @@ fn std_ports_fluid_loads_with_no_errors_and_fluid_port_trait() {
     );
 }
 
-/// std/ports/fluid cardinality lock: exactly 2 enums (FluidType, PipeConnectionType),
-/// 2 traits (FluidPort, PipedFluidPort), 0 structures.
+/// std/ports/fluid cardinality lock: exactly 3 enums (FluidType, PipeConnectionType,
+/// FittingStandard), 3 traits (FluidPort, PipedFluidPort, HydraulicPort), 0 structures.
 ///
-/// Updated incrementally per task ζ step-3: PipeConnectionType + PipedFluidPort added.
+/// Updated incrementally per task ζ step-5: FittingStandard + HydraulicPort added.
 #[test]
 fn std_ports_fluid_module_cardinality_locked() {
     let module = load_module("std/ports/fluid");
@@ -2382,8 +2382,9 @@ fn std_ports_fluid_module_cardinality_locked() {
     let enum_names: Vec<&str> = module.enum_defs.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
         module.enum_defs.len(),
-        2,
-        "std/ports/fluid should declare exactly 2 enums (FluidType, PipeConnectionType), got: {:?}",
+        3,
+        "std/ports/fluid should declare exactly 3 enums \
+         (FluidType, PipeConnectionType, FittingStandard), got: {:?}",
         enum_names
     );
     assert!(
@@ -2396,6 +2397,11 @@ fn std_ports_fluid_module_cardinality_locked() {
         "std/ports/fluid enum_defs should contain 'PipeConnectionType'; got: {:?}",
         enum_names
     );
+    assert!(
+        enum_names.contains(&"FittingStandard"),
+        "std/ports/fluid enum_defs should contain 'FittingStandard'; got: {:?}",
+        enum_names
+    );
 
     let trait_names: Vec<&str> = module
         .trait_defs
@@ -2404,8 +2410,9 @@ fn std_ports_fluid_module_cardinality_locked() {
         .collect();
     assert_eq!(
         module.trait_defs.len(),
-        2,
-        "std/ports/fluid should declare exactly 2 traits (FluidPort, PipedFluidPort), got: {:?}",
+        3,
+        "std/ports/fluid should declare exactly 3 traits \
+         (FluidPort, PipedFluidPort, HydraulicPort), got: {:?}",
         trait_names
     );
     assert!(
@@ -2416,6 +2423,11 @@ fn std_ports_fluid_module_cardinality_locked() {
     assert!(
         trait_names.contains(&"PipedFluidPort"),
         "std/ports/fluid trait_defs should contain 'PipedFluidPort'; got: {:?}",
+        trait_names
+    );
+    assert!(
+        trait_names.contains(&"HydraulicPort"),
+        "std/ports/fluid trait_defs should contain 'HydraulicPort'; got: {:?}",
         trait_names
     );
 
@@ -2617,6 +2629,144 @@ structure def PipeConformer {
             .iter()
             .any(|t| t.name == "PipeConformer" && t.entity_kind == EntityKind::Structure),
         "PipeConformer should be declared as a Structure template; found: {:?}",
+        compiled
+            .templates
+            .iter()
+            .map(|t| (&t.name, &t.entity_kind))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── task ζ step-5: FittingStandard enum + HydraulicPort (§5.6 multi-domain) ──
+
+/// FittingStandard enum must declare exactly 4 variants in order:
+/// [NPT, BSP, JIC, ORFS].
+///
+/// RED: FittingStandard is absent → find_enum panics.
+#[test]
+fn fitting_standard_enum_surface() {
+    let e = find_enum("std/ports/fluid", "FittingStandard");
+    assert_eq!(
+        e.variants.as_slice(),
+        ["NPT", "BSP", "JIC", "ORFS"].as_slice(),
+        "FittingStandard variants should be [NPT, BSP, JIC, ORFS] in order; got: {:?}",
+        e.variants
+    );
+}
+
+/// HydraulicPort refines exactly [FluidPort, MechanicalPort] (§5.6 multi-domain,
+/// order not guaranteed) and has exactly 1 own required member:
+/// fitting_type : FittingStandard.
+///
+/// RED: HydraulicPort is absent → find_trait panics.
+#[test]
+fn hydraulic_port_trait_surface() {
+    let t = find_trait("std/ports/fluid", "HydraulicPort");
+
+    assert_eq!(
+        t.refinements.len(),
+        2,
+        "HydraulicPort should refine exactly 2 supertraits \
+         (FluidPort, MechanicalPort), got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"FluidPort".to_string()),
+        "HydraulicPort refinements should contain 'FluidPort', got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"MechanicalPort".to_string()),
+        "HydraulicPort refinements should contain 'MechanicalPort', got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        1,
+        "HydraulicPort should have exactly 1 own required member (fitting_type); got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name,
+        "fitting_type",
+        "HydraulicPort required_members[0] should be 'fitting_type'"
+    );
+    assert_eq!(
+        param_type("std/ports/fluid", "HydraulicPort", "fitting_type"),
+        Type::Enum("FittingStandard".into()),
+        "HydraulicPort.fitting_type must be Type::Enum(\"FittingStandard\")"
+    );
+}
+
+/// Behavioral: a concrete port that conforms to HydraulicPort must compile with
+/// zero Severity::Error diagnostics when ALL inherited + own params are supplied.
+///
+/// HydraulicPort §5.6 multi-domain diamond:
+///
+///          Port  (direction : Directionality = Bidi — defaulted, can omit)
+///         /    \
+///   FluidPort  MechanicalPort (: LocatedPort)
+///   (pressure,  (frame : Frame3, max_load : Option<Force> = none,
+///    flow_rate,  max_torque : Option<Torque> = none — both have defaults, can omit)
+///    medium,
+///    fluid_type)
+///         \    /
+///       HydraulicPort
+///       (fitting_type)
+///
+/// max_load and max_torque are Option-defaults in MechanicalPort → omitted here.
+///
+/// This is the PRD §7 ζ signal: "reify check accepts the multi-domain HydraulicPort."
+///
+/// RED: HydraulicPort absent → compile error on unknown trait.
+#[test]
+fn hydraulic_port_concrete_conformer_multidomain_compiles() {
+    // Enum-typed param (fitting_type) omits the type annotation per the same
+    // port-param enum-type annotation limitation documented in the PipedFluidPort
+    // conformer test above.
+    let source = r#"
+import std.ports.fluid
+
+structure def HydroConformer {
+    port p : in HydraulicPort {
+        param pressure : Pressure = 101325Pa
+        param flow_rate : VolumetricFlowRate = 1gal / 1s
+        param medium : String = "hydraulic_oil"
+        param fluid_type = FluidType.Liquid
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1mm, 0mm, 0mm),
+            y_axis: vec3(0mm, 1mm, 0mm),
+            z_axis: vec3(0mm, 0mm, 1mm),
+        )
+        param fitting_type = FittingStandard.NPT
+    }
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "HydraulicPort concrete conformer (§5.6 multi-domain: FluidPort+MechanicalPort) \
+         should compile without errors when all required params are supplied; got: {:?}",
+        errors
+    );
+
+    assert!(
+        compiled
+            .templates
+            .iter()
+            .any(|t| t.name == "HydroConformer" && t.entity_kind == EntityKind::Structure),
+        "HydroConformer should be declared as a Structure template; found: {:?}",
         compiled
             .templates
             .iter()
