@@ -847,6 +847,10 @@ mod tests {
     // `crate::math_signatures`, imported here to pin disjointness from the five
     // geometry families and the dynamics-query family (both directions).
     use crate::math_signatures::MATH_CONSTRUCTION_NAMES;
+    // Math-linalg operation/function family (task 4182 δ) — sibling slice in
+    // `crate::math_signatures`, imported here to pin disjointness from the five
+    // geometry families, the dynamics-query family, AND the construction family.
+    use crate::math_signatures::MATH_OPERATION_NAMES;
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
@@ -1361,6 +1365,11 @@ mod tests {
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
                  MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
             );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
         }
     }
 
@@ -1403,6 +1412,11 @@ mod tests {
                 !MATH_CONSTRUCTION_NAMES.contains(name),
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
             );
         }
     }
@@ -1449,6 +1463,110 @@ mod tests {
                 !DYNAMICS_QUERY_NAMES.contains(name),
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
                  DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ — \
+                 constructors and operations are disjoint slices)"
+            );
+        }
+    }
+
+    /// Disjointness invariant for the math-linalg OPERATION family (task 4182
+    /// δ). Every `MATH_OPERATION_NAMES` entry (`sqrt` / `dot` / `determinant` /
+    /// `eigenvalues` / `complex` / …) must be absent from all five geometry
+    /// families, the dynamics-query family, AND the math-linalg CONSTRUCTION
+    /// family — so a name can satisfy at most one classification predicate in
+    /// `expr.rs::resolve_function_overload`'s `NoUserFunctions` ladder, and the
+    /// operation/construction split stays a partition (never overlapping
+    /// slices). Sibling to `math_typed_fn_names_are_disjoint_from_other_families`
+    /// (which pins the construction family); the converse asserts added to the
+    /// geometry / dynamics / construction disjointness tests above pin the other
+    /// direction.
+    ///
+    /// Also pins disjointness from the two EARLIER arms in the same
+    /// `NoUserFunctions` ladder that this six-family set didn't cover (amendment:
+    /// reviewer test_coverage): the affine constructor/algebra families
+    /// (`AFFINE_MAP_CONSTRUCTOR_NAMES` + `affine_map_algebra_result_type`'s arms)
+    /// and the list-helper family (`infer_list_helper_return_type`'s arms). A
+    /// math op sharing a name with an earlier arm would be silently shadowed and
+    /// produce a wrong cell type with no failing test. `determinant` is the one
+    /// DELIBERATE overlap with affine-algebra — the affine arm fires only for an
+    /// `AffineMap` first arg and otherwise falls through to the math arm (arg-type
+    /// disambiguated), so it is the documented exception.
+    #[test]
+    fn math_operation_fn_names_are_disjoint_from_other_families() {
+        // Affine ALGEBRA free-fn names (`affine_map_algebra_result_type`'s match
+        // arms) and list-helper names (`infer_list_helper_return_type`'s match
+        // arms) have no public single-source slice — they are hardcoded match
+        // arms — so these local fixtures mirror them. Keep in sync with those fns.
+        const AFFINE_ALGEBRA_NAMES: &[&str] = &["affine_compose", "affine_inverse", "determinant"];
+        const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
+
+        for name in MATH_OPERATION_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179 — \
+                 operations and constructors are disjoint slices)"
+            );
+            // Affine constructor family — an EARLIER arm in expr.rs's
+            // NoUserFunctions ladder; a same-named math op would be shadowed.
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family — earlier \
+                 arm in the NoUserFunctions ladder would shadow it)"
+            );
+            // Affine ALGEBRA free-fns — also an earlier arm. `determinant` is the
+            // ONE intentional overlap (arg-type disambiguated: the affine arm
+            // fires only for an AffineMap first arg, else falls through to the
+            // math arm), so it is the documented exception; every other
+            // affine-algebra name would UNCONDITIONALLY shadow a same-named math op.
+            assert!(
+                !AFFINE_ALGEBRA_NAMES.contains(name) || *name == "determinant",
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be an affine-algebra \
+                 free-fn (except the intentional, arg-type-disambiguated `determinant` \
+                 overlap)"
+            );
+            // List-helper family — also an earlier ladder arm; a collision would
+            // shadow the math arm.
+            assert!(
+                !LIST_HELPER_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be a list-helper \
+                 (`single` / `flat_map` — earlier arm in the NoUserFunctions ladder \
+                 would shadow it)"
             );
         }
     }
