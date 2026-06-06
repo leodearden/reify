@@ -2005,8 +2005,8 @@ fn std_ports_thermal_loads_with_no_errors_and_thermal_port_trait() {
     }
 }
 
-/// std/ports/thermal cardinality lock: exactly 1 trait (ThermalPort),
-/// 0 enums, 0 structures.
+/// std/ports/thermal cardinality lock: exactly 2 traits (ThermalPort +
+/// ThermalContactPort), 0 enums, 0 structures.
 #[test]
 fn std_ports_thermal_module_cardinality_locked() {
     let module = load_module("std/ports/thermal");
@@ -2029,8 +2029,19 @@ fn std_ports_thermal_module_cardinality_locked() {
         .collect();
     assert_eq!(
         module.trait_defs.len(),
-        1,
-        "std/ports/thermal should declare exactly 1 trait (ThermalPort), got: {:?}",
+        2,
+        "std/ports/thermal should declare exactly 2 traits \
+         (ThermalPort + ThermalContactPort), got: {:?}",
+        trait_names
+    );
+    assert!(
+        trait_names.contains(&"ThermalPort"),
+        "std/ports/thermal trait list should contain 'ThermalPort', got: {:?}",
+        trait_names
+    );
+    assert!(
+        trait_names.contains(&"ThermalContactPort"),
+        "std/ports/thermal trait list should contain 'ThermalContactPort', got: {:?}",
         trait_names
     );
 
@@ -2045,6 +2056,134 @@ fn std_ports_thermal_module_cardinality_locked() {
         0,
         "std/ports/thermal should declare 0 structures, got: {:?}",
         structure_names
+    );
+}
+
+// ─── step-3b (thermal): ThermalContactPort trait surface ──────────────────────
+
+/// ThermalContactPort refines ThermalPort + RegionPort (multi-supertrait).
+/// Own required_members == [contact_area] (len 1); inherited members excluded.
+/// contact_conductance : Option<ThermalConductivity> = none in defaults.
+///
+/// Refinement order is parser-free — asserted by containment + length, not by
+/// exact ordered slice (multi-supertrait precedent: Watertight : Closed + Manifold
+/// in geometry_traits_tests.rs:31-54).
+///
+/// Proves: ThermalContactPort resolves as a port-type with both ThermalPort and
+/// RegionPort in its inheritance chain, and alias-inside-Option in param position
+/// works for ThermalConductivity.
+///
+/// RED on current main (ThermalContactPort absent → find_trait panics).
+#[test]
+fn thermal_contact_port_trait_surface() {
+    let t = find_trait("std/ports/thermal", "ThermalContactPort");
+
+    // Multi-supertrait refinements: order is parser-free; assert by containment.
+    assert_eq!(
+        t.refinements.len(),
+        2,
+        "ThermalContactPort should have exactly 2 refinements \
+         (ThermalPort, RegionPort), got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"ThermalPort".to_string()),
+        "ThermalContactPort.refinements should contain 'ThermalPort', got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.refinements.contains(&"RegionPort".to_string()),
+        "ThermalContactPort.refinements should contain 'RegionPort', got: {:?}",
+        t.refinements
+    );
+
+    // OWN required member: contact_area : Area (no default).
+    // Inherited region/frame/heat_flow are NOT in own required_members.
+    assert_eq!(
+        t.required_members.len(),
+        1,
+        "ThermalContactPort should have exactly 1 own required member \
+         (contact_area); got: {:?}",
+        t.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name,
+        "contact_area",
+        "ThermalContactPort required_members[0] should be 'contact_area'"
+    );
+    assert_eq!(
+        param_type("std/ports/thermal", "ThermalContactPort", "contact_area"),
+        Type::Scalar {
+            dimension: DimensionVector::AREA
+        },
+        "ThermalContactPort.contact_area must be Scalar<AREA>"
+    );
+
+    // contact_conductance : Option<ThermalConductivity> = none
+    let contact_cond = t
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("contact_conductance"))
+        .expect(
+            "ThermalContactPort.defaults should contain 'contact_conductance' (= none)"
+        );
+    match &contact_cond.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: DimensionVector::THERMAL_CONDUCTIVITY
+                })),
+                "ThermalContactPort.contact_conductance default cell_type must be \
+                 Type::Option(Scalar<THERMAL_CONDUCTIVITY>)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "ThermalContactPort.contact_conductance default_decl must have \
+                 a default expression (none)"
+            );
+        }
+        other => panic!(
+            "ThermalContactPort.contact_conductance default must be \
+             DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
+}
+
+// ─── step-3c (thermal): behavioral compile signal ──────────────────────────────
+
+/// Inline compile test: a structure parameterized on ThermalContactPort compiles
+/// clean. This is the headline behavioral signal — proves ThermalContactPort
+/// resolves as a port-type/trait-bound from user source (imports std.ports.thermal),
+/// with its ThermalPort and RegionPort supertrait chains fully resolved.
+///
+/// No concrete conformer is instantiated (mirroring the ActuatorInterface<…>
+/// type-param-bound example test and task α's inline RegionPort tests).
+///
+/// RED on current main (ThermalContactPort absent → trait-bound unresolved →
+/// Severity::Error diagnostics).
+#[test]
+fn reify_check_accepts_thermal_contact_port() {
+    let source = "\
+import std.ports.thermal
+structure def ContactInterface<C: ThermalContactPort> { port contact : C }
+";
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "ContactInterface<C: ThermalContactPort> should compile without errors; \
+         got: {:?}",
+        errors
     );
 }
 
