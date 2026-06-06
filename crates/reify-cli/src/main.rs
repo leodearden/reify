@@ -31,6 +31,10 @@ fn print_usage(out: &mut dyn std::io::Write) {
     );
     let _ = writeln!(
         out,
+        "  run <file>                Alias for eval (flagship: reify run <shell.ri>)"
+    );
+    let _ = writeln!(
+        out,
         "  eval <file>               Evaluate and print every top-level value cell"
     );
     let _ = writeln!(
@@ -109,7 +113,7 @@ fn main() -> ExitCode {
         "check" => cmd_check(&args[2..]),
         "test" => cmd_test(&args[2..]),
         "build" => cmd_build(&args[2..]),
-        "eval" => cmd_eval(&args[2..]),
+        "run" | "eval" => cmd_eval(&args[2..]),
         "doc" => cmd_doc(&args[2..]),
         "lsp" => cmd_lsp(),
         "gui" => cmd_gui(&args[2..]),
