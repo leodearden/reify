@@ -14,8 +14,9 @@ use reify_compiler::{
     CompiledTrait, DefaultKind, EntityKind, RequirementKind, ValueCellDecl, ValueCellKind,
     stdlib_loader,
 };
+use reify_ast::ExprKind;
 use reify_core::{DimensionVector, Severity, Type};
-use reify_ir::EnumDef;
+use reify_ir::{CompiledExpr, CompiledExprKind, EnumDef, Value};
 use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -98,6 +99,46 @@ fn param_type(module_path: &str, trait_name: &str, member: &str) -> Type {
             "module '{}' trait '{}' member '{}' should be RequirementKind::Param, got {:?}",
             module_path, trait_name, member, other
         ),
+    }
+}
+
+/// Recursively collect ValueRef member names from a compiled expression tree.
+/// Mirrors `collect_value_ref_members` in `modal_options_validation_tests.rs`
+/// and `buckling_stdlib_compile.rs` — used to assert a `let` RHS references
+/// the expected param cells.
+fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
+    match &expr.kind {
+        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let mut refs = collect_value_ref_members(left);
+            refs.extend(collect_value_ref_members(right));
+            refs
+        }
+        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
+        _ => vec![],
+    }
+}
+
+/// Recursively collect numeric-literal values (`Value::Real`/`Value::Scalar`/
+/// `Value::Int` operands) from a compiled expression tree.
+///
+/// `collect_value_ref_members` proves a `let` RHS references the right *params*,
+/// but not the literal *coefficients* baked beside them — a regression that
+/// changed `pitch * 1.0825` to `pitch * 1.25` would still reference `pitch` and
+/// slip past that walk. This pins the exact ISO coefficients instead (see
+/// `thread_spec_derived_let_coefficients_pinned`).
+fn collect_number_literals(expr: &CompiledExpr) -> Vec<f64> {
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Real(v)) => vec![*v],
+        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => vec![*si_value],
+        CompiledExprKind::Literal(Value::Int(v)) => vec![*v as f64],
+        CompiledExprKind::BinOp { left, right, .. } => {
+            let mut lits = collect_number_literals(left);
+            lits.extend(collect_number_literals(right));
+            lits
+        }
+        CompiledExprKind::UnOp { operand, .. } => collect_number_literals(operand),
+        _ => vec![],
     }
 }
 
@@ -410,8 +451,9 @@ fn located_port_trait_surface() {
 // ─── step-5: std/ports/mechanical loads + marker traits ──────────────────────
 
 /// std/ports/mechanical must load with zero Severity::Error diagnostics.
-/// MechanicalPort refines exactly ["Port"]; Bore, Shaft, StructurePort each
-/// refine exactly ["MechanicalPort"] with empty own required_members.
+/// MechanicalPort refines exactly ["LocatedPort"] (step-8 restructure); Bore,
+/// Shaft, StructurePort each refine exactly ["MechanicalPort"] with empty own
+/// required_members.
 #[test]
 fn std_ports_mechanical_loads_with_no_errors_and_marker_traits() {
     let module = load_module("std/ports/mechanical");
@@ -430,13 +472,17 @@ fn std_ports_mechanical_loads_with_no_errors_and_marker_traits() {
     let mechanical_port = find_trait("std/ports/mechanical", "MechanicalPort");
     assert_eq!(
         mechanical_port.refinements.as_slice(),
-        ["Port".to_string()].as_slice(),
-        "MechanicalPort should refine exactly [Port], got: {:?}",
+        ["LocatedPort".to_string()].as_slice(),
+        "MechanicalPort should refine exactly [LocatedPort] (step-8 restructure: a \
+         mechanical port is spatially located), got: {:?}",
         mechanical_port.refinements
     );
+    // max_load/max_torque carry `= none` defaults, so they live in `defaults`,
+    // not `required_members` (which holds only members with no default).
     assert!(
         mechanical_port.required_members.is_empty(),
-        "MechanicalPort should have no own required_members, got: {:?}",
+        "MechanicalPort should have no own required_members (max_load/max_torque \
+         are Option<…> = none, hence in defaults), got: {:?}",
         mechanical_port
             .required_members
             .iter()
@@ -462,55 +508,141 @@ fn std_ports_mechanical_loads_with_no_errors_and_marker_traits() {
     }
 }
 
+// ─── step-7 (task β): MechanicalPort optional ratings ────────────────────────
+
+/// MechanicalPort carries two optional ratings as `Option<…> = none` defaults:
+///   max_load   : Option<Force>  = none
+///   max_torque : Option<Torque> = none
+/// Both live in `defaults` (DefaultKind::Param), not required_members.
+///
+/// Mirrors signal_port_trait_surface's impedance-default assertion.
+/// RED: MechanicalPort has an empty body (no such defaults).
+#[test]
+fn mechanical_port_optional_ratings_surface() {
+    let t = find_trait("std/ports/mechanical", "MechanicalPort");
+
+    // max_load : Option<Force> = none
+    let max_load = t
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("max_load"))
+        .expect("MechanicalPort.defaults should contain an entry named 'max_load' (= none)");
+    match &max_load.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: DimensionVector::FORCE
+                })),
+                "MechanicalPort.max_load default cell_type must be Type::Option(Scalar<FORCE>)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "MechanicalPort.max_load default_decl must have a default expression (none)"
+            );
+        }
+        other => panic!(
+            "MechanicalPort.max_load default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
+
+    // max_torque : Option<Torque> = none  (Torque = Force·Length/Angle)
+    let expected_torque_dim = DimensionVector::FORCE
+        .mul(&DimensionVector::LENGTH)
+        .div(&DimensionVector::ANGLE);
+    let max_torque = t
+        .defaults
+        .iter()
+        .find(|d| d.name.as_deref() == Some("max_torque"))
+        .expect("MechanicalPort.defaults should contain an entry named 'max_torque' (= none)");
+    match &max_torque.kind {
+        DefaultKind::Param { cell_type, default_decl } => {
+            assert_eq!(
+                *cell_type,
+                Type::Option(Box::new(Type::Scalar {
+                    dimension: expected_torque_dim
+                })),
+                "MechanicalPort.max_torque default cell_type must be \
+                 Type::Option(Scalar<Torque>) (Force·Length/Angle)"
+            );
+            assert!(
+                default_decl.default.is_some(),
+                "MechanicalPort.max_torque default_decl must have a default expression (none)"
+            );
+        }
+        other => panic!(
+            "MechanicalPort.max_torque default must be DefaultKind::Param, got: {:?}",
+            other
+        ),
+    }
+}
+
 // ─── step-7: RotaryPort/ThreadedPort + cardinality lock ──────────────────────
 
-/// RotaryPort refines [MechanicalPort] with required members [torque_capacity,
-/// max_speed] in order.
+// ─── step-9 (task β): MotivePort / RotaryPort / LinearPort surfaces ───────────
+
+/// MotivePort is the motive (power-delivering) port base: it refines exactly
+/// [MechanicalPort] with no own required members.
 ///
-/// `torque_capacity` is asserted to the exact Torque dimension
-/// (Force·Length/Angle = kg·m²·s⁻²·rad⁻¹), which is distinct from Energy
-/// (kg·m²·s⁻²) via the Angle⁻¹ slot.  This locks the `Torque = Force *
-/// Length / Angle` deviation documented in ports_mechanical.ri and ensures
-/// that a regression to Energy or any other scalar would be caught.
+/// RED: MotivePort is absent → find_trait panics.
+#[test]
+fn motive_port_trait_surface() {
+    let t = find_trait("std/ports/mechanical", "MotivePort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["MechanicalPort".to_string()].as_slice(),
+        "MotivePort should refine exactly [MechanicalPort], got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.required_members.is_empty(),
+        "MotivePort should have no own required_members, got: {:?}",
+        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+}
+
+/// RotaryPort refines exactly [MotivePort] (was [MechanicalPort]) with required
+/// members [max_speed, max_torque, axis] in order (was [torque_capacity,
+/// max_speed]):
+///   max_speed  : Scalar<ANGULAR_VELOCITY>
+///   max_torque : Scalar<Torque = Force·Length/Angle>  (renamed from torque_capacity)
+///   axis       : Vector3<Length>
 ///
-/// `max_speed` is asserted to Scalar<ANGULAR_VELOCITY>.
+/// The Torque dimension (Force·Length/Angle) is distinct from Energy
+/// (kg·m²·s⁻²) via the Angle⁻¹ slot — a regression to Energy is caught here.
+///
+/// RED: RotaryPort still refines [MechanicalPort] with [torque_capacity, max_speed].
 #[test]
 fn rotary_port_trait_surface() {
     let t = find_trait("std/ports/mechanical", "RotaryPort");
 
     assert_eq!(
         t.refinements.as_slice(),
-        ["MechanicalPort".to_string()].as_slice(),
-        "RotaryPort should refine exactly [MechanicalPort], got: {:?}",
+        ["MotivePort".to_string()].as_slice(),
+        "RotaryPort should refine exactly [MotivePort], got: {:?}",
         t.refinements
     );
 
     assert_eq!(
         t.required_members.len(),
-        2,
-        "RotaryPort should have exactly 2 required members; got: {:?}",
+        3,
+        "RotaryPort should have exactly 3 required members [max_speed, max_torque, axis]; \
+         got: {:?}",
         t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
     );
     assert_eq!(
-        t.required_members[0].name, "torque_capacity",
-        "RotaryPort required_members[0] should be 'torque_capacity'"
+        t.required_members[0].name, "max_speed",
+        "RotaryPort required_members[0] should be 'max_speed'"
     );
     assert_eq!(
-        t.required_members[1].name, "max_speed",
-        "RotaryPort required_members[1] should be 'max_speed'"
+        t.required_members[1].name, "max_torque",
+        "RotaryPort required_members[1] should be 'max_torque'"
     );
-
-    // Torque = Force * Length / Angle (distinct from Energy by the Angle⁻¹ slot).
-    let expected_torque_dim = DimensionVector::FORCE
-        .mul(&DimensionVector::LENGTH)
-        .div(&DimensionVector::ANGLE);
     assert_eq!(
-        param_type("std/ports/mechanical", "RotaryPort", "torque_capacity"),
-        Type::Scalar {
-            dimension: expected_torque_dim
-        },
-        "RotaryPort.torque_capacity must be Scalar<Force·Length/Angle> \
-         (Torque alias — distinct from Energy via Angle⁻¹ slot)"
+        t.required_members[2].name, "axis",
+        "RotaryPort required_members[2] should be 'axis'"
     );
 
     assert_eq!(
@@ -520,10 +652,380 @@ fn rotary_port_trait_surface() {
         },
         "RotaryPort.max_speed must have DimensionVector::ANGULAR_VELOCITY"
     );
+
+    // Torque = Force * Length / Angle (distinct from Energy by the Angle⁻¹ slot).
+    let expected_torque_dim = DimensionVector::FORCE
+        .mul(&DimensionVector::LENGTH)
+        .div(&DimensionVector::ANGLE);
+    assert_eq!(
+        param_type("std/ports/mechanical", "RotaryPort", "max_torque"),
+        Type::Scalar {
+            dimension: expected_torque_dim
+        },
+        "RotaryPort.max_torque must be Scalar<Force·Length/Angle> \
+         (Torque alias — distinct from Energy via Angle⁻¹ slot)"
+    );
+
+    assert_eq!(
+        param_type("std/ports/mechanical", "RotaryPort", "axis"),
+        Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }),
+        },
+        "RotaryPort.axis must be Vector3<Length>"
+    );
+
+    // Regression guard: torque_capacity was renamed to max_torque.
+    assert!(
+        !t.required_members.iter().any(|r| r.name == "torque_capacity"),
+        "RotaryPort must not expose 'torque_capacity' (renamed to max_torque)"
+    );
 }
 
-/// ThreadedPort refines [MechanicalPort] with required members [thread_diameter,
-/// pitch] in order; both resolve to Scalar<LENGTH>.
+/// Behavioural (conformance): a concrete structure conforming to RotaryPort that
+/// supplies all four required members (frame, max_speed, max_torque, axis)
+/// compiles clean.
+///
+/// End-to-end counterpart to `rotary_port_trait_surface`: it drives the merged
+/// RotaryPort requirement set (Port→LocatedPort→MechanicalPort→MotivePort→
+/// RotaryPort) through the strict `structure def X : Trait` conformance checker
+/// (the lenient `port p : in Trait {}` slot does NOT enforce required-member
+/// presence). This is the POSITIVE half of the `max_torque` name-shadowing
+/// guarantee: RotaryPort's required `max_torque : Torque` re-declares
+/// MechanicalPort's optional `max_torque : Option<Torque> = none`, and supplying a
+/// real `Torque` here satisfies it. The NEGATIVE half is
+/// `rotary_port_conformer_inherited_option_default_does_not_satisfy_max_torque`.
+#[test]
+fn rotary_port_concrete_conformer_compiles() {
+    let source = r#"
+import std.ports.mechanical
+
+structure def RotaryConformer : RotaryPort {
+    param frame : Frame3 = Frame3(
+        origin: vec3(0mm, 0mm, 0mm),
+        x_axis: vec3(1mm, 0mm, 0mm),
+        y_axis: vec3(0mm, 1mm, 0mm),
+        z_axis: vec3(0mm, 0mm, 1mm),
+    )
+    param max_speed : AngularVelocity = 1rad / 1s
+    param max_torque : Torque = 1N * 1m / 1rad
+    param axis : Vector3<Length> = vec3(0mm, 0mm, 1mm)
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a structure conforming to RotaryPort and supplying frame/max_speed/max_torque/axis \
+         should compile without errors (the required max_torque:Torque is satisfied by the \
+         supplied Torque value); got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Behavioural (conformance): a structure conforming to RotaryPort that omits
+/// `max_torque` is REJECTED — the inherited MechanicalPort default
+/// `max_torque : Option<Torque> = none` does NOT satisfy RotaryPort's required
+/// `max_torque : Torque`.
+///
+/// This is the load-bearing half of the `max_torque` shadowing guarantee
+/// (plan.json design decision 1). The conformance checker compares the inherited
+/// `Option<Torque>` default against the required `Torque` and rejects it on type
+/// grounds — "type mismatch for trait member 'max_torque' … available default has
+/// Option<…>" — rather than silently accepting the optional default. If that
+/// shadowing ever regressed so the `Option<Torque>=none` default DID satisfy the
+/// requirement, this conformer would compile clean and the assertion would fail.
+///
+/// Probed against the omit-`max_speed` case (a required member with NO inherited
+/// default → plain "missing required member"), which confirms the strict
+/// conformance checker is reached for both — so the type-mismatch outcome here is
+/// specifically the inherited Option default being rejected, not a generic miss.
+#[test]
+fn rotary_port_conformer_inherited_option_default_does_not_satisfy_max_torque() {
+    let source = r#"
+import std.ports.mechanical
+
+structure def RotaryConformerMissingTorque : RotaryPort {
+    param frame : Frame3 = Frame3(
+        origin: vec3(0mm, 0mm, 0mm),
+        x_axis: vec3(1mm, 0mm, 0mm),
+        y_axis: vec3(0mm, 1mm, 0mm),
+        z_axis: vec3(0mm, 0mm, 1mm),
+    )
+    param max_speed : AngularVelocity = 1rad / 1s
+    param axis : Vector3<Length> = vec3(0mm, 0mm, 1mm)
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("max_torque") && d.message.contains("Option<")),
+        "omitting max_torque from a RotaryPort conformer must be rejected because the inherited \
+         Option<Torque>=none default cannot satisfy the required Torque (expected a diagnostic \
+         naming max_torque and the rejected Option<…> default); got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// LinearPort refines exactly [MotivePort] with required members [max_speed,
+/// max_force, stroke, axis] in order:
+///   max_speed : Scalar<Velocity = Length/Time>
+///   max_force : Scalar<FORCE>
+///   stroke    : Scalar<LENGTH>
+///   axis      : Vector3<Length>
+///
+/// RED: LinearPort is absent → find_trait panics.
+#[test]
+fn linear_port_trait_surface() {
+    let t = find_trait("std/ports/mechanical", "LinearPort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["MotivePort".to_string()].as_slice(),
+        "LinearPort should refine exactly [MotivePort], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        4,
+        "LinearPort should have exactly 4 required members \
+         [max_speed, max_force, stroke, axis]; got: {:?}",
+        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+    for (i, name) in ["max_speed", "max_force", "stroke", "axis"].iter().enumerate() {
+        assert_eq!(
+            t.required_members[i].name, *name,
+            "LinearPort required_members[{}] should be '{}'",
+            i, name
+        );
+    }
+
+    // Velocity = Length / Time (alias resolves to the composite dimension).
+    let expected_velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+    assert_eq!(
+        param_type("std/ports/mechanical", "LinearPort", "max_speed"),
+        Type::Scalar {
+            dimension: expected_velocity_dim
+        },
+        "LinearPort.max_speed must be Scalar<Length/Time> (Velocity alias)"
+    );
+    assert_eq!(
+        param_type("std/ports/mechanical", "LinearPort", "max_force"),
+        Type::Scalar {
+            dimension: DimensionVector::FORCE
+        },
+        "LinearPort.max_force must be Scalar<FORCE>"
+    );
+    assert_eq!(
+        param_type("std/ports/mechanical", "LinearPort", "stroke"),
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
+        "LinearPort.stroke must be Scalar<LENGTH>"
+    );
+    assert_eq!(
+        param_type("std/ports/mechanical", "LinearPort", "axis"),
+        Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }),
+        },
+        "LinearPort.axis must be Vector3<Length>"
+    );
+}
+
+// ─── step-11 (task β): GuidePort / LinearGuidePort / RotaryGuidePort ──────────
+
+/// Assert that `trait_name` in std/ports/mechanical carries exactly one
+/// trait-level constraint and that it is the unnamed single-DOF invariant
+/// `degrees_of_freedom == 1`.
+///
+/// An unlabeled trait-body `constraint <expr>` compiles to a
+/// `TraitDefault { name: None, kind: DefaultKind::Constraint(decl) }`
+/// (traits.rs:252-257) with the parsed predicate preserved verbatim, so the
+/// AST is `BinOp { op: "==", left: Ident("degrees_of_freedom"),
+/// right: NumberLiteral { value: 1.0, is_real: false } }`. Pinning the RHS
+/// literal here is what distinguishes the prismatic/revolute `== 1` invariant
+/// from any other DOF count.
+fn assert_dof_eq_one_constraint(trait_name: &str) {
+    let t = find_trait("std/ports/mechanical", trait_name);
+    let constraint_count = t
+        .defaults
+        .iter()
+        .filter(|d| matches!(d.kind, DefaultKind::Constraint(_)))
+        .count();
+    assert_eq!(
+        constraint_count, 1,
+        "{} should carry exactly one trait-level constraint; got {} total defaults",
+        trait_name,
+        t.defaults.len()
+    );
+    let c = t
+        .defaults
+        .iter()
+        .find(|d| matches!(d.kind, DefaultKind::Constraint(_)))
+        .unwrap();
+    assert!(
+        c.name.is_none(),
+        "{}'s degrees_of_freedom constraint should be unlabeled (name: None), got: {:?}",
+        trait_name, c.name
+    );
+    let decl = match &c.kind {
+        DefaultKind::Constraint(decl) => decl,
+        _ => unreachable!("filtered to Constraint above"),
+    };
+    match &decl.expr.kind {
+        ExprKind::BinOp { op, left, right } => {
+            assert_eq!(op, "==", "{} constraint op should be '=='", trait_name);
+            assert!(
+                matches!(&left.kind, ExprKind::Ident(name) if name == "degrees_of_freedom"),
+                "{} constraint LHS should be Ident(degrees_of_freedom), got: {:?}",
+                trait_name, left.kind
+            );
+            assert!(
+                matches!(&right.kind, ExprKind::NumberLiteral { value, .. } if *value == 1.0),
+                "{} constraint RHS should be NumberLiteral(1), got: {:?}",
+                trait_name, right.kind
+            );
+        }
+        other => panic!(
+            "{} constraint should be a BinOp `degrees_of_freedom == 1`, got: {:?}",
+            trait_name, other
+        ),
+    }
+}
+
+/// GuidePort is the kinematic-guide base: it refines exactly [MechanicalPort]
+/// with a single required member `degrees_of_freedom : Int` (the count of
+/// permitted relative DOFs along/about the guide).
+///
+/// RED: GuidePort is absent → find_trait panics.
+#[test]
+fn guide_port_trait_surface() {
+    let t = find_trait("std/ports/mechanical", "GuidePort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["MechanicalPort".to_string()].as_slice(),
+        "GuidePort should refine exactly [MechanicalPort], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        1,
+        "GuidePort should have exactly 1 required member (degrees_of_freedom); got: {:?}",
+        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        t.required_members[0].name, "degrees_of_freedom",
+        "GuidePort required_members[0] should be 'degrees_of_freedom'"
+    );
+    assert_eq!(
+        param_type("std/ports/mechanical", "GuidePort", "degrees_of_freedom"),
+        Type::Int,
+        "GuidePort.degrees_of_freedom must be Type::Int"
+    );
+}
+
+/// LinearGuidePort refines exactly [GuidePort], adds no own required params, and
+/// pins the single-DOF invariant as a trait-level constraint
+/// `degrees_of_freedom == 1` (a prismatic guide permits exactly one
+/// translational DOF). A conformer with degrees_of_freedom != 1 is a constraint
+/// violation (exercised behaviourally in ports_mechanical_thread_eval.rs).
+///
+/// RED: LinearGuidePort is absent → find_trait panics.
+#[test]
+fn linear_guide_port_trait_surface() {
+    let t = find_trait("std/ports/mechanical", "LinearGuidePort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["GuidePort".to_string()].as_slice(),
+        "LinearGuidePort should refine exactly [GuidePort], got: {:?}",
+        t.refinements
+    );
+    assert!(
+        t.required_members.is_empty(),
+        "LinearGuidePort should add no own required members (dof inherited from \
+         GuidePort), got: {:?}",
+        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+
+    assert_dof_eq_one_constraint("LinearGuidePort");
+}
+
+/// RotaryGuidePort refines exactly [GuidePort], pins the same single-DOF
+/// invariant `degrees_of_freedom == 1` (a revolute guide permits exactly one
+/// rotational DOF), and adds two required load ratings:
+///   max_radial_load : Scalar<FORCE>
+///   max_axial_load  : Scalar<FORCE>
+///
+/// RED: RotaryGuidePort is absent → find_trait panics.
+#[test]
+fn rotary_guide_port_trait_surface() {
+    let t = find_trait("std/ports/mechanical", "RotaryGuidePort");
+
+    assert_eq!(
+        t.refinements.as_slice(),
+        ["GuidePort".to_string()].as_slice(),
+        "RotaryGuidePort should refine exactly [GuidePort], got: {:?}",
+        t.refinements
+    );
+
+    assert_eq!(
+        t.required_members.len(),
+        2,
+        "RotaryGuidePort should have exactly 2 required members \
+         [max_radial_load, max_axial_load]; got: {:?}",
+        t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
+    for (i, name) in ["max_radial_load", "max_axial_load"].iter().enumerate() {
+        assert_eq!(
+            t.required_members[i].name, *name,
+            "RotaryGuidePort required_members[{}] should be '{}'",
+            i, name
+        );
+    }
+    assert_eq!(
+        param_type("std/ports/mechanical", "RotaryGuidePort", "max_radial_load"),
+        Type::Scalar {
+            dimension: DimensionVector::FORCE
+        },
+        "RotaryGuidePort.max_radial_load must be Scalar<FORCE>"
+    );
+    assert_eq!(
+        param_type("std/ports/mechanical", "RotaryGuidePort", "max_axial_load"),
+        Type::Scalar {
+            dimension: DimensionVector::FORCE
+        },
+        "RotaryGuidePort.max_axial_load must be Scalar<FORCE>"
+    );
+
+    assert_dof_eq_one_constraint("RotaryGuidePort");
+}
+
+/// ThreadedPort refines exactly [MechanicalPort] with a single required member
+/// `thread_spec : ThreadSpec` (Type::StructureRef("ThreadSpec")) — replacing the
+/// old raw thread_diameter/pitch Length pair (PRD §4 decision 6).
+///
+/// RED: ThreadedPort still exposes [thread_diameter, pitch].
 #[test]
 fn threaded_port_trait_surface() {
     let t = find_trait("std/ports/mechanical", "ThreadedPort");
@@ -537,51 +1039,323 @@ fn threaded_port_trait_surface() {
 
     assert_eq!(
         t.required_members.len(),
-        2,
-        "ThreadedPort should have exactly 2 required members; got: {:?}",
+        1,
+        "ThreadedPort should have exactly 1 required member (thread_spec); got: {:?}",
         t.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
     );
     assert_eq!(
-        t.required_members[0].name, "thread_diameter",
-        "ThreadedPort required_members[0] should be 'thread_diameter'"
+        t.required_members[0].name, "thread_spec",
+        "ThreadedPort required_members[0] should be 'thread_spec'"
     );
     assert_eq!(
-        t.required_members[1].name, "pitch",
-        "ThreadedPort required_members[1] should be 'pitch'"
+        param_type("std/ports/mechanical", "ThreadedPort", "thread_spec"),
+        Type::StructureRef("ThreadSpec".into()),
+        "ThreadedPort.thread_spec must be Type::StructureRef(\"ThreadSpec\")"
     );
 
-    assert_eq!(
-        param_type("std/ports/mechanical", "ThreadedPort", "thread_diameter"),
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH
-        },
-        "ThreadedPort.thread_diameter must have DimensionVector::LENGTH"
+    // Regression guards: the raw thread_diameter/pitch pair was replaced.
+    assert!(
+        !t.required_members.iter().any(|r| r.name == "thread_diameter"),
+        "ThreadedPort must not expose 'thread_diameter' (replaced by thread_spec)"
     );
+    assert!(
+        !t.required_members.iter().any(|r| r.name == "pitch"),
+        "ThreadedPort must not expose 'pitch' (replaced by thread_spec)"
+    );
+}
+
+// ─── step-1 (task β): mechanical thread enums surface ─────────────────────────
+
+/// std/ports/mechanical declares the three thread-system enums with exact
+/// variants in order:
+///   ThreadSystem              == [ISO_Metric, ISO_Metric_Fine, UNC, UNF]
+///   ThreadClass               == [Class_6g6H, Class_4g6H]
+///   ThreadTighteningDirection == [Clockwise, Counterclockwise]
+///
+/// RED: the three enums are absent from the module (find_enum panics).
+#[test]
+fn mechanical_thread_enums_surface() {
+    let thread_system = find_enum("std/ports/mechanical", "ThreadSystem");
     assert_eq!(
-        param_type("std/ports/mechanical", "ThreadedPort", "pitch"),
-        Type::Scalar {
-            dimension: DimensionVector::LENGTH
-        },
-        "ThreadedPort.pitch must have DimensionVector::LENGTH"
+        thread_system.variants,
+        vec![
+            "ISO_Metric".to_string(),
+            "ISO_Metric_Fine".to_string(),
+            "UNC".to_string(),
+            "UNF".to_string(),
+        ],
+        "ThreadSystem variants must be [ISO_Metric, ISO_Metric_Fine, UNC, UNF] in order; got: {:?}",
+        thread_system.variants
+    );
+
+    let thread_class = find_enum("std/ports/mechanical", "ThreadClass");
+    assert_eq!(
+        thread_class.variants,
+        vec!["Class_6g6H".to_string(), "Class_4g6H".to_string()],
+        "ThreadClass variants must be [Class_6g6H, Class_4g6H] in order; got: {:?}",
+        thread_class.variants
+    );
+
+    let tightening = find_enum("std/ports/mechanical", "ThreadTighteningDirection");
+    assert_eq!(
+        tightening.variants,
+        vec!["Clockwise".to_string(), "Counterclockwise".to_string()],
+        "ThreadTighteningDirection variants must be [Clockwise, Counterclockwise] in order; got: {:?}",
+        tightening.variants
+    );
+}
+
+// ─── step-3 (task β): ThreadSpec structure surface ───────────────────────────
+
+/// std/ports/mechanical declares `structure def ThreadSpec` with exactly 6
+/// Param cells (in order) and 4 derived Let cells (in order):
+///
+///   params: system : ThreadSystem
+///           nominal_diameter : Length
+///           pitch : Length
+///           thread_class : ThreadClass
+///           tightening : ThreadTighteningDirection = ThreadTighteningDirection.Clockwise
+///           thread_form : Option<Geometry> = none
+///   lets:   minor_diameter, pitch_diameter, tap_drill, clearance_hole
+///           (each an arithmetic expr over nominal_diameter & pitch)
+///
+/// RED: ThreadSpec is absent → template lookup panics.
+#[test]
+fn thread_spec_structure_surface() {
+    let module = load_module("std/ports/mechanical");
+
+    let thread_spec = module
+        .templates
+        .iter()
+        .find(|t| t.name == "ThreadSpec" && t.entity_kind == EntityKind::Structure)
+        .expect(
+            "std/ports/mechanical should contain 'structure def ThreadSpec'; \
+             check ports_mechanical.ri for the ThreadSpec definition",
+        );
+
+    // ── Param cells: exact names, order, and types ───────────────────────────
+    let param_cells: Vec<&ValueCellDecl> = thread_spec
+        .value_cells
+        .iter()
+        .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
+        .collect();
+    let param_names: Vec<&str> = param_cells.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    let expected_params: [(&str, Type); 6] = [
+        ("system", Type::Enum("ThreadSystem".into())),
+        (
+            "nominal_diameter",
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+        ),
+        ("pitch", Type::Scalar { dimension: DimensionVector::LENGTH }),
+        ("thread_class", Type::Enum("ThreadClass".into())),
+        ("tightening", Type::Enum("ThreadTighteningDirection".into())),
+        ("thread_form", Type::Option(Box::new(Type::Geometry))),
+    ];
+
+    assert_eq!(
+        param_cells.len(),
+        6,
+        "ThreadSpec should have exactly 6 param cells \
+         [system, nominal_diameter, pitch, thread_class, tightening, thread_form], got: {:?}",
+        param_names
+    );
+    for (i, (name, ty)) in expected_params.iter().enumerate() {
+        assert_eq!(
+            param_cells[i].id.member, *name,
+            "ThreadSpec param #{} should be '{}', got '{}'",
+            i, name, param_cells[i].id.member
+        );
+        assert_eq!(
+            param_cells[i].cell_type, *ty,
+            "ThreadSpec.{} should be type {:?}, got {:?}",
+            name, ty, param_cells[i].cell_type
+        );
+    }
+
+    // ── tightening default = ThreadTighteningDirection.Clockwise ─────────────
+    let tightening = param_cells
+        .iter()
+        .find(|vc| vc.id.member == "tightening")
+        .unwrap();
+    match &tightening
+        .default_expr
+        .as_ref()
+        .expect(
+            "ThreadSpec.tightening must have a default_expr \
+             (= ThreadTighteningDirection.Clockwise)",
+        )
+        .kind
+    {
+        CompiledExprKind::Literal(Value::Enum { type_name, variant }) => {
+            assert_eq!(
+                type_name, "ThreadTighteningDirection",
+                "tightening default enum type"
+            );
+            assert_eq!(variant, "Clockwise", "tightening default enum variant");
+        }
+        other => panic!(
+            "ThreadSpec.tightening default should be Literal(Value::Enum {{ \
+             type_name: \"ThreadTighteningDirection\", variant: \"Clockwise\" }}), got: {:?}",
+            other
+        ),
+    }
+
+    // ── thread_form default = none (OptionNone) ──────────────────────────────
+    let thread_form = param_cells
+        .iter()
+        .find(|vc| vc.id.member == "thread_form")
+        .unwrap();
+    match &thread_form
+        .default_expr
+        .as_ref()
+        .expect("ThreadSpec.thread_form must have a default_expr (= none)")
+        .kind
+    {
+        CompiledExprKind::OptionNone => {}
+        other => panic!(
+            "ThreadSpec.thread_form default should be \
+             CompiledExprKind::OptionNone (none), got: {:?}",
+            other
+        ),
+    }
+
+    // ── Let cells: exact names, order, each references nominal_diameter+pitch ─
+    let let_cells: Vec<&ValueCellDecl> = thread_spec
+        .value_cells
+        .iter()
+        .filter(|vc| matches!(vc.kind, ValueCellKind::Let))
+        .collect();
+    let let_names: Vec<&str> = let_cells.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        let_cells.len(),
+        4,
+        "ThreadSpec should have exactly 4 let cells \
+         [minor_diameter, pitch_diameter, tap_drill, clearance_hole], got: {:?}",
+        let_names
+    );
+    for (i, name) in ["minor_diameter", "pitch_diameter", "tap_drill", "clearance_hole"]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(
+            let_cells[i].id.member, *name,
+            "ThreadSpec let #{} should be '{}', got '{}'",
+            i, name, let_cells[i].id.member
+        );
+        let rhs = let_cells[i]
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("ThreadSpec.{} (let) must have a RHS default_expr", name));
+        let refs = collect_value_ref_members(rhs);
+        assert!(
+            refs.contains(&"nominal_diameter") && refs.contains(&"pitch"),
+            "ThreadSpec.{} RHS must reference both 'nominal_diameter' and 'pitch', got refs: {:?}",
+            name,
+            refs
+        );
+    }
+}
+
+/// Pin the *exact* ISO coefficients baked into the ThreadSpec derived `let`s.
+///
+/// `thread_spec_structure_surface` only asserts each `let` RHS references
+/// `nominal_diameter` and `pitch`; it would still pass if a coefficient drifted
+/// (e.g. `pitch * 1.0825` → `pitch * 1.25`). This walks each RHS's compiled
+/// expression tree and pins the literal coefficient against the 60°-flank
+/// identities (ISO 68-1 / ISO 273):
+///   minor_diameter = D − P·1.0825   (ISO 68-1 d1: D − 1.25H, H = 0.866P)
+///   pitch_diameter = D − P·0.6495   (ISO 68-1 d2: D − 0.75H)
+///   clearance_hole = D + P·0.5      (ISO 273 medium-fit approximation)
+///   tap_drill      = D − P          (no coefficient — pure nominal − pitch)
+///
+/// Closes the test-coverage gap that a coefficient regression in
+/// ports_mechanical.ri would otherwise slip past both this compile test and the
+/// eval test (which exercises a locally re-declared copy of ThreadSpec).
+#[test]
+fn thread_spec_derived_let_coefficients_pinned() {
+    let module = load_module("std/ports/mechanical");
+    let thread_spec = module
+        .templates
+        .iter()
+        .find(|t| t.name == "ThreadSpec" && t.entity_kind == EntityKind::Structure)
+        .expect("std/ports/mechanical should contain 'structure def ThreadSpec'");
+
+    // Coefficient-bearing lets: assert the exact ISO constant is a literal operand.
+    let assert_coeff = |member: &str, expected: f64| {
+        let cell = thread_spec
+            .value_cells
+            .iter()
+            .find(|vc| matches!(vc.kind, ValueCellKind::Let) && vc.id.member == member)
+            .unwrap_or_else(|| panic!("ThreadSpec should have a let cell '{}'", member));
+        let rhs = cell
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("ThreadSpec.{} (let) must have a RHS default_expr", member));
+        let lits = collect_number_literals(rhs);
+        assert!(
+            lits.iter().any(|v| (v - expected).abs() < 1e-12),
+            "ThreadSpec.{} RHS must bake the ISO coefficient {} (regression guard against a \
+             drifted thread-geometry constant); got literals: {:?}",
+            member,
+            expected,
+            lits
+        );
+    };
+    assert_coeff("minor_diameter", 1.0825);
+    assert_coeff("pitch_diameter", 0.6495);
+    assert_coeff("clearance_hole", 0.5);
+
+    // tap_drill is pure `nominal_diameter − pitch` — no numeric coefficient at all.
+    let tap_drill = thread_spec
+        .value_cells
+        .iter()
+        .find(|vc| matches!(vc.kind, ValueCellKind::Let) && vc.id.member == "tap_drill")
+        .expect("ThreadSpec should have a let cell 'tap_drill'");
+    let tap_lits = collect_number_literals(
+        tap_drill
+            .default_expr
+            .as_ref()
+            .expect("ThreadSpec.tap_drill (let) must have a RHS default_expr"),
+    );
+    assert!(
+        tap_lits.is_empty(),
+        "ThreadSpec.tap_drill RHS should be pure `nominal_diameter − pitch` with no numeric \
+         coefficient; got literals: {:?}",
+        tap_lits
     );
 }
 
 /// std/ports/mechanical cardinality lock: exactly 6 traits (MechanicalPort,
-/// Bore, Shaft, RotaryPort, ThreadedPort, StructurePort), 0 enums, 0 structures.
+/// Bore, Shaft, RotaryPort, ThreadedPort, StructurePort), 3 enums (ThreadSystem,
+/// ThreadClass, ThreadTighteningDirection), 1 structure (ThreadSpec).
+///
+/// Bumped incrementally by task β steps (mirroring task α's in-file discipline):
+///   step-1: enums 0→3 (ThreadSystem, ThreadClass, ThreadTighteningDirection)
+///   step-3: structures 0→1 (ThreadSpec)
+///   step-9: traits 6→8 (MotivePort, LinearPort)
+///   step-11: traits 8→11 (GuidePort, LinearGuidePort, RotaryGuidePort)
 #[test]
 fn std_ports_mechanical_module_cardinality_locked() {
     let module = load_module("std/ports/mechanical");
 
+    let enum_names: Vec<&str> = module.enum_defs.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
         module.enum_defs.len(),
-        0,
-        "std/ports/mechanical should declare 0 enums, got: {:?}",
-        module
-            .enum_defs
-            .iter()
-            .map(|e| e.name.as_str())
-            .collect::<Vec<_>>()
+        3,
+        "std/ports/mechanical should declare exactly 3 enums \
+         (ThreadSystem, ThreadClass, ThreadTighteningDirection), got: {:?}",
+        enum_names
     );
+    for expected in &["ThreadSystem", "ThreadClass", "ThreadTighteningDirection"] {
+        assert!(
+            module.enum_defs.iter().any(|e| e.name == *expected),
+            "std/ports/mechanical should contain enum '{}', got: {:?}",
+            expected,
+            enum_names
+        );
+    }
 
     let trait_names: Vec<&str> = module
         .trait_defs
@@ -590,11 +1364,32 @@ fn std_ports_mechanical_module_cardinality_locked() {
         .collect();
     assert_eq!(
         module.trait_defs.len(),
-        6,
-        "std/ports/mechanical should declare exactly 6 traits \
-         (MechanicalPort, Bore, Shaft, RotaryPort, ThreadedPort, StructurePort), got: {:?}",
+        11,
+        "std/ports/mechanical should declare exactly 11 traits (MechanicalPort, Bore, \
+         Shaft, RotaryPort, ThreadedPort, StructurePort, MotivePort, LinearPort, \
+         GuidePort, LinearGuidePort, RotaryGuidePort), got: {:?}",
         trait_names
     );
+    for expected in &[
+        "MechanicalPort",
+        "Bore",
+        "Shaft",
+        "RotaryPort",
+        "ThreadedPort",
+        "StructurePort",
+        "MotivePort",
+        "LinearPort",
+        "GuidePort",
+        "LinearGuidePort",
+        "RotaryGuidePort",
+    ] {
+        assert!(
+            module.trait_defs.iter().any(|t| t.name == *expected),
+            "std/ports/mechanical should contain trait '{}', got: {:?}",
+            expected,
+            trait_names
+        );
+    }
 
     let structure_names: Vec<&str> = module
         .templates
@@ -604,8 +1399,16 @@ fn std_ports_mechanical_module_cardinality_locked() {
         .collect();
     assert_eq!(
         structure_names.len(),
-        0,
-        "std/ports/mechanical should declare 0 structures, got: {:?}",
+        1,
+        "std/ports/mechanical should declare exactly 1 structure (ThreadSpec), got: {:?}",
+        structure_names
+    );
+    assert!(
+        module
+            .templates
+            .iter()
+            .any(|t| t.name == "ThreadSpec" && t.entity_kind == EntityKind::Structure),
+        "std/ports/mechanical should contain 'ThreadSpec' structure, got: {:?}",
         structure_names
     );
 }

@@ -15,11 +15,12 @@
 //      alias indirection, mirroring `pub type Velocity = Length / Time`.
 //      The alias is `pub` to mirror units.ri's `pub type Velocity` convention.
 //   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
-//   3. No `#no_prelude` pragma. std.ports.mechanical refines Port from
-//      std.ports (inter-stdlib dependency), so the growing-prelude sequence
-//      in stdlib_loader.rs must include std.ports before this module. Adding
-//      `#no_prelude` would break both the refinement resolution and the
-//      stdlib_loader_tests bidirectional invariant test.
+//   3. No `#no_prelude` pragma. std.ports.mechanical refines LocatedPort from
+//      std.ports (inter-stdlib dependency; MechanicalPort : LocatedPort : Port),
+//      so the growing-prelude sequence in stdlib_loader.rs must include
+//      std.ports before this module. Adding `#no_prelude` would break both the
+//      refinement resolution and the stdlib_loader_tests bidirectional invariant
+//      test.
 
 // ── Torque type alias ─────────────────────────────────────────────────────────
 
@@ -27,12 +28,76 @@
 // Distinct from Energy (J = N·m) because of the Angle⁻¹ slot.
 pub type Torque = Force * Length / Angle
 
+// ── Thread system enums ───────────────────────────────────────────────────────
+
+// Thread standard / series selecting the geometric family of a ThreadSpec.
+// All four are 60°-flank threads, so the ISO 68-1 derived-let identities
+// (minor/pitch diameter from nominal & pitch) hold for every variant.
+enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
+
+// Thread tolerance / fit class (external `g` / internal `H` designations).
+enum ThreadClass { Class_6g6H, Class_4g6H }
+
+// Handedness of the thread helix — Clockwise is a right-hand thread
+// (tightens clockwise), Counterclockwise a left-hand thread.
+enum ThreadTighteningDirection { Clockwise, Counterclockwise }
+
+// ── Thread specification structure ─────────────────────────────────────────────
+
+// A full standards-derived thread specification.
+//
+// `system`/`thread_class`/`tightening` select the thread family, tolerance
+// class, and handedness; `nominal_diameter` (major Ø D) and `pitch` (P) are the
+// two driving dimensions. The four derived `let`s apply the ISO 68-1 / ISO 261
+// 60°-flank identities — exact for all four ThreadSystem variants (all are
+// 60°-flank threads):
+//
+//   minor_diameter  = D − 1.25·H,  H = 0.866·P  ⇒  D − 1.0825·P  (ISO d1)
+//   pitch_diameter  = D − 0.75·H                ⇒  D − 0.6495·P  (ISO d2)
+//   tap_drill       = D − P                     (standard ~75%-thread tap rule)
+//   clearance_hole  = D + 0.5·P                 (documented ISO 273 medium-fit
+//                                                approximation; the close/medium/
+//                                                coarse fit-class table is
+//                                                deferred — if/match don't parse
+//                                                in a let RHS, PRD §5/§8)
+//
+// `thread_form : Option<Geometry>` is a carrier slot for a generated thread-helix
+// solid; `none` until a thread-helix kernel op exists (PRD §5, out of scope).
+structure def ThreadSpec {
+    param system : ThreadSystem
+    param nominal_diameter : Length
+    param pitch : Length
+    param thread_class : ThreadClass
+    param tightening : ThreadTighteningDirection = ThreadTighteningDirection.Clockwise
+    param thread_form : Option<Geometry> = none
+
+    let minor_diameter = nominal_diameter - pitch * 1.0825
+    let pitch_diameter = nominal_diameter - pitch * 0.6495
+    let tap_drill = nominal_diameter - pitch
+    let clearance_hole = nominal_diameter + pitch * 0.5
+}
+
 // ── Mechanical port base ──────────────────────────────────────────────────────
 
 // Base trait for any mechanical connection interface.
-// Inherits `direction` from Port via refinement.
-// Bodies are empty — conformers supply Port's direction requirement directly.
-trait MechanicalPort : Port {}
+//
+// Refines LocatedPort (PRD §2 / §4 decision 1): a mechanical port is spatially
+// located, so it transitively satisfies LocatedPort — which is precisely what
+// makes connect.rs's asymmetric-LocatedPort warning fire when a mechanical port
+// connects to a non-located one. Inherits `direction` (Port) and `frame`
+// (LocatedPort) through the refinement chain.
+//
+// Two optional ratings, both `Option<…> = none` (absent unless the conformer
+// supplies them), per PRD decision 5:
+//   max_load   : Option<Force>  — maximum static/working load the port carries.
+//   max_torque : Option<Torque> — maximum continuous torque (see Torque alias).
+// RotaryPort re-declares `max_torque` as a *required* Torque; an optional default
+// and a required member of the same name never collide (trait_requirements.rs
+// only conflicts required-vs-required), so the module loads clean.
+trait MechanicalPort : LocatedPort {
+    param max_load : Option<Force> = none
+    param max_torque : Option<Torque> = none
+}
 
 // ── Marker traits ─────────────────────────────────────────────────────────────
 
@@ -48,22 +113,89 @@ trait Shaft : MechanicalPort {}
 // Marker per spec §11.3 listing.
 trait StructurePort : MechanicalPort {}
 
-// ── Parameterised rotary port ─────────────────────────────────────────────────
+// ── Motive ports (power-delivering) ─────────────────────────────────────────────
 
-// Rotary shaft port — carries torque and has a speed limit.
-// torque_capacity : Torque — the maximum continuous torque the port can transmit.
-// max_speed : AngularVelocity — maximum continuous rotational speed (rad/s).
-trait RotaryPort : MechanicalPort {
-    param torque_capacity : Torque
+// Base trait for motive ports — mechanical interfaces that *deliver power*
+// (rotary torque or linear thrust), as opposed to a passive mating or structural
+// interface. Marker base with no own required members; refined by RotaryPort and
+// LinearPort. Refines MechanicalPort, so it inherits the frame/direction chain and
+// the optional max_load/max_torque ratings.
+trait MotivePort : MechanicalPort {}
+
+// Rotary shaft port — delivers torque about an axis with a speed limit.
+//   max_speed  : AngularVelocity — maximum continuous rotational speed (rad/s).
+//   max_torque : Torque          — maximum continuous torque (Force·Length/Angle).
+//   axis       : Vector3<Length> — rotation axis (Vector3<Length> per the
+//                constitutive.ri axis convention; the geometry Axis value type is
+//                unconstructible at stdlib scope).
+// `max_torque` (required Torque) re-declares MechanicalPort's optional
+// `max_torque : Option<Torque> = none`; a required member and an optional default
+// of the same name never collide (trait_requirements.rs conflicts only
+// required-vs-required), so the module loads clean. Renames the previously shipped
+// `torque_capacity` to `max_torque` and reparents to MotivePort (PRD §4).
+trait RotaryPort : MotivePort {
     param max_speed : AngularVelocity
+    param max_torque : Torque
+    param axis : Vector3<Length>
+}
+
+// Linear actuator port — delivers thrust along an axis over a finite stroke.
+//   max_speed : Velocity        — maximum continuous linear speed (Velocity alias
+//               = Length/Time; units.ri:91).
+//   max_force : Force           — maximum continuous thrust.
+//   stroke    : Length          — usable travel range.
+//   axis      : Vector3<Length> — travel axis (constitutive.ri convention).
+trait LinearPort : MotivePort {
+    param max_speed : Velocity
+    param max_force : Force
+    param stroke : Length
+    param axis : Vector3<Length>
 }
 
 // ── Parameterised threaded port ───────────────────────────────────────────────
 
-// Threaded fastener port — geometry defined by diameter and pitch.
-// thread_diameter : Length — nominal major diameter of the thread.
-// pitch : Length — thread pitch (distance between adjacent thread crests).
+// Threaded fastener port — carries a full standards-derived ThreadSpec.
+// thread_spec : ThreadSpec — the thread system, driving dimensions (major Ø +
+// pitch), tolerance class, handedness, and the derived minor/pitch/tap-drill/
+// clearance diameters (see ThreadSpec above). Replaces the previous raw
+// thread_diameter/pitch Length pair (PRD §4 decision 6).
 trait ThreadedPort : MechanicalPort {
-    param thread_diameter : Length
-    param pitch : Length
+    param thread_spec : ThreadSpec
+}
+
+// ── Guide ports (kinematic guides) ──────────────────────────────────────────────
+
+// Base trait for kinematic-guide ports — interfaces that constrain relative
+// motion to a fixed number of degrees of freedom (linear rails, rotary bearings).
+//   degrees_of_freedom : Int — count of permitted relative DOFs. The concrete
+//   guide sub-traits pin this to their kinematic invariant via a trait-level
+//   `constraint` (see LinearGuidePort / RotaryGuidePort), so every conformer is
+//   REQUIRED to declare it.
+trait GuidePort : MechanicalPort {
+    param degrees_of_freedom : Int
+}
+
+// Prismatic (linear) guide — permits exactly one translational DOF along the rail.
+//
+// The `degrees_of_freedom == 1` trait constraint makes any conformer whose
+// degrees_of_freedom != 1 a constraint violation at check() time (the prismatic
+// invariant — verified behaviourally in
+// reify-eval/tests/ports_mechanical_thread_eval.rs). Adds no own params beyond the
+// inherited degrees_of_freedom.
+trait LinearGuidePort : GuidePort {
+    constraint degrees_of_freedom == 1
+}
+
+// Revolute (rotary) guide — permits exactly one rotational DOF about the bearing
+// axis, with radial/axial load ratings.
+//
+// Carries the same `degrees_of_freedom == 1` invariant (a conformer with
+// degrees_of_freedom != 1 is a constraint violation). The two ratings bound the
+// load the bearing can carry:
+//   max_radial_load : Force — maximum continuous radial (perpendicular) load.
+//   max_axial_load  : Force — maximum continuous axial (thrust) load.
+trait RotaryGuidePort : GuidePort {
+    constraint degrees_of_freedom == 1
+    param max_radial_load : Force
+    param max_axial_load : Force
 }
