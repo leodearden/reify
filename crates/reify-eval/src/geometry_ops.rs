@@ -364,6 +364,48 @@ pub(crate) fn decode_plane(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3
     Ok((origin_arr, unit_normal))
 }
 
+/// Decode a [`Value::Axis`] into `(origin, unit_direction)` — a pair of SI
+/// metre triples returned as `([f64; 3], [f64; 3])`.
+///
+/// The direction vector is normalized to unit length.  Non-unit directions are
+/// accepted and normalized silently.  Zero-magnitude directions are rejected.
+///
+/// # Returns
+/// - `Ok((origin, unit_direction))` — origin in metres, direction a
+///   dimensionless unit vector.
+/// - `Err(message)` — for any of:
+///   - wrong value variant (not `Value::Axis`), including `Value::Undef`;
+///   - origin or direction with non-numeric / non-finite components;
+///   - zero-magnitude direction.
+///
+/// Reuses the private helpers [`point3_components`] and [`unit_vector3`] from
+/// [`decode_plane`] — the single canonical decode surface for Axis values
+/// (task η, design decision A).
+///
+/// # Visibility
+/// `pub(crate)` — widened to `pub` only when a cross-crate consumer lands
+/// (task 3465, design open).
+pub(crate) fn decode_axis(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3]), String> {
+    let (origin_val, dir_val) = match value {
+        reify_ir::Value::Axis { origin, direction } => (origin.as_ref(), direction.as_ref()),
+        other => {
+            return Err(format!(
+                "expected an Axis value, got {}",
+                other
+            ));
+        }
+    };
+    let origin_arr = point3_components(origin_val).ok_or_else(|| {
+        "Axis origin is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let dir_raw = point3_components(dir_val).ok_or_else(|| {
+        "Axis direction is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let unit_dir = unit_vector3(dir_raw)
+        .map_err(|e| format!("Axis has a degenerate direction: {e}"))?;
+    Ok((origin_arr, unit_dir))
+}
+
 /// Translate a compiled geometry operation into a runtime `GeometryOp` by
 /// evaluating its argument expressions against the current value environment.
 ///
