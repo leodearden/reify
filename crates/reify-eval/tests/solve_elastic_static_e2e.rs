@@ -788,3 +788,137 @@ fn e2e_cantilever_b1_b2_displacement_stress_fields() {
         max_von_mises
     );
 }
+
+// ── step-11: deterministic ElasticOptions accepted end-to-end (task 2926) ──────
+//
+// Compiles + evals an inline `.ri` calling `solve_elastic_static(...)` with
+// `ElasticOptions(deterministic: true)` on the L=1m, b=h=0.1m, P=1000N cantilever
+// (same material/geometry as the smoke fixture). Proves the new `deterministic`
+// ElasticOptions field flows through compile → ComputeNode → trampoline cleanly.
+//
+// Achievability basis: the cantilever mesh (nz=6, nx=60 ⇒ ~854 nodes ⇒ 2562
+// DOFs < PARALLEL_DOF_THRESHOLD=10_000) resolves to Deterministic even with
+// deterministic:true, so the σ_max band is the SAME validated computation as
+// `e2e_cantilever_max_von_mises_within_tolerance`.
+//
+// On a fresh checkout (no `deterministic` field on ElasticOptions) compiling the
+// `.ri` would emit an unknown-ctor-param Error; GREENed by steps 4 + 10.
+
+/// Inline cantilever source opting into deterministic execution via
+/// `ElasticOptions(deterministic: true)`. Mirrors the smoke fixture's
+/// material/geometry/loads/supports plus the ConstitutiveLawInput / LoadCase
+/// coercion workarounds (see `examples/fea_cantilever_smoke.ri`).
+const CANTILEVER_DETERMINISTIC_SRC: &str = r#"
+structure FeaCantileverDeterministic {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+    let lc = LoadCase(name: "cantilever", loads: [tip_load], supports: [mount])
+    let ci = ConstitutiveLawInput(law: material)
+
+    let result = solve_elastic_static(
+        ci.law, length, width, height, lc.loads, lc.supports,
+        ElasticOptions(deterministic: true)
+    )
+}
+"#;
+
+/// Cantilever solved with `ElasticOptions(deterministic: true)`: clean compile,
+/// ComputeNode lowering, converged solve, and σ_max within ±50% of 6 MPa.
+#[test]
+fn e2e_cantilever_deterministic_option_within_tolerance() {
+    let compiled = parse_and_compile_with_stdlib(CANTILEVER_DETERMINISTIC_SRC);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    let eval_result = engine.eval(&compiled);
+
+    // ── (a) No Error-severity diagnostics — proves `deterministic:` is an
+    //     accepted ElasticOptions field end-to-end (compile + eval). ───────────
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics with ElasticOptions(deterministic: true), got: {:?}",
+        errors
+    );
+
+    // ── (b) A ComputeNode with target == "solver::elastic_static" must exist. ──
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let has_compute_node = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .any(|(_, data)| data.target == "solver::elastic_static");
+    assert!(
+        has_compute_node,
+        "expected a ComputeNode with target==\"solver::elastic_static\" in the graph"
+    );
+
+    // ── (c) converged == true AND max_von_mises ∈ [3e6, 9e6] Pa. ───────────────
+    //
+    // deterministic:true keeps the same Deterministic solve (mesh < 10K DOFs),
+    // so the validated ±50%-of-6 MPa band still holds.
+    let result_cell = ValueCellId::new("FeaCantileverDeterministic", "result");
+    let result_val = eval_result.values.get(&result_cell).unwrap_or_else(|| {
+        panic!("cell FeaCantileverDeterministic.result not found in eval result")
+    });
+
+    let converged = extract_field(result_val, "converged")
+        .unwrap_or_else(|| panic!("could not extract 'converged' from result: {:?}", result_val));
+    assert_eq!(
+        converged,
+        Value::Bool(true),
+        "expected result.converged == Bool(true) under deterministic solve, got: {:?}",
+        converged
+    );
+
+    let mvm = extract_max_von_mises(result_val).unwrap_or_else(|| {
+        panic!("could not extract max_von_mises from result: {:?}", result_val)
+    });
+    let si_value = match &mvm {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::PRESSURE,
+                "expected max_von_mises dimension == PRESSURE, got: {:?}",
+                dimension
+            );
+            *si_value
+        }
+        other => panic!("expected max_von_mises to be Value::Scalar, got: {:?}", other),
+    };
+
+    // Analytical σ_max = 6PL/(bh²) = 6e6 Pa; ±50% band = [3e6, 9e6].
+    let analytical_sigma: f64 = 6.0 * 1000.0 * 1.0 / (0.1 * 0.1 * 0.1);
+    let lo = analytical_sigma * 0.5;
+    let hi = analytical_sigma * 1.5;
+    assert!(
+        si_value.is_finite() && si_value > 0.0,
+        "max_von_mises must be positive finite, got: {}",
+        si_value
+    );
+    assert!(
+        si_value >= lo && si_value <= hi,
+        "max_von_mises = {:.3e} Pa outside ±50% of analytical {:.3e} Pa (expected [{:.3e}, {:.3e}])",
+        si_value,
+        analytical_sigma,
+        lo,
+        hi
+    );
+}
