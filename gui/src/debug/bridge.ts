@@ -783,6 +783,19 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       return { ok: true, from, to };
     },
 
+    focus_element: (params) => {
+      const testId = params.testId as string;
+      if (!testId) return { error: 'testId is required' };
+      // CSS.escape fallback for jsdom — mirrors buildSelectorPredicate (:175-177).
+      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(testId)
+        : testId.replace(/["\\]/g, '\\$&');
+      const el = document.querySelector(`[data-testid="${escaped}"]`);
+      if (!el) return { error: `element with data-testid="${testId}" not found` };
+      (el as HTMLElement).focus();
+      return { ok: true };
+    },
+
     select_entity: (params) => {
       const entityPath = (params.entityPath as string) ?? null;
       ctx.stores.selection.selectEntity(entityPath);
