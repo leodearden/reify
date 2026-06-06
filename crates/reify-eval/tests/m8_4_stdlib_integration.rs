@@ -712,6 +712,64 @@ fn linalg_4x4_determinant() {
     }
 }
 
+// ── step-7: linalg_complex_eigenvalues_rotation ──────────────────────────────
+
+/// Asserts LinalgDemo.ceig = complex_eigenvalues(rot2) is a Value::List of 2
+/// Value::Complex items, containing {0+1i, 0−1i} by set-membership (tol 1e-9).
+/// rot2 = [[0,-1],[1,0]] (90° rotation); char poly λ²+1=0 → eigenvalues ±i.
+/// Set-membership is used rather than positional check to be robust to
+/// builtin's (re,im) sort order.
+#[test]
+fn linalg_complex_eigenvalues_rotation() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let ceig_id = ValueCellId::new("LinalgDemo", "ceig");
+    let ceig_val = result
+        .values
+        .get(&ceig_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.ceig not found in eval result"));
+
+    match ceig_val {
+        Value::List(items) => {
+            assert_eq!(
+                items.len(),
+                2,
+                "ceig should have 2 entries, got {}",
+                items.len()
+            );
+
+            // Extract (re, im) pairs from each Complex item.
+            let pairs: Vec<(f64, f64)> = items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| match item {
+                    Value::Complex { re, im, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::DIMENSIONLESS,
+                            "ceig[{i}].dimension should be DIMENSIONLESS, got {dimension:?}"
+                        );
+                        (*re, *im)
+                    }
+                    other => panic!("ceig[{i}] should be Value::Complex, got {other:?}"),
+                })
+                .collect();
+
+            // Check by set-membership: {0+1i} and {0-1i} must both appear.
+            let has_plus_i = pairs
+                .iter()
+                .any(|(re, im)| re.abs() < 1e-9 && (im - 1.0).abs() < 1e-9);
+            let has_minus_i = pairs
+                .iter()
+                .any(|(re, im)| re.abs() < 1e-9 && (im + 1.0).abs() < 1e-9);
+
+            assert!(has_plus_i, "ceig should contain 0+1i, got {pairs:?}");
+            assert!(has_minus_i, "ceig should contain 0-1i, got {pairs:?}");
+        }
+        other => panic!("LinalgDemo.ceig should be Value::List, got {other:?}"),
+    }
+}
+
 // ── step-5: linalg_4x4_symmetric_eigenvalues ─────────────────────────────────
 
 /// Asserts LinalgDemo.eig4 = eigenvalues(sym4) has exactly 4 entries,
