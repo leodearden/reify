@@ -16347,4 +16347,140 @@ mod tests {
             "zero-magnitude normal must be rejected by decode_plane (never pass through as [0,0,0])"
         );
     }
+
+    // ── decode_axis unit tests (task η, step-3) ─────────────────────────────
+
+    /// Helper: build a Value::Point with three LENGTH-dimensioned components
+    /// (metres), as produced by point3() in the stdlib.
+    fn make_point3_length_val(x: f64, y: f64, z: f64) -> reify_ir::Value {
+        reify_ir::Value::Point(vec![
+            reify_ir::Value::length(x),
+            reify_ir::Value::length(y),
+            reify_ir::Value::length(z),
+        ])
+    }
+
+    /// True producer→decode round-trip for axis_z with origin at (0,0,0).
+    /// decode_axis must return origin=[0,0,0] and direction=[0,0,1].
+    #[test]
+    fn decode_axis_producer_round_trip_axis_z_origin() {
+        let origin = make_point3_length_val(0.0, 0.0, 0.0);
+        let val = reify_stdlib::eval_builtin("axis_z", std::slice::from_ref(&origin));
+        let (got_origin, got_dir) = decode_axis(&val).expect("axis_z should decode cleanly");
+        assert!((got_origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", got_origin[0]);
+        assert!((got_origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", got_origin[1]);
+        assert!((got_origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", got_origin[2]);
+        assert!((got_dir[0] - 0.0).abs() < 1e-12, "dx must be 0.0, got {}", got_dir[0]);
+        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy must be 0.0, got {}", got_dir[1]);
+        assert!((got_dir[2] - 1.0).abs() < 1e-12, "dz must be 1.0, got {}", got_dir[2]);
+    }
+
+    /// axis_x round-trip: direction=[1,0,0], origin passes through in SI metres.
+    #[test]
+    fn decode_axis_producer_round_trip_axis_x_with_offset_origin() {
+        // 1mm=0.001m, 2mm=0.002m, 3mm=0.003m
+        let origin = make_point3_length_val(0.001, 0.002, 0.003);
+        let val = reify_stdlib::eval_builtin("axis_x", std::slice::from_ref(&origin));
+        let (got_origin, got_dir) = decode_axis(&val).expect("axis_x with offset origin should decode");
+        assert!((got_origin[0] - 0.001).abs() < 1e-12, "ox must be 0.001, got {}", got_origin[0]);
+        assert!((got_origin[1] - 0.002).abs() < 1e-12, "oy must be 0.002, got {}", got_origin[1]);
+        assert!((got_origin[2] - 0.003).abs() < 1e-12, "oz must be 0.003, got {}", got_origin[2]);
+        assert!((got_dir[0] - 1.0).abs() < 1e-12, "dx must be 1.0, got {}", got_dir[0]);
+        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy must be 0.0, got {}", got_dir[1]);
+        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz must be 0.0, got {}", got_dir[2]);
+    }
+
+    /// axis_y round-trip: direction=[0,1,0].
+    #[test]
+    fn decode_axis_producer_round_trip_axis_y() {
+        let origin = make_point3_length_val(0.0, 0.0, 0.0);
+        let val = reify_stdlib::eval_builtin("axis_y", std::slice::from_ref(&origin));
+        let (got_origin, got_dir) = decode_axis(&val).expect("axis_y should decode cleanly");
+        assert!((got_dir[0] - 0.0).abs() < 1e-12, "dx must be 0.0, got {}", got_dir[0]);
+        assert!((got_dir[1] - 1.0).abs() < 1e-12, "dy must be 1.0, got {}", got_dir[1]);
+        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz must be 0.0, got {}", got_dir[2]);
+        // origin must be [0,0,0]
+        assert!((got_origin[0] - 0.0).abs() < 1e-12, "ox");
+        assert!((got_origin[1] - 0.0).abs() < 1e-12, "oy");
+        assert!((got_origin[2] - 0.0).abs() < 1e-12, "oz");
+    }
+
+    /// A non-unit direction (magnitude 2) must be normalized to unit length.
+    #[test]
+    fn decode_axis_normalizes_non_unit_direction() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let non_unit_dir = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(2.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+        ]);
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(non_unit_dir),
+        };
+        let (_, got_dir) =
+            decode_axis(&axis).expect("non-unit direction [2,0,0] should normalize without error");
+        assert!((got_dir[0] - 1.0).abs() < 1e-12, "dx must be 1.0 after normalization, got {}", got_dir[0]);
+        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy");
+        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz");
+    }
+
+    /// Value::Plane must be rejected by decode_axis — wrong variant.
+    #[test]
+    fn decode_axis_rejects_plane_value() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let normal = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(1.0),
+        ]);
+        let plane = reify_ir::Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(normal),
+        };
+        assert!(
+            decode_axis(&plane).is_err(),
+            "Value::Plane must be rejected by decode_axis (wrong variant)"
+        );
+    }
+
+    /// Value::Undef must be rejected by decode_axis.
+    #[test]
+    fn decode_axis_rejects_undef() {
+        assert!(
+            decode_axis(&reify_ir::Value::Undef).is_err(),
+            "Value::Undef must be rejected by decode_axis"
+        );
+    }
+
+    /// An Axis with a zero-magnitude direction must be rejected.
+    #[test]
+    fn decode_axis_rejects_zero_magnitude_direction() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let zero_dir = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+        ]);
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(zero_dir),
+        };
+        assert!(
+            decode_axis(&axis).is_err(),
+            "zero-magnitude direction must be rejected by decode_axis"
+        );
+    }
 }
