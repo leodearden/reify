@@ -19,4 +19,17 @@ structure def Demo {
 
     // Arithmetic hole: 1+1 → 2.
     let arith = "x={1+1}"
+
+    // Escaped braces: `{{`/`}}` collapse to literal single braces (no hole).
+    // "{{braces}}" → "{braces}".
+    let escaped = "{{braces}}"
+
+    // Undef-totality (PRD §6.3): a let binding of auto(free) stays Value::Undef
+    // at eval time (the solver has no objective to constrain it).
+    // __interp_render maps Undef → literal "undef", so the cell becomes a
+    // determinate Value::String("gap is undef") rather than poisoning to Undef.
+    // NOTE: `let ... = auto(free)` (not a param) exits 0 — strict auto params
+    // without an objective emit an error and exit non-zero (see task-4132).
+    let gap : Length = auto(free)
+    let undef_demo = "gap is {gap}"
 }
