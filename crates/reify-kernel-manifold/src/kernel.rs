@@ -37,7 +37,7 @@
 use std::collections::HashMap;
 
 use manifold3d::Manifold;
-use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value};
+use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value, write_stl_binary};
 
 /// Error message used by the v0.2 stub paths (`query`/`export`) that
 /// have not yet been wired to real FFI. Boolean ops (`Union`,
@@ -579,11 +579,21 @@ impl GeometryKernel for ManifoldKernel {
 
     fn export(
         &self,
-        _handle: GeometryHandleId,
-        _format: ExportFormat,
-        _writer: &mut dyn std::io::Write,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        Err(ExportError::FormatError(STUB_MSG.into()))
+        match format {
+            ExportFormat::Stl => {
+                // Manifold tessellate ignores tolerance (exact meshes); pass 0.0.
+                let mesh = self
+                    .tessellate(handle, 0.0)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                write_stl_binary(&mesh, writer)
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            _ => Err(ExportError::FormatError(STUB_MSG.into())),
+        }
     }
 
     /// Materialise the stored [`Manifold`] as a `reify_types::Mesh`.
