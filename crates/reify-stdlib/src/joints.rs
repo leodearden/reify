@@ -1347,6 +1347,90 @@ pub(crate) fn is_joint_value(v: &Value) -> bool {
     }
 }
 
+/// The subset of [`JOINT_KINDS`] that have a single free motion variable
+/// (a drive DOF) and may therefore appear in `bind`, `dim`, `sweep`, and
+/// `sweep_grid`.
+///
+/// = `JOINT_KINDS` minus `{"coupling", "fixed"}`:
+/// - **prismatic** — translates along an axis (LENGTH DOF)
+/// - **revolute** — rotates about an axis (ANGLE DOF)
+/// - **cylindrical** — translates + rotates about the same axis (2-DOF,
+///   currently rejected by `driving_joint_kind` for single-driver sweeps)
+/// - **planar** — translates in a plane + rotates about its normal (3-DOF,
+///   same limitation)
+/// - **spherical** — rotates about any axis through the origin (3-DOF,
+///   same limitation)
+///
+/// Coupling and fixed joints are **non-driving**: coupling's motion is
+/// derived from a parent joint's DOF (it has no independent free variable)
+/// and fixed has zero DOF.  Passing either to `bind`/`dim`/`sweep` is an
+/// error surfaced as `E_MECHANISM_NONDRIVING_JOINT`.
+///
+/// Tied to [`JOINT_KINDS`] via slice membership — a future kind addition
+/// only needs to be made in the constant; `is_driving_joint` follows.
+/// The drift-guard unit test `driving_joint_kinds_is_subset_of_joint_kinds_and_complement_is_coupling_and_fixed`
+/// asserts `DRIVING_JOINT_KINDS ⊆ JOINT_KINDS` and that the complement
+/// is exactly `{coupling, fixed}`.
+pub(crate) const DRIVING_JOINT_KINDS: &[&str] =
+    &["prismatic", "revolute", "cylindrical", "planar", "spherical"];
+
+/// Returns `true` when `v` is a `Value::Map` whose `kind` field is one of
+/// the strings in [`DRIVING_JOINT_KINDS`].
+///
+/// Used by `snapshot::eval_snapshot` (`bind` arm) and
+/// `sweep::eval_sweep` (`dim` / `sweep` / `sweep_grid` arms) to reject
+/// coupling and fixed joints before constructing a binding or sweep-dim Map.
+///
+/// Tied to [`DRIVING_JOINT_KINDS`] via `contains` so a future kind addition
+/// only needs to be made in the constant — the predicate follows automatically.
+pub(crate) fn is_driving_joint(v: &Value) -> bool {
+    match v {
+        Value::Map(m) => matches!(
+            m.get(&Value::String("kind".to_string())),
+            Some(Value::String(s)) if DRIVING_JOINT_KINDS.contains(&s.as_str())
+        ),
+        _ => false,
+    }
+}
+
+/// Discriminator string embedded in the error Map returned by
+/// [`make_nondriving_joint_error`].  Matched by the `detect_nondriving_joint_errors`
+/// detector in `engine_eval.rs` to emit `E_MECHANISM_NONDRIVING_JOINT`.
+pub(crate) const NONDRIVING_JOINT_ERROR: &str = "nondriving_joint";
+
+/// Build an error `Value::Map` for a non-driving joint passed to
+/// `bind`, `dim`, `sweep`, or `sweep_grid`.
+///
+/// Layout (alphabetical `BTreeMap` key order):
+/// - `"error"` → `"nondriving_joint"` (the `detect_nondriving_joint_errors`
+///   discriminator)
+/// - `"error_message"` → a human-readable description listing which joint
+///   kinds are driving and noting that coupling/fixed have no free motion
+///   variable
+/// - `"joint"` → the offending joint Value (for structural dedup in the
+///   detector: two structurally-equal joints → one diagnostic)
+///
+/// Mirrors `make_duplicate_solid_error` in `mechanism.rs` (the
+/// error/error_message Map-decoration pattern from task 4308).
+pub(crate) fn make_nondriving_joint_error(joint: Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("error".to_string()),
+        Value::String(NONDRIVING_JOINT_ERROR.to_string()),
+    );
+    m.insert(
+        Value::String("error_message".to_string()),
+        Value::String(
+            "non-driving joint passed to bind/dim/sweep: coupling and fixed joints \
+             have no free motion variable; use a driving joint (prismatic, revolute, \
+             cylindrical, planar, or spherical)"
+                .to_string(),
+        ),
+    );
+    m.insert(Value::String("joint".to_string()), joint);
+    Value::Map(m)
+}
+
 /// Build a coupling `Value::Map` with the four-key layout:
 /// `"kind"`, `"offset"`, `"parent"`, `"ratio"`.
 ///
