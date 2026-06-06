@@ -427,6 +427,39 @@ fn deterministic_displacement_bit_stable_across_repeats_and_thread_counts() {
     }
 }
 
+// ─── step-5 RED ──────────────────────────────────────────────────────────────
+
+/// Tolerance-equivalent displacement and von Mises across 3 repeated runs in
+/// default / parallel mode at fixed threads=4.
+///
+/// `resolve_execution_modes(false, 4, ndof)` → `Parallel{4}` (ndof ≥ 10 000),
+/// so the parallel SpMV/dot path engages. Three independent runs (separate
+/// calls to `solve_box_cantilever`) produce the same physical answer up to
+/// floating-point round-off from non-deterministic reduction order. The
+/// `EQUIV_TOL = 1e-3` bound provides ≥ 2 orders headroom over the expected
+/// difference ≲ cond(K)·cg_tol ~ 1e-6.
+///
+/// Iteration count equality is NOT asserted — in parallel mode round-off can
+/// shift the convergence step across runs (within a few iterations).
+///
+/// Note: `assert_tolerance_equivalent` is not yet defined — this test fails
+/// to compile (RED).
+#[test]
+fn default_parallel_tolerance_equivalent_across_repeated_runs() {
+    // Three repeated runs at fixed threads=4 in parallel mode.
+    let run1 = solve_box_cantilever(false, 4);
+    let run2 = solve_box_cantilever(false, 4);
+    let run3 = solve_box_cantilever(false, 4);
+
+    assert!(run1.converged, "parallel t=4 run1 did not converge (iter={})", run1.iterations);
+    assert!(run2.converged, "parallel t=4 run2 did not converge (iter={})", run2.iterations);
+    assert!(run3.converged, "parallel t=4 run3 did not converge (iter={})", run3.iterations);
+
+    // Tolerance-equivalence (missing helper → RED).
+    assert_tolerance_equivalent(&run1, &run2, "run2_vs_run1");
+    assert_tolerance_equivalent(&run1, &run3, "run3_vs_run1");
+}
+
 // ─── step-3 RED ──────────────────────────────────────────────────────────────
 
 /// Byte-identical recovered stress field and max von Mises across thread counts
