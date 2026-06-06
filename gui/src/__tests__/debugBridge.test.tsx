@@ -12,6 +12,13 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: vi.fn(),
+  // LogicalSize class whose instances carry { width, height } — used by set_window_size handler.
+  LogicalSize: class LogicalSize {
+    constructor(w: number, h: number) { (this as any).width = w; (this as any).height = h; }
+  },
+}));
 vi.mock('three', () => ({
   Box3: class { expandByObject() {} isEmpty() { return true; } },
   Vector3: class {},
@@ -22,6 +29,7 @@ vi.mock('html-to-image', () => ({
 
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { toPng } from 'html-to-image';
 import { initDebugBridge } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
@@ -83,6 +91,11 @@ function makeStores(selectedEntities: string[] = [], anchorEntity: string | null
         propertyHeight: 200,
         constraintHeight: 140,
       },
+      setEditorWidth: vi.fn(),
+      setSideWidth: vi.fn(),
+      setDesignTreeHeight: vi.fn(),
+      setPropertyHeight: vi.fn(),
+      setConstraintHeight: vi.fn(),
     },
   };
 }
@@ -2316,5 +2329,392 @@ describe('debug bridge tab_order', () => {
     for (let i = 1; i < indices.length; i++) {
       expect(indices[i]).toBeGreaterThan(indices[i - 1]);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge resize_panes (step-1 RED → step-2 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge resize_panes', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(stores: ReturnType<typeof makeStores>, id: number, params: Record<string, unknown>) {
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command: 'resize_panes', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) single dimension: editorWidth calls setEditorWidth with value and returns { ok:true }', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7000, { editorWidth: 450 });
+    expect(result.ok).toBe(true);
+    expect(stores.layout.setEditorWidth).toHaveBeenCalledWith(450);
+    expect(stores.layout.setSideWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setDesignTreeHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+  });
+
+  it('(b) multi-dimension call invokes exactly those setters', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7001, { sideWidth: 380, designTreeHeight: 220 });
+    expect(result.ok).toBe(true);
+    expect(stores.layout.setSideWidth).toHaveBeenCalledWith(380);
+    expect(stores.layout.setDesignTreeHeight).toHaveBeenCalledWith(220);
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+  });
+
+  it('(c) non-number value for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7002, { editorWidth: 'bad' });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(c) negative value for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7003, { editorWidth: -1 });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(c) NaN for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7004, { editorWidth: NaN });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(c) Infinity for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7005, { editorWidth: Infinity });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(d) empty params {} returns an error', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7006, {});
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setSideWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setDesignTreeHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+  });
+
+  it('(e) returned layout snapshot has all 5 pane dimension keys with current store values', async () => {
+    // Regression: resize_panes returns { ok, layout: {...ctx.stores.layout.state} }.
+    // This test locks in the returned layout snapshot contract so a regression that
+    // removes or reshapes the field is caught. The setter is mocked (vi.fn()) so the
+    // state does not change; the snapshot reflects the initial makeStores() values.
+    const stores = makeStores();
+    const result = await dispatch(stores, 7007, { editorWidth: 450 });
+    expect(result.ok).toBe(true);
+    // layout snapshot must exist and carry all 5 dimension keys.
+    expect(result.layout).toBeDefined();
+    expect(result.layout).toHaveProperty('editorWidth');
+    expect(result.layout).toHaveProperty('sideWidth');
+    expect(result.layout).toHaveProperty('designTreeHeight');
+    expect(result.layout).toHaveProperty('propertyHeight');
+    expect(result.layout).toHaveProperty('constraintHeight');
+    // Values reflect the initial makeStores() state (setter is mocked, state unchanged).
+    expect(result.layout).toEqual({
+      editorWidth: 300,
+      sideWidth: 300,
+      designTreeHeight: 160,
+      propertyHeight: 200,
+      constraintHeight: 140,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge set_window_size (step-3 RED → step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge set_window_size', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let setSizeSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    setSizeSpy = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(getCurrentWindow).mockReturnValue({ setSize: setSizeSpy } as any);
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(id: number, params: Record<string, unknown>) {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command: 'set_window_size', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) valid dimensions call setSize once and return { ok:true, width, height }', async () => {
+    const result = await dispatch(8000, { width: 1024, height: 768 });
+    expect(result).toEqual({ ok: true, width: 1024, height: 768 });
+    expect(setSizeSpy).toHaveBeenCalledTimes(1);
+    expect(setSizeSpy.mock.calls[0][0]).toMatchObject({ width: 1024, height: 768 });
+  });
+
+  it('(b) non-number width returns error, setSize not called', async () => {
+    const result = await dispatch(8001, { width: 'bad', height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) width === 0 returns error', async () => {
+    const result = await dispatch(8002, { width: 0, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) negative width returns error', async () => {
+    const result = await dispatch(8003, { width: -100, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) NaN width returns error', async () => {
+    const result = await dispatch(8004, { width: NaN, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) Infinity width returns error', async () => {
+    const result = await dispatch(8005, { width: Infinity, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) non-number height returns error', async () => {
+    const result = await dispatch(8006, { width: 1024, height: 'bad' });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) height === 0 returns error', async () => {
+    const result = await dispatch(8007, { width: 1024, height: 0 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) NaN height returns error', async () => {
+    const result = await dispatch(8008, { width: 1024, height: NaN });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) Infinity height returns error', async () => {
+    const result = await dispatch(8009, { width: 1024, height: Infinity });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge tree-node expand/collapse (step-5 RED → step-6 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge tree-node expand/collapse', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+  });
+
+  async function dispatch(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  /** Inject a chevron button that toggles the design-panel expandedSet on click. */
+  function setupDesignPanel(path: string, initialExpanded = false) {
+    const expandedSet = new Set<string>();
+    if (initialExpanded) expandedSet.add(path);
+    const btn = document.createElement('button');
+    btn.setAttribute('data-testid', `chevron-${path}`);
+    btn.addEventListener('click', () => {
+      if (expandedSet.has(path)) expandedSet.delete(path);
+      else expandedSet.add(path);
+    });
+    document.body.appendChild(btn);
+    window.__REIFY_DEBUG__!.designTree = { expanded: () => expandedSet };
+    return { expandedSet, btn };
+  }
+
+  /** Inject a constraint-row button that toggles the constraint-panel expandedSet on click. */
+  function setupConstraintPanel(path: string, initialExpanded = false) {
+    const expandedSet = new Set<string>();
+    if (initialExpanded) expandedSet.add(path);
+    const btn = document.createElement('button');
+    btn.setAttribute('data-testid', `constraint-row-${path}`);
+    btn.addEventListener('click', () => {
+      if (expandedSet.has(path)) expandedSet.delete(path);
+      else expandedSet.add(path);
+    });
+    document.body.appendChild(btn);
+    window.__REIFY_DEBUG__!.constraintPanel = { expandedNodes: () => expandedSet };
+    return { expandedSet, btn };
+  }
+
+  it('(a) expand_tree_node: node NOT expanded → clicks chevron once, returns { ok:true, path, expanded:true }', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', false);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9000, 'expand_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.path).toBe('Bracket.body');
+    expect(result.expanded).toBe(true);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) expand_tree_node idempotent: node already expanded → NO click, returns expanded:true', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', true);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9001, 'expand_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(true);
+    expect(clickSpy).not.toHaveBeenCalled();
+  });
+
+  it('(c) collapse_tree_node: node expanded → clicks once, returns expanded:false', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', true);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9002, 'collapse_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(false);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('(d) collapse_tree_node idempotent: not expanded → NO click, returns expanded:false', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', false);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9003, 'collapse_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(false);
+    expect(clickSpy).not.toHaveBeenCalled();
+  });
+
+  it('(e) expand_tree_node: missing path returns { error }', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    setupDesignPanel('Bracket.body', false);
+
+    const result = await dispatch(9004, 'expand_tree_node', {});
+    expect(result).toHaveProperty('error');
+  });
+
+  it('(f) expand_tree_node: control element absent returns { error } with path in message', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    // Register accessor but do NOT inject a button
+    const expandedSet = new Set<string>();
+    window.__REIFY_DEBUG__!.designTree = { expanded: () => expandedSet };
+
+    const result = await dispatch(9005, 'expand_tree_node', { path: 'Missing.node' });
+    expect(result).toHaveProperty('error');
+    expect(result.error).toContain('Missing.node');
+  });
+
+  it('(g) panel:constraint drives constraint-row testid and reads constraintPanel.expandedNodes', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupConstraintPanel('constraint-1', false);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9006, 'expand_tree_node', { path: 'constraint-1', panel: 'constraint' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(true);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('(h) designTree panel not registered returns { error }', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    // designTree not registered on ctx (default state after initDebugBridge)
+
+    const result = await dispatch(9007, 'expand_tree_node', { path: 'Bracket.body' });
+    expect(result).toHaveProperty('error');
+  });
+
+  it('(i) invalid panel value returns { error } mentioning the unknown panel name', async () => {
+    // Locks in the panel validation branch: unknown panel values (anything other than
+    // 'design' or 'constraint') return an error that names the bad value.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    setupDesignPanel('Bracket.body', false);
+
+    const result = await dispatch(9008, 'expand_tree_node', { path: 'Bracket.body', panel: 'foo' });
+    expect(result).toHaveProperty('error');
+    expect(result.error).toContain('foo');
+    expect(result.error).toContain('design');
+    expect(result.error).toContain('constraint');
   });
 });

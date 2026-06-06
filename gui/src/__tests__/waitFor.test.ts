@@ -80,6 +80,11 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
         propertyHeight: 200,
         constraintHeight: 140,
       },
+      setEditorWidth: vi.fn(),
+      setSideWidth: vi.fn(),
+      setDesignTreeHeight: vi.fn(),
+      setPropertyHeight: vi.fn(),
+      setConstraintHeight: vi.fn(),
     },
   };
 }

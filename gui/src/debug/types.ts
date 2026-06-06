@@ -52,7 +52,7 @@ export interface DebugStores {
     };
   };
   viewState: ViewStateStore;
-  /** Pane/splitter dimensions (read-only for L0; C2/resize_panes will add setters). */
+  /** Pane/splitter dimensions. C2/resize_panes owns these setters (breadcrumb from L0). */
   layout: {
     state: {
       editorWidth: number;
@@ -61,6 +61,12 @@ export interface DebugStores {
       propertyHeight: number;
       constraintHeight: number;
     };
+    /** Accept a plain value or a functional updater, matching the layoutStore setter signature. */
+    setEditorWidth: (v: number | ((prev: number) => number)) => void;
+    setSideWidth: (v: number | ((prev: number) => number)) => void;
+    setDesignTreeHeight: (v: number | ((prev: number) => number)) => void;
+    setPropertyHeight: (v: number | ((prev: number) => number)) => void;
+    setConstraintHeight: (v: number | ((prev: number) => number)) => void;
   };
 }
 

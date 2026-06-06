@@ -3,6 +3,7 @@
 
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import type { DebugStores, DebugViewport, ReifyDebugContext } from './types';
 import { convertRawGuiState } from '../types';
 import type { RawGuiState, DiagnosticInfo } from '../types';
@@ -219,6 +220,61 @@ function describeActive(el: HTMLElement) {
 }
 
 function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
+  /**
+   * C2 tree-node driver — shared between expand_tree_node and collapse_tree_node.
+   * Reads the current expanded state from the registered panel accessor,
+   * clicks the real DOM toggle control if the state needs to change (idempotent),
+   * then re-reads the state post-click for the truthful return value.
+   */
+  function driveTreeNode(params: Record<string, unknown>, wantExpanded: boolean): unknown {
+    const path = params.path as string | undefined;
+    if (!path) return { error: 'path is required' };
+
+    const panelParam = params.panel ?? 'design';
+    if (panelParam !== 'design' && panelParam !== 'constraint') {
+      return { error: `unknown panel '${String(panelParam)}'; expected 'design' or 'constraint'` };
+    }
+
+    let accessor: (() => Set<string>) | undefined;
+    let testid: string;
+
+    if (panelParam === 'design') {
+      if (!ctx.designTree) return { error: 'design tree not registered' };
+      accessor = ctx.designTree.expanded;
+      testid = `chevron-${path}`;
+    } else {
+      if (!ctx.constraintPanel) return { error: 'constraint tree not registered' };
+      accessor = ctx.constraintPanel.expandedNodes;
+      // NOTE: For the constraint panel, clicking `constraint-row-${path}` has a side
+      // effect beyond toggling expansion: the row's onClick also fires
+      // props.onConstraintSelect (a selection update), so calling expand_tree_node or
+      // collapse_tree_node on a constraint node will also change the current selection.
+      // Additionally, the toggle only fires when isExpandable(status) is true for the
+      // node — clicking a non-expandable constraint row performs no expansion change
+      // but still triggers selection. In that scenario the tool returns
+      // { ok:true, expanded:false } regardless of wantExpanded because the accessor
+      // re-read post-click reflects the real signal state. The caller can detect this
+      // no-op case by checking whether expanded === wantExpanded in the response.
+      testid = `constraint-row-${path}`;
+    }
+
+    const expandedNow = accessor().has(path);
+    if (expandedNow !== wantExpanded) {
+      // CSS.escape is not available in jsdom — use the same fallback as buildSelectorPredicate.
+      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(testid)
+        : testid.replace(/["\\]/g, '\\$&');
+      const el = document.querySelector(`[data-testid="${escaped}"]`);
+      if (!el) return { error: `tree node control not found: ${path}` };
+      (el as HTMLElement).click();
+    }
+
+    // Re-read post-click — reports the real signal truth, not the pre-click assumption.
+    // For the constraint panel, if the node is non-expandable the click leaves the
+    // accessor state unchanged, so expanded may equal !wantExpanded (a silent no-op).
+    return { ok: true, path, expanded: accessor().has(path) };
+  }
+
   return {
     // --- Read commands (frontend-mediated) ---
 
@@ -860,6 +916,62 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       }
       return { errors, count: errors.length };
     },
+
+    // --- C2: layout-control tools (task-4302) ---
+
+    resize_panes: (params) => {
+      const DIMS = [
+        ['editorWidth',      'setEditorWidth'],
+        ['sideWidth',        'setSideWidth'],
+        ['designTreeHeight', 'setDesignTreeHeight'],
+        ['propertyHeight',   'setPropertyHeight'],
+        ['constraintHeight', 'setConstraintHeight'],
+      ] as const;
+
+      // Validate first pass — reject any invalid value before applying anything.
+      let anyProvided = false;
+      for (const [dim] of DIMS) {
+        const raw = params[dim];
+        if (raw === undefined) continue;
+        anyProvided = true;
+        if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
+          return { error: `${dim} must be a non-negative finite number` };
+        }
+      }
+      if (!anyProvided) return { error: 'no pane dimensions provided' };
+
+      // Apply pass — all values validated.
+      // NOTE: Values are applied as-is without clamping to the interactive splitter
+      // min/max bounds (the App.tsx handleLeftResize/handleRightResize handlers enforce
+      // those bounds during user drag). resize_panes is intentionally unclamped to give
+      // the caller full programmatic control; the caller is responsible for staying in a
+      // valid range. Setting a dimension to 0 is allowed (e.g. to collapse a pane
+      // programmatically) even though the splitter UI prevents this interactively.
+      const layout = ctx.stores.layout;
+      for (const [dim, setter] of DIMS) {
+        const raw = params[dim];
+        if (raw !== undefined) {
+          (layout[setter] as (v: number) => void)(raw as number);
+        }
+      }
+
+      return { ok: true, layout: { ...ctx.stores.layout.state } };
+    },
+
+    set_window_size: async (params) => {
+      const { width, height } = params as { width: unknown; height: unknown };
+      if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0) {
+        return { error: 'width must be a positive finite number' };
+      }
+      if (typeof height !== 'number' || !Number.isFinite(height) || height <= 0) {
+        return { error: 'height must be a positive finite number' };
+      }
+      await getCurrentWindow().setSize(new LogicalSize(width, height));
+      return { ok: true, width, height };
+    },
+
+    expand_tree_node: (params) => driveTreeNode(params, true),
+    collapse_tree_node: (params) => driveTreeNode(params, false),
 
     wait_for_idle: async (params) => {
       const timeoutMs =

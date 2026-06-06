@@ -483,6 +483,75 @@ fn tool_defs() -> Vec<ToolDef> {
                 }
             }),
         },
+        // --- C2 layout-control tools (task-4302) — frontend-mediated ---
+        ToolDef {
+            name: "resize_panes",
+            description: "Resize one or more layout panes by setting their pixel dimensions. \
+                          All five dimensions are optional; omit any to leave them unchanged. \
+                          Accepts non-negative finite numbers. Returns { ok, layout } on success.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "editorWidth":       { "type": "number", "description": "Width of the editor pane in pixels." },
+                    "sideWidth":         { "type": "number", "description": "Width of the side panel in pixels." },
+                    "designTreeHeight":  { "type": "number", "description": "Height of the design tree panel in pixels." },
+                    "propertyHeight":    { "type": "number", "description": "Height of the property panel in pixels." },
+                    "constraintHeight":  { "type": "number", "description": "Height of the constraint panel in pixels." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "set_window_size",
+            description: "Resize the application window to the specified logical-pixel dimensions. \
+                          Both width and height must be positive finite numbers. \
+                          Returns { ok, width, height } on success.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "width":  { "type": "number", "description": "Target window width in logical pixels (must be > 0)." },
+                    "height": { "type": "number", "description": "Target window height in logical pixels (must be > 0)." }
+                },
+                "required": ["width", "height"]
+            }),
+        },
+        ToolDef {
+            name: "expand_tree_node",
+            description: "Expand a node in the design tree or constraint panel by clicking its toggle control. \
+                          Idempotent: if the node is already expanded, no click is dispatched. \
+                          panel defaults to 'design'; pass panel:'constraint' for the constraint panel. \
+                          Returns { ok, path, expanded } where expanded reflects the post-operation state.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path":  { "type": "string", "description": "Entity path or node id to expand." },
+                    "panel": {
+                        "type": "string",
+                        "enum": ["design", "constraint"],
+                        "description": "Which panel's tree to operate on (default: 'design')."
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDef {
+            name: "collapse_tree_node",
+            description: "Collapse a node in the design tree or constraint panel by clicking its toggle control. \
+                          Idempotent: if the node is already collapsed, no click is dispatched. \
+                          panel defaults to 'design'; pass panel:'constraint' for the constraint panel. \
+                          Returns { ok, path, expanded } where expanded reflects the post-operation state.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path":  { "type": "string", "description": "Entity path or node id to collapse." },
+                    "panel": {
+                        "type": "string",
+                        "enum": ["design", "constraint"],
+                        "description": "Which panel's tree to operate on (default: 'design')."
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
     ]
 }
 
@@ -1795,5 +1864,114 @@ mod tests {
     fn debug_endpoint_url_formats_correctly() {
         assert_eq!(debug_endpoint_url(3939), "http://127.0.0.1:3939/mcp");
         assert_eq!(debug_endpoint_url(51000), "http://127.0.0.1:51000/mcp");
+    }
+
+    // task-4302 step-7 RED → step-8 GREEN: C2 layout-control tools must be
+    // registered in tool_defs() with correct schema shapes.
+    #[test]
+    fn tool_defs_registers_layout_control_tools() {
+        let defs = tool_defs();
+
+        // --- resize_panes ---
+        let rp = defs
+            .iter()
+            .find(|t| t.name == "resize_panes")
+            .expect("resize_panes must be present in tool_defs()");
+        assert_eq!(rp.input_schema["type"].as_str(), Some("object"),
+            "resize_panes: input_schema.type must be 'object'");
+        assert!(!rp.description.is_empty(), "resize_panes: description must be non-empty");
+        // All 5 pane properties must be present and typed as number
+        for dim in &["editorWidth", "sideWidth", "designTreeHeight", "propertyHeight", "constraintHeight"] {
+            assert_eq!(
+                rp.input_schema["properties"][dim]["type"].as_str(),
+                Some("number"),
+                "resize_panes: properties.{dim} must be 'number'",
+            );
+        }
+        // None of the pane properties should be required (all optional)
+        if let Some(required) = rp.input_schema["required"].as_array() {
+            let pane_dims = ["editorWidth", "sideWidth", "designTreeHeight", "propertyHeight", "constraintHeight"];
+            for dim in pane_dims {
+                assert!(
+                    !required.iter().any(|v| v.as_str() == Some(dim)),
+                    "resize_panes: '{dim}' must NOT be listed in required (all pane dims are optional)"
+                );
+            }
+        }
+
+        // --- set_window_size ---
+        let sws = defs
+            .iter()
+            .find(|t| t.name == "set_window_size")
+            .expect("set_window_size must be present in tool_defs()");
+        assert_eq!(sws.input_schema["type"].as_str(), Some("object"),
+            "set_window_size: input_schema.type must be 'object'");
+        assert!(!sws.description.is_empty(), "set_window_size: description must be non-empty");
+        assert_eq!(sws.input_schema["properties"]["width"]["type"].as_str(), Some("number"),
+            "set_window_size: properties.width.type must be 'number'");
+        assert_eq!(sws.input_schema["properties"]["height"]["type"].as_str(), Some("number"),
+            "set_window_size: properties.height.type must be 'number'");
+        let sws_required = sws.input_schema["required"]
+            .as_array()
+            .expect("set_window_size: required must be an array");
+        assert!(sws_required.iter().any(|v| v.as_str() == Some("width")),
+            "set_window_size: 'width' must be in required");
+        assert!(sws_required.iter().any(|v| v.as_str() == Some("height")),
+            "set_window_size: 'height' must be in required");
+
+        // --- expand_tree_node and collapse_tree_node ---
+        for tool_name in &["expand_tree_node", "collapse_tree_node"] {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == *tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(schema["type"].as_str(), Some("object"),
+                "{tool_name}: input_schema.type must be 'object'");
+            assert!(!entry.description.is_empty(),
+                "{tool_name}: description must be non-empty");
+            // path is required
+            assert_eq!(schema["properties"]["path"]["type"].as_str(), Some("string"),
+                "{tool_name}: properties.path.type must be 'string'");
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(required.iter().any(|v| v.as_str() == Some("path")),
+                "{tool_name}: 'path' must be listed in required");
+            // panel is optional
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("panel")),
+                "{tool_name}: 'panel' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    // task-4302 step-9 RED → step-10 GREEN: capabilities/default.json must
+    // grant core:window:allow-set-size for set_window_size to work at runtime.
+    #[test]
+    fn capabilities_default_grants_window_set_size() {
+        const CAPS: &str = include_str!("../capabilities/default.json");
+        let v: serde_json::Value = serde_json::from_str(CAPS)
+            .expect("capabilities/default.json must be valid JSON");
+        let permissions = v["permissions"]
+            .as_array()
+            .expect("capabilities/default.json must have a 'permissions' array");
+        let perm_strings: Vec<&str> = permissions
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+
+        assert!(
+            perm_strings.contains(&"core:window:allow-set-size"),
+            "capabilities/default.json must grant 'core:window:allow-set-size' \
+             so that set_window_size's getCurrentWindow().setSize() call is \
+             authorized at runtime. Add it to the permissions array."
+        );
+        // Regression guard: the pre-existing core:window:default must still be present.
+        assert!(
+            perm_strings.contains(&"core:window:default"),
+            "capabilities/default.json must still contain 'core:window:default' \
+             (regression: do not replace it with core:window:allow-set-size)."
+        );
     }
 }
