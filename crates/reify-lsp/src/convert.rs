@@ -84,6 +84,18 @@ pub fn position_to_offset(source: &str, position: Position) -> usize {
 /// Returns `Some((start, word))` where `start` is the byte offset of the word's
 /// first character, or `None` if the offset doesn't point at an identifier character.
 /// Identifier characters: alphanumeric or underscore.
+///
+/// ## Member-access caveat
+///
+/// This function is intentionally **byte-based and AST-blind**: it returns the
+/// bare identifier word even when the cursor sits on the `.field` segment of a
+/// member-access expression (e.g. `diameter` in `h.diameter`). Callers that
+/// must distinguish a `.field` segment from a local value binding —
+/// specifically rename / document-highlight / find-references — layer an
+/// AST-aware guard in [`references::collect_references_at`]
+/// (`cursor_on_member_segment`) immediately after the entity's member list is
+/// obtained. The three other callers (`hover`, `goto_def`) are byte-based by
+/// design and are unaffected by this seam.
 pub fn find_word_at_offset(source: &str, offset: usize) -> Option<(usize, &str)> {
     if offset >= source.len() {
         return None;
