@@ -143,6 +143,34 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
       { path: "count", op: "exists" },
     ],
   },
+  // task-4304 F2: LSP probe e2e signal scenarios (live signal via npm run test:e2e,
+  // not CI-gated — per H0 harness contract).  Positions resolved against small_cube.ri:
+  //   line=7 col=10 → `size` identifier in `param size: Scalar = 10mm`
+  //   line=9 col=19 → first `size` arg in `let body = box(size, size, size)`
+  {
+    name: "hover_at_markdown_small_cube",
+    fixture: "small_cube",
+    tool: "hover_at",
+    // line=7, col=10: `size` parameter declaration — LSP returns hover markdown
+    args: { line: 7, col: 10 },
+    assertions: [{ path: "markdownLength", op: "atLeast", expected: 1 }],
+  },
+  {
+    name: "completion_at_nonempty_small_cube",
+    fixture: "small_cube",
+    tool: "completion_at",
+    // line=9, col=19: inside `box(size,...)` — LSP returns non-empty completion list
+    args: { line: 9, col: 19 },
+    assertions: [{ path: "itemCount", op: "atLeast", expected: 1 }],
+  },
+  {
+    name: "definition_at_range_small_cube",
+    fixture: "small_cube",
+    tool: "definition_at",
+    // line=9, col=19: `size` usage in box call → definition jumps to line 7 (param decl)
+    args: { line: 9, col: 19 },
+    assertions: [{ path: "range.start.line", op: "exists" }],
+  },
 ];
 
 // ─── Assertion type + evaluateAssertion ──────────────────────────────────────
