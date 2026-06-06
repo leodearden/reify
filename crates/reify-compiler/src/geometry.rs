@@ -3519,6 +3519,7 @@ mod tests {
             content_hash: ContentHash::of_str("fn_box_shadow_hoist"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         };
         let functions = vec![box_shadow_fn];
 
@@ -3572,6 +3573,7 @@ mod tests {
             content_hash: ContentHash::of_str("fn_box_shadow_merge"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         };
         let functions = vec![box_shadow_fn];
 

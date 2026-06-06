@@ -785,6 +785,7 @@ fn prelude_function_merging_path() {
         content_hash: ContentHash::of_str("fn_double"),
         annotations: vec![],
         optimized_target: None,
+        type_params: vec![],
     };
 
     let synthetic_prelude = CompiledModuleBuilder::new(ModulePath::single("synthetic"))

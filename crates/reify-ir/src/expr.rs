@@ -296,6 +296,13 @@ pub struct CompiledFunction {
     /// (P3.4 ComputeNode) can probe the same field name regardless of whether
     /// the node originated from a constraint or function definition.
     pub optimized_target: Option<String>,
+    /// Type parameters declared on this function (e.g. `<D, C>` in
+    /// `fn f<D, C>(x: C) -> Field<D, C>`).
+    ///
+    /// Populated by `compile_function` in `reify-compiler/src/functions.rs` via
+    /// `convert_type_params` (same lowering aliases and traits use).  Empty for
+    /// non-generic functions.  Added by task 4230 (generic-user-fns α).
+    pub type_params: Vec<crate::TypeParam>,
 }
 
 impl CompiledFunction {

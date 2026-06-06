@@ -705,6 +705,7 @@ mod tests {
             content_hash: ContentHash::of_str(name),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         }
     }
 
@@ -1085,6 +1086,7 @@ mod tests {
             content_hash: ContentHash::of_str("f_stub_3702"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         };
 
         // New signature: no compiled_args — only arg_types.
@@ -1293,6 +1295,7 @@ mod tests {
             content_hash: ContentHash::of_str("bad_stub_3702"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         };
 
         // New signature: (named, arg_types). Providing 0 arg types so the

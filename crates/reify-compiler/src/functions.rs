@@ -2,6 +2,43 @@ use super::*;
 
 use crate::types::TopologyTemplate;
 
+/// Push the appropriate unresolved-type diagnostic for a fn signature position.
+///
+/// Generic fns (non-empty `type_param_names`) emit `FnUnknownTypeParam` with a message that
+/// names the generic function and clarifies the "not a declared type parameter or a known type"
+/// interpretation.  Non-generic fns keep `UnresolvedType` + the legacy `"unresolved <prefix>:
+/// <expr>"` message bit-for-bit (INV-6 regression pin).
+///
+/// `non_generic_prefix` is either `"unresolved type"` (param position) or
+/// `"unresolved return type"` (return-type position); both compile_function and
+/// compile_assoc_function use this helper so a future message-wording change is
+/// made in exactly one place.
+fn push_signature_type_error(
+    diagnostics: &mut Vec<Diagnostic>,
+    type_param_names: &HashSet<String>,
+    type_expr: impl std::fmt::Display,
+    span: reify_core::SourceSpan,
+    fn_name: &str,
+    non_generic_prefix: &str,
+) {
+    if !type_param_names.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "type '{}' in the signature of generic function '{}' is not a declared type parameter or a known type",
+                type_expr, fn_name
+            ))
+            .with_code(DiagnosticCode::FnUnknownTypeParam)
+            .with_label(DiagnosticLabel::new(span, "unknown type name")),
+        );
+    } else {
+        diagnostics.push(
+            Diagnostic::error(format!("{}: {}", non_generic_prefix, type_expr))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(span, "unknown type name")),
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_function(
     fn_def: &reify_ast::FnDef,
@@ -13,7 +50,13 @@ pub(crate) fn compile_function(
     prelude_template_registry: Option<&HashMap<String, &TopologyTemplate>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
-    let empty_params = HashSet::new();
+    // Build the set of declared type-parameter names so `resolve_type_expr_with_aliases`
+    // can map a bare `T` → `Type::TypeParam("T")`. Mirror of entity.rs:560-563.
+    let type_param_names: HashSet<String> = fn_def
+        .type_params
+        .iter()
+        .map(|tp| tp.name.clone())
+        .collect();
     // Resolve parameter types.
     //
     // `param_type_resolved[i]` is `true` when the i-th param's declared type resolved
@@ -26,7 +69,7 @@ pub(crate) fn compile_function(
     for p in &fn_def.params {
         let (ty, resolved) = match resolve_type_expr_with_aliases(
             &p.type_expr,
-            &empty_params,
+            &type_param_names,
             alias_registry,
             diagnostics,
             structure_names,
@@ -34,10 +77,13 @@ pub(crate) fn compile_function(
         ) {
             Some(t) => (t, true),
             None => {
-                diagnostics.push(
-                    Diagnostic::error(format!("unresolved type: {}", p.type_expr))
-                        .with_code(DiagnosticCode::UnresolvedType)
-                        .with_label(DiagnosticLabel::new(p.type_expr.span, "unknown type name")),
+                push_signature_type_error(
+                    diagnostics,
+                    &type_param_names,
+                    &p.type_expr,
+                    p.type_expr.span,
+                    &fn_def.name,
+                    "unresolved type",
                 );
                 (Type::Real, false) // fallback; `resolved` flag prevents cascade in default check
             }
@@ -123,7 +169,7 @@ pub(crate) fn compile_function(
         Some(te) => {
             match resolve_type_expr_with_aliases(
                 te,
-                &empty_params,
+                &type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -131,10 +177,13 @@ pub(crate) fn compile_function(
             ) {
                 Some(t) => t,
                 None => {
-                    diagnostics.push(
-                        Diagnostic::error(format!("unresolved return type: {}", te))
-                            .with_code(DiagnosticCode::UnresolvedType)
-                            .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                    push_signature_type_error(
+                        diagnostics,
+                        &type_param_names,
+                        te,
+                        te.span,
+                        &fn_def.name,
+                        "unresolved return type",
                     );
                     Type::Real
                 }
@@ -200,6 +249,14 @@ pub(crate) fn compile_function(
     );
 
     // Compute content hash — fold in default hashes so fn f(x:Real=1) ≠ fn f(x:Real=2).
+    //
+    // NOTE: `type_params` (bounds / defaults) are intentionally excluded from this hash.
+    // Distinct generic signatures still hash differently because the param/return types are
+    // already formatted as "TypeParam(T)" in `param_hashes`, capturing the type-param *names*.
+    // `TypeParam.bounds` and `TypeParam.default` are unused downstream today, so omitting
+    // them is currently safe. If bounds or defaults start affecting compilation (e.g. β/γ/δ),
+    // fold a hash of (name + bounds + default) per TypeParam into `all_hashes` here to keep
+    // content-addressing complete.
     let content_hash = {
         let name_hash = ContentHash::of_str(&fn_def.name);
         let param_hashes = params
@@ -247,6 +304,7 @@ pub(crate) fn compile_function(
         content_hash,
         annotations,
         optimized_target: opt_target,
+        type_params: convert_type_params(&fn_def.type_params),
     })
 }
 
@@ -274,7 +332,13 @@ pub(crate) fn compile_assoc_function(
     trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
-    let empty_params = HashSet::new();
+    // Mirror of compile_function: build the type-param name set for signature resolution.
+    // No-op for today's non-generic assoc fns (empty fn_def.type_params → empty set).
+    let type_param_names: HashSet<String> = fn_def
+        .type_params
+        .iter()
+        .map(|tp| tp.name.clone())
+        .collect();
     let receiver_type = Type::StructureRef(conformer_name.to_string());
 
     // Resolve parameter types. The leading `is_self` receiver maps to the
@@ -288,7 +352,7 @@ pub(crate) fn compile_assoc_function(
         }
         let ty = match resolve_type_expr_with_aliases(
             &p.type_expr,
-            &empty_params,
+            &type_param_names,
             alias_registry,
             diagnostics,
             structure_names,
@@ -296,10 +360,13 @@ pub(crate) fn compile_assoc_function(
         ) {
             Some(t) => t,
             None => {
-                diagnostics.push(
-                    Diagnostic::error(format!("unresolved type: {}", p.type_expr))
-                        .with_code(DiagnosticCode::UnresolvedType)
-                        .with_label(DiagnosticLabel::new(p.type_expr.span, "unknown type name")),
+                push_signature_type_error(
+                    diagnostics,
+                    &type_param_names,
+                    &p.type_expr,
+                    p.type_expr.span,
+                    &fn_def.name,
+                    "unresolved type",
                 );
                 Type::Real
             }
@@ -324,7 +391,7 @@ pub(crate) fn compile_assoc_function(
     let return_type = match &fn_def.return_type {
         Some(te) => match resolve_type_expr_with_aliases(
             te,
-            &empty_params,
+            &type_param_names,
             alias_registry,
             diagnostics,
             structure_names,
@@ -332,10 +399,13 @@ pub(crate) fn compile_assoc_function(
         ) {
             Some(t) => t,
             None => {
-                diagnostics.push(
-                    Diagnostic::error(format!("unresolved return type: {}", te))
-                        .with_code(DiagnosticCode::UnresolvedType)
-                        .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                push_signature_type_error(
+                    diagnostics,
+                    &type_param_names,
+                    te,
+                    te.span,
+                    &fn_def.name,
+                    "unresolved return type",
                 );
                 Type::Real
             }
@@ -366,6 +436,10 @@ pub(crate) fn compile_assoc_function(
 
     // Content hash — same shape as `compile_function` so that an override body
     // and an injected-default body hash differently when their bodies differ.
+    //
+    // NOTE: `type_params` (bounds / defaults) are intentionally excluded — see the
+    // matching comment in `compile_function` for rationale. Fold them in here too
+    // when bounds/defaults start affecting compilation.
     let content_hash = {
         let name_hash = ContentHash::of_str(&fn_def.name);
         let param_hashes = params
@@ -405,6 +479,7 @@ pub(crate) fn compile_assoc_function(
         content_hash,
         annotations,
         optimized_target: opt_target,
+        type_params: convert_type_params(&fn_def.type_params),
     })
 }
 
