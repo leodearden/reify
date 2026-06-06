@@ -100,6 +100,10 @@ toml = "0.8"
 
 zstd = "0.13"
 
+# 3MF export: Stored/no-compression for byte-determinism; default-features=false
+# drops deflate/bzip2/time C-deps for pure-Rust wasm-safe build (task 4286).
+zip = { version = "2", default-features = false }
+
 tree-sitter = "0.24"
 tree-sitter-language = "0.1"
 tree-sitter-reify = { path = "tree-sitter-reify" }
