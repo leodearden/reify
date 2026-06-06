@@ -24,15 +24,67 @@ use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 /// by the compiler. Single source of truth — imported into the `units.rs` test
 /// module to pin disjointness from the geometry / dynamics families.
 ///
-/// Case-sensitive: Reify function names are snake_case. (β extends this slice
-/// with the linear-algebra operation names later.)
+/// Case-sensitive: Reify function names are snake_case. (The §3 operation /
+/// function names live in the sibling [`MATH_OPERATION_NAMES`] slice — task
+/// 4182 δ — NOT in this construction-only slice.)
 pub const MATH_CONSTRUCTION_NAMES: &[&str] = &["vec", "matrix", "diag", "identity"];
 
-/// Is `name` a math-linalg construction builtin? Name-only classification,
-/// mirroring `units::is_geometry_query` (a `.contains` over the single-source-of-
-/// truth [`MATH_CONSTRUCTION_NAMES`] slice). Case-sensitive.
+/// The complete set of math-linalg **operation / function** builtin names
+/// recognised by the compiler (task 4182 δ, the §3 operation family). Sibling
+/// to [`MATH_CONSTRUCTION_NAMES`] — kept as a SEPARATE slice so α's
+/// construction-only contract (`math_construction_names_are_exactly_the_four`)
+/// stays valid; [`is_math_typed_fn`] ORs the two. Single source of truth —
+/// imported into the `units.rs` test module to pin disjointness from the five
+/// geometry families, the dynamics-query family, AND the construction family.
+///
+/// Membership is the task-4182 pre-1 frozen set: every §3 operation name that
+/// currently DRIFTS to the first-arg default (all are pure eval-builtins with
+/// no pub-fn signature). §1.2 trig is deliberately EXCLUDED — it is not in the
+/// §3 table this leaf implements; see esc-4182-74 for the (latent) trig
+/// compile-time-typing gap surfaced by the probe.
+///
+/// Case-sensitive snake_case, mirroring [`MATH_CONSTRUCTION_NAMES`].
+pub const MATH_OPERATION_NAMES: &[&str] = &[
+    // scalar / element-wise
+    "sqrt",
+    "abs",
+    "sign",
+    "pow",
+    "min",
+    "max",
+    "clamp",
+    "lerp",
+    // vector ops
+    "dot",
+    "cross",
+    "normalize",
+    "magnitude",
+    "outer",
+    // matrix ops
+    "determinant",
+    "inverse",
+    "transpose",
+    "trace",
+    // spectral
+    "eigenvalues",
+    "complex_eigenvalues",
+    // complex
+    "complex",
+    "real",
+    "imag",
+    "conjugate",
+    "complex_magnitude",
+    "phase",
+    "arg",
+];
+
+/// Is `name` a math-linalg builtin the compiler types via [`math_fn_result_type`]?
+/// Name-only classification, mirroring `units::is_geometry_query` (a `.contains`
+/// over the single-source-of-truth slices). Recognises BOTH the construction
+/// family ([`MATH_CONSTRUCTION_NAMES`]) and the operation family
+/// ([`MATH_OPERATION_NAMES`], task 4182 δ). Case-sensitive.
 pub(crate) fn is_math_typed_fn(name: &str) -> bool {
-    MATH_CONSTRUCTION_NAMES.contains(&name)
+    MATH_CONSTRUCTION_NAMES.contains(&name) || MATH_OPERATION_NAMES.contains(&name)
 }
 
 /// Result type for a math-linalg construction builtin, derived from the
@@ -191,16 +243,21 @@ mod tests {
             !is_math_typed_fn("body_mass_props"),
             "must reject dynamics-query 'body_mass_props'"
         );
-        // A linear-algebra OPERATION (task β), deliberately NOT an α constructor.
+        // `determinant` is now an in-family OPERATION name (task 4182 δ added it
+        // to MATH_OPERATION_NAMES), so it must be RECOGNISED — not rejected.
         assert!(
-            !is_math_typed_fn("determinant"),
-            "must reject 'determinant' — a β operation, not an α construction builtin"
+            is_math_typed_fn("determinant"),
+            "must recognise 'determinant' — a math-linalg δ operation builtin"
         );
-        // Empty / unrelated.
+        // Empty / unrelated / a plausible-but-nonexistent math op.
         assert!(!is_math_typed_fn(""), "must reject empty name");
         assert!(
             !is_math_typed_fn("does_not_exist"),
             "must reject unrelated name"
+        );
+        assert!(
+            !is_math_typed_fn("eigenvectors"),
+            "must reject 'eigenvectors' — a plausible but unregistered math op"
         );
     }
 
