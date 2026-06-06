@@ -43,7 +43,7 @@
 
 use reify_core::{Severity, ValueCellId};
 use reify_eval::compute_targets::register_compute_fns;
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value, ValueMap};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── Path constants ────────────────────────────────────────────────────────────
@@ -83,6 +83,47 @@ fn marlin_dialect_value() -> Value {
         version: 0,
         fields: PersistentMap::default(),
     }))
+}
+
+/// Read an intermediate `EndEffectorTrack` let cell from the eval values map and
+/// return the number of trajectory samples (`t_samples` list length).
+///
+/// **Panics loudly** if the cell is missing or not an `EndEffectorTrack`
+/// `StructureInstance`, so that a regression where `simulate_trajectory` or
+/// `input_shape` returns `Undef` fails the test immediately — instead of silently
+/// reducing to `peak_* = 0.0` via `peak_deviation_at`'s lossy `f64::max` fold.
+///
+/// Returns 0 if `t_samples` is absent or empty (a degenerate but non-Undef track),
+/// so `assert!(nonempty_track(...) >= 2, ...)` catches empty-track regressions too.
+/// A valid 4-waypoint cubic spline yields ≥ 2 samples from `simulate_trajectory_core`.
+///
+/// Mirrors the `EndEffectorTrack` StructureInstance field-walk in
+/// `zv_shaped_ramp_db_reduction.rs::vibration_at_loc` (lines 211-221).
+fn nonempty_track(values: &ValueMap, member: &str) -> usize {
+    let cell = ValueCellId::new("PrinterPrintEnvelope", member);
+    let val = values.get(&cell).unwrap_or_else(|| {
+        panic!(
+            "PrinterPrintEnvelope.{member} cell missing from eval result \
+             — simulate_trajectory or input_shape likely returned Undef (regression?)"
+        )
+    });
+    let Value::StructureInstance(data) = val else {
+        panic!(
+            "PrinterPrintEnvelope.{member} must be an EndEffectorTrack StructureInstance; \
+             got {val:?} — simulate_trajectory or input_shape returned Undef or a non-track \
+             value (regression?)"
+        )
+    };
+    assert_eq!(
+        data.type_name, "EndEffectorTrack",
+        "PrinterPrintEnvelope.{member} has wrong type_name: expected \"EndEffectorTrack\", \
+         got \"{}\"",
+        data.type_name
+    );
+    match data.fields.get(&"t_samples".to_string()) {
+        Some(Value::List(samples)) => samples.len(),
+        _ => 0,
+    }
 }
 
 // ── Seam pin (always-run) ─────────────────────────────────────────────────────
@@ -206,6 +247,60 @@ fn printer_print_envelope_eval_e2e() {
             n
         );
     }
+
+    // ── (2b) track_unshaped — non-empty EndEffectorTrack (≥ 2 t_samples) ────────
+    //
+    // peak_deviation_at folds with f64::max starting at 0.0 (trampoline.rs:1084-1088):
+    // it collapses BOTH "broken track (Undef/empty)" AND "live track with zero modal
+    // deviation" to Real(0.0). The peak_* >= 0 gate above therefore cannot distinguish
+    // a genuine regression from a healthy-but-zero-deviation run. The discriminating
+    // signal exists only at the TRACK level, before peak_deviation_at's reduction.
+    //
+    // A valid 4-waypoint cubic spline yields >= 2 t_samples from simulate_trajectory_core
+    // (simulate.rs:470-487). Undef returns 0 samples because Undef is not an
+    // EndEffectorTrack — the helper panics with a clear message on type mismatch.
+    //
+    // This assertion is a regression guard: GREEN on current main (the subsystem
+    // returns a well-formed non-empty track), RED only when simulate_trajectory
+    // returns Undef (Undef-track regression) or t_samples collapses to empty.
+    assert!(
+        nonempty_track(&eval_result.values, "track_unshaped") >= 2,
+        "PrinterPrintEnvelope.track_unshaped must have >= 2 t_samples: \
+         a valid 4-waypoint cubic spline always produces >= 2 trajectory samples \
+         (simulate_trajectory_core), while Undef/degenerate has 0 — \
+         this catches the documented \"simulate_trajectory returns Undef -> \
+         peak_unshaped silently = 0.0\" regression"
+    );
+
+    // ── (2c) track_impulse / track_tots — non-empty EndEffectorTrack (≥ 2 t_samples) ─
+    //
+    // Covers the `input_shape` regression surface for both shaped variants:
+    //
+    //   track_impulse: ZV input_shape arm. build_train_for_shaper resolves ZVShaper
+    //   deterministically from the example's ZVShaper struct; the impulse arm re-fits
+    //   a PiecewisePolynomialProfile from a valid input, so simulate always yields a
+    //   non-empty track. Catches: ZV input_shape -> Undef -> simulate(Undef) -> Undef
+    //   -> peak_impulse silently = 0.0.
+    //
+    //   track_tots: TOTS input_shape arm. input_shape returns Undef only on
+    //   ConstraintInfeasible; the example's kinematic limits (velocity_limit 300,
+    //   acceleration_limit 5000 over a 0->200 mm / 3 s move) are generously feasible,
+    //   and a NonConvergence outcome still returns the best-feasible re-timed profile.
+    //   Catches: TOTS ConstraintInfeasible -> Undef -> peak_tots silently = 0.0.
+    assert!(
+        nonempty_track(&eval_result.values, "track_impulse") >= 2,
+        "PrinterPrintEnvelope.track_impulse must have >= 2 t_samples: \
+         the ZV input_shape arm re-fits a valid PiecewisePolynomialProfile and \
+         simulate always produces a non-empty track — \
+         0 samples means input_shape returned Undef (ZV regression?)"
+    );
+    assert!(
+        nonempty_track(&eval_result.values, "track_tots") >= 2,
+        "PrinterPrintEnvelope.track_tots must have >= 2 t_samples: \
+         the TOTS kinematic limits (v=300, a=5000, 0->200 mm / 3 s) are feasible \
+         and NonConvergence still returns a best-feasible profile — \
+         0 samples means input_shape returned Undef (ConstraintInfeasible? regression?)"
+    );
 
     // ── (3) budget — finite and > 0 ──────────────────────────────────────────
     let budget_cell = ValueCellId::new("PrinterPrintEnvelope", "budget");
