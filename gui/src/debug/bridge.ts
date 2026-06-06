@@ -245,6 +245,16 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
     } else {
       if (!ctx.constraintPanel) return { error: 'constraint tree not registered' };
       accessor = ctx.constraintPanel.expandedNodes;
+      // NOTE: For the constraint panel, clicking `constraint-row-${path}` has a side
+      // effect beyond toggling expansion: the row's onClick also fires
+      // props.onConstraintSelect (a selection update), so calling expand_tree_node or
+      // collapse_tree_node on a constraint node will also change the current selection.
+      // Additionally, the toggle only fires when isExpandable(status) is true for the
+      // node — clicking a non-expandable constraint row performs no expansion change
+      // but still triggers selection. In that scenario the tool returns
+      // { ok:true, expanded:false } regardless of wantExpanded because the accessor
+      // re-read post-click reflects the real signal state. The caller can detect this
+      // no-op case by checking whether expanded === wantExpanded in the response.
       testid = `constraint-row-${path}`;
     }
 
@@ -260,6 +270,8 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
     }
 
     // Re-read post-click — reports the real signal truth, not the pre-click assumption.
+    // For the constraint panel, if the node is non-expandable the click leaves the
+    // accessor state unchanged, so expanded may equal !wantExpanded (a silent no-op).
     return { ok: true, path, expanded: accessor().has(path) };
   }
 
@@ -929,6 +941,12 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       if (!anyProvided) return { error: 'no pane dimensions provided' };
 
       // Apply pass — all values validated.
+      // NOTE: Values are applied as-is without clamping to the interactive splitter
+      // min/max bounds (the App.tsx handleLeftResize/handleRightResize handlers enforce
+      // those bounds during user drag). resize_panes is intentionally unclamped to give
+      // the caller full programmatic control; the caller is responsible for staying in a
+      // valid range. Setting a dimension to 0 is allowed (e.g. to collapse a pane
+      // programmatically) even though the splitter UI prevents this interactively.
       const layout = ctx.stores.layout;
       for (const [dim, setter] of DIMS) {
         const raw = params[dim];

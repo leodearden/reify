@@ -2423,6 +2423,31 @@ describe('debug bridge resize_panes', () => {
     expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
     expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
   });
+
+  it('(e) returned layout snapshot has all 5 pane dimension keys with current store values', async () => {
+    // Regression: resize_panes returns { ok, layout: {...ctx.stores.layout.state} }.
+    // This test locks in the returned layout snapshot contract so a regression that
+    // removes or reshapes the field is caught. The setter is mocked (vi.fn()) so the
+    // state does not change; the snapshot reflects the initial makeStores() values.
+    const stores = makeStores();
+    const result = await dispatch(stores, 7007, { editorWidth: 450 });
+    expect(result.ok).toBe(true);
+    // layout snapshot must exist and carry all 5 dimension keys.
+    expect(result.layout).toBeDefined();
+    expect(result.layout).toHaveProperty('editorWidth');
+    expect(result.layout).toHaveProperty('sideWidth');
+    expect(result.layout).toHaveProperty('designTreeHeight');
+    expect(result.layout).toHaveProperty('propertyHeight');
+    expect(result.layout).toHaveProperty('constraintHeight');
+    // Values reflect the initial makeStores() state (setter is mocked, state unchanged).
+    expect(result.layout).toEqual({
+      editorWidth: 300,
+      sideWidth: 300,
+      designTreeHeight: 160,
+      propertyHeight: 200,
+      constraintHeight: 140,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2677,5 +2702,19 @@ describe('debug bridge tree-node expand/collapse', () => {
 
     const result = await dispatch(9007, 'expand_tree_node', { path: 'Bracket.body' });
     expect(result).toHaveProperty('error');
+  });
+
+  it('(i) invalid panel value returns { error } mentioning the unknown panel name', async () => {
+    // Locks in the panel validation branch: unknown panel values (anything other than
+    // 'design' or 'constraint') return an error that names the bad value.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    setupDesignPanel('Bracket.body', false);
+
+    const result = await dispatch(9008, 'expand_tree_node', { path: 'Bracket.body', panel: 'foo' });
+    expect(result).toHaveProperty('error');
+    expect(result.error).toContain('foo');
+    expect(result.error).toContain('design');
+    expect(result.error).toContain('constraint');
   });
 });
