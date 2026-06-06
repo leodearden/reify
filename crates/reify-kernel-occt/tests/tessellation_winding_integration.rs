@@ -75,6 +75,22 @@ fn weld_vertices(vertices: &[f32]) -> (Vec<[f32; 3]>, Vec<u32>) {
 }
 
 // ---------------------------------------------------------------------------
+// Geometric helper shared by both tests
+// ---------------------------------------------------------------------------
+
+/// Compute the geometric normal of triangle (pa, pb, pc) from the emitted
+/// winding order: AB × AC.  All inputs and the result are in f64.
+fn tri_winding_normal(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3]) -> [f64; 3] {
+    let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+    let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+    [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    ]
+}
+
+// ---------------------------------------------------------------------------
 // Test A — closed-orientable-manifold winding invariant (step-1)
 // ---------------------------------------------------------------------------
 
@@ -100,6 +116,17 @@ fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
         0,
         "index count must be a multiple of 3"
     );
+
+    // Validity note: `BRepPrimAPI_MakeBox` builds an oriented closed shell
+    // that assigns some faces FORWARD and others REVERSED relative to the
+    // solid's outward normal convention — this is a guaranteed invariant of
+    // OCCT's oriented-solid construction.  Empirically confirmed: this test
+    // was RED on the unfixed codebase (≥1 REVERSED face was inward-wound →
+    // a shared edge's directed key appeared twice with its reverse absent).
+    // The test is therefore a valid regression guard only so long as OCCT
+    // continues to emit reversed faces for a box solid, which is guaranteed
+    // by the oriented-topology construction (`BRepPrimAPI_MakeBox` always
+    // produces a shell with mixed-orientation faces).
 
     let (canon_verts, remap) = weld_vertices(&mesh.vertices);
 
@@ -134,17 +161,31 @@ fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
     }
 
     // Outward-orientation check.
-    // Box centroid = average of all canonical vertices (for a box this equals
-    // the geometric centre, and any vertex-cloud centroid works as a proxy).
+    // Box centroid from the AABB (min+max per axis / 2).  Using the analytic
+    // bounding-box center rather than the vertex-cloud average makes this
+    // robust to non-uniform vertex distributions — e.g. if a tighter
+    // tolerance caused OCCT to add interior tessellation nodes on any face,
+    // the vertex mean would shift toward the denser face whereas the AABB
+    // center is unaffected.
     let box_centroid = {
-        let (mut sx, mut sy, mut sz) = (0.0f64, 0.0f64, 0.0f64);
+        let mut min = [f64::MAX; 3];
+        let mut max = [f64::MIN; 3];
         for v in &canon_verts {
-            sx += v[0] as f64;
-            sy += v[1] as f64;
-            sz += v[2] as f64;
+            for k in 0..3 {
+                let coord = v[k] as f64;
+                if coord < min[k] {
+                    min[k] = coord;
+                }
+                if coord > max[k] {
+                    max[k] = coord;
+                }
+            }
         }
-        let n = canon_verts.len() as f64;
-        [sx / n, sy / n, sz / n]
+        [
+            (min[0] + max[0]) / 2.0,
+            (min[1] + max[1]) / 2.0,
+            (min[2] + max[2]) / 2.0,
+        ]
     };
 
     for t in 0..num_tris {
@@ -155,24 +196,11 @@ fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
         let pb = canon_verts[b];
         let pc = canon_verts[c];
 
-        // Edge vectors (f64 for cross-product accuracy).
-        let ab = [
-            (pb[0] - pa[0]) as f64,
-            (pb[1] - pa[1]) as f64,
-            (pb[2] - pa[2]) as f64,
-        ];
-        let ac = [
-            (pc[0] - pa[0]) as f64,
-            (pc[1] - pa[1]) as f64,
-            (pc[2] - pa[2]) as f64,
-        ];
-
         // Geometric normal from the emitted winding order (AB × AC).
-        let normal = [
-            ab[1] * ac[2] - ab[2] * ac[1],
-            ab[2] * ac[0] - ab[0] * ac[2],
-            ab[0] * ac[1] - ab[1] * ac[0],
-        ];
+        let pa_f64 = [pa[0] as f64, pa[1] as f64, pa[2] as f64];
+        let pb_f64 = [pb[0] as f64, pb[1] as f64, pb[2] as f64];
+        let pc_f64 = [pc[0] as f64, pc[1] as f64, pc[2] as f64];
+        let normal = tri_winding_normal(pa_f64, pb_f64, pc_f64);
 
         // Outward direction: triangle centroid → box centroid reversed.
         let tri_centroid = [
@@ -254,13 +282,7 @@ fn tessellated_box_supplied_normals_agree_with_winding() {
         ];
 
         // Geometric normal from the emitted winding (AB × AC).
-        let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
-        let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
-        let winding_normal = [
-            ab[1] * ac[2] - ab[2] * ac[1],
-            ab[2] * ac[0] - ab[0] * ac[2],
-            ab[0] * ac[1] - ab[1] * ac[0],
-        ];
+        let winding_normal = tri_winding_normal(pa, pb, pc);
 
         // Average of the three supplied per-vertex normals.
         let avg_supplied = [
