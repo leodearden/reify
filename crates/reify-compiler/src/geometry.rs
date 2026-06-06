@@ -1188,7 +1188,7 @@ pub(crate) fn compile_geometry_call(
                 Some(sub_ops)
             } else {
                 push_labeled_arg_count_error(
-                    format!("circular_pattern() expects 9 arguments, got {n}"),
+                    format!("circular_pattern() expects 9 arguments (scalar) or 4 (axis-value), got {n}"),
                     expr.span,
                     diagnostics,
                 );
@@ -1232,7 +1232,7 @@ pub(crate) fn compile_geometry_call(
                 Some(sub_ops)
             } else {
                 push_labeled_arg_count_error(
-                    format!("mirror() expects 7 arguments, got {n}"),
+                    format!("mirror() expects 7 arguments (scalar) or 2 (plane-value), got {n}"),
                     expr.span,
                     diagnostics,
                 );

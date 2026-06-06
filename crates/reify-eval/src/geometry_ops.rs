@@ -406,6 +406,34 @@ pub(crate) fn decode_axis(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3]
     Ok((origin_arr, unit_dir))
 }
 
+/// Convert a bare-numeric angle [`reify_ir::Value`] to radians, emitting a
+/// deprecation warning diagnostic.
+///
+/// CAD convention: a bare `Real` or `Int` angle (no unit suffix in source) is
+/// interpreted as degrees and converted to radians.  Values that already carry
+/// an `ANGLE` dimension (from `deg` / `rad` suffixes) pass through unchanged.
+///
+/// Extracted to a shared free function to prevent verbatim duplication between
+/// the value-form and scalar-form branches of the `circular_pattern` eval arm.
+fn resolve_bare_angle(raw: reify_ir::Value, diagnostics: &mut Vec<Diagnostic>) -> reify_ir::Value {
+    let as_deg: Option<f64> = match &raw {
+        reify_ir::Value::Real(v) => Some(*v),
+        reify_ir::Value::Int(i) => Some(*i as f64),
+        _ => None,
+    };
+    if let Some(deg) = as_deg {
+        let rad = deg * std::f64::consts::PI / 180.0;
+        diagnostics.push(Diagnostic::warning(format!(
+            "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
+             use `{}deg` or `{:.6}rad` for explicit units",
+            deg, deg, deg, rad
+        )));
+        reify_ir::Value::angle(rad)
+    } else {
+        raw
+    }
+}
+
 /// Translate a compiled geometry operation into a runtime `GeometryOp` by
 /// evaluating its argument expressions against the current value environment.
 ///
@@ -803,24 +831,8 @@ pub(crate) fn compile_geometry_op(
                         .ok_or_else(|| {
                             format!("missing required argument 'angle' for {}", kind)
                         })?;
-                        // CAD convention: a bare numeric angle (no unit suffix) is
-                        // interpreted as degrees and converted to radians.  Values
-                        // that already carry an ANGLE dimension (from `deg`/`rad`
-                        // suffixes in source) pass through unchanged.
-                        let mut convert_bare_angle = |deg: f64| -> reify_ir::Value {
-                            let rad = deg * std::f64::consts::PI / 180.0;
-                            diagnostics.push(Diagnostic::warning(format!(
-                                "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
-                                 use `{}deg` or `{:.6}rad` for explicit units",
-                                deg, deg, deg, rad
-                            )));
-                            reify_ir::Value::angle(rad)
-                        };
-                        let angle = match raw_angle {
-                            reify_ir::Value::Real(v) => convert_bare_angle(v),
-                            reify_ir::Value::Int(i) => convert_bare_angle(i as f64),
-                            other => other,
-                        };
+                        // CAD convention: bare numeric angle → degrees → radians with warning.
+                        let angle = resolve_bare_angle(raw_angle, diagnostics);
                         Ok(reify_ir::GeometryOp::CircularPattern {
                             target: target_id,
                             axis_origin,
@@ -866,20 +878,7 @@ pub(crate) fn compile_geometry_op(
                             format!("missing required argument 'angle' for {}", kind)
                         })?;
                         // CAD convention: same bare-angle path as the value form above.
-                        let mut convert_bare_angle = |deg: f64| -> reify_ir::Value {
-                            let rad = deg * std::f64::consts::PI / 180.0;
-                            diagnostics.push(Diagnostic::warning(format!(
-                                "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
-                                 use `{}deg` or `{:.6}rad` for explicit units",
-                                deg, deg, deg, rad
-                            )));
-                            reify_ir::Value::angle(rad)
-                        };
-                        let angle = match raw_angle {
-                            reify_ir::Value::Real(v) => convert_bare_angle(v),
-                            reify_ir::Value::Int(i) => convert_bare_angle(i as f64),
-                            other => other,
-                        };
+                        let angle = resolve_bare_angle(raw_angle, diagnostics);
                         Ok(reify_ir::GeometryOp::CircularPattern {
                             target: target_id,
                             axis_origin,
