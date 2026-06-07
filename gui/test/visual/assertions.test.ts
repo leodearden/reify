@@ -329,4 +329,104 @@ describe("runValueScenario", () => {
     expect(result.passed).toBe(false);
     expect(result.failures.some((f) => f.includes(scenario.tool))).toBe(true);
   });
+
+  // task-4303 step-13 RED → step-14 GREEN: F1 setup pre-steps
+  it("(e) setup steps: callTool called for each setup step BEFORE asserted tool", async () => {
+    const callOrder: string[] = [];
+    const setupScenario: ValueScenario = {
+      name: "test_setup_order",
+      fixture: "small_cube",
+      tool: "store_state",
+      args: {},
+      assertions: [{ path: "ok", op: "exists" }],
+      setup: [
+        { tool: "load_fixture", args: { name: "all_severities" } },
+        { tool: "wait_for_idle", args: {} },
+      ],
+    } as ValueScenario;
+
+    const deps: ScenarioDeps = {
+      openFixture: async (_rel: string): Promise<RpcResult<unknown>> => ({ ok: true, value: null }),
+      callTool: async (tool: string, _args: Record<string, unknown>): Promise<RpcResult<unknown>> => {
+        callOrder.push(tool);
+        return { ok: true, value: { ok: true } };
+      },
+    };
+    const result = await runValueScenario(deps, setupScenario);
+
+    // setup tools called first, then asserted tool
+    expect(callOrder).toEqual(["load_fixture", "wait_for_idle", "store_state"]);
+    expect(result.passed).toBe(true);
+  });
+
+  it("(f) setup step returns ok:false → passed=false, failure names setup tool, asserted tool NOT called", async () => {
+    let assertedToolCalled = false;
+    const setupScenario: ValueScenario = {
+      name: "test_setup_fail",
+      fixture: "small_cube",
+      tool: "store_state",
+      args: {},
+      assertions: [{ path: "ok", op: "exists" }],
+      setup: [
+        { tool: "load_fixture", args: { name: "bogus" } },
+      ],
+    } as ValueScenario;
+
+    const deps: ScenarioDeps = {
+      openFixture: async (_rel: string): Promise<RpcResult<unknown>> => ({ ok: true, value: null }),
+      callTool: async (tool: string, _args: Record<string, unknown>): Promise<RpcResult<unknown>> => {
+        if (tool === "load_fixture") {
+          return { ok: false, error: "unknown fixture" };
+        }
+        assertedToolCalled = true;
+        return { ok: true, value: { ok: true } };
+      },
+    };
+    const result = await runValueScenario(deps, setupScenario);
+
+    expect(result.passed).toBe(false);
+    // Failure message names the failing setup tool
+    expect(result.failures.some((f) => f.includes("load_fixture"))).toBe(true);
+    // Asserted tool (store_state) was NOT called
+    expect(assertedToolCalled).toBe(false);
+  });
+});
+
+// task-4303 step-13 RED → step-14 GREEN: F1 VALUE_SCENARIOS presence and structure
+describe("F1 VALUE_SCENARIOS (task-4303)", () => {
+  const F1_SCENARIO_NAMES = [
+    "load_fixture_core",
+    "load_fixture_get_diagnostics",
+    "inject_diagnostics_diagnostic_row",
+    "reset_app_state_baseline",
+    "inject_diagnostics_element_screenshot",
+  ];
+
+  const KNOWN_TOOLS = new Set([
+    "load_fixture", "wait_for_idle", "get_diagnostics", "inject_diagnostics",
+    "click_element", "query_selector_all", "store_state", "element_screenshot",
+    "reset_app_state",
+  ]);
+
+  it("all F1 scenario names are present and unique", () => {
+    const validFixtureKeys = Object.keys(FIXTURES);
+    for (const name of F1_SCENARIO_NAMES) {
+      const matching = VALUE_SCENARIOS.filter((s) => s.name === name);
+      expect(matching.length, `${name} should appear exactly once`).toBe(1);
+      const s = matching[0];
+      expect(validFixtureKeys, `${name}: fixture must be a valid FIXTURES key`).toContain(s.fixture);
+      expect(s.assertions.length, `${name}: assertions must be non-empty`).toBeGreaterThan(0);
+    }
+  });
+
+  it("every setup step in F1 scenarios uses a known tool name", () => {
+    for (const name of F1_SCENARIO_NAMES) {
+      const s = VALUE_SCENARIOS.find((sc) => sc.name === name);
+      if (!s) continue; // already caught by prior test
+      const steps = (s as ValueScenario & { setup?: { tool: string; args: Record<string, unknown> }[] }).setup ?? [];
+      for (const step of steps) {
+        expect(KNOWN_TOOLS.has(step.tool), `${name}: setup step tool '${step.tool}' is unknown`).toBe(true);
+      }
+    }
+  });
 });
