@@ -1819,6 +1819,50 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_DUP_MEMBER_KEY`
     /// (see `docs/prds/keyed-collection-identity.md` task β).
     DuplicateMemberKey,
+    /// Origin: `crates/reify-compiler/src/expr.rs` — `ExprKind::FunctionCall`
+    /// compile path (task 4197 α).
+    ///
+    /// Canonical message form:
+    /// `"E_DETERMINACY_INTRINSIC_SCOPE: <name> is a purpose-body determinacy
+    /// intrinsic and may only appear as a top-level constraint inside a purpose body"`.
+    ///
+    /// Emitted as a `Severity::Error` when `AllParamsDetermined` or
+    /// `AllGeometryDetermined` is used outside a purpose body (or in a nested
+    /// sub-expression position that reaches `compile_expr` without being desugared
+    /// by `compile_purpose`). These names are reserved as compiler-sugar intrinsics;
+    /// they are not user-callable functions. The intrinsics are valid ONLY as
+    /// direct top-level `constraint` members of a purpose body, where
+    /// `compile_purpose` rewrites them to a `forall … determined(…)` AST before
+    /// calling `compile_expr`.
+    ///
+    /// Returns a non-cascading poison literal (`Value::Undef, Type::Bool`) so
+    /// downstream expressions do not emit spurious follow-on errors.
+    ///
+    /// See also: `DeterminacyIntrinsicArg` (E_DETERMINACY_INTRINSIC_ARG) for
+    /// the bad-argument variant fired when the intrinsic IS in a purpose body
+    /// but with an invalid argument.
+    DeterminacyIntrinsicScope,
+    /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (task 4197 α).
+    ///
+    /// Canonical message form:
+    /// `"E_DETERMINACY_INTRINSIC_ARG: <name> expects exactly one purpose-parameter
+    /// (entity reference) argument"`.
+    ///
+    /// Emitted as a `Severity::Error` when `AllParamsDetermined` or
+    /// `AllGeometryDetermined` appears as a top-level `constraint` in a purpose
+    /// body but with an invalid argument: wrong arity (0 or ≥2 args), a
+    /// non-identifier argument (e.g. a literal or computed expression), or an
+    /// identifier that is not a registered purpose parameter. The argument MUST be
+    /// exactly one bare identifier that resolves to a purpose parameter via
+    /// `scope.purpose_param_root`.
+    ///
+    /// Returns a non-cascading poison placeholder constraint so constraint indices
+    /// remain stable and exactly one diagnostic is emitted (anti-cascade policy).
+    ///
+    /// See also: `DeterminacyIntrinsicScope` (E_DETERMINACY_INTRINSIC_SCOPE) for
+    /// the out-of-scope variant fired when the intrinsic is used outside a purpose
+    /// constraint position entirely.
+    DeterminacyIntrinsicArg,
 }
 
 /// A diagnostic message with location and optional labels.
