@@ -1540,7 +1540,32 @@ pub(crate) fn compile_expr_guarded(
                                 );
                             }
                         }
-                        type_resolution::substitute_type_params(&matched_fn.return_type, &subst)
+                        let substituted = type_resolution::substitute_type_params(
+                            &matched_fn.return_type,
+                            &subst,
+                        );
+                        // A BARE top-level unbound type-param means nothing pinned
+                        // the result type (e.g. `make<T>() -> T` called as `make()`):
+                        // the call yields a wholly-undetermined type → error + poison.
+                        // A NESTED unbound param (e.g. `Field<TypeParam(D), Real>`)
+                        // is TOLERATED — it is pinned by an enclosing call (B5,
+                        // PRD §8 / D3-decision).
+                        if matches!(substituted, Type::TypeParam(_)) {
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "cannot infer type argument(s) for generic call to '{}': \
+                                     result type is undetermined",
+                                    name
+                                ))
+                                .with_code(DiagnosticCode::FnTypeArgUnresolved)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "unresolved type argument",
+                                )),
+                            );
+                        }
+                        substituted
                     };
                     build_user_function_call_expr(name, compiled_args, result_type)
                 }
