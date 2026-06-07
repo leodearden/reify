@@ -334,6 +334,88 @@ fn eval_cached_param_default_sibling_let_parity_with_eval() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// step-7 (A): RED — incremental correctness: edit_param re-evaluates param
+// that depends on a sibling let (dirty-cone + eval-set ordering)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// After editing a param whose downstream let feeds another param's default,
+/// the downstream param must be re-evaluated (not served a stale cache hit).
+///
+/// Repro: same T structure as step-1.
+///   param rope_dia : Length = 6mm          ← we edit this to 12mm
+///   let drum_d = rope_dia * 2.0            ← let; recomputes to 0.024m
+///   param feed : Length = 1300mm
+///   param p : Real = feed / drum_d         ← param that reads the let
+///   let out = p
+///
+/// After `edit_param(rope_dia, 12mm)`:
+///   drum_d_new = 0.012 * 2.0 = 0.024 m
+///   p_new      = 1.3 / 0.024 ≈ 54.1666...
+///   out_new    = p_new
+///
+/// FAILS today because `build_from_graph_and_fields` (deps.rs:149) adds
+/// reverse edges only for Let cells, so `p` is not in
+/// `dependents_of("drum_d")` and the dirty cone misses `p`. eval_cached's
+/// param cache-reuse path then returns the STALE p = 108.333... instead of
+/// the correct 54.166...
+#[test]
+fn incremental_edit_rope_dia_re_evaluates_param_p_through_sibling_let() {
+    let mut engine = fresh_engine();
+    let module = compile_source(
+        "structure T { \
+            param rope_dia : Length = 6mm \
+            let drum_d = rope_dia * 2.0 \
+            param feed : Length = 1300mm \
+            param p : Real = feed / drum_d \
+            let out = p \
+        }",
+    );
+
+    // Initial eval — establishes cache and reverse index.
+    engine.eval(&module);
+
+    // Edit rope_dia to 12mm (0.012 m SI).
+    // Expected after edit:
+    //   drum_d = 0.012 * 2.0 = 0.024 m
+    //   p      = 1.3 / 0.024 = 54.1666...
+    //   out    = p
+    let result = engine
+        .edit_param(ValueCellId::new("T", "rope_dia"), Value::length(0.012))
+        .unwrap();
+
+    let p_id = ValueCellId::new("T", "p");
+    let out_id = ValueCellId::new("T", "out");
+    let expected_p = 1.3_f64 / 0.024_f64; // ≈ 54.16666...
+
+    match result.values.get(&p_id) {
+        Some(Value::Scalar { si_value, .. }) => {
+            assert!(
+                (si_value - expected_p).abs() < 1e-9,
+                "After edit_param(rope_dia=12mm), T.p must be re-evaluated to ~54.166... \
+                 (= feed/new_drum_d = 1.3/0.024); got {si_value} (diff {}). \
+                 Bug: p is not in dirty cone — reverse index only tracks Let dependents.",
+                (si_value - expected_p).abs()
+            );
+        }
+        other => panic!(
+            "T.p must be a Scalar after edit_param; got {:?}. \
+             Bug: stale cache — p was not re-evaluated after drum_d changed.",
+            other
+        ),
+    }
+
+    match result.values.get(&out_id) {
+        Some(Value::Scalar { si_value, .. }) => {
+            assert!(
+                (si_value - expected_p).abs() < 1e-9,
+                "T.out must equal T.p (~54.166...) after edit; got {si_value}"
+            );
+        }
+        other => panic!("T.out must be a Scalar after edit_param; got {:?}", other),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Smoke: existing let-only cycle detector is NOT broken by the change
 // ──────────────────────────────────────────────────────────────────────────────
 
