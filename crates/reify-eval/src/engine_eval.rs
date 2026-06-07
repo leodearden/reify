@@ -1489,6 +1489,20 @@ fn parse_data(data_val: &Value) -> Option<Vec<f64>> {
 
 // ── undef-self-describing α (task 4321): UndefCause classifier ───────────────
 
+/// Populate `map` with `detail` for every auto param in `auto_params`.
+///
+/// Called from the `Infeasible` and `NoProgress` resolution-loop arms so the
+/// two near-identical capture loops don't drift independently.
+fn record_failed_autos(
+    map: &mut HashMap<ValueCellId, String>,
+    auto_params: &[AutoParam],
+    detail: &str,
+) {
+    for ap in auto_params {
+        map.insert(ap.id.clone(), detail.to_owned());
+    }
+}
+
 /// Classify the origin of every undef cell in `snap_values`, returning a map
 /// from originating-cell id to its `UndefCause`.
 ///
@@ -2319,15 +2333,10 @@ impl Engine {
         // mutations (`self.next_snapshot_id`, etc.) inside the loop body.
         let mut resolved_params = HashMap::new();
         // undef-self-describing α (task 4321): side-channel for the cells whose
-        // template solve failed (Infeasible or NoProgress). Populated in step-6
-        // inside the resolution loop; empty in step-4 so all auto|provisional
-        // undef cells classify as AwaitingSolve.  The HashMap<id, detail> shape
-        // lets classify_undef_origins emit the coarse SolveResult string verbatim
-        // (§8.3 — no fabricated solver detail). Always declared; populated only
-        // when capture_undef_causes is true (gated inside the match arms in step-6).
-        // `mut` is needed in step-6 for the .insert() calls; suppress the
-        // step-4-only unused_mut warning here.
-        #[allow(unused_mut)]
+        // template solve failed (Infeasible or NoProgress).  The HashMap<id, detail>
+        // shape lets classify_undef_origins emit the coarse SolveResult string
+        // verbatim (§8.3 — no fabricated solver detail). Populated only when
+        // capture_undef_causes is true (gated inside the match arms below).
         let mut solve_failed_autos: HashMap<ValueCellId, String> = HashMap::new();
         let has_active_solver = self
             .resolve_solver_for_module(module, &mut diagnostics)
@@ -2478,16 +2487,17 @@ impl Engine {
                         diagnostics: solver_diags,
                     } => {
                         diagnostics.extend(solver_diags);
-                        // undef-self-describing α (step-6): record every auto-param
-                        // that failed to solve so classify_undef_origins can emit
+                        // undef-self-describing α: record every auto-param that
+                        // failed to solve so classify_undef_origins can emit
                         // SolveFailed instead of AwaitingSolve.  Gated by the
                         // capture flag so the resolution loop is byte-identical
                         // when capture is off (A1 / BT8).
                         if self.capture_undef_causes {
-                            for ap in &problem.auto_params {
-                                solve_failed_autos
-                                    .insert(ap.id.clone(), "infeasible".to_owned());
-                            }
+                            record_failed_autos(
+                                &mut solve_failed_autos,
+                                &problem.auto_params,
+                                "infeasible",
+                            );
                         }
                     }
                     SolveResult::NoProgress { reason } => {
@@ -2495,14 +2505,16 @@ impl Engine {
                             "Constraint solver made no progress: {}",
                             reason
                         )));
-                        // undef-self-describing α (step-6): same as Infeasible arm —
-                        // record failed autos with a coarse "no progress: <reason>"
-                        // detail string (§8.3 — no fabricated solver detail).
+                        // undef-self-describing α: same as Infeasible arm — record
+                        // failed autos with a coarse "no progress: <reason>" detail
+                        // string (§8.3 — no fabricated solver detail).
                         if self.capture_undef_causes {
                             let detail = format!("no progress: {reason}");
-                            for ap in &problem.auto_params {
-                                solve_failed_autos.insert(ap.id.clone(), detail.clone());
-                            }
+                            record_failed_autos(
+                                &mut solve_failed_autos,
+                                &problem.auto_params,
+                                &detail,
+                            );
                         }
                     }
                 }

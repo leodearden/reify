@@ -10010,8 +10010,6 @@ mod tests {
 // ── UndefCause unit tests (task 4321 / undef-self-describing α) ──────────────
 //
 // Tests Eq / Hash / Clone / Debug runtime behaviour on `UndefCause`.
-// The enum does not exist yet (step-2 implements it), so these tests
-// fail to compile until step-2 lands — that is the intended RED state.
 #[cfg(test)]
 mod undef_cause_tests {
     use std::collections::HashSet;
@@ -10029,27 +10027,44 @@ mod undef_cause_tests {
         ValueCellId::new(entity, member)
     }
 
-    // ── Construct all 5 variants ──────────────────────────────────────────────
+    // ── Construct all 5 variants and assert inter-variant inequality ──────────
 
     #[test]
-    fn construct_all_variants() {
-        let _unbound = UndefCause::Unbound {
+    fn distinct_variant_kinds_are_unequal() {
+        let unbound = UndefCause::Unbound {
             param: cell("S", "a"),
             span: span(0, 5),
         };
-        let _awaiting = UndefCause::AwaitingSolve {
+        let awaiting = UndefCause::AwaitingSolve {
             param: cell("S", "k"),
         };
-        let _failed = UndefCause::SolveFailed {
+        let failed = UndefCause::SolveFailed {
             detail: "infeasible".to_string(),
         };
-        let _contract = UndefCause::OpContractFailed {
+        let contract = UndefCause::OpContractFailed {
             code: DiagnosticCode::ConstraintViolated,
             span: span(10, 20),
         };
-        let _user = UndefCause::UserUndef {
+        let user = UndefCause::UserUndef {
             span: span(30, 35),
         };
+
+        // Every pair of distinct variants must be unequal.
+        assert_ne!(unbound, awaiting);
+        assert_ne!(unbound, failed);
+        assert_ne!(unbound, contract);
+        assert_ne!(unbound, user);
+        assert_ne!(awaiting, failed);
+        assert_ne!(awaiting, contract);
+        assert_ne!(awaiting, user);
+        assert_ne!(failed, contract);
+        assert_ne!(failed, user);
+        assert_ne!(contract, user);
+
+        // Debug round-trip: every variant produces a non-empty string.
+        for v in [&unbound, &awaiting, &failed, &contract, &user] {
+            assert!(!format!("{v:?}").is_empty());
+        }
     }
 
     // ── Eq / Hash: dedup-by-(kind,cell) contract that β depends on (PRD Q4) ──

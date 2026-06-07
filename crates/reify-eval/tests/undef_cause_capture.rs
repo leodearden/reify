@@ -5,9 +5,7 @@
 //! - A2: each Layer-1 cluster records the correct UndefCause variant.
 //! - A3: a purely-propagated undef (let c = a+b, inputs unbound) records None.
 //! - A1/BT8: capture on vs. off leaves (Value, DeterminacyState) and
-//!   content-hash per cell byte-identical (step-7 transparency lock).
-//!
-//! RED until step-4: set_capture_undef_causes / undef_causes are not yet wired.
+//!   content-hash per cell byte-identical (transparency lock).
 
 use reify_core::{Diagnostic, ValueCellId};
 use reify_eval::Engine;
@@ -74,6 +72,13 @@ fn layer1_non_solver_origins_recorded() {
         causes.get(&b_id)
     );
 
+    // Field-level check on 'a': param must equal the cell id, span must be
+    // non-empty (i.e. the classifier captured a real source location).
+    if let Some(UndefCause::Unbound { param, span }) = causes.get(&a_id) {
+        assert_eq!(param, &a_id, "Unbound.param must equal the cell's ValueCellId");
+        assert!(span.len() > 0, "Unbound.span must be non-empty (real source location)");
+    }
+
     // "c" is a propagated let (c = a + b; both inputs undef) → None (A3).
     let c_id = ValueCellId::new("UndefDemo", "c");
     assert!(
@@ -136,6 +141,40 @@ fn solve_failed_origin_recorded() {
     // Verify the detail string is non-empty / coarse.
     if let Some(UndefCause::SolveFailed { detail }) = causes.get(&x_id) {
         assert!(!detail.is_empty(), "SolveFailed.detail must not be empty");
+    }
+}
+
+// ── A2: SolveFailed — no-progress solver path ────────────────────────────────
+
+/// Evaluating SolveFail with MockConstraintSolver::new_no_progress records
+/// SolveFailed (not AwaitingSolve) for the auto param "x", with a detail
+/// string beginning "no progress:".
+#[test]
+fn no_progress_solve_failed_origin_recorded() {
+    let module = solve_failed_module();
+
+    let solver = MockConstraintSolver::new_no_progress("iteration limit reached");
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+    engine.set_capture_undef_causes(true);
+    engine.eval(&module);
+
+    let causes = engine.undef_causes();
+    let x_id = ValueCellId::new("SolveFail", "x");
+
+    assert!(
+        matches!(causes.get(&x_id), Some(UndefCause::SolveFailed { .. })),
+        "expected SolveFailed for 'x' after no-progress solve, got {:?}",
+        causes.get(&x_id)
+    );
+
+    // The detail string must begin "no progress:" to distinguish from Infeasible.
+    if let Some(UndefCause::SolveFailed { detail }) = causes.get(&x_id) {
+        assert!(
+            detail.starts_with("no progress:"),
+            "NoProgress detail must start with 'no progress:', got: {detail:?}"
+        );
     }
 }
 
