@@ -161,7 +161,7 @@ fn cmd_cache_stats(args: &[String]) -> ExitCode {
     // is empty), the section header still prints — keeps the output schema
     // stable and discoverable.  Row format: `  <hash>  <bytes>`; the
     // trailing numeric token is the parseable byte size.
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.1));
     println!("Top {STATS_TOP_N} largest entries:");
     for (hash, sz) in entries.iter().take(STATS_TOP_N) {
         println!("  {hash}  {sz}");
