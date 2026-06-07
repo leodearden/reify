@@ -1114,13 +1114,46 @@ fn eval_ad_hoc_selector(
     }
 }
 
-/// Find the first compiled function matching `name`, arity, and per-parameter
-/// [`Type`] equality against the compiled arguments' result types.
+/// Returns `true` when `t` is, or recursively wraps, a [`Type::TypeParam`].
 ///
-/// This is the canonical first-match-wins overload-resolution helper shared by:
+/// Local mirror of `reify_compiler::type_compat::type_carries_type_param`
+/// (covering the bare `TypeParam` leaf and the `Option`/`List`/`Set`/`Map`
+/// wrappers). reify-expr's library deps are only reify-core + reify-ir
+/// (reify-compiler is a dev-dep), so the compiler helper cannot be imported
+/// here — the two MUST be kept in sync. Used by
+/// [`find_matching_compiled_function`] to make a *generic* candidate's
+/// type-param-carrying params act as eval-time resolution wildcards, gated on
+/// `!f.type_params.is_empty()` so non-generic fns are bit-for-bit unchanged
+/// (INV-6, task 4231 β-eval).
+fn type_carries_type_param(t: &Type) -> bool {
+    match t {
+        Type::TypeParam(_) => true,
+        Type::Option(inner) => type_carries_type_param(inner),
+        Type::List(inner) => type_carries_type_param(inner),
+        Type::Set(inner) => type_carries_type_param(inner),
+        Type::Map(key, val) => type_carries_type_param(key) || type_carries_type_param(val),
+        _ => false,
+    }
+}
+
+/// Find the compiled function matching `name`, arity, and per-parameter
+/// [`Type`] compatibility against the compiled arguments' result types.
+///
+/// This is the canonical overload-resolution helper shared by:
 /// - [`eval_user_function_call`] in this crate, and
 /// - the `@optimized` `UserFunctionCall` → `ComputeNode` lowering site in
 ///   `reify-eval/src/engine_eval.rs`.
+///
+/// Mirrors the compile-time `reify_compiler::type_compat::resolve_function_overload`
+/// so eval re-selects the SAME overload the compiler chose (task 4231 β-eval):
+/// - For a non-generic candidate (`type_params` empty) every param keeps **exact**
+///   type equality — non-generic fns are bit-for-bit unchanged (INV-6).
+/// - For a *generic* candidate a type-param-carrying param acts as a **wildcard**
+///   (matches any arg type) — eval is type-erased (INV-2), so the concrete arg
+///   binds the param positionally with no runtime type check.
+/// - **Exact-match-wins tie-break:** if any candidate matches ALL params by exact
+///   equality, generic wildcard matches are discarded first, so a concrete
+///   overload still beats a generic one (mirrors resolve_function_overload).
 ///
 /// If the resolution rule ever grows (e.g. subtyping, coercion ranking,
 /// operator-overloading nuance), update only this function; both call sites
@@ -1130,13 +1163,29 @@ pub fn find_matching_compiled_function<'a>(
     name: &str,
     args: &[CompiledExpr],
 ) -> Option<&'a CompiledFunction> {
-    fns.iter().find(|f| {
-        f.name == name
-            && f.params.len() == args.len()
-            && f.params
-                .iter()
-                .zip(args.iter())
-                .all(|((_, param_ty), arg)| *param_ty == arg.result_type)
+    let arity_match = |f: &&CompiledFunction| f.name == name && f.params.len() == args.len();
+    let exact = |((_, param_ty), arg): (&(String, Type), &CompiledExpr)| *param_ty == arg.result_type;
+
+    // First-match-wins among candidates whose params ALL match by exact equality.
+    // (Includes generic candidates only when their args happen to be exact —
+    // e.g. a TypeParam param vs a concrete arg is NOT exact, so generics fall
+    // through to the wildcard pass below.)
+    if let Some(f) = fns
+        .iter()
+        .filter(arity_match)
+        .find(|f| f.params.iter().zip(args.iter()).all(exact))
+    {
+        return Some(f);
+    }
+
+    // No exact overload — allow a generic candidate's type-param-carrying params
+    // to act as wildcards. Gated on `!type_params.is_empty()` so this pass can
+    // never relax a non-generic fn.
+    fns.iter().filter(arity_match).find(|f| {
+        let is_generic = !f.type_params.is_empty();
+        f.params.iter().zip(args.iter()).all(|((_, param_ty), arg)| {
+            (is_generic && type_carries_type_param(param_ty)) || *param_ty == arg.result_type
+        })
     })
 }
 
