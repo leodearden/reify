@@ -3018,6 +3018,7 @@ mod dependency_map_tests {
     /// Vec<cell>>).  Reverse edges are derived automatically so `deps_of` works
     /// correctly.  Cells mentioned only as deps (leaves) get empty forward/reverse
     /// entries.
+    #[allow(clippy::type_complexity)]
     fn make_dep_map(edges: &[(&str, &str, &[(&str, &str)])]) -> DependencyMap {
         // edges: slice of (entity, field, [(dep_entity, dep_field), ...])
         let mut forward: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
