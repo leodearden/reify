@@ -1,6 +1,6 @@
 # Stdlib `param X : Real` Placeholder Audit
 
-**Status:** Open — classification complete; dimensionless annotations applied (step-2); follow-up tasks filed (step-3); composite-dim task-E (#3115) resolved 2026-05-15 → all 11 blocked-composite sites tightened to named-dimension aliases; mechanical task-A (#3111) resolved 2026-06-05 → all 12 materials_mechanical.ri tightenable-now sites tightened
+**Status:** Open — classification complete; dimensionless annotations applied (step-2); follow-up tasks filed (step-3); composite-dim task-E (#3115) resolved 2026-05-15 → all 11 blocked-composite sites tightened to named-dimension aliases; mechanical task-A (#3111) resolved 2026-06-05 → all 12 materials_mechanical.ri tightenable-now sites tightened; geometry task-F (#3116) resolved 2026-06-07 → all 24 blocked-geometry-type tolerancing.ri sites tightened (feature→Geometry, datum_refs→DatumRef)
 **Date:** 2026-05-07 (audit), 2026-05-15 (task-E close-out)
 **Source:** Task 3090 (origin tasks: 2354 stdlib design, 2696 Density type, 2759 tensor literals)
 **Audit doc parallel:** `docs/notes/stdlib-trait-breadth-audit-v01.md` (trait-breadth audit, task 2347; refreshed 2026-05-14 via task 3529, formerly named `stdlib-trait-audit.md`)
@@ -244,47 +244,54 @@ Source: `crates/reify-compiler/stdlib/structural_physical.ri`
 
 Source: `crates/reify-compiler/stdlib/tolerancing.ri`
 
-All 24 sites use `Real` as a placeholder for a `Geometry` or `DatumRef` type that does
-not yet exist in the resolver.
+**Resolved by task #3116 (2026-06-07).** All 24 sites tightened:
+`feature` → `Geometry`, `datum_refs` → `DatumRef` (aliases `Type::Geometry` via the new
+`"DatumRef"` resolver arm added to `type_resolution.rs`). Per-row line numbers below
+reflect the pre-ε audit; the ε rebase shifted line numbers but not the classification.
 
-#### `feature` — 16 sites (blocked-geometry-type)
+#### `feature` — 16 sites (tightened-by-#3116)
 
-| Line | Owner | Param | Classification | Follow-up |
+| Line (pre-ε) | Owner | Param | Classification | Resolution |
 |------|-------|-------|----------------|-----------|
-| 43 | `GeometricTolerance` trait | `feature` | blocked-geometry-type | task-F |
-| 65 | `Flatness` struct | `feature` | blocked-geometry-type | task-F |
-| 72 | `Straightness` struct | `feature` | blocked-geometry-type | task-F |
-| 78 | `Circularity` struct | `feature` | blocked-geometry-type | task-F |
-| 84 | `Cylindricity` struct | `feature` | blocked-geometry-type | task-F |
-| 91 | `Parallelism` struct | `feature` | blocked-geometry-type | task-F |
-| 98 | `Perpendicularity` struct | `feature` | blocked-geometry-type | task-F |
-| 107 | `Angularity` struct | `feature` | blocked-geometry-type | task-F |
-| 116 | `Position` struct | `feature` | blocked-geometry-type | task-F |
-| 123 | `Concentricity` struct | `feature` | blocked-geometry-type | task-F |
-| 130 | `Symmetry` struct | `feature` | blocked-geometry-type | task-F |
-| 139 | `CircularRunout` struct | `feature` | blocked-geometry-type | task-F |
-| 145 | `TotalRunout` struct | `feature` | blocked-geometry-type | task-F |
-| 152 | `ProfileOfSurface` struct | `feature` | blocked-geometry-type | task-F |
-| 158 | `ProfileOfLine` struct | `feature` | blocked-geometry-type | task-F |
-| 169 | `Datum` struct | `feature` | blocked-geometry-type | task-F |
+| 43 | `GeometricTolerance` trait | `feature` | tightened-by-#3116 | → `Geometry` |
+| 65 | `Flatness` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 72 | `Straightness` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 78 | `Circularity` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 84 | `Cylindricity` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 91 | `Parallelism` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 98 | `Perpendicularity` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 107 | `Angularity` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 116 | `Position` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 123 | `Concentricity` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 130 | `Symmetry` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 139 | `CircularRunout` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 145 | `TotalRunout` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 152 | `ProfileOfSurface` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 158 | `ProfileOfLine` struct | `feature` | tightened-by-#3116 | → `Geometry` |
+| 169 | `Datum` struct | `feature` | tightened-by-#3116 | → `Geometry` |
 
-#### `datum_refs` — 8 sites (blocked-geometry-type)
+Also: `fn require_finish(feature: Real, ...)` (1 additional site) → `feature: Geometry`.
+Total `feature` sites tightened: 17.
 
-| Line | Owner | Param | Classification | Follow-up |
+#### `datum_refs` — 8 sites (tightened-by-#3116)
+
+| Line (pre-ε) | Owner | Param | Classification | Resolution |
 |------|-------|-------|----------------|-----------|
-| 53 | `OrientationTolerance` trait | `datum_refs` | blocked-geometry-type | task-F |
-| 58 | `LocationTolerance` trait | `datum_refs` | blocked-geometry-type | task-F |
-| 92 | `Parallelism` struct | `datum_refs` | blocked-geometry-type | task-F |
-| 99 | `Perpendicularity` struct | `datum_refs` | blocked-geometry-type | task-F |
-| 108 | `Angularity` struct | `datum_refs` | blocked-geometry-type | task-F |
-| 117 | `Position` struct | `datum_refs` | blocked-geometry-type | task-F |
-| 124 | `Concentricity` struct | `datum_refs` | blocked-geometry-type | task-F |
-| 131 | `Symmetry` struct | `datum_refs` | blocked-geometry-type | task-F |
+| 53 | `OrientationTolerance` trait | `datum_refs` | tightened-by-#3116 | → `DatumRef` |
+| 58 | `LocationTolerance` trait | `datum_refs` | tightened-by-#3116 | → `DatumRef` |
+| 92 | `Parallelism` struct | `datum_refs` | tightened-by-#3116 | → `DatumRef` |
+| 99 | `Perpendicularity` struct | `datum_refs` | tightened-by-#3116 | → `DatumRef` |
+| 108 | `Angularity` struct | `datum_refs` | tightened-by-#3116 | → `DatumRef` |
+| 117 | `Position` struct | `datum_refs` | tightened-by-#3116 | → `DatumRef` |
+| 124 | `Concentricity` struct | `datum_refs` | tightened-by-#3116 | → `DatumRef` |
+| 131 | `Symmetry` struct | `datum_refs` | tightened-by-#3116 | → `DatumRef` |
 
-**Notes:** `feature` represents a geometric entity (face, edge, axis, surface) and
-`datum_refs` represents a set of datum reference frames. Neither has a type-system
-counterpart today. Both require a `Geometry` / `DatumRef` resolver capability that
-must be introduced before these params can be tightened.
+**Notes:** `feature` now holds a `Type::Geometry` value (real geometry handle via `box()`
+or any other Solid/Geometry expression); `datum_refs` uses the `DatumRef` type alias which
+resolves to the same `Type::Geometry` variant. Both formerly used `Real = 0.0` placeholders.
+`DatumRef` resolver arm (`"DatumRef" => Some(Type::Geometry)`) added by task #3116 in
+`crates/reify-compiler/src/type_resolution.rs`. All consumer sites (examples/, tests/) 
+cascade-updated in the same task.
 
 ---
 
@@ -375,8 +382,9 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 | `genuine-dimensionless` | 21 | Annotated `// dimensionless` in-place |
 | `tightened-by-#3111` | 12 | task-A ✓ resolved 2026-06-05 — 10 pre-β + 2 post-β (#4240) sites in materials_mechanical.ri: density→Density, youngs_modulus/shear_modulus/yield_strength/ultimate_tensile_strength/compressive_strength/fatigue_limit/fatigue_strength_at→Pressure, charpy_impact/izod_impact→Energy |
 | `tightened-by-#3115` | 11 | Composite-dim alias task-E ✓ resolved 2026-05-15 — all 11 sites now use named-dimension aliases (ThermalConductivity, SpecificHeat, ThermalExpansion, ElectricResistivity, ElectricalConductivity, DielectricStrength, Stiffness, AbsorptionCoeff, FractureToughness) |
+| `tightened-by-#3116` | 24 | Geometry task-F ✓ resolved 2026-06-07 — all 24 tolerancing.ri blocked-geometry-type sites tightened (17 feature→Geometry, 8 datum_refs→DatumRef; `fn require_finish` param also tightened) |
 | `blocked-composite` | 0 | All 11 previous blocked-composite sites tightened by #3115 |
-| `blocked-geometry-type` | 24 | Filed geometry-type follow-up task (task-F) |
+| `blocked-geometry-type` | 0 | All 24 previous blocked-geometry-type sites tightened by #3116 |
 | `blocked-field-in-param` | 0 | Resolved by task 3117; both sites tightened to Field types |
 | `structural-contract` | 7 | Rationale recorded; no tightening needed or intended |
 | **Total** | **101** | |
@@ -403,6 +411,6 @@ rejected by the dimension checker. **No follow-up task is filed for this module.
 | task-C ✓ | Tighten `materials_optical.ri` `reference_thickness` | reference_thickness → Length; update call sites | #3113 (resolved) |
 | task-D | Tighten `structural_physical.ri` dimensioned params | volume→Volume, centroid_x/y/z→Length, moment_of_inertia→MomentOfInertia, max_deflection→Length, hardening_modulus→Pressure, max_service_temp→Temperature, seal_pressure_rating→Pressure; update call sites | #3114 |
 | task-E ✓ | Add named-dimension aliases for composite quantities | Introduced 9 aliases (ThermalConductivity, SpecificHeat, ThermalExpansion, ElectricResistivity, ElectricalConductivity, DielectricStrength, Stiffness, AbsorptionCoeff, FractureToughness — last needs fractional Length exponent, supported via new `from_rational_exps` helper) to NAMED_DIMENSIONS; resolver table-driven so no resolver changes needed. All 11 audit-identified blocked-composite sites tightened. Trait-level constraints (`stiffness > 0`, `resistivity < 0.0001`, etc.) rewritten to use dimensioned RHS literals (e.g. `> 0.0 * 1N / 1m`) — bare numeric RHS evaluated to Indeterminate at runtime because `eval_cmp` compares dimensions; see esc-3115-112 design note. | #3115 (resolved 2026-05-15) |
-| task-F | Introduce `Geometry` / `DatumRef` resolver capability | Add a `Geometry` opaque type and `DatumRef` type to the resolver so `tolerancing.ri::feature` (16 sites) and `datum_refs` (8 sites) can be tightened away from `Real` | #3116 |
+| task-F ✓ | Introduce `Geometry` / `DatumRef` resolver capability | Added `"DatumRef" => Some(Type::Geometry)` arm to `resolve_type_name`; tightened all 17 `feature` sites to `Geometry` and all 8 `datum_refs` sites to `DatumRef` in stdlib tolerancing.ri; cascade-migrated examples/tolerancing/std_tolerancing_surface.ri and examples/m8_tolerancing.ri; test suite (reify-compiler, reify-cli, reify-eval) fully green. | #3116 (resolved 2026-06-07) |
 | task-G ✓ | Investigate and resolve `Field<X,Y>` in `param` positions | Confirmed: resolver arm at `type_resolution.rs:1313` (added by task 3088) works in `param` positions. TODO was stale. Both `ElasticResult::displacement` and `::stress` tightened to Field types. | #3117 (resolved) |
 | task-H ✓ | Tighten `frame` and `ShellStress.top/mid/bottom` to Field types | Confirmed: resolver already supported these forms (per task 3117). `ElasticResult.frame` tightened to `Field<Point3<Length>, Matrix<3,3,Real>>`; `ShellStress.{top,mid,bottom}` tightened to `Field<Point3<Length>, Tensor<2,3,Pressure>>`. Regression-locked by `tests/solver_elastic_tests.rs::{elastic_result_struct_has_correct_param_shape, shell_stress_struct_has_top_mid_bottom_field_params}`. | #3641 (resolved) |
