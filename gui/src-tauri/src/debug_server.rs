@@ -2658,4 +2658,76 @@ mod tests {
         assert!(!is_image_tool("health"));
         assert!(!is_image_tool(""));
     }
+
+    // --- F1: inject_diagnostics + reset_app_state ---
+
+    #[test]
+    fn tool_defs_registers_inject_diagnostics_and_reset_app_state() {
+        let defs = tool_defs();
+
+        // --- inject_diagnostics ---
+        let inject = defs
+            .iter()
+            .find(|d| d.name == "inject_diagnostics")
+            .expect("inject_diagnostics must be present in tool_defs()");
+        let inject_schema = &inject.input_schema;
+
+        // Non-empty description
+        assert!(
+            !inject.description.is_empty(),
+            "inject_diagnostics: description must be non-empty"
+        );
+
+        // Description must contain "synthetic" (G2/G6 label contract)
+        assert!(
+            inject.description.to_lowercase().contains("synthetic"),
+            "inject_diagnostics: description must contain 'synthetic' (G2/G6 honesty label); got {:?}",
+            inject.description
+        );
+
+        // type == "object"
+        assert_eq!(
+            inject_schema["type"].as_str(),
+            Some("object"),
+            "inject_diagnostics: input_schema.type must be 'object'"
+        );
+
+        // "diagnostics" property must be an array type
+        assert_eq!(
+            inject_schema["properties"]["diagnostics"]["type"].as_str(),
+            Some("array"),
+            "inject_diagnostics: properties.diagnostics.type must be 'array'"
+        );
+
+        // --- reset_app_state ---
+        let reset = defs
+            .iter()
+            .find(|d| d.name == "reset_app_state")
+            .expect("reset_app_state must be present in tool_defs()");
+        let reset_schema = &reset.input_schema;
+
+        // Non-empty description
+        assert!(
+            !reset.description.is_empty(),
+            "reset_app_state: description must be non-empty"
+        );
+
+        // type == "object"
+        assert_eq!(
+            reset_schema["type"].as_str(),
+            Some("object"),
+            "reset_app_state: input_schema.type must be 'object'"
+        );
+
+        // required must be absent or empty (no required params)
+        let has_nonempty_required = reset_schema["required"]
+            .as_array()
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false);
+        assert!(
+            !has_nonempty_required,
+            "reset_app_state: required must be absent or empty; got {:?}",
+            reset_schema["required"]
+        );
+    }
 }
