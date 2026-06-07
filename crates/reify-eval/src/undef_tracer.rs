@@ -53,10 +53,28 @@ pub fn trace_undef_causes(
     values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     start: &ValueCellId,
 ) -> Vec<UndefCause> {
-    // STUB — returns empty vec so TDD test steps fail on assertion, not on missing symbol.
-    // Replaced in step-4 (impl).
-    let _ = (origins, dep_map, values, start);
-    Vec::new()
+    // Walk forward through undef cells only.
+    // absent-from-values ⇒ treat as undef (α convention: pre-seeded Unbound params
+    // are (Undef, Undetermined) in snapshot.values but may be absent from the
+    // engine-side map before first eval).
+    let reachable = dep_map.forward_reachable(start, |c| {
+        values.get(c).map(|(v, _)| v.is_undef()).unwrap_or(true)
+    });
+
+    // Collect origins for each reachable UNDEF cell.
+    // `reachable` is sorted by ValueCellId, so the result is order-stable (B1).
+    // Dedup is by originating cell (visited-set in forward_reachable) — each cell
+    // contributes at most one origin; same-detail SolveFailed on distinct cells
+    // are both returned.
+    //
+    // Extra guard: `forward_reachable` includes boundary cells (determined cells
+    // that were visited but not expanded past). Filter those out — only undef
+    // cells can be undef-cause originators (B4: determined inputs never appear).
+    reachable
+        .iter()
+        .filter(|c| values.get(*c).map(|(v, _)| v.is_undef()).unwrap_or(true))
+        .filter_map(|c| origins.get(c).cloned())
+        .collect()
 }
 
 // ── unit tests ────────────────────────────────────────────────────────────────
@@ -165,7 +183,7 @@ mod tests {
         );
         origins.insert(
             b.clone(),
-            UndefCause::Unbound { param: b.clone(), span: SourceSpan::new(2, 1) },
+            UndefCause::Unbound { param: b.clone(), span: SourceSpan::new(2, 3) },
         );
 
         let mut values = PersistentMap::new();
@@ -353,11 +371,11 @@ mod tests {
         );
         origins.insert(
             b.clone(),
-            UndefCause::Unbound { param: b.clone(), span: SourceSpan::new(2, 1) },
+            UndefCause::Unbound { param: b.clone(), span: SourceSpan::new(2, 3) },
         );
         origins.insert(
             c_node.clone(),
-            UndefCause::Unbound { param: c_node.clone(), span: SourceSpan::new(4, 1) },
+            UndefCause::Unbound { param: c_node.clone(), span: SourceSpan::new(4, 5) },
         );
 
         let mut values = PersistentMap::new();
