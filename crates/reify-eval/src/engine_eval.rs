@@ -505,7 +505,7 @@ fn detect_error_map_diagnostics(
         })
         .collect();
     // Sort by ValueCellId for deterministic ordering across hash-based ValueMap iteration.
-    hits.sort_by(|(a, _), (b, _)| a.cmp(b));
+    hits.sort_by_key(|(a, _)| *a);
 
     // Dedup by structural Value equality — one diagnostic per distinct error Map.
     let msg_key = Value::String("error_message".to_string());
