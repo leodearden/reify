@@ -1116,23 +1116,81 @@ fn eval_ad_hoc_selector(
 
 /// Returns `true` when `t` is, or recursively wraps, a [`Type::TypeParam`].
 ///
-/// Local mirror of `reify_compiler::type_compat::type_carries_type_param`
-/// (covering the bare `TypeParam` leaf and the `Option`/`List`/`Set`/`Map`
-/// wrappers). reify-expr's library deps are only reify-core + reify-ir
-/// (reify-compiler is a dev-dep), so the compiler helper cannot be imported
-/// here — the two MUST be kept in sync. Used by
+/// Local mirror of `reify_compiler::type_compat::type_carries_type_param`,
+/// kept VERBATIM with it. reify-expr's library deps are only reify-core +
+/// reify-ir (reify-compiler is a dev-dep), so the compiler helper cannot be
+/// imported here — the two MUST be kept in sync. If they drift, a generic call
+/// whose param embeds a type-param in a constructor covered by only one copy
+/// resolves at compile time but the eval-side resolver rejects it → an
+/// `id(..)`-style call falls back to `Value::Undef` (the esc-4231-120 /
+/// esc-4231-126 divergence class).
+///
+/// Recurses through the same inner-`Type`-bearing constructor set as the
+/// compiler-side `unify` / `substitute_type_params` walks —
+/// `List`/`Set`/`Keyed`/`Option`/`Complex`/`Range`,
+/// `Point`/`Vector`/`Tensor`/`Matrix` (quantity slot), `Map`, `Field`,
+/// `Function` (params + return), and `Union`. Used by
 /// [`find_matching_compiled_function`] to make a *generic* candidate's
 /// type-param-carrying params act as eval-time resolution wildcards, gated on
 /// `!f.type_params.is_empty()` so non-generic fns are bit-for-bit unchanged
 /// (INV-6, task 4231 β-eval).
+///
+/// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
+/// variant forces a compile-time decision here, in lock-step with the canonical
+/// compiler-side copy.
 fn type_carries_type_param(t: &Type) -> bool {
     match t {
+        // The type-parameter leaf itself.
         Type::TypeParam(_) => true,
-        Type::Option(inner) => type_carries_type_param(inner),
-        Type::List(inner) => type_carries_type_param(inner),
-        Type::Set(inner) => type_carries_type_param(inner),
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_carries_type_param(inner),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_carries_type_param(quantity),
+
+        // Two-inner-Type wrappers.
         Type::Map(key, val) => type_carries_type_param(key) || type_carries_type_param(val),
-        _ => false,
+        Type::Field { domain, codomain } => {
+            type_carries_type_param(domain) || type_carries_type_param(codomain)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => params.iter().any(type_carries_type_param) || type_carries_type_param(return_type),
+
+        // Union: any arm.
+        Type::Union(arms) => arms.iter().any(type_carries_type_param),
+
+        // All remaining leaves carry no inner `Type`.
+        Type::Bool
+        | Type::Int
+        | Type::Real
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::Error => false,
     }
 }
 
@@ -5273,6 +5331,58 @@ mod tests {
             Value::Real(v) => assert!((v - 10.0).abs() < 1e-12, "expected 10.0, got {}", v),
             other => panic!("expected Real(10.0), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn find_matching_resolves_generic_field_param_call() {
+        // Parity guard (esc-4231-126): a generic candidate whose param embeds a
+        // type-param inside a NON-collection constructor (`Field<T, Real>`) must
+        // be selected by the eval-side resolver for a concrete `Field<Real, Real>`
+        // arg, mirroring compile-time `resolve_function_overload`. Before the
+        // local `type_carries_type_param` mirror was widened it only covered the
+        // `Option`/`List`/`Set`/`Map` wrappers, so `Field<T, _>` fell through to
+        // the old `_ => false` arm → the generic param was NOT a wildcard → the
+        // call resolved at compile time but evaled to `Undef`. This locks the two
+        // copies (compiler-side + eval-side) in parity for the `Field` walk.
+        let params = vec![(
+            "x".to_string(),
+            Type::Field {
+                domain: Box::new(Type::TypeParam("T".to_string())),
+                codomain: Box::new(Type::Real),
+            },
+        )];
+        let generic_fn = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::Real,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: lit(Value::Real(1.0), Type::Real),
+            },
+            content_hash: ContentHash::of(b"generic_field_f"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![reify_ir::TypeParam {
+                name: "T".to_string(),
+                bounds: vec![],
+                default: None,
+            }],
+        };
+        // Arg's result_type is the concrete Field<Real, Real>; the Value payload
+        // is irrelevant to overload resolution (which keys on result_type).
+        let concrete_field = Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::Real),
+        };
+        let args = vec![lit(Value::Undef, concrete_field)];
+        let fns = [generic_fn];
+        assert!(
+            find_matching_compiled_function(&fns, "f", &args).is_some(),
+            "generic fn with a Field<T, Real> param should resolve for a Field<Real, Real> arg"
+        );
     }
 
     fn make_factorial_fn() -> CompiledFunction {
