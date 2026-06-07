@@ -144,4 +144,31 @@ describe("parseRpcResponse", () => {
       expect(result.value).toEqual({ meshCount: 1 });
     }
   });
+
+  // task-4305 amendment (Suggestion 1): Branch 5 coverage.
+  // inBandError is applied to the bare result object (Branch 5) as well as to the
+  // parsed text-content JSON (Branch 4), but the original step-1/step-2 cases only
+  // covered Branch 4. These two cases verify the newly-introduced {ok:false} return
+  // path in Branch 5 and guard against regression to the unconditional ok:true.
+  it("(l) Branch 5: bare result {error:'timeout'} (no content array) → ok:false, error:'timeout'", () => {
+    const envelope = {
+      result: { error: "timeout" },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("timeout");
+    }
+  });
+
+  it("(m) Branch 5 regression guard: bare result {meshCount:1} (no error field) → ok:true, value:{meshCount:1}", () => {
+    const envelope = {
+      result: { meshCount: 1 },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual({ meshCount: 1 });
+    }
+  });
 });

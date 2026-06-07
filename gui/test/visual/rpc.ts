@@ -13,8 +13,14 @@ export type RpcResult<T> =
  * and must be distinguished from success values at the JS layer.
  *
  * Discriminator: a non-null object whose `.error` field is a string.
- * No tool success path returns a top-level string `error`, so this cannot
- * misclassify a success value. Ref: docs/debug-mcp-contract.md §2a.
+ *
+ * CROSS-LANGUAGE INVARIANT (docs/debug-mcp-contract.md §2a): No success handler
+ * in debug_server.rs may return a response payload with a top-level string `error`
+ * field. If any handler did, its success response would be silently turned into
+ * {ok:false} here. When adding a new handler to debug_server.rs, use a distinct
+ * key (e.g. `lastError`, `warningMessage`) if the success payload needs to surface
+ * an error-like field. The §2a contract note is the authoritative source; this
+ * comment mirrors it for discoverability from the JS consumer side.
  */
 function inBandError(v: unknown): v is { error: string } {
   return v !== null && typeof v === "object" && typeof (v as Record<string, unknown>).error === "string";
