@@ -1,0 +1,7 @@
+structure Box3mf {
+    param width: Scalar = 10mm
+    param height: Scalar = 20mm
+    param depth: Scalar = 5mm
+
+    let body = box(width, height, depth)
+}

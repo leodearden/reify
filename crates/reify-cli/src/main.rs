@@ -546,6 +546,8 @@ fn cmd_build(args: &[String]) -> ExitCode {
         ExportFormat::Step
     } else if output_path.ends_with(".stl") {
         ExportFormat::Stl
+    } else if output_path.ends_with(".3mf") {
+        ExportFormat::ThreeMF
     } else {
         eprintln!("Unknown output format, defaulting to STEP");
         ExportFormat::Step

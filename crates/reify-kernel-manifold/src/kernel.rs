@@ -37,7 +37,7 @@
 use std::collections::HashMap;
 
 use manifold3d::Manifold;
-use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value, write_stl_binary};
+use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, ThreeMfOptions, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
 
 /// Error message used by the v0.2 stub paths (`query`/`export`) that
 /// have not yet been wired to real FFI. Boolean ops (`Union`,
@@ -590,6 +590,19 @@ impl GeometryKernel for ManifoldKernel {
                     .tessellate(handle, 0.0)
                     .map_err(|e| ExportError::FormatError(e.to_string()))?;
                 write_stl_binary(&mesh, writer)
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            ExportFormat::ThreeMF => {
+                // Manifold tessellate ignores tolerance (exact meshes); pass 0.0.
+                let mesh = self
+                    .tessellate(handle, 0.0)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                // default() → include_materials/include_colors both false → no warnings.
+                // Warnings are intentionally discarded: export() has no warning channel.
+                // Task δ wires include_materials/include_colors via occurrence params
+                // and surfaces W_3MF_NO_MATERIALS as a build diagnostic.
+                write_3mf(&mesh, ThreeMfOptions::default(), writer)
+                    .map(|_warnings| ())
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
             _ => Err(ExportError::FormatError(STUB_MSG.into())),
@@ -2073,5 +2086,36 @@ mod tests {
             84 + 50 * count as usize,
             "STL byte length must equal 84 + 50*count"
         );
+    }
+
+    /// Mirrors `export_stl_of_unit_cube_writes_valid_binary` for 3MF.
+    /// Because Stored=uncompressed, OPC part names and model XML appear
+    /// literally in raw bytes — no zip reader needed.
+    ///
+    /// RED before step-8: Manifold export() routes ThreeMF to `_ => Err(STUB_MSG)`.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn export_3mf_of_unit_cube_writes_valid_package() {
+        let mut kernel = ManifoldKernel::new();
+        let h = kernel
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
+
+        let mut buf = Vec::new();
+        kernel
+            .export(h, ExportFormat::ThreeMF, &mut buf)
+            .expect("ManifoldKernel ThreeMF export of a unit cube must succeed");
+
+        // Stored/uncompressed: OPC part names and model XML appear literally in raw bytes.
+        assert!(
+            buf.windows(b"3D/3dmodel.model".len())
+                .any(|w| w == b"3D/3dmodel.model"),
+            "raw bytes must contain '3D/3dmodel.model'"
+        );
+
+        let tri_needle = b"<triangle ";
+        let tri_count = buf.windows(tri_needle.len()).filter(|w| *w == tri_needle).count();
+        assert!(tri_count > 0, "ManifoldKernel 3MF export must contain at least one <triangle>");
     }
 }

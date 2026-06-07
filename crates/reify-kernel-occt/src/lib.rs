@@ -106,7 +106,7 @@ pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 use std::collections::HashMap;
 
 #[cfg(has_occt)]
-use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value, WarmStartable, write_stl_binary};
+use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, ThreeMfOptions, Value, WarmStartable, write_3mf, write_stl_binary};
 
 #[cfg(has_occt)]
 /// Send-safe payload for OCCT warm-start state.
@@ -3072,6 +3072,18 @@ impl OcctKernel {
                     .tessellate(handle, Self::DEFAULT_STL_TESSELLATION_TOLERANCE)
                     .map_err(|e| ExportError::FormatError(e.to_string()))?;
                 write_stl_binary(&mesh, writer)
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            ExportFormat::ThreeMF => {
+                let mesh = self
+                    .tessellate(handle, Self::DEFAULT_STL_TESSELLATION_TOLERANCE)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                // default() → include_materials/include_colors both false → no warnings.
+                // Warnings are intentionally discarded: export() has no warning channel.
+                // Task δ wires include_materials/include_colors via occurrence params
+                // and surfaces W_3MF_NO_MATERIALS as a build diagnostic.
+                write_3mf(&mesh, ThreeMfOptions::default(), writer)
+                    .map(|_warnings| ())
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
             ExportFormat::Obj => Err(ExportError::FormatError(format!(
@@ -9267,6 +9279,47 @@ mod tests {
 
     /// Degenerate input: CircleProfile with negative radius returns GeometryError::OperationFailed.
     ///
+    /// Export a 10×10×10 box to 3MF via the OCCT kernel and assert valid OPC
+    /// package structure on raw bytes (Stored=uncompressed, no zip reader needed).
+    ///
+    /// Mirrors `new_ops_export_stl` (:5711). RED before step-6: `ExportFormat::ThreeMF`
+    /// does not exist → workspace compile fails.
+    #[test]
+    fn new_ops_export_3mf() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+
+        let mut buf = Vec::new();
+        kernel
+            .export(box_h.id, ExportFormat::ThreeMF, &mut buf)
+            .expect("OCCT ThreeMF export of a 10x10x10 box must succeed");
+
+        // Stored/uncompressed: OPC part names and model XML appear literally in raw bytes.
+        let raw = &buf;
+
+        // The ZIP local-file-header entry for 3D/3dmodel.model must be present.
+        assert!(
+            raw.windows(b"3D/3dmodel.model".len())
+                .any(|w| w == b"3D/3dmodel.model"),
+            "raw bytes must contain '3D/3dmodel.model'"
+        );
+
+        // At least one <triangle element must appear in the model XML.
+        let tri_needle = b"<triangle ";
+        let tri_count = raw.windows(tri_needle.len()).filter(|w| *w == tri_needle).count();
+        assert!(tri_count > 0, "OCCT 3MF export must contain at least one <triangle>");
+    }
+
     /// RED until step-4 adds GeometryOp::CircleProfile.
     #[test]
     fn circle_profile_negative_radius_returns_error() {

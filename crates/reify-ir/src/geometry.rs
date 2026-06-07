@@ -1529,6 +1529,7 @@ pub enum ExportFormat {
     Step,
     Stl,
     Obj,
+    ThreeMF,
 }
 
 /// Tessellated mesh for visualization.
@@ -1723,6 +1724,201 @@ pub fn write_stl_ascii(
 
     writer.write_all(b"endsolid reify\n")?;
     Ok(())
+}
+
+// ── 3MF serializer ───────────────────────────────────────────────────────────
+
+/// Options for [`write_3mf`].
+///
+/// **Kernel wiring status (γ):** both `ManifoldKernel::export` and
+/// `OcctKernel::export` call `write_3mf` with `ThreeMfOptions::default()`
+/// (both flags `false`) and discard the returned warnings.  The kernel
+/// `export()` trait has no warning channel; wiring these options through
+/// occurrence parameters and surfacing warnings as build diagnostics is
+/// task δ's responsibility.
+#[derive(Debug, Clone, Default)]
+pub struct ThreeMfOptions {
+    /// Embed per-body material data in the output (γ: not yet implemented;
+    /// emits `W_3MF_NO_MATERIALS` while still writing geometry).
+    pub include_materials: bool,
+    /// Embed per-vertex color data in the output (γ: not yet implemented;
+    /// emits `W_3MF_NO_MATERIALS` while still writing geometry).
+    pub include_colors: bool,
+}
+
+/// Warnings returned by [`write_3mf`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreeMfWarning {
+    /// `include_materials` or `include_colors` was requested but no
+    /// material/color data is present in the mesh — geometry is still
+    /// written; materials are omitted.  Per PRD §4.2 this is an
+    /// "honest no-op with warning", NOT a silent ignore.
+    NoMaterials,
+}
+
+impl ThreeMfWarning {
+    /// Machine-stable warning code string.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ThreeMfWarning::NoMaterials => "W_3MF_NO_MATERIALS",
+        }
+    }
+}
+
+/// Write `mesh` to the 3MF format (OPC ZIP package).
+///
+/// Produces a valid 3MF/OPC ZIP holding three parts:
+///
+/// - `[Content_Types].xml` — OPC content-type declarations
+/// - `_rels/.rels` — OPC relationship pointing to the 3D model start-part
+/// - `3D/3dmodel.model` — 3MF core model XML
+///   (`<model>/<resources>/<object>/<mesh>/<vertices>/<triangles>`)
+///
+/// **Compression:** all parts use `Stored` (no compression), so the model XML
+/// bytes appear literally inside the archive.  Downstream tests can
+/// substring-count `<triangle ` / `3D/3dmodel.model` on raw bytes without a
+/// zip reader.
+///
+/// **Determinism:** all ZIP entries carry a pinned DOS-epoch timestamp
+/// (1980-01-01 00:00:00 via [`zip::DateTime::default()`]).  Two calls on the
+/// same `Mesh` with the same `ThreeMfOptions` are byte-identical.
+///
+/// Returns `Err(io::Error(InvalidData))` if `indices.len()` is not a
+/// multiple of 3, if `vertices.len()` is not a multiple of 3, or if any
+/// triangle index is out of bounds.
+/// Returns [`ThreeMfWarning::NoMaterials`] when either `include_materials` or
+/// `include_colors` is set (geometry is still written).
+///
+/// **NaN/Inf coordinates:** non-finite `f32` values are written as-is via
+/// `{}` formatting (matching `write_stl_ascii` behavior).  3MF consumers
+/// that require IEEE-finite coordinates will reject such packages.
+pub fn write_3mf(
+    mesh: &Mesh,
+    opts: ThreeMfOptions,
+    writer: &mut dyn std::io::Write,
+) -> std::io::Result<Vec<ThreeMfWarning>> {
+    use std::io::{Cursor, Error, ErrorKind, Write as _};
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
+
+    // Reject malformed meshes with a non-triangular index buffer up front.
+    if !mesh.indices.len().is_multiple_of(3) {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "index buffer length {} is not a multiple of 3",
+                mesh.indices.len()
+            ),
+        ));
+    }
+    // Mirror the index check: a partial vertex triple would be silently
+    // truncated by `len() / 3`, producing a mesh with a dropped float.
+    // Reject it symmetrically so both buffers fail loudly on malformed input.
+    if !mesh.vertices.len().is_multiple_of(3) {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "vertex buffer length {} is not a multiple of 3",
+                mesh.vertices.len()
+            ),
+        ));
+    }
+
+    // Pinned timestamp: DOS epoch (1980-01-01 00:00:00) for byte-determinism.
+    // zip::DateTime::default() gives the zeroed DOS epoch without the `time` feature.
+    let fixed_time = zip::DateTime::default();
+    let entry_opts = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Stored)
+        .last_modified_time(fixed_time);
+
+    // ZipWriter requires Write + Seek; build into an in-memory Cursor first.
+    let mut cursor = Cursor::new(Vec::<u8>::new());
+    {
+        let mut zw = ZipWriter::new(&mut cursor);
+
+        // ── [Content_Types].xml ──────────────────────────────────────────────
+        zw.start_file("[Content_Types].xml", entry_opts)?;
+        zw.write_all(
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+              <Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
+              <Default Extension=\"rels\" \
+                ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
+              <Default Extension=\"model\" \
+                ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/>\
+              </Types>",
+        )?;
+
+        // ── _rels/.rels ──────────────────────────────────────────────────────
+        zw.start_file("_rels/.rels", entry_opts)?;
+        zw.write_all(
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+              <Relationships \
+                xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
+              <Relationship Id=\"rel0\" \
+                Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\" \
+                Target=\"/3D/3dmodel.model\"/>\
+              </Relationships>",
+        )?;
+
+        // ── 3D/3dmodel.model ─────────────────────────────────────────────────
+        zw.start_file("3D/3dmodel.model", entry_opts)?;
+        zw.write_all(
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+              <model unit=\"millimeter\" \
+                xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\
+              <resources><object id=\"1\" type=\"model\"><mesh><vertices>",
+        )?;
+
+        // One <vertex x="…" y="…" z="…"/> per xyz triple in the vertex buffer.
+        let n_verts = mesh.vertices.len() / 3;
+        let mut line_buf = String::with_capacity(80);
+        for i in 0..n_verts {
+            let v = mesh_vertex(&mesh.vertices, i as u32).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidData, format!("vertex index {i} out of bounds"))
+            })?;
+            line_buf.clear();
+            // Using std::fmt::Write on String is infallible.
+            let _ = std::fmt::write(
+                &mut line_buf,
+                format_args!("<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", v[0], v[1], v[2]),
+            );
+            zw.write_all(line_buf.as_bytes())?;
+        }
+
+        zw.write_all(b"</vertices><triangles>")?;
+
+        // One <triangle v1="…" v2="…" v3="…"/> per index triple.
+        for chunk in mesh.indices.chunks_exact(3) {
+            // Validate indices (reuse triangle_verts OOB check).
+            let _ = triangle_verts(&mesh.vertices, chunk)?;
+            line_buf.clear();
+            let _ = std::fmt::write(
+                &mut line_buf,
+                format_args!(
+                    "<triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>",
+                    chunk[0], chunk[1], chunk[2]
+                ),
+            );
+            zw.write_all(line_buf.as_bytes())?;
+        }
+
+        zw.write_all(
+            b"</triangles></mesh></object></resources>\
+              <build><item objectid=\"1\"/></build></model>",
+        )?;
+
+        zw.finish()?;
+    }
+
+    // Copy the complete in-memory ZIP to the outer (non-Seek) writer.
+    writer.write_all(cursor.get_ref())?;
+
+    // Warning gate: honest no-op with warning per PRD §4.2.
+    let mut warnings = Vec::new();
+    if opts.include_materials || opts.include_colors {
+        warnings.push(ThreeMfWarning::NoMaterials);
+    }
+    Ok(warnings)
 }
 
 /// FEA element-order discriminator for a tet-based [`VolumeMesh`].
@@ -6894,5 +7090,174 @@ mod tests {
             std::io::ErrorKind::InvalidData,
             "error kind must be InvalidData"
         );
+    }
+
+    // ── 3MF serializer tests ─────────────────────────────────────────────────
+
+    /// Helper: build a 12-triangle unit cube mesh (8 vertices, 36 indices).
+    fn unit_cube_mesh() -> Mesh {
+        // 8 corners of a unit cube [0,1]^3
+        #[rustfmt::skip]
+        let vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0, // v0
+            1.0, 0.0, 0.0, // v1
+            1.0, 1.0, 0.0, // v2
+            0.0, 1.0, 0.0, // v3
+            0.0, 0.0, 1.0, // v4
+            1.0, 0.0, 1.0, // v5
+            1.0, 1.0, 1.0, // v6
+            0.0, 1.0, 1.0, // v7
+        ];
+        // 12 triangles (2 per face, 6 faces)
+        #[rustfmt::skip]
+        let indices: Vec<u32> = vec![
+            // -Z face
+            0, 2, 1,  0, 3, 2,
+            // +Z face
+            4, 5, 6,  4, 6, 7,
+            // -Y face
+            0, 1, 5,  0, 5, 4,
+            // +Y face
+            3, 6, 2,  3, 7, 6,
+            // -X face
+            0, 4, 7,  0, 7, 3,
+            // +X face
+            1, 2, 6,  1, 6, 5,
+        ];
+        Mesh { vertices, indices, normals: None }
+    }
+
+    #[test]
+    fn write_3mf_box_produces_valid_3mf_package() {
+        use std::io::Cursor;
+        let mesh = unit_cube_mesh();
+        let tri_count = mesh.indices.len() / 3; // 12
+        let vert_count = mesh.vertices.len() / 3; // 8
+
+        let mut buf = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+            .expect("write_3mf should succeed");
+
+        // --- ZIP structure assertions ---
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf))
+            .expect("output should be a valid ZIP archive");
+
+        // Required OPC parts
+        let names: std::collections::HashSet<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(names.contains("[Content_Types].xml"), "missing [Content_Types].xml");
+        assert!(names.contains("_rels/.rels"), "missing _rels/.rels");
+        assert!(names.contains("3D/3dmodel.model"), "missing 3D/3dmodel.model");
+
+        // --- 3dmodel.model content assertions ---
+        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+        let mut model_xml = String::new();
+        std::io::Read::read_to_string(&mut model_file, &mut model_xml).unwrap();
+
+        let actual_triangles = model_xml.matches("<triangle ").count();
+        assert_eq!(actual_triangles, tri_count,
+            "expected {tri_count} <triangle> elements, got {actual_triangles}");
+
+        let actual_verts = model_xml.matches("<vertex ").count();
+        assert_eq!(actual_verts, vert_count,
+            "expected {vert_count} <vertex> elements, got {actual_verts}");
+
+        // --- Determinism: two calls on the same mesh produce byte-identical output ---
+        let mut buf2 = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf2)
+            .expect("second write_3mf should succeed");
+        assert_eq!(buf, buf2, "write_3mf must be byte-deterministic");
+    }
+
+    #[test]
+    fn write_3mf_malformed_mesh_returns_err() {
+        // 4 indices — not a multiple of 3; must be rejected.
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 1.0],
+            indices: vec![0, 1, 2, 3],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_3mf(&mesh, ThreeMfOptions::default(), &mut buf);
+        assert!(result.is_err(), "non-multiple-of-3 index buffer must return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
+        );
+    }
+
+    #[test]
+    fn write_3mf_malformed_vertex_buffer_returns_err() {
+        // 7 floats — not a multiple of 3; the trailing dangling float must be
+        // rejected rather than silently truncated (asymmetric-validation fix).
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5],
+            indices: vec![],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_3mf(&mesh, ThreeMfOptions::default(), &mut buf);
+        assert!(result.is_err(), "non-multiple-of-3 vertex buffer must return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
+        );
+    }
+
+    #[test]
+    fn write_3mf_materials_gate_emits_w_3mf_no_materials() {
+        use std::io::Cursor;
+        let mesh = unit_cube_mesh();
+
+        // (a) include_materials: true → warning emitted, geometry still written
+        {
+            let mut buf = Vec::new();
+            let warnings = write_3mf(
+                &mesh,
+                ThreeMfOptions { include_materials: true, include_colors: false },
+                &mut buf,
+            )
+            .expect("write_3mf with include_materials should succeed");
+
+            assert_eq!(warnings, vec![ThreeMfWarning::NoMaterials],
+                "include_materials:true must emit NoMaterials warning");
+            assert_eq!(warnings[0].code(), "W_3MF_NO_MATERIALS",
+                "NoMaterials.code() must return 'W_3MF_NO_MATERIALS'");
+
+            // Geometry must still be present
+            let mut archive = zip::ZipArchive::new(Cursor::new(&buf)).unwrap();
+            let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+            let mut xml = String::new();
+            std::io::Read::read_to_string(&mut model_file, &mut xml).unwrap();
+            assert!(xml.matches("<triangle ").count() > 0,
+                "geometry must be written even when include_materials:true");
+        }
+
+        // (b) include_colors: true → warning emitted
+        {
+            let mut buf = Vec::new();
+            let warnings = write_3mf(
+                &mesh,
+                ThreeMfOptions { include_materials: false, include_colors: true },
+                &mut buf,
+            )
+            .expect("write_3mf with include_colors should succeed");
+
+            assert_eq!(warnings, vec![ThreeMfWarning::NoMaterials],
+                "include_colors:true must emit NoMaterials warning");
+        }
+
+        // (c) default (both false) → no warnings
+        {
+            let mut buf = Vec::new();
+            let warnings = write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+                .expect("write_3mf with defaults should succeed");
+
+            assert!(warnings.is_empty(),
+                "default ThreeMfOptions (both flags false) must produce no warnings");
+        }
     }
 }
