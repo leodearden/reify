@@ -277,6 +277,18 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
       { path: "selection.selectedEntity", op: "equals", expected: null },
     ],
   },
+  // task-4305 E1 C1 e2e signal; open_menu clicks [data-testid=menu-trigger-file] and
+  // returns the live ctx.menuBar.openMenu() state (synchronous Solid signal update).
+  {
+    name: "open_menu_file",
+    fixture: "small_cube",
+    tool: "open_menu",
+    args: { name: "file" },
+    assertions: [
+      { path: "ok", op: "equals", expected: true },
+      { path: "open", op: "equals", expected: "file" },
+    ],
+  },
   // task-4305 E1 C2 e2e signal (live via npm run test:e2e); resize_panes writes
   // ctx.stores.layout (L0) and echoes layout.editorWidth — deterministic store round-trip.
   {
