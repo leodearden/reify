@@ -2675,6 +2675,20 @@ impl FeatureTagTable {
         self.entries.get(&id)
     }
 
+    /// Remove the entry for `id`, returning it if present.
+    ///
+    /// Used by the cache-hit short-circuit in `Engine::execute_realization_ops`
+    /// to evict any cross-kernel colliding entry at `id` before pushing the
+    /// cached handle — so a subsequent `lookup(id)` correctly returns `None`
+    /// (the #3226 spec: a cache-served handle has no entries in the tag table
+    /// on the second build).
+    ///
+    /// Returns `None` silently when `id` is absent (no-op in the common
+    /// single-kernel case where the per-build reset already cleared the table).
+    pub fn remove(&mut self, id: GeometryHandleId) -> Option<FeatureTag> {
+        self.entries.remove(&id)
+    }
+
     /// Number of entries currently in the table.
     pub fn len(&self) -> usize {
         self.entries.len()

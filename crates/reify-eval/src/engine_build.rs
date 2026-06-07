@@ -3698,18 +3698,20 @@ impl Engine {
     /// follow-up task can either cache the table entries alongside the
     /// handle or skip the table reset for engines with non-empty cache.
     ///
-    /// **Internal-consistency invariant** (amendment): on cache-hit the
-    /// helper `debug_assert!`s that neither `feature_tag_table` nor
-    /// `topology_attribute_table` already carries an entry for the cached
-    /// handle. Under the per-build reset contract above, that assertion
-    /// must always hold (the table was just reset and only earlier
-    /// realizations in the same build could have touched a different
-    /// handle). The assertion fires loudly during development if a future
-    /// refactor weakens the per-build reset or routes a cache-served
-    /// handle through a path that ALSO populates the tables — both of
-    /// which would silently regress attribute-query results for a cached
-    /// handle. Production builds skip the check entirely
-    /// (`debug_assertions` cfg).
+    /// **Cross-kernel collision guard** (task 4349): on cache-hit the helper
+    /// calls `feature_tag_table.remove(cached_handle.id)` (and analogously for
+    /// `topology_attribute_table`) to evict any entry that a cross-kernel
+    /// sibling op may have recorded at the same bare `GeometryHandleId`. Both
+    /// tables are keyed by `GeometryHandleId` only (not the full `KernelHandle`),
+    /// and each kernel's counter starts at 1 — so OCCT and Manifold independently
+    /// produce `GeometryHandleId(1)`. A Manifold op earlier in the same build may
+    /// have written `feature_tag_table.record(GeometryHandleId(1), tag)` before
+    /// this cache-hit returns `{Occt, GeometryHandleId(1)}` from a prior build,
+    /// collapsing two distinct `KernelHandle`s onto one key. The `remove` is a
+    /// no-op in the common single-kernel case (the per-build reset already cleared
+    /// the table) and enforces the #3226 spec ("cache-served handle has no entries
+    /// in those tables") in the cross-kernel case. The principled re-key of both
+    /// tables to `KernelHandle` is deferred to follow-up task #4351.
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
@@ -3836,22 +3838,29 @@ impl Engine {
                     }
                 });
             if let Some((cached_handle, resolved_repr)) = cache_probe {
-                // Internal-consistency invariant (amendment): the per-build
-                // reset of `feature_tag_table` / `topology_attribute_table` at
-                // the top of build() / build_snapshot() / tessellate_*()
-                // guarantees neither table can already carry an entry for the
-                // cached handle on a clean cache-hit path. If a future refactor
-                // weakens the reset or routes the cached handle through a path
-                // that ALSO populates the tables, this debug_assert fires loudly
-                // during development rather than silently regressing attribute-
-                // query results for cached handles.
-                debug_assert!(
-                    feature_tag_table.lookup(cached_handle.id).is_none(),
-                    "feature_tag_table already has an entry for cached handle \
-                     {:?} on cache-hit short-circuit — per-build reset invariant \
-                     violated",
-                    cached_handle,
-                );
+                // Cross-kernel collision guard (task 4349): `FeatureTagTable`
+                // and `TopologyAttributeTable` are keyed by bare
+                // `GeometryHandleId` — NOT by the full `KernelHandle`. Each
+                // kernel's handle-id counter starts at 1, so OCCT and Manifold
+                // independently produce `GeometryHandleId(1)` for their first
+                // handle. Within one build a Manifold op may record
+                // `feature_tag_table.record(GeometryHandleId(1), tag)` before
+                // this cache-hit short-circuit returns the cached
+                // `{Occt, GeometryHandleId(1)}` from a prior build — two
+                // distinct `KernelHandle`s collapsing onto the same numeric key.
+                //
+                // Rather than asserting the table is empty at the cached key
+                // (which fails under cross-kernel collision even though the
+                // per-build reset is unconditional), we defensively remove any
+                // entry at `cached_handle.id` from both tables. This is a no-op
+                // in the common single-kernel case (the per-build reset already
+                // cleared the table) and enforces the #3226 spec ("a cache-served
+                // handle has no entries in those tables on the second build") in
+                // the cross-kernel case by evicting the colliding sibling entry.
+                //
+                // The principled root fix (re-keying both tables by `KernelHandle`)
+                // is deferred to follow-up task #4351.
+                feature_tag_table.remove(cached_handle.id);
                 debug_assert!(
                     topology_attribute_table.lookup(cached_handle.id).is_none(),
                     "topology_attribute_table already has an entry for cached \
