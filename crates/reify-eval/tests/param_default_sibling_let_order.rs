@@ -436,7 +436,8 @@ fn incremental_edit_rope_dia_re_evaluates_param_p_through_sibling_let() {
 ///   param a : Real = b + 1.0   ← reads let b → cycle member
 ///   let b = a * 2.0            ← reads param a → cycle member
 ///
-/// Override: `Value::Int(42)` for `a` — Int vs Real is a type-kind mismatch.
+/// Override: `Value::Bool(true)` for `a` — Bool vs Real is a type-kind mismatch
+/// (unlike Int, Bool has no coercion path to Real per `value_type_kind_matches`).
 ///
 /// Assert:
 ///   (a) cycle error is still present (a and b are cyclic).
@@ -448,8 +449,8 @@ fn cyclic_param_override_rejection_warning_not_suppressed() {
     let mut engine = fresh_engine();
     let a_id = ValueCellId::new("C", "a");
 
-    // Set a type-kind-mismatched override: Int value for a Real param.
-    engine.set_param_and_invalidate(&a_id, Value::Int(42));
+    // Set a type-kind-mismatched override: Bool value for a Real param.
+    engine.set_param_and_invalidate(&a_id, Value::Bool(true));
 
     let module = compile_source(
         "structure C { \

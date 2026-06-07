@@ -2890,18 +2890,18 @@ impl Engine {
                     .iter()
                     .filter(|c| matches!(c.kind, ValueCellKind::Param))
                 {
-                    if let Some(v) = self.param_overrides.get(&cell.id) {
-                        if let Err(ref rejection) = validate_param_override(v, &cell.cell_type) {
-                            emit_param_override_rejection_warning(
-                                &mut diagnostics,
-                                &cell.id,
-                                &cell.cell_type,
-                                v,
-                                rejection,
-                                &mut self.last_param_override_type_kind_rejections,
-                                &mut self.last_param_override_dimension_rejections,
-                            );
-                        }
+                    if let Some(v) = self.param_overrides.get(&cell.id)
+                        && let Err(ref rejection) = validate_param_override(v, &cell.cell_type)
+                    {
+                        emit_param_override_rejection_warning(
+                            &mut diagnostics,
+                            &cell.id,
+                            &cell.cell_type,
+                            v,
+                            rejection,
+                            &mut self.last_param_override_type_kind_rejections,
+                            &mut self.last_param_override_dimension_rejections,
+                        );
                     }
                 }
 
@@ -2910,7 +2910,7 @@ impl Engine {
                 // and cycle-detection logic is not duplicated between this path and
                 // evaluate_params_and_lets_unified. partial_map_skip=false: ALL params
                 // enter the graph (eval_cached "always writes a result" contract).
-                let (combined_nodes, mut combined_traces, sorted_combined) =
+                let (_combined_nodes, combined_traces, sorted_combined) =
                     build_combined_param_let_graph(
                         template,
                         &self.param_overrides,
@@ -3596,18 +3596,18 @@ impl Engine {
             .iter()
             .filter(|c| matches!(c.kind, ValueCellKind::Param))
         {
-            if let Some(v) = self.param_overrides.get(&cell.id) {
-                if let Err(ref rejection) = validate_param_override(v, &cell.cell_type) {
-                    emit_param_override_rejection_warning(
-                        diagnostics,
-                        &cell.id,
-                        &cell.cell_type,
-                        v,
-                        rejection,
-                        &mut self.last_param_override_type_kind_rejections,
-                        &mut self.last_param_override_dimension_rejections,
-                    );
-                }
+            if let Some(v) = self.param_overrides.get(&cell.id)
+                && let Err(ref rejection) = validate_param_override(v, &cell.cell_type)
+            {
+                emit_param_override_rejection_warning(
+                    diagnostics,
+                    &cell.id,
+                    &cell.cell_type,
+                    v,
+                    rejection,
+                    &mut self.last_param_override_type_kind_rejections,
+                    &mut self.last_param_override_dimension_rejections,
+                );
             }
         }
 
@@ -3616,7 +3616,7 @@ impl Engine {
         // duplicated in the eval_cached path. partial_map_skip=true preserves the
         // eval() PARTIAL-MAP invariant (params with no override AND no default are
         // absent from values by design).
-        let (combined_nodes, mut combined_traces, sorted_combined) =
+        let (_combined_nodes, mut combined_traces, sorted_combined) =
             build_combined_param_let_graph(template, &self.param_overrides, true, diagnostics);
 
         // ── Step 5: Unified evaluation in topological order ───────────────────
