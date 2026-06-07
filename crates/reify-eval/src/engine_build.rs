@@ -10723,6 +10723,98 @@ mod tests {
              be removed (not left behind as a foreign kernel's tag)"
         );
     }
+
+    /// Regression test for cross-kernel `GeometryHandleId` collision at the
+    /// cache-hit short-circuit — `topology_attribute_table` path (task 4349).
+    ///
+    /// Symmetric to `cache_hit_short_circuit_tolerates_cross_kernel_feature_tag_id_collision`
+    /// but pre-seeds ONLY `topology_attribute_table` (leaving `feature_tag_table`
+    /// empty). After step-2's fix the first check (`feature_tag_table.remove`)
+    /// is a no-op on the empty table and execution reaches the SECOND
+    /// `debug_assert!(topology_attribute_table.lookup(cached_handle.id).is_none())`
+    /// which then fires because `GeometryHandleId(1)` is occupied by the
+    /// sibling attribute entry.
+    ///
+    /// # RED → GREEN
+    ///
+    /// Before the fix: `debug_assert!` for `topology_attribute_table` panics
+    ///   → test FAILS (RED).
+    /// After  the fix: `topology_attribute_table.remove(cached_handle.id)` is
+    ///   called → no panic → call returns → lookup is `None` → test PASSES (GREEN).
+    #[test]
+    fn cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision() {
+        use reify_ir::{FeatureId, Role};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let realization_id = RealizationNodeId::new("CrossKernelEntity2", 0);
+        let tol = 1e-4_f64;
+
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let registry = dispatch_test_single_default_registry(&desc);
+
+        let mut state = DispatchTestState::default();
+
+        // Pre-seed the cache: the prior build stored {Occt, GeometryHandleId(1)}.
+        let cached_handle = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
+        state.realization_cache.insert(
+            &realization_id.entity,
+            ReprKind::BRep,
+            tol,
+            NO_OPTIONS,
+            cached_handle,
+        );
+
+        // Pre-seed ONLY topology_attribute_table (not feature_tag_table) at
+        // GeometryHandleId(1), simulating a cross-kernel sibling Mesh op that
+        // recorded its first handle's attribute earlier in this same build.
+        // feature_tag_table stays empty → the first check (now a remove, step-2)
+        // is a no-op and execution reaches the SECOND assert for topology.
+        let feature_id = FeatureId::from(&realization_id);
+        let sibling_attr = TopologyAttribute {
+            feature_id,
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: Vec::new(),
+        };
+        state
+            .topology_attribute_table
+            .record(GeometryHandleId(1), sibling_attr);
+
+        // Drive the cache-hit short-circuit: operations=&[] + demanded_tol +
+        // realization_name together arm the cache probe.
+        //
+        // Before the fix: debug_assert!(topology_attribute_table.lookup(cached_handle.id).is_none())
+        //   panics → test FAILS (RED).
+        // After  the fix: topology_attribute_table.remove(cached_handle.id) is
+        //   called → no panic → call returns → test continues.
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "default",
+            &[], // empty ops — cache-hit fires before the op loop
+            &realization_id,
+            Some("part"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+        );
+
+        // Post-condition: the cached handle must read None from topology_attribute_table.
+        assert!(
+            state
+                .topology_attribute_table
+                .lookup(GeometryHandleId(1))
+                .is_none(),
+            "topology_attribute_table must have no entry for the cached handle id \
+             after cache-hit short-circuit: cross-kernel sibling's colliding entry \
+             must be removed (not left behind as a foreign kernel's attribute)"
+        );
+    }
 }
 
 // ── dispatch_volume_mesh unit tests ──────────────────────────────────────────
