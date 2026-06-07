@@ -11,7 +11,7 @@
 
 use reify_core::{Diagnostic, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::{DeterminacyState, UndefCause, Value};
+use reify_ir::UndefCause;
 use reify_test_support::{
     MockConstraintChecker, MockConstraintSolver, collect_errors, compile_source_with_stdlib,
 };
@@ -180,14 +180,17 @@ fn capture_is_byte_transparent() {
     }
 
     // (4) EvalResult diagnostics are equal (checked via a second eval).
+    // `Diagnostic` does not implement `PartialEq`, so compare via Debug-format
+    // strings — this captures all fields (level, message, code, labels) and
+    // is sufficient for a transparency regression gate.
     let mut engine_off2 = Engine::new(Box::new(MockConstraintChecker::new()), None);
     let result_off = engine_off2.eval(&module);
     let mut engine_on2 = Engine::new(Box::new(MockConstraintChecker::new()), None);
     engine_on2.set_capture_undef_causes(true);
     let result_on = engine_on2.eval(&module);
     assert_eq!(
-        result_off.diagnostics,
-        result_on.diagnostics,
+        format!("{:?}", result_off.diagnostics),
+        format!("{:?}", result_on.diagnostics),
         "EvalResult.diagnostics must be identical across capture on/off"
     );
 

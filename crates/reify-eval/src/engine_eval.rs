@@ -1487,6 +1487,113 @@ fn parse_data(data_val: &Value) -> Option<Vec<f64>> {
     Some(data)
 }
 
+// ── undef-self-describing α (task 4321): UndefCause classifier ───────────────
+
+/// Classify the origin of every undef cell in `snap_values`, returning a map
+/// from originating-cell id to its `UndefCause`.
+///
+/// # Classification rules (A2)
+///
+/// For each cell `(id, (val, det))` in `snap_values` where `val.is_undef()`:
+///
+/// 1. **No matching decl** — synthetic guard/list/sub-elaborated cells have no
+///    entry in `decls`.  Skipped silently to avoid false `Unbound` causes.
+///
+/// 2. **Propagated undef** (A3) — if any direct input cell (from
+///    `extract_value_deps(default_expr)`) is undef or absent in `snap_values`,
+///    the cell's undef status is fully explained by its inputs.  Record nothing.
+///
+/// 3. **Originating undef** — all direct inputs are determined:
+///    - `det == Auto | Provisional`: solver variable.
+///      - id in `solve_failed_autos` → [`UndefCause::SolveFailed`] with the
+///        coarse detail string captured from the actual `SolveResult`.
+///      - otherwise → [`UndefCause::AwaitingSolve`].
+///    - `default_expr == Some(Literal(Value::Undef))` → [`UndefCause::UserUndef`].
+///    - `default_expr == None` → [`UndefCause::Unbound`].
+///    - `default_expr` is non-undef and all inputs are determined → the
+///      `OpContractFailed` case owned by task γ; record nothing.
+///
+/// # A1 guarantee
+///
+/// This function only reads `snap_values` and `decls`; it never modifies them.
+/// The caller's `snapshot.values` is untouched, making capture-on == capture-off
+/// for every `(Value, DeterminacyState)` and content-hash structural.
+fn classify_undef_origins(
+    snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    decls: &HashMap<&ValueCellId, &reify_compiler::ValueCellDecl>,
+    solve_failed_autos: &HashMap<ValueCellId, String>,
+) -> HashMap<ValueCellId, reify_ir::UndefCause> {
+    use reify_ir::{CompiledExprKind, DeterminacyState, UndefCause, Value};
+
+    let mut causes = HashMap::new();
+
+    for (id, (val, det)) in snap_values.iter() {
+        if !val.is_undef() {
+            continue;
+        }
+
+        // (1) Skip cells with no matching decl (synthetic guard/list/sub cells).
+        let Some(decl) = decls.get(id) else {
+            continue;
+        };
+
+        // (2) A3: check whether any direct input is undef → purely propagated.
+        let propagated = if let Some(default_expr) = &decl.default_expr {
+            let inputs = crate::deps::extract_value_deps(default_expr);
+            inputs.iter().any(|input_id| {
+                match snap_values.get(input_id) {
+                    Some((v, _)) => v.is_undef(),
+                    None => true, // absent counts as undef
+                }
+            })
+        } else {
+            // No default_expr → no input edges → cannot be propagated.
+            false
+        };
+
+        if propagated {
+            // A3: propagated undef — record nothing.
+            continue;
+        }
+
+        // (3) Originating undef: classify.
+        let cause = match det {
+            DeterminacyState::Auto | DeterminacyState::Provisional => {
+                // Solver variable.
+                if let Some(detail) = solve_failed_autos.get(id) {
+                    UndefCause::SolveFailed {
+                        detail: detail.clone(),
+                    }
+                } else {
+                    UndefCause::AwaitingSolve { param: id.clone() }
+                }
+            }
+            _ => {
+                match &decl.default_expr {
+                    // `= undef` literal.
+                    Some(expr)
+                        if matches!(&expr.kind, CompiledExprKind::Literal(Value::Undef)) =>
+                    {
+                        UndefCause::UserUndef { span: decl.span }
+                    }
+                    // No default expression → required param with no value.
+                    None => UndefCause::Unbound {
+                        param: id.clone(),
+                        span: decl.span,
+                    },
+                    // Non-undef default_expr with all determined inputs:
+                    // the OpContractFailed case owned by task γ — record nothing.
+                    _ => continue,
+                }
+            }
+        };
+
+        causes.insert(id.clone(), cause);
+    }
+
+    causes
+}
+
 impl Engine {
     /// Evaluate a compiled module, returning computed values.
     ///
@@ -1581,6 +1688,10 @@ impl Engine {
         self.last_param_override_type_kind_rejections = 0;
         self.last_param_override_dimension_rejections = 0;
         self.last_sub_component_unknown_structure_errors = 0;
+        // undef-self-describing α (task 4321): clear the cause map unconditionally
+        // so stale data from a prior eval() call never leaks through, even when
+        // capture_undef_causes is toggled off between calls.
+        self.last_undef_causes.clear();
 
         // Build Snapshot from CompiledModule (creates EvaluationGraph internally)
         let snapshot_id = self.next_snapshot_id;
@@ -2207,6 +2318,17 @@ impl Engine {
         // expression) so the &self borrow doesn't extend across the &mut self
         // mutations (`self.next_snapshot_id`, etc.) inside the loop body.
         let mut resolved_params = HashMap::new();
+        // undef-self-describing α (task 4321): side-channel for the cells whose
+        // template solve failed (Infeasible or NoProgress). Populated in step-6
+        // inside the resolution loop; empty in step-4 so all auto|provisional
+        // undef cells classify as AwaitingSolve.  The HashMap<id, detail> shape
+        // lets classify_undef_origins emit the coarse SolveResult string verbatim
+        // (§8.3 — no fabricated solver detail). Always declared; populated only
+        // when capture_undef_causes is true (gated inside the match arms in step-6).
+        // `mut` is needed in step-6 for the .insert() calls; suppress the
+        // step-4-only unused_mut warning here.
+        #[allow(unused_mut)]
+        let mut solve_failed_autos: HashMap<ValueCellId, String> = HashMap::new();
         let has_active_solver = self
             .resolve_solver_for_module(module, &mut diagnostics)
             .is_some();
@@ -2559,6 +2681,30 @@ impl Engine {
                     }
                 }
             }
+        }
+
+        // undef-self-describing α (task 4321): post-eval UndefCause classification pass.
+        //
+        // Runs HERE — after snapshot.values is fully finalized (resolution phase +
+        // post-solver guard re-eval + sub-component elaboration + MassProperties PSD
+        // check) and BEFORE snapshot is moved into EvaluationState. Reads snapshot
+        // read-only and writes only `self.last_undef_causes` (never snapshot.values),
+        // so A1 (capture-on == capture-off for every (Value,DeterminacyState) and
+        // content-hash) is STRUCTURAL.
+        //
+        // Only allocates and classifies when the caller has opted in (BT8 toggle).
+        if self.capture_undef_causes {
+            // Build decl table: id → &ValueCellDecl from all templates' value_cells.
+            // Includes only top-level named cells; synthetic guard/list/sub-elaborated
+            // cells have no entry and are silently skipped in the classifier.
+            let decls: HashMap<&ValueCellId, &reify_compiler::ValueCellDecl> = module
+                .templates
+                .iter()
+                .flat_map(|t| t.value_cells.iter())
+                .map(|d| (&d.id, d))
+                .collect();
+            self.last_undef_causes =
+                classify_undef_origins(&snapshot.values, &decls, &solve_failed_autos);
         }
 
         // Store internal state for incremental evaluation

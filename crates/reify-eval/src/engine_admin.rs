@@ -299,6 +299,10 @@ impl Engine {
             // for the matching cfg gates on the declaration and read site).
             #[cfg(any(test, feature = "test-instrumentation"))]
             panic_on_eval_cells: std::collections::HashSet::new(),
+            // undef-self-describing α (task 4321): capture disabled by default
+            // to guarantee zero overhead on the hot path.
+            capture_undef_causes: false,
+            last_undef_causes: HashMap::new(),
         }
     }
 
@@ -1561,6 +1565,37 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn imported_file_content_hash(&self, path: &str) -> Option<reify_core::ContentHash> {
         self.cache.get_imported_file_hash(path)
+    }
+
+    // ── undef-self-describing α (task 4321) ──────────────────────────────────
+
+    /// Enable or disable the per-cell UndefCause classification pass in `eval()`.
+    ///
+    /// Disabled by default (zero overhead on the hot path: no allocation, no
+    /// classification work). Call with `true` before `eval()` to populate the
+    /// per-cell origin map accessible via [`Self::undef_causes()`].
+    ///
+    /// Mirrors the `last_*` instrumentation-field + `engine_admin.rs` accessor
+    /// convention (e.g. `last_sub_component_unknown_structure_errors` /
+    /// `last_dispatch_count`).
+    pub fn set_capture_undef_causes(&mut self, on: bool) {
+        self.capture_undef_causes = on;
+    }
+
+    /// Returns the per-cell `UndefCause` map from the most recent `eval()` call.
+    ///
+    /// Empty when `capture_undef_causes` is `false` (the default). Only
+    /// *originating* undef cells appear — purely-propagated cells are absent (A3
+    /// in the PRD: a cell whose undef status is fully explained by an undef input
+    /// records no cause here, leaving its entry absent).
+    ///
+    /// Cleared at the start of every `eval()` call so stale data from a prior
+    /// pass never leaks through, even if `capture_undef_causes` is toggled off
+    /// between calls.
+    pub fn undef_causes(
+        &self,
+    ) -> &std::collections::HashMap<reify_core::ValueCellId, reify_ir::UndefCause> {
+        &self.last_undef_causes
     }
 }
 
