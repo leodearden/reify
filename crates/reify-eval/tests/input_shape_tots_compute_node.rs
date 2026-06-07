@@ -247,7 +247,12 @@ fn seed_final_output(engine: &mut reify_eval::Engine, cell: &ValueCellId) {
 ///   (c) a second dispatch with identical `(profile, shaper)` is a cache HIT.
 ///
 /// RED until step-28: `"trajectory::input_shape"` is not registered until then.
+///
+/// Gated `release-only` — the TOTS solve takes ~8–10 s in debug (argmin
+/// optimisation + cubic-spline evaluation in unoptimised code).  Matches the
+/// buckling/modal pattern (`#[cfg_attr(debug_assertions, ignore = …)]`).
 #[test]
+#[cfg_attr(debug_assertions, ignore = "heavy TOTS solve; release-only")]
 fn input_shape_tots_completed_donates_warm_state_then_reuses() {
     let mut engine = engine_with_input_shape_target();
 
@@ -348,7 +353,10 @@ fn input_shape_tots_completed_donates_warm_state_then_reuses() {
 /// conditions copied verbatim into the solved waypoints (`tots_result_to_profile`
 /// emits `j.end` as the last knot value), so a changed endpoint is reliably
 /// result-determining and the MISS recompute is guaranteed to differ.
+///
+/// Gated `release-only` — two TOTS solves in debug consume ~16 s.
 #[test]
+#[cfg_attr(debug_assertions, ignore = "heavy TOTS solve; release-only")]
 fn input_shape_tots_profile_change_forces_miss() {
     let mut engine = engine_with_input_shape_target();
 

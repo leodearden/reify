@@ -784,6 +784,30 @@ pub enum DiagnosticCode {
     /// Wired into both `Engine::eval` and `Engine::eval_cached` so the error
     /// surfaces on `reify check` (no kernel) and in the GUI diagnostics panel.
     MechanismDuplicateSolid,
+    /// Origin (L1/eval): `crates/reify-stdlib/src/snapshot.rs` — `bind` arm
+    /// guard (task 4309 α) and `crates/reify-stdlib/src/sweep.rs` — `dim` /
+    /// `sweep` / `sweep_grid` arm guards (task 4309 α).
+    /// Origin (L2/compile): `crates/reify-compiler` — DrivingJoint-bound
+    /// enforcement (task γ; not yet landed).
+    ///
+    /// Canonical message form:
+    /// `"non-driving joint passed to bind/dim/sweep: coupling and fixed joints \
+    ///   have no free motion variable; use a driving joint (prismatic, revolute, \
+    ///   cylindrical, planar, or spherical)"`.
+    ///
+    /// Emitted as a `Severity::Error` by `detect_nondriving_joint_errors` in
+    /// `engine_eval.rs` (task 4309) when any top-level evaluated cell holds a
+    /// `Value::Map` carrying `error = "nondriving_joint"`.  Wired into both
+    /// `Engine::eval` and `Engine::eval_cached` so the diagnostic surfaces on
+    /// `reify check` (no kernel) and in the GUI diagnostics panel.
+    ///
+    /// Per PRD D6: **one code, two emission sites** — L1 (eval, this task α)
+    /// and L2 (compile, task γ) share this same variant.  Reserving it here
+    /// lets task γ emit it later with zero enum churn, exactly as
+    /// `MechanismDuplicateSolid` was reserved ahead of its emitter.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_MECHANISM_NONDRIVING_JOINT`.
+    MechanismNonDrivingJoint,
     /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
     /// §"Singularity, over/under-constraint diagnostics").
@@ -2981,6 +3005,37 @@ mod tests {
             let s = serde_json::to_string(&code).unwrap();
             assert_eq!(s, expected, "serde mismatch for {code:?}");
         }
+    }
+
+    // --- MechanismNonDrivingJoint tests (task 4309 — E_MECHANISM_NONDRIVING_JOINT) ---
+    // Pairs with the L1 eval guard in reify-stdlib snapshot.rs (bind arm) and
+    // sweep.rs (dim/sweep/sweep_grid arms), and reserves the variant for the
+    // L2 compile guard in reify-compiler (task γ). Per PRD D6: one code, two
+    // emission sites. Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
+    // derives are already covered by `diagnostic_code_derives` above; only the
+    // variant-specific round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::MechanismNonDrivingJoint` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_unresolved_name_with_code_round_trips`
+    /// (which targets a different variant); a future enum reorganisation that
+    /// drops `MechanismNonDrivingJoint` is caught here.
+    #[test]
+    fn diagnostic_code_mechanism_nondriving_joint_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::MechanismNonDrivingJoint);
+        assert_eq!(d.code, Some(DiagnosticCode::MechanismNonDrivingJoint));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::MechanismNonDrivingJoint`
+    /// serializes as `"MechanismNonDrivingJoint"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_mechanism_nondriving_joint_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::MechanismNonDrivingJoint).unwrap();
+        assert_eq!(s, "\"MechanismNonDrivingJoint\"");
     }
 }
 

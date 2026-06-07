@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use reify_ir::Value;
 
 use crate::eval_builtin;
-use crate::joints::is_joint_value;
+use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_error};
 use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
 use crate::loop_closure_solver::{NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure};
 use crate::mechanism::is_world;
@@ -34,9 +34,13 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "bind" => {
             // Validation surface (each guard short-circuits to
-            // Value::Undef BEFORE constructing the binding Map):
+            // Value::Undef or an error Map BEFORE constructing the
+            // binding Map):
             //   args.len() == 2          → arity guard
-            //   is_joint_value(args[0])  → joint-arg guard
+            //   is_joint_value(args[0])  → joint-arg guard (non-joints → Undef)
+            //   is_driving_joint(args[0])→ driving-joint guard (coupling/
+            //                              fixed → E_MECHANISM_NONDRIVING_JOINT
+            //                              error Map, not Undef)
             // The motion value (args[1]) is stored verbatim and
             // accepted lazily — downstream `transform_at` is the
             // single point of dimension/finite-value validation when
@@ -51,6 +55,9 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             }
             if !is_joint_value(&args[0]) {
                 return Some(Value::Undef);
+            }
+            if !is_driving_joint(&args[0]) {
+                return Some(make_nondriving_joint_error(args[0].clone()));
             }
             make_binding(args[0].clone(), args[1].clone())
         }
@@ -1121,7 +1128,20 @@ fn wrap_jointvalue_for_joint(
 /// `kind`, `joint`, `value` (alphabetical, matching `BTreeMap` iteration).
 /// Mirrors `make_joint`/`make_coupling` in `joints.rs` and the kind-
 /// discriminated Map convention used across the stdlib value types.
-fn make_binding(joint: Value, value: Value) -> Value {
+///
+/// This is the INTERNAL binding constructor. It produces the identical Map
+/// that the public `bind` builtin's happy path returns, but WITHOUT `bind`'s
+/// user-input validation surface — notably the L1 non-driving-joint guard
+/// (`is_driving_joint`, snapshot.rs `bind` arm), which rejects `coupling`/
+/// `fixed` joints supplied by `.ri` authors. Internal callers that assemble
+/// per-body / per-free-joint FK bindings (loop-closure free-joint synthesis at
+/// [`snapshot`]'s closed-chain arm above, and `snapshot_for_sample` in
+/// `dynamics::eval`) bind joints already validated upstream and MUST bypass
+/// that guard — those joints legitimately include non-driving kinds, and
+/// routing them through `bind` would yield `nondriving_joint` error Maps that
+/// fail the `kind=="binding"` validation loop and collapse the snapshot to
+/// `Undef`. `pub(crate)` so `dynamics::eval` can reach it.
+pub(crate) fn make_binding(joint: Value, value: Value) -> Value {
     let mut m = BTreeMap::new();
     m.insert(
         Value::String("kind".to_string()),
@@ -1219,6 +1239,71 @@ mod tests {
         // joint kinds in JOINT_KINDS, so it must be rejected.
         let world = eval_builtin("world", &[]);
         assert!(eval_builtin("bind", &[world, v]).is_undef());
+    }
+
+    // ── bind() non-driving joint guard ────────────────────────────────────
+
+    /// `bind(coupling, value)` and `bind(fixed, value)` must return a
+    /// `Value::Map` with `error == "nondriving_joint"` (not a binding Map
+    /// and not `Undef`). Coupling and fixed joints have no free motion
+    /// variable; attempting to bind them is an `E_MECHANISM_NONDRIVING_JOINT`
+    /// error.
+    ///
+    /// RED: today `bind(coupling, ...)` returns a `kind="binding"` Map
+    /// because coupling ∈ `JOINT_KINDS` passes `is_joint_value`; the
+    /// `error` field check below fails.
+    #[test]
+    fn bind_non_driving_joint_returns_nondriving_error() {
+        let prismatic = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let coupling = eval_builtin("couple", &[prismatic.clone(), Value::Real(-1.0)]);
+        let fixed = eval_builtin("fixed", &[]);
+        let v = Value::length(0.005);
+
+        // coupling → error map
+        let result_coupling = eval_builtin("bind", &[coupling, v.clone()]);
+        let map_c = match &result_coupling {
+            Value::Map(m) => m,
+            other => panic!("bind(coupling, v): expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map_c.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "bind(coupling, v) must return error='nondriving_joint'"
+        );
+
+        // fixed → error map
+        let result_fixed = eval_builtin("bind", &[fixed, v.clone()]);
+        let map_f = match &result_fixed {
+            Value::Map(m) => m,
+            other => panic!("bind(fixed, v): expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map_f.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "bind(fixed, v) must return error='nondriving_joint'"
+        );
+    }
+
+    /// Regression pin: `bind(prismatic, v)` still returns a `kind="binding"` Map
+    /// with no `error` key after the non-driving-joint guard is added.
+    #[test]
+    fn bind_driving_joint_happy_path_unaffected_by_nondriving_guard() {
+        let prismatic = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let v = Value::length(0.005);
+        let result = eval_builtin("bind", &[prismatic, v]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("bind(prismatic, v): expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("binding".to_string())),
+            "bind(prismatic, v) must still return kind='binding'"
+        );
+        assert!(
+            map.get(&Value::String("error".to_string())).is_none(),
+            "bind(prismatic, v) must NOT carry an 'error' key"
+        );
     }
 
     // ── snapshot() empty case: pin canonical Snapshot Map shape ───────────

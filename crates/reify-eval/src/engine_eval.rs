@@ -447,6 +447,85 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
     diagnostics
 }
 
+/// Shared implementation for scanning the top-level evaluated value-map for
+/// error-Map diagnostics and emitting one [`Diagnostic`] per distinct error.
+///
+/// Called by [`detect_mechanism_errors`] and [`detect_nondriving_joint_errors`]
+/// so the filter → sort → dedup → emit logic lives in one place.  Any future
+/// provenance fix (e.g. attaching a source span or recording the originating
+/// cell id in the error Map) only needs to be made here.
+///
+/// **Algorithm:**
+/// 1. Filter `values` for `Value::Map` entries whose `error` field equals
+///    `discriminator` (the cross-crate contract string produced by the
+///    corresponding `make_*_error` function in `reify-stdlib`).  When `kind`
+///    is `Some(k)`, the Map's `"kind"` field must additionally equal `k`.
+///    This distinguishes producers that decorate a typed Map (e.g.
+///    `make_duplicate_solid_error` clones a `kind="mechanism"` Map and stamps
+///    `error="duplicate_solid"`) from producers that build a fresh, kind-less
+///    error Map (`make_nondriving_joint_error`, which passes `None`).  Without
+///    the guard a future error-Map type that happened to reuse a discriminator
+///    string would be misattributed to the wrong detector.
+/// 2. Sort by [`ValueCellId`] for deterministic ordering across hash-based
+///    [`ValueMap`] iteration.
+/// 3. Dedup by structural [`Value`] equality — one diagnostic per distinct
+///    error Map.  An error event propagated verbatim to multiple cells collapses
+///    to a single diagnostic; two independently-produced Maps that happen to be
+///    structurally identical also collapse (under-reports by one).  Fixing this
+///    would require per-call provenance tracking in the error Map; accepted as a
+///    v0.1 limitation shared by all error-Map detectors.
+/// 4. Emit `Diagnostic::error(msg).with_code(code)` per surviving entry,
+///    using `error_message` from the Map or `fallback_msg` as a constant.
+///
+/// **No source span / [`DiagnosticLabel`]:** [`ValueCellId`] carries only
+/// `{entity, member}` strings with no source-span, so no label is attached.
+fn detect_error_map_diagnostics(
+    values: &ValueMap,
+    kind: Option<&str>,
+    discriminator: &str,
+    code: DiagnosticCode,
+    fallback_msg: &str,
+) -> Vec<Diagnostic> {
+    let mut hits: Vec<(&ValueCellId, &Value)> = values
+        .iter()
+        .filter(|(_, v)| {
+            let Value::Map(m) = v else { return false; };
+            // Optional kind guard: when the producing `make_*_error` decorates
+            // a typed Map (duplicate_solid clones a `kind="mechanism"` Map),
+            // require the kind to match so an unrelated Map that happens to
+            // reuse the `error` discriminator is not picked up by this detector.
+            if let Some(kind) = kind {
+                let kind_key = Value::String("kind".to_string());
+                if !matches!(m.get(&kind_key), Some(Value::String(k)) if k == kind) {
+                    return false;
+                }
+            }
+            let error_key = Value::String("error".to_string());
+            matches!(m.get(&error_key), Some(Value::String(e)) if e == discriminator)
+        })
+        .collect();
+    // Sort by ValueCellId for deterministic ordering across hash-based ValueMap iteration.
+    hits.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    // Dedup by structural Value equality — one diagnostic per distinct error Map.
+    let msg_key = Value::String("error_message".to_string());
+    let mut seen = std::collections::BTreeSet::new();
+    let mut diagnostics = Vec::new();
+    for (_, value) in hits {
+        if seen.insert(value.clone()) {
+            let msg = match value {
+                Value::Map(m) => match m.get(&msg_key) {
+                    Some(Value::String(msg)) => msg.clone(),
+                    _ => fallback_msg.to_string(),
+                },
+                _ => fallback_msg.to_string(),
+            };
+            diagnostics.push(Diagnostic::error(msg).with_code(code));
+        }
+    }
+    diagnostics
+}
+
 /// Scan the evaluated value-map for duplicate-solid mechanism errors and emit
 /// a typed [`Diagnostic`] for each distinct errored mechanism.
 ///
@@ -454,81 +533,44 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
 /// discipline) OUTSIDE the solver gate so the error surfaces on kernel-less
 /// `reify check` and in the GUI panel.
 ///
-/// **Dedup strategy:** `body()` returns an already-errored mechanism Map
-/// verbatim (mechanism.rs:88), so a single duplicate-solid event propagates
-/// an identical error Map to multiple cells.  Matches are sorted by
-/// [`ValueCellId`] for reproducible ordering and deduplicated by structural
-/// [`Value`] equality — one diagnostic per distinct errored mechanism.
+/// Delegates to [`detect_error_map_diagnostics`] with `kind = Some("mechanism")`
+/// and `discriminator = "duplicate_solid"`.  `make_duplicate_solid_error`
+/// (mechanism.rs) clones a `kind="mechanism"` Map and stamps
+/// `error="duplicate_solid"`, so BOTH fields are required to match — preserving
+/// the original `is_duplicate_solid_mechanism` predicate's two-field contract.
 ///
-/// **Known v0.1 limitation — structural dedup:** Two genuinely independent
-/// errored mechanisms that happen to be structurally identical (e.g. two
-/// separate let-bindings both building `body(body(mechanism(),"a",j),"a",j)`)
-/// will collapse to a single diagnostic, under-reporting one error.  The dedup
-/// is necessary to collapse same-error propagation chains (a single
-/// duplicate-solid event can reach dozens of downstream cells as identical
-/// Maps), but keying on the structural `Value` cannot distinguish "re-propagated
-/// copy of the same error" from "two independent errors that happen to match".
-/// Fixing this would require per-mechanism provenance tracking (e.g. an
-/// originating cell id stored in the error Map); accepted as a v0.1 limitation.
-///
-/// **No source span / [`DiagnosticLabel`]:** Unlike `detect_scope_coupling`
-/// (which attaches a constraint span from `constraint.span`), there is no
-/// usable location to attach here.  [`ValueCellId`] carries only
-/// `{entity, member}` strings with no source-span.  The `error_path1` and
-/// `error_path2` fields in the error Map are empty `Value::List`s by the
-/// v0.1 error-Map convention (see `make_duplicate_solid_error` in
-/// `mechanism.rs`) — duplicate-solid detection has no path-shaped diagnostic
-/// context to surface.  A follow-up task could resolve the originating
-/// `body()` call's span via the compiler's span table.
+/// **No source span:** [`ValueCellId`] carries no source-span; the `error_path1`
+/// / `error_path2` fields in the error Map are empty `Value::List`s by the v0.1
+/// convention.  A follow-up task could resolve the originating `body()` call's
+/// span via the compiler's span table.
 fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
-    let mut hits: Vec<(&ValueCellId, &Value)> = values
-        .iter()
-        .filter(|(_, v)| is_duplicate_solid_mechanism(v))
-        .collect();
-    // Sort by ValueCellId for deterministic ordering across hash-based ValueMap iteration.
-    hits.sort_by(|(a, _), (b, _)| a.cmp(b));
-
-    // Dedup by structural Value equality — one diagnostic per distinct errored mechanism.
-    // See the "Known v0.1 limitation" note in the function doc above.
-    let mut seen = std::collections::BTreeSet::new();
-    let mut diagnostics = Vec::new();
-    for (_, value) in hits {
-        if seen.insert(value.clone()) {
-            let msg = mechanism_error_message(value);
-            // No DiagnosticLabel: ValueCellId carries no source span and
-            // error_path1/error_path2 are empty Lists (see doc comment above).
-            diagnostics.push(
-                Diagnostic::error(msg).with_code(DiagnosticCode::MechanismDuplicateSolid),
-            );
-        }
-    }
-    diagnostics
+    detect_error_map_diagnostics(
+        values,
+        Some("mechanism"),
+        "duplicate_solid",
+        DiagnosticCode::MechanismDuplicateSolid,
+        "duplicate solid in mechanism",
+    )
 }
 
-/// Returns `true` when `v` is a mechanism `Value::Map` (`kind="mechanism"`)
-/// carrying `error="duplicate_solid"`.  Inline predicate matching the
-/// documented error-Map shape (`make_duplicate_solid_error` in mechanism.rs).
-fn is_duplicate_solid_mechanism(v: &Value) -> bool {
-    let Value::Map(m) = v else {
-        return false;
-    };
-    let kind_key = Value::String("kind".to_string());
-    let error_key = Value::String("error".to_string());
-    matches!(m.get(&kind_key), Some(Value::String(k)) if k == "mechanism")
-        && matches!(m.get(&error_key), Some(Value::String(e)) if e == "duplicate_solid")
-}
-
-/// Extract the `error_message` string from a duplicate-solid mechanism Map,
-/// falling back to a constant if the field is absent or not a string.
-fn mechanism_error_message(v: &Value) -> String {
-    let Value::Map(m) = v else {
-        return "duplicate solid in mechanism".to_string();
-    };
-    let msg_key = Value::String("error_message".to_string());
-    match m.get(&msg_key) {
-        Some(Value::String(msg)) => msg.clone(),
-        _ => "duplicate solid in mechanism".to_string(),
-    }
+/// Scan top-level eval cells for `E_MECHANISM_NONDRIVING_JOINT` errors
+/// (task 4309 — α).
+///
+/// Called in both `eval` and `eval_cached` outside the solver gate, mirroring
+/// [`detect_mechanism_errors`].  Delegates to [`detect_error_map_diagnostics`]
+/// with `kind = None` and `discriminator = "nondriving_joint"` — the `error`
+/// field value produced by `make_nondriving_joint_error` in `joints.rs` and
+/// returned by `bind`/`dim`/`sweep`/`sweep_grid` when a coupling or fixed joint
+/// is passed.  `kind` is `None` because that producer builds a fresh error Map
+/// with no `"kind"` field (only `error`/`error_message`/`joint`).
+fn detect_nondriving_joint_errors(values: &ValueMap) -> Vec<Diagnostic> {
+    detect_error_map_diagnostics(
+        values,
+        None,
+        "nondriving_joint",
+        DiagnosticCode::MechanismNonDrivingJoint,
+        "joint has no free motion variable (coupling or fixed)",
+    )
 }
 
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
@@ -2582,6 +2624,9 @@ impl Engine {
         // `reify check` (no kernel needed — duplicate-solid detection is at
         // mechanism-builder eval).  Mirrors the detect_scope_coupling seam.
         diagnostics.extend(detect_mechanism_errors(&values));
+        // Non-driving-joint diagnostics (task 4309 — E_MECHANISM_NONDRIVING_JOINT).
+        // Same gate placement and rationale as detect_mechanism_errors above.
+        diagnostics.extend(detect_nondriving_joint_errors(&values));
 
         EvalResult {
             values,
@@ -3145,6 +3190,9 @@ impl Engine {
         // is the incremental LSP path; without this call the GUI/LSP would drop the
         // MechanismDuplicateSolid diagnostic on every incremental re-evaluation.
         diagnostics.extend(detect_mechanism_errors(&values));
+        // Non-driving-joint diagnostics (task 4309 — E_MECHANISM_NONDRIVING_JOINT).
+        // Mirrors eval() call site; eval_cached is the LSP/GUI incremental path.
+        diagnostics.extend(detect_nondriving_joint_errors(&values));
 
         CachedEvalResult {
             eval_result: EvalResult {
