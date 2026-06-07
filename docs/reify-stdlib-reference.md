@@ -96,8 +96,8 @@ fn max<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>) -> Scalar<Q>
 fn clamp<Q: Dimension>(x: Scalar<Q>, lo: Scalar<Q>, hi: Scalar<Q>) -> Scalar<Q>
 fn lerp<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>, t: Real) -> Scalar<Q>
 fn remap(x: Real, from_lo: Real, from_hi: Real, to_lo: Real, to_hi: Real) -> Real
-fn sqrt<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q^(1/2)>   // Compiler intrinsic -- halves even exponents
-fn pow(base: Real, exp: Real) -> Real                      // Dimensionless only for non-integer exp
+fn sqrt<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q^(1/2)>   // Compiler signature (math_signatures.rs) + eval-time DimensionVector::root(2) (numeric.rs)
+fn pow(base: Real, exp: Real) -> Real                      // Dimensionless only; use the `^` operator for dimensioned integer powers
 fn log(x: Real) -> Real
 fn log10(x: Real) -> Real
 fn exp(x: Real) -> Real
@@ -108,7 +108,7 @@ fn round(x: Real) -> Int
 fn mod(x: Int, y: Int) -> Int
 ```
 
-**Dimensional `sqrt`:** `sqrt` is a compiler intrinsic that halves even exponents. `pow` with non-integer exponents is restricted to dimensionless in v0.1. `pow` with integer literal exponents on dimensioned quantities works through repeated multiplication.
+**Dimensional `sqrt`:** `sqrt` propagates dimension via a compiler signature wired in `math_signatures.rs` (halves each exponent to produce `Q^(1/2)`) plus eval-time `DimensionVector::root(2)` in `numeric.rs` — it is not a free-standing compiler intrinsic. `pow` is dimensionless-only (it always returns `Real`; see `numeric.rs:88`). Dimensioned integer powers are handled by the `^` operator (`eval_pow` in `reify-expr`, tasks 3805/4106), not by `pow`. `pow` with non-integer exponents is restricted to dimensionless in v0.1.
 
 ### 1.2 `std.math.trig`
 
@@ -135,12 +135,33 @@ fn cross<Q1: Dimension, Q2: Dimension>(a: Vector<3,Q1>, b: Vector<3,Q2>) -> Vect
 fn normalize<N: Nat, Q: Dimension>(v: Vector<N,Q>) -> Vector<N, Dimensionless>
 fn magnitude<N: Nat, Q: Dimension>(v: Vector<N,Q>) -> Scalar<Q>
 fn determinant<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Scalar<Q^N>
+                                                  // any N via dense LA (nalgebra); singular → det ≈ 0
 fn inverse<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Matrix<N,N,Q^(-1)>
+                                                  // any N via dense LA (nalgebra); singular → Undef
 fn transpose<M: Nat, N: Nat, Q: Dimension>(m: Matrix<M,N,Q>) -> Matrix<N,M,Q>
 fn outer<N: Nat, M: Nat, Q1: Dimension, Q2: Dimension>(a: Vector<N,Q1>, b: Vector<M,Q2>) -> Matrix<N,M,Q1*Q2>
 fn trace<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Scalar<Q>
 fn eigenvalues<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> List<Scalar<Q>>
+                                                  // real spectrum only; returns Undef when any eigenvalue is non-real (documented, not silent)
+
+// Added in v0.6 (task γ)
+fn complex_eigenvalues<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> List<Complex<Q>>
+                                                  // general complex spectrum, any N (matrix.rs:248-287)
+
+// Added in v0.6 (task α) — construction
+fn vec<N: Nat, Q: Dimension>(list: List<Scalar<Q>>) -> Vector<N,Q>
+                                                  // N inferred from list length
+fn matrix<M: Nat, N: Nat, Q: Dimension>(rows: List<List<Scalar<Q>>>) -> Tensor<2,M,N,Q>
+                                                  // rank-2 (M rows × N cols) only; construct.rs:40-43
+fn diag<N: Nat, Q: Dimension>(list: List<Scalar<Q>>) -> Tensor<2,N,N,Q>
+                                                  // N×N diagonal matrix; N inferred from list length
+fn identity(n: Int) -> Tensor<2,N,N,Dimensionless>  // N = n (runtime value)
+                                                  // N×N identity matrix
 ```
+
+`determinant` and `inverse` evaluate for any N via dense linear algebra (nalgebra, task β); they are not limited to 2×2 or 3×3. `eigenvalues` returns the real spectrum `List<Scalar<Q>>` for symmetric or near-real matrices; if any eigenvalue has a non-negligible imaginary part the function returns `Undef` (not a silent projection). Use `complex_eigenvalues` (v0.6) for the full complex spectrum.
+
+`vec`, `matrix`, `diag`, and `identity` (v0.6, task α) build `Vector`/`Tensor` values from list literals (see `construct.rs`). `matrix` is rank-2 only (M×N); use `vec` for rank-1 vectors. Type signatures follow the frozen contract in PRD §3.
 
 ### 1.4 `std.math.complex`
 
