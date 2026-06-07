@@ -1548,4 +1548,65 @@ mod tests {
         assert_eq!(subst.get("B"), Some(&Type::length()));
         assert_eq!(subst.len(), 2);
     }
+
+    // ── task 4231 β: resolve_function_overload selects generic candidates ─────
+
+    /// `make_fn` + non-empty `type_params` + a chosen return type.
+    fn make_generic_fn(
+        name: &str,
+        params: Vec<(&str, Type)>,
+        type_param_names: &[&str],
+        return_type: Type,
+    ) -> CompiledFunction {
+        let mut f = make_fn(name, params);
+        f.type_params = type_param_names
+            .iter()
+            .map(|n| reify_ir::TypeParam {
+                name: n.to_string(),
+                bounds: vec![],
+                default: None,
+            })
+            .collect();
+        f.return_type = return_type;
+        f
+    }
+
+    #[test]
+    fn overload_selects_generic_candidate() {
+        // A generic fn `id<T>(x: T) -> T` must resolve against a concrete arg.
+        // RED until step-6: a TypeParam param fails exact-equality → NoMatch.
+        let fns = vec![make_generic_fn("id", vec![("x", tp("T"))], &["T"], tp("T"))];
+        assert!(
+            matches!(
+                resolve_function_overload("id", &[Type::length()], &fns),
+                OverloadResolution::Resolved(_)
+            ),
+            "generic candidate should resolve against a concrete arg"
+        );
+    }
+
+    #[test]
+    fn overload_concrete_beats_generic_on_exact_match() {
+        // Tie-break (INV-6 guard): concrete f(Real)->Real + generic f<T>(x:T)->T
+        // called with Real resolves to the CONCRETE overload (exact match wins).
+        let concrete = make_fn("f", vec![("x", Type::Real)]); // non-generic, returns Real
+        let generic = make_generic_fn("f", vec![("x", tp("T"))], &["T"], tp("T"));
+        let fns = vec![concrete, generic];
+        match resolve_function_overload("f", &[Type::Real], &fns) {
+            OverloadResolution::Resolved(matched) => {
+                assert!(
+                    matched.type_params.is_empty(),
+                    "exact concrete overload should win over the generic one"
+                );
+                assert_eq!(matched.return_type, Type::Real);
+            }
+            OverloadResolution::NoMatch(_) => panic!("expected Resolved(concrete), got NoMatch"),
+            OverloadResolution::Ambiguous(_) => {
+                panic!("expected Resolved(concrete), got Ambiguous")
+            }
+            OverloadResolution::NoUserFunctions => {
+                panic!("expected Resolved(concrete), got NoUserFunctions")
+            }
+        }
+    }
 }
