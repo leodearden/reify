@@ -102,7 +102,7 @@ impl GeometryKernel for SingleKernelHolder {
 mod tests {
     use reify_test_support::MockGeometryKernel;
     use reify_test_support::mm3;
-    use reify_ir::{BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError, TessError, Value};
+    use reify_ir::{BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
 
     use super::*;
 
@@ -334,5 +334,57 @@ mod tests {
             .expect("execute through trait object should succeed");
         assert_eq!(handle.id, GeometryHandleId(1));
         assert_eq!(handle.repr, Some(BRepKind::Solid));
+    }
+
+    /// Minimal in-test stub kernel that only supports `measure_mesh_deviation`.
+    /// Implements the four required trait methods as `unimplemented!()` stubs,
+    /// following the CountingKernel minimal-stub pattern from reify-ir/src/geometry.rs.
+    struct DeviationStubKernel {
+        deviation: Option<f64>,
+    }
+
+    impl GeometryKernel for DeviationStubKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+        }
+
+        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+        }
+
+        fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+        }
+
+        fn measure_mesh_deviation(&self, _handle: GeometryHandleId, _mesh: &Mesh) -> Option<f64> {
+            self.deviation
+        }
+    }
+
+    #[test]
+    fn measure_mesh_deviation_delegates_to_registered_kernel() {
+        const SENTINEL: f64 = 0.00123;
+        let mut planner = SingleKernelHolder::new();
+        planner.register_kernel(Box::new(DeviationStubKernel { deviation: Some(SENTINEL) }));
+        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+        let result = planner.measure_mesh_deviation(GeometryHandleId(1), &mesh);
+        assert_eq!(result, Some(SENTINEL));
+    }
+
+    #[test]
+    fn measure_mesh_deviation_no_kernel_returns_none() {
+        let planner = SingleKernelHolder::new();
+        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+        let result = planner.measure_mesh_deviation(GeometryHandleId(1), &mesh);
+        assert!(result.is_none());
     }
 }
