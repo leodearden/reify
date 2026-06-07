@@ -320,6 +320,26 @@ pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
     }
 }
 
+/// Returns `true` when `t` is, or recursively wraps, a `Type::TypeParam`.
+///
+/// Mirrors [`type_carries_trait_object`]: covers the bare `TypeParam(name)`
+/// leaf and the generic wrappers `Option<T>`, `List<T>`, `Set<T>`, and
+/// `Map<K,V>` (both positions participate). Used by `resolve_function_overload`
+/// to make a *generic* candidate's type-param-carrying params act as
+/// resolution wildcards (match any arg type), gated on
+/// `!f.type_params.is_empty()` so non-generic fns are completely unaffected
+/// (INV-6, task 4231 β).
+pub(crate) fn type_carries_type_param(t: &Type) -> bool {
+    match t {
+        Type::TypeParam(_) => true,
+        Type::Option(inner) => type_carries_type_param(inner),
+        Type::List(inner) => type_carries_type_param(inner),
+        Type::Set(inner) => type_carries_type_param(inner),
+        Type::Map(key, val) => type_carries_type_param(key) || type_carries_type_param(val),
+        _ => false,
+    }
+}
+
 /// A call-site type-argument inference conflict: the same type parameter was
 /// bound to two different concrete types across a generic call's arguments.
 ///
@@ -497,12 +517,22 @@ pub(crate) fn resolve_function_overload<'a>(
         .iter()
         .copied()
         .filter(|f| {
+            // For a GENERIC candidate, a type-param-carrying param is a
+            // resolution wildcard (matches any arg) — mirroring the trait-object
+            // wildcard. Gated on `is_generic` so non-generic fns (empty
+            // type_params) are bit-for-bit unchanged (INV-6). A full wildcard
+            // (not structural unify) is deliberate: a conflicting generic call
+            // (e.g. `pair(1, 1.5)`) still SELECTS the candidate so the call site
+            // can emit `E_FN_TYPE_ARG_CONFLICT` rather than a generic no-match.
+            let is_generic = !f.type_params.is_empty();
             f.params.len() == arg_types.len()
                 && f.params
                     .iter()
                     .zip(arg_types.iter())
                     .all(|((_, param_ty), arg_ty)| {
-                        type_carries_trait_object(param_ty) || param_ty == arg_ty
+                        type_carries_trait_object(param_ty)
+                            || (is_generic && type_carries_type_param(param_ty))
+                            || param_ty == arg_ty
                     })
         })
         .collect();
