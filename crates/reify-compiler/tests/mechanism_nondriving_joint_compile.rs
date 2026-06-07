@@ -21,11 +21,12 @@
 //! builtin args, which are not the subject of these tests) do not affect
 //! the count.
 //!
-//! ## RED until step-6
+//! ## RED until step-6 (bind tests) / step-8 (dim + sweep tests)
 //!
-//! All three tests currently fail RED: `check_mechanism_joint_bound` does
-//! not yet exist and `phase_fn_arg_conformance` does not yet walk
-//! `FunctionCall` (bind/dim/sweep) nodes.
+//! The `bind` tests (step-5 RED / step-6 GREEN) confirm that
+//! `check_expr_mechanism_joint_bound` fires for `bind`.  The `dim` and
+//! `sweep` tests (step-7 RED / step-8 GREEN) confirm that the same check
+//! is generalised to `dim` (arg0) and `sweep@arity4` (arg1).
 
 use reify_core::DiagnosticCode;
 use reify_test_support::compile_source_with_stdlib;
@@ -125,6 +126,165 @@ structure def Test {
         diags.is_empty(),
         "bind(prismatic(...)) must emit zero MechanismNonDrivingJoint \
          diagnostics (positive guard); got: {:?}",
+        diags
+    );
+}
+
+// ── dim path ─────────────────────────────────────────────────────────────────
+
+/// `dim(couple(prismatic(1.0), -1.0), 0mm..1m, 11)` — arg0 of `dim` is a
+/// FunctionCall named "couple" → Path-B resolution → "Coupling" → does not
+/// satisfy DrivingJoint → MechanismNonDrivingJoint naming "Coupling".
+///
+/// RED until step-8: `check_expr_mechanism_joint_bound` currently only
+/// handles `bind`; `dim` is not yet in the builtin table.
+#[test]
+fn dim_couple_emits_mechanism_nondriving_joint_naming_coupling() {
+    let module = compile_source_with_stdlib(
+        r#"
+structure def Test {
+    let d = dim(couple(prismatic(1.0), -1.0), 0mm..1m, 11)
+}
+"#,
+    );
+    let diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .collect();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly 1 MechanismNonDrivingJoint for dim(couple(...)), \
+         got {}: {:?}",
+        diags.len(),
+        module.diagnostics
+    );
+    assert!(
+        diags[0].message.contains("Coupling"),
+        "diagnostic should name 'Coupling'; got: {}",
+        diags[0].message
+    );
+}
+
+/// Positive guard: `dim(prismatic(1.0), 0mm..1m, 11)` — arg0 is a
+/// FunctionCall named "prismatic" → Path-B → "Prismatic" → satisfies
+/// DrivingJoint → zero MechanismNonDrivingJoint diagnostics.
+///
+/// Trivially passes (no check fires) until step-8; kept to confirm
+/// step-8 doesn't over-fire.
+#[test]
+fn dim_prismatic_emits_no_mechanism_nondriving_joint() {
+    let module = compile_source_with_stdlib(
+        r#"
+structure def Test {
+    let d = dim(prismatic(1.0), 0mm..1m, 11)
+}
+"#,
+    );
+    let diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .collect();
+    assert!(
+        diags.is_empty(),
+        "dim(prismatic(...)) must emit zero MechanismNonDrivingJoint \
+         diagnostics (positive guard); got: {:?}",
+        diags
+    );
+}
+
+// ── sweep path ────────────────────────────────────────────────────────────────
+
+/// Kinematic `sweep(mechanism(), couple(prismatic(1.0), -1.0), 0mm..1m, 11)`
+/// (arity 4) — arg1 of `sweep` is a FunctionCall named "couple" → Path-B
+/// → "Coupling" → does not satisfy DrivingJoint →
+/// MechanismNonDrivingJoint naming "Coupling".
+///
+/// RED until step-8: `check_expr_mechanism_joint_bound` currently only
+/// handles `bind`; arity-4 `sweep` is not yet in the builtin table.
+#[test]
+fn sweep_arity4_couple_emits_mechanism_nondriving_joint_naming_coupling() {
+    let module = compile_source_with_stdlib(
+        r#"
+structure def Test {
+    let s = sweep(mechanism(), couple(prismatic(1.0), -1.0), 0mm..1m, 11)
+}
+"#,
+    );
+    let diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .collect();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly 1 MechanismNonDrivingJoint for sweep@arity4(couple(...)), \
+         got {}: {:?}",
+        diags.len(),
+        module.diagnostics
+    );
+    assert!(
+        diags[0].message.contains("Coupling"),
+        "diagnostic should name 'Coupling'; got: {}",
+        diags[0].message
+    );
+}
+
+/// Positive guard: kinematic `sweep(mechanism(), prismatic(1.0), 0mm..1m, 11)`
+/// (arity 4) — arg1 is "prismatic" → Path-B → "Prismatic" → satisfies
+/// DrivingJoint → zero MechanismNonDrivingJoint diagnostics.
+///
+/// Trivially passes until step-8; kept to confirm step-8 doesn't over-fire.
+#[test]
+fn sweep_arity4_prismatic_emits_no_mechanism_nondriving_joint() {
+    let module = compile_source_with_stdlib(
+        r#"
+structure def Test {
+    let s = sweep(mechanism(), prismatic(1.0), 0mm..1m, 11)
+}
+"#,
+    );
+    let diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .collect();
+    assert!(
+        diags.is_empty(),
+        "sweep@arity4(prismatic(...)) must emit zero MechanismNonDrivingJoint \
+         diagnostics (positive guard); got: {:?}",
+        diags
+    );
+}
+
+/// Geometry sweep `sweep(cylinder(5mm, 10mm), line_segment(...))` (arity 2)
+/// — must NOT emit MechanismNonDrivingJoint.  The arity-2 form is the CSG
+/// geometry sweep (docs §3), not the kinematic sweep (§13.4); the check
+/// must skip it.
+///
+/// Trivially passes until step-8; kept to confirm step-8 applies the
+/// arity-4 guard and does not mis-check geometry sweeps.
+#[test]
+fn sweep_geometry_arity2_untouched_no_mechanism_nondriving_joint() {
+    let module = compile_source_with_stdlib(
+        r#"
+structure def Test {
+    let s = sweep(cylinder(5mm, 10mm), line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 10mm))
+}
+"#,
+    );
+    let diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .collect();
+    assert!(
+        diags.is_empty(),
+        "geometry sweep (arity 2) must emit zero MechanismNonDrivingJoint \
+         diagnostics; got: {:?}",
         diags
     );
 }
