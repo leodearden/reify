@@ -1013,6 +1013,7 @@ mod tests {
             operations: ops,
             content_hash: hash,
             produced_repr: reify_ir::ReprKind::BRep,
+            produced_kernel: None,
         };
 
         assert_eq!(node.id, id);
@@ -1480,6 +1481,7 @@ mod tests {
             operations: vec![],
             content_hash: ContentHash::of_str("r0"),
             produced_repr: reify_ir::ReprKind::BRep,
+            produced_kernel: None,
         };
         graph.realizations.insert(rnid.clone(), rnode);
         assert_eq!(graph.realizations.len(), 1);
@@ -1942,6 +1944,7 @@ mod tests {
                 operations: vec![],
                 content_hash: hash_h,
                 produced_repr: reify_ir::ReprKind::BRep,
+                produced_kernel: None,
             },
         );
 
