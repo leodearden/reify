@@ -257,6 +257,20 @@ fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "element_screenshot",
+            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" }. Frontend-mediated (no Rust dispatch arm).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "testId": {
+                        "type": "string",
+                        "description": "Value of the data-testid attribute on the target element (e.g. \"diagnostics-dialog\")."
+                    }
+                },
+                "required": ["testId"]
+            }),
+        },
+        ToolDef {
             name: "set_test_mode",
             description: "Freeze CSS animations and transitions for pixel-stable DOM screenshots. Does NOT pause JS-driven animations or the Three.js render loop. Returns { ok: true, test_mode: bool }.",
             input_schema: json!({
@@ -892,7 +906,7 @@ struct DebugServerState {
 }
 
 fn is_image_tool(name: &str) -> bool {
-    matches!(name, "screenshot" | "screenshot_window")
+    matches!(name, "screenshot" | "screenshot_window" | "element_screenshot")
 }
 
 // --- Tool dispatch ---
