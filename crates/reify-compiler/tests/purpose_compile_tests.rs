@@ -1983,6 +1983,89 @@ purpose check(subject : Beam) {
 
 // ── task-4197 α: determinacy intrinsics compiler sugar ──────────────────────
 
+/// BT2: `AllGeometryDetermined(X)` desugars to the same `CompiledExpr` as the
+/// hand-written `forall __p in X.geometric_params: determined(__p)` (golden-equivalence).
+///
+/// RED before step-4 impl: AllGeometryDetermined is not yet in the recognizer map
+/// (step-2 only added "params"), so (A) does not desugar and its hash differs.
+#[test]
+fn all_geometry_determined_desugars_to_same_compiled_expr_as_hand_written_forall() {
+    // (A) using the compiler-sugar intrinsic
+    let source_a = r#"
+purpose g(subject : Structure) {
+    constraint AllGeometryDetermined(subject)
+}
+"#;
+
+    // (B) hand-written reflective forall — the canonical expansion
+    let source_b = r#"
+purpose g(subject : Structure) {
+    constraint forall __p in subject.geometric_params: determined(__p)
+}
+"#;
+
+    let module_a = compile_module_with_diagnostics(source_a);
+    let module_b = compile_module_with_diagnostics(source_b);
+
+    // Both must compile without Error diagnostics
+    let errors_a: Vec<_> = module_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_a.is_empty(),
+        "AllGeometryDetermined (A): expected no Error diagnostics, got: {:?}",
+        errors_a
+    );
+
+    let errors_b: Vec<_> = module_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_b.is_empty(),
+        "hand-written forall geometric (B): expected no Error diagnostics, got: {:?}",
+        errors_b
+    );
+
+    // Both purposes must have exactly one constraint
+    let purpose_a = module_a
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "g")
+        .expect("expected compiled purpose 'g' from source_a");
+    let purpose_b = module_b
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "g")
+        .expect("expected compiled purpose 'g' from source_b");
+
+    assert_eq!(
+        purpose_a.constraints.len(),
+        1,
+        "AllGeometryDetermined purpose must have 1 constraint"
+    );
+    assert_eq!(
+        purpose_b.constraints.len(),
+        1,
+        "hand-written geometric forall purpose must have 1 constraint"
+    );
+
+    // The desugared expr must be content-hash-equal to the hand-written form.
+    let hash_a = purpose_a.constraints[0].expr.content_hash;
+    let hash_b = purpose_b.constraints[0].expr.content_hash;
+    assert_eq!(
+        hash_a, hash_b,
+        "AllGeometryDetermined must desugar to the same CompiledExpr \
+         (identical content_hash) as `forall __p in subject.geometric_params: determined(__p)`.\n\
+         A hash: {:?}\n\
+         B hash: {:?}",
+        hash_a, hash_b
+    );
+}
+
 /// BT1: `AllParamsDetermined(X)` desugars to the same `CompiledExpr` as the
 /// hand-written `forall __p in X.params: determined(__p)` (golden-equivalence).
 ///
