@@ -6499,6 +6499,48 @@ mod tests {
         }
     }
 
+    /// RED step-1 (task 4190): GeometryOp::Split.kind_name() must return "Split".
+    ///
+    /// References the not-yet-existing variant — compile-fails RED until step-2
+    /// adds `GeometryOp::Split { target, plane_origin, plane_normal }` and the
+    /// "Split" arm in `kind_name()`.
+    #[test]
+    fn geometry_op_split_kind_name_is_split() {
+        let op = GeometryOp::Split {
+            target: GeometryHandleId(1),
+            plane_origin: [0.0, 0.0, 0.0],
+            plane_normal: [0.0, 0.0, 1.0],
+        };
+        assert_eq!(
+            op.kind_name(),
+            "Split",
+            "GeometryOp::Split must return \"Split\" from kind_name()"
+        );
+    }
+
+    /// RED step-1 (task 4190): the default `execute_split` impl on
+    /// `GeometryKernel` must return `Err(GeometryError::OperationFailed(_))`.
+    ///
+    /// `DefaultsOnlyKernel` overrides nothing, so it inherits the default.
+    /// Mirrors the pattern of `default_geometry_kernel_extract_vertices_returns_topology_not_supported_error`
+    /// (see ~line 5988) but for `execute_split`.
+    ///
+    /// RED until step-2 adds `GeometryKernel::execute_split` with a default Err impl.
+    #[test]
+    fn default_geometry_kernel_execute_split_returns_operation_failed_error() {
+        let op = GeometryOp::Split {
+            target: GeometryHandleId(1),
+            plane_origin: [0.0, 0.0, 0.0],
+            plane_normal: [0.0, 0.0, 1.0],
+        };
+        let mut kernel = DefaultsOnlyKernel;
+        let result = kernel.execute_split(&op);
+        assert!(
+            matches!(result, Err(GeometryError::OperationFailed(_))),
+            "expected Err(GeometryError::OperationFailed(_)), got: {result:?}",
+        );
+    }
+
     /// Standalone pin for GeometryOp::Wedge.kind_name() == "Wedge".
     /// RED until step-4 adds GeometryOp::Wedge.
     #[test]
