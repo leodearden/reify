@@ -3173,6 +3173,38 @@ impl OcctKernel {
             },
         })
     }
+
+    /// Sampled max facet-chord deviation (SI metres) of `mesh` from the exact
+    /// BRep stored under `handle`.
+    ///
+    /// Mirrors [`OcctKernel::tessellate`]: resolves the shape via
+    /// [`OcctKernel::get_shape`] (returns `QueryError::InvalidHandle` on miss),
+    /// builds a [`ffi::ffi::TessResult`] from the mesh (normals unused by the
+    /// metric), then calls the FFI, mapping any error to
+    /// `QueryError::QueryFailed`.
+    ///
+    /// See [`ffi::ffi::measure_mesh_deviation`] for the sampling algorithm.
+    ///
+    /// No tolerance argument — cannot echo the configured deflection
+    /// (structural anti-circularity, PRD §8.3 CRITICAL).
+    pub fn measure_mesh_deviation(
+        &self,
+        handle: GeometryHandleId,
+        mesh: &Mesh,
+    ) -> Result<f64, QueryError> {
+        let shape = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+
+        let tess_result = ffi::ffi::TessResult {
+            vertices: mesh.vertices.clone(),
+            indices: mesh.indices.clone(),
+            normals: Vec::new(), // normals unused by the metric
+        };
+
+        ffi::ffi::measure_mesh_deviation(shape, &tess_result)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
 }
 
 #[cfg(has_occt)]
