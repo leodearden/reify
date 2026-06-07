@@ -3858,8 +3858,13 @@ impl Engine {
                 // handle has no entries in those tables on the second build") in
                 // the cross-kernel case by evicting the colliding sibling entry.
                 //
-                // The principled root fix (re-keying both tables by `KernelHandle`)
-                // is deferred to follow-up task #4351.
+                // Trade-off: this eviction also causes the SIBLING handle's own
+                // tag/attribute query to return `None` at `GeometryHandleId(1)`
+                // — the shared key already makes both reads indeterminate in the
+                // cross-kernel case, so both handles are in a corrupted state
+                // regardless. Accepted interim behavior; only follow-up task
+                // #4351's `KernelHandle` re-key will preserve both entries
+                // independently.
                 feature_tag_table.remove(cached_handle.id);
                 topology_attribute_table.remove(cached_handle.id);
                 step_handles.push(cached_handle);
@@ -10624,6 +10629,64 @@ mod tests {
 
     // ── Task 4349: cross-kernel GeometryHandleId collision regression tests ─────
 
+    /// Shared scaffolding for the two cross-kernel `GeometryHandleId` collision
+    /// regression tests (task 4349).
+    ///
+    /// Builds `DispatchTestState`, pre-seeds the realization cache with
+    /// `{Occt, GeometryHandleId(1)}`, calls the `pre_seed` closure (so each
+    /// test can populate its own table at `GeometryHandleId(1)` to simulate the
+    /// colliding sibling op), then drives the cache-hit short-circuit via
+    /// `state.run_demand` with `operations=&[]`. Returns the state after the
+    /// call for post-condition assertions.
+    fn run_cross_kernel_cache_hit_short_circuit(
+        entity_name: &str,
+        pre_seed: impl FnOnce(&mut DispatchTestState, &RealizationNodeId),
+    ) -> DispatchTestState {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let realization_id = RealizationNodeId::new(entity_name, 0);
+        let tol = 1e-4_f64;
+
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let registry = dispatch_test_single_default_registry(&desc);
+
+        let mut state = DispatchTestState::default();
+
+        // Pre-seed the cache: the prior build stored {Occt, GeometryHandleId(1)}
+        // as the terminal handle for this entity.
+        state.realization_cache.insert(
+            &realization_id.entity,
+            ReprKind::BRep,
+            tol,
+            NO_OPTIONS,
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+        );
+
+        // Allow each test to pre-seed its specific table before the run.
+        pre_seed(&mut state, &realization_id);
+
+        // Drive the cache-hit short-circuit: operations=&[] ensures the function
+        // returns BEFORE the op loop. demanded_tol=Some(tol) and
+        // realization_name=Some("part") together enable the cache probe path.
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "default",
+            &[], // empty ops — cache-hit fires before the op loop
+            &realization_id,
+            Some("part"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+        );
+
+        state
+    }
+
     /// Regression test for cross-kernel `GeometryHandleId` collision at the
     /// cache-hit short-circuit — `feature_tag_table` path (task 4349).
     ///
@@ -10653,60 +10716,21 @@ mod tests {
     #[test]
     fn cache_hit_short_circuit_tolerates_cross_kernel_feature_tag_id_collision() {
         use reify_ir::StepKind;
-        use reify_test_support::mocks::MockGeometryKernel;
 
-        let realization_id = RealizationNodeId::new("CrossKernelEntity", 0);
-        let tol = 1e-4_f64;
-
-        let desc = dispatch_test_descriptor_all_brep();
-        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
-        let registry = dispatch_test_single_default_registry(&desc);
-
-        let mut state = DispatchTestState::default();
-
-        // Pre-seed the cache: the prior build stored {Occt, GeometryHandleId(1)}
-        // as the terminal handle for this entity.
-        let cached_handle = KernelHandle {
-            kernel: KernelId::Occt,
-            id: GeometryHandleId(1),
-        };
-        state.realization_cache.insert(
-            &realization_id.entity,
-            ReprKind::BRep,
-            tol,
-            NO_OPTIONS,
-            cached_handle,
-        );
-
-        // Pre-seed feature_tag_table with a colliding entry at GeometryHandleId(1),
-        // simulating a cross-kernel sibling op (e.g. Manifold) that recorded its
-        // first handle's tag earlier in this same build.
-        let sibling_tag = FeatureTag {
-            source_span: SourceSpan::new(0, 0),
-            step_kind: StepKind::Primitive,
-            sub_index: 0,
-        };
-        state.feature_tag_table.record(GeometryHandleId(1), sibling_tag);
-
-        // Drive the cache-hit short-circuit: operations=&[] ensures the function
-        // returns BEFORE the op loop. demanded_tol=Some(tol) and
-        // realization_name=Some("part") together enable the cache probe path.
-        //
-        // Before the fix: debug_assert!(feature_tag_table.lookup(cached_handle.id).is_none())
-        //   at engine_build.rs:3848 panics → test FAILS (RED).
-        // After  the fix: feature_tag_table.remove(cached_handle.id) is called
-        //   → no panic → call returns → test continues.
-        state.run_demand(
-            &mut kernels,
-            &registry,
-            "default",
-            &[], // empty ops — cache-hit fires before the op loop
-            &realization_id,
-            Some("part"),
-            SourceSpan::new(0, 0),
-            ReprKind::BRep,
-            Some(tol),
-        );
+        let state =
+            run_cross_kernel_cache_hit_short_circuit("CrossKernelEntity", |state, _| {
+                // Pre-seed feature_tag_table with a colliding entry at GeometryHandleId(1),
+                // simulating a cross-kernel sibling op (e.g. Manifold) that recorded its
+                // first handle's tag earlier in this same build.
+                state.feature_tag_table.record(
+                    GeometryHandleId(1),
+                    FeatureTag {
+                        source_span: SourceSpan::new(0, 0),
+                        step_kind: StepKind::Primitive,
+                        sub_index: 0,
+                    },
+                );
+            });
 
         // Post-condition: the cached handle must read None from feature_tag_table
         // (#3226 spec: a cache-served handle has no entries in those tables).
@@ -10738,64 +10762,26 @@ mod tests {
     #[test]
     fn cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision() {
         use reify_ir::{FeatureId, Role};
-        use reify_test_support::mocks::MockGeometryKernel;
 
-        let realization_id = RealizationNodeId::new("CrossKernelEntity2", 0);
-        let tol = 1e-4_f64;
-
-        let desc = dispatch_test_descriptor_all_brep();
-        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
-        let registry = dispatch_test_single_default_registry(&desc);
-
-        let mut state = DispatchTestState::default();
-
-        // Pre-seed the cache: the prior build stored {Occt, GeometryHandleId(1)}.
-        let cached_handle = KernelHandle {
-            kernel: KernelId::Occt,
-            id: GeometryHandleId(1),
-        };
-        state.realization_cache.insert(
-            &realization_id.entity,
-            ReprKind::BRep,
-            tol,
-            NO_OPTIONS,
-            cached_handle,
-        );
-
-        // Pre-seed ONLY topology_attribute_table (not feature_tag_table) at
-        // GeometryHandleId(1), simulating a cross-kernel sibling Mesh op that
-        // recorded its first handle's attribute earlier in this same build.
-        // feature_tag_table stays empty → the first check (now a remove, step-2)
-        // is a no-op and execution reaches the SECOND assert for topology.
-        let feature_id = FeatureId::from(&realization_id);
-        let sibling_attr = TopologyAttribute {
-            feature_id,
-            role: Role::Side,
-            local_index: 0,
-            user_label: None,
-            mod_history: Vec::new(),
-        };
-        state
-            .topology_attribute_table
-            .record(GeometryHandleId(1), sibling_attr);
-
-        // Drive the cache-hit short-circuit: operations=&[] + demanded_tol +
-        // realization_name together arm the cache probe.
-        //
-        // Before the fix: debug_assert!(topology_attribute_table.lookup(cached_handle.id).is_none())
-        //   panics → test FAILS (RED).
-        // After  the fix: topology_attribute_table.remove(cached_handle.id) is
-        //   called → no panic → call returns → test continues.
-        state.run_demand(
-            &mut kernels,
-            &registry,
-            "default",
-            &[], // empty ops — cache-hit fires before the op loop
-            &realization_id,
-            Some("part"),
-            SourceSpan::new(0, 0),
-            ReprKind::BRep,
-            Some(tol),
+        let state = run_cross_kernel_cache_hit_short_circuit(
+            "CrossKernelEntity2",
+            |state, realization_id| {
+                // Pre-seed ONLY topology_attribute_table (not feature_tag_table) at
+                // GeometryHandleId(1), simulating a cross-kernel sibling Mesh op that
+                // recorded its first handle's attribute earlier in this same build.
+                // feature_tag_table stays empty → the first check (now a remove, step-2)
+                // is a no-op and execution reaches the SECOND assert for topology.
+                state.topology_attribute_table.record(
+                    GeometryHandleId(1),
+                    TopologyAttribute {
+                        feature_id: FeatureId::from(realization_id),
+                        role: Role::Side,
+                        local_index: 0,
+                        user_label: None,
+                        mod_history: Vec::new(),
+                    },
+                );
+            },
         );
 
         // Post-condition: the cached handle must read None from topology_attribute_table.
