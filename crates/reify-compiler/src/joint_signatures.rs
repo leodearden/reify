@@ -97,4 +97,106 @@ pub(crate) fn joint_ctor_result_type(name: &str, _args: &[CompiledExpr]) -> Type
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Independent fixture — list of all 17 expected names in the family.
+    /// Deliberately does NOT reference `JOINT_TYPED_FN_NAMES` so a drift in
+    /// that slice is caught against this independent list (mirrors
+    /// `math_signatures::tests::EXPECTED_NAMES`).
+    const EXPECTED_NAMES: [&str; 17] = [
+        // Driving joint kinds (5)
+        "prismatic",
+        "revolute",
+        "cylindrical",
+        "planar",
+        "spherical",
+        // Coupling kinds (4)
+        "couple",
+        "gear",
+        "screw",
+        "rack_and_pinion",
+        // Fixed (1)
+        "fixed",
+        // Mechanism/body (2)
+        "mechanism",
+        "body",
+        // Other constructors (4)
+        "snapshot",
+        "body_id_of",
+        "dim",
+        "bind",
+        "joint_jacobian",
+    ];
+
+    // ── Name-family contract (step-1 RED / step-2 GREEN) ─────────────────────
+
+    /// `is_joint_typed_fn` recognises every expected joint-constructor name.
+    #[test]
+    fn is_joint_typed_fn_recognises_all_expected_names() {
+        for name in EXPECTED_NAMES {
+            assert!(
+                is_joint_typed_fn(name),
+                "is_joint_typed_fn({name:?}) must be true (§13 joint-constructor family)"
+            );
+        }
+    }
+
+    /// `is_joint_typed_fn` rejects names from sibling families, the empty name,
+    /// and unknown names (mirrors `is_math_typed_fn_rejects_other_family_and_unknown_names`).
+    #[test]
+    fn is_joint_typed_fn_rejects_other_family_and_unknown_names() {
+        // Geometry-query family.
+        assert!(!is_joint_typed_fn("volume"), "must reject geometry-query 'volume'");
+        // Dynamics-query family.
+        assert!(
+            !is_joint_typed_fn("body_mass_props"),
+            "must reject dynamics-query 'body_mass_props'"
+        );
+        // Math-linalg family.
+        assert!(!is_joint_typed_fn("vec"), "must reject math-linalg 'vec'");
+        assert!(!is_joint_typed_fn("sqrt"), "must reject math-linalg 'sqrt'");
+        // `sweep` is deliberately EXCLUDED from the family — it has a geometry overload.
+        assert!(!is_joint_typed_fn("sweep"), "must reject 'sweep' (geometry overload, excluded)");
+        // Empty / unknown.
+        assert!(!is_joint_typed_fn(""), "must reject empty name");
+        assert!(!is_joint_typed_fn("does_not_exist"), "must reject unrelated name");
+    }
+
+    /// Case-sensitivity invariant: Reify function names are snake_case, so the
+    /// PascalCase forms must not match (mirrors `is_math_typed_fn_is_case_sensitive`).
+    #[test]
+    fn is_joint_typed_fn_is_case_sensitive() {
+        assert!(!is_joint_typed_fn("Prismatic"), "PascalCase must not match");
+        assert!(!is_joint_typed_fn("Couple"), "PascalCase must not match");
+        assert!(!is_joint_typed_fn("Bind"), "PascalCase must not match");
+        assert!(!is_joint_typed_fn("Fixed"), "PascalCase must not match");
+        assert!(!is_joint_typed_fn("Mechanism"), "PascalCase must not match");
+    }
+
+    /// `JOINT_TYPED_FN_NAMES` is exactly the 17 expected names: correct count,
+    /// every expected name present, and no extra entry. Mirrors
+    /// `math_construction_names_are_exactly_the_four`.
+    #[test]
+    fn joint_typed_fn_names_are_exactly_the_17() {
+        assert_eq!(
+            JOINT_TYPED_FN_NAMES.len(),
+            EXPECTED_NAMES.len(),
+            "JOINT_TYPED_FN_NAMES must hold exactly {} names, got {:?}",
+            EXPECTED_NAMES.len(),
+            JOINT_TYPED_FN_NAMES
+        );
+        // Every expected name is in the slice.
+        for name in EXPECTED_NAMES {
+            assert!(
+                JOINT_TYPED_FN_NAMES.contains(&name),
+                "JOINT_TYPED_FN_NAMES must contain {name:?}"
+            );
+        }
+        // No extra name beyond the expected fixture.
+        for name in JOINT_TYPED_FN_NAMES {
+            assert!(
+                EXPECTED_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES has unexpected entry {name:?} not in the fixture"
+            );
+        }
+    }
 }
