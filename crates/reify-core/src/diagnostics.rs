@@ -1835,7 +1835,7 @@ pub enum DiagnosticCode {
     /// `compile_purpose` rewrites them to a `forall … determined(…)` AST before
     /// calling `compile_expr`.
     ///
-    /// Returns a non-cascading poison literal (`Value::Undef, Type::Bool`) so
+    /// Returns a non-cascading poison literal (`Value::Undef, Type::Error`) so
     /// downstream expressions do not emit spurious follow-on errors.
     ///
     /// See also: `DeterminacyIntrinsicArg` (E_DETERMINACY_INTRINSIC_ARG) for

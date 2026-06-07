@@ -462,6 +462,36 @@ fn try_desugar_determinacy_intrinsic(
     }))
 }
 
+/// Compile a purpose constraint expression, desugaring determinacy intrinsics first.
+///
+/// Encapsulates the `try_desugar_determinacy_intrinsic` → `compile_expr` dispatch
+/// used at every constraint position inside a purpose body (top-level and guarded).
+/// Avoids duplicating the three-arm match at each call site.
+///
+/// - If `expr` is a recognised intrinsic with a valid argument, the rewritten
+///   AST is compiled and returned.
+/// - If the intrinsic argument is invalid, a diagnostic has already been pushed
+///   by `try_desugar_determinacy_intrinsic` and a poison expr is returned so
+///   constraint indices remain stable without cascading.
+/// - Otherwise, `expr` is compiled as-is via `compile_expr`.
+fn compile_constraint_expr_desugared(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    match try_desugar_determinacy_intrinsic(expr, scope, diagnostics) {
+        Some(Ok(ref rewritten)) => compile_expr(rewritten, scope, enum_defs, functions, diagnostics),
+        Some(Err(())) => {
+            // Arg error — diagnostic already pushed; emit poison to keep
+            // constraint indices stable and suppress cascading errors.
+            CompiledExpr::literal(Value::Undef, Type::Error)
+        }
+        None => compile_expr(expr, scope, enum_defs, functions, diagnostics),
+    }
+}
+
 /// Compile a parsed purpose declaration into a CompiledPurpose.
 pub(crate) fn compile_purpose(
     purpose_def: &reify_ast::PurposeDef,
@@ -515,21 +545,13 @@ pub(crate) fn compile_purpose(
                 // with a valid purpose-param arg, rewrite to the reflective forall form.
                 // If the intrinsic is recognised but args are bad, use a poison expr
                 // and skip compile_expr (to avoid cascading into the scope guard).
-                let desugar_result =
-                    try_desugar_determinacy_intrinsic(&constraint.expr, &scope, diagnostics);
-                let compiled_expr = match desugar_result {
-                    Some(Ok(ref rewritten)) => {
-                        compile_expr(rewritten, &scope, enum_defs, functions, diagnostics)
-                    }
-                    Some(Err(())) => {
-                        // Arg error — diagnostic already pushed; emit poison to keep
-                        // constraint indices stable and suppress cascading errors.
-                        CompiledExpr::literal(Value::Undef, Type::Error)
-                    }
-                    None => {
-                        compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics)
-                    }
-                };
+                let compiled_expr = compile_constraint_expr_desugared(
+                    &constraint.expr,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                );
                 let id = ConstraintNodeId::new(purpose_name, constraint_index);
                 constraints.push(CompiledConstraint {
                     id,
@@ -636,28 +658,13 @@ pub(crate) fn compile_purpose(
                                 };
                                 // Desugar determinacy intrinsics in guarded constraints too
                                 // (task-4197 α): same desugar as the top-level arm.
-                                let guard_desugar =
-                                    try_desugar_determinacy_intrinsic(&c.expr, &scope, diagnostics);
-                                let body = match guard_desugar {
-                                    Some(Ok(ref rewritten)) => compile_expr(
-                                        rewritten,
-                                        &scope,
-                                        enum_defs,
-                                        functions,
-                                        diagnostics,
-                                    ),
-                                    Some(Err(())) => {
-                                        // Arg error — poison; emit_implies below will wrap it.
-                                        CompiledExpr::literal(Value::Undef, Type::Error)
-                                    }
-                                    None => compile_expr(
-                                        &c.expr,
-                                        &scope,
-                                        enum_defs,
-                                        functions,
-                                        diagnostics,
-                                    ),
-                                };
+                                let body = compile_constraint_expr_desugared(
+                                    &c.expr,
+                                    &scope,
+                                    enum_defs,
+                                    functions,
+                                    diagnostics,
+                                );
                                 emit_implies(
                                     antecedent,
                                     body,
