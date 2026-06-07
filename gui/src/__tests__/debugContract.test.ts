@@ -45,6 +45,8 @@ function makeStores(): DebugStores {
         tessellationDiagnostics: [],
       },
       initFromState: vi.fn(),
+      setCompileDiagnostics: vi.fn(),
+      setTessellationDiagnostics: vi.fn(),
     },
     editor: {
       state: {
@@ -55,6 +57,7 @@ function makeStores(): DebugStores {
         cursorPosition: null,
       },
       openFile: vi.fn(),
+      closeFile: vi.fn(),
     },
     selection: {
       state: {

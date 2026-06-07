@@ -14,6 +14,13 @@ import { getConsoleErrors, clearConsoleErrors } from './consoleErrors';
 import { toPng } from 'html-to-image';
 import { createLspClient, extractHoverMarkdown } from '../editor/lspClient';
 import { pathToUri } from '../utils/pathUtils';
+import {
+  DEFAULT_EDITOR_WIDTH,
+  DEFAULT_SIDE_WIDTH,
+  DEFAULT_DESIGN_TREE_HEIGHT,
+  DEFAULT_PROPERTY_HEIGHT,
+  DEFAULT_CONSTRAINT_HEIGHT,
+} from '../stores/layoutStore';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
 // 16 MB ceiling is empirical: html-to-image silently truncates output above the
@@ -1330,6 +1337,147 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         distanceDelta: Math.abs(d1 - d0),
         camera: { position: { x: vp.camera.position.x, y: vp.camera.position.y, z: vp.camera.position.z } },
       };
+    },
+
+    // --- F1: fixture/injection/capture tools (task-4303) ---
+
+    inject_diagnostics: (params) => {
+      const raw = params.diagnostics;
+      if (!Array.isArray(raw) || raw.length === 0) {
+        return { error: 'diagnostics must be a non-empty array' };
+      }
+
+      // Validate each entry has required fields (severity + message).
+      for (let i = 0; i < raw.length; i++) {
+        const entry = raw[i];
+        if (
+          entry === null ||
+          typeof entry !== 'object' ||
+          typeof (entry as Record<string, unknown>).severity !== 'string' ||
+          typeof (entry as Record<string, unknown>).message !== 'string'
+        ) {
+          return { error: `diagnostics[${i}] must have severity (string) and message (string)` };
+        }
+      }
+
+      // Validate source (optional).
+      const sourceRaw = params.source;
+      if (sourceRaw !== undefined && sourceRaw !== 'compile' && sourceRaw !== 'tessellation') {
+        return { error: 'source must be "compile" or "tessellation"' };
+      }
+      const source = (sourceRaw as 'compile' | 'tessellation') ?? 'compile';
+
+      // Normalize: preserve caller-provided fields; default ONLY omitted positional fields.
+      // Never mutate message or severity.
+      const normalized: DiagnosticInfo[] = raw.map((entry: Record<string, unknown>) => {
+        const line = typeof entry.line === 'number' ? entry.line : 0;
+        const column = typeof entry.column === 'number' ? entry.column : 0;
+        return {
+          file_path: typeof entry.file_path === 'string' ? entry.file_path : 'synthetic://inject_diagnostics',
+          line,
+          column,
+          end_line: typeof entry.end_line === 'number' ? entry.end_line : line,
+          end_column: typeof entry.end_column === 'number' ? entry.end_column : column,
+          severity: entry.severity as string,
+          message: entry.message as string,
+          code: entry.code !== undefined ? (entry.code as string | null) : null,
+        };
+      });
+
+      if (source === 'tessellation') {
+        ctx.stores.engine.setTessellationDiagnostics(normalized);
+      } else {
+        ctx.stores.engine.setCompileDiagnostics(normalized);
+      }
+
+      return { ok: true, count: normalized.length, source };
+    },
+
+    reset_app_state: () => {
+      const { engine, editor, selection, viewState, layout } = ctx.stores;
+
+      // Snapshot open file paths BEFORE closing (closeFile mutates openFiles).
+      const paths = editor.state.openFiles.map((f) => f.path);
+      for (const p of paths) {
+        editor.closeFile(p);
+      }
+
+      selection.clearSelection();
+      viewState.resetToDefaultView();
+      engine.setCompileDiagnostics([]);
+      engine.setTessellationDiagnostics([]);
+
+      layout.setEditorWidth(DEFAULT_EDITOR_WIDTH);
+      layout.setSideWidth(DEFAULT_SIDE_WIDTH);
+      layout.setDesignTreeHeight(DEFAULT_DESIGN_TREE_HEIGHT);
+      layout.setPropertyHeight(DEFAULT_PROPERTY_HEIGHT);
+      layout.setConstraintHeight(DEFAULT_CONSTRAINT_HEIGHT);
+
+      return { ok: true };
+    },
+
+    element_screenshot: async (params) => {
+      const testId = params.testId;
+      if (!testId || typeof testId !== 'string') {
+        return { error: 'testId is required' };
+      }
+
+      // CSS.escape may not be available in all environments (e.g. jsdom).
+      const escaped =
+        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+          ? CSS.escape(testId)
+          : testId.replace(/["\\]/g, '\\$&');
+      const el = document.querySelector(`[data-testid="${escaped}"]`);
+      if (!el) {
+        return { error: `element with data-testid="${testId}" not found` };
+      }
+
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return { error: 'element has zero area' };
+      }
+
+      const dpr = window.devicePixelRatio || 1;
+
+      // Capture the full window.
+      // Pass pixelRatio explicitly so the crop math stays correct regardless of any
+      // future html-to-image default change.
+      const dataUrl = await toPng(document.documentElement, { cacheBust: true, pixelRatio: dpr });
+
+      // Load the full-window image and crop to the element's DPR-scaled bounds.
+      // getBoundingClientRect() returns viewport-relative coordinates; add scrollX/scrollY
+      // to convert to document-origin offsets that match the full-document capture origin.
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image as HTMLImageElement);
+        image.onerror = reject;
+        image.src = dataUrl;
+      });
+
+      const canvasW = Math.round(rect.width * dpr);
+      const canvasH = Math.round(rect.height * dpr);
+      const canvas = document.createElement('canvas');
+      canvas.width = canvasW;
+      canvas.height = canvasH;
+      const ctx2d = canvas.getContext('2d') as CanvasRenderingContext2D;
+      ctx2d.drawImage(
+        img,
+        (rect.x + window.scrollX) * dpr,
+        (rect.y + window.scrollY) * dpr,
+        rect.width * dpr,
+        rect.height * dpr,
+        0,
+        0,
+        canvasW,
+        canvasH,
+      );
+
+      const cropped = canvas.toDataURL('image/png');
+      if (cropped.length > MAX_SCREENSHOT_CHARS) {
+        return { error: 'screenshot too large', size: cropped.length, limit: MAX_SCREENSHOT_CHARS };
+      }
+
+      return { data: cropped };
     },
   };
 }

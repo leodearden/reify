@@ -34,6 +34,11 @@ export function getByPath(obj: unknown, dotted: string): unknown {
  *
  * Values match the existing Scenario.fixture convention in run.ts so the same
  * `path.join(REPO_ROOT, rel)` plumbing resolves both visual and value fixtures.
+ *
+ * COUPLING: kept in sync with `fixture_relpath()` in
+ * gui/src-tauri/src/debug_server.rs. Add new fixtures to BOTH sides; an
+ * "unknown fixture" runtime error from load_fixture is the only gap-detector
+ * (no compile-time cross-check exists).
  */
 export const FIXTURES = {
   empty: "gui/test/fixtures/empty.ri",
@@ -55,6 +60,11 @@ export type ValueScenario = {
   name: string;
   /** Key into FIXTURES — the .ri file to open before calling the tool */
   fixture: keyof typeof FIXTURES;
+  /**
+   * Optional setup steps executed (in order) after openFixture and BEFORE
+   * the asserted tool call.  Any step returning ok:false aborts the scenario.
+   */
+  setup?: { tool: string; args: Record<string, unknown> }[];
   /** MCP tool name to call (e.g. "store_state") */
   tool: string;
   /** Arguments to pass to the tool */
@@ -202,6 +212,89 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
       { path: "azimuthDelta", op: "atLeast", expected: 0.001 },
     ],
   },
+  // task-4303 F1 e2e signal scenarios (live-only via `npm run test:e2e`, NOT CI-gated
+  // per PRD §4.10).  Structure validated in assertions.test.ts; live values asserted
+  // only during a real reify-gui session.
+  //
+  // (1) load_fixture core: load all_severities.ri and assert ok===true.
+  {
+    name: "load_fixture_core",
+    fixture: "all_severities",
+    tool: "load_fixture",
+    args: { name: "all_severities" },
+    assertions: [{ path: "ok", op: "equals", expected: true }],
+  },
+  // (2) load_fixture → get_diagnostics: all_severities.ri violates thickness>5mm
+  //     (thickness=1mm) → ≥1 compile diagnostic emitted via eval→compile_diagnostics.
+  {
+    name: "load_fixture_get_diagnostics",
+    fixture: "all_severities",
+    setup: [
+      { tool: "load_fixture", args: { name: "all_severities" } },
+      { tool: "wait_for_idle", args: {} },
+    ],
+    tool: "get_diagnostics",
+    args: {},
+    assertions: [{ path: "compileCount", op: "atLeast", expected: 1 }],
+  },
+  // (3) inject_diagnostics → diagnostic-row: inject 2 compile entries, open the
+  //     diagnostics panel via click_element on the diagnostics-count badge, then
+  //     query_selector_all diagnostic-row — asserts injected set is rendered.
+  {
+    name: "inject_diagnostics_diagnostic_row",
+    fixture: "empty",
+    setup: [
+      {
+        tool: "inject_diagnostics",
+        args: {
+          diagnostics: [
+            { severity: "Error", message: "synthetic error 1" },
+            { severity: "Warning", message: "synthetic warning 1" },
+          ],
+          source: "compile",
+        },
+      },
+      { tool: "click_element", args: { testId: "diagnostics-count" } },
+    ],
+    tool: "query_selector_all",
+    args: { selector: '[data-testid="diagnostic-row"]' },
+    assertions: [{ path: "count", op: "atLeast", expected: 1 }],
+  },
+  // (4) reset_app_state → store_state baseline: load a fixture, then reset, then
+  //     assert openFiles===[] and selectedEntity===null.
+  {
+    name: "reset_app_state_baseline",
+    fixture: "small_cube",
+    setup: [
+      { tool: "load_fixture", args: { name: "small_cube" } },
+      { tool: "wait_for_idle", args: {} },
+      { tool: "reset_app_state", args: {} },
+    ],
+    tool: "store_state",
+    args: {},
+    assertions: [
+      { path: "editor.openFiles", op: "equals", expected: [] },
+      { path: "selection.selectedEntity", op: "equals", expected: null },
+    ],
+  },
+  // (5) inject_diagnostics → element_screenshot of diagnostics-dialog.
+  {
+    name: "inject_diagnostics_element_screenshot",
+    fixture: "empty",
+    setup: [
+      {
+        tool: "inject_diagnostics",
+        args: {
+          diagnostics: [{ severity: "Error", message: "synthetic error for screenshot" }],
+          source: "compile",
+        },
+      },
+      { tool: "click_element", args: { testId: "diagnostics-count" } },
+    ],
+    tool: "element_screenshot",
+    args: { testId: "diagnostics-dialog" },
+    assertions: [{ path: "data", op: "exists" }],
+  },
 ];
 
 // ─── Assertion type + evaluateAssertion ──────────────────────────────────────
@@ -299,10 +392,12 @@ export type ScenarioDeps = {
  * Logic:
  * 1. Call deps.openFixture(FIXTURES[scenario.fixture]) — on failure, push an
  *    "open_file failed" message and return early (tool is NOT called).
- * 2. Call deps.callTool(scenario.tool, scenario.args) — on failure push a
+ * 2. Run each setup step via deps.callTool (in order); if any returns ok:false,
+ *    push a "<tool> failed" message and return early (asserted tool NOT called).
+ * 3. Call deps.callTool(scenario.tool, scenario.args) — on failure push a
  *    "<tool> failed" message.
- * 3. Evaluate each assertion via evaluateAssertion, collecting failure messages.
- * 4. Return { name, passed: failures.length===0, failures }.
+ * 4. Evaluate each assertion via evaluateAssertion, collecting failure messages.
+ * 5. Return { name, passed: failures.length===0, failures }.
  */
 export async function runValueScenario(
   deps: ScenarioDeps,
@@ -314,6 +409,15 @@ export async function runValueScenario(
   if (!openResult.ok) {
     failures.push(`open_file failed: ${openResult.error}`);
     return { name: scenario.name, passed: false, failures };
+  }
+
+  // Run setup steps (if any) before the asserted tool.
+  for (const step of scenario.setup ?? []) {
+    const stepResult = await deps.callTool(step.tool, step.args);
+    if (!stepResult.ok) {
+      failures.push(`${step.tool} failed: ${stepResult.error}`);
+      return { name: scenario.name, passed: false, failures };
+    }
   }
 
   const toolResult = await deps.callTool(scenario.tool, scenario.args);
@@ -331,3 +435,62 @@ export async function runValueScenario(
 
   return { name: scenario.name, passed: failures.length === 0, failures };
 }
+
+// ─── KNOWN_DEBUG_TOOL_NAMES ───────────────────────────────────────────────────
+
+/**
+ * Canonical set of debug tool names used by VALUE_SCENARIOS setup steps.
+ *
+ * Mirrors the handler keys registered by `buildHandlers()` in
+ * gui/src/debug/bridge.ts (frontend-mediated tools) and `tool_defs()` in
+ * gui/src-tauri/src/debug_server.rs (Rust-dispatched tools).
+ *
+ * Exported so assertions.test.ts can derive its KNOWN_TOOLS check from a single
+ * source rather than maintaining an inline literal.  Update here when a new tool
+ * is added to VALUE_SCENARIOS setup steps.
+ */
+export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
+  // Rust-dispatched tools (debug_server.rs dispatch_tool)
+  "load_fixture",
+  "open_file",
+  // Frontend-mediated tools (bridge.ts buildHandlers)
+  "wait_for_idle",
+  "wait_for",
+  "wait_for_selector",
+  "get_diagnostics",
+  "inject_diagnostics",
+  "reset_app_state",
+  "click_element",
+  "query_selector_all",
+  "query_selector",
+  "store_state",
+  "element_screenshot",
+  "screenshot",
+  "screenshot_window",
+  "type_in_editor",
+  "keyboard",
+  "select_entity",
+  "clear_selection",
+  "fit_to_view",
+  "set_camera",
+  "set_test_mode",
+  "list_console_errors",
+  "resize_panes",
+  "expand_tree_node",
+  "collapse_tree_node",
+  "hover_at",
+  "completion_at",
+  "definition_at",
+  "pick_entity_at",
+  "orbit_camera",
+  "pan_camera",
+  "zoom_camera",
+  "viewport_state",
+  "dom_query",
+  "list_elements",
+  "get_layout_metrics",
+  "get_computed_style",
+  "get_window_state",
+  "ui_outline",
+  "health",
+] as const);
