@@ -539,24 +539,33 @@ fn cmd_build(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // Detect `--verbose` anywhere in the args.
+    let verbose = args.iter().any(|a| a == "--verbose");
+
     let file = &args[0];
-    let output_path = match args.iter().position(|a| a == "-o") {
-        Some(i) if i + 1 < args.len() => &args[i + 1],
+
+    // Under `--verbose`, `-o` is optional (the full geometry build still runs
+    // and provenance is printed; the file is only written if `-o` is present).
+    // Without `--verbose`, `-o` is required (no behavior change).
+    let output_path: Option<&String> = match args.iter().position(|a| a == "-o") {
+        Some(i) if i + 1 < args.len() => Some(&args[i + 1]),
+        _ if verbose => None,
         _ => {
             eprintln!("Usage: reify build <file> -o <output>");
             return ExitCode::FAILURE;
         }
     };
 
-    let format = if output_path.ends_with(".step") || output_path.ends_with(".stp") {
-        ExportFormat::Step
-    } else if output_path.ends_with(".stl") {
-        ExportFormat::Stl
-    } else if output_path.ends_with(".3mf") {
-        ExportFormat::ThreeMF
-    } else {
-        eprintln!("Unknown output format, defaulting to STEP");
-        ExportFormat::Step
+    let format = match output_path {
+        Some(p) if p.ends_with(".step") || p.ends_with(".stp") => ExportFormat::Step,
+        Some(p) if p.ends_with(".stl") => ExportFormat::Stl,
+        Some(p) if p.ends_with(".3mf") => ExportFormat::ThreeMF,
+        Some(_) => {
+            eprintln!("Unknown output format, defaulting to STEP");
+            ExportFormat::Step
+        }
+        // No -o under --verbose: still run the full geometry build as STEP.
+        None => ExportFormat::Step,
     };
 
     let compiled = match parse_and_compile(file) {
@@ -583,13 +592,28 @@ fn cmd_build(args: &[String]) -> ExitCode {
         &mut std::io::stderr(),
     );
 
+    // Under --verbose, print per-realization kernel provenance to stdout.
+    if verbose {
+        let provenance = engine.realization_kernel_provenance();
+        for entry in &provenance {
+            println!(
+                "  {}: kernel: {}, repr: {:?}",
+                entry.realization,
+                entry.kernel.as_registry_name(),
+                entry.repr,
+            );
+        }
+    }
+
     match result.geometry_output {
         Some(data) => {
-            if let Err(e) = std::fs::write(output_path, &data) {
-                eprintln!("Error writing {}: {}", output_path, e);
-                return ExitCode::FAILURE;
+            if let Some(path) = output_path {
+                if let Err(e) = std::fs::write(path, &data) {
+                    eprintln!("Error writing {}: {}", path, e);
+                    return ExitCode::FAILURE;
+                }
+                println!("Wrote {} ({} bytes)", path, data.len());
             }
-            println!("Wrote {} ({} bytes)", output_path, data.len());
             match outcome {
                 ConstraintOutcome::AllSatisfied => ExitCode::SUCCESS,
                 ConstraintOutcome::SomeIndeterminate(n) => {
