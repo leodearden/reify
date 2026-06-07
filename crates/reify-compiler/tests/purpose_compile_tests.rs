@@ -2150,3 +2150,92 @@ purpose design_review(subject : Structure) {
         hash_a, hash_b
     );
 }
+
+/// BT3: `AllParamsDetermined` / `AllGeometryDetermined` used OUTSIDE a purpose body
+/// must emit `DiagnosticCode::DeterminacyIntrinsicScope` (E_DETERMINACY_INTRINSIC_SCOPE)
+/// and must NOT emit a "no matching overload" / unknown-user-fn diagnostic for the
+/// intrinsic name (invariant A3: no silent fall-through).
+///
+/// RED before step-6 impl: no scope guard exists yet, so the call falls through to
+/// the function-overload resolver and emits a "no matching overload" error instead.
+#[test]
+fn all_params_determined_outside_purpose_body_emits_scope_diagnostic() {
+    // Use inside a structure constraint — not a purpose body
+    let source = r#"
+structure Foo {
+    param w : Length = 1mm
+    constraint AllParamsDetermined(w)
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // Must have a DeterminacyIntrinsicScope diagnostic
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        !scope_diags.is_empty(),
+        "expected a DeterminacyIntrinsicScope diagnostic for intrinsic used outside purpose body, \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    // The scope diagnostic message must contain "E_DETERMINACY_INTRINSIC_SCOPE"
+    assert!(
+        scope_diags[0].message.contains("E_DETERMINACY_INTRINSIC_SCOPE"),
+        "DeterminacyIntrinsicScope diagnostic must contain 'E_DETERMINACY_INTRINSIC_SCOPE' in message. \
+         Got: {:?}",
+        scope_diags[0].message
+    );
+
+    // Must NOT have a "no matching overload" or unknown-user-fn diagnostic for
+    // the intrinsic name — the scope guard must intercept before overload resolution.
+    let overload_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("no matching overload")
+                && d.message.contains("AllParamsDetermined")
+        })
+        .collect();
+    assert!(
+        overload_diags.is_empty(),
+        "must NOT emit a 'no matching overload' diagnostic for AllParamsDetermined \
+         (scope guard must intercept first), got: {:?}",
+        overload_diags
+    );
+}
+
+/// BT3 variant: `AllGeometryDetermined` used outside a purpose body also emits
+/// `DiagnosticCode::DeterminacyIntrinsicScope`.
+#[test]
+fn all_geometry_determined_outside_purpose_body_emits_scope_diagnostic() {
+    let source = r#"
+structure Bar {
+    param h : Length = 2mm
+    constraint AllGeometryDetermined(h)
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        !scope_diags.is_empty(),
+        "expected a DeterminacyIntrinsicScope diagnostic for AllGeometryDetermined outside \
+         purpose body, got diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    assert!(
+        scope_diags[0].message.contains("E_DETERMINACY_INTRINSIC_SCOPE"),
+        "DeterminacyIntrinsicScope diagnostic must contain 'E_DETERMINACY_INTRINSIC_SCOPE'. \
+         Got: {:?}",
+        scope_diags[0].message
+    );
+}
