@@ -11,7 +11,7 @@
 //! with no stdlib) + `reify_expr` eval (INV-2 type erasure). Call-site type is
 //! read via `module.templates[0].value_cells[].default_expr`.
 
-use reify_core::DimensionVector;
+use reify_core::{DimensionVector, Severity, Type};
 use reify_test_support::compile_source;
 
 /// Locate the `default_expr` of a named value cell in the first template.
@@ -66,5 +66,116 @@ fn generic_id_call_resolves_and_evaluates() {
             dimension: DimensionVector::LENGTH,
         },
         "id(5mm) should evaluate to the 5mm length scalar, got {v_val:?}"
+    );
+}
+
+// ── step-7: call-site return-type substitution (B1 / B2 / B5) ─────────────────
+
+/// B1: `id<T>(x: T) -> T` called as `id(5mm)` must SUBSTITUTE the return type —
+/// `result_type == Scalar<LENGTH>`, not the raw `TypeParam("T")`. Zero Error
+/// diagnostics.
+///
+/// RED until step-8: the Resolved arm does `result_type = return_type.clone()`
+/// verbatim, so `result_type` is `TypeParam("T")` (unsubstituted).
+#[test]
+fn generic_id_call_substitutes_return_type() {
+    let module = compile_source("fn id<T>(x: T) -> T { x } structure S { let v = id(5mm) }");
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for id(5mm), got: {errors:?}"
+    );
+
+    let v_expr = cell_expr(&module, "v");
+    assert_eq!(
+        v_expr.result_type,
+        Type::length(),
+        "id(5mm) result_type should be substituted to Scalar<LENGTH>, got {:?}",
+        v_expr.result_type
+    );
+}
+
+/// B2: `single<T>(x: T) -> List<T>` called as `single(5mm)` must substitute the
+/// inner type-arg: `result_type == List<Scalar<LENGTH>>`. Eval (INV-2, type
+/// erased) yields `List([5mm scalar])` — exercises inner-arg substitution at
+/// eval (PRD §ref :1335).
+///
+/// RED until step-8: `result_type` is the raw `List<TypeParam("T")>`.
+#[test]
+fn generic_single_call_substitutes_to_list_and_evals() {
+    let module =
+        compile_source("fn single<T>(x: T) -> List<T> { [x] } structure S { let v = single(5mm) }");
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for single(5mm), got: {errors:?}"
+    );
+
+    let v_expr = cell_expr(&module, "v");
+    assert_eq!(
+        v_expr.result_type,
+        Type::List(Box::new(Type::length())),
+        "single(5mm) result_type should be List<Scalar<LENGTH>>, got {:?}",
+        v_expr.result_type
+    );
+
+    // INV-2: eval is type-erased — value correct regardless of substitution.
+    let values = reify_ir::ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let v_val = reify_expr::eval_expr(v_expr, &ctx);
+    assert_eq!(
+        v_val,
+        reify_ir::Value::List(vec![reify_ir::Value::Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector::LENGTH,
+        }]),
+        "single(5mm) should evaluate to List([5mm length scalar]), got {v_val:?}"
+    );
+}
+
+/// B5: `constant_field<D, C>(value: C) -> Field<D, C>` called as
+/// `constant_field(42.5)` binds only `C` (→ Real); `D` stays unbound. The
+/// result type retains the NESTED unbound `TypeParam("D")` inside `Field<…>`
+/// and this is TOLERATED — NO Error diagnostic (it is pinned later by an
+/// enclosing call, PRD §8 / D3-decision).
+///
+/// RED until step-8: `result_type` is the raw `Field<TypeParam(D), TypeParam(C)>`
+/// (C not yet substituted to Real).
+#[test]
+fn generic_constant_field_call_substitutes_codomain_tolerates_unbound_domain() {
+    let module = compile_source(
+        "fn constant_field<D, C>(value: C) -> Field<D, C> { value } \
+         structure S { let v = constant_field(42.5) }",
+    );
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "B5: constant_field(42.5) must check clean (nested unbound D is tolerated), got: {errors:?}"
+    );
+
+    let v_expr = cell_expr(&module, "v");
+    assert_eq!(
+        v_expr.result_type,
+        Type::Field {
+            domain: Box::new(Type::TypeParam("D".to_string())),
+            codomain: Box::new(Type::Real),
+        },
+        "constant_field(42.5) result_type should be Field<TypeParam(D), Real> (C bound, D unbound), got {:?}",
+        v_expr.result_type
     );
 }
