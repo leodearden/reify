@@ -2708,6 +2708,14 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
             }
+            // Split is a multi-output topology selector; it cannot return a
+            // single GeometryHandle. Callers must use execute_split() instead.
+            GeometryOp::Split { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "GeometryOp::Split is multi-output; use execute_split() instead of execute()"
+                        .into(),
+                ));
+            }
         };
         Ok(self.store(shape))
     }
