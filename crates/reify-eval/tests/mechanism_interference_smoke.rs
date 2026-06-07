@@ -360,14 +360,16 @@ fn fk_posed_cubes_no_interference_and_correct_clearance() {
 
 // ─── swept clearance: flat_map over FK-swept snapshots → monotonic to zero ───
 //
-// head: 20mm cube at source-origin, moved by prismatic j (X-axis, 0..300mm).
-// dock: translate(box(200mm,20mm,20mm), 200mm, 0mm, 0mm) — fixed, spans x[200,400]mm.
+// head: box(20mm,20mm,20mm) — centered; right face at x = v + 10mm (half-width 10mm).
+//       Moved by prismatic j (X-axis, 0..300mm).
+// dock: translate(box(200mm,20mm,20mm), 200mm, 0mm, 0mm) — fixed.
+//       box() is centered → spans [−100, +100] in x; translate +200mm → [100, 300] mm.
 //
 // 7 sweep steps: v = 0, 50, 100, 150, 200, 250, 300 mm
-// clearance(v) = max(0, 180 - v) mm (face-to-face: dock_left=200, head_right=v+20)
+// clearance(v) = max(0, dock_left(100) − head_right(v+10)) = max(0, 90 − v) mm
 //
-// Steps 0-150mm: clearances 180, 130, 80, 30 mm (strictly positive)
-// Steps 200-300mm: clearances 0, 0, 0 mm (touching / interfering inside dock)
+// Steps 0mm (90mm), 50mm (40mm): strictly positive.
+// Steps 100mm onward: head right face (v+10) ≥ 110 > 100 = dock left → 0 / interfering.
 //
 // Acceptance (PRD §11.1): clearances[0] > 1mm, sequence monotone non-increasing,
 // clearances.last() ≈ 0 (interfering); at least one positive AND one near-zero entry.

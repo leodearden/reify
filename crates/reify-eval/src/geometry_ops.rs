@@ -10249,6 +10249,282 @@ mod tests {
         }
     }
 
+    /// Contract test (task 3844 KCC-ε): a `flat_map(snaps, |s| [center_of_mass(s)])`
+    /// cell must return `None` from `try_eval_kinematic_query` so the pure-eval value
+    /// (set by the regular eval pass) is preserved.
+    ///
+    /// The swept dispatch intercepts ALL `flat_map` calls in the kinematic post-process;
+    /// this test locks the fall-through contract for non-kinematic inner functions,
+    /// independent of OCCT availability.
+    #[test]
+    fn try_eval_swept_kinematic_query_non_kinematic_inner_falls_through_to_none() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // snaps cell → a single-element list.  The snapshot content is never
+        // accessed because the non-kinematic inner fn name triggers the
+        // fall-through before any snapshot body processing.
+        let snaps_cell = ValueCellId::new("Swept", "snaps");
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            snaps_cell.clone(),
+            reify_ir::Value::List(vec![reify_ir::Value::Undef]),
+        );
+
+        // Lambda param cell.
+        let s_param = ValueCellId::new("Swept", "s");
+
+        // Inner: FunctionCall("center_of_mass", [ValueRef(s_param)])
+        let s_ref = reify_ir::CompiledExpr::value_ref(s_param.clone(), Type::Geometry);
+        let inner = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "center_of_mass".to_string(),
+                    qualified_name: "center_of_mass".to_string(),
+                },
+                args: vec![s_ref],
+            },
+            result_type: Type::Real,
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        // Lambda body: ListLiteral([inner])
+        let lambda_body = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        // Lambda arg: Lambda { params, param_ids: [s_param], body, captures: [] }
+        let lambda_arg = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::Lambda {
+                params: vec![("s".to_string(), None)],
+                param_ids: vec![s_param],
+                body: Box::new(lambda_body),
+                captures: vec![],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        // flat_map(snaps, lambda_arg)
+        let snaps_ref =
+            reify_ir::CompiledExpr::value_ref(snaps_cell, Type::List(Box::new(Type::Geometry)));
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "flat_map".to_string(),
+                    qualified_name: "flat_map".to_string(),
+                },
+                args: vec![snaps_ref, lambda_arg],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+
+        let result = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+            &mut HashMap::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "flat_map with non-kinematic inner (center_of_mass) must return None \
+             so the pure-eval value is preserved; got {result:?}"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "fall-through must emit no diagnostics; got {diagnostics:?}"
+        );
+    }
+
+    /// Contract test (task 3844 KCC-ε): a well-formed
+    /// `flat_map(snaps, |s| [min_clearance(s, id_a, id_b)])` over a 2-element
+    /// snapshot list must return `Some(Value::List(len=2))` from
+    /// `try_eval_kinematic_query`.
+    ///
+    /// Uses identity world_transforms (no `ApplyTransform` ops emitted) so the
+    /// test can run without OCCT — only `MockGeometryKernel::with_distance_result`
+    /// is required.  Locks the happy-path list-length contract independent of OCCT
+    /// availability.
+    #[test]
+    fn try_eval_swept_kinematic_query_min_clearance_returns_list_of_correct_length() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let src_a = reify_ir::GeometryHandleId(10);
+        let src_b = reify_ir::GeometryHandleId(20);
+
+        // Identity world_transforms: no ApplyTransform ops, probe uses raw handles.
+        let mut kernel = MockGeometryKernel::new()
+            .with_distance_result(src_a, src_b, reify_ir::Value::Real(0.050)); // 50 mm
+
+        let make_transform_identity = || -> reify_ir::Value {
+            reify_ir::Value::Transform {
+                rotation: Box::new(reify_ir::Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+                translation: Box::new(reify_ir::Value::Vector(vec![
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ])),
+            }
+        };
+
+        let make_snapshot = |transform_a: reify_ir::Value,
+                              transform_b: reify_ir::Value|
+         -> reify_ir::Value {
+            let make_body = |id: i64, solid: &str, wt: reify_ir::Value| -> reify_ir::Value {
+                let mut m = std::collections::BTreeMap::new();
+                m.insert(
+                    reify_ir::Value::String("id".to_string()),
+                    reify_ir::Value::Int(id),
+                );
+                m.insert(
+                    reify_ir::Value::String("solid".to_string()),
+                    reify_ir::Value::String(solid.to_string()),
+                );
+                m.insert(reify_ir::Value::String("world_transform".to_string()), wt);
+                reify_ir::Value::Map(m)
+            };
+            let mut snap_map = std::collections::BTreeMap::new();
+            snap_map.insert(
+                reify_ir::Value::String("kind".to_string()),
+                reify_ir::Value::String("snapshot".to_string()),
+            );
+            snap_map.insert(
+                reify_ir::Value::String("bodies".to_string()),
+                reify_ir::Value::List(vec![
+                    make_body(1, "body_a", transform_a),
+                    make_body(2, "body_b", transform_b),
+                ]),
+            );
+            reify_ir::Value::Map(snap_map)
+        };
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "body_a".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_a,
+            },
+        );
+        named_steps.insert(
+            "body_b".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_b,
+            },
+        );
+
+        // Two snapshots, each with identity transforms.
+        let snaps_cell = ValueCellId::new("Swept", "snaps");
+        let id_a_cell = ValueCellId::new("Swept", "id_a");
+        let id_b_cell = ValueCellId::new("Swept", "id_b");
+        let s_param = ValueCellId::new("Swept", "s");
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            snaps_cell.clone(),
+            reify_ir::Value::List(vec![
+                make_snapshot(make_transform_identity(), make_transform_identity()),
+                make_snapshot(make_transform_identity(), make_transform_identity()),
+            ]),
+        );
+        values.insert(id_a_cell.clone(), reify_ir::Value::Int(1));
+        values.insert(id_b_cell.clone(), reify_ir::Value::Int(2));
+
+        // Build flat_map(snaps, |s| [min_clearance(s, id_a, id_b)])
+        let s_ref = reify_ir::CompiledExpr::value_ref(s_param.clone(), Type::Geometry);
+        let id_a_ref = reify_ir::CompiledExpr::value_ref(id_a_cell.clone(), Type::Int);
+        let id_b_ref = reify_ir::CompiledExpr::value_ref(id_b_cell.clone(), Type::Int);
+
+        let inner = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "min_clearance".to_string(),
+                    qualified_name: "min_clearance".to_string(),
+                },
+                args: vec![s_ref, id_a_ref, id_b_ref],
+            },
+            result_type: Type::Real,
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let lambda_body = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let lambda_arg = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::Lambda {
+                params: vec![("s".to_string(), None)],
+                param_ids: vec![s_param],
+                body: Box::new(lambda_body),
+                captures: vec![id_a_cell, id_b_cell],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let snaps_ref =
+            reify_ir::CompiledExpr::value_ref(snaps_cell, Type::List(Box::new(Type::Geometry)));
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "flat_map".to_string(),
+                    qualified_name: "flat_map".to_string(),
+                },
+                args: vec![snaps_ref, lambda_arg],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+            &mut HashMap::new(),
+        );
+
+        // Must return Some(Value::List) of length 2 (one result per snapshot).
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "swept min_clearance flat_map over a 2-snapshot list must return \
+                 Some(Value::List(len=2)), got {other:?}; diagnostics: {diagnostics:?}"
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            2,
+            "list length must equal snapshot count (2), got {}: {list:?}",
+            list.len()
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+    }
+
     /// Contract test (task 4142, Cluster B RED — topology/resolve_geometry_handle_arg leaf):
     /// `try_eval_topology_selector` resolves the geometry handle via
     /// `KernelHandle.id`, ignoring `KernelHandle.kernel`.

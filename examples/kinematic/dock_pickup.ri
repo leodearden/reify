@@ -8,12 +8,12 @@
 //     SI-meter values that transitions from strictly positive (head outside
 //     the dock) to zero/interfering (head inside the dock).
 //
-// Geometry:
-//   head_solid:  box(20mm, 20mm, 20mm) at the source origin; FK-posed by j_x.
-//                Right face of head at x = (joint_value + 20mm).
-//   dock_solid:  translate(box(400mm, 20mm, 20mm), 300mm, 0mm, 0mm); FIXED.
-//                Left face of dock at x = 300mm, right face at x = 700mm.
-//   Gap at v=0:  300mm − 20mm = 280mm  →  clearance = 0.280 m.
+// Geometry (all box() calls are centered at the origin before translate):
+//   head_solid:  box(20mm, 20mm, 20mm) — centered; spans [−10, +10] mm in x
+//                at source.  FK-posed: right face at x = v + 10mm (half-width 10mm).
+//   dock_solid:  translate(box(400mm, 20mm, 20mm), 490mm, 0mm, 0mm) — FIXED.
+//                Centered box spans [−200, +200] in x; translate +490mm → [290, 690] mm.
+//   Gap at v=0:  dock_left(290) − head_right(10) = 280mm  →  clearance = 0.280 m.
 //
 // PRD ref:  docs/prds/kinematic-constraints.md §11.1 (KCC-epsilon, task 3844)
 structure def DockPickup {
