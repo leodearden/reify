@@ -101,3 +101,46 @@ fn generic_body_builtin_clamp_already_permissive() {
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
+
+// ── (d) Multi-overload with TypeParam arg — no spurious conformance error ──
+
+/// Two concrete overloads `sink(x: Real)` and `sink(x: Mass)` called with a
+/// TypeParam-typed arg from a generic body.  Because `type_carries_type_param(arg)`
+/// is true, BOTH overloads match — `resolve_function_overload` returns Ambiguous.
+///
+/// The conformance/bounds post-pass SKIPS `Ambiguous` (early `_ => return`),
+/// so NO spurious "does not satisfy" or "does not implement" diagnostic is
+/// emitted.  The call site may emit its own "ambiguous overload" diagnostic,
+/// but that is distinct from a conformance error.
+///
+/// Pins the interaction of the D4 arg-side wildcard with multi-overload
+/// resolution (reviewer_comprehensive robustness, task-4232 amendment pass).
+#[test]
+fn generic_body_type_param_arg_multi_overload_no_spurious_conformance_error() {
+    let source = r#"
+        fn sink(x: Real) -> Real { x }
+        fn sink(x: Mass) -> Real { x }
+        fn use_sink<T>(x: T) -> Real { sink(x) }
+        structure S { let v = use_sink(5mm) }
+    "#;
+    let module = compile_source(source);
+
+    // No conformance or bound-violation error must be emitted by the post-pass.
+    // The call site may have its own "ambiguous overload" diagnostic — we do not
+    // assert on that here; only that the post-pass doesn't add a spurious one.
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && (d.message.contains("does not satisfy")
+                    || d.message.contains("does not implement"))
+        })
+        .collect();
+    assert!(
+        conformance_errors.is_empty(),
+        "expected no conformance/bound errors for TypeParam arg with multi-overload sink, \
+         got: {:?}",
+        conformance_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}

@@ -183,6 +183,162 @@ fn fn_bound_multiple_call_sites_only_bad_errors() {
     );
 }
 
+// ── (g) Forwarded unbounded type-param — deferred-soundness pin ───────────
+
+/// `fn g<U>(x: U) -> U { f(x) }` with `fn f<T: Rigid>(x: T)`.
+///
+/// Inside g's body, `x` has type `TypeParam("U")`.  When the post-pass sees
+/// `f(x)`, it unifies `TypeParam("T")` with `TypeParam("U")` → subst =
+/// {"T": TypeParam("U")}.  `check_type_param_bounds` receives
+/// `type_args = [TypeParam("U")]` and skips it at entity.rs:3692 — no eager
+/// bound error, even for `g(Widget())`.
+///
+/// This pins the **deferred-soundness contract**: the bound is enforced at the
+/// concrete outer call site only if `g` itself declares `<U: Rigid>`.  A
+/// future monomorphisation phase would re-check at that point; the eager
+/// post-pass correctly defers.
+#[test]
+fn fn_bound_unbounded_forwarded_to_bounded_no_eager_error() {
+    let source = r#"
+        trait Rigid { param mass : Mass }
+        structure def Bolt : Rigid { param mass : Mass = 1kg }
+        structure def Widget { param x : Length = 5mm }
+        fn f<T: Rigid>(x: T) -> T { x }
+        fn g<U>(x: U) -> U { f(x) }
+        structure Sfw { let v = g(Widget()) }
+    "#;
+    let module = compile_source(source);
+
+    // No eager bound-violation error: TypeParam("U") is a forwarded type-param
+    // and check_type_param_bounds skips it (entity.rs:3692).
+    let bound_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("does not satisfy"))
+        .collect();
+    assert!(
+        bound_errors.is_empty(),
+        "forwarding TypeParam(U) into f<T: Rigid> should not emit an eager bound error \
+         (deferred to g's concrete call site); got: {:?}",
+        bound_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── (h) Multi-bound: one bound satisfied, one violated ────────────────────
+
+/// `fn dual<T: HasMass + HasWidth>(x: T)` requires T to satisfy BOTH bounds.
+/// `Bolt` only implements `HasMass`, not `HasWidth`. Calling `dual(Bolt())`
+/// must emit an error mentioning the missing bound `HasWidth`.
+///
+/// Exercises the per-bound loop inside `check_type_param_bounds` (entity.rs:3703):
+/// each bound is checked independently, so a partial violator still gets caught.
+#[test]
+fn fn_bound_multi_bound_partial_violation() {
+    let source = r#"
+        trait HasMass { param mass : Mass }
+        trait HasWidth { param width : Length }
+        structure def Bolt : HasMass { param mass : Mass = 1kg }
+        fn dual<T: HasMass + HasWidth>(x: T) -> T { x }
+        structure S { let bad = dual(Bolt()) }
+    "#;
+    let module = compile_source(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected a bound error for Bolt missing HasWidth, got none"
+    );
+    let has_width_error = errors.iter().any(|e| e.message.contains("HasWidth"));
+    assert!(
+        has_width_error,
+        "expected error mentioning HasWidth (the unsatisfied bound), got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+/// Same multi-bound fn `dual<T: HasMass + HasWidth>`, but with `Full` which
+/// satisfies both bounds — no error expected.
+#[test]
+fn fn_bound_multi_bound_both_satisfied_no_error() {
+    let source = r#"
+        trait HasMass { param mass : Mass }
+        trait HasWidth { param width : Length }
+        structure def Full : HasMass + HasWidth {
+            param mass : Mass = 2kg
+            param width : Length = 10mm
+        }
+        fn dual<T: HasMass + HasWidth>(x: T) -> T { x }
+        structure Sok { let ok = dual(Full()) }
+    "#;
+    let module = compile_source(source);
+
+    let bound_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("does not satisfy"))
+        .collect();
+    assert!(
+        bound_errors.is_empty(),
+        "Full satisfies HasMass + HasWidth, expected no error, got: {:?}",
+        bound_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── (i) Nested-constructor (List<T>) unification path ─────────────────────
+
+/// `fn wrap<T: Rigid>(items: List<T>) -> List<T>` called with a `List<Bolt>`
+/// (ok) and a `List<Widget>` (violation).
+///
+/// Exercises the constructor-recursion path in `unify` (type_compat.rs:452):
+/// `unify(List(TypeParam("T")), List(UserDefined("Bolt")))` recurses into
+/// `unify(TypeParam("T"), UserDefined("Bolt"))`, binding T → Bolt.
+/// Without this path the subst would remain empty and the bound check would
+/// skip T (treating it as unbound), silently missing the violation.
+///
+/// To construct a `List<Bolt>` value at the call site we chain through
+/// `fn single<T>(x: T) -> List<T> { [x] }` — proven to produce a
+/// `List<UserDefined(Bolt)>` result_type (fn_generic_call_inference_tests.rs B2).
+#[test]
+fn fn_bound_nested_list_constructor_violation() {
+    let source = r#"
+        trait Rigid { param mass : Mass }
+        structure def Bolt : Rigid { param mass : Mass = 1kg }
+        structure def Widget { param x : Length = 5mm }
+        fn single<T>(x: T) -> List<T> { [x] }
+        fn wrap<T: Rigid>(items: List<T>) -> List<T> { items }
+        structure Sok  { let ok  = wrap(single(Bolt())) }
+        structure Sbad { let bad = wrap(single(Widget())) }
+    "#;
+    let module = compile_source(source);
+
+    // Must have exactly one bound error — for Widget, not Bolt.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected a bound error for List<Widget> passed to wrap<T: Rigid>, got none"
+    );
+    let has_widget_error = errors.iter().any(|e| e.message.contains("Widget") && e.message.contains("Rigid"));
+    assert!(
+        has_widget_error,
+        "expected error mentioning Widget and Rigid, got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    let has_bolt_error = errors.iter().any(|e| e.message.contains("Bolt"));
+    assert!(
+        !has_bolt_error,
+        "Bolt satisfies Rigid — no error expected for wrap(single(Bolt())), got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
 // ── (f) INV-6 unbounded param pin — no spurious check ─────────────────────
 
 /// `fn id<T>(x: T) -> T { x }` has no bounds on T. Calling `id(Bolt())` must

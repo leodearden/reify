@@ -617,29 +617,20 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     let mut new_diagnostics: Vec<reify_core::Diagnostic> = Vec::new();
 
     let walk = |expr: &CompiledExpr, span: SourceSpan, diags: &mut Vec<reify_core::Diagnostic>| {
-        check_expr_fn_arg_conformance(
+        // task 4232 γ: single walk resolves each UserFunctionCall overload once,
+        // performing both trait-object arg conformance (D4) and fn type-param
+        // bound validation (D5) from the shared Resolved(f) result — avoiding
+        // the double walk + double resolve_function_overload call that separate
+        // functions would incur (reviewer_comprehensive performance, code_duplication).
+        check_expr_fn_calls(
             expr,
             resolution_functions,
             &template_registry,
             &trait_registry,
             span,
+            has_bounded_generic_fns,
             diags,
         );
-        // task 4232 (generic-fns γ D5): trait-bound validation on fn type-params.
-        // For each UserFunctionCall resolving to a generic fn with bounded type-params,
-        // re-derives the type-arg subst via unify and delegates to check_type_param_bounds.
-        // Gated on `has_bounded_generic_fns` (computed once above) so non-generic
-        // sources pay zero per-expression overhead.
-        if has_bounded_generic_fns {
-            check_expr_fn_type_param_bounds(
-                expr,
-                resolution_functions,
-                &template_registry,
-                &trait_registry,
-                span,
-                diags,
-            );
-        }
         // task 4310 (mechanism γ): L2 compile-time DrivingJoint-bound check.
         // Rejects bind(couple(...), v) etc. with MechanismNonDrivingJoint.
         check_expr_mechanism_joint_bound(
@@ -709,37 +700,53 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     ctx.diagnostics.extend(new_diagnostics);
 }
 
-/// Walk a single `CompiledExpr` tree, calling `check_fn_arg_conformance` for
-/// every `UserFunctionCall` node whose resolved overload has trait-object params.
+/// Walk a single `CompiledExpr` tree and, for each `UserFunctionCall` node,
+/// resolve the overload **once** then perform two checks from the shared result:
 ///
-/// Re-resolves each call via `resolve_function_overload` using the args'
-/// `result_type`s to pick the correct overload when multiple same-name functions
-/// exist.  Only `OverloadResolution::Resolved` is acted upon; `NoMatch`,
-/// `Ambiguous`, and `NoUserFunctions` are skipped (they carry their own
-/// diagnostics from the original call site, or indicate an eval-builtin).
-fn check_expr_fn_arg_conformance(
+/// 1. **Trait-object arg conformance** (D4, task-4232 γ): for every param whose
+///    type carries a trait object, verify the arg's concrete type conforms,
+///    skipping args whose `result_type` carries a type-param (deferred wildcard).
+///
+/// 2. **Fn type-param bound validation** (D5, task-4232 γ): if `check_bounds` is
+///    true and the resolved fn has ≥1 bounded type-param, re-derive the type-arg
+///    substitution via [`unify`] and call [`check_type_param_bounds`].
+///
+/// Using a single walk with one `resolve_function_overload` call per node avoids
+/// the O(2×|fns|) overhead of two separate walks (reviewer_comprehensive
+/// performance/code_duplication notes, task-4232 amendment pass).
+///
+/// Only `OverloadResolution::Resolved` is acted upon; `NoMatch`, `Ambiguous`,
+/// and `NoUserFunctions` are skipped (each has its own diagnostic or is an
+/// eval-builtin that carries no user-fn semantics).
+///
+/// Reuses the structure-side bound diagnostic message (no new `DiagnosticCode`
+/// — PRD §7.3).  The caller (`phase_fn_arg_conformance`) already owns the
+/// registries; no additional registry build is required.
+fn check_expr_fn_calls(
     expr: &CompiledExpr,
     functions: &[CompiledFunction],
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     representative_span: SourceSpan,
+    check_bounds: bool,
     diagnostics: &mut Vec<reify_core::Diagnostic>,
 ) {
     expr.walk(&mut |node: &CompiledExpr| {
         let CompiledExprKind::UserFunctionCall { function_name, args } = &node.kind else {
             return;
         };
-        // Re-resolve the overload using the args' result_types.
-        // This correctly disambiguates same-name overloads and skips
-        // eval-builtins (NoUserFunctions) and already-diagnosed failures
-        // (NoMatch / Ambiguous).
+
+        // Re-resolve the overload once using the args' result_types.
+        // This disambiguates same-name overloads and skips eval-builtins
+        // (NoUserFunctions) and already-diagnosed failures (NoMatch / Ambiguous).
         let arg_result_types: Vec<Type> =
             args.iter().map(|a| a.result_type.clone()).collect();
         let f = match resolve_function_overload(function_name, &arg_result_types, functions) {
             OverloadResolution::Resolved(f) => f,
             _ => return,
         };
-        // Check each param whose type carries a trait object.
+
+        // ── Check 1: trait-object arg conformance ──────────────────────────
         for ((param_name, param_ty), arg) in f.params.iter().zip(args.iter()) {
             if !type_carries_trait_object(param_ty) {
                 continue;
@@ -748,8 +755,6 @@ fn check_expr_fn_arg_conformance(
             // A type-param-carrying arg forwarded to a trait-object param is
             // "unknown, not definitely non-conforming" — its real conformance
             // is decided when T is bound to a concrete type at the call site.
-            // The conformance walker already handles this (conformance/mod.rs:915),
-            // but this early-exit avoids unnecessary work in the common case.
             if type_carries_type_param(&arg.result_type) {
                 continue;
             }
@@ -763,97 +768,54 @@ fn check_expr_fn_arg_conformance(
                 diagnostics,
             );
         }
-    });
-}
 
-/// Walk a single `CompiledExpr` tree and, for every `UserFunctionCall` that
-/// resolves to a generic fn with bounded type-params, validate the inferred
-/// concrete type-args against those bounds.
-///
-/// Re-derives the type-arg substitution via [`unify`] over the args'
-/// `result_type`s — identical to the call-site derivation in `expr.rs`.
-/// Unbound params self-fill as `Type::TypeParam(name)`, which
-/// [`check_type_param_bounds`] skips (entity.rs:3692 guard), delivering
-/// "an unbound bounded param is not checked" for free.
-///
-/// Skips calls where:
-/// - `resolve_function_overload` returns non-`Resolved` (NoMatch / Ambiguous /
-///   NoUserFunctions — each has its own diagnostic or represents an eval-builtin).
-/// - The resolved fn has no type-params (unbounded generic / concrete fn).
-/// - All type-params have empty bounds (no check needed — INV-6 pin).
-/// - `unify` returns a `TypeArgConflict`: the call was already poisoned at the
-///   call site (expr.rs emits `FnTypeArgConflict` and the call becomes a poison
-///   `Literal`), so it never appears as a `UserFunctionCall` in compiled trees;
-///   the early return is a defensive guard.
-///
-/// Reuses the structure-side bound diagnostic message (no new `DiagnosticCode` —
-/// PRD §7.3). The caller (`phase_fn_arg_conformance`) already owns the
-/// registries; no additional registry build is required.
-fn check_expr_fn_type_param_bounds(
-    expr: &CompiledExpr,
-    functions: &[CompiledFunction],
-    template_registry: &HashMap<String, &TopologyTemplate>,
-    trait_registry: &HashMap<String, &CompiledTrait>,
-    representative_span: SourceSpan,
-    diagnostics: &mut Vec<reify_core::Diagnostic>,
-) {
-    expr.walk(&mut |node: &CompiledExpr| {
-        let CompiledExprKind::UserFunctionCall { function_name, args } = &node.kind else {
-            return;
-        };
-
-        // Re-resolve the overload via arg result_types (same as check_expr_fn_arg_conformance).
-        let arg_result_types: Vec<Type> =
-            args.iter().map(|a| a.result_type.clone()).collect();
-        let f = match resolve_function_overload(function_name, &arg_result_types, functions) {
-            OverloadResolution::Resolved(f) => f,
-            _ => return,
-        };
-
-        // Only act on generic fns with at least one bounded type-param.
-        if f.type_params.is_empty()
-            || f.type_params.iter().all(|tp| tp.bounds.is_empty())
+        // ── Check 2: fn type-param bound validation ─────────────────────────
+        // Gated on `check_bounds` (= `has_bounded_generic_fns`, computed once
+        // before the walk) so non-generic sources pay zero per-node overhead.
+        if check_bounds
+            && !f.type_params.is_empty()
+            && f.type_params.iter().any(|tp| !tp.bounds.is_empty())
         {
-            return;
-        }
-
-        // Re-derive the type-arg substitution by unifying each declared param type
-        // with the corresponding arg's result_type — same logic as expr.rs:1530.
-        let mut subst: HashMap<String, Type> = HashMap::new();
-        for ((_, param_ty), arg) in f.params.iter().zip(args.iter()) {
-            if unify(param_ty, &arg.result_type, &mut subst).is_err() {
-                // TypeArgConflict: call was already poisoned at compile time;
-                // bail out so we don't emit a spurious / contradictory bound error.
-                return;
+            // Re-derive the type-arg substitution by unifying each declared
+            // param type with the corresponding arg's result_type — same logic
+            // as expr.rs:1530.  An Err(TypeArgConflict) means the call was
+            // already poisoned at compile time (expr.rs emits FnTypeArgConflict
+            // and the call becomes a poison Literal), so it never appears as a
+            // UserFunctionCall in compiled trees; the early return is defensive.
+            let mut subst: HashMap<String, Type> = HashMap::new();
+            for ((_, param_ty), arg) in f.params.iter().zip(args.iter()) {
+                if unify(param_ty, &arg.result_type, &mut subst).is_err() {
+                    return;
+                }
             }
+
+            // Build declaration-ordered type_args: unbound params self-fill as
+            // Type::TypeParam(name) so check_type_param_bounds' TypeParam guard
+            // (entity.rs:3692) skips them — delivering "unbound → not checked".
+            let type_args: Vec<Type> = f
+                .type_params
+                .iter()
+                .map(|tp| {
+                    subst
+                        .get(&tp.name)
+                        .cloned()
+                        .unwrap_or_else(|| Type::TypeParam(tp.name.clone()))
+                })
+                .collect();
+
+            // Delegate to the structure-side bound checker — reuses the same
+            // diagnostic message format, transitive satisfies_trait_bound walk,
+            // and arity/default/TypeParam-skip logic.
+            check_type_param_bounds(
+                &f.type_params,
+                &type_args,
+                function_name,
+                template_registry,
+                trait_registry,
+                diagnostics,
+                representative_span,
+            );
         }
-
-        // Build declaration-ordered type_args: unbound params self-fill as
-        // Type::TypeParam(name) so check_type_param_bounds' TypeParam guard
-        // (entity.rs:3692) skips them — delivering "unbound → not checked".
-        let type_args: Vec<Type> = f
-            .type_params
-            .iter()
-            .map(|tp| {
-                subst
-                    .get(&tp.name)
-                    .cloned()
-                    .unwrap_or_else(|| Type::TypeParam(tp.name.clone()))
-            })
-            .collect();
-
-        // Delegate to the structure-side bound checker — reuses the same
-        // diagnostic message format, transitive satisfies_trait_bound walk,
-        // and arity/default/TypeParam-skip logic.
-        check_type_param_bounds(
-            &f.type_params,
-            &type_args,
-            function_name,
-            template_registry,
-            trait_registry,
-            diagnostics,
-            representative_span,
-        );
     });
 }
 
