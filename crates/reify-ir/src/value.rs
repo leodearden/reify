@@ -9937,3 +9937,93 @@ mod tests {
         }
     }
 }
+
+// ── UndefCause unit tests (task 4321 / undef-self-describing α) ──────────────
+//
+// Tests Eq / Hash / Clone / Debug runtime behaviour on `UndefCause`.
+// The enum does not exist yet (step-2 implements it), so these tests
+// fail to compile until step-2 lands — that is the intended RED state.
+#[cfg(test)]
+mod undef_cause_tests {
+    use std::collections::HashSet;
+
+    use reify_core::diagnostics::{DiagnosticCode, SourceSpan};
+    use reify_core::identity::ValueCellId;
+
+    use super::UndefCause;
+
+    fn span(start: u32, end: u32) -> SourceSpan {
+        SourceSpan::new(start, end)
+    }
+
+    fn cell(entity: &str, member: &str) -> ValueCellId {
+        ValueCellId::new(entity, member)
+    }
+
+    // ── Construct all 5 variants ──────────────────────────────────────────────
+
+    #[test]
+    fn construct_all_variants() {
+        let _unbound = UndefCause::Unbound {
+            param: cell("S", "a"),
+            span: span(0, 5),
+        };
+        let _awaiting = UndefCause::AwaitingSolve {
+            param: cell("S", "k"),
+        };
+        let _failed = UndefCause::SolveFailed {
+            detail: "infeasible".to_string(),
+        };
+        let _contract = UndefCause::OpContractFailed {
+            code: DiagnosticCode::ConstraintViolated,
+            span: span(10, 20),
+        };
+        let _user = UndefCause::UserUndef {
+            span: span(30, 35),
+        };
+    }
+
+    // ── Eq / Hash: dedup-by-(kind,cell) contract that β depends on (PRD Q4) ──
+
+    #[test]
+    fn same_unbound_same_span_equal_and_hash_dedup() {
+        let a = UndefCause::Unbound { param: cell("S", "x"), span: span(0, 3) };
+        let b = UndefCause::Unbound { param: cell("S", "x"), span: span(0, 3) };
+        assert_eq!(a, b);
+        // Both inserted into a HashSet → len == 1.
+        let mut set = HashSet::new();
+        set.insert(a);
+        set.insert(b);
+        assert_eq!(set.len(), 1, "two identical Unbound entries must dedup to 1");
+    }
+
+    #[test]
+    fn different_param_unbound_not_equal() {
+        let a = UndefCause::Unbound { param: cell("S", "x"), span: span(0, 3) };
+        let b = UndefCause::Unbound { param: cell("S", "y"), span: span(0, 3) };
+        assert_ne!(a, b);
+        let mut set = HashSet::new();
+        set.insert(a);
+        set.insert(b);
+        assert_eq!(set.len(), 2, "Unbound with different params must be distinct");
+    }
+
+    #[test]
+    fn unbound_vs_user_undef_not_equal() {
+        let a = UndefCause::Unbound { param: cell("S", "x"), span: span(0, 3) };
+        let b = UndefCause::UserUndef { span: span(0, 3) };
+        assert_ne!(a, b);
+    }
+
+    // ── Clone + Debug round-trip ──────────────────────────────────────────────
+
+    #[test]
+    fn clone_and_debug_work() {
+        let orig = UndefCause::SolveFailed { detail: "no progress: dim".to_string() };
+        let cloned = orig.clone();
+        assert_eq!(orig, cloned);
+        // Debug must produce a non-empty string without panicking.
+        let debug_str = format!("{:?}", cloned);
+        assert!(!debug_str.is_empty());
+    }
+}
