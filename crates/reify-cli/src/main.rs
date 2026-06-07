@@ -11,6 +11,12 @@ use reify_eval::TestStatus;
 // emitting a symbol reference into the rlib); the linker passes the rlib
 // unconditionally when the crate appears in `extern crate` position.
 extern crate reify_kernel_occt as _;
+// Ensure reify_kernel_manifold's object files are included in the link so its
+// unconditional `inventory::submit!` fires and populates the global kernel
+// registry with the Manifold entry.  Manifold's submit has no cfg gate (unlike
+// OCCT's cfg(has_occt)), so this extern crate reference is always active and
+// the "manifold" key is always present in the binary's registry.
+extern crate reify_kernel_manifold as _;
 
 mod cache;
 mod mcp_context;
