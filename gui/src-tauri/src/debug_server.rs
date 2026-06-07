@@ -722,6 +722,101 @@ fn tool_defs() -> Vec<ToolDef> {
                 }
             }),
         },
+        // task-4300 I2: canvas interaction tools — frontend-mediated (no dispatch arm needed;
+        // the default `_ =>` arm at :817-821 routes unknown names to DebugBridge::query_frontend).
+        ToolDef {
+            name: "pick_entity_at",
+            description: "Raycast at canvas CSS-px coords and return the entity hit (if any). \
+                          PURE QUERY — does NOT mutate selection (select_entity covers the mutate case). \
+                          Coords are CSS-logical-px from window origin (clientX/clientY). \
+                          Omitted x/y default to canvas center (NDC origin, ray through look-at target). \
+                          Returns {hit:true, entityPath, point:{x,y,z}, distance} on hit; \
+                          {hit:false} on miss; {error} for unknown viewport or non-finite coords.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "x": {
+                        "type": "number",
+                        "description": "CSS-px x coordinate from window origin (clientX). Omit for canvas center."
+                    },
+                    "y": {
+                        "type": "number",
+                        "description": "CSS-px y coordinate from window origin (clientY). Omit for canvas center."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "orbit_camera",
+            description: "Drive the viewport camera via OrbitControls' public rotateLeft/rotateUp API. \
+                          Units are RADIANS of azimuth/elevation delta (reproducible, resolution-independent). \
+                          Omitted deltas default to 0. \
+                          Returns {ok, azimuth, polar, azimuthDelta, polarDelta, camera:{position}}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "dazimuth": {
+                        "type": "number",
+                        "description": "Azimuth (yaw) delta in radians. Positive = rotate left. Defaults to 0."
+                    },
+                    "delevation": {
+                        "type": "number",
+                        "description": "Elevation (pitch) delta in radians. Positive = rotate up. Defaults to 0."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "pan_camera",
+            description: "Pan the viewport camera via OrbitControls' public pan API. \
+                          Units are pixels. Omitted deltas default to 0. \
+                          Returns {ok, target:{x,y,z}, camera:{position}}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "dx": {
+                        "type": "number",
+                        "description": "Horizontal pan in pixels. Positive = pan right. Defaults to 0."
+                    },
+                    "dy": {
+                        "type": "number",
+                        "description": "Vertical pan in pixels. Positive = pan down. Defaults to 0."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "zoom_camera",
+            description: "Zoom the viewport camera via OrbitControls' public dollyIn API. \
+                          scale is a multiplicative distance factor: scale>1 moves farther, scale<1 closer. \
+                          (dollyIn(scale) multiplies the orbit radius by scale per OrbitControls internals.) \
+                          Returns {ok, distance, distanceDelta, camera:{position}}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "scale": {
+                        "type": "number",
+                        "description": "Multiplicative distance scale factor. Must be finite and >0. scale>1 = farther, scale<1 = closer."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
     ]
 }
 
