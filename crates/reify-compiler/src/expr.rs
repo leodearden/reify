@@ -579,7 +579,7 @@ pub(crate) fn extract_auto_free(expr: &reify_ast::Expr) -> Option<bool> {
 pub(crate) fn determinacy_intrinsic_member(name: &str) -> Option<&'static str> {
     match name {
         "AllParamsDetermined" => Some("params"),
-        // "AllGeometryDetermined" => "geometric_params" added in step-4 (task-4197)
+        "AllGeometryDetermined" => Some("geometric_params"),
         _ => None,
     }
 }
