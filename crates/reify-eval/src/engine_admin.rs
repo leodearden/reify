@@ -1786,6 +1786,29 @@ impl Engine {
     ) -> &std::collections::HashMap<reify_core::ValueCellId, reify_ir::UndefCause> {
         &self.last_undef_causes
     }
+
+    /// Reconstruct the complete set of root [`reify_ir::UndefCause`]s for
+    /// `cell` by walking forward dependencies through undef cells.
+    ///
+    /// Combines the per-cell origin side-map from the most recent `eval()` call
+    /// with the dependency graph from the current snapshot to produce a sorted,
+    /// deduplicated `Vec<UndefCause>`.
+    ///
+    /// Returns an empty `Vec` when:
+    /// - no snapshot is available (eval not yet called), or
+    /// - `capture_undef_causes` was `false` during the last `eval()` (empty
+    ///   origins map), or
+    /// - `cell` is determined (no undef causes to report).
+    ///
+    /// Consumer-facing API for δ (CLI) / ε (GUI) / ζ (LSP). See also the
+    /// free function [`crate::trace_undef_causes`] for synthetic-input unit
+    /// testing.
+    pub fn trace_undef_causes(&self, cell: &reify_core::ValueCellId) -> Vec<reify_ir::UndefCause> {
+        // STUB — returns empty vec so TDD test steps RED on assertion, not missing symbol.
+        // Replaced in step-6 (impl).
+        let _ = cell;
+        Vec::new()
+    }
 }
 
 /// Perform the full startup-sweep of `cache_root`, binding the current build's

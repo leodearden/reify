@@ -2677,6 +2677,30 @@ impl DependencyMap {
         self.reverse.get(cell).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    /// Walk forward dependencies from `start`, expanding only cells for which
+    /// `should_expand(cell)` returns `true`.
+    ///
+    /// Returns the deduplicated, **sorted** set of all visited cells (including
+    /// `start`), ordered by `ValueCellId` ascending for order-stability (B1).
+    ///
+    /// Cycle-safe: a `HashSet` visited-set prevents re-visiting any cell
+    /// (BT7).  Absent cells (not in `self.forward`) are treated as leaves
+    /// (no outgoing edges), matching the `deps_of` convention.
+    ///
+    /// # Boundary-stop semantics
+    ///
+    /// When `should_expand(cell)` returns `false` the cell IS included in the
+    /// result (it was reached), but its outgoing edges are NOT followed.
+    pub fn forward_reachable(
+        &self,
+        start: &ValueCellId,
+        should_expand: impl Fn(&ValueCellId) -> bool,
+    ) -> Vec<ValueCellId> {
+        // STUB — returns [start] so TDD test steps RED on assertion, not missing symbol.
+        // Replaced in step-2 (impl).
+        vec![start.clone()]
+    }
+
     /// Return all cells in dependency order (topological sort).
     ///
     /// Uses Kahn's algorithm: start with cells that have no deps, process queue,
