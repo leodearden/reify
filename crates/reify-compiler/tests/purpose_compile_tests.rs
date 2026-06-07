@@ -1980,3 +1980,90 @@ purpose check(subject : Beam) {
         member_names
     );
 }
+
+// ── task-4197 α: determinacy intrinsics compiler sugar ──────────────────────
+
+/// BT1: `AllParamsDetermined(X)` desugars to the same `CompiledExpr` as the
+/// hand-written `forall __p in X.params: determined(__p)` (golden-equivalence).
+///
+/// RED before step-2 impl: (A) currently compiles AllParamsDetermined as a
+/// UserFunctionCall / overload-error poison, so its content_hash differs from
+/// the reflective Quantifier in (B).
+#[test]
+fn all_params_determined_desugars_to_same_compiled_expr_as_hand_written_forall() {
+    // (A) using the compiler-sugar intrinsic
+    let source_a = r#"
+purpose design_review(subject : Structure) {
+    constraint AllParamsDetermined(subject)
+}
+"#;
+
+    // (B) hand-written reflective forall — the canonical expansion
+    let source_b = r#"
+purpose design_review(subject : Structure) {
+    constraint forall __p in subject.params: determined(__p)
+}
+"#;
+
+    let module_a = compile_module_with_diagnostics(source_a);
+    let module_b = compile_module_with_diagnostics(source_b);
+
+    // Both must compile without Error diagnostics
+    let errors_a: Vec<_> = module_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_a.is_empty(),
+        "AllParamsDetermined (A): expected no Error diagnostics, got: {:?}",
+        errors_a
+    );
+
+    let errors_b: Vec<_> = module_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_b.is_empty(),
+        "hand-written forall (B): expected no Error diagnostics, got: {:?}",
+        errors_b
+    );
+
+    // Both purposes must have exactly one constraint
+    let purpose_a = module_a
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "design_review")
+        .expect("expected compiled purpose 'design_review' from source_a");
+    let purpose_b = module_b
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "design_review")
+        .expect("expected compiled purpose 'design_review' from source_b");
+
+    assert_eq!(
+        purpose_a.constraints.len(),
+        1,
+        "AllParamsDetermined purpose must have 1 constraint"
+    );
+    assert_eq!(
+        purpose_b.constraints.len(),
+        1,
+        "hand-written forall purpose must have 1 constraint"
+    );
+
+    // The desugared expr must be content-hash-equal to the hand-written form.
+    // (CompiledExpr does not derive PartialEq; ContentHash does.)
+    let hash_a = purpose_a.constraints[0].expr.content_hash;
+    let hash_b = purpose_b.constraints[0].expr.content_hash;
+    assert_eq!(
+        hash_a, hash_b,
+        "AllParamsDetermined must desugar to the same CompiledExpr \
+         (identical content_hash) as `forall __p in subject.params: determined(__p)`.\n\
+         A hash: {:?}\n\
+         B hash: {:?}",
+        hash_a, hash_b
+    );
+}
