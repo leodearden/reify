@@ -363,12 +363,18 @@ pub(crate) fn compile_trait(
 /// recognized determinacy intrinsic (`determinacy_intrinsic_member(name).is_some()`)
 /// AND the single argument is a bare `Ident` that resolves to a registered purpose
 /// parameter via `scope.purpose_param_root`, this function rewrites the call to the
-/// equivalent `forall __p in <param>.<member>: determined(__p)` AST and returns
-/// `Some(rewritten_expr)`.
+/// equivalent `forall __p in <param>.<member>: determined(__p)` AST.
 ///
-/// If the call does not match (wrong name, wrong arity, non-ident arg, or the ident
-/// is not a registered purpose param), returns `None` — the caller falls through to
-/// normal `compile_expr` or the arg-error handler added in step-8.
+/// ## Return value
+///
+/// - `None` — the expression is **not** a determinacy intrinsic call at all;
+///   the caller should compile it via the normal `compile_expr` path.
+/// - `Some(Ok(rewritten))` — the call desugared successfully; compile `rewritten`.
+/// - `Some(Err(()))` — the call **is** a recognized intrinsic but has bad args
+///   (wrong arity, non-ident arg, or an ident that is not a registered purpose param).
+///   A `DeterminacyIntrinsicArg` (`E_DETERMINACY_INTRINSIC_ARG`) diagnostic was
+///   pushed into `diagnostics`; the caller should emit a poison constraint without
+///   calling `compile_expr` (to avoid cascading into the scope guard).
 ///
 /// All spans in the synthesized AST are copied from the original call's span so that
 /// any downstream diagnostic labels point at the right source location.
@@ -378,27 +384,56 @@ pub(crate) fn compile_trait(
 fn try_desugar_determinacy_intrinsic(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,
-) -> Option<reify_ast::Expr> {
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Result<reify_ast::Expr, ()>> {
     let reify_ast::ExprKind::FunctionCall { name, args } = &expr.kind else {
         return None;
     };
     let member = determinacy_intrinsic_member(name.as_str())?;
 
-    // Must be exactly one arg that is a bare Ident registered as a purpose param.
+    // ── Arg/arity validation (step-8) ─────────────────────────────────────────
+    // From here on the name is a recognized intrinsic. Any mismatch emits
+    // E_DETERMINACY_INTRINSIC_ARG and returns Some(Err(())) so the caller can
+    // push a poison constraint without falling through to compile_expr (which
+    // would cascade into the scope guard — a different, less informative error).
+    let mut arg_error = |msg: String| -> Option<Result<reify_ast::Expr, ()>> {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "E_DETERMINACY_INTRINSIC_ARG: {msg}"
+            ))
+            .with_label(DiagnosticLabel::new(expr.span, "intrinsic call here"))
+            .with_code(DiagnosticCode::DeterminacyIntrinsicArg),
+        );
+        Some(Err(()))
+    };
+
     if args.len() != 1 {
-        return None;
+        return arg_error(format!(
+            "`{}` expects exactly one purpose-parameter (entity reference) argument, \
+             got {}",
+            name,
+            args.len()
+        ));
     }
     let reify_ast::ExprKind::Ident(param_name) = &args[0].kind else {
-        return None;
+        return arg_error(format!(
+            "`{}` expects a bare purpose-parameter name as its argument, \
+             not a complex expression",
+            name
+        ));
     };
     if scope.purpose_param_root(param_name).is_none() {
-        return None;
+        return arg_error(format!(
+            "`{}` argument `{}` is not a registered purpose parameter; \
+             pass the purpose's entity-reference parameter directly",
+            name, param_name
+        ));
     }
 
     let span = expr.span;
 
     // Synthesize: forall __p in <param>.<member>: determined(__p)
-    Some(reify_ast::Expr {
+    Some(Ok(reify_ast::Expr {
         kind: reify_ast::ExprKind::Quantifier {
             kind: reify_ast::QuantifierKind::ForAll,
             variable: "__p".to_string(),
@@ -424,7 +459,7 @@ fn try_desugar_determinacy_intrinsic(
             }),
         },
         span,
-    })
+    }))
 }
 
 /// Compile a parsed purpose declaration into a CompiledPurpose.
@@ -478,17 +513,23 @@ pub(crate) fn compile_purpose(
                 // Desugar determinacy intrinsics before compiling (task-4197 α).
                 // If the constraint is AllParamsDetermined(X) or AllGeometryDetermined(X)
                 // with a valid purpose-param arg, rewrite to the reflective forall form.
-                let desugared;
-                let expr_to_compile = if let Some(d) =
-                    try_desugar_determinacy_intrinsic(&constraint.expr, &scope)
-                {
-                    desugared = d;
-                    &desugared
-                } else {
-                    &constraint.expr
+                // If the intrinsic is recognised but args are bad, use a poison expr
+                // and skip compile_expr (to avoid cascading into the scope guard).
+                let desugar_result =
+                    try_desugar_determinacy_intrinsic(&constraint.expr, &scope, diagnostics);
+                let compiled_expr = match desugar_result {
+                    Some(Ok(ref rewritten)) => {
+                        compile_expr(rewritten, &scope, enum_defs, functions, diagnostics)
+                    }
+                    Some(Err(())) => {
+                        // Arg error — diagnostic already pushed; emit poison to keep
+                        // constraint indices stable and suppress cascading errors.
+                        CompiledExpr::literal(Value::Undef, Type::Error)
+                    }
+                    None => {
+                        compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics)
+                    }
                 };
-                let compiled_expr =
-                    compile_expr(expr_to_compile, &scope, enum_defs, functions, diagnostics);
                 let id = ConstraintNodeId::new(purpose_name, constraint_index);
                 constraints.push(CompiledConstraint {
                     id,
@@ -595,22 +636,28 @@ pub(crate) fn compile_purpose(
                                 };
                                 // Desugar determinacy intrinsics in guarded constraints too
                                 // (task-4197 α): same desugar as the top-level arm.
-                                let desugared_guard;
-                                let guard_expr = if let Some(d) =
-                                    try_desugar_determinacy_intrinsic(&c.expr, &scope)
-                                {
-                                    desugared_guard = d;
-                                    &desugared_guard
-                                } else {
-                                    &c.expr
+                                let guard_desugar =
+                                    try_desugar_determinacy_intrinsic(&c.expr, &scope, diagnostics);
+                                let body = match guard_desugar {
+                                    Some(Ok(ref rewritten)) => compile_expr(
+                                        rewritten,
+                                        &scope,
+                                        enum_defs,
+                                        functions,
+                                        diagnostics,
+                                    ),
+                                    Some(Err(())) => {
+                                        // Arg error — poison; emit_implies below will wrap it.
+                                        CompiledExpr::literal(Value::Undef, Type::Error)
+                                    }
+                                    None => compile_expr(
+                                        &c.expr,
+                                        &scope,
+                                        enum_defs,
+                                        functions,
+                                        diagnostics,
+                                    ),
                                 };
-                                let body = compile_expr(
-                                    guard_expr,
-                                    &scope,
-                                    enum_defs,
-                                    functions,
-                                    diagnostics,
-                                );
                                 emit_implies(
                                     antecedent,
                                     body,
