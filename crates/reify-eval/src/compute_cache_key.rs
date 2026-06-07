@@ -206,6 +206,7 @@ mod tests {
                 operations: vec![],
                 content_hash,
                 produced_repr: ReprKind::BRep,
+                produced_kernel: None,
             },
         );
     }
