@@ -1303,4 +1303,105 @@ mod tests {
         // check fires before any other filtering.
         let _ = try_default_padding(&[&bad_cand], &[]);
     }
+
+    // ── task 4231 β: unify (call-site type-arg inference) ────────────────────
+    //
+    // Structural single-pass unification: bind TypeParam leaves from argument
+    // types; the ONLY error is a type-param double-binding (TypeArgConflict).
+    // Conservative on structural mismatch (Ok, no binding). PRD D2.
+
+    fn tp(name: &str) -> Type {
+        Type::TypeParam(name.to_string())
+    }
+
+    #[test]
+    fn unify_binds_bare_type_param() {
+        // (a) unify(TypeParam("T"), Real) → Ok, subst == {T: Real}.
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("T"), &Type::Real, &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::Real));
+        assert_eq!(subst.len(), 1);
+    }
+
+    #[test]
+    fn unify_recurses_into_list() {
+        // (b) unify(List(TypeParam("T")), List(Int)) → Ok, {T: Int}.
+        let mut subst = HashMap::new();
+        assert!(
+            unify(
+                &Type::List(Box::new(tp("T"))),
+                &Type::List(Box::new(Type::Int)),
+                &mut subst,
+            )
+            .is_ok()
+        );
+        assert_eq!(subst.get("T"), Some(&Type::Int));
+        assert_eq!(subst.len(), 1);
+    }
+
+    #[test]
+    fn unify_recurses_into_field_both_positions() {
+        // (c) unify(Field{B, C}, Field{Real, Length}) → Ok, {B: Real, C: Length}.
+        let mut subst = HashMap::new();
+        assert!(
+            unify(
+                &Type::Field {
+                    domain: Box::new(tp("B")),
+                    codomain: Box::new(tp("C")),
+                },
+                &Type::Field {
+                    domain: Box::new(Type::Real),
+                    codomain: Box::new(Type::length()),
+                },
+                &mut subst,
+            )
+            .is_ok()
+        );
+        assert_eq!(subst.get("B"), Some(&Type::Real));
+        assert_eq!(subst.get("C"), Some(&Type::length()));
+        assert_eq!(subst.len(), 2);
+    }
+
+    #[test]
+    fn unify_double_bind_conflict_errors() {
+        // (d) bind T:Int then T:Real with the SAME subst → second call Errs,
+        //     conflict.param == "T".
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("T"), &Type::Int, &mut subst).is_ok());
+        let err = unify(&tp("T"), &Type::Real, &mut subst)
+            .expect_err("re-binding T to a different type must conflict");
+        assert_eq!(err.param, "T");
+        assert_eq!(err.existing, Type::Int);
+        assert_eq!(err.incoming, Type::Real);
+    }
+
+    #[test]
+    fn unify_consistent_rebind_ok() {
+        // (e) unify T against Int twice → both Ok, no error, single binding.
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("T"), &Type::Int, &mut subst).is_ok());
+        assert!(unify(&tp("T"), &Type::Int, &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::Int));
+        assert_eq!(subst.len(), 1);
+    }
+
+    #[test]
+    fn unify_conservative_on_structural_mismatch() {
+        // (f) unify(List(TypeParam("T")), Int) → Ok with EMPTY subst
+        //     (declared constructor != arg constructor: no binding, no error).
+        let mut subst = HashMap::new();
+        assert!(unify(&Type::List(Box::new(tp("T"))), &Type::Int, &mut subst).is_ok());
+        assert!(subst.is_empty());
+    }
+
+    #[test]
+    fn unify_accumulates_across_calls() {
+        // (g) two unify calls sharing one subst accumulate distinct params.
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("A"), &Type::Int, &mut subst).is_ok());
+        assert!(unify(&tp("B"), &Type::length(), &mut subst).is_ok());
+        assert_eq!(subst.get("A"), Some(&Type::Int));
+        assert_eq!(subst.get("B"), Some(&Type::length()));
+        assert_eq!(subst.len(), 2);
+    }
 }
