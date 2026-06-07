@@ -360,6 +360,134 @@ fn detect_let_cycle<'a>(
     (let_cells, let_traces, sorted_lets)
 }
 
+/// Build the combined Param+Let dependency graph for `template`, topologically
+/// sort it, and emit two-tier cycle diagnostics (4a let-only, 4b cross-kind).
+///
+/// Shared between `evaluate_params_and_lets_unified` (fresh eval) and the
+/// `eval_cached` unified pass. The `partial_map_skip` flag selects between the
+/// two inclusion rules for Param cells:
+///
+/// * `true`  — eval path: skip Param cells where `!has_override && !has_default`
+///   (PARTIAL-MAP invariant; those cells are intentionally absent from `values`).
+/// * `false` — eval_cached path: include ALL Param cells (even
+///   no-override/no-default ones), giving them an empty trace so the "always
+///   writes a result" contract is preserved.
+///
+/// Returns `(combined_nodes, combined_traces, sorted_combined)` where
+/// `sorted_combined` is in dependency order; nodes dropped by Kahn's algorithm
+/// (cycle members) are absent from `sorted_combined` but present in
+/// `combined_nodes`.
+fn build_combined_param_let_graph(
+    template: &reify_compiler::TopologyTemplate,
+    param_overrides: &HashMap<ValueCellId, Value>,
+    partial_map_skip: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (HashSet<NodeId>, HashMap<NodeId, DependencyTrace>, Vec<NodeId>) {
+    let mut combined_nodes: HashSet<NodeId> = HashSet::new();
+    let mut combined_traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+
+    for cell in &template.value_cells {
+        if cell.kind.is_auto() {
+            continue;
+        }
+        let node_id = NodeId::Value(cell.id.clone());
+        match cell.kind {
+            ValueCellKind::Param => {
+                if partial_map_skip
+                    && !param_overrides.contains_key(&cell.id)
+                    && cell.default_expr.is_none()
+                {
+                    // PARTIAL-MAP: silently absent from the graph.
+                    continue;
+                }
+                let trace = cell
+                    .default_expr
+                    .as_ref()
+                    .map(extract_dependency_trace)
+                    .unwrap_or_default();
+                combined_nodes.insert(node_id.clone());
+                combined_traces.insert(node_id, trace);
+            }
+            ValueCellKind::Let => {
+                if let Some(ref expr) = cell.default_expr {
+                    combined_nodes.insert(node_id.clone());
+                    combined_traces.insert(node_id, extract_dependency_trace(expr));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let sorted_combined = topological_sort(&combined_nodes, &combined_traces);
+
+    // ── Two-tier cycle diagnostics ──────────────────────────────────────────
+    if sorted_combined.len() < combined_nodes.len() {
+        let sorted_combined_set: HashSet<&NodeId> = sorted_combined.iter().collect();
+
+        // 4a — let-only subgraph cycle check (preserves existing diagnostic shape).
+        let let_node_ids: HashSet<NodeId> = template
+            .value_cells
+            .iter()
+            .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
+            .map(|c| NodeId::Value(c.id.clone()))
+            .collect();
+        let mut let_only_cyclic: HashSet<&NodeId> = HashSet::new();
+        if !let_node_ids.is_empty() {
+            let let_traces_check: HashMap<NodeId, DependencyTrace> = combined_traces
+                .iter()
+                .filter(|(k, _)| let_node_ids.contains(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let sorted_lets_check = topological_sort(&let_node_ids, &let_traces_check);
+            if sorted_lets_check.len() < let_node_ids.len() {
+                let sorted_let_set: HashSet<&NodeId> = sorted_lets_check.iter().collect();
+                let mut cyclic_members: Vec<&str> = let_node_ids
+                    .iter()
+                    .filter(|nid| !sorted_let_set.contains(nid))
+                    .filter_map(|nid| match nid {
+                        NodeId::Value(vcid) => Some(vcid.member.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                for nid in let_node_ids.iter() {
+                    if !sorted_let_set.contains(nid) {
+                        let_only_cyclic.insert(nid);
+                    }
+                }
+                cyclic_members.sort();
+                diagnostics.push(Diagnostic::error(format!(
+                    "circular let-binding dependency in template {}: [{}]",
+                    template.name,
+                    cyclic_members.join(", "),
+                )));
+            }
+        }
+
+        // 4b — cross-kind (param↔let) cycle.
+        let cross_kind_cyclic: Vec<&str> = combined_nodes
+            .iter()
+            .filter(|nid| {
+                !sorted_combined_set.contains(nid) && !let_only_cyclic.contains(nid)
+            })
+            .filter_map(|nid| match nid {
+                NodeId::Value(vcid) => Some(vcid.member.as_str()),
+                _ => None,
+            })
+            .collect();
+        if !cross_kind_cyclic.is_empty() {
+            let mut members = cross_kind_cyclic;
+            members.sort();
+            diagnostics.push(Diagnostic::error(format!(
+                "circular dependency in template {}: [{}]",
+                template.name,
+                members.join(", "),
+            )));
+        }
+    }
+
+    (combined_nodes, combined_traces, sorted_combined)
+}
+
 /// Static coupling detection pass: walk `templates` in iteration order (which
 /// mirrors the per-scope resolution order) and emit
 /// [`DiagnosticCode::ScopeCoupling`] when a later scope's constraint or
@@ -2751,111 +2879,44 @@ impl Engine {
             // with a single combined-graph topological sort so a param default correctly
             // observes any sibling let it reads (spec §8.2 order-independence).
             {
-                // ── Build combined Param+Let dependency graph ─────────────────────────
-                let mut combined_nodes: HashSet<NodeId> = HashSet::new();
-                let mut combined_traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
-
-                for cell in &template.value_cells {
-                    if cell.kind.is_auto() {
-                        continue;
-                    }
-                    let node_id = NodeId::Value(cell.id.clone());
-                    match cell.kind {
-                        ValueCellKind::Param => {
-                            // ALL param cells enter the dependency graph, including
-                            // no-override/no-default params (they become leaves with an empty
-                            // trace). The evaluation loop's `None => default_or(Determined)`
-                            // branch writes (Undef, Determined) for them, preserving the
-                            // eval_cached "always writes a result" contract (asymmetric with
-                            // eval()'s PARTIAL-MAP skip).
-                            let trace = cell
-                                .default_expr
-                                .as_ref()
-                                .map(extract_dependency_trace)
-                                .unwrap_or_default();
-                            combined_nodes.insert(node_id.clone());
-                            combined_traces.insert(node_id, trace);
+                // ── Pre-check: emit override-rejection warnings for ALL Param cells ───
+                // Runs unconditionally before the topological sort so that Param cells
+                // dropped from sorted_combined (cycle members) still surface their
+                // rejection warnings. The topo loop's Param arm still calls
+                // validate_param_override to determine the effective value but does NOT
+                // re-emit the warning (avoiding double-emission for non-cyclic params).
+                for cell in template
+                    .value_cells
+                    .iter()
+                    .filter(|c| matches!(c.kind, ValueCellKind::Param))
+                {
+                    if let Some(v) = self.param_overrides.get(&cell.id) {
+                        if let Err(ref rejection) = validate_param_override(v, &cell.cell_type) {
+                            emit_param_override_rejection_warning(
+                                &mut diagnostics,
+                                &cell.id,
+                                &cell.cell_type,
+                                v,
+                                rejection,
+                                &mut self.last_param_override_type_kind_rejections,
+                                &mut self.last_param_override_dimension_rejections,
+                            );
                         }
-                        ValueCellKind::Let => {
-                            if let Some(ref expr) = cell.default_expr {
-                                combined_nodes.insert(node_id.clone());
-                                combined_traces.insert(node_id, extract_dependency_trace(expr));
-                            }
-                        }
-                        _ => {}
                     }
                 }
 
-                // ── Topological sort of combined graph ────────────────────────────────
-                let sorted_combined = topological_sort(&combined_nodes, &combined_traces);
-
-                // ── Cross-kind cycle detection ────────────────────────────────────────
-                // (same two-tier logic as evaluate_params_and_lets_unified)
-                if sorted_combined.len() < combined_nodes.len() {
-                    let sorted_combined_set: HashSet<&NodeId> = sorted_combined.iter().collect();
-
-                    // 4a — let-only subgraph cycle check.
-                    let let_node_ids: HashSet<NodeId> = template
-                        .value_cells
-                        .iter()
-                        .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
-                        .map(|c| NodeId::Value(c.id.clone()))
-                        .collect();
-                    let mut let_only_cyclic: HashSet<&NodeId> = HashSet::new();
-                    if !let_node_ids.is_empty() {
-                        let let_traces_check: HashMap<NodeId, DependencyTrace> = combined_traces
-                            .iter()
-                            .filter(|(k, _)| let_node_ids.contains(*k))
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect();
-                        let sorted_lets_check =
-                            topological_sort(&let_node_ids, &let_traces_check);
-                        if sorted_lets_check.len() < let_node_ids.len() {
-                            let sorted_let_set: HashSet<&NodeId> =
-                                sorted_lets_check.iter().collect();
-                            let mut cyclic_members: Vec<&str> = let_node_ids
-                                .iter()
-                                .filter(|nid| !sorted_let_set.contains(nid))
-                                .filter_map(|nid| match nid {
-                                    NodeId::Value(vcid) => Some(vcid.member.as_str()),
-                                    _ => None,
-                                })
-                                .collect();
-                            for nid in let_node_ids.iter() {
-                                if !sorted_let_set.contains(nid) {
-                                    let_only_cyclic.insert(nid);
-                                }
-                            }
-                            cyclic_members.sort();
-                            diagnostics.push(Diagnostic::error(format!(
-                                "circular let-binding dependency in template {}: [{}]",
-                                template.name,
-                                cyclic_members.join(", "),
-                            )));
-                        }
-                    }
-
-                    // 4b — cross-kind cycle.
-                    let cross_kind_cyclic: Vec<&str> = combined_nodes
-                        .iter()
-                        .filter(|nid| {
-                            !sorted_combined_set.contains(nid) && !let_only_cyclic.contains(nid)
-                        })
-                        .filter_map(|nid| match nid {
-                            NodeId::Value(vcid) => Some(vcid.member.as_str()),
-                            _ => None,
-                        })
-                        .collect();
-                    if !cross_kind_cyclic.is_empty() {
-                        let mut members = cross_kind_cyclic;
-                        members.sort();
-                        diagnostics.push(Diagnostic::error(format!(
-                            "circular dependency in template {}: [{}]",
-                            template.name,
-                            members.join(", "),
-                        )));
-                    }
-                }
+                // ── Steps 2–4: Build combined graph, topo-sort, emit cycle diagnostics ─
+                // Delegates to build_combined_param_let_graph so the same graph-build
+                // and cycle-detection logic is not duplicated between this path and
+                // evaluate_params_and_lets_unified. partial_map_skip=false: ALL params
+                // enter the graph (eval_cached "always writes a result" contract).
+                let (combined_nodes, mut combined_traces, sorted_combined) =
+                    build_combined_param_let_graph(
+                        template,
+                        &self.param_overrides,
+                        false,
+                        &mut diagnostics,
+                    );
 
                 // ── Evaluate in topological order with cache fast-paths ────────────────
                 for node_id in sorted_combined {
@@ -2896,20 +2957,10 @@ impl Engine {
                                 .get(&cell.id)
                                 .map(|v| (v, validate_param_override(v, &cell.cell_type)));
 
-                            // Unconditional override-validation diagnostic pre-check — must run
-                            // BEFORE any cache fast-path or cache-reuse short-circuit so that
-                            // rejection warnings surface on every LSP keystroke (task 2267).
-                            if let Some((override_val, Err(rej))) = &override_entry {
-                                emit_param_override_rejection_warning(
-                                    &mut diagnostics,
-                                    &cell.id,
-                                    &cell.cell_type,
-                                    override_val,
-                                    rej,
-                                    &mut self.last_param_override_type_kind_rejections,
-                                    &mut self.last_param_override_dimension_rejections,
-                                );
-                            }
+                            // Override-rejection warning was already emitted in the
+                            // pre-check loop above (before the topological sort) so it
+                            // surfaces even for cycle-dropped Param cells that never
+                            // appear in sorted_combined.
 
                             // Cache fast-path (same-version result is always fresh).
                             if let Some(CachedResult::Value(val, _)) =
@@ -3534,136 +3585,39 @@ impl Engine {
             }
         }
 
-        // ── Step 2: Build combined Param+Let dependency graph ─────────────────
-        //
-        // Included:
-        //   Param cells with a default_expr OR an override entry (roots if
-        //   override-only; leaves in the dep graph if they have an expr).
-        //   Let  cells with a default_expr (all normal let bindings).
-        //
-        // Excluded:
-        //   Auto cells   — pre-seeded above; treated as leaves for the graph.
-        //   PARTIAL-MAP params (no override AND no default_expr) — absent from
-        //   values by design (see PARTIAL-MAP INVARIANT comment in Engine::eval).
-        //   Let cells with no default_expr — should not exist in practice.
-        let mut combined_nodes: HashSet<NodeId> = HashSet::new();
-        let mut combined_traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
-
-        for cell in &template.value_cells {
-            if cell.kind.is_auto() {
-                continue;
-            }
-            let node_id = NodeId::Value(cell.id.clone());
-            match cell.kind {
-                ValueCellKind::Param => {
-                    let has_override = self.param_overrides.contains_key(&cell.id);
-                    let has_default = cell.default_expr.is_some();
-                    if !has_override && !has_default {
-                        // PARTIAL-MAP: silently absent — do not include.
-                        continue;
-                    }
-                    // Build trace from the default expression (if any).
-                    // An override-only param has no expression deps → empty trace
-                    // (root node in the combined graph). At eval time the override
-                    // value is used directly, so its position in the topo order
-                    // relative to its declared expr deps is irrelevant in practice —
-                    // but ordering it conservatively after its expr deps is correct.
-                    let trace = match &cell.default_expr {
-                        Some(expr) => extract_dependency_trace(expr),
-                        None => DependencyTrace::default(),
-                    };
-                    combined_nodes.insert(node_id.clone());
-                    combined_traces.insert(node_id, trace);
+        // ── Pre-check: emit override-rejection warnings for ALL Param cells ───────
+        // Runs unconditionally BEFORE the topological sort so that Param cells
+        // dropped from sorted_combined (cycle members) still surface their
+        // rejection warnings. The topo loop's Param arm still calls
+        // validate_param_override to determine the effective value but does NOT
+        // re-emit the warning (avoiding double-emission for non-cyclic params).
+        for cell in template
+            .value_cells
+            .iter()
+            .filter(|c| matches!(c.kind, ValueCellKind::Param))
+        {
+            if let Some(v) = self.param_overrides.get(&cell.id) {
+                if let Err(ref rejection) = validate_param_override(v, &cell.cell_type) {
+                    emit_param_override_rejection_warning(
+                        diagnostics,
+                        &cell.id,
+                        &cell.cell_type,
+                        v,
+                        rejection,
+                        &mut self.last_param_override_type_kind_rejections,
+                        &mut self.last_param_override_dimension_rejections,
+                    );
                 }
-                ValueCellKind::Let => {
-                    if let Some(ref expr) = cell.default_expr {
-                        combined_nodes.insert(node_id.clone());
-                        combined_traces.insert(node_id, extract_dependency_trace(expr));
-                    }
-                }
-                _ => {} // Auto handled above; no other kinds expected here.
             }
         }
 
-        // ── Step 3: Topological sort of combined graph ────────────────────────
-        // Nodes in a cycle are silently dropped by Kahn's algorithm; the cycle is
-        // detected below via the length shortfall.
-        let sorted_combined = topological_sort(&combined_nodes, &combined_traces);
-
-        // ── Step 4: Cycle diagnostics over the combined graph ─────────────────
-        // When the combined topological sort dropped nodes, at least one cycle
-        // exists. We report it in two passes:
-        //
-        //   4a. Let-only subgraph: if the let-only sort also dropped nodes, emit
-        //       the existing `circular let-binding dependency` diagnostic shape.
-        //
-        //   4b. Cross-kind (param↔let): any dropped node NOT already attributed
-        //       to a let-only cycle is part of a cross-kind cycle. Emit a
-        //       `circular dependency` diagnostic naming all such members.
-        if sorted_combined.len() < combined_nodes.len() {
-            let sorted_combined_set: HashSet<&NodeId> = sorted_combined.iter().collect();
-
-            // 4a — let-only subgraph cycle check (preserves existing diagnostic shape).
-            let let_node_ids: HashSet<NodeId> = template
-                .value_cells
-                .iter()
-                .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
-                .map(|c| NodeId::Value(c.id.clone()))
-                .collect();
-            let mut let_only_cyclic: HashSet<&NodeId> = HashSet::new();
-            if !let_node_ids.is_empty() {
-                let let_traces_check: HashMap<NodeId, DependencyTrace> = combined_traces
-                    .iter()
-                    .filter(|(k, _)| let_node_ids.contains(*k))
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                let sorted_lets_check = topological_sort(&let_node_ids, &let_traces_check);
-                if sorted_lets_check.len() < let_node_ids.len() {
-                    let sorted_let_set: HashSet<&NodeId> = sorted_lets_check.iter().collect();
-                    let mut cyclic_members: Vec<&str> = let_node_ids
-                        .iter()
-                        .filter(|nid| !sorted_let_set.contains(nid))
-                        .filter_map(|nid| match nid {
-                            NodeId::Value(vcid) => Some(vcid.member.as_str()),
-                            _ => None,
-                        })
-                        .collect();
-                    // Track which nodes were attributed to the let-only cycle.
-                    for nid in let_node_ids.iter() {
-                        if !sorted_let_set.contains(nid) {
-                            let_only_cyclic.insert(nid);
-                        }
-                    }
-                    cyclic_members.sort();
-                    diagnostics.push(Diagnostic::error(format!(
-                        "circular let-binding dependency in template {}: [{}]",
-                        template.name,
-                        cyclic_members.join(", "),
-                    )));
-                }
-            }
-
-            // 4b — cross-kind cycle: combined-dropped nodes not covered by 4a.
-            let cross_kind_cyclic: Vec<&str> = combined_nodes
-                .iter()
-                .filter(|nid| {
-                    !sorted_combined_set.contains(nid) && !let_only_cyclic.contains(nid)
-                })
-                .filter_map(|nid| match nid {
-                    NodeId::Value(vcid) => Some(vcid.member.as_str()),
-                    _ => None,
-                })
-                .collect();
-            if !cross_kind_cyclic.is_empty() {
-                let mut members = cross_kind_cyclic;
-                members.sort();
-                diagnostics.push(Diagnostic::error(format!(
-                    "circular dependency in template {}: [{}]",
-                    template.name,
-                    members.join(", "),
-                )));
-            }
-        }
+        // ── Steps 2–4: Build combined graph, topo-sort, emit cycle diagnostics ───
+        // Extracted into build_combined_param_let_graph so the same logic is not
+        // duplicated in the eval_cached path. partial_map_skip=true preserves the
+        // eval() PARTIAL-MAP invariant (params with no override AND no default are
+        // absent from values by design).
+        let (combined_nodes, mut combined_traces, sorted_combined) =
+            build_combined_param_let_graph(template, &self.param_overrides, true, diagnostics);
 
         // ── Step 5: Unified evaluation in topological order ───────────────────
         // Cells dropped from `sorted_combined` (cycles) remain Undef — the cycle
@@ -3695,16 +3649,9 @@ impl Engine {
                         }
                         Some(v) => match validate_param_override(v, &cell.cell_type) {
                             Ok(()) => Some(v.clone()),
-                            Err(ref rejection) => {
-                                emit_param_override_rejection_warning(
-                                    diagnostics,
-                                    &cell.id,
-                                    &cell.cell_type,
-                                    v,
-                                    rejection,
-                                    &mut self.last_param_override_type_kind_rejections,
-                                    &mut self.last_param_override_dimension_rejections,
-                                );
+                            Err(_) => {
+                                // Rejection warning already emitted in the pre-check
+                                // loop before the topological sort; do not re-emit here.
                                 None
                             }
                         },

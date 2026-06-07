@@ -416,6 +416,80 @@ fn incremental_edit_rope_dia_re_evaluates_param_p_through_sibling_let() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Amendment 2 (robustness): override-rejection warning must surface for cyclic params
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A Param cell that is BOTH in a dependency cycle AND carries a type-mismatched
+/// override must still emit its override-rejection warning.
+///
+/// Before the amendment, `emit_param_override_rejection_warning` only ran
+/// inside the `for node_id in sorted_combined` topo loop. Kahn's algorithm
+/// drops cycle members from `sorted_combined`, so cycle-dropped params were
+/// never visited and their rejection warnings were silently lost.
+///
+/// The fix: a pre-check loop runs over ALL Param cells unconditionally BEFORE
+/// the topological sort and emits the warning there; the topo loop only calls
+/// `validate_param_override` to decide the effective value but no longer
+/// re-emits the warning.
+///
+/// Structure:
+///   param a : Real = b + 1.0   ← reads let b → cycle member
+///   let b = a * 2.0            ← reads param a → cycle member
+///
+/// Override: `Value::Int(42)` for `a` — Int vs Real is a type-kind mismatch.
+///
+/// Assert:
+///   (a) cycle error is still present (a and b are cyclic).
+///   (b) `engine.last_param_override_type_kind_rejections() == 1` — the
+///       rejection warning was emitted by the pre-check loop even though `a`
+///       was dropped from `sorted_combined`.
+#[test]
+fn cyclic_param_override_rejection_warning_not_suppressed() {
+    let mut engine = fresh_engine();
+    let a_id = ValueCellId::new("C", "a");
+
+    // Set a type-kind-mismatched override: Int value for a Real param.
+    engine.set_param_and_invalidate(&a_id, Value::Int(42));
+
+    let module = compile_source(
+        "structure C { \
+            param a : Real = b + 1.0 \
+            let b = a * 2.0 \
+        }",
+    );
+
+    let result = engine.eval(&module);
+
+    // (a) The cycle error must be present (unchanged behaviour).
+    let cycle_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && (d.message.contains("circular") || d.message.contains("cycle"))
+        })
+        .collect();
+    assert!(
+        !cycle_errors.is_empty(),
+        "Cross-kind cycle error must be present alongside the override warning; \
+         got diagnostics: {:?}",
+        result.diagnostics
+    );
+
+    // (b) The type-kind rejection counter must be exactly 1 — the pre-check
+    // loop fired the warning even though `a` was a cycle member dropped from
+    // sorted_combined.
+    assert_eq!(
+        engine.last_param_override_type_kind_rejections(),
+        1,
+        "Exactly one type-kind-rejection warning expected for cyclic param `C.a`; \
+         got {} (counter was 0 before the amendment — warning was silently lost \
+         because the cycle-dropped param was never visited in the topo loop).",
+        engine.last_param_override_type_kind_rejections()
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Smoke: existing let-only cycle detector is NOT broken by the change
 // ──────────────────────────────────────────────────────────────────────────────
 
