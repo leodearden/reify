@@ -2125,4 +2125,44 @@ mod tests {
         // RED until step-6 adds "circle" to GEOMETRY_FUNCTION_NAMES.
         assert!(is_geometry_function("circle"));
     }
+
+    // --- split topology selector (task 4190, step-5 RED / step-6 GREEN) ---
+    //
+    // `split(solid, plane) -> List<Solid>` joins the topology-selector family
+    // (GEOMETRY_TOPOLOGY_SELECTOR_NAMES), NOT GEOMETRY_FUNCTION_NAMES, because
+    // it returns List<Solid> (multi-output). Family-disjointness invariant: once
+    // "split" is added to GEOMETRY_TOPOLOGY_SELECTOR_NAMES, the existing
+    // disjointness test `geometry_query_names_are_disjoint_from_other_families`
+    // continues to pass because "split" is absent from all other families.
+
+    #[test]
+    fn is_geometry_topology_selector_recognises_split() {
+        // RED until step-6 adds "split" to GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+        assert!(is_geometry_topology_selector("split"));
+    }
+
+    #[test]
+    fn topology_selector_result_type_split_is_list_geometry() {
+        // RED until step-6 adds the "split" arm to topology_selector_result_type.
+        assert_eq!(
+            topology_selector_result_type("split"),
+            Some(reify_core::Type::List(Box::new(reify_core::Type::Geometry)))
+        );
+    }
+
+    #[test]
+    fn split_is_not_a_geometry_function() {
+        // split is in the topology-selector family, NOT the constructor family.
+        assert!(!is_geometry_function("split"));
+    }
+
+    #[test]
+    fn split_is_not_a_geometry_query_helper() {
+        assert!(!is_geometry_query_helper("split"));
+    }
+
+    #[test]
+    fn split_is_not_a_geometry_kinematic_query() {
+        assert!(!is_geometry_kinematic_query("split"));
+    }
 }
