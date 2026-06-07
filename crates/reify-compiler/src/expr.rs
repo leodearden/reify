@@ -1503,7 +1503,70 @@ pub(crate) fn compile_expr_guarded(
                     if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                         emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                     }
-                    let result_type = matched_fn.return_type.clone();
+                    // Generic call (task 4231 β): infer type arguments by unifying
+                    // each declared param type against the concrete arg type, then
+                    // substitute the bound type parameters into the return type.
+                    // Non-generic fns (empty type_params) keep the exact
+                    // return_type.clone() path bit-for-bit unchanged (INV-6/D10).
+                    let result_type = if matched_fn.type_params.is_empty() {
+                        matched_fn.return_type.clone()
+                    } else {
+                        let mut subst: std::collections::HashMap<String, Type> =
+                            std::collections::HashMap::new();
+                        for ((_, declared), arg_ty) in
+                            matched_fn.params.iter().zip(arg_types.iter())
+                        {
+                            // A type-param double-binding to two different types is
+                            // a call-site type-argument conflict (PRD D2 / §4.2).
+                            // Emit E_FN_TYPE_ARG_CONFLICT and poison the call to
+                            // prevent a follow-on cascade (mirror the Ambiguous arm).
+                            if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst)
+                            {
+                                return make_poison_literal(
+                                    diagnostics,
+                                    Diagnostic::error(format!(
+                                        "conflicting type arguments for type parameter '{}' \
+                                         in call to '{}': {} vs {}",
+                                        conflict.param,
+                                        name,
+                                        conflict.existing,
+                                        conflict.incoming
+                                    ))
+                                    .with_code(DiagnosticCode::FnTypeArgConflict)
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "conflicting type argument",
+                                    )),
+                                );
+                            }
+                        }
+                        let substituted = type_resolution::substitute_type_params(
+                            &matched_fn.return_type,
+                            &subst,
+                        );
+                        // A BARE top-level unbound type-param means nothing pinned
+                        // the result type (e.g. `make<T>() -> T` called as `make()`):
+                        // the call yields a wholly-undetermined type → error + poison.
+                        // A NESTED unbound param (e.g. `Field<TypeParam(D), Real>`)
+                        // is TOLERATED — it is pinned by an enclosing call (B5,
+                        // PRD §8 / D3-decision).
+                        if matches!(substituted, Type::TypeParam(_)) {
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "cannot infer type argument(s) for generic call to '{}': \
+                                     result type is undetermined",
+                                    name
+                                ))
+                                .with_code(DiagnosticCode::FnTypeArgUnresolved)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "unresolved type argument",
+                                )),
+                            );
+                        }
+                        substituted
+                    };
                     build_user_function_call_expr(name, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
