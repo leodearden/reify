@@ -1649,10 +1649,17 @@ mod tests {
     // Engine::set_active_solve_cancel, and the context-install wiring inside
     // run_compute_dispatch → RED.
 
-    /// Observed state: (sink_present, cancel_present, cancel_was_cancelled).
-    static CTX_OBSERVER_RESULT: OnceLock<Mutex<Option<(bool, bool, bool)>>> = OnceLock::new();
+    // Each observer uses its OWN OnceLock<Mutex<..>> static AND its OWN
+    // trampoline fn so the two tests do not race under `cargo test`'s default
+    // multi-thread pool.  ComputeFn is a bare fn-pointer (cannot capture),
+    // so per-test static + per-test fn is the only zero-shared-state option —
+    // matching the ZETA-tracer convention at engine_compute.rs:1065-1067.
 
-    fn ctx_observer_fn(
+    /// Observed state for the progress-sink test: (sink_present, cancel_present, cancel_was_cancelled).
+    static CTX_OBSERVER_RESULT_PROGRESS: OnceLock<Mutex<Option<(bool, bool, bool)>>> =
+        OnceLock::new();
+
+    fn ctx_observer_progress_fn(
         _value_inputs: &[Value],
         _realization_inputs: &[RealizationReadHandle],
         _options: &Value,
@@ -1666,7 +1673,37 @@ mod tests {
             let cancel_cancelled = cancel.as_ref().is_some_and(|c| c.is_cancelled());
             (sink_present, cancel_present, cancel_cancelled)
         });
-        *CTX_OBSERVER_RESULT
+        *CTX_OBSERVER_RESULT_PROGRESS
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = observation;
+        ComputeOutcome::Completed {
+            result: Value::Int(0),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+        }
+    }
+
+    /// Observed state for the pre-cancelled-handle test: (sink_present, cancel_present, cancel_was_cancelled).
+    static CTX_OBSERVER_RESULT_CANCEL: OnceLock<Mutex<Option<(bool, bool, bool)>>> =
+        OnceLock::new();
+
+    fn ctx_observer_cancel_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        use crate::solver_progress::current_solve_dispatch_context;
+        let observation = current_solve_dispatch_context().map(|(sink, cancel)| {
+            let sink_present = sink.is_some();
+            let cancel_present = cancel.is_some();
+            let cancel_cancelled = cancel.as_ref().is_some_and(|c| c.is_cancelled());
+            (sink_present, cancel_present, cancel_cancelled)
+        });
+        *CTX_OBSERVER_RESULT_CANCEL
             .get_or_init(|| Mutex::new(None))
             .lock()
             .unwrap() = observation;
@@ -1684,8 +1721,8 @@ mod tests {
 
         use crate::solver_progress::{SolverProgressSink, SolverProgressUpdate};
 
-        // Reset static.
-        if let Some(m) = CTX_OBSERVER_RESULT.get() {
+        // Reset this test's dedicated static.
+        if let Some(m) = CTX_OBSERVER_RESULT_PROGRESS.get() {
             *m.lock().unwrap() = None;
         }
 
@@ -1696,7 +1733,7 @@ mod tests {
         }
 
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn("test::ctx_observer", ctx_observer_fn as ComputeFn);
+        engine.register_compute_fn("test::ctx_observer", ctx_observer_progress_fn as ComputeFn);
 
         // Install sink and a NON-cancelled handle.
         engine.set_solver_progress_sink(Arc::new(NoopSink));
@@ -1726,7 +1763,7 @@ mod tests {
             VersionId(2),
         ).expect("dispatch must Ok");
 
-        let observed = CTX_OBSERVER_RESULT
+        let observed = CTX_OBSERVER_RESULT_PROGRESS
             .get()
             .expect("trampoline must have set the static")
             .lock()
@@ -1743,9 +1780,8 @@ mod tests {
 
         use crate::solver_progress::{SolverProgressSink, SolverProgressUpdate};
 
-        // Reset static (reuse CTX_OBSERVER_RESULT — runs serially in a
-        // different test but share the reset guard).
-        if let Some(m) = CTX_OBSERVER_RESULT.get() {
+        // Reset this test's dedicated static.
+        if let Some(m) = CTX_OBSERVER_RESULT_CANCEL.get() {
             *m.lock().unwrap() = None;
         }
 
@@ -1755,7 +1791,10 @@ mod tests {
         }
 
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn("test::ctx_observer_cancelled", ctx_observer_fn as ComputeFn);
+        engine.register_compute_fn(
+            "test::ctx_observer_cancelled",
+            ctx_observer_cancel_fn as ComputeFn,
+        );
 
         engine.set_solver_progress_sink(Arc::new(NoopSink2));
         let cancelled_handle = CancellationHandle::new();
@@ -1787,7 +1826,7 @@ mod tests {
             VersionId(2),
         ).expect("dispatch must Ok");
 
-        let observed = CTX_OBSERVER_RESULT
+        let observed = CTX_OBSERVER_RESULT_CANCEL
             .get()
             .expect("trampoline must have set the static")
             .lock()
