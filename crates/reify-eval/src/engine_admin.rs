@@ -1816,6 +1816,10 @@ impl Engine {
         // Build the dependency map from the current snapshot graph.
         // Rebuilt per call (see design decision: O(graph) rebuild acceptable for
         // a read-only tooling path; no Engine field or lifetime surface added).
+        // Callers tracing N cells per interaction (e.g. GUI hover, LSP diagnostics)
+        // can avoid O(N·graph) cost by calling the free function
+        // `crate::undef_tracer::trace_undef_causes` directly with a single
+        // pre-built `DependencyMap` (built once via `DependencyMap::from_graph`).
         let dep_map = crate::deps::DependencyMap::from_graph(&snap.graph);
 
         // Delegate to the free function which owns the cycle-safe DAG walk and

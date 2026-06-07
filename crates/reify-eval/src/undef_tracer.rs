@@ -70,6 +70,13 @@ pub fn trace_undef_causes(
     // Extra guard: `forward_reachable` includes boundary cells (determined cells
     // that were visited but not expanded past). Filter those out — only undef
     // cells can be undef-cause originators (B4: determined inputs never appear).
+    //
+    // Note on the double `values.get(c)...unwrap_or(true)` lookup: the same
+    // predicate runs inside `forward_reachable`'s `should_expand` closure and
+    // again in the `.filter(...)` below. This is intentional (belt-and-suspenders):
+    // `forward_reachable` visits boundary cells without expanding past them, so
+    // the second filter is the correct place to exclude them from cause
+    // collection. The double read-only lookup is negligible on this tooling path.
     reachable
         .iter()
         .filter(|c| values.get(*c).map(|(v, _)| v.is_undef()).unwrap_or(true))
@@ -345,6 +352,55 @@ mod tests {
         assert!(
             result.iter().all(|r| matches!(r, UndefCause::SolveFailed { .. })),
             "INDEPENDENCE: both must be SolveFailed: {:?}",
+            result
+        );
+    }
+
+    // ── absent-from-values ⇒ treat as undef ──────────────────────────────────
+
+    /// absent-from-values: a cell with a recorded origin that is entirely absent
+    /// from `values` is still traversed and reported.
+    ///
+    /// This directly exercises the `unwrap_or(true)` fallback that upholds α's
+    /// convention — pre-seeded Unbound params may be absent from the engine-side
+    /// `snapshot.values` before first evaluation.  A future refactor flipping the
+    /// default to `false` would silently break tracing of those params; this test
+    /// guards against that regression.
+    #[test]
+    fn absent_from_values_treated_as_undef() {
+        // Topology: top → mid → leaf
+        // `leaf` has a recorded origin but is ABSENT from `values`.
+        // `mid` and `top` are also absent — all must be treated as undef.
+        let top = cell("s", "top");
+        let mid = cell("s", "mid");
+        let leaf = cell("s", "leaf");
+
+        let dep_map = make_dep_map(&[
+            (top.clone(), vec![mid.clone()]),
+            (mid.clone(), vec![leaf.clone()]),
+        ]);
+
+        let mut origins = HashMap::new();
+        origins.insert(
+            leaf.clone(),
+            UndefCause::Unbound { param: leaf.clone(), span: SourceSpan::new(0, 1) },
+        );
+
+        // Intentionally empty — no cell is seeded into `values`.
+        // Every cell is absent; the unwrap_or(true) path must fire for each.
+        let values: PersistentMap<ValueCellId, (Value, DeterminacyState)> = PersistentMap::new();
+
+        let result = trace_undef_causes(&origins, &dep_map, &values, &top);
+
+        assert_eq!(
+            result.len(),
+            1,
+            "absent-from-values must be treated as undef and reported: got {:?}",
+            result
+        );
+        assert!(
+            matches!(&result[0], UndefCause::Unbound { param, .. } if param == &leaf),
+            "absent-from-values: expected Unbound(leaf), got {:?}",
             result
         );
     }
