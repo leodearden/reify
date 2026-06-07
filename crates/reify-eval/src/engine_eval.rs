@@ -2771,7 +2771,7 @@ impl Engine {
                             let trace = cell
                                 .default_expr
                                 .as_ref()
-                                .map(|e| extract_dependency_trace(e))
+                                .map(extract_dependency_trace)
                                 .unwrap_or_default();
                             combined_nodes.insert(node_id.clone());
                             combined_traces.insert(node_id, trace);
@@ -3251,7 +3251,7 @@ impl Engine {
                     .cache
                     .get(&node_id)
                     .and_then(|entry| match &entry.result {
-                        CachedResult::Value(_, det) => Some(det.clone()),
+                        CachedResult::Value(_, det) => Some(*det),
                         _ => None,
                     })
                     .unwrap_or(DeterminacyState::Undetermined);
@@ -3263,6 +3263,36 @@ impl Engine {
                 reverse_index: ReverseDependencyIndex::default(),
                 trace_map: HashMap::new(),
             });
+        }
+
+        // Re-apply active purpose bindings against the fresh snapshot (task 3260 / task 3103).
+        // The snapshot created above has no purpose-injected constraints; re-injection
+        // rebuilds them against the new graph.  Mirrors the eval() pattern: save bindings via
+        // mem::take (so activate_purpose_constraints_with_bindings_inner's already-active guard
+        // is not hit), clear derived state (old constraint node IDs are invalid in the new
+        // snapshot), then re-inject.  activate_purpose_constraints_with_bindings_inner
+        // repopulates active_purpose_bindings, active_purposes, active_objective_map, and
+        // active_tolerance_scope from scratch so the engine state is consistent after this block.
+        {
+            let mut preserved_bindings: Vec<(String, Vec<(String, String)>)> =
+                std::mem::take(&mut self.active_purpose_bindings)
+                    .into_iter()
+                    .collect();
+            // Sort for deterministic re-injection order (matches eval() line 1654).
+            preserved_bindings.sort_by(|a, b| a.0.cmp(&b.0));
+            if !preserved_bindings.is_empty() {
+                self.active_purposes.clear();
+                self.active_objective_map.clear();
+                self.active_tolerance_scope.clear();
+                let mut any_injected = false;
+                for (purpose_name, param_bindings) in &preserved_bindings {
+                    any_injected |= self
+                        .activate_purpose_constraints_with_bindings_inner(purpose_name, param_bindings);
+                }
+                if any_injected {
+                    self.rebuild_purpose_infrastructure();
+                }
+            }
         }
 
         CachedEvalResult {
