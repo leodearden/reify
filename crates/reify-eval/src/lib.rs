@@ -839,6 +839,29 @@ pub struct Engine {
     /// a cause).  Exposed as `&HashMap<ValueCellId, UndefCause>` via
     /// `Engine::undef_causes()`.
     last_undef_causes: HashMap<ValueCellId, reify_ir::UndefCause>,
+    /// Per-build achieved representation tolerance, keyed by realized-occurrence
+    /// name (`"{entity}#realization[{index}]"`).
+    ///
+    /// Populated by the per-output tessellation closure in `geometry_ops.rs`
+    /// (`surface_subtree` / `walk_placed_realizations`) after a successful
+    /// `kernel.tessellate(placed_id, budget)` call on a non-empty mesh: the
+    /// sampled max facet-chord deviation (SI metres) returned by
+    /// `kernel.measure_mesh_deviation(placed_id, &mesh)` is inserted under the
+    /// occurrence's `entity_path`.
+    ///
+    /// Cleared at the start of each `tessellate_realizations()` /
+    /// `tessellate_snapshot()` call, mirroring the
+    /// `feature_tag_table` / `topology_attribute_table` / `swept_kind_table`
+    /// reset-at-entry pattern.
+    ///
+    /// A missing key means the occurrence was never realized / tessellated, or
+    /// its mesh was empty, or the kernel returned `None` (non-OCCT) — this is
+    /// the B3 honest-absence contract.  The accessor returns `None` for absent
+    /// keys; it never returns `Some(0.0)` for unrealized subjects.
+    ///
+    /// Task 4198 (Determinacy β) — γ reads this to assert `RepresentationWithin`
+    /// bounds.
+    achieved_repr_tol: BTreeMap<String, f64>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.

@@ -303,6 +303,9 @@ impl Engine {
             // to guarantee zero overhead on the hot path.
             capture_undef_causes: false,
             last_undef_causes: HashMap::new(),
+            // Task 4198 (Determinacy β): empty until tessellate_realizations()
+            // / tessellate_snapshot() populates it via measure_mesh_deviation.
+            achieved_repr_tol: BTreeMap::new(),
         }
     }
 
@@ -400,6 +403,24 @@ impl Engine {
     /// entry. Task 2982.
     pub fn swept_kind_table(&self) -> &crate::sweep_classifier::SweptKindTable {
         &self.swept_kind_table
+    }
+
+    /// Return the achieved representation tolerance (SI metres) for the given
+    /// realized-occurrence name, or `None` if the occurrence was never
+    /// tessellated, its mesh was empty, or the kernel has no exact surface to
+    /// project onto (non-OCCT kernels — B3 honest absence).
+    ///
+    /// The key format is `"{entity}#realization[{index}]"` — the same
+    /// `MeshSurface.entity_path` the surfacing layer computes.
+    ///
+    /// Populated by `tessellate_realizations()` / `tessellate_snapshot()`;
+    /// cleared at the start of each call. A missing key is never a stale
+    /// value — it always means "not recorded this build".
+    ///
+    /// Task 4198 (Determinacy β) — γ (`RepresentationWithin` assertion) reads
+    /// this to compare the measured deviation against the demanded tolerance.
+    pub fn achieved_repr_tol(&self, occurrence: &str) -> Option<f64> {
+        self.achieved_repr_tol.get(occurrence).copied()
     }
 
     /// **Test-instrumentation only — not a stable public surface.**

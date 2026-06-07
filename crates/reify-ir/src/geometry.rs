@@ -2575,6 +2575,31 @@ pub trait GeometryKernel: Send + Sync {
     fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
         None
     }
+
+    /// Returns the sampled max facet-chord deviation (SI metres) of `mesh` from
+    /// the exact representation of `handle`, or `None` for kernels without an
+    /// exact surface to project onto (non-OCCT kernels: mocks, stubs, Fidget,
+    /// OpenVDB, Manifold).
+    ///
+    /// The metric samples 4 interior points per triangle (centroid + 3 edge
+    /// midpoints) and projects each onto the exact BRep via
+    /// `BRepExtrema_DistShapeShape`, returning the global maximum distance.
+    /// Mesh vertices lie on the surface by construction and are excluded; only
+    /// interior samples reveal chord error.
+    ///
+    /// This is the B3 honest-absence default: non-OCCT kernels inherit `None`
+    /// with zero per-impl edits, mirroring the established
+    /// `extract_edges`/`make_compound`/`ingest_mesh` default-absent pattern.
+    /// The absence of an override IS the "not supported" contract.
+    ///
+    /// `&self` (read-only): only a projection query is needed, no shape mutation.
+    fn measure_mesh_deviation(
+        &self,
+        _handle: GeometryHandleId,
+        _mesh: &Mesh,
+    ) -> Option<f64> {
+        None
+    }
 }
 
 /// Debug-build invariant check for kernel implementors that override
