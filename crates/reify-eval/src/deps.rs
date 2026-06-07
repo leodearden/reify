@@ -2696,9 +2696,29 @@ impl DependencyMap {
         start: &ValueCellId,
         should_expand: impl Fn(&ValueCellId) -> bool,
     ) -> Vec<ValueCellId> {
-        // STUB — returns [start] so TDD test steps RED on assertion, not missing symbol.
-        // Replaced in step-2 (impl).
-        vec![start.clone()]
+        let mut visited: HashSet<ValueCellId> = HashSet::new();
+        let mut stack: Vec<ValueCellId> = vec![start.clone()];
+
+        while let Some(cell) = stack.pop() {
+            if !visited.insert(cell.clone()) {
+                // Already visited — cycle guard.
+                continue;
+            }
+
+            if should_expand(&cell) {
+                // Push unvisited forward deps onto the stack.
+                for dep in self.deps_of(&cell) {
+                    if !visited.contains(dep) {
+                        stack.push(dep.clone());
+                    }
+                }
+            }
+            // If !should_expand: cell is included in visited but NOT expanded.
+        }
+
+        let mut result: Vec<ValueCellId> = visited.into_iter().collect();
+        result.sort();
+        result
     }
 
     /// Return all cells in dependency order (topological sort).
