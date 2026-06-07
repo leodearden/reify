@@ -1349,6 +1349,31 @@ pub(crate) fn compile_expr_guarded(
                 return poison;
             }
 
+            // ── Determinacy intrinsic scope guard (det-α step-6) ──────────────────
+            // `AllParamsDetermined` / `AllGeometryDetermined` are COMPILER SUGAR that
+            // `compile_purpose` desugars into a reflective `forall` BEFORE
+            // `compile_expr` is ever called.  Any call that reaches this arm was NOT
+            // desugared — it was used outside a purpose-body top-level constraint
+            // (e.g. inside a structure or function body).  Emit
+            // `E_DETERMINACY_INTRINSIC_SCOPE` and return a non-cascading poison
+            // literal; do NOT fall through to overload resolution (invariant A3).
+            if determinacy_intrinsic_member(name).is_some() {
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "E_DETERMINACY_INTRINSIC_SCOPE: `{}` is a purpose-body \
+                         determinacy intrinsic and may only appear as a top-level \
+                         constraint inside a purpose body",
+                        name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        expr.span,
+                        "intrinsic used here",
+                    ))
+                    .with_code(DiagnosticCode::DeterminacyIntrinsicScope),
+                );
+            }
+
             // Intercept `some(expr)` before general function resolution.
             // some() is a language-level constructor, not a user-defined function.
             if name == "some" {
