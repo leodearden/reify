@@ -392,6 +392,29 @@ describe("runValueScenario", () => {
   });
 });
 
+// task-4305 E1 step-7 RED → step-8 GREEN: I1 scroll e2e signal scenario
+describe("I1 VALUE_SCENARIO (task-4305 E1)", () => {
+  it("scroll_editor_large_assembly is present exactly once in VALUE_SCENARIOS", () => {
+    const matching = VALUE_SCENARIOS.filter((s) => s.name === "scroll_editor_large_assembly");
+    expect(matching.length, "scroll_editor_large_assembly should appear exactly once").toBe(1);
+  });
+
+  it("scroll_editor_large_assembly has correct fixture, tool, args, and key assertions", () => {
+    const scenario = VALUE_SCENARIOS.find((s) => s.name === "scroll_editor_large_assembly");
+    expect(scenario).toBeDefined();
+    if (!scenario) return;
+    const validFixtureKeys = Object.keys(FIXTURES);
+    expect(validFixtureKeys).toContain(scenario.fixture);
+    expect(scenario.tool).toBe("scroll");
+    expect(scenario.args.target).toBe("editor");
+    expect(scenario.assertions).toContainEqual({ path: "ok", op: "equals", expected: true });
+    // scrollTop asserted via exists (not a value) — clamp depends on live viewport height
+    const scrollTopAssertion = scenario.assertions.find((a) => a.path === "scrollTop");
+    expect(scrollTopAssertion).toBeDefined();
+    expect(scrollTopAssertion!.op).toBe("exists");
+  });
+});
+
 // task-4305 E1 step-5 RED → step-6 GREEN: C1 open_menu e2e signal scenario
 describe("C1 VALUE_SCENARIO (task-4305 E1)", () => {
   it("open_menu_file is present exactly once in VALUE_SCENARIOS", () => {
