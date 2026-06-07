@@ -11,7 +11,7 @@
 //! with no stdlib) + `reify_expr` eval (INV-2 type erasure). Call-site type is
 //! read via `module.templates[0].value_cells[].default_expr`.
 
-use reify_core::{DimensionVector, Severity, Type};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
 use reify_test_support::compile_source;
 
 /// Locate the `default_expr` of a named value cell in the first template.
@@ -177,5 +177,38 @@ fn generic_constant_field_call_substitutes_codomain_tolerates_unbound_domain() {
         },
         "constant_field(42.5) result_type should be Field<TypeParam(D), Real> (C bound, D unbound), got {:?}",
         v_expr.result_type
+    );
+}
+
+// ── step-9: type-argument conflict diagnostic (B4) ───────────────────────────
+
+/// B4: `pair<T>(a: T, b: T) -> T` called as `pair(1, 1.5)` binds `T:Int` from
+/// the first arg then sees `T:Real` from the second — a type-argument conflict.
+/// The call site must emit `DiagnosticCode::FnTypeArgConflict` referencing the
+/// conflicting param `'T'`.
+///
+/// (`1` lexes as Int, `1.5` as Real — a guaranteed Int/Real mismatch pair.)
+///
+/// RED until step-10: step-8 ignores the `unify` Err, so no FnTypeArgConflict
+/// is emitted.
+#[test]
+fn generic_pair_call_conflicting_args_emits_conflict_diagnostic() {
+    let module =
+        compile_source("fn pair<T>(a: T, b: T) -> T { a } structure S { let v = pair(1, 1.5) }");
+
+    let conflict_diag = module
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::FnTypeArgConflict));
+    assert!(
+        conflict_diag.is_some(),
+        "expected a FnTypeArgConflict diagnostic for pair(1, 1.5); got diagnostics: {:?}",
+        module.diagnostics
+    );
+    let diag = conflict_diag.unwrap();
+    assert!(
+        diag.message.contains("'T'"),
+        "FnTypeArgConflict message should reference the conflicting param \"'T'\" (quoted), got: {:?}",
+        diag.message
     );
 }
