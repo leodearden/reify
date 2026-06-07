@@ -119,9 +119,54 @@ pub(crate) fn is_joint_typed_fn(name: &str) -> bool {
 /// Only reached for names in [`JOINT_TYPED_FN_NAMES`] (the caller gates on
 /// [`is_joint_typed_fn`]); the `_` arm is therefore unreachable in practice
 /// and returns a harmless `Type::Real`.
-#[allow(unused_variables)]
 pub(crate) fn joint_ctor_result_type(name: &str, _args: &[CompiledExpr]) -> Type {
-    Type::Real
+    match name {
+        // ── Driving joint kind constructors (5) ──────────────────────────────
+        // Each driving-joint kind maps to its own nominal structure type.
+        // Runtime: joints.rs emits Value::Map; cell TYPE is the nominal tag.
+        "prismatic" => Type::StructureRef("Prismatic".to_string()),
+        "revolute" => Type::StructureRef("Revolute".to_string()),
+        "cylindrical" => Type::StructureRef("Cylindrical".to_string()),
+        "planar" => Type::StructureRef("Planar".to_string()),
+        "spherical" => Type::StructureRef("Spherical".to_string()),
+
+        // ── Coupling constructors (4) ─────────────────────────────────────────
+        // couple / gear / screw / rack_and_pinion all produce a Coupling value.
+        "couple" | "gear" | "screw" | "rack_and_pinion" => {
+            Type::StructureRef("Coupling".to_string())
+        }
+
+        // ── Fixed joint (1) ──────────────────────────────────────────────────
+        "fixed" => Type::StructureRef("Fixed".to_string()),
+
+        // ── Mechanism / body constructors (2) ────────────────────────────────
+        // Both `mechanism` (the top-level builder) and `body` (the body-within-
+        // mechanism builder) produce a Mechanism value.
+        "mechanism" | "body" => Type::StructureRef("Mechanism".to_string()),
+
+        // ── Snapshot constructor (1) ──────────────────────────────────────────
+        "snapshot" => Type::StructureRef("Snapshot".to_string()),
+
+        // ── Body-ID accessor (1) ──────────────────────────────────────────────
+        // body_id_of evaluates to Value::Int at runtime (esc-3845-91);
+        // the cell TYPE is the nominal BodyId tag.
+        "body_id_of" => Type::StructureRef("BodyId".to_string()),
+
+        // ── Sweep dimension (1) ───────────────────────────────────────────────
+        "dim" => Type::StructureRef("SweepDim".to_string()),
+
+        // ── Joint binding (1) ─────────────────────────────────────────────────
+        "bind" => Type::StructureRef("JointBinding".to_string()),
+
+        // ── Joint Jacobian / Twist (1) ────────────────────────────────────────
+        // joint_jacobian evaluates to Value::Map (prismatic/revolute/fixed) or
+        // Value::List (planar/spherical/cylindrical) at runtime (esc-3845-91);
+        // the cell TYPE is the nominal Twist tag.
+        "joint_jacobian" => Type::StructureRef("Twist".to_string()),
+
+        // Unreachable in practice — the caller gates on is_joint_typed_fn.
+        _ => Type::Real,
+    }
 }
 
 #[cfg(test)]
