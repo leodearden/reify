@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use reify_core::Severity;
 use reify_eval::cache::NodeId;
 use reify_eval::{CancellationHandle, SolverProgressSink, SolverProgressUpdate};
-use reify_ir::{Freshness, Value};
+use reify_ir::Freshness;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── fixture ───────────────────────────────────────────────────────────────────
