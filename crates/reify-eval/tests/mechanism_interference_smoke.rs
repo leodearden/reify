@@ -426,7 +426,8 @@ fn swept_min_clearance_monotonic_to_interference() {
         .map(|(i, v)| read_si_f64(v, &format!("clearances[{i}]")))
         .collect();
 
-    // clearances[0]: head at x=0, dock left face at x=200; gap = 200-20 = 180mm.
+    // clearances[0]: head right face at x=10mm (half-width 10mm, v=0),
+    // dock left face at x=100mm (centered box +200mm → spans [100,300]); gap = 90mm.
     assert!(
         vals[0] > 1e-3,
         "clearances[0] must be strictly positive (>1mm), got {:.6} m",

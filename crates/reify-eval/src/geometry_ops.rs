@@ -10519,9 +10519,219 @@ mod tests {
             "list length must equal snapshot count (2), got {}: {list:?}",
             list.len()
         );
+        // Each element must be a length Scalar with si_value ≈ 0.050 m.
+        // Without this check, a regression that returns Value::Undef or dispatches
+        // to the wrong helper would still pass the length-only assertion above.
+        for (i, elem) in list.iter().enumerate() {
+            match elem {
+                reify_ir::Value::Scalar { si_value, .. } => {
+                    let diff = (si_value - 0.050_f64).abs();
+                    assert!(
+                        diff < 1e-9,
+                        "clearances[{i}] expected ≈ 0.050 m, got {si_value:.9} m (delta {diff:.2e})"
+                    );
+                }
+                other => panic!(
+                    "clearances[{i}] expected Value::Scalar (length ≈ 0.050 m), got {other:?}"
+                ),
+            }
+        }
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {diagnostics:?}"
+        );
+    }
+
+    /// Swept kinematic query: per-snapshot failures (malformed snapshot missing
+    /// `bodies`) become `Value::Undef` in the output list, while other snapshots
+    /// still resolve.  List length is always equal to the snapshot count.
+    ///
+    /// Pins the most subtle invariant documented in `try_eval_swept_kinematic_query`:
+    /// "Per-snapshot failures (None) become Value::Undef so the list length is
+    /// always equal to the snapshot count."
+    #[test]
+    fn try_eval_swept_kinematic_query_malformed_snapshot_yields_undef_element() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let src_a = reify_ir::GeometryHandleId(10);
+        let src_b = reify_ir::GeometryHandleId(20);
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_distance_result(src_a, src_b, reify_ir::Value::Real(0.030)); // 30 mm
+
+        // Well-formed snapshot with identity transforms.
+        let make_body = |id: i64, solid: &str| -> reify_ir::Value {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(
+                reify_ir::Value::String("id".to_string()),
+                reify_ir::Value::Int(id),
+            );
+            m.insert(
+                reify_ir::Value::String("solid".to_string()),
+                reify_ir::Value::String(solid.to_string()),
+            );
+            let identity_transform = reify_ir::Value::Transform {
+                rotation: Box::new(reify_ir::Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+                translation: Box::new(reify_ir::Value::Vector(vec![
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ])),
+            };
+            m.insert(
+                reify_ir::Value::String("world_transform".to_string()),
+                identity_transform,
+            );
+            reify_ir::Value::Map(m)
+        };
+
+        // snapshot_good: valid Snapshot Map with a `bodies` list.
+        let mut good_map = std::collections::BTreeMap::new();
+        good_map.insert(
+            reify_ir::Value::String("kind".to_string()),
+            reify_ir::Value::String("snapshot".to_string()),
+        );
+        good_map.insert(
+            reify_ir::Value::String("bodies".to_string()),
+            reify_ir::Value::List(vec![make_body(1, "body_a"), make_body(2, "body_b")]),
+        );
+        let snapshot_good = reify_ir::Value::Map(good_map);
+
+        // snapshot_malformed: Map has `kind="snapshot"` but is missing `bodies`.
+        // `extract_snapshot_bodies` returns None → `eval_kinematic_on_snapshot`
+        // returns Some(Value::Undef).
+        let mut bad_map = std::collections::BTreeMap::new();
+        bad_map.insert(
+            reify_ir::Value::String("kind".to_string()),
+            reify_ir::Value::String("snapshot".to_string()),
+        );
+        let snapshot_malformed = reify_ir::Value::Map(bad_map);
+
+        let snaps_cell = ValueCellId::new("Swept", "snaps");
+        let id_a_cell = ValueCellId::new("Swept", "id_a");
+        let id_b_cell = ValueCellId::new("Swept", "id_b");
+        let s_param = ValueCellId::new("Swept", "s");
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "body_a".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_a,
+            },
+        );
+        named_steps.insert(
+            "body_b".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_b,
+            },
+        );
+
+        // List: [snapshot_good, snapshot_malformed].
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            snaps_cell.clone(),
+            reify_ir::Value::List(vec![snapshot_good, snapshot_malformed]),
+        );
+        values.insert(id_a_cell.clone(), reify_ir::Value::Int(1));
+        values.insert(id_b_cell.clone(), reify_ir::Value::Int(2));
+
+        // Build flat_map(snaps, |s| [min_clearance(s, id_a, id_b)])
+        let s_ref = reify_ir::CompiledExpr::value_ref(s_param.clone(), Type::Geometry);
+        let id_a_ref = reify_ir::CompiledExpr::value_ref(id_a_cell.clone(), Type::Int);
+        let id_b_ref = reify_ir::CompiledExpr::value_ref(id_b_cell.clone(), Type::Int);
+
+        let inner = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "min_clearance".to_string(),
+                    qualified_name: "min_clearance".to_string(),
+                },
+                args: vec![s_ref, id_a_ref, id_b_ref],
+            },
+            result_type: Type::Real,
+            content_hash: reify_core::ContentHash(0),
+        };
+        let lambda_body = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+        let lambda_arg = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::Lambda {
+                params: vec![("s".to_string(), None)],
+                param_ids: vec![s_param],
+                body: Box::new(lambda_body),
+                captures: vec![id_a_cell, id_b_cell],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+        let snaps_ref =
+            reify_ir::CompiledExpr::value_ref(snaps_cell, Type::List(Box::new(Type::Geometry)));
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "flat_map".to_string(),
+                    qualified_name: "flat_map".to_string(),
+                },
+                args: vec![snaps_ref, lambda_arg],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+            &mut HashMap::new(),
+        );
+
+        // Must return Some(Value::List) of length 2 (one per snapshot, not one per resolution).
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "malformed-snapshot test must return Some(Value::List(len=2)), \
+                 got {other:?}; diagnostics: {diagnostics:?}"
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            2,
+            "list length must equal snapshot count (2) even with a malformed element, \
+             got {}: {list:?}",
+            list.len()
+        );
+
+        // Element 0 (good snapshot): resolved to a length Scalar ≈ 0.030 m.
+        match &list[0] {
+            reify_ir::Value::Scalar { si_value, .. } => {
+                let diff = (si_value - 0.030_f64).abs();
+                assert!(
+                    diff < 1e-9,
+                    "list[0] (good snapshot) expected ≈ 0.030 m, got {si_value:.9} m"
+                );
+            }
+            other => panic!("list[0] (good snapshot) expected Value::Scalar, got {other:?}"),
+        }
+
+        // Element 1 (malformed snapshot): must be Value::Undef.
+        assert_eq!(
+            list[1],
+            reify_ir::Value::Undef,
+            "list[1] (malformed snapshot missing 'bodies') must be Value::Undef, got {:?}",
+            list[1]
         );
     }
 
