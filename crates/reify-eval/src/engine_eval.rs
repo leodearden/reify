@@ -2478,12 +2478,32 @@ impl Engine {
                         diagnostics: solver_diags,
                     } => {
                         diagnostics.extend(solver_diags);
+                        // undef-self-describing α (step-6): record every auto-param
+                        // that failed to solve so classify_undef_origins can emit
+                        // SolveFailed instead of AwaitingSolve.  Gated by the
+                        // capture flag so the resolution loop is byte-identical
+                        // when capture is off (A1 / BT8).
+                        if self.capture_undef_causes {
+                            for ap in &problem.auto_params {
+                                solve_failed_autos
+                                    .insert(ap.id.clone(), "infeasible".to_owned());
+                            }
+                        }
                     }
                     SolveResult::NoProgress { reason } => {
                         diagnostics.push(Diagnostic::warning(format!(
                             "Constraint solver made no progress: {}",
                             reason
                         )));
+                        // undef-self-describing α (step-6): same as Infeasible arm —
+                        // record failed autos with a coarse "no progress: <reason>"
+                        // detail string (§8.3 — no fabricated solver detail).
+                        if self.capture_undef_causes {
+                            let detail = format!("no progress: {reason}");
+                            for ap in &problem.auto_params {
+                                solve_failed_autos.insert(ap.id.clone(), detail.clone());
+                            }
+                        }
                     }
                 }
             }
