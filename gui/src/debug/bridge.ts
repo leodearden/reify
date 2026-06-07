@@ -14,6 +14,13 @@ import { getConsoleErrors, clearConsoleErrors } from './consoleErrors';
 import { toPng } from 'html-to-image';
 import { createLspClient, extractHoverMarkdown } from '../editor/lspClient';
 import { pathToUri } from '../utils/pathUtils';
+import {
+  DEFAULT_EDITOR_WIDTH,
+  DEFAULT_SIDE_WIDTH,
+  DEFAULT_DESIGN_TREE_HEIGHT,
+  DEFAULT_PROPERTY_HEIGHT,
+  DEFAULT_CONSTRAINT_HEIGHT,
+} from '../stores/layoutStore';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
 // 16 MB ceiling is empirical: html-to-image silently truncates output above the
@@ -1384,6 +1391,29 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       }
 
       return { ok: true, count: normalized.length, source };
+    },
+
+    reset_app_state: () => {
+      const { engine, editor, selection, viewState, layout } = ctx.stores;
+
+      // Snapshot open file paths BEFORE closing (closeFile mutates openFiles).
+      const paths = editor.state.openFiles.map((f) => f.path);
+      for (const p of paths) {
+        editor.closeFile(p);
+      }
+
+      selection.clearSelection();
+      viewState.resetToDefaultView();
+      engine.setCompileDiagnostics([]);
+      engine.setTessellationDiagnostics([]);
+
+      layout.setEditorWidth(DEFAULT_EDITOR_WIDTH);
+      layout.setSideWidth(DEFAULT_SIDE_WIDTH);
+      layout.setDesignTreeHeight(DEFAULT_DESIGN_TREE_HEIGHT);
+      layout.setPropertyHeight(DEFAULT_PROPERTY_HEIGHT);
+      layout.setConstraintHeight(DEFAULT_CONSTRAINT_HEIGHT);
+
+      return { ok: true };
     },
   };
 }
