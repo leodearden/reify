@@ -56,11 +56,15 @@ trait FormTolerance : GeometricTolerance {
 
 // Orientation tolerances constrain angular relationship to datums.
 trait OrientationTolerance : GeometricTolerance {
+    // v1: holds a single datum geometry handle (DatumRef aliases Type::Geometry).
+    // The plural name reflects the GD&T datum reference frame concept; list/set
+    // support for multi-datum references is deferred — see PRD §8 Q1.
     param datum_refs : DatumRef
 }
 
 // Location tolerances constrain position relative to datums.
 trait LocationTolerance : GeometricTolerance {
+    // v1: holds a single datum geometry handle (see OrientationTolerance.datum_refs).
     param datum_refs : DatumRef
 }
 
@@ -244,7 +248,12 @@ fn limit_tolerance(upper: Length, lower: Length) -> DimensionalTolerance {
 }
 
 // Asserts that a surface finish specification is non-trivial (value > 0mm).
-// feature: the geometry handle for the surface feature (tightened from Real — task #3116).
+// feature: the geometry handle for the surface feature (tightened from Real — task #3116);
+//   present for API symmetry so callers identify which surface is being inspected.
+//   The current body evaluates only `finish.value > 0mm` and does not dereference feature.
+//   EVAL-ENGINE NOTE: passing a Geometry arg (e.g. box(1mm,1mm,1mm)) causes the simple eval
+//   engine to propagate Undef through this call (box() → Undef → require_finish → Undef);
+//   a full geometry kernel evaluates to Bool(true/false) as expected.
 fn require_finish(feature: Geometry, finish: SurfaceFinish) -> Bool {
     finish.value > 0mm
 }

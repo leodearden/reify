@@ -145,7 +145,10 @@ structure def StdTolerancingSurface {
     sub pos_mmc = PosMMCTol()
 
     // ── Satisfiable constraints (reify check gate, Test B) ────────────────────
-    // require_finish predicate: finish.value (1.6µm) > 0mm → Satisfied
+    // Finish predicate as inline expression (sf.value > 0mm) rather than require_finish():
+    // the eval engine propagates Undef through free function calls when any argument is a
+    // Geometry handle.  require_finish() runtime behavior is regression-locked by the
+    // require_finish_bool_free_fn test in crates/reify-compiler/tests/tolerancing_tests.rs.
     constraint sf.value > 0mm
     // Conforms MMC: zone = 0.1mm + 0.1mm = 0.2mm ≥ 0.15mm → Satisfied
     constraint Conforms(tolerance: self.pos_mmc, measured_deviation: 0.15mm, feature_departure: 0.1mm)

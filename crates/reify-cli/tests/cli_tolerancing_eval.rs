@@ -62,10 +62,13 @@ fn eval_std_tolerancing_surface_example_succeeds() {
         "stdout should contain 'sym_upper' (symmetric_tolerance upper_limit);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
-    // ── Surface finish require_finish bool cell ───────────────────────────────
+    // ── Surface finish bool cell (sf.value > 0mm inline expression) ──────────
+    // finish_ok is produced by `sf.value > 0mm` (not require_finish); the inline
+    // expression is used because the eval engine propagates Undef through free function
+    // calls with Geometry args.  require_finish() is regression-locked in tolerancing_tests.rs.
     assert!(
         stdout.contains("finish_ok = true"),
-        "stdout should contain 'finish_ok = true' (require_finish returns true for 1.6µm > 0mm);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "stdout should contain 'finish_ok = true' (sf.value > 0mm: 1.6µm > 0mm → true);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 

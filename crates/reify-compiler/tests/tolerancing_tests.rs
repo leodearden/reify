@@ -1208,10 +1208,15 @@ structure def Probe {
     // `feat : Geometry = box(1mm,1mm,1mm)` requires the geometry kernel to evaluate.
     // The simple engine returns Undef for box(); the engine propagates Undef for the
     // require_finish call. Accept Bool(true) (full kernel) or Undef (simple engine).
+    // The cell must EXIST (None would mean the param was never produced, a regression).
     // The compile-time assertion above is the primary correctness check.
     match result.values.get(&ok_cell) {
         Some(Value::Bool(true)) => {} // full kernel: geometry handle, finish.value > 0mm → true
-        Some(Value::Undef) | None => {} // simple engine: box() → Undef → require_finish propagates Undef
+        Some(Value::Undef) => {} // simple engine: box() → Undef → require_finish propagates Undef
+        None => panic!(
+            "require_finish with default-direction SurfaceFinish(value: 1.6um): cell \
+             Probe.ok must exist after successful eval (got None — param never produced)"
+        ),
         Some(other) => panic!(
             "require_finish with default-direction SurfaceFinish(value: 1.6um) should \
              return Bool(true) or Undef (simple engine), got {:?}",
@@ -1274,11 +1279,16 @@ structure def Probe {
 
     // `feat : Geometry = box(1mm,1mm,1mm)` requires the geometry kernel to evaluate.
     // Accept Bool(true) (full kernel) or Undef (simple engine — box() → Undef → propagated).
+    // The cell must EXIST (None means the param was never produced — a regression).
     // The compile-time assertion above is the primary type-correctness check.
     let cell_id = ValueCellId::new("Probe", "ok");
     match result.values.get(&cell_id) {
         Some(Value::Bool(true)) => {} // full kernel: 1.6µm > 0mm → true
-        Some(Value::Undef) | None => {} // simple engine: box() → Undef → require_finish propagates Undef
+        Some(Value::Undef) => {} // simple engine: box() → Undef → require_finish propagates Undef
+        None => panic!(
+            "require_finish(feat: Geometry, SurfaceFinish(value: 1.6um)): cell Probe.ok must \
+             exist after successful eval (got None — param never produced)"
+        ),
         Some(other) => panic!(
             "require_finish(feat: Geometry, SurfaceFinish(value: 1.6um)) should be Bool(true) \
              or Undef (simple engine), got {:?}",
@@ -2095,15 +2105,17 @@ structure def GeomProbe {
 }
 "#;
     let module = parse_and_compile_with_stdlib(source);
-    let unresolved_errors: Vec<_> = module
+    // Assert zero Error diagnostics — not just "unresolved" substring — so a differently
+    // worded error or an entirely different compile failure does not slip through silently.
+    let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error && d.message.contains("unresolved"))
+        .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(
-        unresolved_errors.is_empty(),
-        "`param feature : Geometry` and `param datum_refs : DatumRef` must produce \
-         no unresolved-type errors; got: {:?}",
-        unresolved_errors
+        errors.is_empty(),
+        "`param feature : Geometry` and `param datum_refs : DatumRef` must compile with \
+         zero Error diagnostics (both type names must resolve cleanly); got: {:?}",
+        errors
     );
 }
