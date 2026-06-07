@@ -229,4 +229,131 @@ mod tests {
             );
         }
     }
+
+    // ── Result-type resolution (step-3 RED / step-4 GREEN) ───────────────────
+
+    /// Every joint-constructor name maps to the exact nominal `Type::StructureRef`.
+    /// Called with `&[]` args (name-only dispatch; args are unused).
+    #[test]
+    fn joint_ctor_result_type_maps_each_name_to_its_nominal_struct() {
+        // Driving joint kinds → their own kind type.
+        assert_eq!(
+            joint_ctor_result_type("prismatic", &[]),
+            Type::StructureRef("Prismatic".to_string()),
+            "prismatic must map to StructureRef(Prismatic)"
+        );
+        assert_eq!(
+            joint_ctor_result_type("revolute", &[]),
+            Type::StructureRef("Revolute".to_string()),
+            "revolute must map to StructureRef(Revolute)"
+        );
+        assert_eq!(
+            joint_ctor_result_type("cylindrical", &[]),
+            Type::StructureRef("Cylindrical".to_string()),
+            "cylindrical must map to StructureRef(Cylindrical)"
+        );
+        assert_eq!(
+            joint_ctor_result_type("planar", &[]),
+            Type::StructureRef("Planar".to_string()),
+            "planar must map to StructureRef(Planar)"
+        );
+        assert_eq!(
+            joint_ctor_result_type("spherical", &[]),
+            Type::StructureRef("Spherical".to_string()),
+            "spherical must map to StructureRef(Spherical)"
+        );
+
+        // Coupling kinds: all → Coupling.
+        for name in &["couple", "gear", "screw", "rack_and_pinion"] {
+            assert_eq!(
+                joint_ctor_result_type(name, &[]),
+                Type::StructureRef("Coupling".to_string()),
+                "{name} must map to StructureRef(Coupling)"
+            );
+        }
+
+        // Fixed → Fixed.
+        assert_eq!(
+            joint_ctor_result_type("fixed", &[]),
+            Type::StructureRef("Fixed".to_string()),
+            "fixed must map to StructureRef(Fixed)"
+        );
+
+        // Mechanism/body → Mechanism (BOTH names map to the same type).
+        assert_eq!(
+            joint_ctor_result_type("mechanism", &[]),
+            Type::StructureRef("Mechanism".to_string()),
+            "mechanism must map to StructureRef(Mechanism)"
+        );
+        assert_eq!(
+            joint_ctor_result_type("body", &[]),
+            Type::StructureRef("Mechanism".to_string()),
+            "body must map to StructureRef(Mechanism)"
+        );
+
+        // Snapshot → Snapshot.
+        assert_eq!(
+            joint_ctor_result_type("snapshot", &[]),
+            Type::StructureRef("Snapshot".to_string()),
+            "snapshot must map to StructureRef(Snapshot)"
+        );
+
+        // body_id_of → BodyId.
+        assert_eq!(
+            joint_ctor_result_type("body_id_of", &[]),
+            Type::StructureRef("BodyId".to_string()),
+            "body_id_of must map to StructureRef(BodyId)"
+        );
+
+        // dim → SweepDim.
+        assert_eq!(
+            joint_ctor_result_type("dim", &[]),
+            Type::StructureRef("SweepDim".to_string()),
+            "dim must map to StructureRef(SweepDim)"
+        );
+
+        // bind → JointBinding.
+        assert_eq!(
+            joint_ctor_result_type("bind", &[]),
+            Type::StructureRef("JointBinding".to_string()),
+            "bind must map to StructureRef(JointBinding)"
+        );
+
+        // joint_jacobian → Twist.
+        assert_eq!(
+            joint_ctor_result_type("joint_jacobian", &[]),
+            Type::StructureRef("Twist".to_string()),
+            "joint_jacobian must map to StructureRef(Twist)"
+        );
+    }
+
+    /// Args-agnostic invariant: the same result is returned for non-empty args
+    /// (name-only dispatch — the arg slice is currently unused).
+    #[test]
+    fn joint_ctor_result_type_is_args_agnostic() {
+        use reify_core::identity::ValueCellId;
+        use reify_ir::Value;
+        // A dummy non-empty arg slice.
+        let dummy_arg =
+            CompiledExpr::literal(Value::Real(1.0), Type::Real);
+        let args_slice = &[dummy_arg];
+
+        assert_eq!(
+            joint_ctor_result_type("prismatic", args_slice),
+            joint_ctor_result_type("prismatic", &[]),
+            "prismatic result must be the same regardless of args"
+        );
+        assert_eq!(
+            joint_ctor_result_type("bind", args_slice),
+            joint_ctor_result_type("bind", &[]),
+            "bind result must be the same regardless of args"
+        );
+        assert_eq!(
+            joint_ctor_result_type("joint_jacobian", args_slice),
+            joint_ctor_result_type("joint_jacobian", &[]),
+            "joint_jacobian result must be the same regardless of args"
+        );
+        // Suppress unused-import warning by ensuring the use is reachable.
+        let _ = ValueCellId::new("S", "x");
+    }
 }
