@@ -562,6 +562,28 @@ pub(crate) fn extract_auto_free(expr: &reify_ast::Expr) -> Option<bool> {
     }
 }
 
+/// Map a determinacy-intrinsic name to its reflective member name.
+///
+/// Returns the `PurposeReflectiveAggregation` member name for the two
+/// compiler-sugar intrinsics (task-4197 α):
+///
+/// - `"AllParamsDetermined"`   → `Some("params")`
+/// - `"AllGeometryDetermined"` → `Some("geometric_params")`
+/// - anything else             → `None`
+///
+/// This is the **single source of truth** for the intrinsic→member mapping.
+/// It is consulted by:
+/// 1. `traits.rs::desugar_determinacy_intrinsic` — valid desugar in purpose bodies.
+/// 2. `expr.rs::compile_expr_guarded` FunctionCall arm — scope guard that fires
+///    for any intrinsic call that reaches `compile_expr` without desugaring.
+pub(crate) fn determinacy_intrinsic_member(name: &str) -> Option<&'static str> {
+    match name {
+        "AllParamsDetermined" => Some("params"),
+        // "AllGeometryDetermined" => "geometric_params" added in step-4 (task-4197)
+        _ => None,
+    }
+}
+
 pub(crate) fn compile_expr(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,

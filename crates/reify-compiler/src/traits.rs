@@ -357,6 +357,76 @@ pub(crate) fn compile_trait(
     }
 }
 
+/// Desugar a determinacy intrinsic call to its reflective `forall` form (task-4197 α).
+///
+/// When a purpose-body constraint expression is a `FunctionCall` whose name is a
+/// recognized determinacy intrinsic (`determinacy_intrinsic_member(name).is_some()`)
+/// AND the single argument is a bare `Ident` that resolves to a registered purpose
+/// parameter via `scope.purpose_param_root`, this function rewrites the call to the
+/// equivalent `forall __p in <param>.<member>: determined(__p)` AST and returns
+/// `Some(rewritten_expr)`.
+///
+/// If the call does not match (wrong name, wrong arity, non-ident arg, or the ident
+/// is not a registered purpose param), returns `None` — the caller falls through to
+/// normal `compile_expr` or the arg-error handler added in step-8.
+///
+/// All spans in the synthesized AST are copied from the original call's span so that
+/// any downstream diagnostic labels point at the right source location.
+///
+/// Invariant: the rewritten AST is byte-identical to what the parser produces for
+/// the hand-written reflective form (same name/param/var → identical `content_hash`).
+fn try_desugar_determinacy_intrinsic(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+) -> Option<reify_ast::Expr> {
+    let reify_ast::ExprKind::FunctionCall { name, args } = &expr.kind else {
+        return None;
+    };
+    let member = determinacy_intrinsic_member(name.as_str())?;
+
+    // Must be exactly one arg that is a bare Ident registered as a purpose param.
+    if args.len() != 1 {
+        return None;
+    }
+    let reify_ast::ExprKind::Ident(param_name) = &args[0].kind else {
+        return None;
+    };
+    if scope.purpose_param_root(param_name).is_none() {
+        return None;
+    }
+
+    let span = expr.span;
+
+    // Synthesize: forall __p in <param>.<member>: determined(__p)
+    Some(reify_ast::Expr {
+        kind: reify_ast::ExprKind::Quantifier {
+            kind: reify_ast::QuantifierKind::ForAll,
+            variable: "__p".to_string(),
+            collection: Box::new(reify_ast::Expr {
+                kind: reify_ast::ExprKind::MemberAccess {
+                    object: Box::new(reify_ast::Expr {
+                        kind: reify_ast::ExprKind::Ident(param_name.clone()),
+                        span,
+                    }),
+                    member: member.to_string(),
+                },
+                span,
+            }),
+            predicate: Box::new(reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "determined".to_string(),
+                    args: vec![reify_ast::Expr {
+                        kind: reify_ast::ExprKind::Ident("__p".to_string()),
+                        span,
+                    }],
+                },
+                span,
+            }),
+        },
+        span,
+    })
+}
+
 /// Compile a parsed purpose declaration into a CompiledPurpose.
 pub(crate) fn compile_purpose(
     purpose_def: &reify_ast::PurposeDef,
@@ -405,8 +475,20 @@ pub(crate) fn compile_purpose(
     for member in &purpose_def.members {
         match member {
             reify_ast::MemberDecl::Constraint(constraint) => {
+                // Desugar determinacy intrinsics before compiling (task-4197 α).
+                // If the constraint is AllParamsDetermined(X) or AllGeometryDetermined(X)
+                // with a valid purpose-param arg, rewrite to the reflective forall form.
+                let desugared;
+                let expr_to_compile = if let Some(d) =
+                    try_desugar_determinacy_intrinsic(&constraint.expr, &scope)
+                {
+                    desugared = d;
+                    &desugared
+                } else {
+                    &constraint.expr
+                };
                 let compiled_expr =
-                    compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
+                    compile_expr(expr_to_compile, &scope, enum_defs, functions, diagnostics);
                 let id = ConstraintNodeId::new(purpose_name, constraint_index);
                 constraints.push(CompiledConstraint {
                     id,
@@ -511,8 +593,19 @@ pub(crate) fn compile_purpose(
                                 } else {
                                     cond.clone()
                                 };
+                                // Desugar determinacy intrinsics in guarded constraints too
+                                // (task-4197 α): same desugar as the top-level arm.
+                                let desugared_guard;
+                                let guard_expr = if let Some(d) =
+                                    try_desugar_determinacy_intrinsic(&c.expr, &scope)
+                                {
+                                    desugared_guard = d;
+                                    &desugared_guard
+                                } else {
+                                    &c.expr
+                                };
                                 let body = compile_expr(
-                                    &c.expr,
+                                    guard_expr,
                                     &scope,
                                     enum_defs,
                                     functions,
