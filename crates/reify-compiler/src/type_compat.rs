@@ -623,6 +623,13 @@ pub(crate) fn resolve_function_overload<'a>(
             // (not structural unify) is deliberate: a conflicting generic call
             // (e.g. `pair(1, 1.5)`) still SELECTS the candidate so the call site
             // can emit `E_FN_TYPE_ARG_CONFLICT` rather than a generic no-match.
+            //
+            // D4 (task-4232 γ): A type-param-carrying ARG also acts as a
+            // resolution wildcard (matches any param). This lets a generic fn
+            // body pass a TypeParam-typed value to a concrete-param function
+            // without a spurious NoMatch. It is self-scoping: TypeParam args only
+            // arise inside generic fn bodies, so concrete-arg calls (non-generic
+            // callers) are bit-for-bit unchanged — type_carries_type_param(concrete) = false.
             let is_generic = !f.type_params.is_empty();
             f.params.len() == arg_types.len()
                 && f.params
@@ -631,6 +638,7 @@ pub(crate) fn resolve_function_overload<'a>(
                     .all(|((_, param_ty), arg_ty)| {
                         type_carries_trait_object(param_ty)
                             || (is_generic && type_carries_type_param(param_ty))
+                            || type_carries_type_param(arg_ty)
                             || param_ty == arg_ty
                     })
         })
