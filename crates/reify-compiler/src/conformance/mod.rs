@@ -943,6 +943,127 @@ fn check_leaf_trait_conformance(
     }
 }
 
+// ── Mechanism DrivingJoint bound check (task 4310 — mechanism γ) ─────────────
+
+/// Resolve the nominal joint-structure type of a compiled argument expression.
+///
+/// **Path A** — `arg.result_type == Type::StructureRef(name)`: returns the name
+/// directly. Covers structure-constructor `Coupling()` (once β lands), typed
+/// `let` bindings annotated with a joint type, and any future site where the
+/// compiler assigns `StructureRef` to a joint expression.
+///
+/// **Path B** — `arg` is a `CompiledExprKind::FunctionCall` whose callee is a
+/// known joint-constructor builtin: maps the lowercase builtin name to the
+/// PascalCase nominal type string.
+///   couple / gear / screw / rack_and_pinion → "Coupling"
+///   fixed                                   → "Fixed"
+///   prismatic / revolute / cylindrical /
+///   planar / spherical                      → their PascalCase kind names
+///
+/// Returns `None` for under-typed args (Real, Int, ValueRef without StructureRef
+/// result type) and for unknown function names.  Callers skip the check in this
+/// case; the α runtime guard backstops these sites (PRD D2).
+fn resolve_joint_nominal_type(arg: &CompiledExpr) -> Option<String> {
+    // Path A: result_type already carries the StructureRef tag.
+    if let Type::StructureRef(name) = &arg.result_type {
+        return Some(name.clone());
+    }
+    // Path B: arg is a FunctionCall to a known joint-constructor builtin.
+    if let CompiledExprKind::FunctionCall { function, .. } = &arg.kind {
+        let type_name = match function.name.as_str() {
+            "couple" | "gear" | "screw" | "rack_and_pinion" => "Coupling",
+            "fixed" => "Fixed",
+            "prismatic" => "Prismatic",
+            "revolute" => "Revolute",
+            "cylindrical" => "Cylindrical",
+            "planar" => "Planar",
+            "spherical" => "Spherical",
+            _ => return None,
+        };
+        return Some(type_name.to_owned());
+    }
+    None
+}
+
+/// Walk a `CompiledExpr` tree and emit
+/// [`DiagnosticCode::MechanismNonDrivingJoint`] for each eval-builtin
+/// mechanism call whose joint argument resolves to a known non-driving joint type.
+///
+/// ## Covered builtins (bind only for step-6; dim/sweep added in step-8)
+///
+/// | Builtin | Arity condition | Joint arg index |
+/// |---------|-----------------|-----------------|
+/// | `bind`  | any             | 0               |
+///
+/// ## Joint-type resolution
+///
+/// Uses [`resolve_joint_nominal_type`]: Path A (`result_type == StructureRef`)
+/// first, then Path B (FunctionCall to a known joint-constructor builtin).
+/// Under-typed args (Real, Int, etc. with unknown callee) are silently skipped
+/// — the α runtime guard backstops those sites (PRD D2).
+///
+/// ## Trait-bound check
+///
+/// Looks up the resolved structure name in `template_registry`.  If the
+/// structure's `trait_bounds` do NOT satisfy `DrivingJoint` (checked via
+/// [`satisfies_trait_bound`], which walks the refinement chain transitively),
+/// one `MechanismNonDrivingJoint` diagnostic is emitted naming the type.
+///
+/// Coupling (trait_bounds = ["Joint"], NOT "DrivingJoint") → rejected.
+/// Prismatic/Revolute/etc. (trait_bounds = ["DrivingJoint"]) → accepted.
+///
+/// ## Diagnostic span
+///
+/// Uses the `representative_span` threaded by [`phase_fn_arg_conformance`]
+/// from the enclosing field / constraint / realization.
+pub(crate) fn check_expr_mechanism_joint_bound(
+    expr: &CompiledExpr,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    expr.walk(&mut |node: &CompiledExpr| {
+        let CompiledExprKind::FunctionCall { function, args } = &node.kind else {
+            return;
+        };
+        // Determine which argument position carries the joint.
+        // Step-6 scope: bind only (arg0).
+        // Step-8 extends to dim (arg0) and sweep@arity4 (arg1).
+        let joint_arg_idx: usize = match function.name.as_str() {
+            "bind" => 0,
+            _ => return,
+        };
+        let Some(joint_arg) = args.get(joint_arg_idx) else {
+            return; // Arity too low — skip (malformed / already-diagnosed).
+        };
+        // Resolve the nominal joint type.
+        let Some(type_name) = resolve_joint_nominal_type(joint_arg) else {
+            return; // Under-typed / unknown — skip (D2: α runtime backstops).
+        };
+        // Look up the structure in the template registry.
+        let Some(tmpl) = template_registry.get(type_name.as_str()) else {
+            return; // Not a known joint structure in this scope — skip.
+        };
+        // Check DrivingJoint conformance (transitive through refinements).
+        if !satisfies_trait_bound(&tmpl.trait_bounds, "DrivingJoint", trait_registry) {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "joint type '{}' does not satisfy DrivingJoint: \
+                     bind/dim/sweep require an independent motion variable; \
+                     Coupling (derived motion) and Fixed (0-DOF) cannot be driven",
+                    type_name
+                ))
+                .with_code(DiagnosticCode::MechanismNonDrivingJoint)
+                .with_label(DiagnosticLabel::new(
+                    span,
+                    format!("'{}' is not a DrivingJoint", type_name),
+                )),
+            );
+        }
+    });
+}
+
 #[cfg(test)]
 /// # Why these tests live here (and cannot move to `tests/*.rs`)
 ///
