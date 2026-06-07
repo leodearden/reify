@@ -94,10 +94,10 @@ impl ConstraintClassifier {
                     }
                     // Type::String is a no-op — no domain flag set
                 }
-                CompiledExprKind::FunctionCall { function, .. } => {
-                    if is_geometry_qualified_name(&function.qualified_name) {
-                        flags.has_geometric = true;
-                    }
+                CompiledExprKind::FunctionCall { function, .. }
+                    if is_geometry_qualified_name(&function.qualified_name) =>
+                {
+                    flags.has_geometric = true;
                 }
                 // Child traversal handled by walk — no manual recursion needed
                 _ => {}
