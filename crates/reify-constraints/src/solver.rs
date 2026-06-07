@@ -168,7 +168,6 @@ fn comparison_residual(
                 if d < 1e-15 { 0.0 } else { d }
             }
             BinOp::Ne if (l - r).abs() > 1e-15 => 0.0,
-            BinOp::Ne => 1.0,
             _ => 1.0,
         },
         _ => 1.0,
@@ -233,7 +232,6 @@ fn comparison_violation(
                 if d.abs() < 1e-15 { 0.0 } else { d.powi(2) }
             }
             BinOp::Ne if (l - r).abs() > 1e-15 => 0.0,
-            BinOp::Ne => 1.0,
             // Not a comparison
             _ => 1.0,
         },
