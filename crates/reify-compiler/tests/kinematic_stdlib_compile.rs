@@ -478,6 +478,60 @@ fn coupling_and_fixed_are_declared_without_driving_joint() {
     );
 }
 
+// ─── JointBinding and Twist marker structures (task 4310 γ) ──────────────────
+//
+// JointBinding — element type of snapshot()'s `bindings` argument (D8).
+//   Declared now to make the type expressible; the actual `List<JointBinding>`
+//   param typing of snapshot()'s bindings arg lands with β's signature family.
+//
+// Twist — spatial-velocity / joint-Jacobian column element.
+//
+// Both are empty marker structures (no params). They do NOT conform to
+// Joint or DrivingJoint — they are not joint kinds.
+//
+// RED until step-4: decls not yet added to kinematic.ri.
+
+#[test]
+fn joint_binding_is_empty_marker_structure() {
+    let template = find_structure("JointBinding");
+    assert!(
+        param_cells(template).is_empty(),
+        "JointBinding should be an empty marker structure (no params); \
+         got: {:?}",
+        param_cells(template)
+            .iter()
+            .map(|p| &p.id.member)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        template.trait_bounds.is_empty(),
+        "JointBinding should NOT conform to Joint or DrivingJoint \
+         (it is a binding-record marker, not a joint kind); \
+         got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+}
+
+#[test]
+fn twist_is_empty_marker_structure() {
+    let template = find_structure("Twist");
+    assert!(
+        param_cells(template).is_empty(),
+        "Twist should be an empty marker structure (no params); got: {:?}",
+        param_cells(template)
+            .iter()
+            .map(|p| &p.id.member)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        template.trait_bounds.is_empty(),
+        "Twist should NOT conform to Joint or DrivingJoint \
+         (it is a spatial-velocity marker, not a joint kind); \
+         got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+}
+
 // ─── Top-level types exist and do not conform ─────────────────────────────────
 
 #[test]
