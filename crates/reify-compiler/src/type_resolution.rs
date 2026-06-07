@@ -1144,6 +1144,104 @@ pub(crate) fn resolve_parameterized_alias(
     resolve_type_alias_expr_with_subst(body, alias_registry, &subst, diagnostics, depth + 1)
 }
 
+/// Substitute resolved type parameters in a `Type` from a name→`Type` map.
+///
+/// Walks a fully-resolved `Type` and rewrites every `Type::TypeParam(name)`
+/// leaf to `subst[name]` when bound, leaving unbound type-params unchanged
+/// (passthrough). This is the resolved-`Type`-walk analog of the AST-expr
+/// substitution in [`resolve_type_alias_expr_with_subst`] (PRD D3).
+///
+/// Used at generic-call sites (task 4231 β) to substitute the matched
+/// function's return type once `unify` has bound the type parameters from the
+/// argument types.
+///
+/// The `match` is intentionally exhaustive (no `_` wildcard) so that any future
+/// `Type` variant forces a compile error here rather than silently passing
+/// through unsubstituted — important for a recursive type walk.
+pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -> Type {
+    match ty {
+        // Type-parameter leaf: substitute when bound, else pass through.
+        Type::TypeParam(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
+
+        // Single-inner-Type wrappers: recurse and rebuild.
+        Type::List(inner) => Type::List(Box::new(substitute_type_params(inner, subst))),
+        Type::Set(inner) => Type::Set(Box::new(substitute_type_params(inner, subst))),
+        Type::Keyed(inner) => Type::Keyed(Box::new(substitute_type_params(inner, subst))),
+        Type::Option(inner) => Type::Option(Box::new(substitute_type_params(inner, subst))),
+        Type::Complex(inner) => Type::Complex(Box::new(substitute_type_params(inner, subst))),
+        Type::Range(inner) => Type::Range(Box::new(substitute_type_params(inner, subst))),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => Type::Map(
+            Box::new(substitute_type_params(key, subst)),
+            Box::new(substitute_type_params(val, subst)),
+        ),
+        Type::Field { domain, codomain } => Type::Field {
+            domain: Box::new(substitute_type_params(domain, subst)),
+            codomain: Box::new(substitute_type_params(codomain, subst)),
+        },
+
+        // Function: substitute each param + the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| substitute_type_params(p, subst))
+                .collect(),
+            return_type: Box::new(substitute_type_params(return_type, subst)),
+        },
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { n, quantity } => Type::Point {
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+        Type::Vector { n, quantity } => Type::Vector {
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+        Type::Tensor { rank, n, quantity } => Type::Tensor {
+            rank: *rank,
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+        Type::Matrix { m, n, quantity } => Type::Matrix {
+            m: *m,
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+
+        // Union: substitute each arm.
+        Type::Union(arms) => Type::Union(
+            arms.iter()
+                .map(|a| substitute_type_params(a, subst))
+                .collect(),
+        ),
+
+        // All remaining leaves carry no inner `Type` to substitute.
+        Type::Bool
+        | Type::Int
+        | Type::Real
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::Error => ty.clone(),
+    }
+}
+
 /// Resolve a type alias body TypeExpr with parameter substitutions applied.
 ///
 /// Like `resolve_type_alias_expr`, but checks the substitution map first so
