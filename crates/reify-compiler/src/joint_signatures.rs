@@ -62,7 +62,37 @@ use reify_ir::CompiledExpr;
 /// handles sweep's arity-4 kinematic conformance check separately.
 ///
 /// Case-sensitive: Reify function names are snake_case.
-pub const JOINT_TYPED_FN_NAMES: &[&str] = &[];
+///
+/// Single source of truth — imported into the `units.rs` test module to pin
+/// disjointness from all sibling families (mirrors `MATH_CONSTRUCTION_NAMES`).
+pub const JOINT_TYPED_FN_NAMES: &[&str] = &[
+    // Driving joint kind constructors (5): → Prismatic/Revolute/Cylindrical/Planar/Spherical
+    "prismatic",
+    "revolute",
+    "cylindrical",
+    "planar",
+    "spherical",
+    // Coupling constructors (4): couple/gear/screw/rack_and_pinion → Coupling
+    "couple",
+    "gear",
+    "screw",
+    "rack_and_pinion",
+    // Fixed joint (1): → Fixed
+    "fixed",
+    // Mechanism/body constructors (2): mechanism/body → Mechanism
+    "mechanism",
+    "body",
+    // Snapshot constructor (1): → Snapshot
+    "snapshot",
+    // Body-ID accessor (1): → BodyId
+    "body_id_of",
+    // Sweep dimension (1): → SweepDim
+    "dim",
+    // Joint binding (1): → JointBinding
+    "bind",
+    // Joint Jacobian / Twist (1): → Twist
+    "joint_jacobian",
+];
 
 /// Is `name` a §13 joint-constructor builtin the compiler types via
 /// [`joint_ctor_result_type`]? Name-only classification — a `.contains` over
