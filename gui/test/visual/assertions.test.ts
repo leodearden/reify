@@ -392,6 +392,26 @@ describe("runValueScenario", () => {
   });
 });
 
+// task-4305 E1 step-5 RED → step-6 GREEN: C1 open_menu e2e signal scenario
+describe("C1 VALUE_SCENARIO (task-4305 E1)", () => {
+  it("open_menu_file is present exactly once in VALUE_SCENARIOS", () => {
+    const matching = VALUE_SCENARIOS.filter((s) => s.name === "open_menu_file");
+    expect(matching.length, "open_menu_file should appear exactly once").toBe(1);
+  });
+
+  it("open_menu_file has correct fixture, tool, args, and key assertions", () => {
+    const scenario = VALUE_SCENARIOS.find((s) => s.name === "open_menu_file");
+    expect(scenario).toBeDefined();
+    if (!scenario) return;
+    const validFixtureKeys = Object.keys(FIXTURES);
+    expect(validFixtureKeys).toContain(scenario.fixture);
+    expect(scenario.tool).toBe("open_menu");
+    expect(scenario.args.name).toBe("file");
+    expect(scenario.assertions).toContainEqual({ path: "ok", op: "equals", expected: true });
+    expect(scenario.assertions).toContainEqual({ path: "open", op: "equals", expected: "file" });
+  });
+});
+
 // task-4305 E1 step-3 RED → step-4 GREEN: C2 resize_panes e2e signal scenario
 describe("C2 VALUE_SCENARIO (task-4305 E1)", () => {
   it("resize_panes_editor_width is present exactly once in VALUE_SCENARIOS", () => {
