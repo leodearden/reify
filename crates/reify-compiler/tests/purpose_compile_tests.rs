@@ -2239,3 +2239,179 @@ structure Bar {
         scope_diags[0].message
     );
 }
+
+// ── step-7: Arg/arity diagnostic RED tests ───────────────────────────────────
+
+/// BT3 arg variant: `AllParamsDetermined()` (zero args) inside a purpose body
+/// must emit exactly one `DiagnosticCode::DeterminacyIntrinsicArg` diagnostic
+/// (E_DETERMINACY_INTRINSIC_ARG) and no scope diagnostic.
+///
+/// RED before step-8 impl: the desugar currently falls through to compile_expr
+/// which hits the scope guard and emits DeterminacyIntrinsicScope instead.
+#[test]
+fn all_params_determined_zero_args_emits_arg_diagnostic() {
+    let source = r#"
+purpose p(subject : Structure) {
+    constraint AllParamsDetermined()
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    let arg_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicArg))
+        .collect();
+    assert!(
+        !arg_diags.is_empty(),
+        "expected DeterminacyIntrinsicArg for zero-arg AllParamsDetermined, \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        arg_diags[0].message.contains("E_DETERMINACY_INTRINSIC_ARG"),
+        "diagnostic message must contain 'E_DETERMINACY_INTRINSIC_ARG'. Got: {:?}",
+        arg_diags[0].message
+    );
+    // Must NOT emit a scope diagnostic for an in-purpose call
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        scope_diags.is_empty(),
+        "must NOT emit DeterminacyIntrinsicScope for in-purpose bad-arg call, \
+         got: {:?}",
+        scope_diags
+    );
+}
+
+/// BT3 arg variant: `AllParamsDetermined(subject, subject)` (two args) inside a
+/// purpose body must emit exactly one `DeterminacyIntrinsicArg` and no scope
+/// diagnostic.
+///
+/// RED before step-8.
+#[test]
+fn all_params_determined_two_args_emits_arg_diagnostic() {
+    let source = r#"
+purpose p(subject : Structure) {
+    constraint AllParamsDetermined(subject, subject)
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    let arg_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicArg))
+        .collect();
+    assert!(
+        !arg_diags.is_empty(),
+        "expected DeterminacyIntrinsicArg for two-arg AllParamsDetermined, \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        arg_diags[0].message.contains("E_DETERMINACY_INTRINSIC_ARG"),
+        "diagnostic message must contain 'E_DETERMINACY_INTRINSIC_ARG'. Got: {:?}",
+        arg_diags[0].message
+    );
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        scope_diags.is_empty(),
+        "must NOT emit DeterminacyIntrinsicScope for in-purpose bad-arg call, \
+         got: {:?}",
+        scope_diags
+    );
+}
+
+/// BT3 arg variant: `AllParamsDetermined(80mm)` — literal arg instead of a
+/// purpose param — inside a purpose body must emit `DeterminacyIntrinsicArg`
+/// and no scope diagnostic.
+///
+/// RED before step-8.
+#[test]
+fn all_params_determined_literal_arg_emits_arg_diagnostic() {
+    let source = r#"
+purpose p(subject : Structure) {
+    constraint AllParamsDetermined(80mm)
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    let arg_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicArg))
+        .collect();
+    assert!(
+        !arg_diags.is_empty(),
+        "expected DeterminacyIntrinsicArg for literal-arg AllParamsDetermined, \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        arg_diags[0].message.contains("E_DETERMINACY_INTRINSIC_ARG"),
+        "diagnostic message must contain 'E_DETERMINACY_INTRINSIC_ARG'. Got: {:?}",
+        arg_diags[0].message
+    );
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        scope_diags.is_empty(),
+        "must NOT emit DeterminacyIntrinsicScope for in-purpose bad-arg call, \
+         got: {:?}",
+        scope_diags
+    );
+}
+
+/// BT3 arg variant: `AllGeometryDetermined` with wrong arity (zero args) must
+/// also emit `DeterminacyIntrinsicArg` (confirms the guard applies to both
+/// intrinsic names).
+///
+/// RED before step-8.
+#[test]
+fn all_geometry_determined_zero_args_emits_arg_diagnostic() {
+    let source = r#"
+purpose g(subject : Structure) {
+    constraint AllGeometryDetermined()
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    let arg_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicArg))
+        .collect();
+    assert!(
+        !arg_diags.is_empty(),
+        "expected DeterminacyIntrinsicArg for zero-arg AllGeometryDetermined, \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        arg_diags[0].message.contains("E_DETERMINACY_INTRINSIC_ARG"),
+        "diagnostic message must contain 'E_DETERMINACY_INTRINSIC_ARG'. Got: {:?}",
+        arg_diags[0].message
+    );
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        scope_diags.is_empty(),
+        "must NOT emit DeterminacyIntrinsicScope for in-purpose bad-arg call, \
+         got: {:?}",
+        scope_diags
+    );
+}
