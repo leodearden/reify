@@ -135,23 +135,27 @@ fn fn_bound_unbound_type_param_not_checked() {
     );
 }
 
-// ── (e) Forward-reference order independence ───────────────────────────────
+// ── (e) Multiple call sites: both violations emitted ──────────────────────
 
-/// A non-conforming structure declared AFTER the call site still errors.
-/// The post-pass runs after all entities compile, giving order independence.
+/// When both a valid and an invalid call to `f<T: Rigid>` appear in separate
+/// structures, only the invalid one produces a bound error. The post-pass
+/// walks ALL compiled templates so the violation in `Sbad` is caught even
+/// though `Sok` compiled cleanly — pins that the post-pass runs globally.
 ///
-/// RED until step-2: the post-pass path naturally provides this — tested
-/// explicitly to pin the invariant.
+/// RED until step-2: the post-pass bound-check walker is not yet wired.
 #[test]
-fn fn_bound_forward_ref_non_conforming_still_errors() {
+fn fn_bound_multiple_call_sites_only_bad_errors() {
     let source = r#"
         trait Rigid { param mass : Mass }
-        fn f<T: Rigid>(x: T) -> T { x }
-        structure Sbad { let bad = f(Widget()) }
+        structure def Bolt : Rigid { param mass : Mass = 1kg }
         structure def Widget { param x : Length = 5mm }
+        fn f<T: Rigid>(x: T) -> T { x }
+        structure Sok { let ok = f(Bolt()) }
+        structure Sbad { let bad = f(Widget()) }
     "#;
     let module = compile_source(source);
 
+    // There must be at least one bound-violation error mentioning Widget+Rigid.
     let errors: Vec<_> = module
         .diagnostics
         .iter()
@@ -159,14 +163,22 @@ fn fn_bound_forward_ref_non_conforming_still_errors() {
         .collect();
     assert!(
         !errors.is_empty(),
-        "expected bound error for forward-declared Widget not satisfying Rigid"
+        "expected bound error for f(Widget()) in Sbad"
     );
     let has_bound_error = errors
         .iter()
         .any(|e| e.message.contains("Widget") && e.message.contains("Rigid"));
     assert!(
         has_bound_error,
-        "expected error mentioning Widget and Rigid (forward-ref), got: {:?}",
+        "expected error mentioning Widget and Rigid, got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+
+    // No error should mention Bolt.
+    let has_bolt_error = errors.iter().any(|e| e.message.contains("Bolt"));
+    assert!(
+        !has_bolt_error,
+        "Bolt satisfies Rigid — no error expected for f(Bolt()), got: {:?}",
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
