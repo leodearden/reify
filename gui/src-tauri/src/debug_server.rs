@@ -271,6 +271,41 @@ fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "inject_diagnostics",
+            description: "Inject SYNTHETIC diagnostics into the engine store for testing the diagnostics UI in isolation. The honest acceptance signal is the rendered DiagnosticsPanel (query_selector_all diagnostic-row / element_screenshot), NOT 'the store was set'. Normalises only omitted positional fields; never alters caller-supplied message or severity. Routes to compile diagnostics by default, or tessellation diagnostics when source='tessellation'. Frontend-mediated.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "diagnostics": {
+                        "type": "array",
+                        "description": "Array of diagnostic entries to inject. Each entry must have severity and message; positional fields (file_path, line, column, end_line, end_column, code) are optional and filled with defaults when omitted.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "severity": { "type": "string" },
+                                "message":  { "type": "string" }
+                            },
+                            "required": ["severity", "message"]
+                        }
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["compile", "tessellation"],
+                        "description": "Which diagnostic channel to populate. Defaults to 'compile' so the StatusBar badge appears immediately."
+                    }
+                },
+                "required": ["diagnostics"]
+            }),
+        },
+        ToolDef {
+            name: "reset_app_state",
+            description: "Reset app-level store state: close all open files, clear the selection, reset the camera view, clear any injected diagnostics (compile and tessellation), and reset layout pane dimensions to their defaults. Does NOT reset the OCCT engine process. Frontend-mediated.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
             name: "set_test_mode",
             description: "Freeze CSS animations and transitions for pixel-stable DOM screenshots. Does NOT pause JS-driven animations or the Three.js render loop. Returns { ok: true, test_mode: bool }.",
             input_schema: json!({
