@@ -29,8 +29,8 @@
 
 #![cfg(has_occt)]
 
-use reify_ir::{GeometryOp, Value};
-use reify_kernel_occt::OcctKernel;
+use reify_ir::{GeometryKernel, GeometryOp, Value};
+use reify_kernel_occt::{OcctKernel, OcctKernelHandle};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -227,5 +227,91 @@ fn b3_invalid_handle_returns_err() {
         result.is_err(),
         "B3: invalid handle should return Err, got Ok({:?})",
         result.ok()
+    );
+}
+
+// ── Step-3: actor-channel parity + dyn-trait reachability ────────────────────
+//
+// These tests verify that `OcctKernelHandle::measure_mesh_deviation` routes the
+// measurement request correctly through the actor channel and returns the SAME
+// value as a direct `OcctKernel::measure_mesh_deviation` call on the same shape
+// and mesh.
+//
+// They also verify that the method is reachable through `&dyn GeometryKernel`,
+// returning `Some` (the OCCT handle overrides the default-absent trait method).
+//
+// These tests are RED because `OcctRequest::MeasureMeshDeviation`, the actor
+// handler, the `OcctKernelHandle` inherent method, and the trait override do
+// not yet exist (step-4 will implement them).
+
+/// Actor-channel parity: `OcctKernelHandle::measure_mesh_deviation` returns the
+/// same value as `OcctKernel::measure_mesh_deviation` for the same shape and mesh,
+/// within 1e-9 m (channel round-trip carries vertices/indices faithfully).
+#[test]
+fn handle_deviation_matches_direct_kernel() {
+    let coarse_tol = 5e-2_f64;
+
+    // --- Direct kernel (reference value) ---
+    let (direct_kernel, direct_sphere_id) = make_shape(sphere_op(1.0));
+    let direct_mesh = direct_kernel
+        .tessellate(direct_sphere_id, coarse_tol)
+        .expect("direct kernel: tessellation should succeed");
+    let direct_dev = direct_kernel
+        .measure_mesh_deviation(direct_sphere_id, &direct_mesh)
+        .expect("direct kernel: measure_mesh_deviation should return Ok");
+
+    // --- Actor handle (must match) ---
+    let handle = OcctKernelHandle::spawn();
+    let sphere_gh = handle
+        .execute(&sphere_op(1.0))
+        .expect("actor handle: execute should succeed");
+    let handle_mesh = handle
+        .tessellate(sphere_gh.id, coarse_tol)
+        .expect("actor handle: tessellation should succeed");
+    // OcctKernelHandle::measure_mesh_deviation does not exist yet (step-4
+    // implements it) — this call makes the test RED.
+    let handle_dev = handle
+        .measure_mesh_deviation(sphere_gh.id, &handle_mesh)
+        .expect("actor handle: measure_mesh_deviation should return Some");
+
+    assert!(
+        (handle_dev - direct_dev).abs() < 1e-9,
+        "actor-channel parity: handle_dev ({handle_dev}) and direct_dev ({direct_dev}) \
+         must agree within 1e-9 m"
+    );
+}
+
+/// Dyn-trait reachability: through `&dyn GeometryKernel`, the trait method
+/// `measure_mesh_deviation` returns `Some` for an `OcctKernelHandle`.
+///
+/// This confirms the trait override (step-4) is wired and the engine's
+/// `&dyn GeometryKernel` call site will get a real measurement (not the
+/// default `None`).
+#[test]
+fn dyn_trait_measure_mesh_deviation_returns_some() {
+    let handle = OcctKernelHandle::spawn();
+    let sphere_gh = handle
+        .execute(&sphere_op(1.0))
+        .expect("dyn-trait test: execute should succeed");
+    let mesh = handle
+        .tessellate(sphere_gh.id, 5e-2)
+        .expect("dyn-trait test: tessellation should succeed");
+
+    // Cast to &dyn GeometryKernel — exercises the trait dispatch path.
+    let dyn_kernel: &dyn GeometryKernel = &handle;
+    let result = dyn_kernel.measure_mesh_deviation(sphere_gh.id, &mesh);
+
+    assert!(
+        result.is_some(),
+        "dyn-trait: measure_mesh_deviation should return Some for OcctKernelHandle, got None"
+    );
+    let dev = result.unwrap();
+    assert!(
+        dev.is_finite() && dev >= 0.0,
+        "dyn-trait: deviation must be finite ≥ 0, got {dev}"
+    );
+    assert!(
+        dev > 1e-7,
+        "dyn-trait: sphere deviation (coarse) must be > 1e-7 m (curved surface), got {dev}"
     );
 }
