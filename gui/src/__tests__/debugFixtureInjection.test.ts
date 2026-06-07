@@ -222,3 +222,86 @@ describe('inject_diagnostics: bridge handler', () => {
     expect(vi.mocked(stores.engine.setTessellationDiagnostics)).not.toHaveBeenCalled();
   });
 });
+
+// ─── reset_app_state ──────────────────────────────────────────────────────────
+
+describe('reset_app_state: bridge handler', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let stores: DebugStores;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    // Stub with two open files and a selected entity
+    stores = makeStores();
+    (stores.editor.state as any).openFiles = [
+      { path: 'a.ri', content: '' },
+      { path: 'b.ri', content: '' },
+    ];
+    (stores.selection.state as any).selectedEntity = 'some/entity';
+
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('calls closeFile for each open file path', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 1, 'reset_app_state') as any;
+
+    expect(result.ok).toBe(true);
+    expect(vi.mocked(stores.editor.closeFile)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(stores.editor.closeFile)).toHaveBeenCalledWith('a.ri');
+    expect(vi.mocked(stores.editor.closeFile)).toHaveBeenCalledWith('b.ri');
+  });
+
+  it('calls clearSelection once', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 2, 'reset_app_state') as any;
+
+    expect(result.ok).toBe(true);
+    expect(vi.mocked(stores.selection.clearSelection)).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls viewState.resetToDefaultView once', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 3, 'reset_app_state') as any;
+
+    expect(result.ok).toBe(true);
+    expect(vi.mocked(stores.viewState.resetToDefaultView)).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears diagnostics via both engine setters with empty arrays', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 4, 'reset_app_state') as any;
+
+    expect(result.ok).toBe(true);
+    expect(vi.mocked(stores.engine.setCompileDiagnostics)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(stores.engine.setCompileDiagnostics)).toHaveBeenCalledWith([]);
+    expect(vi.mocked(stores.engine.setTessellationDiagnostics)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(stores.engine.setTessellationDiagnostics)).toHaveBeenCalledWith([]);
+  });
+
+  it('resets each layout dimension to DEFAULT_* value', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 5, 'reset_app_state') as any;
+
+    expect(result.ok).toBe(true);
+    // DEFAULT_EDITOR_WIDTH=300, DEFAULT_SIDE_WIDTH=300, DEFAULT_DESIGN_TREE_HEIGHT=160,
+    // DEFAULT_PROPERTY_HEIGHT=200, DEFAULT_CONSTRAINT_HEIGHT=140
+    expect(vi.mocked(stores.layout.setEditorWidth)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(stores.layout.setEditorWidth)).toHaveBeenCalledWith(300);
+    expect(vi.mocked(stores.layout.setSideWidth)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(stores.layout.setSideWidth)).toHaveBeenCalledWith(300);
+    expect(vi.mocked(stores.layout.setDesignTreeHeight)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(stores.layout.setDesignTreeHeight)).toHaveBeenCalledWith(160);
+    expect(vi.mocked(stores.layout.setPropertyHeight)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(stores.layout.setPropertyHeight)).toHaveBeenCalledWith(200);
+    expect(vi.mocked(stores.layout.setConstraintHeight)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(stores.layout.setConstraintHeight)).toHaveBeenCalledWith(140);
+  });
+});
