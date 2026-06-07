@@ -1700,7 +1700,7 @@ mod tests {
         );
         assert_eq!(
             run_original_id.len(),
-            num_run as usize,
+            num_run,
             "run_original_id.len() must equal num_run ({num_run})"
         );
         let distinct: HashSet<_> = run_original_id.iter().copied().collect();
@@ -1715,18 +1715,18 @@ mod tests {
         let run_index = m.run_index();
         assert_eq!(
             run_index.len(),
-            num_run as usize + 1,
+            num_run + 1,
             "run_index.len() must equal num_run + 1 (start offsets + sentinel); \
              got {}, expected {}",
             run_index.len(),
-            num_run as usize + 1
+            num_run + 1
         );
 
         // face_id: one entry per triangle.
         let face_id = m.face_id();
         assert_eq!(
             face_id.len(),
-            num_tri as usize,
+            num_tri,
             "face_id.len() must equal num_tri ({num_tri}); got {}",
             face_id.len()
         );
