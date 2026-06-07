@@ -65,6 +65,46 @@ structure def LinalgDemo {
     let z_phase = phase(z)
     let z_mag   = complex_magnitude(z)
 
+    // ── 4×4 tridiagonal SPD matrix ────────────────────────────────────────────
+    //   m4 = [[4,1,0,0],[1,4,1,0],[0,1,4,1],[0,0,1,4]]
+    //   Tridiagonal determinant recurrence: D_n = 4·D_{n-1} − D_{n-2}
+    //     D_1=4, D_2=15, D_3=56, D_4=209  (exact integer)
+    //   SPD, condition number κ ≈ 2.36 → nalgebra LU det error ~1e-13
+
+    let m4 = matrix([[4.0, 1.0, 0.0, 0.0],
+                     [1.0, 4.0, 1.0, 0.0],
+                     [0.0, 1.0, 4.0, 1.0],
+                     [0.0, 0.0, 1.0, 4.0]])
+
+    let det4 = determinant(m4)
+    let inv4 = inverse(m4)
+    // det(A⁻¹) = 1/det(A) = 1/209 ≈ 0.004784689; self-checks the inverse path.
+    let inv4_det = determinant(inv4)
+
+    // ── 4×4 block-diagonal symmetric matrix ──────────────────────────────────
+    //   sym4 = [[2,1,0,0],[1,2,0,0],[0,0,5,3],[0,0,3,5]]
+    //   Block-diagonal → spectrum = union of block spectra:
+    //     top [[2,1],[1,2]]:    eigenvalues {2-1,2+1} = {1, 3}
+    //     bottom [[5,3],[3,5]]: eigenvalues {5-3,5+3} = {2, 8}
+    //   Full spectrum (sorted): {1, 2, 3, 8}  (exact integers)
+
+    let sym4 = matrix([[2.0, 1.0, 0.0, 0.0],
+                       [1.0, 2.0, 0.0, 0.0],
+                       [0.0, 0.0, 5.0, 3.0],
+                       [0.0, 0.0, 3.0, 5.0]])
+
+    let eig4 = eigenvalues(sym4)
+
+    // ── 2×2 rotation matrix (complex eigenvalue demo) ─────────────────────────
+    //   rot2 = [[0,-1],[1,0]]  (90° rotation in the plane)
+    //   Characteristic polynomial: λ² + 1 = 0 → eigenvalues ±i (exactly)
+    //   complex_eigenvalues: real-Schur decomposition → {0+1i, 0−1i}
+
+    let rot2 = matrix([[0.0, -1.0],
+                       [1.0,  0.0]])
+
+    let ceig = complex_eigenvalues(rot2)
+
     // ── @test assertions ──────────────────────────────────────────────────────
     //
     // Determinant of rotation matrix must be 1 (orthogonal matrix invariant).
@@ -74,4 +114,9 @@ structure def LinalgDemo {
     constraint det_rot < 1.001
     constraint z_mag > 4.999
     constraint z_mag < 5.001
+    constraint det4 > 208.999
+    constraint det4 < 209.001
+    // det(inv4) = 1/det(m4) = 1/209 ≈ 0.004785; catches inv4 regressing to Undef.
+    constraint inv4_det > 0.00478
+    constraint inv4_det < 0.00479
 }
