@@ -1516,10 +1516,29 @@ pub(crate) fn compile_expr_guarded(
                         for ((_, declared), arg_ty) in
                             matched_fn.params.iter().zip(arg_types.iter())
                         {
-                            // step-8: a conflicting double-binding (Err) is ignored
-                            // here; the E_FN_TYPE_ARG_CONFLICT emission is wired in
-                            // step-10.
-                            let _ = type_compat::unify(declared, arg_ty, &mut subst);
+                            // A type-param double-binding to two different types is
+                            // a call-site type-argument conflict (PRD D2 / §4.2).
+                            // Emit E_FN_TYPE_ARG_CONFLICT and poison the call to
+                            // prevent a follow-on cascade (mirror the Ambiguous arm).
+                            if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst)
+                            {
+                                return make_poison_literal(
+                                    diagnostics,
+                                    Diagnostic::error(format!(
+                                        "conflicting type arguments for type parameter '{}' \
+                                         in call to '{}': {} vs {}",
+                                        conflict.param,
+                                        name,
+                                        conflict.existing,
+                                        conflict.incoming
+                                    ))
+                                    .with_code(DiagnosticCode::FnTypeArgConflict)
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "conflicting type argument",
+                                    )),
+                                );
+                            }
                         }
                         type_resolution::substitute_type_params(&matched_fn.return_type, &subst)
                     };
