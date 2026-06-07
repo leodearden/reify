@@ -43,7 +43,7 @@ trait Seal {}
 // source-declaration order. Any regression to source order would fail.
 
 structure def NitrileSeal : Seal {
-    param durometer : Scalar = 70.0
+    param durometer : Real = 70.0
     param width : Scalar = 5mm
 }
 

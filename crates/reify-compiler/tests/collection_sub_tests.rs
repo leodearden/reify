@@ -423,7 +423,7 @@ fn compile_indexed_member_access_multi_member_child() {
     let source = r#"
         structure Bolt {
             param diameter : Scalar = 10mm
-            param grade : Scalar = 8.8
+            param grade : Scalar = undef
         }
         structure S {
             sub bolts : List<Bolt>
@@ -507,7 +507,7 @@ fn compile_collection_sub_as_standalone_identifier() {
     // A bare collection sub name (`bolts`) should resolve to ValueRef(__list_bolts),
     // not produce an 'unresolved name' error.
     let source = r#"
-        structure Bolt { param grade : Scalar = 8.8 }
+        structure Bolt { param grade : Scalar = undef }
         structure S {
             sub bolts : List<Bolt>
             constraint bolts.count == 3

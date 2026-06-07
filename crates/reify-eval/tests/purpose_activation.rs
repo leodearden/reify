@@ -2670,8 +2670,8 @@ purpose analysis(subject : Structure) {
 fn guarded_where_arm_active_condition_is_satisfied() {
     let source = r#"
 structure Frame {
-    param material : Scalar = 100.0
-    param youngs_modulus : Scalar = 200.0
+    param material : Real = 100.0
+    param youngs_modulus : Real = 200.0
 }
 
 purpose sim_ready(subject : Structure) {
@@ -2771,7 +2771,7 @@ purpose bounded(subject : Structure) {
 fn guarded_else_arm_active_when_condition_false() {
     let source = r#"
 structure Frame {
-    param z : Scalar = 5.0
+    param z : Real = 5.0
 }
 
 purpose bounded(subject : Structure) {
@@ -2822,7 +2822,7 @@ fn guarded_else_arm_vacuous_when_condition_true() {
     // (condition is true), so the injected constraint is always Satisfied.
     let source = r#"
 structure Frame {
-    param z : Scalar = -5.0
+    param z : Real = -5.0
 }
 
 purpose bounded(subject : Structure) {

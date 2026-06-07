@@ -146,7 +146,7 @@ pub type RotationalStiffness = Real
 // `Range<Angle>` when `type_resolution.rs::resolve_parameterized_builtin_
 // type` grows a Range arm (out of scope for β per the task description).
 structure def FlexureCompliance {
-    param effective_stiffness : RotationalStiffness = 0.0
+    param effective_stiffness : RotationalStiffness = 0
     param max_stress : Pressure = 0Pa
     param max_stress_at_neutral : Pressure = 0Pa
     param yield_margin : Real = 0.0

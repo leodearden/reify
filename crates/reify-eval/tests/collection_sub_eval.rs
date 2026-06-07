@@ -427,7 +427,7 @@ fn eval_collection_aggregate_from_source() {
     // This tests the compiler path for bare collection sub identifier resolution,
     // NOT the builder API that step-19 uses.
     let source = r#"
-        structure Bolt { param grade : Scalar = 8.8 }
+        structure Bolt { param grade : Scalar = undef }
         structure S {
             sub bolts : List<Bolt>
             constraint bolts.count == 3

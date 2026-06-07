@@ -75,7 +75,7 @@ fn simple_alias_compiles_without_errors() {
     let source = r#"
         type Stress = Force
         structure S {
-            param p : Stress = 1mm
+            param p : Stress = undef
         }
     "#;
     let module = compile_source(source);
@@ -94,7 +94,7 @@ fn dimensional_alias_force_div_area() {
     let source = r#"
         type Stress = Force / Area
         structure S {
-            param p : Stress = 1mm
+            param p : Stress = undef
         }
     "#;
     let module = compile_source(source);
@@ -130,7 +130,7 @@ fn dimensional_alias_force_mul_length() {
     let source = r#"
         type Energy = Force * Length
         structure S {
-            param e : Energy = 1mm
+            param e : Energy = undef
         }
     "#;
     let module = compile_source(source);
@@ -168,7 +168,7 @@ fn chained_dimensional_alias_acceleration() {
         type Velocity = Length / Time
         type Acceleration = Velocity / Time
         structure S {
-            param a : Acceleration = 1mm
+            param a : Acceleration = undef
         }
     "#;
     let module = compile_source(source);
@@ -270,7 +270,7 @@ fn parameterized_alias_substitution() {
     let source = r#"
         type Measure<Q> = Q
         structure S {
-            param p : Measure<Force> = 1mm
+            param p : Measure<Force> = undef
         }
     "#;
     let module = compile_source(source);
@@ -308,7 +308,7 @@ fn parameterized_alias_with_default() {
     let source = r#"
         type Measure<Q = Force> = Q
         structure S {
-            param p : Measure = 1mm
+            param p : Measure = undef
         }
     "#;
     let module = compile_source(source);
@@ -344,7 +344,7 @@ fn multi_param_alias_with_partial_defaults() {
     let source = r#"
         type BiMeasure<A, B = Length> = A
         structure S {
-            param p : BiMeasure<Mass> = 1mm
+            param p : BiMeasure<Mass> = undef
         }
     "#;
     let module = compile_source(source);
@@ -591,7 +591,7 @@ fn alias_interop_mixed_declarations() {
         type Stress = Force
         enum Mode { Active Passive }
         structure Tank {
-            param pressure : Stress = 1mm
+            param pressure : Stress = undef
         }
         fn measure(p: Stress) -> Real { p }
     "#;
@@ -641,7 +641,7 @@ fn alias_declared_after_use_forward_reference() {
     // Since aliases are collected in pre-pass, declaration order shouldn't matter.
     let source = r#"
         structure S {
-            param p : Stress = 1mm
+            param p : Stress = undef
         }
         type Stress = Force
     "#;

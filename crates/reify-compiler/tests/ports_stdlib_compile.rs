@@ -2639,7 +2639,7 @@ structure def PipeConformer {
         param pressure : Pressure = 101325Pa
         param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "water"
-        param fluid_type = FluidType.Liquid
+        param fluid_type = undef  // FluidType.Liquid intent; port-param type path can't resolve prelude enums, so untyped default falls back to Real and trips ParamDefaultTypeMismatch on the enum literal
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
             x_axis: vec3(1mm, 0mm, 0mm),
@@ -2647,7 +2647,7 @@ structure def PipeConformer {
             z_axis: vec3(0mm, 0mm, 1mm),
         )
         param inner_diameter : Length = 25mm
-        param connection_type = PipeConnectionType.Threaded
+        param connection_type = undef  // PipeConnectionType.Threaded intent; untyped port-param enum default falls back to Real (see fluid_type note)
     }
 }
 "#;
@@ -2812,14 +2812,14 @@ structure def HydroConformer {
         param pressure : Pressure = 101325Pa
         param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "hydraulic_oil"
-        param fluid_type = FluidType.Liquid
+        param fluid_type = undef  // FluidType.Liquid intent; port-param type path can't resolve prelude enums, so untyped default falls back to Real and trips ParamDefaultTypeMismatch on the enum literal
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
             x_axis: vec3(1mm, 0mm, 0mm),
             y_axis: vec3(0mm, 1mm, 0mm),
             z_axis: vec3(0mm, 0mm, 1mm),
         )
-        param fitting_type = FittingStandard.NPT
+        param fitting_type = undef  // FittingStandard.NPT intent; untyped port-param enum default falls back to Real (see fluid_type note)
     }
 }
 "#;

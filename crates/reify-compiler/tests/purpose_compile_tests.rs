@@ -1440,8 +1440,8 @@ mod guarded {
     fn guarded_where_arm_lowers_to_implies() {
         let source = r#"
 structure Frame {
-    param material : Scalar = 1.0
-    param youngs_modulus : Scalar = 200.0
+    param material : Real = 1.0
+    param youngs_modulus : Real = 200.0
 }
 
 purpose p(subject : Structure) {
@@ -1503,8 +1503,8 @@ purpose p(subject : Structure) {
     fn guarded_unsupported_member_kind_emits_error() {
         let source = r#"
 structure Frame {
-    param material : Scalar = 1.0
-    param youngs_modulus : Scalar = 200.0
+    param material : Real = 1.0
+    param youngs_modulus : Real = 200.0
 }
 
 purpose p(subject : Structure) {
@@ -1554,7 +1554,7 @@ purpose p(subject : Structure) {
         // but the compile test only checks the structural shape (not eval).
         let source = r#"
 structure Frame {
-    param z : Scalar = 5.0
+    param z : Real = 5.0
 }
 
 purpose p(subject : Structure) {
