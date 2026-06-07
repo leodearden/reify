@@ -203,6 +203,37 @@ describe('inject_diagnostics: bridge handler', () => {
     expect(vi.mocked(stores.engine.setTessellationDiagnostics)).not.toHaveBeenCalled();
   });
 
+  it('preserves caller-supplied positional fields; end_line/end_column default to provided line/column', async () => {
+    // Regression guard: a handler bug that always writes line:0 or overwrites
+    // file_path/code must be caught here.
+    const result = await dispatchAndGetResult(capturedHandler!, 6, 'inject_diagnostics', {
+      diagnostics: [{
+        severity: 'Error',
+        message: 'x',
+        line: 42,
+        column: 7,
+        file_path: 'foo.ri',
+        code: 'E001',
+      }],
+      source: 'compile',
+    }) as any;
+
+    expect(result.ok).toBe(true);
+
+    const [normalized] = vi.mocked(stores.engine.setCompileDiagnostics).mock.calls[0][0];
+    // Caller-supplied fields must be preserved exactly — never replaced with defaults.
+    expect(normalized.line).toBe(42);
+    expect(normalized.column).toBe(7);
+    expect(normalized.file_path).toBe('foo.ri');
+    expect(normalized.code).toBe('E001');
+    // end_line/end_column were omitted: they must default to the provided line/column.
+    expect(normalized.end_line).toBe(42);
+    expect(normalized.end_column).toBe(7);
+    // Caller-supplied message/severity must be preserved.
+    expect(normalized.severity).toBe('Error');
+    expect(normalized.message).toBe('x');
+  });
+
   it('missing diagnostics: returns {error}, neither setter called', async () => {
     const result = await dispatchAndGetResult(capturedHandler!, 4, 'inject_diagnostics', {}) as any;
 

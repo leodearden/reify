@@ -272,13 +272,14 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "inject_diagnostics",
-            description: "Inject SYNTHETIC diagnostics into the engine store for testing the diagnostics UI in isolation. The honest acceptance signal is the rendered DiagnosticsPanel (query_selector_all diagnostic-row / element_screenshot), NOT 'the store was set'. Normalises only omitted positional fields; never alters caller-supplied message or severity. Routes to compile diagnostics by default, or tessellation diagnostics when source='tessellation'. Frontend-mediated.",
+            description: "Inject SYNTHETIC diagnostics into the engine store for testing the diagnostics UI in isolation. The honest acceptance signal is the rendered DiagnosticsPanel (query_selector_all diagnostic-row / element_screenshot), NOT 'the store was set'. Normalises only omitted positional fields; never alters caller-supplied message or severity. Routes to compile diagnostics by default, or tessellation diagnostics when source='tessellation'. diagnostics must be non-empty (minItems:1). Frontend-mediated.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "diagnostics": {
                         "type": "array",
-                        "description": "Array of diagnostic entries to inject. Each entry must have severity and message; positional fields (file_path, line, column, end_line, end_column, code) are optional and filled with defaults when omitted.",
+                        "minItems": 1,
+                        "description": "Non-empty array of diagnostic entries to inject. Each entry must have severity and message; positional fields (file_path, line, column, end_line, end_column, code) are optional and filled with defaults when omitted.",
                         "items": {
                             "type": "object",
                             "properties": {

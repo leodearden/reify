@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions.js";
+import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario, KNOWN_DEBUG_TOOL_NAMES } from "./assertions.js";
 import type { Assertion, ValueScenario, ScenarioDeps } from "./assertions.js";
 import type { RpcResult } from "./rpc.js";
 import { resolveRepoRoot } from "./paths.js";
@@ -402,11 +402,9 @@ describe("F1 VALUE_SCENARIOS (task-4303)", () => {
     "inject_diagnostics_element_screenshot",
   ];
 
-  const KNOWN_TOOLS = new Set([
-    "load_fixture", "wait_for_idle", "get_diagnostics", "inject_diagnostics",
-    "click_element", "query_selector_all", "store_state", "element_screenshot",
-    "reset_app_state",
-  ]);
+  // Derived from KNOWN_DEBUG_TOOL_NAMES (assertions.ts) so a renamed tool
+  // in bridge.ts/debug_server.rs only needs one update, not two.
+  const KNOWN_TOOLS = KNOWN_DEBUG_TOOL_NAMES;
 
   it("all F1 scenario names are present and unique", () => {
     const validFixtureKeys = Object.keys(FIXTURES);

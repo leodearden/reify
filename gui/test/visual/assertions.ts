@@ -34,6 +34,11 @@ export function getByPath(obj: unknown, dotted: string): unknown {
  *
  * Values match the existing Scenario.fixture convention in run.ts so the same
  * `path.join(REPO_ROOT, rel)` plumbing resolves both visual and value fixtures.
+ *
+ * COUPLING: kept in sync with `fixture_relpath()` in
+ * gui/src-tauri/src/debug_server.rs. Add new fixtures to BOTH sides; an
+ * "unknown fixture" runtime error from load_fixture is the only gap-detector
+ * (no compile-time cross-check exists).
  */
 export const FIXTURES = {
   empty: "gui/test/fixtures/empty.ri",
@@ -430,3 +435,62 @@ export async function runValueScenario(
 
   return { name: scenario.name, passed: failures.length === 0, failures };
 }
+
+// ─── KNOWN_DEBUG_TOOL_NAMES ───────────────────────────────────────────────────
+
+/**
+ * Canonical set of debug tool names used by VALUE_SCENARIOS setup steps.
+ *
+ * Mirrors the handler keys registered by `buildHandlers()` in
+ * gui/src/debug/bridge.ts (frontend-mediated tools) and `tool_defs()` in
+ * gui/src-tauri/src/debug_server.rs (Rust-dispatched tools).
+ *
+ * Exported so assertions.test.ts can derive its KNOWN_TOOLS check from a single
+ * source rather than maintaining an inline literal.  Update here when a new tool
+ * is added to VALUE_SCENARIOS setup steps.
+ */
+export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
+  // Rust-dispatched tools (debug_server.rs dispatch_tool)
+  "load_fixture",
+  "open_file",
+  // Frontend-mediated tools (bridge.ts buildHandlers)
+  "wait_for_idle",
+  "wait_for",
+  "wait_for_selector",
+  "get_diagnostics",
+  "inject_diagnostics",
+  "reset_app_state",
+  "click_element",
+  "query_selector_all",
+  "query_selector",
+  "store_state",
+  "element_screenshot",
+  "screenshot",
+  "screenshot_window",
+  "type_in_editor",
+  "keyboard",
+  "select_entity",
+  "clear_selection",
+  "fit_to_view",
+  "set_camera",
+  "set_test_mode",
+  "list_console_errors",
+  "resize_panes",
+  "expand_tree_node",
+  "collapse_tree_node",
+  "hover_at",
+  "completion_at",
+  "definition_at",
+  "pick_entity_at",
+  "orbit_camera",
+  "pan_camera",
+  "zoom_camera",
+  "viewport_state",
+  "dom_query",
+  "list_elements",
+  "get_layout_metrics",
+  "get_computed_style",
+  "get_window_state",
+  "ui_outline",
+  "health",
+] as const);

@@ -1440,9 +1440,13 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       const dpr = window.devicePixelRatio || 1;
 
       // Capture the full window.
-      const dataUrl = await toPng(document.documentElement, { cacheBust: true });
+      // Pass pixelRatio explicitly so the crop math stays correct regardless of any
+      // future html-to-image default change.
+      const dataUrl = await toPng(document.documentElement, { cacheBust: true, pixelRatio: dpr });
 
       // Load the full-window image and crop to the element's DPR-scaled bounds.
+      // getBoundingClientRect() returns viewport-relative coordinates; add scrollX/scrollY
+      // to convert to document-origin offsets that match the full-document capture origin.
       const img = await new Promise<HTMLImageElement>((resolve, reject) => {
         const image = new Image();
         image.onload = () => resolve(image as HTMLImageElement);
@@ -1458,8 +1462,8 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       const ctx2d = canvas.getContext('2d') as CanvasRenderingContext2D;
       ctx2d.drawImage(
         img,
-        rect.x * dpr,
-        rect.y * dpr,
+        (rect.x + window.scrollX) * dpr,
+        (rect.y + window.scrollY) * dpr,
         rect.width * dpr,
         rect.height * dpr,
         0,
