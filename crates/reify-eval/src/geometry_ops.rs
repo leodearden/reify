@@ -2086,6 +2086,22 @@ pub(crate) fn try_eval_kinematic_query(
         _ => return None,
     };
 
+    // (1b) Swept flat_map branch: flat_map(snaps, |s| [kin_helper(s, a, b)]).
+    // Checked before the helper-name match (step 2) so the `flat_map` name
+    // does not fall through to the `_ => return None` arm. Non-kinematic
+    // flat_map lambdas (e.g. `center_of_mass`) return None from
+    // `try_eval_swept_kinematic_query`, preserving the pure-eval value.
+    if function.name == "flat_map" {
+        return try_eval_swept_kinematic_query(
+            args,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+            pose_cache,
+        );
+    }
+
     // (2) Must be one of the three recognised helper names.
     let helper = match function.name.as_str() {
         "interferes" => KinematicHelper::Interferes,
@@ -2121,6 +2137,48 @@ pub(crate) fn try_eval_kinematic_query(
         None
     };
 
+    // (5–7) Delegate the per-snapshot core (extract bodies → build id→handle
+    // with FK ApplyTransform → dispatch per-helper) to
+    // `eval_kinematic_on_snapshot`. The swept flat_map branch calls the same
+    // function for each element of the snapshot list (task 3844).
+    eval_kinematic_on_snapshot(
+        helper,
+        &function.name,
+        snapshot_value,
+        body_id_args,
+        named_steps,
+        kernel,
+        diagnostics,
+        pose_cache,
+    )
+}
+
+/// Per-snapshot kinematic dispatch: resolve bodies from a Snapshot Map, apply
+/// FK world_transforms via `GeometryOp::ApplyTransform`, and run the
+/// per-helper kernel probe (`interferes`, `interferes_with`, `min_clearance`).
+///
+/// Extracted from `try_eval_kinematic_query` so the swept flat_map branch
+/// (`try_eval_swept_kinematic_query`) can invoke the same per-snapshot logic
+/// for each element of a snapshot list (task 3844, KCC-epsilon).
+///
+/// `fn_name` is used only in Warning diagnostics; pass the stdlib function
+/// name (e.g. `"min_clearance"`) for readable messages.
+///
+/// Returns:
+///   `Some(Value)` on success — List / Bool / length Scalar per helper.
+///   `Some(Value::Undef)` when the snapshot Map is malformed or a kernel
+///     operation fails — the caller receives the per-snapshot Undef rather
+///     than collapsing the entire swept result.
+fn eval_kinematic_on_snapshot(
+    helper: KinematicHelper,
+    fn_name: &str,
+    snapshot_value: &reify_ir::Value,
+    body_id_args: Option<(i64, i64)>,
+    named_steps: &HashMap<String, KernelHandle>,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+    pose_cache: &mut HashMap<(GeometryHandleId, [u64; 4], [u64; 3]), GeometryHandleId>,
+) -> Option<reify_ir::Value> {
     // (5) Read the Snapshot's bodies list. Returns Some(Value::Undef) (not
     // None) when the cell value isn't a well-formed Snapshot — the stdlib
     // stub already validated this on the value-eval pass, so reaching here
@@ -2178,9 +2236,8 @@ pub(crate) fn try_eval_kinematic_query(
                         if rotation != [1.0, 0.0, 0.0, 0.0] || translation != [0.0, 0.0, 0.0] =>
                     {
                         // Cache posed handles for the duration of the build
-                        // pass: a typical structure calls interferes(s),
-                        // interferes_with(s,…) and min_clearance(s,…) on the
-                        // same snapshot, so without a cache each non-identity
+                        // pass: a typical structure calls interferes/interferes_with/min_clearance on
+                        // the same snapshot, so without a cache each non-identity
                         // body is re-posed once per query (3× the kernel ops
                         // for the same geometry). The key is (source handle,
                         // rotation bits, translation bits) — bit-exact to avoid
@@ -2211,8 +2268,7 @@ pub(crate) fn try_eval_kinematic_query(
                                     // kernel_distance error arm) so the failure
                                     // is visible rather than silently wrong.
                                     diagnostics.push(Diagnostic::warning(format!(
-                                        "{}: ApplyTransform failed for body '{}': {e}",
-                                        function.name, solid_name
+                                        "{fn_name}: ApplyTransform failed for body '{solid_name}': {e}",
                                     )));
                                     return Some(reify_ir::Value::Undef);
                                 }
@@ -2238,7 +2294,7 @@ pub(crate) fn try_eval_kinematic_query(
                 for j in (i + 1)..id_to_handle.len() {
                     let (id_a, handle_a) = id_to_handle[i];
                     let (id_b, handle_b) = id_to_handle[j];
-                    match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+                    match kernel_distance(kernel, handle_a, handle_b, diagnostics, fn_name) {
                         Some(d) if d <= 0.0 => {
                             pairs.push(make_pair_map(id_a, id_b));
                         }
@@ -2268,7 +2324,7 @@ pub(crate) fn try_eval_kinematic_query(
                 Some(h) => h,
                 None => return Some(reify_ir::Value::Undef),
             };
-            match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+            match kernel_distance(kernel, handle_a, handle_b, diagnostics, fn_name) {
                 Some(d) => Some(reify_ir::Value::Bool(d <= 0.0)),
                 None => Some(reify_ir::Value::Undef),
             }
@@ -2289,12 +2345,122 @@ pub(crate) fn try_eval_kinematic_query(
                 Some(h) => h,
                 None => return Some(reify_ir::Value::Undef),
             };
-            match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+            match kernel_distance(kernel, handle_a, handle_b, diagnostics, fn_name) {
                 Some(d) => Some(reify_ir::Value::length(d)),
                 None => Some(reify_ir::Value::Undef),
             }
         }
     }
+}
+
+/// Swept kinematic-query dispatch for `flat_map(snaps, |s| [kin_helper(s, a, b)])`.
+///
+/// Called by `try_eval_kinematic_query` when the outer function name is
+/// `flat_map`. Validates that:
+///   - `args[0]` is a `ValueRef` to a `Value::List` of Snapshot Maps.
+///   - `args[1]` is a `Lambda { param_ids: [s_id], body: ListLiteral([inner]) }`.
+///   - `inner` is a binary kinematic helper call (`interferes_with` or
+///     `min_clearance`) with `args[0] == ValueRef(s_id)` (the lambda param)
+///     and `args[1..]` resolving to `Int` body ids in `values`.
+///
+/// On match: runs `eval_kinematic_on_snapshot` for each snapshot and returns
+/// `Some(Value::List(results))` — one result per snapshot (Undef on per-
+/// snapshot failure, rather than collapsing the whole list).
+///
+/// On any mismatch (non-kinematic inner, wrong shape, non-Int captures):
+/// returns `None` so the cell keeps the pure-eval value (e.g.
+/// `center_of_mass` swept cells computed by the regular eval pass).
+///
+/// The unary `interferes` swept form is intentionally not supported: it would
+/// concatenate pair-lists ambiguously. Falls through to None.
+fn try_eval_swept_kinematic_query(
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+    pose_cache: &mut HashMap<(GeometryHandleId, [u64; 4], [u64; 3]), GeometryHandleId>,
+) -> Option<reify_ir::Value> {
+    // flat_map must have exactly 2 args: (list_arg, lambda_arg).
+    if args.len() != 2 {
+        return None;
+    }
+
+    // args[0] must be a ValueRef to a list of Snapshots.
+    let list_id = match &args[0].kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    let snapshots = match values.get(list_id) {
+        Some(reify_ir::Value::List(snaps)) => snaps,
+        _ => return None,
+    };
+
+    // args[1] must be a Lambda with exactly one parameter (the snapshot `s`).
+    let (s_param_id, body) = match &args[1].kind {
+        reify_ir::CompiledExprKind::Lambda { param_ids, body, .. } if param_ids.len() == 1 => {
+            (&param_ids[0], body.as_ref())
+        }
+        _ => return None,
+    };
+
+    // Lambda body must be ListLiteral([inner]) — a single-element list.
+    let inner = match &body.kind {
+        reify_ir::CompiledExprKind::ListLiteral(elems) if elems.len() == 1 => &elems[0],
+        _ => return None,
+    };
+
+    // inner must be a binary kinematic helper call with 3 args.
+    let (inner_fn, inner_args) = match &inner.kind {
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => {
+            (function, args.as_slice())
+        }
+        _ => return None,
+    };
+    let helper = match inner_fn.name.as_str() {
+        "interferes_with" => KinematicHelper::InterferesWith,
+        "min_clearance" => KinematicHelper::MinClearance,
+        // Unary `interferes` and non-kinematic names (e.g. center_of_mass)
+        // → fall through so the pure-eval value is preserved.
+        _ => return None,
+    };
+    if inner_args.len() != 3 {
+        return None;
+    }
+
+    // inner_args[0] must be ValueRef to the lambda parameter (the snapshot `s`).
+    let arg0_ref = match &inner_args[0].kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    if arg0_ref != s_param_id {
+        return None;
+    }
+
+    // inner_args[1] and [2] must be ValueRefs resolving to Int body ids.
+    let id_a = resolve_int_value_ref(&inner_args[1], values)?;
+    let id_b = resolve_int_value_ref(&inner_args[2], values)?;
+    let body_id_args = Some((id_a, id_b));
+
+    // For each snapshot in the list run the per-snapshot dispatch core and
+    // collect results. Per-snapshot failures (None) become Value::Undef so
+    // the list length is always equal to the snapshot count.
+    let fn_name = inner_fn.name.as_str();
+    let mut out: Vec<reify_ir::Value> = Vec::with_capacity(snapshots.len());
+    for snap in snapshots {
+        let result = eval_kinematic_on_snapshot(
+            helper,
+            fn_name,
+            snap,
+            body_id_args,
+            named_steps,
+            kernel,
+            diagnostics,
+            pose_cache,
+        );
+        out.push(result.unwrap_or(reify_ir::Value::Undef));
+    }
+    Some(reify_ir::Value::List(out))
 }
 
 #[derive(Clone, Copy)]
