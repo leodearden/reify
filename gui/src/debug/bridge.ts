@@ -258,7 +258,7 @@ function describeActive(el: HTMLElement) {
   return { testId: el.getAttribute('data-testid'), tagName: el.tagName.toLowerCase() };
 }
 
-function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
+export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
   /**
    * C2 tree-node driver — shared between expand_tree_node and collapse_tree_node.
    * Reads the current expanded state from the registered panel accessor,
