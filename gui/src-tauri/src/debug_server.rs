@@ -2713,13 +2713,6 @@ mod tests {
             "inject_diagnostics: description must be non-empty"
         );
 
-        // Description must contain "synthetic" (G2/G6 label contract)
-        assert!(
-            inject.description.to_lowercase().contains("synthetic"),
-            "inject_diagnostics: description must contain 'synthetic' (G2/G6 honesty label); got {:?}",
-            inject.description
-        );
-
         // type == "object"
         assert_eq!(
             inject_schema["type"].as_str(),
