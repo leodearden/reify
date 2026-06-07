@@ -598,6 +598,130 @@ fn tool_defs() -> Vec<ToolDef> {
                 "required": ["line", "col"]
             }),
         },
+        // --- I1: Synthetic pointer/scroll/focus tools (task-4299) ---
+        // These are FRONTEND-MEDIATED: no Rust handler arm is added; dispatch_tool's
+        // default arm routes unknown names to debug_bridge.query_frontend (:693-697).
+        ToolDef {
+            name: "click_at",
+            description: "Simulate a pointer click at CSS-logical-pixel coordinates (x, y) measured from the window origin \
+                          (same frame as getBoundingClientRect / clientX/clientY; see contract §3). \
+                          Resolves the target element via document.elementFromPoint(x, y), then dispatches \
+                          pointerdown → pointerup → click events with clientX=x, clientY=y. \
+                          Fires JS click handlers (React onClick etc.); CSS :hover/:active is NOT applied \
+                          (synthetic-event fidelity gap — contract §4).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "x": {
+                        "type": "number",
+                        "description": "CSS-logical-px from the window origin (same frame as getBoundingClientRect / clientX/clientY; see contract §3)"
+                    },
+                    "y": {
+                        "type": "number",
+                        "description": "CSS-logical-px from the window origin (same frame as getBoundingClientRect / clientX/clientY; see contract §3)"
+                    }
+                },
+                "required": ["x", "y"]
+            }),
+        },
+        ToolDef {
+            name: "hover",
+            description: "Simulate a pointer move (hover) at CSS-logical-pixel coordinates (x, y). \
+                          Resolves the target element via document.elementFromPoint(x, y), then dispatches \
+                          pointermove + mousemove events with clientX=x, clientY=y. \
+                          Fires JS move handlers; CSS :hover pseudo-class is NOT applied \
+                          (synthetic-event fidelity gap — contract §4).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "x": {
+                        "type": "number",
+                        "description": "CSS-logical-px from the window origin (same frame as getBoundingClientRect / clientX/clientY; see contract §3)"
+                    },
+                    "y": {
+                        "type": "number",
+                        "description": "CSS-logical-px from the window origin (same frame as getBoundingClientRect / clientX/clientY; see contract §3)"
+                    }
+                },
+                "required": ["x", "y"]
+            }),
+        },
+        ToolDef {
+            name: "drag",
+            description: "Simulate a synthetic pointer drag from one coordinate to another. \
+                          Dispatches pointerdown+mousedown at 'from', pointermove at 'to', then \
+                          pointerup+mouseup at 'to'. Fires JS pointer/mouse handlers; \
+                          there is NO native HTML5 drag-and-drop (dragstart/drop are NOT fired) — \
+                          this is a synthetic pointer-move drag (contract §4).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "from": {
+                        "type": "object",
+                        "description": "Start coordinate {x, y} in CSS-logical-px from the window origin",
+                        "properties": {
+                            "x": { "type": "number" },
+                            "y": { "type": "number" }
+                        }
+                    },
+                    "to": {
+                        "type": "object",
+                        "description": "End coordinate {x, y} in CSS-logical-px from the window origin",
+                        "properties": {
+                            "x": { "type": "number" },
+                            "y": { "type": "number" }
+                        }
+                    }
+                },
+                "required": ["from", "to"]
+            }),
+        },
+        ToolDef {
+            name: "focus_element",
+            description: "Focus a DOM element by its data-testid attribute. \
+                          Calls el.focus() on the resolved element. \
+                          Returns {ok: true} on success or {error} if not found or testId is missing.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "testId": {
+                        "type": "string",
+                        "description": "The data-testid attribute value of the element to focus"
+                    }
+                },
+                "required": ["testId"]
+            }),
+        },
+        ToolDef {
+            name: "scroll",
+            description: "Scroll a DOM element or the CodeMirror editor. \
+                          DOM mode: pass testId to set scrollTop/scrollLeft on the resolved element. \
+                          Editor mode: pass target:'editor' to scroll the CodeMirror scrollDOM. \
+                          Returns {ok: true, scrollTop, scrollLeft} with the resulting scroll offsets \
+                          (enabling a get_layout_metrics round-trip to confirm the applied offset).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "testId": {
+                        "type": "string",
+                        "description": "data-testid of the DOM element to scroll (DOM mode)"
+                    },
+                    "target": {
+                        "type": "string",
+                        "enum": ["editor"],
+                        "description": "Pass 'editor' to scroll the CodeMirror scrollDOM (editor mode)"
+                    },
+                    "top": {
+                        "type": "number",
+                        "description": "scrollTop value to set (pixels)"
+                    },
+                    "left": {
+                        "type": "number",
+                        "description": "scrollLeft value to set (pixels)"
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -2019,6 +2143,124 @@ mod tests {
             "capabilities/default.json must still contain 'core:window:default' \
              (regression: do not replace it with core:window:allow-set-size)."
         );
+    }
+
+    // task-4299 step-1 RED → step-2 GREEN: five synthetic-interaction tools must be
+    // registered in tool_defs() with the correct schema shapes.
+    // Schema-shape-only — NO description-prose pinning (convention at :1668-1670).
+    #[test]
+    fn tool_defs_registers_synthetic_interaction_tools() {
+        let defs = tool_defs();
+
+        // click_at and hover both require exactly ["x", "y"]
+        for tool_name in ["click_at", "hover"] {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("x")),
+                "{tool_name}: 'x' must be listed in required"
+            );
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("y")),
+                "{tool_name}: 'y' must be listed in required"
+            );
+        }
+
+        // drag requires ["from", "to"]
+        {
+            let tool_name = "drag";
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("from")),
+                "{tool_name}: 'from' must be listed in required"
+            );
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("to")),
+                "{tool_name}: 'to' must be listed in required"
+            );
+        }
+
+        // focus_element requires ["testId"]
+        {
+            let tool_name = "focus_element";
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("testId")),
+                "{tool_name}: 'testId' must be listed in required"
+            );
+        }
+
+        // scroll has no required array or an empty one
+        {
+            let tool_name = "scroll";
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{tool_name}: required array must be empty; got {required:?}"
+                );
+            }
+        }
     }
 
     // F2 step-5 RED → step-6 GREEN: hover_at / completion_at / definition_at must be

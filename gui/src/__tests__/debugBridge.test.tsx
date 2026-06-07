@@ -38,6 +38,19 @@ import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
 
+// jsdom 25 does not implement document.elementFromPoint — the method is simply
+// absent from the document prototype. vi.spyOn requires the property to exist
+// before it can be overridden per test. Define a stub that returns null (matching
+// jsdom's layout-less behaviour) so that vi.spyOn/.mockReturnValue works and
+// vi.restoreAllMocks() reverts to this stub after each test.
+if (typeof document.elementFromPoint !== 'function') {
+  Object.defineProperty(document, 'elementFromPoint', {
+    configurable: true,
+    writable: true,
+    value: (): Element | null => null,
+  });
+}
+
 function makeStores(selectedEntities: string[] = [], anchorEntity: string | null = null): DebugStores {
   return {
     engine: {
@@ -3021,4 +3034,385 @@ describe('debug bridge LSP probe input guards', () => {
       expect(calls.find((c) => c[0] === 'lsp_request')).toBeUndefined();
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// task-4299 steps 3–12: I1 synthetic pointer/scroll/focus tools
+// Scaffold mirrors 'debug bridge R1 inspection tools' at :1714-1742.
+// ---------------------------------------------------------------------------
+
+describe('debug bridge click_at', () => {
+  // step-3 RED → step-4 GREEN
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('happy: dispatches click with correct clientX/clientY', async () => {
+    const button = document.createElement('button');
+    button.setAttribute('data-testid', 'test-btn');
+    document.body.appendChild(button);
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(button);
+
+    let firedEvent: MouseEvent | undefined;
+    button.addEventListener('click', (e) => { firedEvent = e as MouseEvent; });
+
+    const result = await dispatchCmd(5001, 'click_at', { x: 140, y: 70 });
+    expect(result.ok).toBe(true);
+    expect(firedEvent).toBeDefined();
+    expect(firedEvent!.clientX).toBe(140);
+    expect(firedEvent!.clientY).toBe(70);
+    // Assert target payload shape (suggestion 4: regression-guard on element resolution)
+    expect(result.target.tagName).toBe('button');
+    expect(result.target.testId).toBe('test-btn');
+  });
+
+  it('no element at point returns {error}', async () => {
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(null);
+    const result = await dispatchCmd(5002, 'click_at', { x: 5, y: 5 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('invalid coords (string) returns {error}', async () => {
+    const result = await dispatchCmd(5003, 'click_at', { x: 'a', y: 1 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('invalid coords (NaN) returns {error}', async () => {
+    const result = await dispatchCmd(5004, 'click_at', { x: NaN, y: 1 });
+    expect(typeof result.error).toBe('string');
+  });
+});
+
+describe('debug bridge hover', () => {
+  // step-5 RED → step-6 GREEN
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('happy: dispatches move event with correct clientX/clientY', async () => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'test-div');
+    document.body.appendChild(el);
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(el);
+
+    let firedEvent: MouseEvent | undefined;
+    // pointermove or mousemove — check whichever fires
+    el.addEventListener('pointermove', (e) => { firedEvent = e as MouseEvent; });
+    el.addEventListener('mousemove', (e) => { if (!firedEvent) firedEvent = e as MouseEvent; });
+
+    const result = await dispatchCmd(5101, 'hover', { x: 50, y: 60 });
+    expect(result.ok).toBe(true);
+    expect(firedEvent).toBeDefined();
+    expect(firedEvent!.clientX).toBe(50);
+    expect(firedEvent!.clientY).toBe(60);
+    // Assert target payload shape (suggestion 4: regression-guard on element resolution)
+    expect(result.target.tagName).toBe('div');
+    expect(result.target.testId).toBe('test-div');
+  });
+
+  it('no element at point returns {error}', async () => {
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(null);
+    const result = await dispatchCmd(5102, 'hover', { x: 5, y: 5 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('invalid coords returns {error}', async () => {
+    const result = await dispatchCmd(5103, 'hover', { x: 'bad', y: 1 });
+    expect(typeof result.error).toBe('string');
+  });
+});
+
+describe('debug bridge drag', () => {
+  // step-7 RED → step-8 GREEN
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('happy: dispatches pointerdown at from and pointerup at to', async () => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(el);
+
+    let downEvent: MouseEvent | undefined;
+    let upEvent: MouseEvent | undefined;
+    el.addEventListener('pointerdown', (e) => { downEvent = e as MouseEvent; });
+    el.addEventListener('mousedown', (e) => { if (!downEvent) downEvent = e as MouseEvent; });
+    el.addEventListener('pointerup', (e) => { upEvent = e as MouseEvent; });
+    el.addEventListener('mouseup', (e) => { if (!upEvent) upEvent = e as MouseEvent; });
+
+    const result = await dispatchCmd(5201, 'drag', { from: { x: 10, y: 20 }, to: { x: 80, y: 90 } });
+    expect(result.ok).toBe(true);
+    expect(downEvent).toBeDefined();
+    expect(downEvent!.clientX).toBe(10);
+    expect(downEvent!.clientY).toBe(20);
+    expect(upEvent).toBeDefined();
+    expect(upEvent!.clientX).toBe(80);
+    expect(upEvent!.clientY).toBe(90);
+  });
+
+  it('no element at from returns {error}', async () => {
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(null);
+    const result = await dispatchCmd(5202, 'drag', { from: { x: 0, y: 0 }, to: { x: 10, y: 10 } });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('invalid from (missing x) returns {error}', async () => {
+    const result = await dispatchCmd(5203, 'drag', { from: { y: 5 }, to: { x: 10, y: 10 } });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('invalid from (NaN) returns {error}', async () => {
+    const result = await dispatchCmd(5204, 'drag', { from: { x: NaN, y: 5 }, to: { x: 10, y: 10 } });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('null to destination falls back to from element; move/up events fire at to coords', async () => {
+    // Covers the `elTo = document.elementFromPoint(to.x, to.y) ?? elFrom` fallback
+    // when the destination point resolves to null (e.g. off-canvas).
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const spy = vi.spyOn(document, 'elementFromPoint');
+    spy.mockReturnValueOnce(el);   // first call: from resolves
+    spy.mockReturnValueOnce(null); // second call: to resolves to null → falls back to el
+
+    let moveEvent: MouseEvent | undefined;
+    let upEvent: MouseEvent | undefined;
+    el.addEventListener('pointermove', (e) => { moveEvent = e as MouseEvent; });
+    el.addEventListener('mousemove', (e) => { if (!moveEvent) moveEvent = e as MouseEvent; });
+    el.addEventListener('pointerup', (e) => { upEvent = e as MouseEvent; });
+    el.addEventListener('mouseup', (e) => { if (!upEvent) upEvent = e as MouseEvent; });
+
+    const result = await dispatchCmd(5205, 'drag', { from: { x: 10, y: 20 }, to: { x: 80, y: 90 } });
+    expect(result.ok).toBe(true);
+    // Events fired on the fallback element (elFrom) but carry the to coordinates.
+    expect(moveEvent).toBeDefined();
+    expect(moveEvent!.clientX).toBe(80);
+    expect(moveEvent!.clientY).toBe(90);
+    expect(upEvent).toBeDefined();
+    expect(upEvent!.clientX).toBe(80);
+    expect(upEvent!.clientY).toBe(90);
+  });
+});
+
+describe('debug bridge focus_element', () => {
+  // step-9 RED → step-10 GREEN
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('happy: focuses element by testId', async () => {
+    const input = document.createElement('input');
+    input.setAttribute('data-testid', 'fld');
+    document.body.appendChild(input);
+
+    const result = await dispatchCmd(5301, 'focus_element', { testId: 'fld' });
+    expect(result.ok).toBe(true);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('missing testId returns {error}', async () => {
+    const result = await dispatchCmd(5302, 'focus_element', {});
+    expect(result.error).toBe('testId is required');
+  });
+
+  it('element not found returns {error}', async () => {
+    const result = await dispatchCmd(5303, 'focus_element', { testId: 'no-such-element' });
+    expect(typeof result.error).toBe('string');
+  });
+});
+
+describe('debug bridge scroll', () => {
+  // step-11 RED → step-12 GREEN
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('DOM mode: sets scrollTop/scrollLeft on element by testId', async () => {
+    const panel = document.createElement('div');
+    panel.setAttribute('data-testid', 'panel');
+    document.body.appendChild(panel);
+    // jsdom's native scrollTop is a no-op — make it writable
+    Object.defineProperty(panel, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(panel, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+
+    const result = await dispatchCmd(5401, 'scroll', { testId: 'panel', top: 120, left: 30 });
+    expect(result.ok).toBe(true);
+    expect(result.scrollTop).toBe(120);
+    expect(result.scrollLeft).toBe(30);
+    expect((panel as any).scrollTop).toBe(120);
+  });
+
+  it('editor mode: scrolls CodeMirror scrollDOM', async () => {
+    const scrollDOM = document.createElement('div');
+    Object.defineProperty(scrollDOM, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(scrollDOM, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+    // Wire editorView into the debug context
+    (window as any).__REIFY_DEBUG__.editorView = { scrollDOM } as any;
+
+    const result = await dispatchCmd(5402, 'scroll', { target: 'editor', top: 80 });
+    expect(result.ok).toBe(true);
+    expect(result.scrollTop).toBe(80);
+    expect((scrollDOM as any).scrollTop).toBe(80);
+  });
+
+  it('editor mode with no editorView returns {error}', async () => {
+    // editorView is not set (default makeStores() has none)
+    const result = await dispatchCmd(5403, 'scroll', { target: 'editor', top: 50 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('neither testId nor target returns {error}', async () => {
+    const result = await dispatchCmd(5404, 'scroll', { top: 100 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('DOM mode: testId not found returns {error}', async () => {
+    const result = await dispatchCmd(5405, 'scroll', { testId: 'no-such-panel', top: 50 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('DOM mode: NaN top returns {error}', async () => {
+    // isFiniteNumber guard: NaN silently coerces to 0 without this check.
+    const panel = document.createElement('div');
+    panel.setAttribute('data-testid', 'panel-nan');
+    document.body.appendChild(panel);
+    Object.defineProperty(panel, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    const result = await dispatchCmd(5406, 'scroll', { testId: 'panel-nan', top: NaN });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('editor mode: Infinity left returns {error}', async () => {
+    // isFiniteNumber guard: ±Infinity silently coerces to 0 without this check.
+    const scrollDOM = document.createElement('div');
+    Object.defineProperty(scrollDOM, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(scrollDOM, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+    (window as any).__REIFY_DEBUG__.editorView = { scrollDOM } as any;
+    const result = await dispatchCmd(5407, 'scroll', { target: 'editor', left: Infinity });
+    expect(typeof result.error).toBe('string');
+  });
 });

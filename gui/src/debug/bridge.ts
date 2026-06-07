@@ -40,6 +40,36 @@ function validVec3(v: unknown): v is [number, number, number] {
   );
 }
 
+/** Returns true iff n is a finite number (not NaN, not ±Infinity). */
+function isFiniteNumber(n: unknown): n is number {
+  return typeof n === 'number' && Number.isFinite(n);
+}
+
+/** Returns true iff v is a plain object with finite x and y. */
+function validXY(v: unknown): v is { x: number; y: number } {
+  if (v === null || typeof v !== 'object') return false;
+  const o = v as Record<string, unknown>;
+  return isFiniteNumber(o.x) && isFiniteNumber(o.y);
+}
+
+/**
+ * Dispatch a synthetic pointer/mouse event on `target` carrying clientX/clientY.
+ *
+ * Uses PointerEvent when available (real browser), falls back to MouseEvent in
+ * jsdom (which lacks the PointerEvent constructor). The event TYPE string —
+ * not the constructor class — determines which listeners fire, so a MouseEvent
+ * dispatched as 'pointerdown' still triggers pointerdown listeners (debugContract
+ * .test.ts:340 / selection.test.ts pattern). Both PointerEvent and MouseEvent
+ * accept clientX/clientY in their init dict, so coordinates propagate correctly.
+ */
+function dispatchPointer(target: Element, type: string, x: number, y: number): void {
+  const init = { clientX: x, clientY: y, bubbles: true, cancelable: true };
+  const evt: Event = typeof PointerEvent === 'function'
+    ? new PointerEvent(type, init)
+    : new MouseEvent(type, init);
+  target.dispatchEvent(evt);
+}
+
 /**
  * Resolve which DebugViewport to target for a given command invocation.
  *
@@ -698,6 +728,101 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       });
       (document.activeElement ?? document.body).dispatchEvent(event);
       return { ok: true };
+    },
+
+    // --- I1: Synthetic pointer/scroll/focus tools (task-4299) ---
+    // NOTE (contract §4 fidelity): these tools fire JS handlers (onClick,
+    // onPointerDown, etc.) but do NOT apply CSS :hover/:active pseudo-classes
+    // and do NOT trigger native OS hit-testing. document.elementFromPoint is
+    // used for target resolution. See docs/debug-mcp-contract.md §4 for the
+    // full fidelity-gaps table.
+
+    click_at: (params) => {
+      if (!validXY(params)) return { error: 'x and y must be finite numbers' };
+      const { x, y } = params as { x: number; y: number };
+      const el = document.elementFromPoint(x, y);
+      if (!el) return { error: `no element at point (${x}, ${y})` };
+      // Dispatch synthetic pointer sequence: pointerdown → pointerup → click.
+      // Each event carries clientX/clientY (contract §3 coordinate convention).
+      // Contract §4: fires JS handlers; CSS :hover/:active NOT applied.
+      dispatchPointer(el, 'pointerdown', x, y);
+      dispatchPointer(el, 'pointerup', x, y);
+      dispatchPointer(el, 'click', x, y);
+      return { ok: true, target: { tagName: el.tagName.toLowerCase(), testId: el.getAttribute('data-testid') } };
+    },
+
+    hover: (params) => {
+      if (!validXY(params)) return { error: 'x and y must be finite numbers' };
+      const { x, y } = params as { x: number; y: number };
+      const el = document.elementFromPoint(x, y);
+      if (!el) return { error: `no element at point (${x}, ${y})` };
+      // Dispatch synthetic move events: pointermove then mousemove.
+      // Contract §4: fires JS move handlers; CSS :hover pseudo-class NOT applied.
+      dispatchPointer(el, 'pointermove', x, y);
+      dispatchPointer(el, 'mousemove', x, y);
+      return { ok: true, target: { tagName: el.tagName.toLowerCase(), testId: el.getAttribute('data-testid') } };
+    },
+
+    drag: (params) => {
+      if (!validXY(params.from)) return { error: 'from must be an object with finite x and y' };
+      if (!validXY(params.to)) return { error: 'to must be an object with finite x and y' };
+      const from = params.from as { x: number; y: number };
+      const to = params.to as { x: number; y: number };
+      const elFrom = document.elementFromPoint(from.x, from.y);
+      if (!elFrom) return { error: `no element at from point (${from.x}, ${from.y})` };
+      // elTo falls back to elFrom when the destination resolves to null (e.g. off-canvas).
+      const elTo = document.elementFromPoint(to.x, to.y) ?? elFrom;
+      // Synthetic pointer-move drag: pointerdown+mousedown at from, pointermove at to,
+      // pointerup+mouseup at to (all with matching clientX/clientY).
+      // Contract §4: NO native HTML5 drag-and-drop — dragstart/drop are NOT fired.
+      dispatchPointer(elFrom, 'pointerdown', from.x, from.y);
+      dispatchPointer(elFrom, 'mousedown', from.x, from.y);
+      dispatchPointer(elTo, 'pointermove', to.x, to.y);
+      dispatchPointer(elTo, 'pointerup', to.x, to.y);
+      dispatchPointer(elTo, 'mouseup', to.x, to.y);
+      return { ok: true, from, to };
+    },
+
+    focus_element: (params) => {
+      const testId = params.testId as string;
+      if (!testId) return { error: 'testId is required' };
+      // CSS.escape fallback for jsdom — mirrors buildSelectorPredicate (:175-177).
+      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(testId)
+        : testId.replace(/["\\]/g, '\\$&');
+      const el = document.querySelector(`[data-testid="${escaped}"]`);
+      if (!el) return { error: `element with data-testid="${testId}" not found` };
+      (el as HTMLElement).focus();
+      return { ok: true };
+    },
+
+    scroll: (params) => {
+      if (params.target === 'editor') {
+        // Editor mode: scroll the CodeMirror EditorView's scrollDOM.
+        const view = ctx.editorView;
+        if (!view) return { error: 'editor view not ready' };
+        const sd = view.scrollDOM;
+        // Reject non-finite offsets (NaN, ±Infinity) — consistent with isFiniteNumber/validXY guards.
+        if (params.top !== undefined && !isFiniteNumber(params.top)) return { error: 'top must be a finite number' };
+        if (params.left !== undefined && !isFiniteNumber(params.left)) return { error: 'left must be a finite number' };
+        if (isFiniteNumber(params.top)) sd.scrollTop = params.top;
+        if (isFiniteNumber(params.left)) sd.scrollLeft = params.left;
+        return { ok: true, scrollTop: sd.scrollTop, scrollLeft: sd.scrollLeft };
+      }
+      // DOM mode: scroll an element resolved by data-testid.
+      const testId = params.testId as string;
+      if (!testId) return { error: 'testId or target:"editor" is required' };
+      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+        ? CSS.escape(testId)
+        : testId.replace(/["\\]/g, '\\$&');
+      const el = document.querySelector(`[data-testid="${escaped}"]`) as HTMLElement | null;
+      if (!el) return { error: `element with data-testid="${testId}" not found` };
+      // Reject non-finite offsets (NaN, ±Infinity) — consistent with isFiniteNumber/validXY guards.
+      if (params.top !== undefined && !isFiniteNumber(params.top)) return { error: 'top must be a finite number' };
+      if (params.left !== undefined && !isFiniteNumber(params.left)) return { error: 'left must be a finite number' };
+      if (isFiniteNumber(params.top)) el.scrollTop = params.top;
+      if (isFiniteNumber(params.left)) el.scrollLeft = params.left;
+      return { ok: true, scrollTop: el.scrollTop, scrollLeft: el.scrollLeft };
     },
 
     select_entity: (params) => {
