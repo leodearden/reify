@@ -2513,6 +2513,7 @@ pub(crate) fn try_eval_topology_selector(
         "perimeter" => TopologySelectorHelper::Perimeter,
         "distance" => TopologySelectorHelper::Distance,
         "intersects" => TopologySelectorHelper::Intersects,
+        "split" => TopologySelectorHelper::Split,
         _ => return None,
     };
 
@@ -2584,7 +2585,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Length
                 | TopologySelectorHelper::Perimeter
                 | TopologySelectorHelper::Distance
-                | TopologySelectorHelper::Intersects => {
+                | TopologySelectorHelper::Intersects
+                | TopologySelectorHelper::Split => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -2878,6 +2880,67 @@ pub(crate) fn try_eval_topology_selector(
                 None => Some(reify_ir::Value::Undef),
             }
         }
+        TopologySelectorHelper::Split => {
+            // `split(solid, plane) -> List<Geometry>` (task 4190, PRD ζ).
+            //
+            // args[0]: solid ValueRef → values map → full parent GeometryHandle.
+            //   Resolved via `resolve_parent_geometry_handle_arg` so we get the
+            //   parent's realization_ref + upstream_values_hash for sub-handle
+            //   construction (PRD §4).  Falls through to None when the arg cell
+            //   is not yet a hydrated Value::GeometryHandle (PRD invariant #2:
+            //   never partially construct a sub-handle).
+            // args[1]: plane ValueRef → values map → Value::Plane.
+            //   Decoded via `decode_plane` → (plane_origin, plane_normal [f64;3]).
+            //   Falls through to None when args[1] is not a Value::Plane (wrong
+            //   variant, unresolved, Undef, etc.) — same fall-through contract.
+            // Dispatch: `GeometryKernel::execute_split(&GeometryOp::Split{..})`.
+            //   On Ok(ids): build Value::List via make_sub_handle(SubKind::Solid).
+            //   On Err: emit Warning diagnostic, return Some(Value::Undef).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+
+            // Resolve and decode the plane arg.
+            let plane_cell_id = match &args[1].kind {
+                reify_ir::CompiledExprKind::ValueRef(id) => id,
+                _ => return None,
+            };
+            let plane_val = values.get(plane_cell_id)?;
+            let (plane_origin, plane_normal) = match decode_plane(plane_val) {
+                Ok(pair) => pair,
+                Err(_) => return None,
+            };
+
+            let op = reify_ir::GeometryOp::Split {
+                target: parent_kernel_handle,
+                plane_origin,
+                plane_normal,
+            };
+            match kernel.execute_split(&op) {
+                Ok(piece_ids) => {
+                    let elements = piece_ids
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, piece_kernel_id)| {
+                            crate::topology_selectors::make_sub_handle(
+                                &parent_rr,
+                                &parent_hash,
+                                crate::topology_selectors::SubKind::Solid,
+                                i as u32,
+                                piece_kernel_id,
+                            )
+                        })
+                        .collect();
+                    Some(reify_ir::Value::List(elements))
+                }
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{}({:?}): kernel error: {}",
+                        function.name, parent_kernel_handle, err
+                    )));
+                    Some(reify_ir::Value::Undef)
+                }
+            }
+        }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → values map → full parent GeometryHandle.
             // The parent's realization_ref + upstream_values_hash are needed to
@@ -2915,7 +2978,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Length
                 | TopologySelectorHelper::Perimeter
                 | TopologySelectorHelper::Distance
-                | TopologySelectorHelper::Intersects => {
+                | TopologySelectorHelper::Intersects
+                | TopologySelectorHelper::Split => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -3352,6 +3416,15 @@ fn dispatch_filtered_subhandles(
     let canonical = match sub_kind {
         crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
         crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
+        // SubKind::Solid is only used by the Split dispatch arm, which calls
+        // execute_split directly — it never reaches dispatch_filtered_subhandles.
+        crate::topology_selectors::SubKind::Solid => {
+            unreachable!(
+                "dispatch_filtered_subhandles called with SubKind::Solid — \
+                 split pieces are handled by the Split arm via execute_split, \
+                 not through the filter-subhandle path"
+            )
+        }
     };
     let canonical = match canonical {
         Ok(ids) => ids,
@@ -3531,6 +3604,25 @@ enum TopologySelectorHelper {
     /// before enabling the parity gate.  See also the "Known parity divergence"
     /// section in `crates/reify-kernel-manifold/src/queries.rs::intersects`.
     Intersects,
+    /// `split(solid, plane) -> List<Geometry>` — split a solid into pieces by
+    /// an unbounded planar cutting tool (task 4190, PRD ζ).
+    ///
+    /// Backed by `GeometryKernel::execute_split` →
+    /// `BRepAlgoAPI_Splitter` (OCCT kernel). A non-intersecting plane yields a
+    /// length-1 list containing the original solid unchanged.
+    ///
+    /// args[0]: solid `Value::GeometryHandle` (resolved from `values` via
+    ///   `resolve_parent_geometry_handle_arg`, providing the parent
+    ///   realization_ref + hash for sub-handle construction).
+    /// args[1]: cutting plane `Value::Plane` (resolved from `values`, decoded
+    ///   via `decode_plane` into (origin, unit_normal)).
+    ///
+    /// Each result piece is stored as a `Value::GeometryHandle` sub-handle via
+    /// `make_sub_handle` with `SubKind::Solid` (0x03) — domain-separated from
+    /// edge (0x01) and face (0x02) hashes.  On kernel error emits a Warning
+    /// diagnostic and returns `Some(Value::Undef)`.  Non-Plane args[1] or
+    /// unhydrated args[0] fall through to `None`.
+    Split,
 }
 
 impl TopologySelectorHelper {
@@ -3554,7 +3646,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::Normal
             | TopologySelectorHelper::Curvature
             | TopologySelectorHelper::Distance
-            | TopologySelectorHelper::Intersects => 2,
+            | TopologySelectorHelper::Intersects
+            | TopologySelectorHelper::Split => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
             | TopologySelectorHelper::Length
@@ -3589,6 +3682,15 @@ fn dispatch_extract_subshapes(
     let result = match sub_kind {
         crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
         crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
+        // SubKind::Solid is only used by the Split dispatch arm, which calls
+        // execute_split directly and does NOT go through dispatch_extract_subshapes.
+        crate::topology_selectors::SubKind::Solid => {
+            unreachable!(
+                "dispatch_extract_subshapes called with SubKind::Solid — \
+                 split pieces are produced via execute_split in the Split arm, \
+                 not through the extract-subshapes path"
+            )
+        }
     };
     match result {
         Ok(sub_ids) => {
