@@ -8,6 +8,7 @@
 
 | Section | Guarding test |
 |---------|--------------|
+| §0 Shipped tool surface + parity | `debugParity.test.ts` — tool_defs↔buildHandlers parity |
 | §1 Tool-def → dispatch → handler wiring | [step-3] `debugContract.test.ts` — error-envelope + wiring |
 | §2 JSON error envelope | [step-3] same file |
 | §3 Coordinate convention | [step-5] `debugContract.test.ts` — coordinate convention |
@@ -16,6 +17,50 @@
 
 The Rust transport seam (query\_frontend ↔ resolve round-trip) is validated
 separately by `gui/src-tauri/src/tests/debug_boundary_tests.rs` (steps 1–2).
+
+---
+
+## §0 Shipped tool surface
+
+### Source of truth
+
+**`tool_defs()` in `gui/src-tauri/src/debug_server.rs`** is the canonical,
+authoritative list of advertised MCP tools (currently **56**).  Every `ToolDef`
+entry there becomes visible to MCP clients via `tools/list`.
+
+Do **not** maintain a separate exhaustive list here — that list would itself be
+a drift surface.  The invariant is enforced at test time (see below).
+
+### At-a-glance grouping (illustrative — tool\_defs() is authoritative)
+
+| Group | Tools |
+|-------|-------|
+| Liveness / engine | `health`, `engine_state`, `mesh_stats`, `morph_stats`, `mesh_morph_stats`, `load_fixture` |
+| Screenshots | `screenshot`, `screenshot_window`, `element_screenshot` |
+| DOM / style / layout / window | `dom_query`, `query_selector`, `query_selector_all`, `get_computed_style`, `get_layout_metrics`, `active_element`, `list_elements`, `get_window_state`, `ui_outline` |
+| Interaction | `click_element`, `click_at`, `type_in_editor`, `keyboard`, `press_tab`, `tab_order`, `focus_element`, `scroll`, `drag`, `hover`, `hover_at`, `orbit_camera`, `pan_camera`, `zoom_camera`, `resize_panes`, `set_window_size` |
+| Viewport / selection | `viewport_state`, `select_entity`, `pick_entity_at`, `fit_to_view`, `set_camera`, `set_test_mode` |
+| Editor / LSP | `editor_content`, `open_file`, `completion_at`, `definition_at` |
+| Menus | `open_menu`, `menu_state` |
+| Tree | `expand_tree_node`, `collapse_tree_node` |
+| Diagnostics / wait / state | `get_diagnostics`, `inject_diagnostics`, `reset_app_state`, `list_console_errors`, `store_state`, `wait_for`, `wait_for_idle`, `wait_for_selector` |
+
+### REST-only handlers (not advertised in tools/list)
+
+`clear_selection` and `toggle_select` are reachable via the REST endpoint and
+have TS handlers in `buildHandlers()`, but intentionally have **no** `ToolDef`
+entry and therefore do **not** appear in `tools/list`.
+
+### Automated drift guard
+
+`gui/src/__tests__/debugParity.test.ts` enforces:
+- Every frontend-mediated `tool_def` has a `buildHandlers()` entry (no runtime
+  "unknown command" errors).
+- Every `buildHandlers()` entry is either advertised in `tool_defs()` or listed
+  in the documented `REST_ONLY_HANDLERS` allowlist.
+- The two allowlists (`PURE_ENGINE_SIDE`, `REST_ONLY_HANDLERS`) are self-checked
+  — each entry must actually exhibit its asymmetry, so a stale allowlist cannot
+  silently mask real drift.
 
 ---
 
@@ -178,7 +223,7 @@ This is the same frame as `Element.getBoundingClientRect()` and `MouseEvent.clie
 ```
 bounds = get_layout_metrics(selector).bounds
 center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
-click_at(center)      ← I1 (future tool, wraps synthetic PointerEvent at clientX/clientY)
+click_at(center)      # dispatches synthetic PointerEvent at clientX/clientY
   → element's JS click handler fires with event.clientX === center.x
 ```
 
@@ -191,8 +236,9 @@ then proves the derived center `(140, 70)` fires the element's click handler.
 
 - This convention is validated **arithmetically** in the unit tests.  The live
   `document.elementFromPoint(centerX, centerY)` hit-test (OS layout + compositing)
-  is deferred to `click_at` (I1)'s real-GUI e2e scenario, which depends on H0 and
-  the complete viewport being rendered.
+  is a synthetic-event fidelity gap: `click_at` dispatches a `PointerEvent` via
+  `dispatchEvent`, which fires JS handlers but does not involve OS hit-testing
+  (see §4).  Real-GUI e2e tests verify full OS compositing end-to-end.
 - The canvas (viewport) coordinate frame is the same CSS-pixel frame: the NDC
   conversion in `createSelection` uses `rect = canvas.getBoundingClientRect()` as
   its origin (see §5).
@@ -233,9 +279,9 @@ not that any CSS changed.
 
 ## §5 pick\_entity\_at ↔ raycast convention
 
-`pick_entity_at` (I2, future tool) answers: *which Three.js entity is under screen
-pixel (clientX, clientY)?*  It wraps the **same** `createSelection` + `Raycaster`
-path that is used for interactive mouse selection.
+`pick_entity_at` answers: *which Three.js entity is under screen pixel (clientX, clientY)?*
+It wraps the **same** `createSelection` + `Raycaster` path that is used for interactive
+mouse selection.
 
 ### NDC formula
 
@@ -280,5 +326,4 @@ real `PerspectiveCamera` at `(0, 0, 5)` looking toward the origin, places a
 - far corner `(5, 5)` → NDC `≈ (-0.988, +0.983)` → misses box →
   `onSelect(null)`
 
-This pins the screen→NDC→raycast convention before `pick_entity_at` (I2) is
-built on top of it.
+This pins the screen→NDC→raycast convention that `pick_entity_at` is built on top of.
