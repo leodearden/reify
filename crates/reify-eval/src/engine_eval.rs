@@ -2641,7 +2641,9 @@ impl Engine {
             .is_some();
 
         for template in &module.templates {
-            // First pass: evaluate Param defaults, Auto cells, (or use overrides)
+            // Pre-seed Auto cells (unchanged; processed separately before the
+            // unified Param+Let pass so Auto leaves are visible to topo-ordered
+            // Param/Let expression evaluation — mirrors eval()'s Auto pre-seed).
             for cell in &template.value_cells {
                 if cell.kind.is_auto() {
                     let node_id = NodeId::Value(cell.id.clone());
@@ -2734,220 +2736,320 @@ impl Engine {
                     }
 
                     values.insert(cell.id.clone(), val);
-                } else if cell.kind == ValueCellKind::Param {
-                    let node_id = NodeId::Value(cell.id.clone());
-
-                    // Validate the override once, storing both the &Value borrow and the
-                    // Result — no unconditional clone.
-                    //
-                    // The amend bdf65905d (task 2267) previously hoisted both the clone and the
-                    // validation into a single `override_check: Option<(Value, Result<...>)>`
-                    // binding so that the diagnostic pre-check and the cache-miss match could share
-                    // the validated result.  That sharing was correct in intent, but it
-                    // unconditionally cloned the Value on EVERY Param cell visit — including the
-                    // LSP-keystroke fast-path where the cloned value is immediately dropped.
-                    //
-                    // Task 2273 separates the two concerns:
-                    //   • validation result  → stored in `override_entry.1` (no clone needed)
-                    //   • value access       → `override_entry.0` holds a &Value borrow, valid for
-                    //                          the duration of this Param branch (param_overrides is
-                    //                          not mutated here).  one .clone() only in the cache-miss
-                    //                          Ok(()) arm — the previous shape cloned on every Param
-                    //                          cell visit even on the LSP fast-path.
-                    let override_entry: Option<(&Value, Result<(), ParamOverrideRejection>)> = self
-                        .param_overrides
-                        .get(&cell.id)
-                        .map(|v| (v, validate_param_override(v, &cell.cell_type)));
-
-                    // Unconditional override-validation diagnostic pre-check.
-                    // Mirrors the step-10/step-11 pattern from task 2259: the solver pass and
-                    // cycle-detection both run unconditionally regardless of cache state. The
-                    // architectural rule is that any diagnostic which must surface on every LSP
-                    // keystroke must run BEFORE any cache fast-path or cache-reuse short-circuit.
-                    // Without this pre-check a same-version repeat call hits try_fast_path,
-                    // returns the cached fallback, and the validation warning is silently dropped.
-                    // See regression tests: eval_cached_repeat_call_re_emits_param_override_*
-                    // (task-2267 step-1 / step-3).
-                    if let Some((override_val, Err(rej))) = &override_entry {
-                        emit_param_override_rejection_warning(
-                            &mut diagnostics,
-                            &cell.id,
-                            &cell.cell_type,
-                            override_val,
-                            rej,
-                            &mut self.last_param_override_type_kind_rejections,
-                            &mut self.last_param_override_dimension_rejections,
-                        );
-                    }
-
-                    // Check version fast path
-                    if let Some(CachedResult::Value(val, _)) =
-                        self.cache.try_fast_path(&node_id, version)
-                    {
-                        self.journal.record(EvalEvent {
-                            timestamp: Instant::now(),
-                            node_id,
-                            kind: EventKind::CacheHit,
-                            version,
-                            payload: None,
-                        });
-                        values.insert(cell.id.clone(), val);
-                        stats.cache_hits += 1;
-                        continue;
-                    }
-
-                    // Check if cache entry still exists and is not dirty.
-                    // For params without overrides, we can reuse cached values.
-                    // Preserve existing freshness (Failed/Pending) — see the
-                    // let-cell block comment for rationale (arch §7.1/§9.2).
-                    if !self.param_overrides.contains_key(&cell.id)
-                        && !self.cache.is_dirty(&node_id)
-                        && let Some(entry) = self.cache.get(&node_id)
-                        && let CachedResult::Value(ref val, _) = entry.result
-                    {
-                        let val = val.clone();
-                        let preserved_freshness = entry.freshness.clone();
-                        values.insert(cell.id.clone(), val);
-                        let trace = entry.dependency_trace.clone();
-                        let result = entry.result.clone();
-                        self.cache.record_evaluation_with_freshness(
-                            node_id.clone(),
-                            result,
-                            version,
-                            trace,
-                            preserved_freshness,
-                        );
-                        self.journal.record(EvalEvent {
-                            timestamp: Instant::now(),
-                            node_id,
-                            kind: EventKind::CacheHit,
-                            version,
-                            payload: None,
-                        });
-                        stats.cache_hits += 1;
-                        continue;
-                    }
-
-                    stats.cache_misses += 1;
-
-                    let start = Instant::now();
-                    self.journal.record(EvalEvent {
-                        timestamp: start,
-                        node_id: node_id.clone(),
-                        kind: EventKind::Started,
-                        version,
-                        payload: None,
-                    });
-
-                    // Use override if available (with validation), otherwise evaluate default.
-                    // Reuses `override_entry` computed above — no second call to validate_param_override.
-                    // Mirrors eval() lines 603-622: on mismatch fall back to default.
-                    //
-                    // `default_or` is parameterised by the DeterminacyState to use when there is
-                    // no default expression: `Undetermined` for the rejected-override arm (mirrors
-                    // eval()'s DeterminacyState path) and `Determined` for the no-override arm.
-                    // This eliminates the duplicated `if cell.default_expr { … } else { … }` block.
-                    //
-                    // `Some((override_val, Ok(())))` is the only site that clones: the &Value
-                    // borrow is moved out of override_entry and cloned here to produce the owned
-                    // Value written to the cache.  Validate-once invariant is preserved — the
-                    // Result in override_entry.1 is the same one computed at the top.
-                    let default_or =
-                        |no_default_state: DeterminacyState| -> (Value, DeterminacyState) {
-                            if let Some(ref expr) = cell.default_expr {
-                                (
-                                    reify_expr::eval_expr(
-                                        expr,
-                                        &eval_ctx_with_meta(
-                                            &values,
-                                            &self.functions,
-                                            &self.meta_map,
-                                        ),
-                                    ),
-                                    DeterminacyState::Determined,
-                                )
-                            } else {
-                                (reify_ir::Value::Undef, no_default_state)
-                            }
-                        };
-                    let (val, det) = match override_entry {
-                        Some((override_val, Ok(()))) => {
-                            (override_val.clone(), DeterminacyState::Determined)
-                        }
-                        Some((_, Err(_))) => {
-                            // Diagnostic already pushed by the unconditional pre-check above.
-                            // Fall back to default; Undetermined if no default (mirrors eval()).
-                            default_or(DeterminacyState::Undetermined)
-                        }
-                        None => default_or(DeterminacyState::Determined),
-                    };
-
-                    // Build dependency trace (params have no reads - they are roots)
-                    let trace = DependencyTrace::default();
-
-                    let cached_result = CachedResult::Value(val.clone(), det);
-                    let outcome = self.cache.record_evaluation(
-                        node_id.clone(),
-                        cached_result,
-                        version,
-                        trace,
-                    );
-
-                    self.journal.record(EvalEvent {
-                        timestamp: Instant::now(),
-                        node_id,
-                        kind: EventKind::Completed { outcome },
-                        version,
-                        payload: Some(EventPayload::Duration(start.elapsed())),
-                    });
-
-                    if outcome == EvalOutcome::Unchanged {
-                        stats.early_cutoffs += 1;
-                    }
-
-                    values.insert(cell.id.clone(), val);
                 }
             }
 
-            // Cycle detection + topological ordering for the second (Let) pass.
-            // `detect_let_cycle` builds let_cells, let_traces, and sorted_lets, emitting
-            // the circular-dependency diagnostic if any cycle is found.  Mirroring
-            // evaluate_let_bindings() ordering fixes forward-reference resolution in
-            // eval_cached (previously let cells evaluated in declaration order only).
-            // `let_traces` is reused in the cache-miss arm below to avoid recomputing
-            // `extract_dependency_trace` for each let cell; `_let_cells` is unused here
-            // (eval_cached uses `cell.default_expr` directly).
-            let (_let_cells, let_traces, sorted_lets) =
-                detect_let_cycle(template, &mut diagnostics);
+            // Unified single-pass evaluation of Param+Let cells in dependency order (§8.2).
+            // Mirrors evaluate_params_and_lets_unified but preserves eval_cached's per-cell
+            // cache fast-path / try_fast_path / is_dirty / record_evaluation_with_freshness
+            // semantics while reordering Param+Let evaluation by data dependency over Auto
+            // leaves (pre-seeded above).
+            //
+            // This replaces the old kind-partitioned two-pass:
+            //   - pass 1: Param cells evaluated in declaration order (before lets in values)
+            //   - pass 2: detect_let_cycle + let cells in topo order
+            // with a single combined-graph topological sort so a param default correctly
+            // observes any sibling let it reads (spec §8.2 order-independence).
+            {
+                // ── Build combined Param+Let dependency graph ─────────────────────────
+                let mut combined_nodes: HashSet<NodeId> = HashSet::new();
+                let mut combined_traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
 
-            // Second pass: evaluate Let bindings in topological order.
-            // Cyclic cells (absent from sorted_lets) are intentionally skipped — the
-            // diagnostic emitted by detect_let_cycle is the only effect of cycle
-            // detection. Forward-reference lookups for cyclic cells would produce
-            // Undef-derived garbage that, if persisted, would corrupt the cache
-            // fast-path on subsequent calls and diverge eval_result.values from
-            // eval()'s shape.
-            let ordered_let_cells: Vec<&ValueCellDecl> = sorted_lets
-                .iter()
-                .filter_map(|nid| match nid {
-                    NodeId::Value(vcid) => template.value_cells.iter().find(|c| &c.id == vcid),
-                    _ => None,
-                })
-                .collect();
-
-            for cell in ordered_let_cells {
-                if let Some(ref expr) = cell.default_expr {
+                for cell in &template.value_cells {
+                    if cell.kind.is_auto() {
+                        continue;
+                    }
                     let node_id = NodeId::Value(cell.id.clone());
+                    match cell.kind {
+                        ValueCellKind::Param => {
+                            // ALL param cells enter the dependency graph, including
+                            // no-override/no-default params (they become leaves with an empty
+                            // trace). The evaluation loop's `None => default_or(Determined)`
+                            // branch writes (Undef, Determined) for them, preserving the
+                            // eval_cached "always writes a result" contract (asymmetric with
+                            // eval()'s PARTIAL-MAP skip).
+                            let trace = cell
+                                .default_expr
+                                .as_ref()
+                                .map(|e| extract_dependency_trace(e))
+                                .unwrap_or_default();
+                            combined_nodes.insert(node_id.clone());
+                            combined_traces.insert(node_id, trace);
+                        }
+                        ValueCellKind::Let => {
+                            if let Some(ref expr) = cell.default_expr {
+                                combined_nodes.insert(node_id.clone());
+                                combined_traces.insert(node_id, extract_dependency_trace(expr));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
 
-                    // Check version fast path
-                    if let Some(CachedResult::Value(val, _)) =
-                        self.cache.try_fast_path(&node_id, version)
-                    {
-                        self.journal.record(EvalEvent {
-                            timestamp: Instant::now(),
-                            node_id,
-                            kind: EventKind::CacheHit,
-                            version,
+                // ── Topological sort of combined graph ────────────────────────────────
+                let sorted_combined = topological_sort(&combined_nodes, &combined_traces);
+
+                // ── Cross-kind cycle detection ────────────────────────────────────────
+                // (same two-tier logic as evaluate_params_and_lets_unified)
+                if sorted_combined.len() < combined_nodes.len() {
+                    let sorted_combined_set: HashSet<&NodeId> = sorted_combined.iter().collect();
+
+                    // 4a — let-only subgraph cycle check.
+                    let let_node_ids: HashSet<NodeId> = template
+                        .value_cells
+                        .iter()
+                        .filter(|c| c.kind == ValueCellKind::Let && c.default_expr.is_some())
+                        .map(|c| NodeId::Value(c.id.clone()))
+                        .collect();
+                    let mut let_only_cyclic: HashSet<&NodeId> = HashSet::new();
+                    if !let_node_ids.is_empty() {
+                        let let_traces_check: HashMap<NodeId, DependencyTrace> = combined_traces
+                            .iter()
+                            .filter(|(k, _)| let_node_ids.contains(*k))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        let sorted_lets_check =
+                            topological_sort(&let_node_ids, &let_traces_check);
+                        if sorted_lets_check.len() < let_node_ids.len() {
+                            let sorted_let_set: HashSet<&NodeId> =
+                                sorted_lets_check.iter().collect();
+                            let mut cyclic_members: Vec<&str> = let_node_ids
+                                .iter()
+                                .filter(|nid| !sorted_let_set.contains(nid))
+                                .filter_map(|nid| match nid {
+                                    NodeId::Value(vcid) => Some(vcid.member.as_str()),
+                                    _ => None,
+                                })
+                                .collect();
+                            for nid in let_node_ids.iter() {
+                                if !sorted_let_set.contains(nid) {
+                                    let_only_cyclic.insert(nid);
+                                }
+                            }
+                            cyclic_members.sort();
+                            diagnostics.push(Diagnostic::error(format!(
+                                "circular let-binding dependency in template {}: [{}]",
+                                template.name,
+                                cyclic_members.join(", "),
+                            )));
+                        }
+                    }
+
+                    // 4b — cross-kind cycle.
+                    let cross_kind_cyclic: Vec<&str> = combined_nodes
+                        .iter()
+                        .filter(|nid| {
+                            !sorted_combined_set.contains(nid) && !let_only_cyclic.contains(nid)
+                        })
+                        .filter_map(|nid| match nid {
+                            NodeId::Value(vcid) => Some(vcid.member.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    if !cross_kind_cyclic.is_empty() {
+                        let mut members = cross_kind_cyclic;
+                        members.sort();
+                        diagnostics.push(Diagnostic::error(format!(
+                            "circular dependency in template {}: [{}]",
+                            template.name,
+                            members.join(", "),
+                        )));
+                    }
+                }
+
+                // ── Evaluate in topological order with cache fast-paths ────────────────
+                for node_id in sorted_combined {
+                    let cell_id = match &node_id {
+                        NodeId::Value(vcid) => vcid.clone(),
+                        _ => continue,
+                    };
+                    let cell = match template.value_cells.iter().find(|c| c.id == cell_id) {
+                        Some(c) => c,
+                        None => continue,
+                    };
+
+                    match cell.kind {
+                        // ── Param cell ────────────────────────────────────────────────
+                        ValueCellKind::Param => {
+                            // Validate the override once, storing both the &Value borrow and the
+                            // Result — no unconditional clone.
+                            //
+                            // The amend bdf65905d (task 2267) previously hoisted both the clone
+                            // and the validation into a single `override_check: Option<(Value,
+                            // Result<...>)>` binding so that the diagnostic pre-check and the
+                            // cache-miss match could share the validated result. That sharing was
+                            // correct in intent, but it unconditionally cloned the Value on EVERY
+                            // Param cell visit — including the LSP-keystroke fast-path where the
+                            // cloned value is immediately dropped.
+                            //
+                            // Task 2273 separates the two concerns:
+                            //   • validation result  → stored in `override_entry.1` (no clone)
+                            //   • value access       → `override_entry.0` holds a &Value borrow,
+                            //     valid for the duration of this Param branch (param_overrides is
+                            //     Ok(()) arm — the previous shape cloned on every Param
+                            //     cell visit even on the LSP fast-path.
+                            let override_entry: Option<(
+                                &Value,
+                                Result<(), ParamOverrideRejection>,
+                            )> = self
+                                .param_overrides
+                                .get(&cell.id)
+                                .map(|v| (v, validate_param_override(v, &cell.cell_type)));
+
+                            // Unconditional override-validation diagnostic pre-check — must run
+                            // BEFORE any cache fast-path or cache-reuse short-circuit so that
+                            // rejection warnings surface on every LSP keystroke (task 2267).
+                            if let Some((override_val, Err(rej))) = &override_entry {
+                                emit_param_override_rejection_warning(
+                                    &mut diagnostics,
+                                    &cell.id,
+                                    &cell.cell_type,
+                                    override_val,
+                                    rej,
+                                    &mut self.last_param_override_type_kind_rejections,
+                                    &mut self.last_param_override_dimension_rejections,
+                                );
+                            }
+
+                            // Cache fast-path (same-version result is always fresh).
+                            if let Some(CachedResult::Value(val, _)) =
+                                self.cache.try_fast_path(&node_id, version)
+                            {
+                                self.journal.record(EvalEvent {
+                                    timestamp: Instant::now(),
+                                    node_id,
+                                    kind: EventKind::CacheHit,
+                                    version,
+                                    payload: None,
+                                });
+                                values.insert(cell.id.clone(), val);
+                                stats.cache_hits += 1;
+                                continue;
+                            }
+
+                            // Cache-reuse: not dirty + entry exists (no override).
+                            // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
+                            if !self.param_overrides.contains_key(&cell.id)
+                                && !self.cache.is_dirty(&node_id)
+                                && let Some(entry) = self.cache.get(&node_id)
+                                && let CachedResult::Value(ref val, _) = entry.result
+                            {
+                                let val = val.clone();
+                                let preserved_freshness = entry.freshness.clone();
+                                values.insert(cell.id.clone(), val);
+                                let trace = entry.dependency_trace.clone();
+                                let result = entry.result.clone();
+                                self.cache.record_evaluation_with_freshness(
+                                    node_id.clone(),
+                                    result,
+                                    version,
+                                    trace,
+                                    preserved_freshness,
+                                );
+                                self.journal.record(EvalEvent {
+                                    timestamp: Instant::now(),
+                                    node_id,
+                                    kind: EventKind::CacheHit,
+                                    version,
+                                    payload: None,
+                                });
+                                stats.cache_hits += 1;
+                                continue;
+                            }
+
+                            // Cache miss: evaluate and record.
+                            stats.cache_misses += 1;
+
+                            let start = Instant::now();
+                            self.journal.record(EvalEvent {
+                                timestamp: start,
+                                node_id: node_id.clone(),
+                                kind: EventKind::Started,
+                                version,
+                                payload: None,
+                            });
+
+                            // Evaluate default expression; mirrors the old Param branch
+                            // (task 2273 validate-once / default_or invariant).
+                            let default_or = |no_default_state: DeterminacyState| -> (
+                                Value,
+                                DeterminacyState,
+                            ) {
+                                if let Some(ref expr) = cell.default_expr {
+                                    (
+                                        reify_expr::eval_expr(
+                                            expr,
+                                            &eval_ctx_with_meta(
+                                                &values,
+                                                &self.functions,
+                                                &self.meta_map,
+                                            ),
+                                        ),
+                                        DeterminacyState::Determined,
+                                    )
+                                } else {
+                                    (reify_ir::Value::Undef, no_default_state)
+                                }
+                            };
+                            let (val, det) = match override_entry {
+                                Some((override_val, Ok(()))) => {
+                                    (override_val.clone(), DeterminacyState::Determined)
+                                }
+                                Some((_, Err(_))) => {
+                                    default_or(DeterminacyState::Undetermined)
+                                }
+                                None => default_or(DeterminacyState::Determined),
+                            };
+
+                            // Use the actual dependency trace from combined_traces so that
+                            // dirty-cone propagation marks dependents when an upstream let
+                            // changes. The old two-pass used DependencyTrace::default()
+                            // (empty) for all Params, silently breaking incremental
+                            // invalidation for param defaults that read sibling lets.
+                            let trace = combined_traces
+                                .get(&node_id)
+                                .cloned()
+                                .unwrap_or_default();
+
+                            let cached_result = CachedResult::Value(val.clone(), det);
+                            let outcome = self.cache.record_evaluation(
+                                node_id.clone(),
+                                cached_result,
+                                version,
+                                trace,
+                            );
+
+                            self.journal.record(EvalEvent {
+                                timestamp: Instant::now(),
+                                node_id,
+                                kind: EventKind::Completed { outcome },
+                                version,
+                                payload: Some(EventPayload::Duration(start.elapsed())),
+                            });
+
+                            if outcome == EvalOutcome::Unchanged {
+                                stats.early_cutoffs += 1;
+                            }
+
+                            values.insert(cell.id.clone(), val);
+                        }
+
+                        // ── Let cell ──────────────────────────────────────────────────────
+                        ValueCellKind::Let => {
+                            let expr = match &cell.default_expr {
+                                Some(e) => e,
+                                None => continue,
+                            };
+
+                            // Cache fast-path.
+                            if let Some(CachedResult::Value(val, _)) =
+                                self.cache.try_fast_path(&node_id, version)
+                            {
+                                self.journal.record(EvalEvent {
+                                    timestamp: Instant::now(),
+                                    node_id,
+                                    kind: EventKind::CacheHit,
+                                    version,
                             payload: None,
                         });
                         values.insert(cell.id.clone(), val);
@@ -2955,133 +3057,92 @@ impl Engine {
                         continue;
                     }
 
-                    // Check if cache entry still exists and is not dirty.
-                    // If so, the node's dependencies haven't changed, so we
-                    // can reuse the cached result and update its basis_version.
-                    //
-                    // Freshness preservation: use `record_evaluation_with_freshness`
-                    // with the *existing* freshness rather than `record_evaluation`
-                    // (which hard-codes `Freshness::Final`). A cell that is
-                    // `Failed { error }` or `Pending { .. }` because of a prior
-                    // computation failure must retain that state when it is not
-                    // re-evaluated — its inputs have not changed, so the failure
-                    // would recur if the cell were executed. Resetting to `Final`
-                    // would silently discard the failure state and suppress the
-                    // freshness-diagnostic block that reads these states downstream.
-                    // See arch §7.1 / §9.2 and task #2337 step-18.
-                    //
-                    // Caveat — `Pending { last_substantive }`: the "inputs have not
-                    // changed, so the failure would recur" argument is strictly correct
-                    // for `Failed` but weaker for `Pending`.  A `Pending` cell was
-                    // recorded because one of its upstreams was `Failed` at evaluation
-                    // time; that upstream's own freshness can later transition
-                    // `Failed → Final` (e.g. via `mark_failed` / `restore_final`)
-                    // without altering its `result_hash`.  If such a transition
-                    // happened without re-marking this cell dirty, we would incorrectly
-                    // preserve `Pending` even though the blocking condition has cleared.
-                    //
-                    // Soundness rests on the dirty-propagation invariant: every
-                    // production code path that mutates an upstream's freshness
-                    // pre-marks all transitive dependents dirty before `eval_cached`'s
-                    // per-cell loop runs.  Reaching this branch with
-                    // `is_dirty(node) == false` therefore proves no upstream has
-                    // transitioned since the entry was last written, and preserving
-                    // `Pending` is sound.  Enforcement sites:
-                    //
-                    //   • `crate::dirty::compute_dirty_cone` (`dirty.rs:22-41`) — BFS
-                    //     over `ReverseDependencyIndex` that yields the transitive
-                    //     dependent set of a changed-cell frontier.
-                    //   • `Engine::edit_param` (`engine_edit.rs:~840`) and
-                    //     `Engine::edit_source` (`engine_edit.rs:~1702`) — both call
-                    //     `compute_dirty_cone` and pre-mark every node in the resulting
-                    //     eval_set via `cache.mark_pending` before any per-cell
-                    //     evaluator runs.
-                    //   • `CacheStore::invalidate_dependents` (`cache.rs:~411`) —
-                    //     direct-read marking used by `set_param_and_invalidate`; the
-                    //     full `eval()` that follows rebuilds from cold, so the
-                    //     cache-reuse path is not reachable until the next
-                    //     `eval_cached` after the invalidation.
-                    if !self.cache.is_dirty(&node_id)
-                        && let Some(entry) = self.cache.get(&node_id)
-                        && let CachedResult::Value(ref val, _) = entry.result
-                    {
-                        let val = val.clone();
-                        let preserved_freshness = entry.freshness.clone();
-                        values.insert(cell.id.clone(), val);
-                        let trace = entry.dependency_trace.clone();
-                        let result = entry.result.clone();
-                        self.cache.record_evaluation_with_freshness(
-                            node_id.clone(),
-                            result,
-                            version,
-                            trace,
-                            preserved_freshness,
-                        );
-                        self.journal.record(EvalEvent {
-                            timestamp: Instant::now(),
-                            node_id,
-                            kind: EventKind::CacheHit,
-                            version,
-                            payload: None,
-                        });
-                        stats.cache_hits += 1;
-                        continue;
+                            // Cache-reuse: not dirty + entry exists.
+                            // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
+                            // See the detailed rationale in the old second-pass let-cell block.
+                            if !self.cache.is_dirty(&node_id)
+                                && let Some(entry) = self.cache.get(&node_id)
+                                && let CachedResult::Value(ref val, _) = entry.result
+                            {
+                                let val = val.clone();
+                                let preserved_freshness = entry.freshness.clone();
+                                values.insert(cell.id.clone(), val);
+                                let trace = entry.dependency_trace.clone();
+                                let result = entry.result.clone();
+                                self.cache.record_evaluation_with_freshness(
+                                    node_id.clone(),
+                                    result,
+                                    version,
+                                    trace,
+                                    preserved_freshness,
+                                );
+                                self.journal.record(EvalEvent {
+                                    timestamp: Instant::now(),
+                                    node_id,
+                                    kind: EventKind::CacheHit,
+                                    version,
+                                    payload: None,
+                                });
+                                stats.cache_hits += 1;
+                                continue;
+                            }
+
+                            // Cache miss: evaluate and record.
+                            stats.cache_misses += 1;
+                            self.cache.clear_dirty(&node_id);
+
+                            let start = Instant::now();
+                            self.journal.record(EvalEvent {
+                                timestamp: start,
+                                node_id: node_id.clone(),
+                                kind: EventKind::Started,
+                                version,
+                                payload: None,
+                            });
+
+                            let val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
+                            );
+
+                            // Use the actual trace from combined_traces (same as the eval()
+                            // unified pass; replaces the old let_traces from detect_let_cycle).
+                            let trace = combined_traces
+                                .get(&node_id)
+                                .cloned()
+                                .expect(
+                                    "sorted_combined ⊆ combined_traces.keys() by construction",
+                                );
+
+                            let cached_result = CachedResult::Value(
+                                val.clone(),
+                                DeterminacyState::Determined,
+                            );
+                            let outcome = self.cache.record_evaluation(
+                                node_id.clone(),
+                                cached_result,
+                                version,
+                                trace,
+                            );
+
+                            self.journal.record(EvalEvent {
+                                timestamp: Instant::now(),
+                                node_id,
+                                kind: EventKind::Completed { outcome },
+                                version,
+                                payload: Some(EventPayload::Duration(start.elapsed())),
+                            });
+
+                            if outcome == EvalOutcome::Unchanged {
+                                stats.early_cutoffs += 1;
+                                self.cache.clear_dependents_dirty(&cell.id);
+                            }
+
+                            values.insert(cell.id.clone(), val);
+                        }
+
+                        _ => {}
                     }
-
-                    stats.cache_misses += 1;
-                    self.cache.clear_dirty(&node_id);
-
-                    let start = Instant::now();
-                    self.journal.record(EvalEvent {
-                        timestamp: start,
-                        node_id: node_id.clone(),
-                        kind: EventKind::Started,
-                        version,
-                        payload: None,
-                    });
-
-                    let val = reify_expr::eval_expr(
-                        expr,
-                        &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
-                    );
-
-                    // Reuse the trace already built by detect_let_cycle. The lookup is
-                    // structurally guaranteed to succeed: detect_let_cycle constructs
-                    // let_traces from let_cells, and topological_sort (Kahn's algorithm)
-                    // emits sorted_lets ⊆ let_traces.keys(). An invariant violation here
-                    // would indicate detect_let_cycle was modified to drop entries while
-                    // still returning them in sorted_lets — surface that loud rather than
-                    // mask it with a defensive recomputation.
-                    let trace = let_traces
-                        .get(&node_id)
-                        .cloned()
-                        .expect("sorted_lets ⊆ let_traces.keys() by detect_let_cycle invariant");
-
-                    let cached_result =
-                        CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                    let outcome = self.cache.record_evaluation(
-                        node_id.clone(),
-                        cached_result,
-                        version,
-                        trace,
-                    );
-
-                    self.journal.record(EvalEvent {
-                        timestamp: Instant::now(),
-                        node_id,
-                        kind: EventKind::Completed { outcome },
-                        version,
-                        payload: Some(EventPayload::Duration(start.elapsed())),
-                    });
-
-                    if outcome == EvalOutcome::Unchanged {
-                        stats.early_cutoffs += 1;
-                        // Early cutoff: clear dirty flags on nodes that
-                        // depend on this cell, since its result hasn't changed.
-                        self.cache.clear_dependents_dirty(&cell.id);
-                    }
-
-                    values.insert(cell.id.clone(), val);
                 }
             }
 
@@ -3164,6 +3225,45 @@ impl Engine {
         // Non-driving-joint diagnostics (task 4309 — E_MECHANISM_NONDRIVING_JOINT).
         // Mirrors eval() call site; eval_cached is the LSP/GUI incremental path.
         diagnostics.extend(detect_nondriving_joint_errors(&values));
+
+        // Build and store a snapshot so that engine.snapshot() returns Some after
+        // eval_cached() — preserving cross-path parity with eval() (spec §8.2,
+        // task 4317 step-6).
+        //
+        // snapshot.values is populated from the evaluated `values` map; the
+        // DeterminacyState for each cell is read from the cache entry that
+        // record_evaluation / record_evaluation_with_freshness wrote during the
+        // unified Param+Let topological pass above.  Cells absent from `values`
+        // (cells that were short-circuited by a fast-path or that have no entry
+        // yet) keep the (Undef, Undetermined/Auto) initialised by
+        // Snapshot::from_compiled_module.
+        {
+            let snapshot_id = self.next_snapshot_id;
+            self.next_snapshot_id += 1;
+            let mut snapshot = Snapshot::from_compiled_module(module);
+            snapshot.id = SnapshotId(snapshot_id);
+            snapshot.version = version;
+            snapshot.provenance = SnapshotProvenance::Initial;
+
+            for (cell_id, val) in values.iter() {
+                let node_id = NodeId::Value(cell_id.clone());
+                let det = self
+                    .cache
+                    .get(&node_id)
+                    .and_then(|entry| match &entry.result {
+                        CachedResult::Value(_, det) => Some(det.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or(DeterminacyState::Undetermined);
+                snapshot.values.insert(cell_id.clone(), (val.clone(), det));
+            }
+
+            self.eval_state = Some(EvaluationState {
+                snapshot,
+                reverse_index: ReverseDependencyIndex::default(),
+                trace_map: HashMap::new(),
+            });
+        }
 
         CachedEvalResult {
             eval_result: EvalResult {
