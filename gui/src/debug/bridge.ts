@@ -1331,6 +1331,60 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
         camera: { position: { x: vp.camera.position.x, y: vp.camera.position.y, z: vp.camera.position.z } },
       };
     },
+
+    // --- F1: fixture/injection/capture tools (task-4303) ---
+
+    inject_diagnostics: (params) => {
+      const raw = params.diagnostics;
+      if (!Array.isArray(raw) || raw.length === 0) {
+        return { error: 'diagnostics must be a non-empty array' };
+      }
+
+      // Validate each entry has required fields (severity + message).
+      for (let i = 0; i < raw.length; i++) {
+        const entry = raw[i];
+        if (
+          entry === null ||
+          typeof entry !== 'object' ||
+          typeof (entry as Record<string, unknown>).severity !== 'string' ||
+          typeof (entry as Record<string, unknown>).message !== 'string'
+        ) {
+          return { error: `diagnostics[${i}] must have severity (string) and message (string)` };
+        }
+      }
+
+      // Validate source (optional).
+      const sourceRaw = params.source;
+      if (sourceRaw !== undefined && sourceRaw !== 'compile' && sourceRaw !== 'tessellation') {
+        return { error: 'source must be "compile" or "tessellation"' };
+      }
+      const source = (sourceRaw as 'compile' | 'tessellation') ?? 'compile';
+
+      // Normalize: preserve caller-provided fields; default ONLY omitted positional fields.
+      // Never mutate message or severity.
+      const normalized: DiagnosticInfo[] = raw.map((entry: Record<string, unknown>) => {
+        const line = typeof entry.line === 'number' ? entry.line : 0;
+        const column = typeof entry.column === 'number' ? entry.column : 0;
+        return {
+          file_path: typeof entry.file_path === 'string' ? entry.file_path : 'synthetic://inject_diagnostics',
+          line,
+          column,
+          end_line: typeof entry.end_line === 'number' ? entry.end_line : line,
+          end_column: typeof entry.end_column === 'number' ? entry.end_column : column,
+          severity: entry.severity as string,
+          message: entry.message as string,
+          code: entry.code !== undefined ? (entry.code as string | null) : null,
+        };
+      });
+
+      if (source === 'tessellation') {
+        ctx.stores.engine.setTessellationDiagnostics(normalized);
+      } else {
+        ctx.stores.engine.setCompileDiagnostics(normalized);
+      }
+
+      return { ok: true, count: normalized.length, source };
+    },
   };
 }
 
