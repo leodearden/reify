@@ -6,14 +6,34 @@ export type RpcResult<T> =
   | { ok: false; error: string };
 
 /**
+ * Detect the in-band error shape returned by reify-debug handlers.
+ *
+ * Debug handlers return failures as Ok(json!({"error":"<msg>",...})) — no MCP
+ * isError flag is set, so the error rides inside the text/result content block
+ * and must be distinguished from success values at the JS layer.
+ *
+ * Discriminator: a non-null object whose `.error` field is a string.
+ * No tool success path returns a top-level string `error`, so this cannot
+ * misclassify a success value. Ref: docs/debug-mcp-contract.md §2a.
+ */
+function inBandError(v: unknown): v is { error: string } {
+  return v !== null && typeof v === "object" && typeof (v as Record<string, unknown>).error === "string";
+}
+
+/**
  * Parse an MCP tools/call response envelope into a typed RpcResult.
  *
  * Branch table (evaluated in order):
  * 1. Envelope has top-level `error` field → ok:false from error.message
  * 2. `result.isError === true` → ok:false from content[0].text or "(unknown error)"
  * 3. `content[0].type === "image"` → ok:true with { data: content[0].data }
- * 4. `content[0].type === "text"` → ok:true; try JSON.parse, fall back to raw string
- * 5. Otherwise → ok:true with the result object itself
+ * 4. `content[0].type === "text"` → try JSON.parse:
+ *    - if parsed value is an in-band error object ({error:<string>}) → ok:false
+ *    - otherwise → ok:true with parsed value (or raw string if non-JSON)
+ * 5. Otherwise → if result object is an in-band error → ok:false; else ok:true
+ *
+ * In-band errors (Branches 4 & 5): debug handlers return Ok({error:<string>,...})
+ * rather than setting MCP isError. See docs/debug-mcp-contract.md §2a.
  */
 export function parseRpcResponse<T = unknown>(envelope: unknown): RpcResult<T> {
   const env = envelope as Record<string, unknown>;
@@ -49,20 +69,31 @@ export function parseRpcResponse<T = unknown>(envelope: unknown): RpcResult<T> {
       return { ok: true, value: { data: first.data } as unknown as T };
     }
 
-    // Branch 4: text content — try JSON parse, fall back to raw string
+    // Branch 4: text content — try JSON parse, fall back to raw string.
+    // After parsing, check for the in-band {error:<string>} envelope before
+    // returning ok:true — debug handlers use Ok({error:...}) for failures.
     if (first.type === "text") {
       if (typeof first.text !== "string") {
         return { ok: false, error: "text content missing text field" };
       }
       const text = first.text;
       try {
-        return { ok: true, value: JSON.parse(text) as T };
+        const parsed = JSON.parse(text);
+        if (inBandError(parsed)) {
+          return { ok: false, error: parsed.error };
+        }
+        return { ok: true, value: parsed as T };
       } catch {
         return { ok: true, value: text as unknown as T };
       }
     }
   }
 
-  // Branch 5: no recognisable content — return result object
+  // Branch 5: no recognisable content — return result object.
+  // Also check for the in-band {error:<string>} envelope (defensive coverage
+  // for Ok({error}) results that arrive as a bare object rather than text).
+  if (inBandError(result)) {
+    return { ok: false, error: result.error };
+  }
   return { ok: true, value: result as unknown as T };
 }
