@@ -2473,4 +2473,74 @@ mod tests {
             }
         }
     }
+
+    // --- F1: load_fixture ---
+
+    #[test]
+    fn tool_defs_registers_load_fixture() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|d| d.name == "load_fixture")
+            .expect("load_fixture must be present in tool_defs()");
+        let schema = &entry.input_schema;
+
+        // Non-empty description
+        assert!(
+            !entry.description.is_empty(),
+            "load_fixture: description must be non-empty"
+        );
+
+        // type == "object"
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "load_fixture: input_schema.type must be 'object'"
+        );
+
+        // "name" must be in required
+        let required = schema["required"]
+            .as_array()
+            .expect("load_fixture: input_schema.required must be an array");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("name")),
+            "load_fixture: 'name' must be listed in required; got {required:?}"
+        );
+
+        // "name" property must be a string
+        assert_eq!(
+            schema["properties"]["name"]["type"].as_str(),
+            Some("string"),
+            "load_fixture: properties.name.type must be 'string'"
+        );
+    }
+
+    #[test]
+    fn fixture_relpath_resolves_catalogue() {
+        // Known catalogue keys
+        let known = [
+            ("all_severities", "gui/test/fixtures/all_severities.ri"),
+            ("small_cube",     "gui/test/fixtures/small_cube.ri"),
+            ("empty",          "gui/test/fixtures/empty.ri"),
+            ("broken_syntax",  "gui/test/fixtures/broken_syntax.ri"),
+            ("large_assembly", "gui/test/fixtures/large_assembly.ri"),
+            ("overflow",       "gui/test/fixtures/overflow.ri"),
+        ];
+        for (name, expected_relpath) in known {
+            let result = fixture_relpath(name);
+            assert_eq!(
+                result.as_deref(),
+                Some(expected_relpath),
+                "fixture_relpath({name:?}) should return Some({expected_relpath:?}), got {result:?}"
+            );
+        }
+
+        // Unknown name must return None
+        let bogus = fixture_relpath("bogus_name");
+        assert_eq!(
+            bogus,
+            None,
+            "fixture_relpath(\"bogus_name\") should return None, got {bogus:?}"
+        );
+    }
 }
