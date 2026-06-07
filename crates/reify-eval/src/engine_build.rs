@@ -2959,6 +2959,10 @@ impl Engine {
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
+        // Determinacy β (task 4198): clear the achieved-tol map at the start
+        // of each tessellate_realizations call so stale entries from a prior
+        // call do not leak into the new result.
+        self.achieved_repr_tol.clear();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -2975,6 +2979,7 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            &mut self.achieved_repr_tol,
         );
 
         TessellateResult {
@@ -3314,6 +3319,12 @@ impl Engine {
         // fn's signature mirrors the disjoint-field-borrow shape already in
         // use for the other &mut params.
         dispatch_count: &mut usize,
+        // Determinacy β (task 4198): cleared at entry to each
+        // `tessellate_realizations` / `tessellate_snapshot` call by the
+        // caller; populated inside `surface_subtree` after each successful
+        // tessellation. Threaded here as a sibling of the other &mut tables
+        // (feature_tag_table / topology_attribute_table / swept_kind_table).
+        achieved_repr_tol: &mut std::collections::BTreeMap<String, f64>,
     ) -> Vec<MeshSurface> {
         let mut meshes = Vec::new();
 
@@ -3558,6 +3569,7 @@ impl Engine {
                 meta_map,
                 &mut meshes,
                 diagnostics,
+                achieved_repr_tol,
             );
         }
 
@@ -3593,6 +3605,7 @@ impl Engine {
                 meta_map,
                 &mut meshes,
                 diagnostics,
+                achieved_repr_tol,
             );
             covered.extend(crate::geometry_ops::reachable_template_indices(
                 module,
@@ -5569,6 +5582,9 @@ impl Engine {
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
+        // Determinacy β (task 4198): clear the achieved-tol map at the start
+        // of each tessellate_snapshot call (mirrors tessellate_realizations).
+        self.achieved_repr_tol.clear();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -5585,6 +5601,7 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            &mut self.achieved_repr_tol,
         );
 
         Some(TessellateResult {

@@ -58,13 +58,20 @@ fn compile_no_errors(source: &str, path_name: &str) -> reify_compiler::CompiledM
 
 /// Build a fresh `Engine` backed by a real OCCT kernel.
 ///
-/// Mirrors the harness in `boolean_ops_e2e.rs`: a `SingleKernelHolder`
-/// with one `OcctKernelHandle` spawned on its own dedicated thread.
+/// Registers `OcctKernelHandle` directly as the `Box<dyn GeometryKernel>`
+/// (mirroring the production path from `reify_kernel_occt::register::factory`,
+/// which inserts `OcctKernelHandle` directly into the engine's kernel map).
+///
+/// **Why not `SingleKernelHolder`**: `SingleKernelHolder` is a wrapper that
+/// delegates most `GeometryKernel` methods to its inner kernel, but it does
+/// NOT override optional capability methods (e.g. `measure_mesh_deviation`)
+/// that default to `None` in the trait. Using `OcctKernelHandle` directly
+/// ensures the `measure_mesh_deviation` override is reachable through the
+/// `&dyn GeometryKernel` call site in `surface_subtree`.
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)))
+    let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
+    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
 // ── B2 end-to-end: sphere coarse > fine ─────────────────────────────────────

@@ -5784,6 +5784,13 @@ pub(crate) fn surface_subtree(
     meta_map: &HashMap<String, HashMap<String, String>>,
     meshes: &mut Vec<crate::MeshSurface>,
     diagnostics: &mut Vec<Diagnostic>,
+    // Determinacy β (task 4198): per-build map from realized-occurrence name
+    // ("{entity}#realization[{index}]") to sampled max facet-chord deviation
+    // in SI metres. Populated here (the unique site holding kernel + placed_id
+    // + fresh mesh + entity_path simultaneously). Recording is skip-on-None
+    // and skip-on-empty-mesh so the map never contains misleading 0.0 entries
+    // (honest absence = missing key, B3).
+    achieved_repr_tol: &mut BTreeMap<String, f64>,
 ) {
     walk_placed_realizations(
         module,
@@ -5807,6 +5814,19 @@ pub(crate) fn surface_subtree(
             let budget = tessellation_budgets[t][r];
             match kernel.tessellate(placed_id, budget) {
                 Ok(mesh) => {
+                    // Determinacy β (task 4198): record the sampled max
+                    // facet-chord deviation BEFORE moving entity_path into
+                    // MeshSurface. Only record for non-empty meshes — an empty
+                    // mesh yields honest absence (missing key), never 0.0.
+                    // measure_mesh_deviation returns None for non-OCCT kernels
+                    // (default-absent trait method, B3). Anti-circularity: the
+                    // metric takes no tolerance argument and measures actual
+                    // facet-chord error, NOT the configured deflection budget.
+                    if !mesh.indices.is_empty() {
+                        if let Some(dev) = kernel.measure_mesh_deviation(placed_id, &mesh) {
+                            achieved_repr_tol.insert(entity_path.clone(), dev);
+                        }
+                    }
                     // step-6: hide iff any `aux` ancestor sub OR this realization's
                     // own `aux` let. aux bodies are still tessellated and shipped —
                     // only hidden by default.
