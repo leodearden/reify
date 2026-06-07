@@ -212,3 +212,52 @@ fn generic_pair_call_conflicting_args_emits_conflict_diagnostic() {
         diag.message
     );
 }
+
+// ── step-11: unresolved type-argument diagnostic + B5 regression guard ───────
+
+/// `make<T>() -> T` called as `make()` has zero params, so nothing pins `T`:
+/// after substitution the result type is a BARE top-level `TypeParam("T")` —
+/// a wholly-undetermined type. The call site must emit
+/// `DiagnosticCode::FnTypeArgUnresolved`.
+///
+/// RED until step-12: step-10 does not yet emit FnTypeArgUnresolved for a
+/// bare-unbound result type.
+#[test]
+fn generic_make_call_bare_unbound_emits_unresolved_diagnostic() {
+    let module = compile_source("fn make<T>() -> T { 0 } structure S { let v = make() }");
+
+    let unresolved_diag = module
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::FnTypeArgUnresolved));
+    assert!(
+        unresolved_diag.is_some(),
+        "expected a FnTypeArgUnresolved diagnostic for make() (result type is a bare \
+         unbound TypeParam); got diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
+/// B5 regression guard: a NESTED unbound type-param (e.g. `Field<TypeParam(D),
+/// Real>` from `constant_field(42.5)`) is TOLERATED and must NOT emit
+/// `FnTypeArgUnresolved` — only a BARE top-level `Type::TypeParam` triggers it.
+///
+/// Must stay green after step-12 (the bare-only rule must not over-trigger).
+#[test]
+fn generic_constant_field_nested_unbound_does_not_emit_unresolved() {
+    let module = compile_source(
+        "fn constant_field<D, C>(value: C) -> Field<D, C> { value } \
+         structure S { let v = constant_field(42.5) }",
+    );
+
+    let unresolved_diag = module
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::FnTypeArgUnresolved));
+    assert!(
+        unresolved_diag.is_none(),
+        "B5: constant_field(42.5) must NOT emit FnTypeArgUnresolved — a nested unbound \
+         param Field<TypeParam(D), Real> is tolerated; got: {:?}",
+        unresolved_diag
+    );
+}
