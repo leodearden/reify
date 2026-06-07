@@ -5822,10 +5822,10 @@ pub(crate) fn surface_subtree(
                     // (default-absent trait method, B3). Anti-circularity: the
                     // metric takes no tolerance argument and measures actual
                     // facet-chord error, NOT the configured deflection budget.
-                    if !mesh.indices.is_empty() {
-                        if let Some(dev) = kernel.measure_mesh_deviation(placed_id, &mesh) {
-                            achieved_repr_tol.insert(entity_path.clone(), dev);
-                        }
+                    if !mesh.indices.is_empty()
+                        && let Some(dev) = kernel.measure_mesh_deviation(placed_id, &mesh)
+                    {
+                        achieved_repr_tol.insert(entity_path.clone(), dev);
                     }
                     // step-6: hide iff any `aux` ancestor sub OR this realization's
                     // own `aux` let. aux bodies are still tessellated and shipped —

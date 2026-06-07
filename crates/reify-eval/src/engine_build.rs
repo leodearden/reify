@@ -10264,6 +10264,7 @@ mod tests {
         let desc = dispatch_test_descriptor_all_brep();
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
         registry.insert(Engine::DEFAULT_KERNEL_NAME.to_string(), &desc);
+        let mut achieved_repr_tol = std::collections::BTreeMap::new();
         Engine::tessellate_from_values(
             &mut geometry_kernels,
             &registry,
@@ -10280,6 +10281,7 @@ mod tests {
             &[],               // ← OOB: empty demanded_tols
             &[vec![1e-4_f64]], // correctly shaped tessellation_budgets
             &mut 0usize,
+            &mut achieved_repr_tol,
         );
     }
 
@@ -10323,6 +10325,7 @@ mod tests {
         let desc = dispatch_test_descriptor_all_brep();
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
         registry.insert(Engine::DEFAULT_KERNEL_NAME.to_string(), &desc);
+        let mut achieved_repr_tol = std::collections::BTreeMap::new();
         Engine::tessellate_from_values(
             &mut geometry_kernels,
             &registry,
@@ -10339,6 +10342,7 @@ mod tests {
             &[vec![None]], // correctly shaped demanded_tols
             &[],           // ← OOB: empty tessellation_budgets
             &mut 0usize,
+            &mut achieved_repr_tol,
         );
     }
 
