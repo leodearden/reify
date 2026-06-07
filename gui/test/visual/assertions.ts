@@ -277,6 +277,44 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
       { path: "selection.selectedEntity", op: "equals", expected: null },
     ],
   },
+  // task-4305 E1 I1 e2e signal; scroll drives the real CodeMirror scrollDOM.
+  // scrollTop asserted via exists (not a value) because clamp depends on live viewport
+  // height — exact/atLeast would be a doomed RED on tall viewports (mirrors
+  // list_console_errors_shape). large_assembly (58 lines) is scrollable on typical viewports.
+  {
+    name: "scroll_editor_large_assembly",
+    fixture: "large_assembly",
+    tool: "scroll",
+    args: { target: "editor", top: 1000 },
+    assertions: [
+      { path: "ok", op: "equals", expected: true },
+      { path: "scrollTop", op: "exists" },
+    ],
+  },
+  // task-4305 E1 C1 e2e signal; open_menu clicks [data-testid=menu-trigger-file] and
+  // returns the live ctx.menuBar.openMenu() state (synchronous Solid signal update).
+  {
+    name: "open_menu_file",
+    fixture: "small_cube",
+    tool: "open_menu",
+    args: { name: "file" },
+    assertions: [
+      { path: "ok", op: "equals", expected: true },
+      { path: "open", op: "equals", expected: "file" },
+    ],
+  },
+  // task-4305 E1 C2 e2e signal (live via npm run test:e2e); resize_panes writes
+  // ctx.stores.layout (L0) and echoes layout.editorWidth — deterministic store round-trip.
+  {
+    name: "resize_panes_editor_width",
+    fixture: "small_cube",
+    tool: "resize_panes",
+    args: { editorWidth: 400 },
+    assertions: [
+      { path: "ok", op: "equals", expected: true },
+      { path: "layout.editorWidth", op: "equals", expected: 400 },
+    ],
+  },
   // (5) inject_diagnostics → element_screenshot of diagnostics-dialog.
   {
     name: "inject_diagnostics_element_screenshot",

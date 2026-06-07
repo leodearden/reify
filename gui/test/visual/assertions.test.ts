@@ -392,6 +392,39 @@ describe("runValueScenario", () => {
   });
 });
 
+// task-4305 E1 step-7 RED → step-8 GREEN: I1 scroll e2e signal scenario
+// Existence + uniqueness only — the generic VALUE_SCENARIOS structural tests above
+// already validate fixture/tool/assertions shape. Detailed field pinning would
+// restate the config verbatim and break on harmless scenario data edits.
+describe("I1 VALUE_SCENARIO (task-4305 E1)", () => {
+  it("scroll_editor_large_assembly is present exactly once in VALUE_SCENARIOS", () => {
+    const matching = VALUE_SCENARIOS.filter((s) => s.name === "scroll_editor_large_assembly");
+    expect(matching.length, "scroll_editor_large_assembly should appear exactly once").toBe(1);
+  });
+});
+
+// task-4305 E1 step-5 RED → step-6 GREEN: C1 open_menu e2e signal scenario
+// Existence + uniqueness only — the generic VALUE_SCENARIOS structural tests above
+// already validate fixture/tool/assertions shape. Detailed field pinning would
+// restate the config verbatim and break on harmless scenario data edits.
+describe("C1 VALUE_SCENARIO (task-4305 E1)", () => {
+  it("open_menu_file is present exactly once in VALUE_SCENARIOS", () => {
+    const matching = VALUE_SCENARIOS.filter((s) => s.name === "open_menu_file");
+    expect(matching.length, "open_menu_file should appear exactly once").toBe(1);
+  });
+});
+
+// task-4305 E1 step-3 RED → step-4 GREEN: C2 resize_panes e2e signal scenario
+// Existence + uniqueness only — the generic VALUE_SCENARIOS structural tests above
+// already validate fixture/tool/assertions shape. Detailed field pinning would
+// restate the config verbatim and break on harmless scenario data edits.
+describe("C2 VALUE_SCENARIO (task-4305 E1)", () => {
+  it("resize_panes_editor_width is present exactly once in VALUE_SCENARIOS", () => {
+    const matching = VALUE_SCENARIOS.filter((s) => s.name === "resize_panes_editor_width");
+    expect(matching.length, "resize_panes_editor_width should appear exactly once").toBe(1);
+  });
+});
+
 // task-4303 step-13 RED → step-14 GREEN: F1 VALUE_SCENARIOS presence and structure
 describe("F1 VALUE_SCENARIOS (task-4303)", () => {
   const F1_SCENARIO_NAMES = [

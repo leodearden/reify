@@ -102,4 +102,73 @@ describe("parseRpcResponse", () => {
       expect(result.error).toBe("text content missing text field");
     }
   });
+
+  // task-4305 E1: in-band {error:<string>} envelope — debug handlers return failures as
+  // Ok(json!({"error":...})) (no MCP isError flag), so the error rides inside the text
+  // content block and must be mapped to {ok:false, error} rather than silently swallowed.
+  it("(i) text content carrying {\"error\":\"timeout\"} → ok:false, error:\"timeout\"", () => {
+    const envelope = {
+      result: {
+        content: [{ type: "text", text: '{"error":"timeout"}' }],
+      },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("timeout");
+    }
+  });
+
+  it("(j) text content carrying {\"error\":\"engine_phase\",\"phase\":\"error\"} → ok:false, error:\"engine_phase\"", () => {
+    const envelope = {
+      result: {
+        content: [{ type: "text", text: '{"error":"engine_phase","phase":"error"}' }],
+      },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("engine_phase");
+    }
+  });
+
+  it("(k) regression guard: text content {\"meshCount\":1} (no error field) → ok:true, value:{meshCount:1}", () => {
+    const envelope = {
+      result: {
+        content: [{ type: "text", text: '{"meshCount":1}' }],
+      },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual({ meshCount: 1 });
+    }
+  });
+
+  // task-4305 amendment (Suggestion 1): Branch 5 coverage.
+  // inBandError is applied to the bare result object (Branch 5) as well as to the
+  // parsed text-content JSON (Branch 4), but the original step-1/step-2 cases only
+  // covered Branch 4. These two cases verify the newly-introduced {ok:false} return
+  // path in Branch 5 and guard against regression to the unconditional ok:true.
+  it("(l) Branch 5: bare result {error:'timeout'} (no content array) → ok:false, error:'timeout'", () => {
+    const envelope = {
+      result: { error: "timeout" },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("timeout");
+    }
+  });
+
+  it("(m) Branch 5 regression guard: bare result {meshCount:1} (no error field) → ok:true, value:{meshCount:1}", () => {
+    const envelope = {
+      result: { meshCount: 1 },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual({ meshCount: 1 });
+    }
+  });
 });
