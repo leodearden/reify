@@ -243,6 +243,20 @@ fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "load_fixture",
+            description: "Load a named test fixture .ri file into the editor and engine. The name must be one of the catalogue keys: all_severities, small_cube, empty, broken_syntax, large_assembly, overflow. Resolves to gui/test/fixtures/{name}.ri relative to the repository root (cwd when the debug server launches).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Fixture name (catalogue key). One of: all_severities, small_cube, empty, broken_syntax, large_assembly, overflow."
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDef {
             name: "set_test_mode",
             description: "Freeze CSS animations and transitions for pixel-stable DOM screenshots. Does NOT pause JS-driven animations or the Three.js render loop. Returns { ok: true, test_mode: bool }.",
             input_schema: json!({
@@ -906,6 +920,7 @@ async fn dispatch_tool(
         "engine_state" => handle_engine_state(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
         "open_file" => handle_open_file(state, params).await,
+        "load_fixture" => handle_load_fixture(state, params).await,
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
         "wait_for" => handle_wait_for(state, params).await,
         "wait_for_selector" => handle_wait_for_selector(state, params).await,
@@ -1102,11 +1117,26 @@ async fn handle_mesh_morph_stats(params: Value) -> Result<Value, String> {
     Ok(obj)
 }
 
-async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let raw_path = params["path"]
-        .as_str()
-        .ok_or_else(|| "path is required".to_string())?;
+/// Catalogue of allowed fixture names → repo-relative paths.
+/// Mirrors the TS FIXTURES keys in gui/test/visual/assertions.ts.
+/// The e2e harness launches reify-gui with cwd=REPO_ROOT, so these
+/// relative paths resolve correctly via canonicalize_debug_open_path.
+fn fixture_relpath(name: &str) -> Option<String> {
+    match name {
+        "all_severities" => Some("gui/test/fixtures/all_severities.ri".to_string()),
+        "small_cube"     => Some("gui/test/fixtures/small_cube.ri".to_string()),
+        "empty"          => Some("gui/test/fixtures/empty.ri".to_string()),
+        "broken_syntax"  => Some("gui/test/fixtures/broken_syntax.ri".to_string()),
+        "large_assembly" => Some("gui/test/fixtures/large_assembly.ri".to_string()),
+        "overflow"       => Some("gui/test/fixtures/overflow.ri".to_string()),
+        _                => None,
+    }
+}
 
+/// Shared file-open helper: canonicalise raw_path, read from disk, load into
+/// the engine on an OS thread (OCCT panics inside tokio), build GUI state, and
+/// tell the frontend to open the file.
+async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Result<Value, String> {
     // Canonicalise the path before reading so the frontend receives the same
     // absolute key regardless of whether the caller supplied a relative or
     // absolute spelling (fixes bug #3892: duplicate tabs via debug bridge).
@@ -1143,6 +1173,22 @@ async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Val
         .debug_bridge
         .query_frontend("open_file", file_data)
         .await
+}
+
+async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let raw_path = params["path"]
+        .as_str()
+        .ok_or_else(|| "path is required".to_string())?;
+    open_path_into_engine(state, raw_path).await
+}
+
+async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let name = params["name"]
+        .as_str()
+        .ok_or_else(|| "name is required".to_string())?;
+    let relpath = fixture_relpath(name)
+        .ok_or_else(|| format!("unknown fixture: {name}"))?;
+    open_path_into_engine(state, &relpath).await
 }
 
 // --- MCP Streamable HTTP handler ---
