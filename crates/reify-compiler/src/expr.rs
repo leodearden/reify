@@ -1503,7 +1503,26 @@ pub(crate) fn compile_expr_guarded(
                     if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                         emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                     }
-                    let result_type = matched_fn.return_type.clone();
+                    // Generic call (task 4231 β): infer type arguments by unifying
+                    // each declared param type against the concrete arg type, then
+                    // substitute the bound type parameters into the return type.
+                    // Non-generic fns (empty type_params) keep the exact
+                    // return_type.clone() path bit-for-bit unchanged (INV-6/D10).
+                    let result_type = if matched_fn.type_params.is_empty() {
+                        matched_fn.return_type.clone()
+                    } else {
+                        let mut subst: std::collections::HashMap<String, Type> =
+                            std::collections::HashMap::new();
+                        for ((_, declared), arg_ty) in
+                            matched_fn.params.iter().zip(arg_types.iter())
+                        {
+                            // step-8: a conflicting double-binding (Err) is ignored
+                            // here; the E_FN_TYPE_ARG_CONFLICT emission is wired in
+                            // step-10.
+                            let _ = type_compat::unify(declared, arg_ty, &mut subst);
+                        }
+                        type_resolution::substitute_type_params(&matched_fn.return_type, &subst)
+                    };
                     build_user_function_call_expr(name, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
