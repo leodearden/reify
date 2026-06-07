@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use reify_core::diagnostics::DiagnosticCode;
+use reify_core::diagnostics::{DiagnosticCode, SourceSpan};
 use reify_core::dimension::DimensionVector;
 use crate::expr::CompiledExpr;
 use reify_core::hash::ContentHash;
@@ -3059,6 +3059,75 @@ pub enum DeterminacyState {
     Provisional,
     /// Value is marked auto — to be resolved by the constraint solver.
     Auto,
+}
+
+/// WHY a value cell is `undef` — per-cell origin captured by the engine's
+/// post-eval classification pass when `capture_undef_causes` is enabled.
+///
+/// # Task scope
+/// This enum is defined in full up-front so task γ (op-sink) can add
+/// `OpContractFailed` construction without any enum churn.  Task α
+/// (this task) constructs the four Layer-1 variants only;
+/// `OpContractFailed` is reserved for task γ.
+///
+/// # PRD references
+/// - §9.2.9 "Tracing" substrate
+/// - A1 TRANSPARENCY: recorded in a parallel side-map, never on `Value`
+/// - PRD Q4: `Eq + Hash` enables β's dedup-by-(kind, originating-cell)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum UndefCause {
+    /// The cell is an unbound required param with no default expression and no
+    /// caller-supplied override.  The cell is absent from `EvalResult.values`
+    /// but present in `snapshot.values` as `(Undef, Undetermined)` via the
+    /// pre-seed in `Snapshot::from_compiled_module`.
+    Unbound {
+        /// The `ValueCellId` of the unbound param.
+        param: ValueCellId,
+        /// Source span of the param declaration.
+        span: SourceSpan,
+    },
+    /// The cell is an `auto` (or `Provisional`) param that has not yet been
+    /// resolved by the constraint solver — either because no solver was
+    /// attached to the engine, or because the template's constraint problem
+    /// yielded no solution and the cell was not touched.
+    ///
+    /// Distinguished from `SolveFailed`: here the solver was either absent or
+    /// returned `Solved` (updating other cells), but this cell stayed `Undef`.
+    AwaitingSolve {
+        /// The `ValueCellId` of the unsolved auto param.
+        param: ValueCellId,
+    },
+    /// The cell is an `auto` (or `Provisional`) param whose template's
+    /// constraint solve explicitly failed (`SolveResult::Infeasible` or
+    /// `SolveResult::NoProgress`).
+    ///
+    /// `detail` is a coarse honest string sourced from the actual
+    /// `SolveResult` (§8.3 — no fabricated detail):
+    /// - `"infeasible"` for `SolveResult::Infeasible`
+    /// - `"no progress: <reason>"` for `SolveResult::NoProgress`
+    SolveFailed {
+        /// Coarse description of the solve failure (never fabricated).
+        detail: String,
+    },
+    /// The cell's default expression evaluated successfully (all inputs were
+    /// determined) but the op returned `Undef` — typically a type/contract
+    /// violation in a built-in or user-defined op.
+    ///
+    /// **Constructed by task γ (the op-sink) only.**  Task α records nothing
+    /// for cells that fall into this branch; the variant exists now so γ can
+    /// construct it without editing the enum.
+    OpContractFailed {
+        /// Diagnostic code identifying the violated contract.
+        code: DiagnosticCode,
+        /// Source span of the offending expression.
+        span: SourceSpan,
+    },
+    /// The cell has an explicit `= undef` default expression (i.e. the author
+    /// deliberately wrote `undef` as the param default).
+    UserUndef {
+        /// Source span of the `undef` literal in the default expression.
+        span: SourceSpan,
+    },
 }
 
 /// The satisfaction state of a constraint.
@@ -9935,5 +10004,110 @@ mod tests {
             let result = SelectorValue::difference(union, leaf_c).unwrap();
             assert_eq!(result.kind, SelectorKind::Face);
         }
+    }
+}
+
+// ── UndefCause unit tests (task 4321 / undef-self-describing α) ──────────────
+//
+// Tests Eq / Hash / Clone / Debug runtime behaviour on `UndefCause`.
+#[cfg(test)]
+mod undef_cause_tests {
+    use std::collections::HashSet;
+
+    use reify_core::diagnostics::{DiagnosticCode, SourceSpan};
+    use reify_core::identity::ValueCellId;
+
+    use super::UndefCause;
+
+    fn span(start: u32, end: u32) -> SourceSpan {
+        SourceSpan::new(start, end)
+    }
+
+    fn cell(entity: &str, member: &str) -> ValueCellId {
+        ValueCellId::new(entity, member)
+    }
+
+    // ── Construct all 5 variants and assert inter-variant inequality ──────────
+
+    #[test]
+    fn distinct_variant_kinds_are_unequal() {
+        let unbound = UndefCause::Unbound {
+            param: cell("S", "a"),
+            span: span(0, 5),
+        };
+        let awaiting = UndefCause::AwaitingSolve {
+            param: cell("S", "k"),
+        };
+        let failed = UndefCause::SolveFailed {
+            detail: "infeasible".to_string(),
+        };
+        let contract = UndefCause::OpContractFailed {
+            code: DiagnosticCode::ConstraintViolated,
+            span: span(10, 20),
+        };
+        let user = UndefCause::UserUndef {
+            span: span(30, 35),
+        };
+
+        // Every pair of distinct variants must be unequal.
+        assert_ne!(unbound, awaiting);
+        assert_ne!(unbound, failed);
+        assert_ne!(unbound, contract);
+        assert_ne!(unbound, user);
+        assert_ne!(awaiting, failed);
+        assert_ne!(awaiting, contract);
+        assert_ne!(awaiting, user);
+        assert_ne!(failed, contract);
+        assert_ne!(failed, user);
+        assert_ne!(contract, user);
+
+        // Debug round-trip: every variant produces a non-empty string.
+        for v in [&unbound, &awaiting, &failed, &contract, &user] {
+            assert!(!format!("{v:?}").is_empty());
+        }
+    }
+
+    // ── Eq / Hash: dedup-by-(kind,cell) contract that β depends on (PRD Q4) ──
+
+    #[test]
+    fn same_unbound_same_span_equal_and_hash_dedup() {
+        let a = UndefCause::Unbound { param: cell("S", "x"), span: span(0, 3) };
+        let b = UndefCause::Unbound { param: cell("S", "x"), span: span(0, 3) };
+        assert_eq!(a, b);
+        // Both inserted into a HashSet → len == 1.
+        let mut set = HashSet::new();
+        set.insert(a);
+        set.insert(b);
+        assert_eq!(set.len(), 1, "two identical Unbound entries must dedup to 1");
+    }
+
+    #[test]
+    fn different_param_unbound_not_equal() {
+        let a = UndefCause::Unbound { param: cell("S", "x"), span: span(0, 3) };
+        let b = UndefCause::Unbound { param: cell("S", "y"), span: span(0, 3) };
+        assert_ne!(a, b);
+        let mut set = HashSet::new();
+        set.insert(a);
+        set.insert(b);
+        assert_eq!(set.len(), 2, "Unbound with different params must be distinct");
+    }
+
+    #[test]
+    fn unbound_vs_user_undef_not_equal() {
+        let a = UndefCause::Unbound { param: cell("S", "x"), span: span(0, 3) };
+        let b = UndefCause::UserUndef { span: span(0, 3) };
+        assert_ne!(a, b);
+    }
+
+    // ── Clone + Debug round-trip ──────────────────────────────────────────────
+
+    #[test]
+    fn clone_and_debug_work() {
+        let orig = UndefCause::SolveFailed { detail: "no progress: dim".to_string() };
+        let cloned = orig.clone();
+        assert_eq!(orig, cloned);
+        // Debug must produce a non-empty string without panicking.
+        let debug_str = format!("{:?}", cloned);
+        assert!(!debug_str.is_empty());
     }
 }

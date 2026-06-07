@@ -816,6 +816,29 @@ pub struct Engine {
     /// but the test hook will be silently absent there too.
     #[cfg(any(test, feature = "test-instrumentation"))]
     panic_on_eval_cells: std::collections::HashSet<ValueCellId>,
+    // ── undef-self-describing α (task 4321) ──────────────────────────────────
+    /// When `true`, `eval()` runs the post-eval `classify_undef_origins` pass
+    /// and stores the result in `last_undef_causes`.  Defaults to `false` so
+    /// the hot path pays zero overhead (no allocation, no classification) when
+    /// callers have not opted in.
+    ///
+    /// Set via `Engine::set_capture_undef_causes(bool)`.
+    /// Read via `Engine::undef_causes()`.
+    ///
+    /// Mirrors the `last_*` instrumentation-field convention (default-false,
+    /// always-present, writer site in `engine_eval.rs`, accessor in
+    /// `engine_admin.rs`).
+    capture_undef_causes: bool,
+    /// Per-cell `UndefCause` map from the most recent `eval()` call.
+    ///
+    /// Rebuilt from scratch on each `eval()` call when `capture_undef_causes`
+    /// is `true`; cleared (but not de-allocated) when `false`.
+    ///
+    /// Keyed by `ValueCellId` of the originating undef cell (see A3 in the
+    /// PRD: purely-propagated cells are absent — only originating cells record
+    /// a cause).  Exposed as `&HashMap<ValueCellId, UndefCause>` via
+    /// `Engine::undef_causes()`.
+    last_undef_causes: HashMap<ValueCellId, reify_ir::UndefCause>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
