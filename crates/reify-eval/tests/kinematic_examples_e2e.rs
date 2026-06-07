@@ -335,6 +335,100 @@ fn dock_pickup_build_with_occt_resolves_clearance() {
     );
 }
 
+/// OCCT-gated: asserts that the swept `clearances` cell in `dock_pickup.ri`
+/// (resolved via `flat_map(snaps, |s| [min_clearance(s, id_head, id_park)])`)
+/// produces a monotone non-increasing list that transitions from strictly
+/// positive clearance (head outside the dock) to zero/interfering (head inside
+/// the dock) as the prismatic joint advances.
+///
+/// Expected shape (step-4 geometry: 11-step sweep 0mm..500mm):
+///   - `clearances` is a `Value::List` of 11 SI-meter length Scalars.
+///   - `clearances[0]` > 1mm (≈ 280mm; head at origin, dock left face at 300mm).
+///   - Sequence is monotone non-increasing (each ≤ prev + 1e-6 m).
+///   - `clearances.last()` ≈ 0 m (< 1e-6; head fully inside the dock).
+///   - At least one strictly-positive (> 1e-3) AND at least one near-zero
+///     (< 1e-6) entry (the transition is present).
+///
+/// RED (step-3): `dock_pickup.ri` has no `clearances` cell yet → the
+/// `ValueCellId` lookup panics. GREEN after step-4 adds `clearances` and
+/// `flat_map` sweep geometry.
+#[test]
+fn dock_pickup_clearance_sweep() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping dock_pickup_clearance_sweep: OCCT not available");
+        return;
+    }
+
+    let compiled = dp_compiled();
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine =
+        reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())));
+    let result = engine.build(compiled, ExportFormat::Step);
+
+    // Look up the swept clearances cell.
+    let clearances_id = ValueCellId::new("DockPickup", "clearances");
+    let clearances_val = result
+        .values
+        .get(&clearances_id)
+        .expect("DockPickup.clearances not found (step-4 must add clearances = flat_map(snaps, |s| [min_clearance(s, id_head, id_park)]))");
+
+    // Must be a List of 11 elements.
+    let clearances: Vec<f64> = match clearances_val {
+        Value::List(items) => {
+            assert_eq!(
+                items.len(),
+                11,
+                "clearances must have 11 elements (11-step sweep), got {}",
+                items.len()
+            );
+            items
+                .iter()
+                .enumerate()
+                .map(|(i, v)| read_f64(v, &format!("DockPickup.clearances[{i}]")))
+                .collect()
+        }
+        other => panic!("DockPickup.clearances must be Value::List, got {other:?}"),
+    };
+
+    // clearances[0] must be strictly positive (≈ 0.280 m).
+    assert!(
+        clearances[0] > 1e-3,
+        "clearances[0] must be > 1mm (head clear of dock at home), got {} m",
+        clearances[0]
+    );
+
+    // Sequence must be monotone non-increasing.
+    for i in 1..clearances.len() {
+        assert!(
+            clearances[i] <= clearances[i - 1] + 1e-6,
+            "clearances must be monotone non-increasing: clearances[{}]={} > clearances[{}]={} + 1e-6",
+            i, clearances[i], i - 1, clearances[i - 1]
+        );
+    }
+
+    // At least one strictly positive entry (outside the dock).
+    let has_positive = clearances.iter().any(|&c| c > 1e-3);
+    assert!(
+        has_positive,
+        "clearances must have at least one entry > 1mm (head must start outside the dock)"
+    );
+
+    // Last entry must be near zero (head inside the dock → interfering).
+    let last = *clearances.last().expect("clearances is non-empty (len==11)");
+    assert!(
+        last < 1e-6,
+        "clearances.last() must be ≈ 0 (head inside dock at 500mm), got {last} m"
+    );
+
+    // At least one near-zero entry.
+    let has_near_zero = clearances.iter().any(|&c| c < 1e-6);
+    assert!(
+        has_near_zero,
+        "clearances must have at least one entry < 1e-6 m (head must end inside the dock)"
+    );
+}
+
 /// `engine.check()` on `dock_pickup.ri` produces a non-empty
 /// `constraint_results` list in which every entry is `Satisfaction::Satisfied`.
 ///
