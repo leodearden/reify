@@ -76,7 +76,7 @@ fn layer1_non_solver_origins_recorded() {
     // non-empty (i.e. the classifier captured a real source location).
     if let Some(UndefCause::Unbound { param, span }) = causes.get(&a_id) {
         assert_eq!(param, &a_id, "Unbound.param must equal the cell's ValueCellId");
-        assert!(span.len() > 0, "Unbound.span must be non-empty (real source location)");
+        assert!(!span.is_empty(), "Unbound.span must be non-empty (real source location)");
     }
 
     // "c" is a propagated let (c = a + b; both inputs undef) → None (A3).
