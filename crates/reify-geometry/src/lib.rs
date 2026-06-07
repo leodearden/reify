@@ -43,6 +43,11 @@ impl SingleKernelHolder {
     }
 }
 
+// FIXME: Every new optional `GeometryKernel` capability method (extract_edges,
+// make_compound, ingest_mesh, measure_mesh_deviation, attribute_hook, ...) MUST be
+// manually added and delegated here. The trait's default implementation silently
+// masks missing delegation — returning None/not-supported instead of the inner
+// kernel's real result.
 impl GeometryKernel for SingleKernelHolder {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         match self.kernel.as_mut() {
@@ -94,6 +99,13 @@ impl GeometryKernel for SingleKernelHolder {
             None => Err(GeometryError::OperationFailed(
                 "no geometry kernel registered".to_string(),
             )),
+        }
+    }
+
+    fn measure_mesh_deviation(&self, handle: GeometryHandleId, mesh: &Mesh) -> Option<f64> {
+        match self.kernel.as_ref() {
+            Some(k) => k.measure_mesh_deviation(handle, mesh),
+            None => None,
         }
     }
 }
