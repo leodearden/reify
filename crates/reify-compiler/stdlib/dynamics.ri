@@ -225,15 +225,16 @@ structure def MotionTrajectory {
 // inner-call type produces zero Error diagnostics — same load-bearing discard
 // documented on `gcode_import`.
 //
-// The mechanism / snapshot / joint params use `Real` placeholders (consistent
-// with the structure_def fields above and trajectory.ri `mechanism : Real`).
-// `q_dot` / `q_ddot` are per-joint generalized velocity / acceleration vectors.
+// The `q_dot` / `q_ddot` params are per-joint generalized velocity / acceleration
+// vectors. `mechanism` and `snapshot` use their proper nominal types now that task β
+// (mechanism-β, task 4311) has introduced `Type::StructureRef("Mechanism")` and
+// `Type::StructureRef("Snapshot")` for the §13 joint-constructor builtins.
 
 // inverse_dynamics_at_snapshot — RNEA inverse dynamics at a single FK snapshot
 // (PRD §5.2). Returns one `JointForce` per joint (revolute → ScalarTorque,
 // prismatic → ScalarForce, etc.). The snapshot's per-body `world_transform`s
 // pin the configuration; `q_dot` / `q_ddot` supply the velocity / acceleration.
-pub fn inverse_dynamics_at_snapshot(mechanism: Real, snapshot: Real, q_dot: List<JointValue>, q_ddot: List<JointValue>) -> List<JointForce> { inverse_dynamics_at_snapshot_lower(mechanism, snapshot, q_dot, q_ddot) }
+pub fn inverse_dynamics_at_snapshot(mechanism: Mechanism, snapshot: Snapshot, q_dot: List<JointValue>, q_ddot: List<JointValue>) -> List<JointForce> { inverse_dynamics_at_snapshot_lower(mechanism, snapshot, q_dot, q_ddot) }
 
 // inverse_dynamics — RNEA inverse dynamics over a whole trajectory (PRD §5.2).
 // Returns `List<List<JointForce>>` parallel to `trajectory.samples` (one inner
@@ -248,7 +249,7 @@ pub fn inverse_dynamics_at_snapshot(mechanism: Real, snapshot: Real, q_dot: List
 // (bit-identical result), exactly the modal_analysis_fns.ri:52 /
 // solver_buckling_fns.ri:49 pattern.
 @optimized("dynamics::inverse_dynamics")
-pub fn inverse_dynamics(mechanism: Real, trajectory: MotionTrajectory) -> List<List<JointForce>> { inverse_dynamics_lower(mechanism, trajectory) }
+pub fn inverse_dynamics(mechanism: Mechanism, trajectory: MotionTrajectory) -> List<List<JointForce>> { inverse_dynamics_lower(mechanism, trajectory) }
 
 // ramp_profile — rest-to-rest constant-acceleration trajectory (PRD §4.3).
 // With no max-velocity argument the profile is triangular: accelerate at
