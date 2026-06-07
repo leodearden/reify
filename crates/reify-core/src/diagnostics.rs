@@ -1153,6 +1153,45 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_FN_UNKNOWN_TYPE_PARAM`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FnUnknownTypeParam,
+    /// A generic function call binds the same type parameter to two different
+    /// concrete types across its arguments (call-site type-argument inference
+    /// conflict).
+    ///
+    /// Origin site: `crates/reify-compiler/src/expr.rs::compile_expr_guarded`
+    /// (the `OverloadResolution::Resolved` arm for a generic callee), emitted
+    /// when the call-site `type_compat::unify` pass returns
+    /// `Err(TypeArgConflict)` — i.e. an earlier argument bound type parameter
+    /// `P` to one type and a later argument requires a different one.
+    ///
+    /// Only reachable for generic user functions (`fn f<T>(…)`); non-generic
+    /// calls bypass unification entirely (INV-6).
+    ///
+    /// Canonical message form:
+    /// `"conflicting type arguments for type parameter '<P>' in call to '<name>': <existing> vs <incoming>"`
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FN_TYPE_ARG_CONFLICT`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FnTypeArgConflict,
+    /// A generic function call's type argument(s) cannot be inferred from the
+    /// supplied arguments, leaving the call's result type wholly undetermined.
+    ///
+    /// Origin site: `crates/reify-compiler/src/expr.rs::compile_expr_guarded`
+    /// (the `OverloadResolution::Resolved` arm for a generic callee), emitted
+    /// when the fully-substituted return type is a BARE top-level
+    /// `Type::TypeParam(_)` — nothing in the arguments pinned it (e.g.
+    /// `fn make<T>() -> T` called as `make()`). A NESTED unbound parameter
+    /// (e.g. `Field<TypeParam(D), Real>`) is tolerated, since an enclosing call
+    /// can still pin it.
+    ///
+    /// Only reachable for generic user functions (`fn f<T>(…)`); non-generic
+    /// calls keep `return_type.clone()` verbatim (INV-6).
+    ///
+    /// Canonical message form:
+    /// `"cannot infer type argument(s) for generic call to '<name>': result type is undetermined"`
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FN_TYPE_ARG_UNRESOLVED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FnTypeArgUnresolved,
     /// An expression references an unbound identifier at compile time.
     ///
     /// Origin sites (all carry this code):
