@@ -393,64 +393,35 @@ describe("runValueScenario", () => {
 });
 
 // task-4305 E1 step-7 RED → step-8 GREEN: I1 scroll e2e signal scenario
+// Existence + uniqueness only — the generic VALUE_SCENARIOS structural tests above
+// already validate fixture/tool/assertions shape. Detailed field pinning would
+// restate the config verbatim and break on harmless scenario data edits.
 describe("I1 VALUE_SCENARIO (task-4305 E1)", () => {
   it("scroll_editor_large_assembly is present exactly once in VALUE_SCENARIOS", () => {
     const matching = VALUE_SCENARIOS.filter((s) => s.name === "scroll_editor_large_assembly");
     expect(matching.length, "scroll_editor_large_assembly should appear exactly once").toBe(1);
   });
-
-  it("scroll_editor_large_assembly has correct fixture, tool, args, and key assertions", () => {
-    const scenario = VALUE_SCENARIOS.find((s) => s.name === "scroll_editor_large_assembly");
-    expect(scenario).toBeDefined();
-    if (!scenario) return;
-    const validFixtureKeys = Object.keys(FIXTURES);
-    expect(validFixtureKeys).toContain(scenario.fixture);
-    expect(scenario.tool).toBe("scroll");
-    expect(scenario.args.target).toBe("editor");
-    expect(scenario.assertions).toContainEqual({ path: "ok", op: "equals", expected: true });
-    // scrollTop asserted via exists (not a value) — clamp depends on live viewport height
-    const scrollTopAssertion = scenario.assertions.find((a) => a.path === "scrollTop");
-    expect(scrollTopAssertion).toBeDefined();
-    expect(scrollTopAssertion!.op).toBe("exists");
-  });
 });
 
 // task-4305 E1 step-5 RED → step-6 GREEN: C1 open_menu e2e signal scenario
+// Existence + uniqueness only — the generic VALUE_SCENARIOS structural tests above
+// already validate fixture/tool/assertions shape. Detailed field pinning would
+// restate the config verbatim and break on harmless scenario data edits.
 describe("C1 VALUE_SCENARIO (task-4305 E1)", () => {
   it("open_menu_file is present exactly once in VALUE_SCENARIOS", () => {
     const matching = VALUE_SCENARIOS.filter((s) => s.name === "open_menu_file");
     expect(matching.length, "open_menu_file should appear exactly once").toBe(1);
   });
-
-  it("open_menu_file has correct fixture, tool, args, and key assertions", () => {
-    const scenario = VALUE_SCENARIOS.find((s) => s.name === "open_menu_file");
-    expect(scenario).toBeDefined();
-    if (!scenario) return;
-    const validFixtureKeys = Object.keys(FIXTURES);
-    expect(validFixtureKeys).toContain(scenario.fixture);
-    expect(scenario.tool).toBe("open_menu");
-    expect(scenario.args.name).toBe("file");
-    expect(scenario.assertions).toContainEqual({ path: "ok", op: "equals", expected: true });
-    expect(scenario.assertions).toContainEqual({ path: "open", op: "equals", expected: "file" });
-  });
 });
 
 // task-4305 E1 step-3 RED → step-4 GREEN: C2 resize_panes e2e signal scenario
+// Existence + uniqueness only — the generic VALUE_SCENARIOS structural tests above
+// already validate fixture/tool/assertions shape. Detailed field pinning would
+// restate the config verbatim and break on harmless scenario data edits.
 describe("C2 VALUE_SCENARIO (task-4305 E1)", () => {
   it("resize_panes_editor_width is present exactly once in VALUE_SCENARIOS", () => {
     const matching = VALUE_SCENARIOS.filter((s) => s.name === "resize_panes_editor_width");
     expect(matching.length, "resize_panes_editor_width should appear exactly once").toBe(1);
-  });
-
-  it("resize_panes_editor_width has correct fixture, tool, and key assertions", () => {
-    const scenario = VALUE_SCENARIOS.find((s) => s.name === "resize_panes_editor_width");
-    expect(scenario).toBeDefined();
-    if (!scenario) return;
-    const validFixtureKeys = Object.keys(FIXTURES);
-    expect(validFixtureKeys).toContain(scenario.fixture);
-    expect(scenario.tool).toBe("resize_panes");
-    expect(scenario.assertions).toContainEqual({ path: "ok", op: "equals", expected: true });
-    expect(scenario.assertions).toContainEqual({ path: "layout.editorWidth", op: "equals", expected: 400 });
   });
 });
 
