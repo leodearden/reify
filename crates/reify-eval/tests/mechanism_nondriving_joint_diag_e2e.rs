@@ -15,7 +15,7 @@
 //! assertions below reflect the now-active contract.
 
 use reify_core::{DiagnosticCode, Severity};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib};
 
 /// A `.ri` source where `bind` receives a coupling joint.
 ///
@@ -71,17 +71,19 @@ structure def NondrivingSweep {
 }
 "#;
 
-/// `Engine::eval` must emit exactly one `E_MECHANISM_NONDRIVING_JOINT` Error
+/// The compiler must emit exactly one `E_MECHANISM_NONDRIVING_JOINT` Error
 /// diagnostic when the source contains `bind(coupling, value)`.
 ///
-/// Keyed on `DiagnosticCode`, not message text, for stability.
+/// With β's joint type signatures, `couple(...)` now resolves to
+/// `Type::StructureRef("Coupling")` at compile time, enabling the
+/// `detect_nondriving_joint_errors` check to fire during compilation rather
+/// than deferred to eval.  Keyed on `DiagnosticCode`, not message text, for
+/// stability.
 #[test]
 fn eval_emits_nondriving_joint_error_for_bind_coupling() {
-    let compiled = parse_and_compile_with_stdlib(NONDRIVING_BIND_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
+    let compiled = compile_source_with_stdlib(NONDRIVING_BIND_SOURCE);
 
-    let matching: Vec<_> = result
+    let matching: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| {
@@ -93,12 +95,12 @@ fn eval_emits_nondriving_joint_error_for_bind_coupling() {
     assert_eq!(
         matching.len(),
         1,
-        "Engine::eval must emit exactly one E_MECHANISM_NONDRIVING_JOINT Error diagnostic \
+        "compiler must emit exactly one E_MECHANISM_NONDRIVING_JOINT Error diagnostic \
          for bind(coupling, value); got {} matching diagnostic(s) out of {} total.\n\
          All diagnostics: {:#?}",
         matching.len(),
-        result.diagnostics.len(),
-        result.diagnostics,
+        compiled.diagnostics.len(),
+        compiled.diagnostics,
     );
 }
 
@@ -128,20 +130,20 @@ fn eval_emits_no_nondriving_joint_error_for_bind_prismatic() {
     );
 }
 
-/// `Engine::eval` must emit exactly one `E_MECHANISM_NONDRIVING_JOINT` Error
+/// The compiler must emit exactly one `E_MECHANISM_NONDRIVING_JOINT` Error
 /// diagnostic when the source contains `dim(coupling, range, steps)`, proving
 /// the seam covers the dim emission site as well as the bind site.
 ///
-/// The source has a single offending cell (`let d`), so exactly one diagnostic
-/// is expected — `== 1` (not `>= 1`) also pins the Value::Eq dedup behaviour so
-/// an accidental double-emission of the same error Map would fail the test.
+/// With β's joint type signatures, `couple(...)` now resolves to
+/// `Type::StructureRef("Coupling")` at compile time, so the check fires during
+/// compilation.  The source has a single offending cell (`let d`), so exactly
+/// one diagnostic is expected — `== 1` (not `>= 1`) also pins dedup behaviour
+/// so an accidental double-emission would fail the test.
 #[test]
 fn eval_emits_nondriving_joint_error_for_dim_coupling() {
-    let compiled = parse_and_compile_with_stdlib(NONDRIVING_DIM_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
+    let compiled = compile_source_with_stdlib(NONDRIVING_DIM_SOURCE);
 
-    let matching: Vec<_> = result
+    let matching: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| {
@@ -153,26 +155,27 @@ fn eval_emits_nondriving_joint_error_for_dim_coupling() {
     assert_eq!(
         matching.len(),
         1,
-        "Engine::eval must emit exactly one E_MECHANISM_NONDRIVING_JOINT Error diagnostic \
+        "compiler must emit exactly one E_MECHANISM_NONDRIVING_JOINT Error diagnostic \
          for dim(coupling, range, steps); got {} matching diagnostic(s) out of {} total.\n\
          All diagnostics: {:#?}",
         matching.len(),
-        result.diagnostics.len(),
-        result.diagnostics,
+        compiled.diagnostics.len(),
+        compiled.diagnostics,
     );
 }
 
-/// `Engine::eval` must emit exactly one `E_MECHANISM_NONDRIVING_JOINT` Error
+/// The compiler must emit exactly one `E_MECHANISM_NONDRIVING_JOINT` Error
 /// diagnostic when the source contains `sweep(m, coupling, range, steps)`,
-/// proving the seam covers the `sweep` emission site (sweep.rs:107) and not
-/// only `bind`/`dim`.
+/// proving the seam covers the `sweep` emission site and not only `bind`/`dim`.
+///
+/// With β's joint type signatures, `couple(...)` now resolves to
+/// `Type::StructureRef("Coupling")` at compile time, so the check fires during
+/// compilation rather than at eval.
 #[test]
 fn eval_emits_nondriving_joint_error_for_sweep_coupling() {
-    let compiled = parse_and_compile_with_stdlib(NONDRIVING_SWEEP_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
+    let compiled = compile_source_with_stdlib(NONDRIVING_SWEEP_SOURCE);
 
-    let matching: Vec<_> = result
+    let matching: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| {
@@ -184,11 +187,11 @@ fn eval_emits_nondriving_joint_error_for_sweep_coupling() {
     assert_eq!(
         matching.len(),
         1,
-        "Engine::eval must emit exactly one E_MECHANISM_NONDRIVING_JOINT Error diagnostic \
+        "compiler must emit exactly one E_MECHANISM_NONDRIVING_JOINT Error diagnostic \
          for sweep(m, coupling, range, steps); got {} matching diagnostic(s) out of {} total.\n\
          All diagnostics: {:#?}",
         matching.len(),
-        result.diagnostics.len(),
-        result.diagnostics,
+        compiled.diagnostics.len(),
+        compiled.diagnostics,
     );
 }
