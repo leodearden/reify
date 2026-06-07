@@ -601,6 +601,16 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     // per call (see doc-comment) requires the full table, not a name-keyed map.
     let resolution_functions: &[CompiledFunction] = &ctx.resolution_functions;
 
+    // Fast-path gate for type-param bound checking (task-4232 γ D5):
+    // compute ONCE whether any function in the resolution table has bounded
+    // type-params.  If not (e.g. non-generic sources like bracket_source, or any
+    // source compiled without user-defined generic functions), skip the per-root
+    // expression walk entirely.  This is O(|fns|) once vs O(|exprs| × |fns|)
+    // per invocation and returns the check overhead to zero for non-generic sources.
+    let has_bounded_generic_fns = resolution_functions.iter().any(|f| {
+        !f.type_params.is_empty() && f.type_params.iter().any(|tp| !tp.bounds.is_empty())
+    });
+
     // Collect diagnostics into a local vec to avoid borrow-checker conflicts
     // (we hold shared borrows on ctx.templates and ctx.resolution_functions via
     // template_registry / resolution_functions while also needing &mut ctx.diagnostics).
@@ -618,14 +628,18 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         // task 4232 (generic-fns γ D5): trait-bound validation on fn type-params.
         // For each UserFunctionCall resolving to a generic fn with bounded type-params,
         // re-derives the type-arg subst via unify and delegates to check_type_param_bounds.
-        check_expr_fn_type_param_bounds(
-            expr,
-            resolution_functions,
-            &template_registry,
-            &trait_registry,
-            span,
-            diags,
-        );
+        // Gated on `has_bounded_generic_fns` (computed once above) so non-generic
+        // sources pay zero per-expression overhead.
+        if has_bounded_generic_fns {
+            check_expr_fn_type_param_bounds(
+                expr,
+                resolution_functions,
+                &template_registry,
+                &trait_registry,
+                span,
+                diags,
+            );
+        }
         // task 4310 (mechanism γ): L2 compile-time DrivingJoint-bound check.
         // Rejects bind(couple(...), v) etc. with MechanismNonDrivingJoint.
         check_expr_mechanism_joint_bound(
