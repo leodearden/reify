@@ -989,11 +989,18 @@ fn resolve_joint_nominal_type(arg: &CompiledExpr) -> Option<String> {
 /// [`DiagnosticCode::MechanismNonDrivingJoint`] for each eval-builtin
 /// mechanism call whose joint argument resolves to a known non-driving joint type.
 ///
-/// ## Covered builtins (bind only for step-6; dim/sweep added in step-8)
+/// ## Covered builtins (task γ step-8)
 ///
 /// | Builtin | Arity condition | Joint arg index |
 /// |---------|-----------------|-----------------|
 /// | `bind`  | any             | 0               |
+/// | `dim`   | any             | 0               |
+/// | `sweep` | arity == 4      | 1               |
+///
+/// The arity-4 guard on `sweep` disambiguates the kinematic
+/// `sweep(mechanism, joint, range, steps)` from the geometry
+/// `sweep(profile, path)` (arity 2).  The geometry form is not a
+/// mechanism builtin and must not be checked.
 ///
 /// ## Joint-type resolution
 ///
@@ -1028,10 +1035,11 @@ pub(crate) fn check_expr_mechanism_joint_bound(
             return;
         };
         // Determine which argument position carries the joint.
-        // Step-6 scope: bind only (arg0).
-        // Step-8 extends to dim (arg0) and sweep@arity4 (arg1).
+        // bind/dim: arg0.  sweep@arity4 (kinematic): arg1.
+        // Arity-2 sweep = geometry (CSG) — skip.
         let joint_arg_idx: usize = match function.name.as_str() {
-            "bind" => 0,
+            "bind" | "dim" => 0,
+            "sweep" if args.len() == 4 => 1,
             _ => return,
         };
         let Some(joint_arg) = args.get(joint_arg_idx) else {
