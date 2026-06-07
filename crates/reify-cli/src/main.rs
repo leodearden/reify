@@ -1509,6 +1509,33 @@ mod tests {
         );
     }
 
+    /// Piece-1 force-link pin: asserts that `reify-kernel-manifold`'s
+    /// `inventory::submit!` fires inside this binary so the Manifold kernel
+    /// appears in the global registry.  This MUST be an in-`main.rs` unit test
+    /// because reify-cli is a `[[bin]]` crate — subprocess integration tests
+    /// can't observe the binary's link set.
+    ///
+    /// Manifold's `inventory::submit!` is unconditional (no `cfg(has_*)` gate),
+    /// so `"manifold"` is asserted without a runtime flag.  OCCT's submit is
+    /// `cfg(has_occt)`-gated, so we guard that assertion on
+    /// `reify_kernel_occt::OCCT_AVAILABLE`.
+    #[test]
+    fn manifold_kernel_is_force_linked_into_binary() {
+        let registry = reify_eval::collect_registry();
+        assert!(
+            registry.contains_key("manifold"),
+            "reify-kernel-manifold's inventory::submit! must land in this binary; \
+             \"manifold\" key is absent — check Cargo.toml dep + extern crate declaration",
+        );
+        if reify_kernel_occt::OCCT_AVAILABLE {
+            assert!(
+                registry.contains_key("occt"),
+                "OCCT_AVAILABLE is true but \"occt\" key missing from collect_registry() — \
+                 reify-kernel-occt inventory::submit! did not fire",
+            );
+        }
+    }
+
     #[test]
     fn uses_label_when_present() {
         let entries = vec![make_entry(
