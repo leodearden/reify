@@ -365,6 +365,61 @@ fn emit_outside_match_collision(
     collisions.insert(name.to_string());
 }
 
+/// Cross-check a structure `param`'s declared type against its initializer's inferred type.
+///
+/// Mirrors the analogous trait-let cross-check at `conformance/checker.rs:1813-1824`.
+/// Uses `type_compatible` (bidirectional; Int→Real widening; `Type::Error` anti-cascade)
+/// and is restricted to scalar-comparable declared types (`Real | Int | Scalar{..}`)
+/// to avoid false positives on geometry/trait/structure-ref params.
+///
+/// Called at the two authoritative param-with-default sites (top-level structure-param
+/// arm and port-member param arm).  NOT called at the ctor-lowering mirror pass
+/// (~entity.rs:4129-4161) which writes into `throwaway_diags` by design.
+fn check_param_default_type(
+    name: &str,
+    declared: &Type,
+    default_expr: Option<&CompiledExpr>,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Anti-cascade: if the declared type failed to resolve, a root-cause
+    // diagnostic was already emitted; skip to avoid a confusing secondary one.
+    if declared.is_error() {
+        return;
+    }
+    // Restrict to scalar-comparable types only.
+    // Complex declared types (Geometry, TraitObject, Vector, Tensor, StructureRef,
+    // List, …) legitimately produce apparent inference mismatches through
+    // compile_expr's paths and would false-positive here.
+    if !matches!(declared, Type::Real | Type::Int | Type::Scalar { .. }) {
+        return;
+    }
+    // No initializer — nothing to check.
+    let Some(default) = default_expr else {
+        return;
+    };
+    // `param x : Length = 1` — whole-number literal idiom.
+    // Int is accepted for any dimensioned Scalar (extends the Int→Real widening
+    // that type_compatible already provides for the Real case).
+    if matches!(declared, Type::Scalar { .. }) && matches!(default.result_type, Type::Int) {
+        return;
+    }
+    if !type_compatible(declared, &default.result_type) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "parameter '{}' declared `{}` but its initializer evaluates to `{}`; \
+                 declared type and initializer dimension must agree",
+                name, declared, default.result_type
+            ))
+            .with_code(DiagnosticCode::ParamDefaultTypeMismatch)
+            .with_label(DiagnosticLabel::new(
+                span,
+                "initializer dimension does not match declared type",
+            )),
+        );
+    }
+}
+
 /// Detect the E_OBJECTIVE_CONFLICT case (PRD §3.3/§6.3, task 4010).
 ///
 /// Returns `Some(Diagnostic)` iff all of the following hold:
@@ -1377,6 +1432,15 @@ pub(crate) fn compile_entity(
                         fixup_option_none_for_param(&mut compiled, &cell_type);
                         compiled
                     });
+
+                    // Site 1: top-level structure-param declared-vs-initializer check.
+                    check_param_default_type(
+                        &param.name,
+                        &cell_type,
+                        default_expr.as_ref(),
+                        param.span,
+                        diagnostics,
+                    );
 
                     ValueCellDecl {
                         id,
