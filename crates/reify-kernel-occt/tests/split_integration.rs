@@ -11,6 +11,28 @@
 //! The non-intersecting case uses plane_origin [0,0,0.05] (outside the box).
 //!
 //! All dimensions are in SI metres (kernel boundary convention).
+//!
+//! ## `#![cfg(has_occt)]` gate
+//!
+//! `has_occt` is emitted by `build.rs` whenever the OCCT shared libraries are
+//! found on the host (via `reify_build_utils::find(NativeDep::Occt)`). In the
+//! standard development and verify environments OCCT is always present, so these
+//! tests always compile and run — this is the same gate used by every other
+//! integration-test file in this crate (e.g. `apply_transform_integration.rs`,
+//! `sweep_guided_integration.rs`, `conformance_integration.rs`).
+//!
+//! The verify pipeline routes `reify-kernel-occt` through the OCCT-gated test
+//! runner (listed in `scripts/occt-touching-crates.txt`) with the serialisation
+//! lock, so `has_occt` IS set and the full BRepAlgoAPI_Splitter path IS
+//! exercised on every verify run.
+//!
+//! If a host lacks OCCT (e.g. a stripped CI image), `has_occt` is absent and
+//! this file compiles to an empty object. That is intentional — the crate's
+//! stub types (`src/stubs.rs`) replace the real kernel, and the
+//! non-OCCT-specific routing (default `execute_split` returning `Err`, mock
+//! kernel call paths) is covered by the eval-side unit tests in
+//! `crates/reify-eval/src/geometry_ops.rs` (`#[cfg(test)]` block), which run
+//! unconditionally and do not require OCCT.
 
 #![cfg(has_occt)]
 
