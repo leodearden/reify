@@ -288,3 +288,110 @@ structure def Test {
         diags
     );
 }
+
+// ── Coupling constructor aliases: gear / screw / rack_and_pinion ──────────────
+//
+// Path B maps the three thin-wrapper constructors (gear, screw, rack_and_pinion)
+// to the same "Coupling" nominal type as `couple`.  A regression in any of
+// those arms would silently allow non-driving coupling joints through the L2
+// guard.  These tests pin each arm explicitly.
+//
+// The arg shapes below are intentionally minimal (integer literals for
+// teeth counts, mm literal for lead/pitch_radius) — eval-level validation
+// of the coupling args is not the subject of these tests.  The diagnostic
+// filter is strict (MechanismNonDrivingJoint only), so incidental arity /
+// type-mismatch diagnostics from the builtin evaluation do not affect the count.
+
+/// `bind(gear(revolute(1.0), 10, 20), 5mm)` — gear wraps a revolute parent into
+/// a Coupling → Path-B resolution → "Coupling" → MechanismNonDrivingJoint.
+#[test]
+fn bind_gear_emits_mechanism_nondriving_joint_naming_coupling() {
+    let module = compile_source_with_stdlib(
+        r#"
+structure def Test {
+    let b = bind(gear(revolute(1.0), 10, 20), 5mm)
+}
+"#,
+    );
+    let diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .collect();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly 1 MechanismNonDrivingJoint for bind(gear(...)), \
+         got {}: {:?}",
+        diags.len(),
+        module.diagnostics
+    );
+    assert!(
+        diags[0].message.contains("Coupling"),
+        "diagnostic should name 'Coupling'; got: {}",
+        diags[0].message
+    );
+}
+
+/// `bind(screw(prismatic(1.0), 1mm), 5mm)` — screw wraps a prismatic parent
+/// into a Coupling → Path-B resolution → "Coupling" → MechanismNonDrivingJoint.
+#[test]
+fn bind_screw_emits_mechanism_nondriving_joint_naming_coupling() {
+    let module = compile_source_with_stdlib(
+        r#"
+structure def Test {
+    let b = bind(screw(prismatic(1.0), 1mm), 5mm)
+}
+"#,
+    );
+    let diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .collect();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly 1 MechanismNonDrivingJoint for bind(screw(...)), \
+         got {}: {:?}",
+        diags.len(),
+        module.diagnostics
+    );
+    assert!(
+        diags[0].message.contains("Coupling"),
+        "diagnostic should name 'Coupling'; got: {}",
+        diags[0].message
+    );
+}
+
+/// `bind(rack_and_pinion(prismatic(1.0), 5mm), 10mm)` — rack_and_pinion wraps
+/// a prismatic parent into a Coupling → Path-B → "Coupling" →
+/// MechanismNonDrivingJoint.
+#[test]
+fn bind_rack_and_pinion_emits_mechanism_nondriving_joint_naming_coupling() {
+    let module = compile_source_with_stdlib(
+        r#"
+structure def Test {
+    let b = bind(rack_and_pinion(prismatic(1.0), 5mm), 10mm)
+}
+"#,
+    );
+    let diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .collect();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly 1 MechanismNonDrivingJoint for bind(rack_and_pinion(...)), \
+         got {}: {:?}",
+        diags.len(),
+        module.diagnostics
+    );
+    assert!(
+        diags[0].message.contains("Coupling"),
+        "diagnostic should name 'Coupling'; got: {}",
+        diags[0].message
+    );
+}
