@@ -2587,6 +2587,15 @@ pub trait GeometryKernel: Send + Sync {
     /// Mesh vertices lie on the surface by construction and are excluded; only
     /// interior samples reveal chord error.
     ///
+    /// # Sampled lower bound — implication for γ (`RepresentationWithin`)
+    ///
+    /// With 4 samples per triangle the returned value is a **sampled lower
+    /// bound** on the true Hausdorff / chord deviation.  A mesh that actually
+    /// exceeds a tolerance can still pass if all 4 per-facet sample points
+    /// happen to land close to the surface.  Task γ consumers of this value
+    /// should document this limitation at the assertion site and, if tighter
+    /// guarantees are required, request denser sampling (deferred).
+    ///
     /// This is the B3 honest-absence default: non-OCCT kernels inherit `None`
     /// with zero per-impl edits, mirroring the established
     /// `extract_edges`/`make_compound`/`ingest_mesh` default-absent pattern.

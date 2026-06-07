@@ -230,7 +230,7 @@ fn b3_invalid_handle_returns_err() {
     );
 }
 
-// ── Step-3: actor-channel parity + dyn-trait reachability ────────────────────
+// ── Actor-channel parity + dyn-trait reachability ────────────────────────────
 //
 // These tests verify that `OcctKernelHandle::measure_mesh_deviation` routes the
 // measurement request correctly through the actor channel and returns the SAME
@@ -239,10 +239,6 @@ fn b3_invalid_handle_returns_err() {
 //
 // They also verify that the method is reachable through `&dyn GeometryKernel`,
 // returning `Some` (the OCCT handle overrides the default-absent trait method).
-//
-// These tests are RED because `OcctRequest::MeasureMeshDeviation`, the actor
-// handler, the `OcctKernelHandle` inherent method, and the trait override do
-// not yet exist (step-4 will implement them).
 
 /// Actor-channel parity: `OcctKernelHandle::measure_mesh_deviation` returns the
 /// same value as `OcctKernel::measure_mesh_deviation` for the same shape and mesh,
@@ -268,8 +264,6 @@ fn handle_deviation_matches_direct_kernel() {
     let handle_mesh = handle
         .tessellate(sphere_gh.id, coarse_tol)
         .expect("actor handle: tessellation should succeed");
-    // OcctKernelHandle::measure_mesh_deviation does not exist yet (step-4
-    // implements it) — this call makes the test RED.
     let handle_dev = handle
         .measure_mesh_deviation(sphere_gh.id, &handle_mesh)
         .expect("actor handle: measure_mesh_deviation should return Some");

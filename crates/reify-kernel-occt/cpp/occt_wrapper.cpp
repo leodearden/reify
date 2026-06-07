@@ -4567,6 +4567,14 @@ double measure_mesh_deviation(const OcctShape& shape, const TessResult& mesh) {
         const size_t n_verts = mesh.vertices.size() / 3;
         double max_dev = 0.0;
 
+        // Initialise the extrema solver once on the face compound; its BVH
+        // and projection structures (S1 side) are built once here and reused
+        // for every sample query via LoadS2 / Perform — avoiding repeated
+        // BRepExtrema construction across potentially thousands of triangles
+        // on fine meshes (4 calls per triangle × N triangles → 1 + 4N instead).
+        BRepExtrema_DistShapeShape dist;
+        dist.LoadS1(face_cmp);
+
         for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
             uint32_t i0 = mesh.indices[i];
             uint32_t i1 = mesh.indices[i + 1];
@@ -4612,10 +4620,10 @@ double measure_mesh_deviation(const OcctShape& shape, const TessResult& mesh) {
                     throw std::runtime_error(
                         "measure_mesh_deviation: vertex construction failed");
                 }
-                // Use the face compound (not shape.shape) so projection is to
-                // the analytical surface, not the solid interior.
-                BRepExtrema_DistShapeShape dist(face_cmp, vertex_maker.Vertex());
-                if (!dist.IsDone()) {
+                // Load the new query vertex as S2 and Perform; S1 (face
+                // compound) stays loaded — its BVH is reused per query.
+                dist.LoadS2(vertex_maker.Vertex());
+                if (!dist.Perform()) {
                     throw std::runtime_error(
                         "measure_mesh_deviation: BRepExtrema_DistShapeShape failed");
                 }

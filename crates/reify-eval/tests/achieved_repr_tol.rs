@@ -16,17 +16,6 @@
 //!   deviation strictly.
 //! - **B3** (honest absence): unknown occurrence name → `None`;
 //!   a never-realized subject is never `0.0`.
-//!
-//! # RED
-//!
-//! The `b1_box_achieved_tol_near_zero` and `b2_sphere_coarse_greater_than_fine`
-//! tests are RED until step-6 wires the recording into the tessellation
-//! closure (`geometry_ops.rs` `surface_subtree`). Pre-2 initialises
-//! `achieved_repr_tol` to an empty `BTreeMap`, so every `achieved_repr_tol`
-//! call returns `None` — the `.expect(…)` calls in those two tests panic.
-//!
-//! `b3_unknown_occurrence_yields_none` is GREEN from the start (empty map ⇒
-//! `None` for every key) and must remain GREEN after step-6.
 
 use reify_core::ModulePath;
 
@@ -83,9 +72,6 @@ fn make_occt_engine() -> reify_eval::Engine {
 /// The `#precision` pragma sets `module.default_tolerance`, which drives the
 /// per-realization tessellation budget via `compute_tessellation_budgets`.
 ///
-/// **RED** until step-6: currently `achieved_repr_tol` returns `None` for
-/// all occurrences, so `.expect(…)` panics.
-///
 /// # Anti-circularity note
 ///
 /// `measure_mesh_deviation` receives no tolerance argument — it cannot echo
@@ -118,23 +104,19 @@ structure Sphere {
 
     // --- Coarse engine ---
     let mut coarse_engine = make_occt_engine();
+    coarse_engine.set_capture_repr_tol(true);
     coarse_engine.tessellate_realizations(&coarse_compiled);
     let coarse_dev = coarse_engine
         .achieved_repr_tol("Sphere#realization[0]")
-        .expect(
-            "B2: coarse sphere should have Some achieved_repr_tol after \
-             tessellate_realizations (None ⇒ step-6 recording not yet wired)",
-        );
+        .expect("B2: coarse sphere should have Some achieved_repr_tol after tessellate_realizations");
 
     // --- Fine engine ---
     let mut fine_engine = make_occt_engine();
+    fine_engine.set_capture_repr_tol(true);
     fine_engine.tessellate_realizations(&fine_compiled);
     let fine_dev = fine_engine
         .achieved_repr_tol("Sphere#realization[0]")
-        .expect(
-            "B2: fine sphere should have Some achieved_repr_tol after \
-             tessellate_realizations (None ⇒ step-6 recording not yet wired)",
-        );
+        .expect("B2: fine sphere should have Some achieved_repr_tol after tessellate_realizations");
 
     // B3-numeric: both values must be finite and ≥ 0.
     assert!(
@@ -162,9 +144,6 @@ structure Sphere {
 /// deviation because all faces are planar. Interior sample points are exact
 /// convex combinations of coplanar f32 vertices; projected distance =
 /// pure f32 quantization (~1e-6 m at unit scale).
-///
-/// **RED** until step-6: currently `achieved_repr_tol` returns `None`, so
-/// `.expect(…)` panics.
 #[test]
 fn b1_box_achieved_tol_near_zero() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -182,14 +161,12 @@ structure Box {
 "#;
     let compiled = compile_no_errors(src, "box_b1");
     let mut engine = make_occt_engine();
+    engine.set_capture_repr_tol(true);
     engine.tessellate_realizations(&compiled);
 
     let dev = engine
         .achieved_repr_tol("Box#realization[0]")
-        .expect(
-            "B1: box should have Some achieved_repr_tol after tessellate_realizations \
-             (None ⇒ step-6 recording not yet wired)",
-        );
+        .expect("B1: box should have Some achieved_repr_tol after tessellate_realizations");
 
     assert!(
         dev >= 0.0,

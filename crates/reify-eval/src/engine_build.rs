@@ -2979,6 +2979,7 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            self.capture_repr_tol,
             &mut self.achieved_repr_tol,
         );
 
@@ -3319,11 +3320,17 @@ impl Engine {
         // fn's signature mirrors the disjoint-field-borrow shape already in
         // use for the other &mut params.
         dispatch_count: &mut usize,
+        // Determinacy β (task 4198): when `true`, `surface_subtree` calls
+        // `kernel.measure_mesh_deviation` and populates `achieved_repr_tol`.
+        // `false` by default — zero hot-path overhead when γ assertions
+        // (`RepresentationWithin`) are not active.  Mirrors `capture_undef_causes`.
+        capture_repr_tol: bool,
         // Determinacy β (task 4198): cleared at entry to each
         // `tessellate_realizations` / `tessellate_snapshot` call by the
         // caller; populated inside `surface_subtree` after each successful
-        // tessellation. Threaded here as a sibling of the other &mut tables
-        // (feature_tag_table / topology_attribute_table / swept_kind_table).
+        // tessellation when `capture_repr_tol` is true. Threaded here as a
+        // sibling of the other &mut tables (feature_tag_table /
+        // topology_attribute_table / swept_kind_table).
         achieved_repr_tol: &mut std::collections::BTreeMap<String, f64>,
     ) -> Vec<MeshSurface> {
         let mut meshes = Vec::new();
@@ -3569,6 +3576,7 @@ impl Engine {
                 meta_map,
                 &mut meshes,
                 diagnostics,
+                capture_repr_tol,
                 achieved_repr_tol,
             );
         }
@@ -3605,6 +3613,7 @@ impl Engine {
                 meta_map,
                 &mut meshes,
                 diagnostics,
+                capture_repr_tol,
                 achieved_repr_tol,
             );
             covered.extend(crate::geometry_ops::reachable_template_indices(
@@ -5601,6 +5610,7 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            self.capture_repr_tol,
             &mut self.achieved_repr_tol,
         );
 
@@ -10281,6 +10291,7 @@ mod tests {
             &[],               // ← OOB: empty demanded_tols
             &[vec![1e-4_f64]], // correctly shaped tessellation_budgets
             &mut 0usize,
+            false,
             &mut achieved_repr_tol,
         );
     }
@@ -10342,6 +10353,7 @@ mod tests {
             &[vec![None]], // correctly shaped demanded_tols
             &[],           // ← OOB: empty tessellation_budgets
             &mut 0usize,
+            false,
             &mut achieved_repr_tol,
         );
     }

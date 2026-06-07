@@ -5784,12 +5784,17 @@ pub(crate) fn surface_subtree(
     meta_map: &HashMap<String, HashMap<String, String>>,
     meshes: &mut Vec<crate::MeshSurface>,
     diagnostics: &mut Vec<Diagnostic>,
+    // Determinacy β (task 4198): when `true`, call
+    // `kernel.measure_mesh_deviation` for each successfully tessellated
+    // occurrence and insert the result into `achieved_repr_tol`. `false`
+    // by default — zero overhead when γ assertions are not active.
+    capture_repr_tol: bool,
     // Determinacy β (task 4198): per-build map from realized-occurrence name
     // ("{entity}#realization[{index}]") to sampled max facet-chord deviation
     // in SI metres. Populated here (the unique site holding kernel + placed_id
-    // + fresh mesh + entity_path simultaneously). Recording is skip-on-None
-    // and skip-on-empty-mesh so the map never contains misleading 0.0 entries
-    // (honest absence = missing key, B3).
+    // + fresh mesh + entity_path simultaneously) when `capture_repr_tol` is
+    // true. Recording is skip-on-None and skip-on-empty-mesh so the map never
+    // contains misleading 0.0 entries (honest absence = missing key, B3).
     achieved_repr_tol: &mut BTreeMap<String, f64>,
 ) {
     walk_placed_realizations(
@@ -5816,13 +5821,17 @@ pub(crate) fn surface_subtree(
                 Ok(mesh) => {
                     // Determinacy β (task 4198): record the sampled max
                     // facet-chord deviation BEFORE moving entity_path into
-                    // MeshSurface. Only record for non-empty meshes — an empty
-                    // mesh yields honest absence (missing key), never 0.0.
+                    // MeshSurface. Gated on `capture_repr_tol` so the hot
+                    // path pays zero overhead (no BRepExtrema projection,
+                    // no actor round-trip) when γ assertions are not active.
+                    // Only record for non-empty meshes — an empty mesh yields
+                    // honest absence (missing key), never 0.0.
                     // measure_mesh_deviation returns None for non-OCCT kernels
                     // (default-absent trait method, B3). Anti-circularity: the
                     // metric takes no tolerance argument and measures actual
                     // facet-chord error, NOT the configured deflection budget.
-                    if !mesh.indices.is_empty()
+                    if capture_repr_tol
+                        && !mesh.indices.is_empty()
                         && let Some(dev) = kernel.measure_mesh_deviation(placed_id, &mesh)
                     {
                         achieved_repr_tol.insert(entity_path.clone(), dev);

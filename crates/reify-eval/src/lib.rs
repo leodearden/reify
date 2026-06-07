@@ -829,6 +829,18 @@ pub struct Engine {
     /// always-present, writer site in `engine_eval.rs`, accessor in
     /// `engine_admin.rs`).
     capture_undef_causes: bool,
+    /// When `true`, `tessellate_realizations()` / `tessellate_snapshot()` call
+    /// `kernel.measure_mesh_deviation(placed_id, &mesh)` for each successfully
+    /// tessellated occurrence and record the result in [`Self::achieved_repr_tol`].
+    /// Defaults to `false` so the hot path pays zero overhead (no BRepExtrema
+    /// projection, no channel round-trip) when γ assertions are not active.
+    ///
+    /// Set via `Engine::set_capture_repr_tol(bool)`.
+    /// Read via `Engine::achieved_repr_tol()`.
+    ///
+    /// Mirrors the `capture_undef_causes` / `set_capture_undef_causes` pattern:
+    /// default-false, always-present field, setter in `engine_admin.rs`.
+    capture_repr_tol: bool,
     /// Per-cell `UndefCause` map from the most recent `eval()` call.
     ///
     /// Rebuilt from scratch on each `eval()` call when `capture_undef_causes`
