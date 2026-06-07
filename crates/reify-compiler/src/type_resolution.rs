@@ -2548,4 +2548,135 @@ mod tests {
             "\"DatumRef\" should resolve to Type::Geometry (datum-reference handle aliases the geometry-handle type)"
         );
     }
+
+    // ── task 4231 β: substitute_type_params (return-type substitution) ──────
+    //
+    // Pure-function unit tests for the resolved-`Type`-walk that rewrites
+    // `Type::TypeParam` leaves from a name→Type substitution map (PRD D3).
+
+    /// Build a substitution map from (name, Type) pairs.
+    fn subst_of(pairs: &[(&str, Type)]) -> HashMap<String, Type> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn substitute_bare_type_param_bound() {
+        // (a) bare TypeParam("T") with {T: Real} → Real.
+        let subst = subst_of(&[("T", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(&Type::TypeParam("T".to_string()), &subst),
+            Type::Real
+        );
+    }
+
+    #[test]
+    fn substitute_unbound_type_param_passthrough() {
+        // (b) unbound TypeParam("D") with {C: Real} → TypeParam("D") unchanged.
+        let subst = subst_of(&[("C", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(&Type::TypeParam("D".to_string()), &subst),
+            Type::TypeParam("D".to_string())
+        );
+    }
+
+    #[test]
+    fn substitute_inside_list() {
+        // (c) List(TypeParam("T")) with {T: Int} → List(Int).
+        let subst = subst_of(&[("T", Type::Int)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::List(Box::new(Type::TypeParam("T".to_string()))),
+                &subst
+            ),
+            Type::List(Box::new(Type::Int))
+        );
+    }
+
+    #[test]
+    fn substitute_field_partial() {
+        // (d) Field{domain: TypeParam("D"), codomain: TypeParam("C")} with
+        //     {C: Real} → Field{domain: TypeParam("D"), codomain: Real}.
+        //     D stays unbound (nested partial substitution).
+        let subst = subst_of(&[("C", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Field {
+                    domain: Box::new(Type::TypeParam("D".to_string())),
+                    codomain: Box::new(Type::TypeParam("C".to_string())),
+                },
+                &subst
+            ),
+            Type::Field {
+                domain: Box::new(Type::TypeParam("D".to_string())),
+                codomain: Box::new(Type::Real),
+            }
+        );
+    }
+
+    #[test]
+    fn substitute_map_both_bound() {
+        // (e) Map(TypeParam("K"), TypeParam("V")) both bound → Map of concretes.
+        let subst = subst_of(&[("K", Type::String), ("V", Type::Int)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Map(
+                    Box::new(Type::TypeParam("K".to_string())),
+                    Box::new(Type::TypeParam("V".to_string())),
+                ),
+                &subst
+            ),
+            Type::Map(Box::new(Type::String), Box::new(Type::Int))
+        );
+    }
+
+    #[test]
+    fn substitute_function_params_and_return() {
+        // (f) Function{params:[TypeParam("T")], return_type: List(TypeParam("T"))}
+        //     with {T: Real} → both positions substituted.
+        let subst = subst_of(&[("T", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Function {
+                    params: vec![Type::TypeParam("T".to_string())],
+                    return_type: Box::new(Type::List(Box::new(Type::TypeParam("T".to_string())))),
+                },
+                &subst
+            ),
+            Type::Function {
+                params: vec![Type::Real],
+                return_type: Box::new(Type::List(Box::new(Type::Real))),
+            }
+        );
+    }
+
+    #[test]
+    fn substitute_recurses_into_quantity() {
+        // (g) Tensor{rank, n, quantity: TypeParam("Q")} recurses into quantity.
+        let subst = subst_of(&[("Q", Type::length())]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity: Box::new(Type::TypeParam("Q".to_string())),
+                },
+                &subst
+            ),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::length()),
+            }
+        );
+    }
+
+    #[test]
+    fn substitute_non_typeparam_leaf_identity() {
+        // (h) non-typeparam leaf (Int) with empty subst → identity.
+        let subst = subst_of(&[]);
+        assert_eq!(substitute_type_params(&Type::Int, &subst), Type::Int);
+    }
 }
