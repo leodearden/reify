@@ -1415,6 +1415,66 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
 
       return { ok: true };
     },
+
+    element_screenshot: async (params) => {
+      const testId = params.testId;
+      if (!testId || typeof testId !== 'string') {
+        return { error: 'testId is required' };
+      }
+
+      // CSS.escape may not be available in all environments (e.g. jsdom).
+      const escaped =
+        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+          ? CSS.escape(testId)
+          : testId.replace(/["\\]/g, '\\$&');
+      const el = document.querySelector(`[data-testid="${escaped}"]`);
+      if (!el) {
+        return { error: `element with data-testid="${testId}" not found` };
+      }
+
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return { error: 'element has zero area' };
+      }
+
+      const dpr = window.devicePixelRatio || 1;
+
+      // Capture the full window.
+      const dataUrl = await toPng(document.documentElement, { cacheBust: true });
+
+      // Load the full-window image and crop to the element's DPR-scaled bounds.
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image as HTMLImageElement);
+        image.onerror = reject;
+        image.src = dataUrl;
+      });
+
+      const canvasW = Math.round(rect.width * dpr);
+      const canvasH = Math.round(rect.height * dpr);
+      const canvas = document.createElement('canvas');
+      canvas.width = canvasW;
+      canvas.height = canvasH;
+      const ctx2d = canvas.getContext('2d') as CanvasRenderingContext2D;
+      ctx2d.drawImage(
+        img,
+        rect.x * dpr,
+        rect.y * dpr,
+        rect.width * dpr,
+        rect.height * dpr,
+        0,
+        0,
+        canvasW,
+        canvasH,
+      );
+
+      const cropped = canvas.toDataURL('image/png');
+      if (cropped.length > MAX_SCREENSHOT_CHARS) {
+        return { error: 'screenshot too large', size: cropped.length, limit: MAX_SCREENSHOT_CHARS };
+      }
+
+      return { data: cropped };
+    },
   };
 }
 

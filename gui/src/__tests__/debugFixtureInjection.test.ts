@@ -341,26 +341,22 @@ describe('element_screenshot: bridge handler', () => {
     });
 
     // Stub global Image so that setting .src fires onload synchronously.
+    // IMPORTANT: do NOT add `src` as a class field — class fields create own
+    // properties on each instance that shadow the prototype getter/setter.
     originalImage = (globalThis as any).Image;
-    (globalThis as any).Image = class FakeImage {
-      public src = '';
-      public onload: (() => void) | null = null;
-      set _src(v: string) {
-        this.src = v;
-        if (this.onload) this.onload();
-      }
-    };
-    // Override the property so setting .src on a FakeImage instance triggers onload.
-    Object.defineProperty((globalThis as any).Image.prototype, 'src', {
+    class FakeImage {
+      onload: (() => void) | null = null;
+      onerror: ((err?: unknown) => void) | null = null;
+    }
+    Object.defineProperty(FakeImage.prototype, 'src', {
       configurable: true,
-      set(v: string) {
-        (this as any)._srcValue = v;
-        if (this.onload) this.onload();
+      set(_v: string) {
+        // Call onload synchronously so the handler Promise resolves in this tick.
+        if ((this as any).onload) (this as any).onload();
       },
-      get() {
-        return (this as any)._srcValue ?? '';
-      },
+      get() { return ''; },
     });
+    (globalThis as any).Image = FakeImage;
 
     // Reset devicePixelRatio to 1 as default; individual tests may override.
     Object.defineProperty(window, 'devicePixelRatio', {
