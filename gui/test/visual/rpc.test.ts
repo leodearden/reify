@@ -102,4 +102,46 @@ describe("parseRpcResponse", () => {
       expect(result.error).toBe("text content missing text field");
     }
   });
+
+  // task-4305 E1: in-band {error:<string>} envelope — debug handlers return failures as
+  // Ok(json!({"error":...})) (no MCP isError flag), so the error rides inside the text
+  // content block and must be mapped to {ok:false, error} rather than silently swallowed.
+  it("(i) text content carrying {\"error\":\"timeout\"} → ok:false, error:\"timeout\"", () => {
+    const envelope = {
+      result: {
+        content: [{ type: "text", text: '{"error":"timeout"}' }],
+      },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("timeout");
+    }
+  });
+
+  it("(j) text content carrying {\"error\":\"engine_phase\",\"phase\":\"error\"} → ok:false, error:\"engine_phase\"", () => {
+    const envelope = {
+      result: {
+        content: [{ type: "text", text: '{"error":"engine_phase","phase":"error"}' }],
+      },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("engine_phase");
+    }
+  });
+
+  it("(k) regression guard: text content {\"meshCount\":1} (no error field) → ok:true, value:{meshCount:1}", () => {
+    const envelope = {
+      result: {
+        content: [{ type: "text", text: '{"meshCount":1}' }],
+      },
+    };
+    const result = parseRpcResponse(envelope);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual({ meshCount: 1 });
+    }
+  });
 });
