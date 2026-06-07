@@ -377,7 +377,14 @@ describe('orbit_camera / pan_camera / zoom_camera: bridge handlers (real OrbitCo
 
   // ── pan_camera ────────────────────────────────────────────────────────────
 
-  it('pan_camera {dx:50,dy:0} → ok, target and camera.position all finite', async () => {
+  it('pan_camera {dx:50,dy:0} → ok, target moved and all components finite', async () => {
+    // Capture the target's x before panning (initial target is at origin, x=0).
+    // Camera at (0,5,5) → right vector (1,0,0), so pan(50,0) shifts target.x by a
+    // non-zero amount proportional to 50/clientHeight.  A no-op (dx/dy dropped, or
+    // update() skipped) would still return finite numbers but leave target unchanged,
+    // so we check the delta explicitly — mirrors orbit_camera's azimuthDelta>0 check.
+    const targetX0 = (window.__REIFY_DEBUG__!.viewport as any).controls.target.x;
+
     const result = await dispatchAndGetResult(capturedHandler!, 20, 'pan_camera', {
       dx: 50,
       dy: 0,
@@ -391,6 +398,8 @@ describe('orbit_camera / pan_camera / zoom_camera: bridge handlers (real OrbitCo
     expect(Number.isFinite(result.camera.position.x)).toBe(true);
     expect(Number.isFinite(result.camera.position.y)).toBe(true);
     expect(Number.isFinite(result.camera.position.z)).toBe(true);
+    // Assert pan actually moved the target (not a no-op regression)
+    expect(Math.abs(result.target.x - targetX0)).toBeGreaterThan(0);
   });
 
   it('pan_camera unknown viewportId → {error}', async () => {
