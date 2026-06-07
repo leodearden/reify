@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use reify_core::diagnostics::DiagnosticCode;
+use reify_core::diagnostics::{DiagnosticCode, SourceSpan};
 use reify_core::dimension::DimensionVector;
 use crate::expr::CompiledExpr;
 use reify_core::hash::ContentHash;
@@ -3059,6 +3059,75 @@ pub enum DeterminacyState {
     Provisional,
     /// Value is marked auto — to be resolved by the constraint solver.
     Auto,
+}
+
+/// WHY a value cell is `undef` — per-cell origin captured by the engine's
+/// post-eval classification pass when `capture_undef_causes` is enabled.
+///
+/// # Task scope
+/// This enum is defined in full up-front so task γ (op-sink) can add
+/// `OpContractFailed` construction without any enum churn.  Task α
+/// (this task) constructs the four Layer-1 variants only;
+/// `OpContractFailed` is reserved for task γ.
+///
+/// # PRD references
+/// - §9.2.9 "Tracing" substrate
+/// - A1 TRANSPARENCY: recorded in a parallel side-map, never on `Value`
+/// - PRD Q4: `Eq + Hash` enables β's dedup-by-(kind, originating-cell)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum UndefCause {
+    /// The cell is an unbound required param with no default expression and no
+    /// caller-supplied override.  The cell is absent from `EvalResult.values`
+    /// but present in `snapshot.values` as `(Undef, Undetermined)` via the
+    /// pre-seed in `Snapshot::from_compiled_module`.
+    Unbound {
+        /// The `ValueCellId` of the unbound param.
+        param: ValueCellId,
+        /// Source span of the param declaration.
+        span: SourceSpan,
+    },
+    /// The cell is an `auto` (or `Provisional`) param that has not yet been
+    /// resolved by the constraint solver — either because no solver was
+    /// attached to the engine, or because the template's constraint problem
+    /// yielded no solution and the cell was not touched.
+    ///
+    /// Distinguished from `SolveFailed`: here the solver was either absent or
+    /// returned `Solved` (updating other cells), but this cell stayed `Undef`.
+    AwaitingSolve {
+        /// The `ValueCellId` of the unsolved auto param.
+        param: ValueCellId,
+    },
+    /// The cell is an `auto` (or `Provisional`) param whose template's
+    /// constraint solve explicitly failed (`SolveResult::Infeasible` or
+    /// `SolveResult::NoProgress`).
+    ///
+    /// `detail` is a coarse honest string sourced from the actual
+    /// `SolveResult` (§8.3 — no fabricated detail):
+    /// - `"infeasible"` for `SolveResult::Infeasible`
+    /// - `"no progress: <reason>"` for `SolveResult::NoProgress`
+    SolveFailed {
+        /// Coarse description of the solve failure (never fabricated).
+        detail: String,
+    },
+    /// The cell's default expression evaluated successfully (all inputs were
+    /// determined) but the op returned `Undef` — typically a type/contract
+    /// violation in a built-in or user-defined op.
+    ///
+    /// **Constructed by task γ (the op-sink) only.**  Task α records nothing
+    /// for cells that fall into this branch; the variant exists now so γ can
+    /// construct it without editing the enum.
+    OpContractFailed {
+        /// Diagnostic code identifying the violated contract.
+        code: DiagnosticCode,
+        /// Source span of the offending expression.
+        span: SourceSpan,
+    },
+    /// The cell has an explicit `= undef` default expression (i.e. the author
+    /// deliberately wrote `undef` as the param default).
+    UserUndef {
+        /// Source span of the `undef` literal in the default expression.
+        span: SourceSpan,
+    },
 }
 
 /// The satisfaction state of a constraint.
