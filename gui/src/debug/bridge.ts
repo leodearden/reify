@@ -1169,6 +1169,168 @@ function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHandler> {
       const loc = await lsp.gotoDefinition(uri, line, col);
       return { uri: loc?.uri ?? null, range: loc?.range ?? null, found: loc !== null };
     },
+
+    // --- I2: canvas-interaction tools (task-4300) ---
+
+    /**
+     * Raycast at CSS-px coords (clientX/clientY from window origin) and return the
+     * first-hit entity.  QUERY ONLY — never mutates selection state.
+     * Omitted x/y → canvas centre (rect.left+rect.width/2, rect.top+rect.height/2).
+     * Lazy import of Raycaster/Vector2 avoids polluting the top-level three import
+     * (sibling tests vi.mock('three') with only {Box3,Vector3}).
+     */
+    pick_entity_at: async (params) => {
+      const picked = pickViewport(ctx, params);
+      if ('error' in picked) return picked;
+      const vp = picked.viewport;
+
+      const rawX = params.x;
+      const rawY = params.y;
+
+      // If either coord is provided, require BOTH to be finite numbers.
+      if (rawX !== undefined || rawY !== undefined) {
+        if (!isFiniteNumber(rawX) || !isFiniteNumber(rawY)) {
+          return { error: 'x and y must be finite numbers' };
+        }
+      }
+
+      const rect = vp.renderer.domElement.getBoundingClientRect();
+      // Default to canvas centre when both coords are omitted.
+      const cx = isFiniteNumber(rawX) ? rawX : rect.left + rect.width / 2;
+      const cy = isFiniteNumber(rawY) ? rawY : rect.top + rect.height / 2;
+
+      // Lazy import: top-level Raycaster/Vector2 would conflict with sibling
+      // test files that vi.mock('three') with only {Box3,Vector3}.
+      const { Raycaster, Vector2 } = await import('three');
+      const ndc = new Vector2(
+        ((cx - rect.left) / rect.width) * 2 - 1,
+        -((cy - rect.top) / rect.height) * 2 + 1,
+      );
+      const rc = new Raycaster();
+      (rc as any).firstHitOnly = true;
+      rc.setFromCamera(ndc, vp.camera);
+
+      const meshes = Array.from(vp.getMeshes().values()) as import('three').Object3D[];
+      const hits = rc.intersectObjects(meshes);
+
+      if (hits.length === 0) return { hit: false };
+      const h = hits[0];
+      return {
+        hit: true,
+        entityPath: h.object.name,
+        point: { x: h.point.x, y: h.point.y, z: h.point.z },
+        distance: h.distance,
+      };
+    },
+
+    /**
+     * Rotate the camera via OrbitControls.rotateLeft/rotateUp.
+     * dazimuth / delevation are in RADIANS (default 0).
+     * Each public method calls controls.update() internally — no extra update() call.
+     * Returns observed azimuth/polar deltas so single-tool harness can assert change.
+     */
+    orbit_camera: (params) => {
+      const picked = pickViewport(ctx, params);
+      if ('error' in picked) return picked;
+      const vp = picked.viewport;
+      if (!vp.controls) return { error: 'controls not available' };
+
+      const rawDaz = params.dazimuth;
+      const rawDel = params.delevation;
+      if (rawDaz !== undefined && !isFiniteNumber(rawDaz)) {
+        return { error: 'dazimuth must be a finite number' };
+      }
+      if (rawDel !== undefined && !isFiniteNumber(rawDel)) {
+        return { error: 'delevation must be a finite number' };
+      }
+      const dazimuth = isFiniteNumber(rawDaz) ? rawDaz : 0;
+      const delevation = isFiniteNumber(rawDel) ? rawDel : 0;
+
+      const az0 = vp.controls.getAzimuthalAngle();
+      const po0 = vp.controls.getPolarAngle();
+
+      // rotateLeft/rotateUp each call controls.update() internally.
+      vp.controls.rotateLeft(dazimuth);
+      vp.controls.rotateUp(delevation);
+      vp.renderer.render(vp.scene, vp.camera);
+
+      const az1 = vp.controls.getAzimuthalAngle();
+      const po1 = vp.controls.getPolarAngle();
+
+      return {
+        ok: true,
+        azimuth: az1,
+        polar: po1,
+        azimuthDelta: Math.abs(az1 - az0),
+        polarDelta: Math.abs(po1 - po0),
+        camera: { position: { x: vp.camera.position.x, y: vp.camera.position.y, z: vp.camera.position.z } },
+      };
+    },
+
+    /**
+     * Pan the camera via OrbitControls.pan(dx, dy).
+     * dx/dy are in CSS pixels (default 0).
+     * pan() calls controls.update() internally — no extra update() call.
+     */
+    pan_camera: (params) => {
+      const picked = pickViewport(ctx, params);
+      if ('error' in picked) return picked;
+      const vp = picked.viewport;
+      if (!vp.controls) return { error: 'controls not available' };
+
+      const rawDx = params.dx;
+      const rawDy = params.dy;
+      if (rawDx !== undefined && !isFiniteNumber(rawDx)) {
+        return { error: 'dx must be a finite number' };
+      }
+      if (rawDy !== undefined && !isFiniteNumber(rawDy)) {
+        return { error: 'dy must be a finite number' };
+      }
+      const dx = isFiniteNumber(rawDx) ? rawDx : 0;
+      const dy = isFiniteNumber(rawDy) ? rawDy : 0;
+
+      // pan() calls controls.update() internally.
+      vp.controls.pan(dx, dy);
+      vp.renderer.render(vp.scene, vp.camera);
+
+      return {
+        ok: true,
+        target: { x: vp.controls.target.x, y: vp.controls.target.y, z: vp.controls.target.z },
+        camera: { position: { x: vp.camera.position.x, y: vp.camera.position.y, z: vp.camera.position.z } },
+      };
+    },
+
+    /**
+     * Zoom the camera via OrbitControls.dollyIn(scale).
+     * scale > 1 → farther, scale < 1 → closer; scale must be finite and > 0.
+     * dollyIn(scale) multiplies orbit radius by scale (verified vs three 0.183.2
+     * OrbitControls.js: update() radius *= _scale; _dollyIn _scale *= dollyScale).
+     * dollyIn() calls controls.update() internally — no extra update() call.
+     */
+    zoom_camera: (params) => {
+      const picked = pickViewport(ctx, params);
+      if ('error' in picked) return picked;
+      const vp = picked.viewport;
+      if (!vp.controls) return { error: 'controls not available' };
+
+      const rawScale = params.scale;
+      if (!isFiniteNumber(rawScale) || rawScale <= 0) {
+        return { error: 'scale must be a positive finite number' };
+      }
+
+      const d0 = vp.controls.getDistance();
+      // dollyIn() calls controls.update() internally.
+      vp.controls.dollyIn(rawScale);
+      vp.renderer.render(vp.scene, vp.camera);
+      const d1 = vp.controls.getDistance();
+
+      return {
+        ok: true,
+        distance: d1,
+        distanceDelta: Math.abs(d1 - d0),
+        camera: { position: { x: vp.camera.position.x, y: vp.camera.position.y, z: vp.camera.position.z } },
+      };
+    },
   };
 }
 

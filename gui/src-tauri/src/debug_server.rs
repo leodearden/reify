@@ -722,6 +722,101 @@ fn tool_defs() -> Vec<ToolDef> {
                 }
             }),
         },
+        // task-4300 I2: canvas interaction tools — frontend-mediated (no dispatch arm needed;
+        // the default `_ =>` arm at :817-821 routes unknown names to DebugBridge::query_frontend).
+        ToolDef {
+            name: "pick_entity_at",
+            description: "Raycast at canvas CSS-px coords and return the entity hit (if any). \
+                          PURE QUERY — does NOT mutate selection (select_entity covers the mutate case). \
+                          Coords are CSS-logical-px from window origin (clientX/clientY). \
+                          Omitted x/y default to canvas center (NDC origin, ray through look-at target). \
+                          Returns {hit:true, entityPath, point:{x,y,z}, distance} on hit; \
+                          {hit:false} on miss; {error} for unknown viewport or non-finite coords.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "x": {
+                        "type": "number",
+                        "description": "CSS-px x coordinate from window origin (clientX). Omit for canvas center."
+                    },
+                    "y": {
+                        "type": "number",
+                        "description": "CSS-px y coordinate from window origin (clientY). Omit for canvas center."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "orbit_camera",
+            description: "Drive the viewport camera via OrbitControls' public rotateLeft/rotateUp API. \
+                          Units are RADIANS of azimuth/elevation delta (reproducible, resolution-independent). \
+                          Omitted deltas default to 0. \
+                          Returns {ok, azimuth, polar, azimuthDelta, polarDelta, camera:{position}}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "dazimuth": {
+                        "type": "number",
+                        "description": "Azimuth (yaw) delta in radians. Positive = rotate left. Defaults to 0."
+                    },
+                    "delevation": {
+                        "type": "number",
+                        "description": "Elevation (pitch) delta in radians. Positive = rotate up. Defaults to 0."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "pan_camera",
+            description: "Pan the viewport camera via OrbitControls' public pan API. \
+                          Units are pixels. Omitted deltas default to 0. \
+                          Returns {ok, target:{x,y,z}, camera:{position}}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "dx": {
+                        "type": "number",
+                        "description": "Horizontal pan in pixels. Positive = pan right. Defaults to 0."
+                    },
+                    "dy": {
+                        "type": "number",
+                        "description": "Vertical pan in pixels. Positive = pan down. Defaults to 0."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "zoom_camera",
+            description: "Zoom the viewport camera via OrbitControls' public dollyIn API. \
+                          scale is a multiplicative distance factor: scale>1 moves farther, scale<1 closer. \
+                          (dollyIn(scale) multiplies the orbit radius by scale per OrbitControls internals.) \
+                          Returns {ok, distance, distanceDelta, camera:{position}}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "scale": {
+                        "type": "number",
+                        "description": "Multiplicative distance scale factor. Must be finite and >0. scale>1 = farther, scale<1 = closer."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -1935,6 +2030,11 @@ mod tests {
             "screenshot_window",
             "fit_to_view",
             "set_camera",
+            // task-4300 I2: canvas interaction tools
+            "pick_entity_at",
+            "orbit_camera",
+            "pan_camera",
+            "zoom_camera",
         ];
         for tool_name in tools {
             let entry = defs
@@ -2315,6 +2415,62 @@ mod tests {
                 required.iter().any(|v| v.as_str() == Some("col")),
                 "{probe_name}: 'col' must be listed in required"
             );
+        }
+    }
+
+    // task-4300 step-1 RED → step-2 GREEN: four I2 canvas-interaction tools must be
+    // registered in tool_defs() with correct schema shapes.
+    #[test]
+    fn tool_defs_registers_canvas_interaction_tools() {
+        let defs = tool_defs();
+
+        struct Expectation {
+            name: &'static str,
+            numeric_props: &'static [&'static str],
+        }
+        let tools = [
+            Expectation { name: "pick_entity_at", numeric_props: &["x", "y"] },
+            Expectation { name: "orbit_camera",   numeric_props: &["dazimuth", "delevation"] },
+            Expectation { name: "pan_camera",     numeric_props: &["dx", "dy"] },
+            Expectation { name: "zoom_camera",    numeric_props: &["scale"] },
+        ];
+
+        for t in &tools {
+            let entry = defs
+                .iter()
+                .find(|d| d.name == t.name)
+                .unwrap_or_else(|| panic!("{} must be present in tool_defs()", t.name));
+            let schema = &entry.input_schema;
+
+            // Non-empty description
+            assert!(
+                !entry.description.is_empty(),
+                "{}: description must be non-empty", t.name
+            );
+
+            // type == "object"
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{}: input_schema.type must be 'object'", t.name
+            );
+
+            // All params are optional — required must be absent or empty
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{}: required must be absent or empty; got {:?}", t.name, required
+                );
+            }
+
+            // Tool-specific numeric properties
+            for prop in t.numeric_props {
+                assert_eq!(
+                    schema["properties"][prop]["type"].as_str(),
+                    Some("number"),
+                    "{}: properties.{}.type must be 'number'", t.name, prop
+                );
+            }
         }
     }
 }
