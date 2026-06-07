@@ -14,7 +14,7 @@
 
 #![cfg(has_occt)]
 
-use reify_ir::{ExportFormat, GeometryKernel, GeometryOp, GeometryQuery, Value};
+use reify_ir::{ExportFormat, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::OcctKernel;
 
 /// 10 mm in metres.
