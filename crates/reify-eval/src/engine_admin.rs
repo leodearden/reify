@@ -1804,10 +1804,30 @@ impl Engine {
     /// free function [`crate::trace_undef_causes`] for synthetic-input unit
     /// testing.
     pub fn trace_undef_causes(&self, cell: &reify_core::ValueCellId) -> Vec<reify_ir::UndefCause> {
-        // STUB — returns empty vec so TDD test steps RED on assertion, not missing symbol.
-        // Replaced in step-6 (impl).
-        let _ = cell;
-        Vec::new()
+        // Reconstruct the complete root-cause set for `cell`.
+        //
+        // Early-out when no snapshot is available (eval not yet called): the
+        // dependency map and values table come from the snapshot, so without one
+        // there is nothing to walk.
+        let Some(snap) = self.snapshot() else {
+            return Vec::new();
+        };
+
+        // Build the dependency map from the current snapshot graph.
+        // Rebuilt per call (see design decision: O(graph) rebuild acceptable for
+        // a read-only tooling path; no Engine field or lifetime surface added).
+        let dep_map = crate::deps::DependencyMap::from_graph(&snap.graph);
+
+        // Delegate to the free function which owns the cycle-safe DAG walk and
+        // origin-collection logic.  origins = engine-side side-map (populated by
+        // classify_undef_origins after every eval with capture_undef_causes=true;
+        // empty when capture is off — produces [] for capture-OFF callers).
+        crate::undef_tracer::trace_undef_causes(
+            self.undef_causes(),
+            &dep_map,
+            &snap.values,
+            cell,
+        )
     }
 }
 
