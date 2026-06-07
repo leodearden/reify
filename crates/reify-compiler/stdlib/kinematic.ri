@@ -158,6 +158,24 @@ structure def Coupling : Joint { }
 // `bind(fixed(...), v)` with E_MECHANISM_NONDRIVING_JOINT naming "Fixed".
 structure def Fixed : Joint { }
 
+// ── Binding / Jacobian element types ─────────────────────────────────────────
+
+// JointBinding — record of a joint's generalized-coordinate binding in a
+// kinematic snapshot. Empty marker for now; fields are added by task β's
+// signature family.
+//
+// This is the element type of the `bindings` argument of `snapshot()` (D8).
+// The actual `List<JointBinding>` param typing of snapshot()'s bindings arg
+// lands with β (task 4311), which wires up the full constructor signature
+// family. Declaring the type here makes it expressible and enforceable once
+// β lands — `param bindings : List<JointBinding>` can resolve correctly.
+structure def JointBinding { }
+
+// Twist — spatial velocity of a rigid body (linear + angular components).
+// Used as the element type of joint-Jacobian columns and wrench vectors.
+// Empty marker; field layout is deferred to the β/SIR-α signature family.
+structure def Twist { }
+
 // ── Top-level kinematic types ─────────────────────────────────────────────────
 
 // BodyId — opaque identifier for a body within a Mechanism.
