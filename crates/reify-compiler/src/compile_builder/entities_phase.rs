@@ -730,6 +730,15 @@ fn check_expr_fn_arg_conformance(
             if !type_carries_trait_object(param_ty) {
                 continue;
             }
+            // D4 (task-4232 γ): skip conformance for TypeParam-typed args.
+            // A type-param-carrying arg forwarded to a trait-object param is
+            // "unknown, not definitely non-conforming" — its real conformance
+            // is decided when T is bound to a concrete type at the call site.
+            // The conformance walker already handles this (conformance/mod.rs:915),
+            // but this early-exit avoids unnecessary work in the common case.
+            if type_carries_type_param(&arg.result_type) {
+                continue;
+            }
             check_fn_arg_conformance(
                 param_ty,
                 param_name,
