@@ -189,6 +189,11 @@ pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     "shared_edges",
     "center_of_mass",
     "moment_of_inertia",
+    // Task 4190 — split(solid, plane) -> List<Solid> via BRepAlgoAPI_Splitter.
+    // Joins the topology-selector family (not GEOMETRY_FUNCTION_NAMES) because
+    // it returns a multi-output List<Geometry>, matching the topology-selector
+    // eval path (try_eval_topology_selector / execute_split).
+    "split",
 ];
 
 pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
@@ -233,6 +238,10 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         | "edges_parallel_to" | "edges_at_height" | "adjacent_faces" | "shared_edges" => {
             Type::List(Box::new(Type::Geometry))
         }
+        // Task 4190 — split(solid, plane) -> List<Solid>. Same List<Geometry>
+        // result type as the edge/face selectors; eval dispatch via
+        // TopologySelectorHelper::Split in try_eval_topology_selector.
+        "split" => Type::List(Box::new(Type::Geometry)),
         "center_of_mass" => Type::point3(Type::length()),
         "moment_of_inertia" => Type::tensor(
             2,
