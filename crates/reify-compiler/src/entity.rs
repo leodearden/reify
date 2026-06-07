@@ -2033,6 +2033,15 @@ pub(crate) fn compile_entity(
                                     compiled
                                 });
 
+                                // Site 2: port-member param declared-vs-initializer check.
+                                check_param_default_type(
+                                    &param.name,
+                                    &cell_type,
+                                    default_expr.as_ref(),
+                                    param.span,
+                                    diagnostics,
+                                );
+
                                 ValueCellDecl {
                                     id,
                                     kind: ValueCellKind::Param,
