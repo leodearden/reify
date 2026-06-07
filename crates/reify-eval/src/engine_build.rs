@@ -10618,6 +10618,102 @@ mod tests {
             parse_warn.message
         );
     }
+
+    // ── Task 4349: cross-kernel GeometryHandleId collision regression tests ─────
+
+    /// Regression test for cross-kernel `GeometryHandleId` collision at the
+    /// cache-hit short-circuit — `feature_tag_table` path (task 4349).
+    ///
+    /// # Background
+    ///
+    /// OCCT and Manifold both mint `GeometryHandleId(1)` for their first
+    /// geometry handle (each kernel's counter starts at 1). Within a single
+    /// build a Manifold op can record
+    /// `feature_tag_table.record(GeometryHandleId(1), tag)` while a later
+    /// cache-hit short-circuit returns the cached `{Occt, GeometryHandleId(1)}`
+    /// from a prior build. The former
+    /// `debug_assert!(feature_tag_table.lookup(cached_handle.id).is_none())`
+    /// fires because key `GeometryHandleId(1)` is occupied by the Manifold
+    /// entry — two distinct `KernelHandle`s collapsing onto one kernel-blind key.
+    ///
+    /// After the fix the assert is replaced with
+    /// `feature_tag_table.remove(cached_handle.id)`, so the cached handle reads
+    /// `None` from the table — satisfying the #3226 spec ("a cache-served handle
+    /// has no entries in those tables on the second build") even when a
+    /// cross-kernel sibling left a colliding numeric id.
+    ///
+    /// # RED → GREEN
+    ///
+    /// Before the fix: `debug_assert!` panics → test FAILS (RED).
+    /// After  the fix: `remove` clears the entry, call returns, lookup is
+    ///   `None` → test PASSES (GREEN).
+    #[test]
+    fn cache_hit_short_circuit_tolerates_cross_kernel_feature_tag_id_collision() {
+        use reify_ir::StepKind;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let realization_id = RealizationNodeId::new("CrossKernelEntity", 0);
+        let tol = 1e-4_f64;
+
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let registry = dispatch_test_single_default_registry(&desc);
+
+        let mut state = DispatchTestState::default();
+
+        // Pre-seed the cache: the prior build stored {Occt, GeometryHandleId(1)}
+        // as the terminal handle for this entity.
+        let cached_handle = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
+        state.realization_cache.insert(
+            &realization_id.entity,
+            ReprKind::BRep,
+            tol,
+            NO_OPTIONS,
+            cached_handle,
+        );
+
+        // Pre-seed feature_tag_table with a colliding entry at GeometryHandleId(1),
+        // simulating a cross-kernel sibling op (e.g. Manifold) that recorded its
+        // first handle's tag earlier in this same build.
+        let sibling_tag = FeatureTag {
+            source_span: SourceSpan::new(0, 0),
+            step_kind: StepKind::Primitive,
+            sub_index: 0,
+        };
+        state.feature_tag_table.record(GeometryHandleId(1), sibling_tag);
+
+        // Drive the cache-hit short-circuit: operations=&[] ensures the function
+        // returns BEFORE the op loop. demanded_tol=Some(tol) and
+        // realization_name=Some("part") together enable the cache probe path.
+        //
+        // Before the fix: debug_assert!(feature_tag_table.lookup(cached_handle.id).is_none())
+        //   at engine_build.rs:3848 panics → test FAILS (RED).
+        // After  the fix: feature_tag_table.remove(cached_handle.id) is called
+        //   → no panic → call returns → test continues.
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "default",
+            &[], // empty ops — cache-hit fires before the op loop
+            &realization_id,
+            Some("part"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+        );
+
+        // Post-condition: the cached handle must read None from feature_tag_table
+        // (#3226 spec: a cache-served handle has no entries in those tables).
+        assert!(
+            state.feature_tag_table.lookup(GeometryHandleId(1)).is_none(),
+            "feature_tag_table must have no entry for the cached handle id after \
+             cache-hit short-circuit: cross-kernel sibling's colliding entry must \
+             be removed (not left behind as a foreign kernel's tag)"
+        );
+    }
 }
 
 // ── dispatch_volume_mesh unit tests ──────────────────────────────────────────
