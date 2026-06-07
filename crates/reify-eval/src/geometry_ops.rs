@@ -2169,6 +2169,7 @@ pub(crate) fn try_eval_kinematic_query(
 ///   `Some(Value::Undef)` when the snapshot Map is malformed or a kernel
 ///     operation fails — the caller receives the per-snapshot Undef rather
 ///     than collapsing the entire swept result.
+#[allow(clippy::too_many_arguments)]
 fn eval_kinematic_on_snapshot(
     helper: KinematicHelper,
     fn_name: &str,
