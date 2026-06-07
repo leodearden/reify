@@ -2589,4 +2589,59 @@ mod tests {
             "fixture_relpath(\"bogus_name\") should return None, got {bogus:?}"
         );
     }
+
+    // --- F1: element_screenshot ---
+
+    #[test]
+    fn tool_defs_registers_element_screenshot() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|d| d.name == "element_screenshot")
+            .expect("element_screenshot must be present in tool_defs()");
+        let schema = &entry.input_schema;
+
+        // Non-empty description
+        assert!(
+            !entry.description.is_empty(),
+            "element_screenshot: description must be non-empty"
+        );
+
+        // type == "object"
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "element_screenshot: input_schema.type must be 'object'"
+        );
+
+        // "testId" must be in required
+        let required = schema["required"]
+            .as_array()
+            .expect("element_screenshot: input_schema.required must be an array");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("testId")),
+            "element_screenshot: 'testId' must be listed in required; got {required:?}"
+        );
+
+        // "testId" property must be a string
+        assert_eq!(
+            schema["properties"]["testId"]["type"].as_str(),
+            Some("string"),
+            "element_screenshot: properties.testId.type must be 'string'"
+        );
+    }
+
+    #[test]
+    fn is_image_tool_recognizes_element_screenshot() {
+        assert!(
+            is_image_tool("element_screenshot"),
+            "element_screenshot must be recognised as an image tool"
+        );
+        // Regression: existing variants still pass
+        assert!(is_image_tool("screenshot"));
+        assert!(is_image_tool("screenshot_window"));
+        // Non-image tools must not match
+        assert!(!is_image_tool("health"));
+        assert!(!is_image_tool(""));
+    }
 }
