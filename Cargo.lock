@@ -4258,6 +4258,7 @@ dependencies = [
  "reify-eval",
  "reify-geometry",
  "reify-ir",
+ "reify-kernel-manifold",
  "reify-kernel-occt",
  "reify-lsp",
  "reify-mcp",
