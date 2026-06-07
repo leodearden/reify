@@ -562,6 +562,28 @@ pub(crate) fn extract_auto_free(expr: &reify_ast::Expr) -> Option<bool> {
     }
 }
 
+/// Map a determinacy-intrinsic name to its reflective member name.
+///
+/// Returns the `PurposeReflectiveAggregation` member name for the two
+/// compiler-sugar intrinsics (task-4197 α):
+///
+/// - `"AllParamsDetermined"`   → `Some("params")`
+/// - `"AllGeometryDetermined"` → `Some("geometric_params")`
+/// - anything else             → `None`
+///
+/// This is the **single source of truth** for the intrinsic→member mapping.
+/// It is consulted by:
+/// 1. `traits.rs::desugar_determinacy_intrinsic` — valid desugar in purpose bodies.
+/// 2. `expr.rs::compile_expr_guarded` FunctionCall arm — scope guard that fires
+///    for any intrinsic call that reaches `compile_expr` without desugaring.
+pub(crate) fn determinacy_intrinsic_member(name: &str) -> Option<&'static str> {
+    match name {
+        "AllParamsDetermined" => Some("params"),
+        "AllGeometryDetermined" => Some("geometric_params"),
+        _ => None,
+    }
+}
+
 pub(crate) fn compile_expr(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,
@@ -1325,6 +1347,31 @@ pub(crate) fn compile_expr_guarded(
                 )
             {
                 return poison;
+            }
+
+            // ── Determinacy intrinsic scope guard (det-α step-6) ──────────────────
+            // `AllParamsDetermined` / `AllGeometryDetermined` are COMPILER SUGAR that
+            // `compile_purpose` desugars into a reflective `forall` BEFORE
+            // `compile_expr` is ever called.  Any call that reaches this arm was NOT
+            // desugared — it was used outside a purpose-body top-level constraint
+            // (e.g. inside a structure or function body).  Emit
+            // `E_DETERMINACY_INTRINSIC_SCOPE` and return a non-cascading poison
+            // literal; do NOT fall through to overload resolution (invariant A3).
+            if determinacy_intrinsic_member(name).is_some() {
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "E_DETERMINACY_INTRINSIC_SCOPE: `{}` is a purpose-body \
+                         determinacy intrinsic and may only appear as a top-level \
+                         constraint inside a purpose body",
+                        name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        expr.span,
+                        "intrinsic used here",
+                    ))
+                    .with_code(DiagnosticCode::DeterminacyIntrinsicScope),
+                );
             }
 
             // Intercept `some(expr)` before general function resolution.
