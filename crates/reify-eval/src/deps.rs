@@ -2991,4 +2991,143 @@ mod dependency_map_tests {
             }
         }
     }
+
+    // ── forward_reachable unit tests (task 4322 / undef-self-describing β) ──
+
+    /// Helper: build a DependencyMap from explicit forward edges (HashMap<cell,
+    /// Vec<cell>>).  Reverse edges are derived automatically so `deps_of` works
+    /// correctly.  Cells mentioned only as deps (leaves) get empty forward/reverse
+    /// entries.
+    fn make_dep_map(edges: &[(&str, &str, &[(&str, &str)])]) -> DependencyMap {
+        // edges: slice of (entity, field, [(dep_entity, dep_field), ...])
+        let mut forward: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+        let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+
+        for &(entity, field, deps) in edges {
+            let cell = ValueCellId::new(entity, field);
+            let dep_cells: Vec<ValueCellId> = deps
+                .iter()
+                .map(|&(de, df)| ValueCellId::new(de, df))
+                .collect();
+
+            // Ensure leaf cells also appear in both maps.
+            for d in &dep_cells {
+                forward.entry(d.clone()).or_default();
+                reverse.entry(d.clone()).or_default();
+            }
+
+            // Reverse: each dep gains `cell` as a dependent.
+            for d in &dep_cells {
+                reverse.entry(d.clone()).or_default().push(cell.clone());
+            }
+
+            forward.insert(cell.clone(), dep_cells);
+            reverse.entry(cell).or_default();
+        }
+
+        DependencyMap { forward, reverse }
+    }
+
+    /// (1) Linear chain: forward = {z:[y], y:[x], x:[]}, should_expand=|_|true,
+    /// start=z → returns sorted {x, y, z}.
+    #[test]
+    fn forward_reachable_linear_chain() {
+        let dep_map = make_dep_map(&[
+            ("s", "z", &[("s", "y")]),
+            ("s", "y", &[("s", "x")]),
+            ("s", "x", &[]),
+        ]);
+        let start = ValueCellId::new("s", "z");
+        let result = dep_map.forward_reachable(&start, |_| true);
+
+        let mut expected = vec![
+            ValueCellId::new("s", "x"),
+            ValueCellId::new("s", "y"),
+            ValueCellId::new("s", "z"),
+        ];
+        expected.sort();
+
+        assert_eq!(
+            result, expected,
+            "linear chain: expected sorted {{x,y,z}}, got {:?}",
+            result
+        );
+    }
+
+    /// (2) Boundary stop: should_expand returns false for a boundary cell →
+    /// that cell IS included but its deps are NOT expanded.
+    #[test]
+    fn forward_reachable_boundary_stop() {
+        // z → y → x; y is the boundary (should_expand returns false for y).
+        let dep_map = make_dep_map(&[
+            ("s", "z", &[("s", "y")]),
+            ("s", "y", &[("s", "x")]),
+            ("s", "x", &[]),
+        ]);
+        let start = ValueCellId::new("s", "z");
+        let y = ValueCellId::new("s", "y");
+        let result = dep_map.forward_reachable(&start, |c| c != &y);
+
+        // z and y appear (y was reached), x does NOT (y was not expanded).
+        let x = ValueCellId::new("s", "x");
+        let z = ValueCellId::new("s", "z");
+
+        assert!(result.contains(&z), "z (start) must be in result: {:?}", result);
+        assert!(result.contains(&y), "y (boundary) must be in result: {:?}", result);
+        assert!(!result.contains(&x), "x must NOT appear (y was not expanded): {:?}", result);
+    }
+
+    /// (3) Cycle: forward = {a:[b], b:[a]}, should_expand=|_|true, start=a →
+    /// TERMINATES and returns sorted {a, b}.
+    #[test]
+    fn forward_reachable_cycle_terminates() {
+        let dep_map = make_dep_map(&[
+            ("s", "a", &[("s", "b")]),
+            ("s", "b", &[("s", "a")]),
+        ]);
+        let start = ValueCellId::new("s", "a");
+        let result = dep_map.forward_reachable(&start, |_| true);
+
+        let mut expected = vec![ValueCellId::new("s", "a"), ValueCellId::new("s", "b")];
+        expected.sort();
+
+        assert_eq!(
+            result, expected,
+            "cycle must terminate and return sorted {{a,b}}, got {:?}",
+            result
+        );
+    }
+
+    /// (4) Leaf start: node with no deps → returns [start].
+    #[test]
+    fn forward_reachable_leaf_start() {
+        let dep_map = make_dep_map(&[("s", "x", &[])]);
+        let start = ValueCellId::new("s", "x");
+        let result = dep_map.forward_reachable(&start, |_| true);
+
+        assert_eq!(result, vec![start.clone()], "leaf start must return [start]: {:?}", result);
+    }
+
+    /// (5) Result is deterministically sorted by ValueCellId ascending.
+    #[test]
+    fn forward_reachable_sorted_output() {
+        // Diamond: e depends on c and d, both depend on a and b.
+        let dep_map = make_dep_map(&[
+            ("s", "e", &[("s", "c"), ("s", "d")]),
+            ("s", "c", &[("s", "a"), ("s", "b")]),
+            ("s", "d", &[("s", "a"), ("s", "b")]),
+            ("s", "a", &[]),
+            ("s", "b", &[]),
+        ]);
+        let start = ValueCellId::new("s", "e");
+        let result = dep_map.forward_reachable(&start, |_| true);
+
+        // Result must be sorted.
+        let mut sorted = result.clone();
+        sorted.sort();
+        assert_eq!(result, sorted, "output must be sorted by ValueCellId: {:?}", result);
+
+        // All 5 cells must appear (diamond collapses a and b to single entries).
+        assert_eq!(result.len(), 5, "diamond must yield 5 distinct cells: {:?}", result);
+    }
 }
