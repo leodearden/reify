@@ -141,16 +141,20 @@ impl ReverseDependencyIndex {
         graph: &crate::graph::EvaluationGraph,
         fields: &[reify_compiler::CompiledField],
     ) -> Self {
-        use reify_compiler::{CompiledFieldSource, ValueCellKind};
+        use reify_compiler::CompiledFieldSource;
         use reify_core::FIELD_ENTITY_PREFIX;
 
         let mut index = Self::new();
 
-        // Value cells: only Let bindings have dependencies (params are roots)
+        // Value cells: non-auto cells with a default_expr have static read-dependencies.
+        // Auto cells are solver-owned leaves — no default expression to extract.
+        // Param cells with a literal default (no ValueRef reads) produce an empty
+        // trace, so they register no reverse edges and remain pure roots.
         for (_, node) in graph.value_cells.iter() {
-            if node.kind == ValueCellKind::Let
-                && let Some(ref expr) = node.default_expr
-            {
+            if node.kind.is_auto() {
+                continue;
+            }
+            if let Some(ref expr) = node.default_expr {
                 let trace = extract_dependency_trace(expr);
                 let node_id = NodeId::Value(node.id.clone());
                 for cell in &trace.reads {
@@ -311,20 +315,23 @@ pub fn build_trace_map_and_fields(
     graph: &crate::graph::EvaluationGraph,
     fields: &[reify_compiler::CompiledField],
 ) -> HashMap<NodeId, DependencyTrace> {
-    use reify_compiler::{CompiledFieldSource, ValueCellKind};
+    use reify_compiler::CompiledFieldSource;
     use reify_core::FIELD_ENTITY_PREFIX;
 
     let mut traces = HashMap::new();
 
     for (_, node) in graph.value_cells.iter() {
-        let trace = if node.kind == ValueCellKind::Let {
+        let trace = if node.kind.is_auto() {
+            // Auto cells are solver-owned leaves; no default expression to extract.
+            DependencyTrace::default()
+        } else {
+            // Param and Let cells: extract deps from their default_expr.
+            // A param with a literal default (no ValueRef reads) gets an empty
+            // trace (equivalent to default()), preserving root semantics.
             node.default_expr
                 .as_ref()
                 .map(extract_dependency_trace)
                 .unwrap_or_default()
-        } else {
-            // Params are roots with no dependencies
-            DependencyTrace::default()
         };
         traces.insert(NodeId::Value(node.id.clone()), trace);
     }
