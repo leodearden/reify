@@ -764,6 +764,60 @@ impl OcctKernel {
         Ok(ids)
     }
 
+    /// Split `target` with an unbounded cutting plane defined by
+    /// `plane_origin` and `plane_normal` (metres). Returns a
+    /// `Vec<GeometryHandleId>` of the result solids (length 1 for a
+    /// non-intersecting plane; ≥ 2 for an intersecting one). Each result
+    /// solid is registered with `BRepKind::Solid`.
+    ///
+    /// Mirrors [`Self::extract_edges`] / [`Self::extract_faces`] but calls
+    /// `ffi::split_shape` instead of `ffi::get_edges` / `ffi::get_faces`.
+    /// Unlike extraction there is no idempotency cache — splitting the same
+    /// solid with the same plane twice legitimately creates fresh handles.
+    pub fn execute_split(
+        &mut self,
+        op: &reify_ir::GeometryOp,
+    ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+        let (target, plane_origin, plane_normal) = match op {
+            reify_ir::GeometryOp::Split {
+                target,
+                plane_origin,
+                plane_normal,
+            } => (*target, *plane_origin, *plane_normal),
+            other => {
+                return Err(GeometryError::OperationFailed(format!(
+                    "execute_split called with non-Split op: {}",
+                    other.kind_name()
+                )));
+            }
+        };
+        let [ox, oy, oz] = plane_origin;
+        let [nx, ny, nz] = plane_normal;
+        // Collect UniquePtr<OcctShape> pieces in a scope that ends the
+        // immutable borrow on `self` before we call `store_with_repr`.
+        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
+            let shape = self
+                .get_shape(target)
+                .map_err(|_| GeometryError::OperationFailed(format!("unknown handle {target:?}")))?;
+            let vec = ffi::ffi::split_shape(shape, ox, oy, oz, nx, ny, nz)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            let len = ffi::ffi::shape_vec_len(&vec);
+            let mut buf = Vec::with_capacity(len);
+            for i in 0..len {
+                let sub = ffi::ffi::shape_vec_at(&vec, i)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                buf.push(sub);
+            }
+            buf
+        };
+        let mut ids = Vec::with_capacity(materialized.len());
+        for sub in materialized {
+            let h = self.store_with_repr(sub, BRepKind::Solid);
+            ids.push(h.id);
+        }
+        Ok(ids)
+    }
+
     /// Assemble N placed product solids into a single `TopoDS_Compound` handle
     /// for multi-body STEP export (T7).
     ///

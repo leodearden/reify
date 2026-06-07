@@ -65,6 +65,14 @@ enum OcctRequest {
         handle: GeometryHandleId,
         reply: oneshot::Sender<Result<Vec<GeometryHandleId>, QueryError>>,
     },
+    /// Split a solid with an unbounded plane via `BRepAlgoAPI_Splitter`,
+    /// returning the result solid handles. Mirrors `ExtractEdges` / `ExtractFaces`
+    /// but returns `GeometryError` (not `QueryError`) to match the
+    /// `GeometryKernel::execute_split` trait signature.
+    Split {
+        op: Box<GeometryOp>,
+        reply: oneshot::Sender<Result<Vec<GeometryHandleId>, GeometryError>>,
+    },
     ExtractVertices {
         handle: GeometryHandleId,
         reply: oneshot::Sender<Result<Vec<GeometryHandleId>, QueryError>>,
@@ -325,6 +333,24 @@ impl OcctKernelHandle {
         let handles = handles.to_vec();
         self.send_request_blocking(
             |reply| OcctRequest::MakeCompound { handles, reply },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )?
+    }
+
+    /// Split `op.target` with a cutting plane via `BRepAlgoAPI_Splitter`,
+    /// returning the result solid handles. Sends an `OcctRequest::Split` to
+    /// the kernel thread and blocks until the result arrives.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    pub fn execute_split(
+        &self,
+        op: &GeometryOp,
+    ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+        let op = Box::new(op.clone());
+        self.send_request_blocking(
+            |reply| OcctRequest::Split { op, reply },
             || GeometryError::OperationFailed("kernel thread died".into()),
         )?
     }
@@ -911,6 +937,10 @@ impl OcctKernelHandle {
                         let result = kernel.make_compound(&handles);
                         let _ = reply.send(result);
                     }
+                    OcctRequest::Split { op, reply } => {
+                        let result = kernel.execute_split(&op);
+                        let _ = reply.send(result);
+                    }
                     OcctRequest::ExtractEdges { handle, reply } => {
                         let result = kernel.extract_edges(handle);
                         let _ = reply.send(result);
@@ -1408,6 +1438,15 @@ impl GeometryKernel for OcctKernelHandle {
         handles: &[GeometryHandleId],
     ) -> Result<GeometryHandle, GeometryError> {
         OcctKernelHandle::make_compound(self, handles)
+    }
+
+    /// Override the trait default with a real channel-routed implementation.
+    /// Delegates to the inherent `execute_split` (which only needs `&self`).
+    fn execute_split(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+        OcctKernelHandle::execute_split(self, op)
     }
 
     /// Override the trait default with a real channel-routed implementation.

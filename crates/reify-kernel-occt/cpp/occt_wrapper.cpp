@@ -93,6 +93,8 @@
 #include <gp_Quaternion.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Pln.hxx>
+#include <BRepAlgoAPI_Splitter.hxx>
 
 // OCCT properties + surface adaptor
 #include <BRepGProp.hxx>
@@ -4314,6 +4316,44 @@ std::unique_ptr<OcctShapeVec> get_vertices(const OcctShape& shape) {
         out->shapes.reserve(static_cast<size_t>(n));
         for (Standard_Integer i = 1; i <= n; ++i) {
             out->shapes.push_back(vmap.FindKey(i));
+        }
+        return out;
+    });
+}
+
+// --- Split ---
+
+std::unique_ptr<OcctShapeVec> split_shape(
+    const OcctShape& shape,
+    double ox, double oy, double oz,
+    double nx, double ny, double nz) {
+    return wrap_occt_call("split_shape", [&]() {
+        // Build the cutting plane from origin + normal.
+        gp_Pnt origin(ox, oy, oz);
+        gp_Dir normal(nx, ny, nz);
+        gp_Pln pln(origin, normal);
+        // Build an unbounded planar face as the splitting tool.
+        BRepBuilderAPI_MakeFace face_builder(pln);
+        if (!face_builder.IsDone()) {
+            throw std::runtime_error("split_shape: BRepBuilderAPI_MakeFace failed");
+        }
+        TopoDS_Shape tool_face = face_builder.Shape();
+        // Populate argument and tool lists.
+        TopTools_ListOfShape args, tools;
+        args.Append(shape.shape);
+        tools.Append(tool_face);
+        // Run the splitter.
+        BRepAlgoAPI_Splitter splitter;
+        splitter.SetArguments(args);
+        splitter.SetTools(tools);
+        splitter.Build();
+        if (!splitter.IsDone()) {
+            throw std::runtime_error("split_shape: BRepAlgoAPI_Splitter failed (IsDone=false)");
+        }
+        // Extract all solids from the result.
+        auto out = std::make_unique<OcctShapeVec>();
+        for (TopExp_Explorer ex(splitter.Shape(), TopAbs_SOLID); ex.More(); ex.Next()) {
+            out->shapes.push_back(ex.Current());
         }
         return out;
     });

@@ -1050,6 +1050,25 @@ std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape);
 /// cache provides idempotency).
 std::unique_ptr<OcctShapeVec> get_vertices(const OcctShape& shape);
 
+/// Split `shape` with an unbounded planar cutting tool defined by `origin` and
+/// `normal` (both in metres, same coordinate system as the shape).
+///
+/// Implementation:
+///   1. Build a `gp_Pln(origin, normal)` cutting plane.
+///   2. Create an unbounded face via `BRepBuilderAPI_MakeFace(pln)`.
+///   3. Run `BRepAlgoAPI_Splitter` with the shape as argument and the face as
+///      tool (`SetArguments` / `SetTools` / `Build`).
+///   4. Walk the result with `TopExp_Explorer(result, TopAbs_SOLID)` and push
+///      each solid into an `OcctShapeVec`.
+///
+/// A plane that does not intersect `shape` returns the original solid in a
+/// length-1 vec (the splitter result contains the untouched argument solid).
+/// Throws `std::runtime_error` if the splitter reports `!IsDone()`.
+std::unique_ptr<OcctShapeVec> split_shape(
+    const OcctShape& shape,
+    double ox, double oy, double oz,
+    double nx, double ny, double nz);
+
 /// Compute the total arc length of an edge (or any 1-dimensional sub-shape)
 /// in the same length units as the shape's coordinates. Backed by
 /// `BRepGProp::LinearProperties` followed by `props.Mass()` — for edges,
