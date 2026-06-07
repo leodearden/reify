@@ -177,6 +177,31 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
     args: { line: 9, col: 19 },
     assertions: [{ path: "range.start.line", op: "exists" }],
   },
+  // task-4300 step-8 GREEN: I2 canvas-interaction e2e signal scenarios (live signal via
+  // npm run test:e2e; NOT verify-gated — needs live reify-gui per H0 contract).
+  // pick_entity_at_small_cube: centre-default ray hits the cube under the default view.
+  // orbit_camera_small_cube: proves orbit_camera changes camera azimuth (threshold 0.001
+  // is far below the damped single-step delta ~0.05 observed in the live GUI).
+  {
+    name: "pick_entity_at_small_cube",
+    fixture: "small_cube",
+    tool: "pick_entity_at",
+    args: {},
+    assertions: [
+      { path: "hit", op: "equals", expected: true },
+      { path: "entityPath", op: "exists" },
+    ],
+  },
+  {
+    name: "orbit_camera_small_cube",
+    fixture: "small_cube",
+    tool: "orbit_camera",
+    args: { dazimuth: 0.5 },
+    assertions: [
+      { path: "ok", op: "equals", expected: true },
+      { path: "azimuthDelta", op: "atLeast", expected: 0.001 },
+    ],
+  },
 ];
 
 // ─── Assertion type + evaluateAssertion ──────────────────────────────────────
