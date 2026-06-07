@@ -1,71 +1,64 @@
 // Dock-pickup gantry worked example
 //
-// Demonstrates a 2-DOF gantry (j_y vertical lift, j_x horizontal reach)
-// picking up a tool from a parking station.  Verifies that at the home
-// position the head does not collide with the parked tool and that the
-// minimum clearance between them is ~580 mm.
+// Demonstrates a gantry head (j_x horizontal reach) driving into a fixed dock.
+// Verifies that:
+//   - At the home position (j_x = 0mm) the head is clear of the dock with
+//     clearance ≈ 280mm.
+//   - The swept clearances cell is a monotone non-increasing list of 11
+//     SI-meter values that transitions from strictly positive (head outside
+//     the dock) to zero/interfering (head inside the dock).
 //
-// PRD ref:  docs/prds/kinematic-constraints.md task 10 (worked examples)
+// Geometry:
+//   head_solid:  box(20mm, 20mm, 20mm) at the source origin; FK-posed by j_x.
+//                Right face of head at x = (joint_value + 20mm).
+//   dock_solid:  translate(box(400mm, 20mm, 20mm), 300mm, 0mm, 0mm); FIXED.
+//                Left face of dock at x = 300mm, right face at x = 700mm.
+//   Gap at v=0:  300mm − 20mm = 280mm  →  clearance = 0.280 m.
 //
-// ── v0.1 source-let positioning note ─────────────────────────────────────────
-// Reify v0.1 `interferes`, `interferes_with`, and `min_clearance` query the
-// OCCT kernel using source-let geometry placements, *not* the per-snapshot FK
-// world_transforms.  Geometry must therefore be pre-positioned at the
-// source-let level via `translate(box(...), …)` rather than relying on the
-// kinematic chain to move solids into place.
-//
-// The head and parked-tool solids are placed via source-lets:
-//   head_solid:        box at origin, spans [0,20]×[0,20]×[0,20] mm
-//   parked_tool_solid: box at +600 mm X, spans [600,620]×[0,20]×[0,20] mm
-//   → closest face-to-face gap = 600 mm − 20 mm = 580 mm
-//
-// FK joints (j_y, j_x) and the sweep are still declared to demonstrate the
-// full kinematic API surface.  Forward integration (v0.2) will remove the
-// explicit translate and let FK transforms drive the kernel.
-// ─────────────────────────────────────────────────────────────────────────────
+// PRD ref:  docs/prds/kinematic-constraints.md §11.1 (KCC-epsilon, task 3844)
 structure def DockPickup {
-    // Gantry Y joint: vertical lift axis, range 0..800 mm.
-    let j_y = prismatic(vec3(0, 1, 0), 0mm .. 800mm)
     // Head X joint: horizontal reach axis, range 0..500 mm.
     let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
 
-    // Source-let positioned solids (v0.1: OCCT kernel uses these, not FK).
-    let head_solid        = box(20mm, 20mm, 20mm)
-    let parked_tool_solid = translate(box(20mm, 20mm, 20mm), 600mm, 0mm, 0mm)
+    // Head solid: a 20×20×20mm cube at the source origin.  FK-posed by j_x.
+    let head_solid = box(20mm, 20mm, 20mm)
 
-    // Mechanism: head slides along j_x (parent = world); parked tool is fixed
-    // (also parent = world).  Body insertion order determines body IDs:
-    //   "head_solid"        → body_id_of result = 0
-    //   "parked_tool_solid" → body_id_of result = 1
+    // Dock solid: a deep fixed dock.  box() is centered, so box(400,20,20)
+    // spans [-200,200] in x; translate by 490mm shifts it to [290,690].
+    // Head right face at home = 0 + 10mm (half-width of box(20,20,20)).
+    // Home gap = 290 - 10 = 280mm.
+    // Head enters the dock when FK right face (10+v) > 290 → at v > 280mm.
+    let dock_solid = translate(box(400mm, 20mm, 20mm), 490mm, 0mm, 0mm)
+
+    // Mechanism: head slides along j_x; dock is fixed.
     let m0 = mechanism()
     let m1 = body(m0, "head_solid", j_x)
-    let m2 = body(m1, "parked_tool_solid", fixed())
-
-    // Sweep: 5 equally-spaced head positions from 0 to 400 mm.
-    // Demonstrates the sweep API; snap_count == 5 is verified by a constraint.
-    //
-    // Note: `snaps` is used only to produce `snap_count` here.  The kinematic-
-    // query cells (pairs, collide, clearance) are driven by the separate `s`
-    // snapshot at the home position.  The v0.1 post-process resolves top-level
-    // `interferes(snapshot_let)` cells but does not recurse into `.map()` lambdas,
-    // so sweep-driven interference queries are not yet supported.  Forward
-    // integration (v0.2) will add sweep-level kinematic queries.
-    let snaps = sweep(m2, j_x, 0mm .. 400mm, 5)
-
-    // Single home-position snapshot for the interference probe.
-    // bind(j_y, 0mm) is recorded in the snapshot but ignored by FK evaluation
-    // (no body has j_y as its at-joint in this mechanism's spanning tree).
-    let s = snapshot(m2, [bind(j_x, 0mm), bind(j_y, 0mm)])
+    let m2 = body(m1, "dock_solid", fixed())
 
     // Body IDs — used as selector arguments to interferes_with/min_clearance.
-    // These must be declared before the kinematic-query cells so the post-process
-    // can resolve their Int-valued args via resolve_int_value_ref.
+    // Declared before kinematic-query cells so post-process can resolve them
+    // via resolve_int_value_ref.
     let id_head = body_id_of(m2, "head_solid")
-    let id_park = body_id_of(m2, "parked_tool_solid")
+    let id_park = body_id_of(m2, "dock_solid")
+
+    // Sweep: 11 equally-spaced head positions from 0 to 500 mm.
+    // box() is centered, so at step i (value = i*50mm):
+    //   head right face = 10 + v mm  (half-width 10mm FK-shifted by v).
+    //   clearance(v) = max(0, 280 - v) mm.
+    //   steps 0..5 (v=0,50,…,250): 280,230,180,130,80,30 mm → strictly positive.
+    //   steps 6..10 (v=300..500): head right face ≥ 310 > 290 = dock left face
+    //                             → clearance collapses to ≈ 0 / interfering.
+    let snaps = sweep(m2, j_x, 0mm .. 500mm, 11)
+
+    // Swept clearances: one min_clearance value per snapshot.
+    // Resolved by the swept flat_map kinematic dispatch in try_eval_kinematic_query
+    // (task 3844, KCC-epsilon), which runs eval_kinematic_on_snapshot per element.
+    let clearances = flat_map(snaps, |s| [min_clearance(s, id_head, id_park)])
+
+    // Single home-position snapshot for single-snapshot probe cells.
+    let s = snapshot(m2, [bind(j_x, 0mm)])
 
     // Kinematic-query cells (post-processed by engine.build + OCCT kernel).
-    // pure engine.eval() leaves these at Value::Undef; they are resolved when
-    // Engine::post_process_kinematic_queries runs inside engine.build().
     let pairs     = interferes(s)
     let collide   = interferes_with(s, id_head, id_park)
     let clearance = min_clearance(s, id_head, id_park)
@@ -73,5 +66,5 @@ structure def DockPickup {
     // Snap count — resolved by pure engine.eval() (no OCCT needed).
     let snap_count = snaps.count
 
-    constraint snap_count == 5
+    constraint snap_count == 11
 }

@@ -209,7 +209,8 @@ fn dock_pickup_compiles_clean() {
 ///
 /// Checks:
 ///   - No Error-severity diagnostics from eval.
-///   - `DockPickup.snap_count == Value::Int(5)` (5-step sweep over j_x).
+///   - `DockPickup.snap_count == Value::Int(11)` (11-step sweep over j_x,
+///     0mm..500mm at 50mm steps).
 ///   - `DockPickup.id_head` and `DockPickup.id_park` are both `Value::Int(_)`
 ///     and are distinct (the OCCT-gated test pins semantic correctness via the
 ///     clearance assertion; pinning exact insertion-order values here would make
@@ -227,7 +228,7 @@ fn dock_pickup_eval_produces_expected_structural_cells() {
         "eval should produce no Error-severity diagnostics, got: {eval_errors:?}"
     );
 
-    // snap_count must be Int(5).
+    // snap_count must be Int(11).
     let snap_count_id = ValueCellId::new("DockPickup", "snap_count");
     let snap_count = result
         .values
@@ -235,12 +236,12 @@ fn dock_pickup_eval_produces_expected_structural_cells() {
         .expect("DockPickup.snap_count not found");
     assert_eq!(
         snap_count,
-        &Value::Int(5),
-        "snap_count should be Int(5), got {snap_count:?}"
+        &Value::Int(11),
+        "snap_count should be Int(11), got {snap_count:?}"
     );
 
     // id_head and id_park must both be Int-typed and distinct.
-    // Current insertion-order semantics: "head_solid" → 0, "parked_tool_solid" → 1;
+    // Current insertion-order semantics: "head_solid" → 0, "dock_solid" → 1;
     // the .ri header documents this but we don't pin the exact values here so that
     // a future body-ID scheme change doesn't break all kinematic tests at once.
     let id_head_id = ValueCellId::new("DockPickup", "id_head");
@@ -275,10 +276,11 @@ fn dock_pickup_eval_produces_expected_structural_cells() {
 /// Mirrors `mechanism_interference_smoke::disjoint_cubes_no_pairs_and_positive_clearance`
 /// but drives dock_pickup.ri instead of an inline source string.
 ///
-/// Expected results (head [0,20]mm³ vs. parked tool [600,620]mm³, gap = 580mm):
+/// Expected results at home position (j_x = 0mm):
+///   head [0,20]mm³ vs. dock [300,700]×[0,20]×[0,20]mm³, gap = 300 − 20 = 280mm.
 ///   - `pairs`     → `Value::List([])` (no colliding pairs)
 ///   - `collide`   → `Value::Bool(false)`
-///   - `clearance` → length Scalar ≈ 0.580 m (within 1e-6 m tolerance)
+///   - `clearance` → length Scalar ≈ 0.280 m (within 1e-6 m tolerance)
 #[test]
 fn dock_pickup_build_with_occt_resolves_clearance() {
     if !OCCT_AVAILABLE {
@@ -293,7 +295,7 @@ fn dock_pickup_build_with_occt_resolves_clearance() {
         reify_eval::Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())));
     let result = engine.build(compiled, ExportFormat::Step);
 
-    // pairs must be an empty list (no collisions).
+    // pairs must be an empty list (no collisions at home position).
     let pairs_id = ValueCellId::new("DockPickup", "pairs");
     let pairs = result
         .values
@@ -303,7 +305,7 @@ fn dock_pickup_build_with_occt_resolves_clearance() {
         Value::List(items) => {
             assert!(
                 items.is_empty(),
-                "interferes(s) must be empty for head vs. parked_tool (580mm gap), got {items:?}"
+                "interferes(s) must be empty for head vs. dock (280mm gap at home), got {items:?}"
             );
         }
         other => panic!("interferes(s) must be Value::List, got {other:?}"),
@@ -318,20 +320,20 @@ fn dock_pickup_build_with_occt_resolves_clearance() {
     assert_eq!(
         collide,
         &Value::Bool(false),
-        "interferes_with(s, id_head, id_park) must be false (580mm gap), got {collide:?}"
+        "interferes_with(s, id_head, id_park) must be false (280mm gap at home), got {collide:?}"
     );
 
-    // clearance must be ≈ 0.580 m.
+    // clearance must be ≈ 0.280 m.
     let clearance_id = ValueCellId::new("DockPickup", "clearance");
     let clearance = result
         .values
         .get(&clearance_id)
         .expect("DockPickup.clearance not found");
     let clearance_m = read_f64(clearance, "DockPickup.clearance");
-    let expected_m = 0.580_f64;
+    let expected_m = 0.280_f64;
     assert!(
         (clearance_m - expected_m).abs() < 1e-6,
-        "min_clearance must be ≈{expected_m} m (580mm gap), got {clearance_m} m"
+        "min_clearance must be ≈{expected_m} m (280mm gap at home), got {clearance_m} m"
     );
 }
 
@@ -447,7 +449,7 @@ fn dock_pickup_constraints_all_satisfied() {
     let check_result = engine.check(compiled);
     assert!(
         !check_result.constraint_results.is_empty(),
-        "dock_pickup.ri should have at least one constraint (snap_count == 5)"
+        "dock_pickup.ri should have at least one constraint (snap_count == 11)"
     );
     for entry in &check_result.constraint_results {
         assert_eq!(
