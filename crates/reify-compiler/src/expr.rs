@@ -4713,6 +4713,62 @@ pub structure Rack {
         );
     }
 
+    /// End-to-end cell-type test for the §13 joint-constructor family (mechanism
+    /// β, task 4311). With an empty template registry (so the lowercase builtins
+    /// are NOT structure-def ctors) and empty user functions (so resolution lands
+    /// in `NoUserFunctions`), each joint-constructor call must lower to a
+    /// `CompiledExprKind::FunctionCall` whose `result_type` is the nominal
+    /// `Type::StructureRef(...)` — NOT the first-arg fallback (e.g. Real).
+    ///
+    /// Tests four names for cross-arm coverage:
+    /// - `prismatic` (driving kind) → StructureRef("Prismatic")
+    /// - `couple` (coupling kind) → StructureRef("Coupling")
+    /// - `bind` (JointBinding) → StructureRef("JointBinding")
+    /// - `joint_jacobian` (Twist) → StructureRef("Twist")
+    ///
+    /// Mirrors `body_mass_props_resolves_to_function_call_returning_mass_properties`.
+    /// RED until step-6 wires the `is_joint_typed_fn` arm into the ladder.
+    #[test]
+    fn joint_ctor_calls_resolve_to_function_calls_returning_nominal_struct_types() {
+        // Empty template registry → joint names are not structure-defs → FunctionCall.
+        let registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        // Helper: compile a call and assert the result type.
+        let check = |name: &str, n_args: usize, expected_type: Type| {
+            let args: Vec<reify_ast::Expr> = (0..n_args).map(|_| num_expr(1.0)).collect();
+            let mut diags: Vec<Diagnostic> = vec![];
+            let result = compile_expr(&call_expr(name, args), &scope, &[], &[], &mut diags);
+            match &result.kind {
+                CompiledExprKind::FunctionCall { function, .. } => {
+                    assert_eq!(
+                        function.name, name,
+                        "{name} must lower to a FunctionCall named {name}"
+                    );
+                }
+                other => panic!("{name} must lower to a stdlib FunctionCall, got {other:?}"),
+            }
+            assert_eq!(
+                result.result_type,
+                expected_type,
+                "{name} result_type must be {expected_type:?} (joint β arm), got {:?}",
+                result.result_type
+            );
+        };
+
+        // Driving kind → named kind type.
+        check("prismatic", 1, Type::StructureRef("Prismatic".to_string()));
+        // Coupling kind → Coupling.
+        check("couple", 1, Type::StructureRef("Coupling".to_string()));
+        // JointBinding → JointBinding.
+        check("bind", 2, Type::StructureRef("JointBinding".to_string()));
+        // Twist / joint Jacobian → Twist.
+        check("joint_jacobian", 1, Type::StructureRef("Twist".to_string()));
+    }
+
     /// `TraitStaticCall` dispatch arm (task η 3945) — after the placeholder is
     /// replaced with real dispatch, calling `C::make()` where trait `C` is unknown
     /// must emit exactly one unknown-trait-static-fn diagnostic.
