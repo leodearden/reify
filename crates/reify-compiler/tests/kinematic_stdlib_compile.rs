@@ -62,6 +62,21 @@ fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
         .collect()
 }
 
+fn find_trait(name: &str) -> &'static reify_compiler::CompiledTrait {
+    let module = load_stdlib_module();
+    module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `trait {}` in std/kinematic, got: {:?}",
+                name,
+                module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        })
+}
+
 // ─── module loads cleanly ────────────────────────────────────────────────────
 
 #[test]
@@ -96,6 +111,37 @@ fn driving_joint_is_empty_marker_trait() {
          got requirements: {:?}, defaults: {:?}",
         trait_def.required_members.iter().map(|r| &r.name).collect::<Vec<_>>(),
         trait_def.defaults.iter().map(|d| &d.name).collect::<Vec<_>>(),
+    );
+}
+
+// ─── Joint root marker trait (task 4310) ─────────────────────────────────────
+
+/// `trait Joint {}` is declared as an empty marker — root of the joint hierarchy.
+/// RED until step-2: kinematic.ri does not yet declare `trait Joint`.
+#[test]
+fn joint_is_empty_marker_trait() {
+    let trait_def = find_trait("Joint");
+    assert!(
+        trait_def.required_members.is_empty() && trait_def.defaults.is_empty(),
+        "Joint trait should be an empty marker (root joint hierarchy tag; no \
+         members required), got requirements: {:?}, defaults: {:?}",
+        trait_def.required_members.iter().map(|r| &r.name).collect::<Vec<_>>(),
+        trait_def.defaults.iter().map(|d| &d.name).collect::<Vec<_>>(),
+    );
+}
+
+/// `DrivingJoint` is declared as `: Joint` (refines Joint).
+/// Coupling/Fixed conform to Joint but NOT DrivingJoint; the refinement makes
+/// `satisfies_trait_bound(bounds, "Joint")` true for ALL joint kinds.
+/// RED until step-2: DrivingJoint currently has no refinements.
+#[test]
+fn driving_joint_refines_joint() {
+    let trait_def = find_trait("DrivingJoint");
+    assert!(
+        trait_def.refinements.contains(&"Joint".to_owned()),
+        "DrivingJoint trait should refine Joint (declared as \
+         `trait DrivingJoint : Joint {{}}`), got refinements: {:?}",
+        trait_def.refinements
     );
 }
 
@@ -401,23 +447,33 @@ fn sweep_dim_has_correct_params() {
     );
 }
 
-// ─── Coupling and Fixed are NOT DrivingJoint ──────────────────────────────────
+// ─── Coupling and Fixed: conform to Joint but NOT DrivingJoint ───────────────
+//
+// Updated by task 4310 (γ): Coupling and Fixed now carry `: Joint` so they
+// appear in the joint hierarchy. They do NOT carry `: DrivingJoint` (no
+// independent motion variable). After kinematic.ri step-2, trait_bounds == ["Joint"].
+//
+// RED until step-2: Coupling and Fixed currently have empty trait_bounds.
 
 #[test]
 fn coupling_and_fixed_are_declared_without_driving_joint() {
     let coupling = find_structure("Coupling");
-    assert!(
-        coupling.trait_bounds.is_empty(),
-        "Coupling should NOT conform to DrivingJoint (derived motion — no \
-         independent motion variable); got trait_bounds: {:?}",
+    assert_eq!(
+        coupling.trait_bounds,
+        vec!["Joint".to_owned()],
+        "Coupling should conform to Joint (root joint marker) but NOT \
+         DrivingJoint (derived motion — no independent motion variable); \
+         got trait_bounds: {:?}",
         coupling.trait_bounds
     );
 
     let fixed = find_structure("Fixed");
-    assert!(
-        fixed.trait_bounds.is_empty(),
-        "Fixed should NOT conform to DrivingJoint (0-DOF sub-assembly \
-         grouping — no motion variable at all); got trait_bounds: {:?}",
+    assert_eq!(
+        fixed.trait_bounds,
+        vec!["Joint".to_owned()],
+        "Fixed should conform to Joint (root joint marker) but NOT \
+         DrivingJoint (0-DOF sub-assembly grouping — no motion variable at all); \
+         got trait_bounds: {:?}",
         fixed.trait_bounds
     );
 }
