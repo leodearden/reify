@@ -1854,6 +1854,27 @@ pub(crate) fn compile_expr_guarded(
                         // earlier `affine_map_algebra_result_type` arm above, so
                         // only Tensor/Matrix determinant args reach here.
                         math_fn_result_type(name, &compiled_args)
+                    } else if is_joint_typed_fn(name) {
+                        // §13 mechanism/joint constructor family (mechanism β,
+                        // task 4311). Set the cell type up-front to the nominal
+                        // StructureRef so the §13 tags become ENFORCED return
+                        // types consumed by γ's compile-time DrivingJoint-bound
+                        // check and by reify-lsp hover. Falling through to the
+                        // first-arg fallback would mis-type a joint as its
+                        // axis/parent arg's type (e.g. Real).
+                        //
+                        // Runtime: joints evaluate to Value::Map/Int/List
+                        // (esc-3845-91), NOT Value::Undef — but StructureRef is
+                        // a representable cell type (engine_eval.rs:122-124) and
+                        // value_type_kind_matches is not enforced on let-cells,
+                        // so the mismatch is safe. (Today these cells already
+                        // carry the first-arg Real mismatch; StructureRef is
+                        // strictly more correct.)
+                        //
+                        // The family is pinned disjoint from all sibling
+                        // families by the units.rs disjointness test, so this
+                        // arm's position in the ladder is unobservable.
+                        joint_ctor_result_type(name, &compiled_args)
                     } else {
                         compiled_args
                             .first()
