@@ -63,5 +63,323 @@ pub fn trace_undef_causes(
 
 #[cfg(test)]
 mod tests {
-    // Tests added in step-3 (RED).
+    use std::collections::HashMap;
+
+    use reify_core::{SourceSpan, ValueCellId};
+    use reify_ir::{DeterminacyState, PersistentMap, UndefCause, Value};
+
+    use super::trace_undef_causes;
+    use crate::deps::DependencyMap;
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    fn cell(entity: &str, field: &str) -> ValueCellId {
+        ValueCellId::new(entity, field)
+    }
+
+    /// Build a DependencyMap from forward edges only (reverse is derived).
+    fn make_dep_map(edges: &[(ValueCellId, Vec<ValueCellId>)]) -> DependencyMap {
+        let mut forward: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+        let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+
+        for (c, deps) in edges {
+            for d in deps {
+                forward.entry(d.clone()).or_default();
+                reverse.entry(d.clone()).or_default();
+                reverse.entry(d.clone()).or_default().push(c.clone());
+            }
+            forward.insert(c.clone(), deps.clone());
+            reverse.entry(c.clone()).or_default();
+        }
+
+        DependencyMap { forward, reverse }
+    }
+
+    /// Insert a cell as undef (Value::Undef, Undetermined).
+    fn undef_cell(
+        values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        c: ValueCellId,
+    ) {
+        values.insert(c, (Value::Undef, DeterminacyState::Undetermined));
+    }
+
+    /// Insert a cell as determined (Value::Int(1), Determined).
+    fn det_cell(
+        values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        c: ValueCellId,
+    ) {
+        values.insert(c, (Value::Int(1), DeterminacyState::Determined));
+    }
+
+    // ── BT1: single root ──────────────────────────────────────────────────────
+
+    /// BT1: forward={c:[a]}, a undef w/ origin Unbound → trace(c)=[Unbound a].
+    #[test]
+    fn single_root_unbound() {
+        let a = cell("s", "a");
+        let c = cell("s", "c");
+
+        let dep_map = make_dep_map(&[(c.clone(), vec![a.clone()])]);
+
+        let mut origins = HashMap::new();
+        origins.insert(
+            a.clone(),
+            UndefCause::Unbound { param: a.clone(), span: SourceSpan::new(0, 3) },
+        );
+
+        let mut values = PersistentMap::new();
+        undef_cell(&mut values, a.clone());
+        undef_cell(&mut values, c.clone());
+
+        let result = trace_undef_causes(&origins, &dep_map, &values, &c);
+        assert_eq!(result.len(), 1, "BT1: expected 1 cause, got {:?}", result);
+        assert!(
+            matches!(&result[0], UndefCause::Unbound { param, .. } if param == &a),
+            "BT1: expected Unbound(a), got {:?}",
+            result
+        );
+    }
+
+    // ── BT2 + diamond dedup ───────────────────────────────────────────────────
+
+    /// Diamond dedup: forward={e:[c,d], c:[a,b], d:[a,b]}, a/b origins →
+    /// trace(e)=[Unbound a, Unbound b] (a reached via both c and d, deduplicated).
+    #[test]
+    fn diamond_dedup() {
+        let a = cell("s", "a");
+        let b = cell("s", "b");
+        let c = cell("s", "c");
+        let d = cell("s", "d");
+        let e = cell("s", "e");
+
+        let dep_map = make_dep_map(&[
+            (e.clone(), vec![c.clone(), d.clone()]),
+            (c.clone(), vec![a.clone(), b.clone()]),
+            (d.clone(), vec![a.clone(), b.clone()]),
+        ]);
+
+        let mut origins = HashMap::new();
+        origins.insert(
+            a.clone(),
+            UndefCause::Unbound { param: a.clone(), span: SourceSpan::new(0, 1) },
+        );
+        origins.insert(
+            b.clone(),
+            UndefCause::Unbound { param: b.clone(), span: SourceSpan::new(2, 1) },
+        );
+
+        let mut values = PersistentMap::new();
+        for c_id in [&a, &b, &c, &d, &e] {
+            undef_cell(&mut values, c_id.clone());
+        }
+
+        let result = trace_undef_causes(&origins, &dep_map, &values, &e);
+
+        assert_eq!(result.len(), 2, "diamond: expected 2 causes (deduped), got {:?}", result);
+        assert!(
+            result.iter().any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &a)),
+            "diamond: must contain Unbound(a): {:?}",
+            result
+        );
+        assert!(
+            result.iter().any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &b)),
+            "diamond: must contain Unbound(b): {:?}",
+            result
+        );
+    }
+
+    // ── BT3: chain collapse ───────────────────────────────────────────────────
+
+    /// BT3: chain z→y→x, only x has origin Unbound → trace(z)=[Unbound x].
+    #[test]
+    fn chain_collapse() {
+        let x = cell("s", "x");
+        let y = cell("s", "y");
+        let z = cell("s", "z");
+
+        let dep_map = make_dep_map(&[
+            (z.clone(), vec![y.clone()]),
+            (y.clone(), vec![x.clone()]),
+        ]);
+
+        let mut origins = HashMap::new();
+        origins.insert(
+            x.clone(),
+            UndefCause::Unbound { param: x.clone(), span: SourceSpan::new(0, 1) },
+        );
+
+        let mut values = PersistentMap::new();
+        for c in [&x, &y, &z] {
+            undef_cell(&mut values, c.clone());
+        }
+
+        let result = trace_undef_causes(&origins, &dep_map, &values, &z);
+
+        assert_eq!(result.len(), 1, "chain: expected [Unbound x], got {:?}", result);
+        assert!(
+            matches!(&result[0], UndefCause::Unbound { param, .. } if param == &x),
+            "chain: expected Unbound(x), got {:?}",
+            result
+        );
+    }
+
+    // ── B4: determined cell not reported ─────────────────────────────────────
+
+    /// B4: a determined input is not expanded and never appears in the trace.
+    #[test]
+    fn determined_not_reported() {
+        let a = cell("s", "a"); // determined input
+        let c = cell("s", "c"); // undef propagated via a
+
+        let dep_map = make_dep_map(&[(c.clone(), vec![a.clone()])]);
+
+        let mut origins = HashMap::new();
+        // 'a' has an origin but is determined — should NOT be reported.
+        origins.insert(
+            a.clone(),
+            UndefCause::Unbound { param: a.clone(), span: SourceSpan::new(0, 1) },
+        );
+
+        let mut values = PersistentMap::new();
+        det_cell(&mut values, a.clone()); // determined
+        undef_cell(&mut values, c.clone()); // undef start
+
+        // Trace from c: a is determined so not expanded → empty result.
+        let result = trace_undef_causes(&origins, &dep_map, &values, &c);
+        assert!(
+            result.is_empty(),
+            "B4: determined dep must not appear in trace, got {:?}",
+            result
+        );
+    }
+
+    /// B4: tracing a determined START cell → empty result.
+    #[test]
+    fn determined_start_empty() {
+        let a = cell("s", "a");
+        let dep_map = make_dep_map(&[]);
+
+        let origins = HashMap::new();
+        let mut values = PersistentMap::new();
+        det_cell(&mut values, a.clone());
+
+        let result = trace_undef_causes(&origins, &dep_map, &values, &a);
+        assert!(result.is_empty(), "determined start must yield empty trace: {:?}", result);
+    }
+
+    // ── BT7: cycle terminates ─────────────────────────────────────────────────
+
+    /// BT7: cycle a→b→a, both undef, origin on a → terminates, returns a's cause.
+    #[test]
+    fn cycle_terminates() {
+        let a = cell("s", "a");
+        let b = cell("s", "b");
+
+        let dep_map = make_dep_map(&[
+            (a.clone(), vec![b.clone()]),
+            (b.clone(), vec![a.clone()]),
+        ]);
+
+        let mut origins = HashMap::new();
+        origins.insert(
+            a.clone(),
+            UndefCause::Unbound { param: a.clone(), span: SourceSpan::new(0, 1) },
+        );
+
+        let mut values = PersistentMap::new();
+        undef_cell(&mut values, a.clone());
+        undef_cell(&mut values, b.clone());
+
+        let result = trace_undef_causes(&origins, &dep_map, &values, &a);
+
+        // Must terminate and return at least a's cause.
+        assert!(
+            result.iter().any(|r| matches!(r, UndefCause::Unbound { param, .. } if param == &a)),
+            "BT7: must return a's cause: {:?}",
+            result
+        );
+    }
+
+    // ── INDEPENDENCE: same-detail SolveFailed on distinct cells ──────────────
+
+    /// INDEPENDENCE: two independent cells each with SolveFailed{detail:"inf"} →
+    /// BOTH returned, not collapsed (dedup by cell, not by cause value).
+    #[test]
+    fn independence_same_detail_solve_failed() {
+        let x = cell("s", "x");
+        let y = cell("s", "y");
+        let z = cell("s", "z"); // z depends on x and y
+
+        let dep_map = make_dep_map(&[(z.clone(), vec![x.clone(), y.clone()])]);
+
+        let mut origins = HashMap::new();
+        origins.insert(x.clone(), UndefCause::SolveFailed { detail: "infeasible".to_string() });
+        origins.insert(y.clone(), UndefCause::SolveFailed { detail: "infeasible".to_string() });
+
+        let mut values = PersistentMap::new();
+        undef_cell(&mut values, x.clone());
+        undef_cell(&mut values, y.clone());
+        undef_cell(&mut values, z.clone());
+
+        let result = trace_undef_causes(&origins, &dep_map, &values, &z);
+
+        assert_eq!(result.len(), 2, "INDEPENDENCE: both SolveFailed cells must be returned: {:?}", result);
+        assert!(
+            result.iter().all(|r| matches!(r, UndefCause::SolveFailed { .. })),
+            "INDEPENDENCE: both must be SolveFailed: {:?}",
+            result
+        );
+    }
+
+    // ── ORDER-STABILITY: output ordered by ValueCellId ascending ─────────────
+
+    /// ORDER-STABILITY: output ordered by ValueCellId ascending.
+    #[test]
+    fn order_stability() {
+        // Three leaf cells with origins; one collector depending on all.
+        let a = cell("s", "a");
+        let b = cell("s", "b");
+        let c_node = cell("s", "c");
+        let top = cell("s", "top");
+
+        let dep_map = make_dep_map(&[
+            (top.clone(), vec![a.clone(), b.clone(), c_node.clone()]),
+        ]);
+
+        let mut origins = HashMap::new();
+        origins.insert(
+            a.clone(),
+            UndefCause::Unbound { param: a.clone(), span: SourceSpan::new(0, 1) },
+        );
+        origins.insert(
+            b.clone(),
+            UndefCause::Unbound { param: b.clone(), span: SourceSpan::new(2, 1) },
+        );
+        origins.insert(
+            c_node.clone(),
+            UndefCause::Unbound { param: c_node.clone(), span: SourceSpan::new(4, 1) },
+        );
+
+        let mut values = PersistentMap::new();
+        for c in [&a, &b, &c_node, &top] {
+            undef_cell(&mut values, c.clone());
+        }
+
+        let result = trace_undef_causes(&origins, &dep_map, &values, &top);
+
+        // Result must contain 3 causes.
+        assert_eq!(result.len(), 3, "ORDER: expected 3 causes: {:?}", result);
+
+        // The originating cells for the result must be in ascending order.
+        // Extract params from Unbound variants (which store the cell id).
+        let params: Vec<ValueCellId> = result
+            .iter()
+            .filter_map(|r| {
+                if let UndefCause::Unbound { param, .. } = r { Some(param.clone()) } else { None }
+            })
+            .collect();
+        let mut sorted = params.clone();
+        sorted.sort();
+        assert_eq!(params, sorted, "ORDER: result must be sorted by originating cell: {:?}", result);
+    }
 }
