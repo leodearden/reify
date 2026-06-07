@@ -801,10 +801,10 @@ pub enum DiagnosticCode {
     /// `Engine::eval` and `Engine::eval_cached` so the diagnostic surfaces on
     /// `reify check` (no kernel) and in the GUI diagnostics panel.
     ///
-    /// Per PRD D6: **one code, two emission sites** — L1 (eval, this task α)
-    /// and L2 (compile, task γ) share this same variant.  Reserving it here
-    /// lets task γ emit it later with zero enum churn, exactly as
-    /// `MechanismDuplicateSolid` was reserved ahead of its emitter.
+    /// Per PRD D6: **one code, two emission sites** — L1 (eval, task α/4309)
+    /// and L2 (compile, task γ/4310) share this same variant.
+    ///   - L1: `detect_nondriving_joint_errors` in `engine_eval.rs` (task α) — landed
+    ///   - L2: `check_expr_mechanism_joint_bound` in `conformance/mod.rs` (task γ) — **LANDED**
     ///
     /// The PRD-prose mnemonic for this code is `E_MECHANISM_NONDRIVING_JOINT`.
     MechanismNonDrivingJoint,

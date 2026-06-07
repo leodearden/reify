@@ -31,7 +31,7 @@ use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
-use crate::conformance::{check_fn_arg_conformance, check_trait_arg_conformance};
+use crate::conformance::{check_expr_mechanism_joint_bound, check_fn_arg_conformance, check_trait_arg_conformance};
 use crate::type_compat::{type_carries_trait_object, resolve_function_overload, OverloadResolution};
 use crate::entity::{
     AutoResolutionRequest, EntityDefRef, PendingBoundCheck, PendingSubOverrideAuto,
@@ -607,6 +607,15 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         check_expr_fn_arg_conformance(
             expr,
             resolution_functions,
+            &template_registry,
+            &trait_registry,
+            span,
+            diags,
+        );
+        // task 4310 (mechanism γ): L2 compile-time DrivingJoint-bound check.
+        // Rejects bind(couple(...), v) etc. with MechanismNonDrivingJoint.
+        check_expr_mechanism_joint_bound(
+            expr,
             &template_registry,
             &trait_registry,
             span,

@@ -1,13 +1,16 @@
 // Stdlib: Kinematic Constraints  (`std.kinematic`)
 //
 // PRD: docs/prds/v0_3/kcc-joints.md  Phase-1 (KCC-ζ task 3845).
+// Updated: task 4310 (mechanism γ) — Joint root trait + JointBinding/Twist
+//          markers + compile-time DrivingJoint-bound enforcement.
 //
 // Provides the named-type substrate for the v0.3 Kinematic Constraints PRD —
-// marker trait DrivingJoint, per-kind joint structures, non-conforming joints,
-// and top-level container types.
+// marker traits Joint/DrivingJoint, per-kind joint structures, non-conforming
+// joints, and top-level container types.
 //
 // Surface:
-//   - trait DrivingJoint               (marker — independent-motion-variable joints)
+//   - trait Joint                      (root marker — every joint kind conforms)
+//   - trait DrivingJoint : Joint       (marker — independent-motion-variable joints)
 //   - structure def Prismatic          : DrivingJoint (axis : Vec3,
 //                                        spring_rate : Option<TranslationalStiffness> = none,
 //                                        damping     : Option<TranslationalDamping>  = none,
@@ -19,8 +22,10 @@
 //   - structure def Cylindrical        : DrivingJoint (axis : Vec3)
 //   - structure def Planar             : DrivingJoint (axis_x : Vec3, axis_y : Vec3)
 //   - structure def Spherical          : DrivingJoint (axis-isotropic; no axis field)
-//   - structure def Coupling           (derived motion — no independent motion var)
-//   - structure def Fixed              (0-DOF sub-assembly grouping)
+//   - structure def Coupling  : Joint  (derived motion — no independent motion var)
+//   - structure def Fixed     : Joint  (0-DOF sub-assembly grouping)
+//   - structure def JointBinding       (element type of snapshot()'s `bindings` arg)
+//   - structure def Twist              (spatial-velocity / joint-Jacobian element)
 //   - structure def BodyId             (opaque body identifier placeholder)
 //   - structure def Mechanism          (body+joint-parent graph placeholder)
 //   - structure def Snapshot           (free_values, is_singular)
@@ -32,12 +37,14 @@
 //   - `std.units` (Bool, Int, Real)
 //
 // Encoding notes:
-//   1. `DrivingJoint` is an empty marker trait. Joints stay `Value::Map` per
-//      PRD §7.1 (esc-3845-91) — these are nominal type-tags, not runtime carriers.
+//   1. `Joint` is an empty root marker trait. `DrivingJoint` refines it
+//      (`: Joint`). Joints stay `Value::Map` per PRD §7.1 (esc-3845-91) —
+//      these are nominal type-tags, not runtime carriers.
 //      The units.rs/sweep.rs per-name runtime hooks are KEPT per esc-3845-91.
-//   2. Coupling / Fixed do NOT carry the `: DrivingJoint` clause. Coupling has
-//      derived motion (screw/gear/rack-and-pinion — no independent motion variable).
-//      Fixed is a 0-DOF sub-assembly grouping — no motion variable at all.
+//   2. Coupling and Fixed carry `: Joint` (root hierarchy tag) but do NOT carry
+//      `: DrivingJoint`. Coupling has derived motion (screw/gear/rack-and-pinion
+//      — no independent motion variable). Fixed is a 0-DOF sub-assembly grouping
+//      — no motion variable at all.
 //   3. Field types use only prelude-resolvable types. PRD §7.1 ideal types that
 //      are not yet surface types (Range<T>, bare Point3, Joint, Body, JointParent,
 //      LoopClosureRecord, BodySnapshot, ConvergenceReport) are represented with
@@ -47,20 +54,34 @@
 //   4. `Vec3` (= Real alias) resolves because kinematic.ri is registered after
 //      std.trajectory. `JointValue` (= Real alias) likewise.
 
+// ── Joint root marker trait ───────────────────────────────────────────────────
+
+// Joint — root marker trait for all joint kinds in the kinematic hierarchy.
+// Every joint structure (Prismatic, Revolute, Cylindrical, Planar, Spherical,
+// Coupling, Fixed) conforms to this trait. It carries no required members —
+// its sole purpose is to let `param j : Joint` typed slots accept any joint
+// kind, and to make the conformance lattice explicit in the trait registry.
+//
+// DrivingJoint refines Joint (` : Joint`) so that `satisfies_trait_bound`
+// correctly propagates: a DrivingJoint argument satisfies a `Joint` param.
+trait Joint { }
+
 // ── DrivingJoint marker trait ─────────────────────────────────────────────────
 
 // DrivingJoint — marker trait for joint kinds that introduce an independent
 // motion variable (a generalized coordinate). Prismatic/Revolute/Cylindrical/
 // Planar/Spherical each contribute at least one DOF to the mechanism.
 //
-// Kept empty by design: each joint encodes its kinematics via the joint-kind
-// type tag (SIR-α nominal dispatch). The sweep engine identifies which joints
-// are sweepable by checking conformance to this trait.
+// Refines Joint (`: Joint`) so all DrivingJoint conformers are also Joint
+// conformers. Kept empty by design: each joint encodes its kinematics via the
+// joint-kind type tag (SIR-α nominal dispatch). The sweep engine identifies
+// which joints are sweepable by checking conformance to this trait.
 //
-// NON-CONFORMING: Coupling (derived motion — screw/gear/rack-and-pinion) and
-// Fixed (0-DOF sub-assembly grouping) are declared WITHOUT this clause because
-// they do not contribute an independent generalized coordinate.
-trait DrivingJoint { }
+// NON-CONFORMING to DrivingJoint: Coupling (derived motion — screw/gear/
+// rack-and-pinion) and Fixed (0-DOF sub-assembly grouping) are declared with
+// `: Joint` but WITHOUT `: DrivingJoint` because they do not contribute an
+// independent generalized coordinate.
+trait DrivingJoint : Joint { }
 
 // ── Conforming joint kinds ────────────────────────────────────────────────────
 
@@ -121,13 +142,39 @@ structure def Spherical : DrivingJoint { }
 // The motion of a Coupling is fully determined by one or more DrivingJoint DOFs
 // via a kinematic constraint equation — it does NOT contribute a generalized
 // coordinate to the mechanism.
-structure def Coupling { }
+//
+// Conforms to Joint (root hierarchy tag) but NOT DrivingJoint.
+// The compile-time guard (task γ / phase_fn_arg_conformance) rejects
+// `bind(couple(...), v)` with E_MECHANISM_NONDRIVING_JOINT naming "Coupling".
+structure def Coupling : Joint { }
 
 // Fixed — rigid, zero-DOF sub-assembly grouping.
 // Two bodies connected by a Fixed joint move as one rigid body. No motion
 // variable; used to group sub-assemblies for bookkeeping without affecting
 // the mechanism's DOF count.
-structure def Fixed { }
+//
+// Conforms to Joint (root hierarchy tag) but NOT DrivingJoint.
+// The compile-time guard (task γ / phase_fn_arg_conformance) rejects
+// `bind(fixed(...), v)` with E_MECHANISM_NONDRIVING_JOINT naming "Fixed".
+structure def Fixed : Joint { }
+
+// ── Binding / Jacobian element types ─────────────────────────────────────────
+
+// JointBinding — record of a joint's generalized-coordinate binding in a
+// kinematic snapshot. Empty marker for now; fields are added by task β's
+// signature family.
+//
+// This is the element type of the `bindings` argument of `snapshot()` (D8).
+// The actual `List<JointBinding>` param typing of snapshot()'s bindings arg
+// lands with β (task 4311), which wires up the full constructor signature
+// family. Declaring the type here makes it expressible and enforceable once
+// β lands — `param bindings : List<JointBinding>` can resolve correctly.
+structure def JointBinding { }
+
+// Twist — spatial velocity of a rigid body (linear + angular components).
+// Used as the element type of joint-Jacobian columns and wrench vectors.
+// Empty marker; field layout is deferred to the β/SIR-α signature family.
+structure def Twist { }
 
 // ── Top-level kinematic types ─────────────────────────────────────────────────
 
