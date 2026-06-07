@@ -392,6 +392,25 @@ describe("runValueScenario", () => {
   });
 });
 
+// task-4305 E1 step-3 RED → step-4 GREEN: C2 resize_panes e2e signal scenario
+describe("C2 VALUE_SCENARIO (task-4305 E1)", () => {
+  it("resize_panes_editor_width is present exactly once in VALUE_SCENARIOS", () => {
+    const matching = VALUE_SCENARIOS.filter((s) => s.name === "resize_panes_editor_width");
+    expect(matching.length, "resize_panes_editor_width should appear exactly once").toBe(1);
+  });
+
+  it("resize_panes_editor_width has correct fixture, tool, and key assertions", () => {
+    const scenario = VALUE_SCENARIOS.find((s) => s.name === "resize_panes_editor_width");
+    expect(scenario).toBeDefined();
+    if (!scenario) return;
+    const validFixtureKeys = Object.keys(FIXTURES);
+    expect(validFixtureKeys).toContain(scenario.fixture);
+    expect(scenario.tool).toBe("resize_panes");
+    expect(scenario.assertions).toContainEqual({ path: "ok", op: "equals", expected: true });
+    expect(scenario.assertions).toContainEqual({ path: "layout.editorWidth", op: "equals", expected: 400 });
+  });
+});
+
 // task-4303 step-13 RED → step-14 GREEN: F1 VALUE_SCENARIOS presence and structure
 describe("F1 VALUE_SCENARIOS (task-4303)", () => {
   const F1_SCENARIO_NAMES = [
