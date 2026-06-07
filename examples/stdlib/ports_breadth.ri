@@ -68,3 +68,36 @@ structure def ThreadAssembly {
         thread_class: ThreadClass.Class_6g6H
     )
 }
+
+// ── Local Frame3 re-declaration (eval-time availability) ─────────────────────
+// Required for Frame3(...) constructions in AsymmetricRig and HydroConformer.
+// Mirrors stdlib ports.ri's structure def Frame3.
+
+structure def Frame3 {
+    param origin : Vector3<Length>
+    param x_axis : Vector3<Length>
+    param y_axis : Vector3<Length>
+    param z_axis : Vector3<Length>
+}
+
+// ── (b) Signal: asymmetric-LocatedPort warning from stdlib-derived ports ──────
+// MechanicalPort refines LocatedPort (β restructure, landed task 4255).
+// ThermalPort refines only Port.
+// Bare `connect mech -> heat` triggers connect.rs:344's asymmetric-LocatedPort
+// warning — the integration point PRD §0 highlights ("previously unreachable
+// from stdlib-derived ports").
+
+structure def AsymmetricRig {
+    port mech : out MechanicalPort {
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1mm, 0mm, 0mm),
+            y_axis: vec3(0mm, 1mm, 0mm),
+            z_axis: vec3(0mm, 0mm, 1mm)
+        )
+    }
+    port heat : in ThermalPort {
+        param heat_flow : Power = 10W
+    }
+    connect mech -> heat
+}
