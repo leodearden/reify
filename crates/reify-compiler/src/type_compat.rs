@@ -320,6 +320,150 @@ pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
     }
 }
 
+/// A call-site type-argument inference conflict: the same type parameter was
+/// bound to two different concrete types across a generic call's arguments.
+///
+/// Raised by [`unify`] when an earlier argument bound type parameter `param`
+/// to `existing` and a later argument requires the incompatible `incoming`.
+/// The call site (expr.rs) consumes this to emit
+/// `DiagnosticCode::FnTypeArgConflict` (task 4231 β, PRD D2 / §4.2).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TypeArgConflict {
+    pub(crate) param: String,
+    pub(crate) existing: Type,
+    pub(crate) incoming: Type,
+}
+
+/// Conservative, single-pass structural unification of a generic function's
+/// declared parameter type against a concrete argument type.
+///
+/// Binds `Type::TypeParam` leaves in `declared` to the corresponding sub-type
+/// of `arg`, accumulating into `subst`. Recurses through matching constructors
+/// (List/Set/Keyed/Option/Complex/Range, Map, Field, Function of equal arity,
+/// Point/Vector/Tensor/Matrix of equal shape, Union of equal length).
+///
+/// Conservative by design (PRD D2): the ONLY error is a type-parameter
+/// double-binding (`Err(TypeArgConflict)`). A structural mismatch where
+/// `declared` is not a `TypeParam` and its constructor does not match `arg`'s
+/// returns `Ok(())` with no binding — eval is type-erased (INV-2), so a
+/// declared/arg shape divergence is not itself a type error at this seam;
+/// overload resolution is the separate match gate.
+///
+/// Pure and side-effect-free apart from mutating `subst`: it takes no
+/// diagnostics sink, leaving emission to the call site.
+pub(crate) fn unify(
+    declared: &Type,
+    arg: &Type,
+    subst: &mut HashMap<String, Type>,
+) -> Result<(), TypeArgConflict> {
+    match (declared, arg) {
+        // Type-parameter leaf: bind if absent; re-bind to the same type is Ok;
+        // re-bind to a different type is the sole error case.
+        (Type::TypeParam(p), _) => match subst.get(p) {
+            None => {
+                subst.insert(p.clone(), arg.clone());
+                Ok(())
+            }
+            Some(existing) if existing == arg => Ok(()),
+            Some(existing) => Err(TypeArgConflict {
+                param: p.clone(),
+                existing: existing.clone(),
+                incoming: arg.clone(),
+            }),
+        },
+
+        // Single-inner-Type constructors: recurse on the child.
+        (Type::List(d), Type::List(a))
+        | (Type::Set(d), Type::Set(a))
+        | (Type::Keyed(d), Type::Keyed(a))
+        | (Type::Option(d), Type::Option(a))
+        | (Type::Complex(d), Type::Complex(a))
+        | (Type::Range(d), Type::Range(a)) => unify(d, a, subst),
+
+        // Two-inner-Type constructors.
+        (Type::Map(dk, dv), Type::Map(ak, av)) => {
+            unify(dk, ak, subst)?;
+            unify(dv, av, subst)
+        }
+        (
+            Type::Field {
+                domain: dd,
+                codomain: dc,
+            },
+            Type::Field {
+                domain: ad,
+                codomain: ac,
+            },
+        ) => {
+            unify(dd, ad, subst)?;
+            unify(dc, ac, subst)
+        }
+
+        // Function: equal arity → unify each param then the return type.
+        (
+            Type::Function {
+                params: dp,
+                return_type: dr,
+            },
+            Type::Function {
+                params: ap,
+                return_type: ar,
+            },
+        ) if dp.len() == ap.len() => {
+            for (d, a) in dp.iter().zip(ap.iter()) {
+                unify(d, a, subst)?;
+            }
+            unify(dr, ar, subst)
+        }
+
+        // Quantity-bearing aggregates: equal shape → unify the quantity slot.
+        (
+            Type::Point { n: dn, quantity: dq },
+            Type::Point { n: an, quantity: aq },
+        ) if dn == an => unify(dq, aq, subst),
+        (
+            Type::Vector { n: dn, quantity: dq },
+            Type::Vector { n: an, quantity: aq },
+        ) if dn == an => unify(dq, aq, subst),
+        (
+            Type::Tensor {
+                rank: drk,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Tensor {
+                rank: ark,
+                n: an,
+                quantity: aq,
+            },
+        ) if drk == ark && dn == an => unify(dq, aq, subst),
+        (
+            Type::Matrix {
+                m: dm,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Matrix {
+                m: am,
+                n: an,
+                quantity: aq,
+            },
+        ) if dm == am && dn == an => unify(dq, aq, subst),
+
+        // Union: equal length → unify arm-by-arm.
+        (Type::Union(da), Type::Union(aa)) if da.len() == aa.len() => {
+            for (d, a) in da.iter().zip(aa.iter()) {
+                unify(d, a, subst)?;
+            }
+            Ok(())
+        }
+
+        // Conservative: any other (declared, arg) pairing — structural
+        // mismatch, or a non-TypeParam leaf — binds nothing and never errors.
+        _ => Ok(()),
+    }
+}
+
 /// Resolve a function call against the list of compiled user functions.
 ///
 /// Uses **exact** type matching for concrete params; trait-object-carrying params
