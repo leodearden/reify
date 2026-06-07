@@ -101,3 +101,32 @@ structure def AsymmetricRig {
     }
     connect mech -> heat
 }
+
+// ── Local enum re-declarations for fluid domain ───────────────────────────────
+
+enum FluidType { Liquid, Gas, TwoPhase }
+enum FittingStandard { NPT, BSP, JIC, ORFS }
+
+// ── (c) Signal: HydraulicPort multi-domain conformance ────────────────────────
+// HydraulicPort refines both FluidPort and MechanicalPort (ζ task 4259, landed).
+// The port-p slot supplies all required params; zero Error diagnostics at
+// compile time confirms the FluidPort+MechanicalPort diamond resolves.
+// (Enum-typed params fluid_type/fitting_type omit the type annotation per the
+// documented port-param enum-type limitation; mirrors the proven ζ conformer
+// shape in ports_stdlib_compile.rs::hydraulic_port_concrete_conformer_multidomain_compiles.)
+
+structure def HydroConformer {
+    port p : in HydraulicPort {
+        param pressure : Pressure = 101325Pa
+        param flow_rate : VolumetricFlowRate = 1gal / 1s
+        param medium : String = "hydraulic_oil"
+        param fluid_type = FluidType.Liquid
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1mm, 0mm, 0mm),
+            y_axis: vec3(0mm, 1mm, 0mm),
+            z_axis: vec3(0mm, 0mm, 1mm)
+        )
+        param fitting_type = FittingStandard.NPT
+    }
+}
