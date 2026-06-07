@@ -22,6 +22,7 @@ pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
 };
 pub use graph::CancellationHandle;
+pub use graph::RealizationKernelProvenance;
 pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;
