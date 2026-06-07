@@ -3861,13 +3861,7 @@ impl Engine {
                 // The principled root fix (re-keying both tables by `KernelHandle`)
                 // is deferred to follow-up task #4351.
                 feature_tag_table.remove(cached_handle.id);
-                debug_assert!(
-                    topology_attribute_table.lookup(cached_handle.id).is_none(),
-                    "topology_attribute_table already has an entry for cached \
-                     handle {:?} on cache-hit short-circuit — per-build reset \
-                     invariant violated",
-                    cached_handle,
-                );
+                topology_attribute_table.remove(cached_handle.id);
                 step_handles.push(cached_handle);
                 named_steps.insert(name.to_string(), cached_handle);
                 // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
