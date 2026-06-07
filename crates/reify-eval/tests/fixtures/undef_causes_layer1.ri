@@ -1,0 +1,18 @@
+// Fixture for task 4321 (PRD undef-self-describing α): Layer-1 UndefCause origins.
+//
+// UndefDemo exercises the four non-solver Layer-1 undef origins on a single eval:
+//   - a, b  : Unbound       (param with no default — absent from EvalResult.values,
+//                             pre-seeded as (Undef, Undetermined) in snapshot.values)
+//   - c     : propagated    (let c = a + b — undef solely due to undef inputs; records
+//                             nothing per A3 transparency)
+//   - u     : UserUndef     (param u: Real = undef — literal undef default)
+//   - k     : AwaitingSolve (param k: Scalar = auto, no solver attached to engine)
+//
+// Compiles clean under parse_and_compile_with_stdlib (no Error diagnostics).
+structure UndefDemo {
+    param a: Length
+    param b: Length
+    let c = a + b
+    param u: Real = undef
+    param k: Scalar = auto
+}

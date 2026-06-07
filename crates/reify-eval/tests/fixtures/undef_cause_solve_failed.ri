@@ -1,0 +1,15 @@
+// Fixture for task 4321 (PRD undef-self-describing α): SolveFailed UndefCause.
+//
+// SolveFail has a single `Scalar = auto` param `x` with two inequality constraints
+// so build_solver_problem returns Some and the solver is invoked.  When evaluated by
+// an engine wired with MockConstraintSolver::new_infeasible the solve returns
+// Infeasible, x stays (Undef, Auto), and the cell must classify as SolveFailed
+// (not AwaitingSolve, which is the classification when no solver is attached).
+//
+// Compiles clean under parse_and_compile_with_stdlib (no Error diagnostics).
+structure SolveFail {
+    param x: Scalar = auto
+
+    constraint x >= 2mm
+    constraint x <= 8mm
+}
