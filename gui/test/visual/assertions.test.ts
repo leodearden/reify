@@ -257,6 +257,17 @@ describe("VALUE_SCENARIOS", () => {
     expect(assertion).toBeDefined();
     expect(assertion!.op).toBe("exists");
   });
+
+  // task-4300 step-7 RED → step-8 GREEN: I2 canvas-interaction e2e signal scenarios
+  // Existence + uniqueness only — the generic structural tests above already
+  // validate fixture/tool/assertions shape.
+  it("I2 scenarios (pick_entity_at_small_cube, orbit_camera_small_cube) are present and unique", () => {
+    const i2Names = ["pick_entity_at_small_cube", "orbit_camera_small_cube"];
+    for (const name of i2Names) {
+      const matching = VALUE_SCENARIOS.filter((s) => s.name === name);
+      expect(matching.length, `${name} should appear exactly once`).toBe(1);
+    }
+  });
 });
 
 describe("runValueScenario", () => {
