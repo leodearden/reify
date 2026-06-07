@@ -1139,6 +1139,17 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // Borrow the profiles vec directly to avoid a clone on every loft op.
         GeometryOp::Loft { profiles } => ParentHandles::Borrowed(profiles.as_slice()),
         GeometryOp::LoftGuided { profiles, .. } => ParentHandles::Borrowed(profiles.as_slice()),
+
+        // Topology selectors — these are NOT realization ops and must never flow
+        // through execute_realization_ops. Split is dispatched via
+        // GeometryKernel::execute_split (eval-time topology selector path).
+        GeometryOp::Split { .. } => {
+            unreachable!(
+                "GeometryOp::Split is a topology selector; \
+                 it is never inserted into the realization graph and \
+                 must not reach parent_handles_for_op"
+            )
+        }
     }
 }
 
@@ -1220,6 +1231,15 @@ fn substitute_op_parents(
         | GeometryOp::RectangleProfile { .. }
         | GeometryOp::CircleProfile { .. }
         | GeometryOp::Pipe { .. } => {}
+
+        // Topology selectors — never inserted into the realization graph.
+        GeometryOp::Split { .. } => {
+            unreachable!(
+                "GeometryOp::Split is a topology selector; \
+                 it is never inserted into the realization graph and \
+                 must not reach substitute_op_parents"
+            )
+        }
     }
 }
 
@@ -1354,6 +1374,16 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         // Profile face producers
         GeometryOp::RectangleProfile { .. } => Operation::ProfileRectangle,
         GeometryOp::CircleProfile { .. } => Operation::ProfileCircle,
+
+        // Topology selectors — never inserted into the realization graph;
+        // Split is dispatched via GeometryKernel::execute_split at eval time.
+        GeometryOp::Split { .. } => {
+            unreachable!(
+                "GeometryOp::Split is a topology selector; \
+                 it is never inserted into the realization graph and \
+                 must not reach geometry_op_to_operation"
+            )
+        }
     }
 }
 

@@ -957,6 +957,21 @@ pub mod ffi {
         /// deduplicated by IsSame). Built per call (no `vertex_map()` cache).
         fn get_vertices(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
+        /// Split `shape` with an unbounded planar cutting tool defined by
+        /// `origin` (`ox`, `oy`, `oz`) and `normal` (`nx`, `ny`, `nz`), both
+        /// in metres. Returns an `OcctShapeVec` of result solids extracted from
+        /// the splitter output. A non-intersecting plane yields the original
+        /// solid in a length-1 vec. Throws if the splitter fails (`!IsDone()`).
+        fn split_shape(
+            shape: &OcctShape,
+            ox: f64,
+            oy: f64,
+            oz: f64,
+            nx: f64,
+            ny: f64,
+            nz: f64,
+        ) -> Result<UniquePtr<OcctShapeVec>>;
+
         // --- Conformance queries ---
 
         /// Check whether `shape` is watertight (closed, no free edges).

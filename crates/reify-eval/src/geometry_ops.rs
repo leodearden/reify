@@ -2513,6 +2513,7 @@ pub(crate) fn try_eval_topology_selector(
         "perimeter" => TopologySelectorHelper::Perimeter,
         "distance" => TopologySelectorHelper::Distance,
         "intersects" => TopologySelectorHelper::Intersects,
+        "split" => TopologySelectorHelper::Split,
         _ => return None,
     };
 
@@ -2584,7 +2585,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Length
                 | TopologySelectorHelper::Perimeter
                 | TopologySelectorHelper::Distance
-                | TopologySelectorHelper::Intersects => {
+                | TopologySelectorHelper::Intersects
+                | TopologySelectorHelper::Split => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -2878,6 +2880,67 @@ pub(crate) fn try_eval_topology_selector(
                 None => Some(reify_ir::Value::Undef),
             }
         }
+        TopologySelectorHelper::Split => {
+            // `split(solid, plane) -> List<Geometry>` (task 4190, PRD ζ).
+            //
+            // args[0]: solid ValueRef → values map → full parent GeometryHandle.
+            //   Resolved via `resolve_parent_geometry_handle_arg` so we get the
+            //   parent's realization_ref + upstream_values_hash for sub-handle
+            //   construction (PRD §4).  Falls through to None when the arg cell
+            //   is not yet a hydrated Value::GeometryHandle (PRD invariant #2:
+            //   never partially construct a sub-handle).
+            // args[1]: plane ValueRef → values map → Value::Plane.
+            //   Decoded via `decode_plane` → (plane_origin, plane_normal [f64;3]).
+            //   Falls through to None when args[1] is not a Value::Plane (wrong
+            //   variant, unresolved, Undef, etc.) — same fall-through contract.
+            // Dispatch: `GeometryKernel::execute_split(&GeometryOp::Split{..})`.
+            //   On Ok(ids): build Value::List via make_sub_handle(SubKind::Solid).
+            //   On Err: emit Warning diagnostic, return Some(Value::Undef).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+
+            // Resolve and decode the plane arg.
+            let plane_cell_id = match &args[1].kind {
+                reify_ir::CompiledExprKind::ValueRef(id) => id,
+                _ => return None,
+            };
+            let plane_val = values.get(plane_cell_id)?;
+            let (plane_origin, plane_normal) = match decode_plane(plane_val) {
+                Ok(pair) => pair,
+                Err(_) => return None,
+            };
+
+            let op = reify_ir::GeometryOp::Split {
+                target: parent_kernel_handle,
+                plane_origin,
+                plane_normal,
+            };
+            match kernel.execute_split(&op) {
+                Ok(piece_ids) => {
+                    let elements = piece_ids
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, piece_kernel_id)| {
+                            crate::topology_selectors::make_sub_handle(
+                                &parent_rr,
+                                &parent_hash,
+                                crate::topology_selectors::SubKind::Solid,
+                                i as u32,
+                                piece_kernel_id,
+                            )
+                        })
+                        .collect();
+                    Some(reify_ir::Value::List(elements))
+                }
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{}({:?}): kernel error: {}",
+                        function.name, parent_kernel_handle, err
+                    )));
+                    Some(reify_ir::Value::Undef)
+                }
+            }
+        }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → values map → full parent GeometryHandle.
             // The parent's realization_ref + upstream_values_hash are needed to
@@ -2915,7 +2978,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Length
                 | TopologySelectorHelper::Perimeter
                 | TopologySelectorHelper::Distance
-                | TopologySelectorHelper::Intersects => {
+                | TopologySelectorHelper::Intersects
+                | TopologySelectorHelper::Split => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -3352,6 +3416,15 @@ fn dispatch_filtered_subhandles(
     let canonical = match sub_kind {
         crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
         crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
+        // SubKind::Solid is only used by the Split dispatch arm, which calls
+        // execute_split directly — it never reaches dispatch_filtered_subhandles.
+        crate::topology_selectors::SubKind::Solid => {
+            unreachable!(
+                "dispatch_filtered_subhandles called with SubKind::Solid — \
+                 split pieces are handled by the Split arm via execute_split, \
+                 not through the filter-subhandle path"
+            )
+        }
     };
     let canonical = match canonical {
         Ok(ids) => ids,
@@ -3531,6 +3604,25 @@ enum TopologySelectorHelper {
     /// before enabling the parity gate.  See also the "Known parity divergence"
     /// section in `crates/reify-kernel-manifold/src/queries.rs::intersects`.
     Intersects,
+    /// `split(solid, plane) -> List<Geometry>` — split a solid into pieces by
+    /// an unbounded planar cutting tool (task 4190, PRD ζ).
+    ///
+    /// Backed by `GeometryKernel::execute_split` →
+    /// `BRepAlgoAPI_Splitter` (OCCT kernel). A non-intersecting plane yields a
+    /// length-1 list containing the original solid unchanged.
+    ///
+    /// args[0]: solid `Value::GeometryHandle` (resolved from `values` via
+    ///   `resolve_parent_geometry_handle_arg`, providing the parent
+    ///   realization_ref + hash for sub-handle construction).
+    /// args[1]: cutting plane `Value::Plane` (resolved from `values`, decoded
+    ///   via `decode_plane` into (origin, unit_normal)).
+    ///
+    /// Each result piece is stored as a `Value::GeometryHandle` sub-handle via
+    /// `make_sub_handle` with `SubKind::Solid` (0x03) — domain-separated from
+    /// edge (0x01) and face (0x02) hashes.  On kernel error emits a Warning
+    /// diagnostic and returns `Some(Value::Undef)`.  Non-Plane args[1] or
+    /// unhydrated args[0] fall through to `None`.
+    Split,
 }
 
 impl TopologySelectorHelper {
@@ -3554,7 +3646,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::Normal
             | TopologySelectorHelper::Curvature
             | TopologySelectorHelper::Distance
-            | TopologySelectorHelper::Intersects => 2,
+            | TopologySelectorHelper::Intersects
+            | TopologySelectorHelper::Split => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
             | TopologySelectorHelper::Length
@@ -3589,6 +3682,15 @@ fn dispatch_extract_subshapes(
     let result = match sub_kind {
         crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
         crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
+        // SubKind::Solid is only used by the Split dispatch arm, which calls
+        // execute_split directly and does NOT go through dispatch_extract_subshapes.
+        crate::topology_selectors::SubKind::Solid => {
+            unreachable!(
+                "dispatch_extract_subshapes called with SubKind::Solid — \
+                 split pieces are produced via execute_split in the Split arm, \
+                 not through the extract-subshapes path"
+            )
+        }
     };
     match result {
         Ok(sub_ids) => {
@@ -16622,6 +16724,339 @@ mod tests {
         assert!(
             decode_axis(&axis).is_err(),
             "zero-magnitude direction must be rejected by decode_axis"
+        );
+    }
+
+    // ── step-7 (task 4190): split dispatch unit tests ────────────────────────
+    //
+    // Tests for the `split(solid, plane) -> List<Geometry>` dispatch arm in
+    // `try_eval_topology_selector`.  These tests reference
+    // `crate::topology_selectors::SubKind::Solid` (added in step-8) and
+    // `TopologySelectorHelper::Split` (added in step-8), so the crate fails
+    // to compile until step-8 is done → RED.
+
+    /// Thin wrapper around `MockGeometryKernel` that overrides `execute_split`
+    /// to return a configurable success result.  All other trait methods
+    /// delegate to the inner mock.
+    ///
+    /// Required because `MockGeometryKernel` does not expose `execute_split`
+    /// configuration (it is not in the mock's in-scope file list for this
+    /// task), so we define a minimal delegating wrapper inline.
+    struct SplitMockKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        /// Returned by every `execute_split` call (cloned on each call).
+        split_ids: Vec<GeometryHandleId>,
+    }
+
+    impl SplitMockKernel {
+        fn new(
+            inner: reify_test_support::mocks::MockGeometryKernel,
+            split_ids: Vec<GeometryHandleId>,
+        ) -> Self {
+            Self { inner, split_ids }
+        }
+    }
+
+    impl reify_ir::GeometryKernel for SplitMockKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            query: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(query)
+        }
+
+        fn export(
+            &self,
+            handle: GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+
+        fn execute_split(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<Vec<GeometryHandleId>, reify_ir::GeometryError> {
+            Ok(self.split_ids.clone())
+        }
+    }
+
+    /// Build a `Value::Plane` with a z=0 normal (z-axis cutting plane) for use
+    /// as the plane argument in split dispatch tests.
+    fn z_plane_value() -> reify_ir::Value {
+        reify_ir::Value::Plane {
+            origin: Box::new(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+            normal: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ])),
+        }
+    }
+
+    /// `split(solid, plane)` dispatch returns `Value::List` of two
+    /// `Value::GeometryHandle` elements when the mock kernel returns
+    /// [GHId(5), GHId(6)] from `execute_split`.
+    ///
+    /// Each element must:
+    ///   (i)  carry the parent solid's `realization_ref` (unchanged, PRD §4 i);
+    ///   (ii) have a `upstream_values_hash` distinct from the other piece
+    ///        (PRD §4 iii) — derived from `SubKind::Solid` discriminant (0x03)
+    ///        via `compose_sub_handle_hash`.
+    ///
+    /// RED: `SubKind::Solid` does not exist yet → compile error.
+    #[test]
+    fn split_dispatch_returns_geometry_handle_list() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("MySolid", 0);
+        let parent_hash: [u8; 32] = [0xAB; 32];
+
+        let piece_ids = vec![GeometryHandleId(5), GeometryHandleId(6)];
+        let mut kernel = SplitMockKernel::new(
+            reify_test_support::mocks::MockGeometryKernel::new(),
+            piece_ids.clone(),
+        );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("solid".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[0]: parent solid as hydrated GeometryHandle in the values map.
+        values.insert(
+            ValueCellId::new("MySolid", "solid"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        // args[1]: cutting plane as Value::Plane in the values map.
+        values.insert(ValueCellId::new("MySolid", "plane"), z_plane_value());
+
+        let expr = topology_selector_call_two_value_refs(
+            "split",
+            "MySolid",
+            "solid",
+            Type::Geometry,
+            "plane",
+            Type::Plane,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "split dispatch must return Some(Value::List(..)), got {:?}; \
+                 diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(list.len(), 2, "expected 2 split pieces, got {}", list.len());
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for successful split, got: {:?}",
+            diagnostics
+        );
+
+        // Verify each piece: correct realization_ref, correct kernel_handle,
+        // distinct upstream_values_hash (SubKind::Solid domain-separation).
+        let expected_kernel_ids = [GeometryHandleId(5), GeometryHandleId(6)];
+        let mut hashes: Vec<[u8; 32]> = Vec::new();
+        for (i, (elem, expected_id)) in list.iter().zip(&expected_kernel_ids).enumerate() {
+            match elem {
+                reify_ir::Value::GeometryHandle {
+                    realization_ref,
+                    upstream_values_hash,
+                    kernel_handle,
+                } => {
+                    assert_eq!(
+                        realization_ref.entity, parent_rr.entity,
+                        "piece[{i}] realization_ref.entity must match parent"
+                    );
+                    assert_eq!(
+                        realization_ref.index, parent_rr.index,
+                        "piece[{i}] realization_ref.index must match parent"
+                    );
+                    assert_eq!(
+                        kernel_handle, expected_id,
+                        "piece[{i}] kernel_handle must be {expected_id:?}"
+                    );
+                    // Verify the hash uses SubKind::Solid (0x03) domain separator.
+                    let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+                        &parent_hash,
+                        crate::topology_selectors::SubKind::Solid, // RED: not yet defined
+                        i as u32,
+                    );
+                    assert_eq!(
+                        *upstream_values_hash, expected_hash,
+                        "piece[{i}] upstream_values_hash must use SubKind::Solid"
+                    );
+                    hashes.push(*upstream_values_hash);
+                }
+                other => panic!("piece[{i}] is not Value::GeometryHandle: {:?}", other),
+            }
+        }
+        // PRD §4 iii: per-index hashes must be distinct.
+        assert_ne!(
+            hashes[0], hashes[1],
+            "split piece 0 and piece 1 hashes must differ (PRD §4 iii)"
+        );
+    }
+
+    /// When args[1] is not a `Value::Plane` (e.g. a bare `Value::Real`),
+    /// `split` dispatch must fall through to `None` so the cell retains its
+    /// compiled default (`Value::Undef`).
+    #[test]
+    fn split_dispatch_falls_through_when_plane_arg_not_a_plane() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("solid".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[0]: valid parent solid.
+        values.insert(
+            ValueCellId::new("MySolid", "solid"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: reify_core::identity::RealizationNodeId::new("MySolid", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent_handle,
+            },
+        );
+        // args[1]: NOT a Plane — should cause decode_plane to fail → fall through.
+        values.insert(
+            ValueCellId::new("MySolid", "plane"),
+            reify_ir::Value::Real(0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "split",
+            "MySolid",
+            "solid",
+            Type::Geometry,
+            "plane",
+            Type::Real,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "non-Plane args[1] must fall through to None (cell stays Undef), got {:?}",
+            result
+        );
+    }
+
+    /// When `execute_split` returns an error, `split` dispatch must emit a
+    /// `Warning` diagnostic and return `Some(Value::Undef)` — the same
+    /// defensive-downgrade contract as other topology-selector dispatch arms.
+    #[test]
+    fn split_dispatch_emits_warning_and_undef_on_kernel_error() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        // Default MockGeometryKernel inherits the trait default for execute_split:
+        // Err(GeometryError::OperationFailed("execute_split not supported by this kernel")).
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("solid".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("MySolid", "solid"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: reify_core::identity::RealizationNodeId::new("MySolid", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent_handle,
+            },
+        );
+        values.insert(ValueCellId::new("MySolid", "plane"), z_plane_value());
+
+        let expr = topology_selector_call_two_value_refs(
+            "split",
+            "MySolid",
+            "solid",
+            Type::Geometry,
+            "plane",
+            Type::Plane,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "kernel Err must produce Some(Value::Undef), got {:?}; \
+             diagnostics: {:?}",
+            result,
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 Warning diagnostic on kernel error, \
+             got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert!(
+            matches!(diagnostics[0].severity, reify_core::Severity::Warning),
+            "diagnostic must be a Warning, got {:?}",
+            diagnostics[0].severity
         );
     }
 }

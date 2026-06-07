@@ -801,6 +801,29 @@ pub enum GeometryOp {
         faces_to_remove: Vec<usize>,
     },
 
+    /// Split a solid into pieces by an unbounded planar cutting tool.
+    ///
+    /// `plane_origin` and `plane_normal` define the cutting plane in the same
+    /// metre-scaled coordinate system used by all other `GeometryOp` variants
+    /// (mirroring [`GeometryOp::Mirror`]'s field layout).  The normal need not
+    /// be unit-length; the C++ implementation normalises it before constructing
+    /// the `gp_Pln`.
+    ///
+    /// This variant is dispatched via [`GeometryKernel::execute_split`], NOT
+    /// [`GeometryKernel::execute`].  Calling `execute` with this variant returns
+    /// `Err(GeometryError::OperationFailed(_))` to preserve the single-handle
+    /// return contract.
+    ///
+    /// Joins the topology-selector family (GEOMETRY_TOPOLOGY_SELECTOR_NAMES in
+    /// `reify-compiler`): `let pieces = split(solid, plane)` is typed as
+    /// `List<Geometry>` at compile time and evaluated via
+    /// `GeometryKernel::execute_split` at eval time.
+    Split {
+        target: GeometryHandleId,
+        plane_origin: [f64; 3],
+        plane_normal: [f64; 3],
+    },
+
     // ── Profile (2-D face producers) ─────────────────────────────────────
     /// Axis-aligned rectangular face centred at origin in the XY plane at z=0.
     ///
@@ -864,6 +887,7 @@ impl GeometryOp {
             GeometryOp::Draft { .. } => "Draft",
             GeometryOp::Thicken { .. } => "Thicken",
             GeometryOp::Shell { .. } => "Shell",
+            GeometryOp::Split { .. } => "Split",
             GeometryOp::RectangleProfile { .. } => "RectangleProfile",
             GeometryOp::CircleProfile { .. } => "CircleProfile",
         }
@@ -2429,6 +2453,30 @@ pub trait GeometryKernel: Send + Sync {
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         Err(QueryError::QueryFailed(
             "topology extraction not supported by this kernel".into(),
+        ))
+    }
+
+    /// Split a solid into pieces by an unbounded planar cutting tool
+    /// (`BRepAlgoAPI_Splitter`).
+    ///
+    /// `op` must be a [`GeometryOp::Split`]; passing any other variant is a
+    /// logic error (the caller in `reify-eval` guarantees this invariant).
+    ///
+    /// Returns a `Vec<GeometryHandleId>` where each id names a freshly-stored
+    /// result solid (with `BRepKind::Solid`).  A plane that does not intersect
+    /// the solid yields a length-1 `Vec` containing the original shape.
+    ///
+    /// Default implementation returns
+    /// `Err(GeometryError::OperationFailed("execute_split not supported by this kernel"))`,
+    /// keeping non-OCCT kernels (mocks, stubs, Manifold, Fidget) compiling
+    /// without per-impl edits.  Mirrors the `make_compound` / `extract_edges` /
+    /// `extract_faces` default-Err pattern.
+    fn execute_split(
+        &mut self,
+        _op: &GeometryOp,
+    ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+        Err(GeometryError::OperationFailed(
+            "execute_split not supported by this kernel".into(),
         ))
     }
 
@@ -6479,12 +6527,20 @@ mod tests {
                     radius: Value::Real(0.008),
                 },
             ),
+            (
+                "Split",
+                GeometryOp::Split {
+                    target: GeometryHandleId(1),
+                    plane_origin: [0.0, 0.0, 0.0],
+                    plane_normal: [0.0, 0.0, 1.0],
+                },
+            ),
         ];
         // Changing this constant forces the test to be updated whenever a
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 40;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 41;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
@@ -6497,6 +6553,48 @@ mod tests {
                 "kind_name() mismatch for GeometryOp::{expected}"
             );
         }
+    }
+
+    /// RED step-1 (task 4190): GeometryOp::Split.kind_name() must return "Split".
+    ///
+    /// References the not-yet-existing variant — compile-fails RED until step-2
+    /// adds `GeometryOp::Split { target, plane_origin, plane_normal }` and the
+    /// "Split" arm in `kind_name()`.
+    #[test]
+    fn geometry_op_split_kind_name_is_split() {
+        let op = GeometryOp::Split {
+            target: GeometryHandleId(1),
+            plane_origin: [0.0, 0.0, 0.0],
+            plane_normal: [0.0, 0.0, 1.0],
+        };
+        assert_eq!(
+            op.kind_name(),
+            "Split",
+            "GeometryOp::Split must return \"Split\" from kind_name()"
+        );
+    }
+
+    /// RED step-1 (task 4190): the default `execute_split` impl on
+    /// `GeometryKernel` must return `Err(GeometryError::OperationFailed(_))`.
+    ///
+    /// `DefaultsOnlyKernel` overrides nothing, so it inherits the default.
+    /// Mirrors the pattern of `default_geometry_kernel_extract_vertices_returns_topology_not_supported_error`
+    /// (see ~line 5988) but for `execute_split`.
+    ///
+    /// RED until step-2 adds `GeometryKernel::execute_split` with a default Err impl.
+    #[test]
+    fn default_geometry_kernel_execute_split_returns_operation_failed_error() {
+        let op = GeometryOp::Split {
+            target: GeometryHandleId(1),
+            plane_origin: [0.0, 0.0, 0.0],
+            plane_normal: [0.0, 0.0, 1.0],
+        };
+        let mut kernel = DefaultsOnlyKernel;
+        let result = kernel.execute_split(&op);
+        assert!(
+            matches!(result, Err(GeometryError::OperationFailed(_))),
+            "expected Err(GeometryError::OperationFailed(_)), got: {result:?}",
+        );
     }
 
     /// Standalone pin for GeometryOp::Wedge.kind_name() == "Wedge".
