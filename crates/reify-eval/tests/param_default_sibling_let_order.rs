@@ -11,7 +11,7 @@
 //! esc-4317-196 scope restriction.
 
 use reify_compiler::CompiledModule;
-use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_core::{Severity, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::{DeterminacyState, Value};
 use reify_test_support::mocks::MockConstraintChecker;
@@ -25,22 +25,6 @@ fn fresh_engine() -> Engine {
 /// Convenience: parse + compile a single-structure source string.
 fn compile_source(source: &str) -> CompiledModule {
     parse_and_compile(source)
-}
-
-/// Build a `Value::Scalar` with LENGTH dimension (metres).
-fn length_scalar(si_meters: f64) -> Value {
-    Value::Scalar {
-        si_value: si_meters,
-        dimension: DimensionVector::LENGTH,
-    }
-}
-
-/// Build a dimensionless `Value::Scalar`.
-fn dimensionless_scalar(v: f64) -> Value {
-    Value::Scalar {
-        si_value: v,
-        dimension: DimensionVector::DIMENSIONLESS,
-    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -116,7 +100,7 @@ fn param_default_referencing_sibling_let_evaluates_correctly() {
     }
 
     // (c) T.out must be Determined and numerically equal to T.p.
-    let (out_val, out_det) = snap
+    let (_, out_det) = snap
         .values
         .get(&out_id)
         .expect("snapshot must contain T.out after eval");
