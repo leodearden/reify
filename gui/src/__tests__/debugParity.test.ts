@@ -73,6 +73,13 @@ const PURE_ENGINE_SIDE = [
  */
 const REST_ONLY_HANDLERS = ['clear_selection', 'toggle_select'];
 
+// --- handler key set (hoisted; shared across checks c/d/e) ---
+// Handler bodies are lazy arrows; buildHandlers construction only calls
+// createLspClient() (a plain object literal) — a stub ctx is safe.
+// Hoisted so (c), (d), (e) share a single construction; if the ctx contract
+// ever changes there is one place to update the stub.
+const handlers = Object.keys(bridge.buildHandlers({} as any));
+
 // -----------------------------------------------------------------------
 
 describe('debug MCP parity: tool_defs() ↔ buildHandlers()', () => {
@@ -81,17 +88,19 @@ describe('debug MCP parity: tool_defs() ↔ buildHandlers()', () => {
     expect(typeof bridge.buildHandlers).toBe('function');
   });
 
-  it('(b) extraction sanity — at least 40 tool_defs, no duplicates', () => {
-    // Guards against a regex that silently matches nothing (actual=56).
-    expect(toolDefNames.length).toBeGreaterThanOrEqual(40);
+  it('(b) extraction sanity — exact count matches raw ToolDef literals, no duplicates', () => {
+    // Cross-check against the raw `ToolDef {` literal count minus the struct
+    // definition itself.  If a future tool name contains chars outside
+    // [a-z0-9_] (e.g. uppercase or hyphen), the name regex silently drops it
+    // while the raw count still includes it — surfacing drift rather than
+    // masking it behind a >= floor.
+    const rawToolDefCount = RUST.match(/ToolDef\s*\{/g)?.length ?? 0;
+    expect(toolDefNames.length).toBe(rawToolDefCount - 1); // -1 for `struct ToolDef {` itself
     // No duplicate tool_def names in debug_server.rs.
     expect(new Set(toolDefNames).size).toBe(toolDefNames.length);
   });
 
   it('(c) every frontend-mediated tool_def has a handler (no runtime "unknown command")', () => {
-    // Handler bodies are lazy arrows; construction only calls createLspClient()
-    // (a plain object literal) — a stub ctx is safe.
-    const handlers = Object.keys(bridge.buildHandlers({} as any));
     const missing = toolDefNames.filter(
       (n) => !PURE_ENGINE_SIDE.includes(n) && !handlers.includes(n),
     );
@@ -99,7 +108,6 @@ describe('debug MCP parity: tool_defs() ↔ buildHandlers()', () => {
   });
 
   it('(d) every handler is advertised in tool_defs or flagged REST-only', () => {
-    const handlers = Object.keys(bridge.buildHandlers({} as any));
     const extra = handlers.filter(
       (h) => !toolDefNames.includes(h) && !REST_ONLY_HANDLERS.includes(h),
     );
@@ -107,7 +115,6 @@ describe('debug MCP parity: tool_defs() ↔ buildHandlers()', () => {
   });
 
   it('(e) allowlists are self-checking — each entry actually exhibits its asymmetry', () => {
-    const handlers = Object.keys(bridge.buildHandlers({} as any));
     // PURE_ENGINE_SIDE: must be in tool_defs AND absent from handlers
     for (const name of PURE_ENGINE_SIDE) {
       expect(toolDefNames, `PURE_ENGINE_SIDE '${name}' must be in tool_defs()`).toContain(name);
