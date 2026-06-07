@@ -305,3 +305,195 @@ describe('reset_app_state: bridge handler', () => {
     expect(vi.mocked(stores.layout.setConstraintHeight)).toHaveBeenCalledWith(140);
   });
 });
+
+// ─── element_screenshot ───────────────────────────────────────────────────────
+
+describe('element_screenshot: bridge handler', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let stores: DebugStores;
+  let drawImageSpy: ReturnType<typeof vi.fn>;
+  let originalCreateElement: typeof document.createElement;
+  let originalImage: typeof Image;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    // Stub the offscreen canvas: capture drawImage calls and return predictable data URL.
+    drawImageSpy = vi.fn();
+    originalCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string, ...rest: any[]) => {
+      if (tag === 'canvas') {
+        const fakeCanvas = {
+          width: 0,
+          height: 0,
+          getContext: () => ({ drawImage: drawImageSpy }),
+          toDataURL: () => 'data:image/png;base64,CROP',
+        };
+        return fakeCanvas as unknown as HTMLCanvasElement;
+      }
+      return originalCreateElement(tag, ...rest);
+    });
+
+    // Stub global Image so that setting .src fires onload synchronously.
+    originalImage = (globalThis as any).Image;
+    (globalThis as any).Image = class FakeImage {
+      public src = '';
+      public onload: (() => void) | null = null;
+      set _src(v: string) {
+        this.src = v;
+        if (this.onload) this.onload();
+      }
+    };
+    // Override the property so setting .src on a FakeImage instance triggers onload.
+    Object.defineProperty((globalThis as any).Image.prototype, 'src', {
+      configurable: true,
+      set(v: string) {
+        (this as any)._srcValue = v;
+        if (this.onload) this.onload();
+      },
+      get() {
+        return (this as any)._srcValue ?? '';
+      },
+    });
+
+    // Reset devicePixelRatio to 1 as default; individual tests may override.
+    Object.defineProperty(window, 'devicePixelRatio', {
+      configurable: true,
+      writable: true,
+      value: 1,
+    });
+
+    stores = makeStores();
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    vi.restoreAllMocks();
+    (globalThis as any).Image = originalImage;
+  });
+
+  it('missing testId: returns {error}', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 1, 'element_screenshot', {}) as any;
+
+    expect(typeof result.error).toBe('string');
+    expect(result.error.length).toBeGreaterThan(0);
+  });
+
+  it('element not found: returns {error}', async () => {
+    const result = await dispatchAndGetResult(capturedHandler!, 2, 'element_screenshot', {
+      testId: 'does-not-exist-xyzzy',
+    }) as any;
+
+    expect(typeof result.error).toBe('string');
+    expect(result.error).toContain('does-not-exist-xyzzy');
+  });
+
+  it('zero-area element (width 0): returns {error}', async () => {
+    // Insert a zero-width element into the DOM.
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'zero-area-el');
+    document.body.appendChild(el);
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, width: 0, height: 50,
+      top: 0, right: 0, bottom: 50, left: 0,
+      toJSON: () => ({}),
+    });
+
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 3, 'element_screenshot', {
+        testId: 'zero-area-el',
+      }) as any;
+      expect(typeof result.error).toBe('string');
+    } finally {
+      document.body.removeChild(el);
+    }
+  });
+
+  it('happy path: DPR=2, crops with scaled drawImage, returns {data}', async () => {
+    // Set devicePixelRatio to 2
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, writable: true, value: 2 });
+
+    // Insert a visible element into the DOM.
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'crop-target');
+    document.body.appendChild(el);
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+      x: 10, y: 20, width: 100, height: 50,
+      top: 20, right: 110, bottom: 70, left: 10,
+      toJSON: () => ({}),
+    });
+
+    // Reset toPng mock to return deterministic full-window URL.
+    vi.mocked(toPng).mockResolvedValue('data:image/png;base64,FULLWINDOW');
+
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 4, 'element_screenshot', {
+        testId: 'crop-target',
+      }) as any;
+
+      // Should return the cropped data URL from fakeCanvas.toDataURL()
+      expect(result.data).toBe('data:image/png;base64,CROP');
+
+      // toPng should have been called on document.documentElement
+      expect(vi.mocked(toPng)).toHaveBeenCalledWith(document.documentElement, expect.objectContaining({ cacheBust: true }));
+
+      // drawImage should have been called with DPR-scaled source rect
+      // sx = x*dpr = 10*2=20, sy = y*dpr = 20*2=40, sw = w*dpr = 100*2=200, sh = h*dpr = 50*2=100
+      expect(drawImageSpy).toHaveBeenCalledTimes(1);
+      const drawArgs = drawImageSpy.mock.calls[0];
+      // drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh)
+      expect(drawArgs[1]).toBe(20);   // sx = x*dpr
+      expect(drawArgs[2]).toBe(40);   // sy = y*dpr
+      expect(drawArgs[3]).toBe(200);  // sw = w*dpr
+      expect(drawArgs[4]).toBe(100);  // sh = h*dpr
+    } finally {
+      document.body.removeChild(el);
+    }
+  });
+
+  it('oversized output: returns {error, size, limit}', async () => {
+    // Make the canvas return a huge data URL
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string, ...rest: any[]) => {
+      if (tag === 'canvas') {
+        const bigData = 'x'.repeat(16 * 1024 * 1024 + 1);
+        return {
+          width: 0,
+          height: 0,
+          getContext: () => ({ drawImage: drawImageSpy }),
+          toDataURL: () => `data:image/png;base64,${bigData}`,
+        } as unknown as HTMLCanvasElement;
+      }
+      return originalCreateElement(tag, ...rest);
+    });
+
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'oversized-el');
+    document.body.appendChild(el);
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, width: 100, height: 100,
+      top: 0, right: 100, bottom: 100, left: 0,
+      toJSON: () => ({}),
+    });
+
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 5, 'element_screenshot', {
+        testId: 'oversized-el',
+      }) as any;
+
+      expect(typeof result.error).toBe('string');
+      expect(typeof result.size).toBe('number');
+      expect(typeof result.limit).toBe('number');
+      expect(result.size).toBeGreaterThan(result.limit);
+    } finally {
+      document.body.removeChild(el);
+    }
+  });
+});
