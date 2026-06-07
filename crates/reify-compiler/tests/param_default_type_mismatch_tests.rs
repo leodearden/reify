@@ -7,6 +7,7 @@
 //! Step 3 (appended later): RED (port-member). References `DiagnosticCode::ParamDefaultTypeMismatch`
 //! which is introduced in step 2.
 
+use reify_core::DiagnosticCode;
 use reify_test_support::{compile_source, errors_only};
 
 /// A structure with `param drum_d : Real = rope_dia * d_ratio` where `rope_dia` has
@@ -91,5 +92,56 @@ structure Valid {
         false_positive.is_none(),
         "unexpected 'declared/initializer' error on valid param annotations: {:?}",
         false_positive
+    );
+}
+
+/// A port-member `param d : Real = rope_dia * 2.0` where `rope_dia : Length` must
+/// produce a `ParamDefaultTypeMismatch` error anchored at the port-member param
+/// declaration ("`param d`"), not at a downstream consumer.
+///
+/// RED until step-4 wires the check at the port-member param arm (site 2).
+#[test]
+fn port_member_param_dimension_mismatch_errors_at_declaration() {
+    let source = r#"
+trait T { param d : Real }
+structure S {
+    param rope_dia : Length = 6mm
+    port p : out T { param d : Real = rope_dia * 2.0 }
+}
+"#;
+
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // Must have at least one error with code ParamDefaultTypeMismatch.
+    let mismatch_diag = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch_diag.is_some(),
+        "expected a ParamDefaultTypeMismatch error for port-member param 'd'; got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+
+    let diag = mismatch_diag.unwrap();
+    assert!(
+        diag.message.contains("Real") && diag.message.contains("Scalar[m]"),
+        "expected error message to mention 'Real' and 'Scalar[m]'; got: {:?}",
+        diag.message
+    );
+
+    // The label span must cover the port-member param declaration.
+    assert!(
+        !diag.labels.is_empty(),
+        "expected diagnostic to have at least one label; diag: {:?}",
+        diag
+    );
+    let span = diag.labels[0].span;
+    let sliced = &source[span.start as usize..span.end as usize];
+    assert!(
+        sliced.contains("param d"),
+        "expected label span to cover the port-member param declaration containing \
+         'param d', but span covers: {:?}",
+        sliced
     );
 }
