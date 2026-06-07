@@ -958,7 +958,7 @@ mod tests {
         );
         let graph = EvaluationGraph::from_templates(&module.templates);
         let traces = build_trace_map_and_fields(&graph, &[]);
-        let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
+        let _index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
 
         let rope_dia_id = ValueCellId::new("T", "rope_dia");
         let feed_id = ValueCellId::new("T", "feed");
