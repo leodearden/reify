@@ -269,4 +269,213 @@ mod tests {
         }));
         assert!(tensegrity_wires(&[bad]).is_undef());
     }
+
+    // ── tensegrity_surfaces unit tests (step-7) ───────────────────────────────
+
+    /// Build a Tensegrity with the given surfaces field value.
+    fn tensegrity_with_surfaces(surfaces_val: Value) -> Value {
+        let nodes = Value::List(vec![
+            node(0.0, 0.0, 0.0),
+            node(1.0, 0.0, 0.0),
+            node(0.5, 1.0, 0.0),
+        ]);
+        let struts = Value::List(vec![]);
+        let cables = Value::List(vec![]);
+        let fields: PersistentMap<String, Value> = [
+            ("nodes".to_string(), nodes),
+            ("struts".to_string(), struts),
+            ("cables".to_string(), cables),
+            ("surfaces".to_string(), surfaces_val),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Tensegrity".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build a Tensegrity WITHOUT a surfaces field (simulates existing call sites).
+    fn tensegrity_no_surfaces() -> Value {
+        let nodes = Value::List(vec![
+            node(0.0, 0.0, 0.0),
+            node(1.0, 0.0, 0.0),
+            node(0.5, 1.0, 0.0),
+        ]);
+        let struts = Value::List(vec![]);
+        let cables = Value::List(vec![]);
+        let fields: PersistentMap<String, Value> = [
+            ("nodes".to_string(), nodes),
+            ("struts".to_string(), struts),
+            ("cables".to_string(), cables),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Tensegrity".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Helper: a single triangle index-triple [[0, 1, 2]].
+    fn one_triangle() -> Value {
+        Value::List(vec![
+            Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(2)]),
+        ])
+    }
+
+    /// tensegrity_surfaces(0 args) and tensegrity_surfaces(2 args) → Undef.
+    #[test]
+    fn surfaces_undef_on_wrong_arity() {
+        assert!(tensegrity_surfaces(&[]).is_undef(), "0-arg should be Undef");
+        let t = tensegrity_with_surfaces(one_triangle());
+        assert!(
+            tensegrity_surfaces(&[t.clone(), t]).is_undef(),
+            "2-arg should be Undef"
+        );
+    }
+
+    /// tensegrity_surfaces(Real(1.0)) and tensegrity_surfaces(wrong type_name) → Undef.
+    #[test]
+    fn surfaces_undef_on_wrong_type() {
+        assert!(
+            tensegrity_surfaces(&[Value::Real(1.0)]).is_undef(),
+            "Real arg should be Undef"
+        );
+        // StructureInstance with wrong type_name
+        let fields: PersistentMap<String, Value> = [
+            ("nodes".to_string(), Value::List(vec![])),
+            ("surfaces".to_string(), Value::List(vec![])),
+        ]
+        .into_iter()
+        .collect();
+        let wrong_type = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "NotATensegrity".to_string(),
+            version: 1,
+            fields,
+        }));
+        assert!(
+            tensegrity_surfaces(&[wrong_type]).is_undef(),
+            "wrong type_name should be Undef"
+        );
+    }
+
+    /// surfaces=[[0,1,2]] with 3 nodes → 1 TensegritySurface with correct fields.
+    #[test]
+    fn surfaces_happy_path_single_triangle() {
+        let t = tensegrity_with_surfaces(one_triangle());
+        let result = tensegrity_surfaces(&[t]);
+        match &result {
+            Value::List(facets) => {
+                assert_eq!(facets.len(), 1, "expected 1 facet, got {:?}", facets.len());
+                match &facets[0] {
+                    Value::StructureInstance(data) => {
+                        assert_eq!(data.type_name, "TensegritySurface");
+                        assert_eq!(
+                            data.fields.get(&"kind".to_string()),
+                            Some(&Value::String("membrane".to_string()))
+                        );
+                        assert_eq!(data.fields.get(&"i0".to_string()), Some(&Value::Int(0)));
+                        assert_eq!(data.fields.get(&"i1".to_string()), Some(&Value::Int(1)));
+                        assert_eq!(data.fields.get(&"i2".to_string()), Some(&Value::Int(2)));
+                        // x0 == node(0.0, 0.0, 0.0).x == 0.0
+                        match data.fields.get(&"x0".to_string()) {
+                            Some(Value::Scalar { si_value, dimension }) => {
+                                assert!((si_value - 0.0).abs() < 1e-12, "x0 should be 0.0m");
+                                assert_eq!(*dimension, DimensionVector::LENGTH);
+                            }
+                            other => panic!("x0 should be Scalar, got {:?}", other),
+                        }
+                        // x1 == node(1.0, 0.0, 0.0).x == 1.0
+                        match data.fields.get(&"x1".to_string()) {
+                            Some(Value::Scalar { si_value, .. }) => {
+                                assert!((si_value - 1.0).abs() < 1e-12, "x1 should be 1.0m");
+                            }
+                            other => panic!("x1 should be Scalar, got {:?}", other),
+                        }
+                        // x2 == node(0.5, 1.0, 0.0).x == 0.5
+                        match data.fields.get(&"x2".to_string()) {
+                            Some(Value::Scalar { si_value, .. }) => {
+                                assert!((si_value - 0.5).abs() < 1e-12, "x2 should be 0.5m");
+                            }
+                            other => panic!("x2 should be Scalar, got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected StructureInstance, got {:?}", other),
+                }
+            }
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    /// surfaces=[] (explicitly empty) → Value::List([]).
+    #[test]
+    fn surfaces_empty_surfaces_field_returns_empty_list() {
+        let t = tensegrity_with_surfaces(Value::List(vec![]));
+        let result = tensegrity_surfaces(&[t]);
+        match &result {
+            Value::List(facets) => assert_eq!(facets.len(), 0, "expected empty list"),
+            other => panic!("expected List([]), got {:?}", other),
+        }
+    }
+
+    /// surfaces field ABSENT (no surfaces key in fields) → Value::List([]).
+    /// Design decision: missing surfaces is not a violation (legitimate for non-membrane nets).
+    #[test]
+    fn surfaces_missing_surfaces_field_returns_empty_list() {
+        let t = tensegrity_no_surfaces();
+        let result = tensegrity_surfaces(&[t]);
+        match &result {
+            Value::List(facets) => assert_eq!(
+                facets.len(),
+                0,
+                "missing surfaces field should return empty list (not Undef)"
+            ),
+            other => panic!("expected List([]), got {:?}", other),
+        }
+    }
+
+    /// surfaces=[[0, 1]] (inner list of length 2, not 3) → Undef.
+    #[test]
+    fn surfaces_undef_on_non_triple() {
+        let pair = Value::List(vec![
+            Value::List(vec![Value::Int(0), Value::Int(1)]), // only 2 indices
+        ]);
+        let t = tensegrity_with_surfaces(pair);
+        assert!(
+            tensegrity_surfaces(&[t]).is_undef(),
+            "inner list of length 2 should be Undef (must be a triple)"
+        );
+    }
+
+    /// surfaces=[[0, 1, 9]] with only 3 nodes (index 9 out of range) → Undef.
+    #[test]
+    fn surfaces_undef_on_out_of_range_index() {
+        let oob = Value::List(vec![
+            Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(9)]),
+        ]);
+        let t = tensegrity_with_surfaces(oob);
+        assert!(
+            tensegrity_surfaces(&[t]).is_undef(),
+            "out-of-range index should be Undef"
+        );
+    }
+
+    /// surfaces=[[-1, 0, 1]] (negative index) → Undef.
+    #[test]
+    fn surfaces_undef_on_negative_index() {
+        let neg = Value::List(vec![
+            Value::List(vec![Value::Int(-1), Value::Int(0), Value::Int(1)]),
+        ]);
+        let t = tensegrity_with_surfaces(neg);
+        assert!(
+            tensegrity_surfaces(&[t]).is_undef(),
+            "negative index should be Undef"
+        );
+    }
 }
