@@ -71,4 +71,58 @@ mod tests {
             span: SourceSpan::empty(0),
         }
     }
+
+    fn bare_ident(s: &str) -> PragmaArg {
+        PragmaArg::Bare(PragmaValue::Ident(s.into()))
+    }
+
+    fn kv_string(key: &str, val: &str) -> PragmaArg {
+        PragmaArg::KeyValue {
+            key: key.into(),
+            value: PragmaValue::String(val.into()),
+        }
+    }
+
+    fn flags(fs: &[&str]) -> CfgSet {
+        CfgSet {
+            flags: fs.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 1: flag form (Bare Ident), AND-of-args, vacuous-true
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn flag_present_is_true() {
+        let p = cfg_pragma(vec![bare_ident("linux")]);
+        assert!(cfg_satisfied(&p, &flags(&["linux"])));
+    }
+
+    #[test]
+    fn flag_absent_is_false() {
+        let p = cfg_pragma(vec![bare_ident("linux")]);
+        assert!(!cfg_satisfied(&p, &flags(&[])));
+    }
+
+    #[test]
+    fn two_bare_flags_anded_both_present() {
+        let p = cfg_pragma(vec![bare_ident("linux"), bare_ident("x86_64")]);
+        assert!(cfg_satisfied(&p, &flags(&["linux", "x86_64"])));
+    }
+
+    #[test]
+    fn two_bare_flags_anded_one_absent() {
+        // Only linux present, not x86_64 — AND must fail.
+        let p = cfg_pragma(vec![bare_ident("linux"), bare_ident("x86_64")]);
+        assert!(!cfg_satisfied(&p, &flags(&["linux"])));
+    }
+
+    #[test]
+    fn empty_args_vacuously_true() {
+        // #cfg() — no args — is vacuously satisfied regardless of active set.
+        let p = cfg_pragma(vec![]);
+        assert!(cfg_satisfied(&p, &CfgSet::default()));
+    }
 }
