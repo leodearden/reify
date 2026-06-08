@@ -279,3 +279,69 @@ fn apply_transform_occt_acceptance() {
         cx
     );
 }
+
+/// Strict multi-kernel-routing test: `Engine::with_registered_kernels` must route
+/// `Operation::TransformApplyTransform` to OCCT and produce non-empty STEP output
+/// with no Error diagnostics.
+///
+/// # Why this test exists
+///
+/// The three tests above all use `Engine::new(checker, Some(kernel))` — the backward-compat
+/// single-kernel path.  In that path, when `dispatch()` returns `None` for an unregistered
+/// op, the code falls back to the caller-supplied kernel silently.
+///
+/// `Engine::with_registered_kernels` is the production multi-kernel path.  In strict mode,
+/// `dispatch()` returning `None` for `Operation::TransformApplyTransform` triggers the
+/// `no_kernel_chain_diagnostic` Error and aborts the realization (engine_build.rs:4382).
+///
+/// Before step-8 registers `(TransformApplyTransform, BRep)` in `occt_capability_descriptor`,
+/// this test fails: OCCT's descriptor lists only the original four transforms, so dispatch
+/// returns `None` → Error diagnostic → geometry_output is None.
+///
+/// RED: `occt_capability_descriptor` does NOT yet declare `TransformApplyTransform` →
+/// strict dispatch returns `None` → `no_kernel_chain_diagnostic` Error pushed → at least one
+/// Error in result.diagnostics → assertion fails.
+#[test]
+fn apply_transform_occt_strict_dispatch() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping apply_transform_occt_strict_dispatch: OCCT not available");
+        return;
+    }
+
+    let source = r#"structure S {
+    let g = apply_transform(
+        box(10mm, 10mm, 10mm),
+        transform3(orient_axis_angle(vec3(0.0, 0.0, 1.0), 90deg), vec3(5mm, 0mm, 0mm))
+    )
+}"#;
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(compile_errors.is_empty(), "unexpected compile errors: {:?}", compile_errors);
+
+    let mut engine = reify_eval::Engine::with_registered_kernels(
+        Box::new(reify_constraints::SimpleConstraintChecker),
+    );
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected build errors (did you forget to register TransformApplyTransform in \
+         occt_capability_descriptor?): {:?}",
+        errors
+    );
+
+    let output = result.geometry_output.expect(
+        "apply_transform must produce geometry output via Engine::with_registered_kernels \
+         (strict-mode inventory dispatch)",
+    );
+    assert!(!output.is_empty(), "STEP output must be non-empty");
+}
