@@ -385,10 +385,14 @@ pub(crate) fn affine_map_algebra_result_type(
 /// (`reify_eval::lib:196`), so the cell typechecks at compile-time and
 /// stays `Undef` at runtime.
 ///
-/// **`curvature` overload note**: only the `Curve`→`Scalar<Curvature>`
-/// overload is registered in Phase 1. The `Surface`→`Matrix<2,2,
-/// Curvature>` overload requires arg-type-aware dispatch and is deferred
-/// to a later phase.
+/// **`curvature` overload note**: the default `Curve`→`Scalar<Curvature>`
+/// overload is registered here.  The `Surface`→`Matrix<2,2,Curvature>`
+/// overload is handled by the arg-aware structural dispatcher
+/// [`geometry_query_arg_aware_result_type`] (task 4315): when the first
+/// compiled arg is an inline `faces(...)[i]` IndexAccess, that fn returns
+/// `Some(Matrix{2,2,Curvature})` before this table is consulted.  A
+/// curvature call whose surface arg arrives via a let-binding or parameter
+/// still falls through to this `Scalar<Curvature>` default.
 ///
 /// Call-site dispatch is in `expr.rs::infer_type` (the `else if
 /// is_geometry_query(name)` arm, immediately after the topology-selector
@@ -483,8 +487,9 @@ pub(crate) fn is_dynamics_query(name: &str) -> bool {
 /// - `intersects(a, b)`      → `Bool`
 /// - `geo_equiv(a, b)`       → `Bool`
 /// - `angle(a, b)`           → `Scalar<Angle>`
-/// - `curvature(curve, t)`   → `Scalar<Curvature>` (Curve overload only;
-///   Surface overload deferred — see [`GEOMETRY_QUERY_NAMES`])
+/// - `curvature(curve, t)`   → `Scalar<Curvature>` (default; Surface overload
+///   `curvature(faces(...)[i], pt)` → `Matrix<2,2,Curvature>` handled by
+///   [`geometry_query_arg_aware_result_type`] — task 4315)
 ///
 /// KGQ-ζ Phase 6 addition (task 3615):
 /// - `normal(surface, point)` → `Vector3<Dimensionless>` (`Type::vec3(Type::Real)`)
@@ -530,6 +535,95 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
         "normal" => Type::vec3(Type::Real),
         _ => return None,
     })
+}
+
+/// The set of face-producing topology-selector names: calling one returns a
+/// `List<Geometry>` of **surface** sub-handles.
+///
+/// This is the Surface-yielding subset of [`GEOMETRY_TOPOLOGY_SELECTOR_NAMES`]
+/// (edges / edges_by_length / edges_parallel_to / edges_at_height / shared_edges
+/// are excluded — they yield curve sub-handles). Used by the structural surface
+/// detector in [`geometry_query_arg_aware_result_type`].
+///
+/// **Invariant:** every entry here MUST also appear in
+/// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`; the converse need not hold (the curve
+/// selectors are legitimately absent). Pinned by the
+/// `geometry_query_arg_aware_result_type` unit tests.
+const FACE_PRODUCING_SELECTOR_NAMES: &[&str] =
+    &["faces", "faces_by_area", "faces_by_normal", "adjacent_faces"];
+
+/// Returns `true` iff `arg.kind` is an `IndexAccess` whose `object` is a
+/// `FunctionCall` whose `function.name` is in [`FACE_PRODUCING_SELECTOR_NAMES`].
+///
+/// Structural surface detection — mirrors the `math_fn_result_type` precedent
+/// of inspecting the COMPILED-ARG STRUCTURE rather than the undifferentiated
+/// first-arg type (which would be `Type::Geometry` for both faces and edges
+/// after index access, offering no discrimination). Called by
+/// [`geometry_query_arg_aware_result_type`].
+fn is_surface_producing_arg(arg: &reify_ir::CompiledExpr) -> bool {
+    use reify_ir::CompiledExprKind;
+    if let CompiledExprKind::IndexAccess { object, .. } = &arg.kind {
+        if let CompiledExprKind::FunctionCall { function, .. } = &object.kind {
+            return FACE_PRODUCING_SELECTOR_NAMES.contains(&function.name.as_str());
+        }
+    }
+    false
+}
+
+/// Arg-aware return-type override for geometry-query functions.
+///
+/// Currently handles only the **curvature Surface→Matrix<2,2,Curvature>**
+/// overload: when `name == "curvature"` AND the first compiled arg is an
+/// inline `faces(...)[i]` form (detected via structural inspection by
+/// [`is_surface_producing_arg`]), returns
+/// `Some(Type::Matrix{m:2, n:2, quantity:Scalar<Curvature>})`.
+///
+/// For every other `(name, arg)` combination — including curvature with a
+/// let-bound solid, a curve IndexAccess, or no arg at all — returns `None`
+/// so the caller falls through to [`geometry_query_result_type`]'s default.
+///
+/// ## Design — why structural inspection?
+///
+/// There is no `Type`-level Surface/Curve distinction:
+/// `topology_selector_result_type` returns `Type::List(Geometry)` for BOTH
+/// `faces()` and `edges()`, so a type-based discriminator would see identical
+/// types for surface and curve sub-handles. The structural approach (checking
+/// which selector the IndexAccess wraps) is the only available signal at the
+/// `CompiledExpr` dispatch point, exactly as `math_fn_result_type` uses
+/// `CompiledExprKind::ListLiteral` length rather than the undifferentiated
+/// `Type::List` to recover the vector dimension.
+///
+/// ## Scope boundary
+///
+/// Only the **inline** `faces(...)[i]` form is detected. A curvature call
+/// whose surface arg arrives via a let-binding or parameter (a `ValueRef`)
+/// degrades to `Scalar<Curvature>`. Threading `Type::Surface` / `Type::Curve`
+/// through the type system is a large cross-cutting change deferred to a
+/// future task.
+///
+/// ## Wiring
+///
+/// Called in `expr.rs`'s `is_geometry_query` arm via
+/// `geometry_query_arg_aware_result_type(name, compiled_args.first())
+///     .or_else(|| geometry_query_result_type(name))`;
+/// [`geometry_query_result_type`] stays **unchanged** (preserving the
+/// maintenance-contract tests that iterate it).
+pub(crate) fn geometry_query_arg_aware_result_type(
+    name: &str,
+    first_arg: Option<&reify_ir::CompiledExpr>,
+) -> Option<reify_core::Type> {
+    use reify_core::{DimensionVector, Type};
+    if name == "curvature" && first_arg.is_some_and(is_surface_producing_arg) {
+        Some(Type::Matrix {
+            m: 2,
+            n: 2,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::CURVATURE,
+            }),
+        })
+    } else {
+        None
+    }
 }
 
 // --- Unit conversion ---
