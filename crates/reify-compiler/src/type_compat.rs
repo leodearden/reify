@@ -248,6 +248,22 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     {
         return true;
     }
+    // PRD §4.2/§11.1 (task 4369/A2): a kind-agnostic `AnySelector` param accepts
+    // any concrete selector argument (Face, Edge, Body — and Vertex once A1 lands),
+    // ONE-DIRECTIONALLY. A single-kind `Selector(k)` param must NOT accept an
+    // agnostic arg (see test step-3(e)).
+    //
+    // This guard lives here (not in `implicitly_converts_to`) for the same reason
+    // as the List<Geometry> rule above: `type_compatible` calls
+    // `implicitly_converts_to` in BOTH directions, so placing it there would also
+    // accept the reverse (a concrete-kind param accepting an agnostic arg), which
+    // would violate the one-directional PRD D3 requirement.
+    //
+    // Identity (AnySelector vs AnySelector) is already covered by
+    // `implicitly_converts_to`'s `from == to` short-circuit below.
+    if matches!((param_ty, arg_ty), (Type::AnySelector, Type::Selector(_))) {
+        return true;
+    }
     // Bidirectional implicit tensor/vector/matrix conversions
     if implicitly_converts_to(param_ty, arg_ty) || implicitly_converts_to(arg_ty, param_ty) {
         return true;
