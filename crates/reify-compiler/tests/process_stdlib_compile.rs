@@ -661,11 +661,12 @@ fn fits_build_volume_over_adding_conformer_compiles_clean() {
 import std.process
 
 structure def FdmPrinter : Adding {
-    param duration        : Time   = 60min
-    param cost            : Money  = 10USD
-    param layer_thickness : Length = 0.2mm
-    param min_feature_size: Length = 0.4mm
-    param build_volume    : Solid  = box(200mm, 200mm, 200mm)
+    param duration           : Time   = 60min
+    param cost               : Money  = 10USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 45deg
 }
 
 structure def SmallPart {

@@ -60,10 +60,13 @@ trait Subtracting : Process {
 // layer_thickness: slice height per deposited layer.
 // min_feature_size: smallest printable feature.
 // build_volume: maximum build envelope (Solid = Type::Geometry).
+// max_overhang_angle: steepest self-supporting overhang angle; the overhang
+//   DFM pass reads applies_to.max_overhang_angle.
 trait Adding : Process {
     param layer_thickness : Length
     param min_feature_size : Length
     param build_volume : Solid
+    param max_overhang_angle : Angle
 }
 
 // Material-deformation processes (forging, stamping, rolling, extrusion, …).
