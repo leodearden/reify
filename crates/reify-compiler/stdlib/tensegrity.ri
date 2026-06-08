@@ -61,6 +61,30 @@ structure def Cable {
     param pretension : Force = 0 * 1N
 }
 
+// ── Membrane ──────────────────────────────────────────────────────────────────
+//
+// A surface element in the tensegrity membrane network. Carries the minimum
+// constitutive data for the membrane solver and viewport:
+//   thickness  — physical membrane thickness (determines membrane stiffness)
+//   material   — elastic properties (E, ν, ρ, σy) from ElasticMaterial
+//   prestress  — isotropic surface stress σ (Pa); n = σ·thickness is the
+//                corresponding surface tension (N/m). Defaults to 0Pa per PRD
+//                §3; a zero-prestress membrane is still structurally meaningful
+//                as a geometric patch (the surface geometry is emitted regardless).
+//
+// thickness and material are required (no defaults) because a bare Membrane()
+// is meaningless — a surface element without geometry or material has no
+// structural identity. Matches the no-default discipline of Strut.
+//
+// prestress defaults to 0Pa so a Membrane can be constructed with only its
+// geometry and material when prestress is unknown or irrelevant (e.g. pure
+// topology enumeration), mirroring Cable.pretension = 0N.
+structure def Membrane {
+    param thickness : Length
+    param material : ElasticMaterial
+    param prestress : Pressure = 0 * 1Pa
+}
+
 // ── Tensegrity ────────────────────────────────────────────────────────────────
 //
 // The typed network binding node positions to member connectivity. All four
