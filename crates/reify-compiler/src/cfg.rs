@@ -93,6 +93,13 @@ mod tests {
         }
     }
 
+    fn target(t: &str) -> CfgSet {
+        CfgSet {
+            target: Some(t.into()),
+            ..Default::default()
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Step 1: flag form (Bare Ident), AND-of-args, vacuous-true
     // -------------------------------------------------------------------------
@@ -127,5 +134,27 @@ mod tests {
         // #cfg() — no args — is vacuously satisfied regardless of active set.
         let p = cfg_pragma(vec![]);
         assert!(cfg_satisfied(&p, &CfgSet::default()));
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 3: target KeyValue resolves against CfgSet.target
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn target_kv_matches_target_field() {
+        let p = cfg_pragma(vec![kv_string("target", "linux")]);
+        assert!(cfg_satisfied(&p, &target("linux")));
+    }
+
+    #[test]
+    fn target_kv_wrong_target_value() {
+        let p = cfg_pragma(vec![kv_string("target", "linux")]);
+        assert!(!cfg_satisfied(&p, &target("wasm")));
+    }
+
+    #[test]
+    fn target_kv_no_target_set() {
+        let p = cfg_pragma(vec![kv_string("target", "linux")]);
+        assert!(!cfg_satisfied(&p, &CfgSet::default()));
     }
 }
