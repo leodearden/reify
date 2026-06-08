@@ -562,10 +562,10 @@ const FACE_PRODUCING_SELECTOR_NAMES: &[&str] =
 /// [`geometry_query_arg_aware_result_type`].
 fn is_surface_producing_arg(arg: &reify_ir::CompiledExpr) -> bool {
     use reify_ir::CompiledExprKind;
-    if let CompiledExprKind::IndexAccess { object, .. } = &arg.kind {
-        if let CompiledExprKind::FunctionCall { function, .. } = &object.kind {
-            return FACE_PRODUCING_SELECTOR_NAMES.contains(&function.name.as_str());
-        }
+    if let CompiledExprKind::IndexAccess { object, .. } = &arg.kind
+        && let CompiledExprKind::FunctionCall { function, .. } = &object.kind
+    {
+        return FACE_PRODUCING_SELECTOR_NAMES.contains(&function.name.as_str());
     }
     false
 }
