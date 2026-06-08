@@ -325,10 +325,37 @@ fn cmd_check(args: &[String]) -> ExitCode {
     }
 
     if purpose_values.is_empty() {
-        // No --purpose flag: existing engine.check() path, byte-for-byte.
+        // No --purpose flag: route through the appropriate check path.
+        //
+        // When the module carries a `RepresentationWithin` assertion (detected
+        // by `module_has_representation_within`), use the kernel-backed path:
+        //   1. `set_capture_repr_tol(true)` — record deviation during tessellation.
+        //   2. `tessellate_realizations(&compiled)` — populate `achieved_repr_tol`.
+        //   3. `engine.check(&compiled)` — `dispatch_constraints` intercepts
+        //      `RepresentationWithin` entries and reads from the populated map
+        //      (type-name-scan fallback resolves the key; absent key → Indeterminate).
+        //
+        // This satisfies C1 ordering (tessellate-before-check) and C1 graceful
+        // degradation (no OCCT kernel → `with_registered_kernel` returns a
+        // None-kernel engine → tessellation skips → map stays empty →
+        // Indeterminate → exit 0).
+        //
+        // When the module has NO `RepresentationWithin` constraints, keep the
+        // existing `Engine::new(None)+check()` path verbatim (C2 — byte-identical
+        // behavior and exit codes for all existing `reify check` inputs).
         let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-        let result = engine.check(&compiled);
+        let result = if module_has_representation_within(&compiled) {
+            // Kernel-backed path for RepresentationWithin assertions (task-4199 γ).
+            let mut engine =
+                reify_eval::Engine::with_registered_kernel(Box::new(checker));
+            engine.set_capture_repr_tol(true);
+            engine.tessellate_realizations(&compiled);
+            engine.check(&compiled)
+        } else {
+            // Existing lightweight path: no kernel, no tessellation (C2).
+            let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+            engine.check(&compiled)
+        };
 
         let outcome = report_eval_output(
             &result.constraint_results,
@@ -1262,6 +1289,45 @@ fn module_has_geometry(module: &reify_compiler::CompiledModule) -> bool {
             || t.value_cells
                 .iter()
                 .any(|vc| vc.cell_type == reify_core::Type::Geometry)
+    })
+}
+
+/// Returns `true` when any template in the module carries at least one
+/// `RepresentationWithin(subject, bound)` constraint.
+///
+/// Used by [`cmd_check`] to decide whether to route through the kernel-backed
+/// `set_capture_repr_tol(true)` → `tessellate_realizations` → `check` path
+/// (so that `dispatch_constraints` can evaluate the assertion against the
+/// populated `achieved_repr_tol` map) or to stay on the existing lightweight
+/// `Engine::new(None)+check()` path for modules with no such assertion.
+///
+/// Reuses [`reify_eval::tolerance_combine::recognize_representation_within`]
+/// so the recognition gate (UFC name + arity + arg0 ValueRef:StructureRef +
+/// arg1 Literal Scalar LENGTH finite≥0) is the same canonical matcher used by
+/// the engine's dispatch interception — a single gate implementation that
+/// cannot drift (retiring the drift risk that lived in the extractor's TODO
+/// before task 4199 γ).
+///
+/// Non-assertion modules: this function returns `false` and `cmd_check` keeps
+/// the existing path verbatim (C2 — byte-identical behavior for all existing
+/// `reify check` inputs).
+fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        // Check direct template constraints first (the common case).
+        let direct = t.constraints.iter().any(|c| {
+            reify_eval::tolerance_combine::recognize_representation_within(&c.expr).is_some()
+        });
+        if direct {
+            return true;
+        }
+        // Also check guarded-group constraints (true-branch + else-branch)
+        // so a RepresentationWithin inside a `when ... { constraint ... }` block
+        // is also detected.
+        t.guarded_groups.iter().any(|g| {
+            g.constraints.iter().chain(g.else_constraints.iter()).any(|c| {
+                reify_eval::tolerance_combine::recognize_representation_within(&c.expr).is_some()
+            })
+        })
     })
 }
 
