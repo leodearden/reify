@@ -151,6 +151,45 @@ structure def TensegrityWire {
     param z2 : Length
 }
 
+// ── TensegritySurface ─────────────────────────────────────────────────────────
+//
+// Emitted by the `tensegrity_surfaces(t)` builtin for each surface facet
+// (triangle) in the Tensegrity.surfaces list. Carries both index metadata
+// (for topology consumers) and inline corner coordinates (for direct rendering
+// without a second nodes-table dereference — mirrors TensegrityWire DD3).
+//
+//   kind       — "membrane" (facet type tag for viewport styling); the only
+//                surface kind in M0 (warp/weft anisotropy ε is a later slice)
+//   i0, i1, i2 — 0-based indices of the three triangle corners in the
+//                Tensegrity.nodes list; ordered CCW-positive by convention
+//   x0,y0,z0   — corner 0 coordinates (Length-typed scalars, SI metres)
+//   x1,y1,z1   — corner 1 coordinates (Length-typed scalars, SI metres)
+//   x2,y2,z2   — corner 2 coordinates (Length-typed scalars, SI metres)
+//
+// This structure_def exists so the CLI dump shows
+//   TensegritySurface { kind: "membrane", i0: 0, i1: 1, i2: 2, x0: ..., ... }
+// rather than an opaque map. The Rust-side `tensegrity_surfaces` builtin
+// constructs TensegritySurface instances directly using StructureTypeId(0) as
+// placeholder (SIR-α convention, same as TensegrityWire).
+//
+// All params are required — TensegritySurface instances are never user-constructed;
+// the builtin always supplies all thirteen fields.
+structure def TensegritySurface {
+    param kind : String
+    param i0 : Int
+    param i1 : Int
+    param i2 : Int
+    param x0 : Length
+    param y0 : Length
+    param z0 : Length
+    param x1 : Length
+    param y1 : Length
+    param z1 : Length
+    param x2 : Length
+    param y2 : Length
+    param z2 : Length
+}
+
 // ── FormFindResult ────────────────────────────────────────────────────────────
 //
 // Output container of `form_find` (PRD §4 / Tier-1 leaf T1a). Carries the
