@@ -2393,6 +2393,63 @@ mod tests {
         );
     }
 
+    // ── AnySelector type-name resolution (task 4369 / A2) ────────────────────
+    //
+    // The bare `Selector` spelling (no kind qualifier) must resolve to
+    // `Type::AnySelector` so that param annotations like `target : Selector`
+    // accept any concrete selector kind at the type-compat level.
+    //
+    // Tests (a) and (b) are RED until step-2 adds the resolver arm.
+    // Test (c) is GREEN from pre-1's Display arm (documents the
+    // resolver<->Display round-trip contract).
+
+    /// (a) `resolve_type_name("Selector")` must return `Type::AnySelector`.
+    ///
+    /// RED until step-2 adds `"Selector" => Some(Type::AnySelector)` to
+    /// `resolve_type_name`.
+    #[test]
+    fn resolve_type_name_recognises_any_selector() {
+        assert_eq!(
+            resolve_type_name("Selector"),
+            Some(Type::AnySelector),
+            "\"Selector\" should resolve to Type::AnySelector"
+        );
+    }
+
+    /// (b) `resolve_type_with_aliases("Selector", …)` must return
+    /// `Type::AnySelector` — it inherits the builtin arm automatically.
+    ///
+    /// RED until step-2 adds the arm to `resolve_type_name`.
+    #[test]
+    fn resolve_type_with_aliases_inherits_any_selector() {
+        let reg = TypeAliasRegistry::new();
+        let result = resolve_type_with_aliases(
+            "Selector",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::AnySelector),
+            "resolve_type_with_aliases(\"Selector\", …) should return Type::AnySelector"
+        );
+    }
+
+    /// (c) Display round-trip: `Type::AnySelector` formats as `"Selector"`,
+    /// which is the same spelling the resolver accepts (task 4369/A2 §11.1).
+    ///
+    /// GREEN from pre-1's Display arm.
+    #[test]
+    fn any_selector_display_matches_resolver_spelling() {
+        assert_eq!(
+            format!("{}", Type::AnySelector),
+            "Selector",
+            "Type::AnySelector should display as \"Selector\" to match the resolver spelling"
+        );
+    }
+
     // ── Keyed<T> parameterized resolution (step-3 RED / task 3930 β) ──────────
     // `Keyed<Vent>` must resolve to the keyed-collection kind, distinct from the
     // `Map`/`List` resolutions of the same arg. Mirrors the List/Map resolver arms.
