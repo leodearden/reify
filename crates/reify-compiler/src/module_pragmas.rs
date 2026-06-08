@@ -857,6 +857,15 @@ fn apply_cfg_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
 /// same `SourceSpan` as the corresponding entry in `parsed.pragmas`, because
 /// they are clones of the same `Pragma` value (see ts_parser.rs dual-storage).
 /// We therefore identify "attached" cfg pragmas by span equality.
+///
+/// **Edge case — lowering failure:** if `lower_import` returns `None` for an
+/// import that immediately follows a `#cfg` (e.g. due to a parse error inside
+/// the import declaration), the predicate clone is discarded while the pragma
+/// remains in `parsed.pragmas`.  This causes the `#cfg` to appear unattached
+/// and to spuriously emit W_CFG_NO_IMPORT even though a parse error already
+/// exists for the same span region.  This is acceptable: the parse error is
+/// the primary signal, and the spurious warning is a secondary artifact on
+/// already-invalid input that does not affect correct input.
 fn apply_cfg_no_import_warning(parsed: &ParsedModule, module: &mut CompiledModule) {
     // Collect the spans of every #cfg pragma that is attached to some import.
     let attached: HashSet<SourceSpan> = parsed
