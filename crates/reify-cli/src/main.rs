@@ -631,8 +631,14 @@ fn cmd_build(args: &[String]) -> ExitCode {
 }
 
 /// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
-/// wire the [`reify_constraints::DimensionalSolver`] and register all compute
-/// trampolines so `@optimized` targets dispatch correctly.
+/// wire the production [`reify_constraints::SolverRegistry`] and register all
+/// compute trampolines so `@optimized` targets dispatch correctly.
+///
+/// The production registry installs `DimensionalSolver` (dimensional constraints)
+/// and `SolveSpaceSolver` (geometric constraints: `std::distance`,
+/// `std::angle_between`, `std::parallel`, `std::tangent`, `std::geo::*`).
+/// This mirrors the GUI's `EngineSession::with_registered_kernel` solver so that
+/// CLI and GUI resolve auto-params identically.
 ///
 /// Both the geometry branch (`with_registered_kernel + build()`) and the plain
 /// branch (`Engine::new(None) + eval()`) share this setup; only the constructor
@@ -648,7 +654,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// emit a misleading "falling back to tet meshing" warning even though the FEA
 /// trampoline independently re-classifies and runs the correct shell solve.
 fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
-    let mut engine = engine.with_solver(Box::new(reify_constraints::DimensionalSolver));
+    let mut engine = engine.with_solver(Box::new(reify_constraints::SolverRegistry::production()));
     reify_eval::compute_targets::register_compute_fns(&mut engine);
     reify_eval::register_shell_extract_compute_fns(&mut engine);
     engine
