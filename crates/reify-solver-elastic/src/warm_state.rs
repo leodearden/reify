@@ -125,8 +125,28 @@ pub fn solve_cg_with_warm_state_progress(
 /// displacement-vector allocation regardless of whether the caller keeps
 /// the `CgResult`, the `CgWarmState`, or both.
 ///
-/// Delegates to [`solve_cg_with_warm_state_progress`] with a no-op
-/// closure so the Arc-share/donate contract is maintained in one place.
+/// # Per-iteration indirection — conscious design choice (task 4366)
+///
+/// This function delegates to [`solve_cg_with_warm_state_progress`] with
+/// a no-op `&mut |_,_| CgIterationControl::Continue` closure, incurring
+/// one `dyn FnMut` indirect call plus one `CgIterationControl` branch on
+/// **every CG iteration**.
+///
+/// This is intentional. The cost is per-iteration (not per-element) and
+/// negligible relative to the dominant O(nnz) sparse mat-vec that
+/// constitutes each iteration; CG is not a measured hot path in any
+/// profile. A separate direct `solve_cg_warm` fast-path (option b) was
+/// considered and declined: it would duplicate the Arc-share/donate
+/// contract across two code paths and risk silent divergence between them.
+/// Keeping the contract in one place and delegating unconditionally is the
+/// lower-risk resolution.
+///
+/// The equivalence between the two entry points is locked by the test
+/// `warm_state::tests::cold_solve_same_iteration_count_via_both_entry_points`
+/// (task 4366 step-3): a cold solve via this function and one via
+/// `solve_cg_with_warm_state_progress` with a recording closure must
+/// produce identical iteration counts and displacement vectors. A future
+/// option-(b) fast-path must pass that test.
 pub fn solve_cg_with_warm_state(
     k: &faer::sparse::SparseRowMat<usize, f64>,
     f: &[f64],
