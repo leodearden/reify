@@ -745,6 +745,24 @@ fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
 /// defense-in-depth guard for cases the compiler cannot see statically.
 fn detect_nondriving_joint_errors(values: &ValueMap, module: &CompiledModule) -> Vec<Diagnostic> {
     let compile_spans = nondriving_joint_compile_spans(&module.diagnostics);
+
+    // Short-circuit: when no compile-time spans are flagged, nothing can be
+    // suppressed.  Skip building the `cell_span` HashMap — an allocation that
+    // walks every template's value_cells — and delegate directly with
+    // `suppress = None`.  This is the common path for LSP/GUI incremental
+    // eval (eval_cached runs per-keystroke; most edits don't involve a
+    // non-driving-joint diagnostic).
+    if compile_spans.is_empty() {
+        return detect_error_map_diagnostics(
+            values,
+            None,
+            "nondriving_joint",
+            DiagnosticCode::MechanismNonDrivingJoint,
+            "joint has no free motion variable (coupling or fixed)",
+            None,
+        );
+    }
+
     let cell_span: HashMap<&ValueCellId, SourceSpan> = module
         .templates
         .iter()
