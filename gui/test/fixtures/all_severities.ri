@@ -13,7 +13,7 @@
 structure AllSeverities {
     param width:     Scalar = 100mm
     param height:    Scalar = 200mm
-    param thickness: Scalar = 1mm
+    param thickness: Length = 1mm
 
     constraint width > 10mm
     constraint height > 10mm
