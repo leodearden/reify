@@ -3586,6 +3586,83 @@ describe('App diagnostics panel splitter (step 11)', () => {
     const editorPanel = screen.getByTestId('editor-panel');
     expect(editorPanel.querySelector('[data-testid="splitter-problems"]')).toBeTruthy();
   });
+
+  it('dragging splitter-problems downward decreases panel height (handleProblemsResize wiring)', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+    compileDiagnosticsCallback!([warningDiag]);
+    await waitFor(() => expect(screen.getByTestId('diagnostics-count')).toBeTruthy());
+
+    // Expand the panel
+    fireEvent.click(screen.getByTestId('diagnostics-count'));
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-panel').getAttribute('data-collapsed')).toBe('false');
+    });
+
+    // Mock editor-panel height so clampProblemsHeight has a known upper bound
+    const editorPanel = screen.getByTestId('editor-panel');
+    Object.defineProperty(editorPanel, 'clientHeight', { value: 600, configurable: true });
+
+    const splitter = editorPanel.querySelector('[data-testid="splitter-problems"]') as HTMLElement;
+    expect(splitter).toBeTruthy();
+
+    // Drag DOWN by 20px — panel is BELOW the splitter so h - delta shrinks it:
+    // clampProblemsHeight(160 - 20, 600, {min:80, editorMin:80, splitterT:4}) = 140
+    fireEvent.mouseDown(splitter, { clientX: 0, clientY: 200 });
+    fireEvent.mouseMove(document, { clientX: 0, clientY: 220 });
+    fireEvent.mouseUp(document);
+
+    await waitFor(() => {
+      const panel = screen.getByTestId('diagnostics-panel');
+      expect(panel.style.height).toBe('140px');
+    });
+  });
+
+  it('oversized persisted problemsHeight is clamped when editor-panel ResizeObserver fires', async () => {
+    // Seed an oversized problemsHeight with panel expanded so the height is visible in the DOM.
+    // editorWidth + sideWidth are required by loadPanelLayout's validation check; without them
+    // loadPanelLayout returns null and defaults are used (problemsCollapsed: true, height: 160).
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      editorWidth: 300,
+      sideWidth: 300,
+      problemsHeight: 500,
+      problemsCollapsed: false,
+    }));
+
+    // Capture all ResizeObserver callbacks in insertion order:
+    // [0] = editorPanel observer (createEffect at ~line 1164)
+    // [1] = sidePanel observer  (createEffect at ~line 1178)
+    const roCallbacks: ResizeObserverCallback[] = [];
+    const OrigRO = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+      constructor(cb: ResizeObserverCallback) { roCallbacks.push(cb); }
+    } as any;
+
+    try {
+      await renderAndWaitForReady();
+
+      // First observer is for the editor panel
+      expect(roCallbacks.length).toBeGreaterThanOrEqual(1);
+      const editorPanel = screen.getByTestId('editor-panel');
+      Object.defineProperty(editorPanel, 'clientHeight', { value: 300, configurable: true });
+
+      // Fire the editor-panel ResizeObserver callback (entry payload unused by handler)
+      roCallbacks[0]([{ contentRect: { width: 500, height: 300 } }] as any, {} as any);
+
+      // clampProblemsHeight(500, 300, {min:80, editorMin:80, splitterT:4}):
+      //   available = 300 - 80 - 4 = 216
+      //   result    = max(80, min(500, 216)) = 216
+      await waitFor(() => {
+        const panel = screen.getByTestId('diagnostics-panel');
+        expect(panel.style.height).toBe('216px');
+      });
+    } finally {
+      globalThis.ResizeObserver = OrigRO;
+    }
+  });
 });
 
 describe('App Escape clears multi-selection', () => {

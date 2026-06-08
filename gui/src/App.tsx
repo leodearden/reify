@@ -1147,16 +1147,20 @@ const App: Component = () => {
 
   // Editor-panel container clamp: clamp the problems panel height when the
   // editor column is resized or on first paint with an oversized persisted value.
+  // problemsHeight reads are wrapped in untrack() so this function does not
+  // create a reactive dependency on problemsHeight — the effect that calls it
+  // should only re-subscribe to initPhase(), not to the height it is clamping.
   function clampEditorPanel(): void {
     if (!editorPanelRef) return;
     const ch = editorPanelRef.clientHeight;
     if (ch <= 0) return;
-    const clamped = clampProblemsHeight(layoutStore.state.problemsHeight, ch, {
+    const currentHeight = untrack(() => layoutStore.state.problemsHeight);
+    const clamped = clampProblemsHeight(currentHeight, ch, {
       minPanelHeight: MIN_PANEL_HEIGHT,
       editorMinHeight: MIN_PANEL_HEIGHT,
       splitterThickness: SPLITTER_THICKNESS,
     });
-    if (clamped !== layoutStore.state.problemsHeight) {
+    if (clamped !== currentHeight) {
       layoutStore.setProblemsHeight(clamped);
     }
   }
