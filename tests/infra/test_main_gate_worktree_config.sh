@@ -177,4 +177,60 @@ git -C "$REPO_G" worktree add -q "$LINKED_G" HEAD
 assert "(g) linked worktree still inherits shared core.hooksPath=hooks" \
     bash -c "[ \"\$(git -C '$LINKED_G' config --get core.hooksPath 2>/dev/null)\" = 'hooks' ]"
 
+# ==============================================================================
+# Leak-guard assertions (step-3): helper must abort when core.bare=true or
+# core.worktree is set, and must write ONLY core.hooksPath to config.worktree.
+# ==============================================================================
+
+# ==============================================================================
+# (leak-a) core.bare=true — helper exits non-zero, worktreeConfig NOT enabled
+# ==============================================================================
+echo ""
+echo "--- (leak-a) core.bare=true: helper exits non-zero ---"
+
+REPO_LA="$(make_repo)"
+git -C "$REPO_LA" config core.bare true
+
+RC_LA=0
+"$HELPER" "$REPO_LA" >/dev/null 2>&1 || RC_LA=$?
+
+assert "(leak-a) bare=true: helper exits non-zero" \
+    test "$RC_LA" -ne 0
+
+assert "(leak-a) bare=true: extensions.worktreeConfig NOT enabled" \
+    bash -c "val=\$(git -C '$REPO_LA' config --get extensions.worktreeConfig 2>/dev/null || true); [ -z \"\$val\" ] || [ \"\$val\" = 'false' ]"
+
+# ==============================================================================
+# (leak-b) core.worktree set — helper exits non-zero
+# ==============================================================================
+echo ""
+echo "--- (leak-b) core.worktree set: helper exits non-zero ---"
+
+REPO_LB="$(make_repo)"
+git -C "$REPO_LB" config core.worktree /tmp  # valid path — guards must detect this
+
+RC_LB=0
+"$HELPER" "$REPO_LB" >/dev/null 2>&1 || RC_LB=$?
+
+assert "(leak-b) core.worktree set: helper exits non-zero" \
+    test "$RC_LB" -ne 0
+
+# ==============================================================================
+# (leak-c) nothing-leaks: config.worktree has hooksPath and ONLY hooksPath
+# ==============================================================================
+echo ""
+echo "--- (leak-c) nothing-leaks: config.worktree contains only hooksPath ---"
+
+REPO_LC="$(make_repo)"
+"$HELPER" "$REPO_LC" >/dev/null 2>&1
+
+assert "(leak-c) config.worktree contains hooksPath" \
+    grep -q 'hooksPath' "$REPO_LC/.git/config.worktree"
+
+assert "(leak-c) config.worktree does NOT contain core.bare" \
+    bash -c "! git -C '$REPO_LC' config --worktree --get core.bare >/dev/null 2>&1"
+
+assert "(leak-c) config.worktree does NOT contain core.worktree" \
+    bash -c "! git -C '$REPO_LC' config --worktree --get core.worktree >/dev/null 2>&1"
+
 test_summary
