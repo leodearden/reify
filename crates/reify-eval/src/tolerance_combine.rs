@@ -17,8 +17,9 @@
 //! <Literal Scalar LENGTH finite>=0])`
 
 use crate::graph::ConstraintNodeData;
-use reify_core::{ConstraintNodeId, DimensionVector, Diagnostic, Severity, Type, ValueCellId};
+use reify_core::{ConstraintNodeId, DimensionVector, Diagnostic, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, PersistentMap, Satisfaction, Value, ValueMap};
+use reify_ir::value::GeometryHandleRef;
 use std::collections::BTreeMap;
 
 /// Combine an output occurrence's tolerance bound with the active purpose's
@@ -67,6 +68,213 @@ pub fn combine_demanded_tolerance(
         (Some(t), None) | (None, Some(t)) => Some(t),
         (None, None) => None,
     }
+}
+
+// ── Private shared recognition helper ────────────────────────────────────────
+
+/// Match the canonical `RepresentationWithin` shape in a single
+/// [`CompiledExpr`] and return the three parsed fields, or `None` on any
+/// gate failure.
+///
+/// ## Gates (mirroring `extract_output_tolerance_bound`'s inner gates)
+///
+/// * **Gate 2** — top-level `UserFunctionCall("RepresentationWithin", [arg0, arg1])`.
+/// * **Gate 3** — `arg0` is a `ValueRef(vcid)` whose `result_type` is
+///   `StructureRef(name)`.
+/// * **Gate 4a** — `arg1` is a `Literal(Scalar { dimension == LENGTH, .. })`.
+/// * **Gate 4b/c** — `si_value` passes `is_valid_tolerance_si` (finite + ≥ 0.0).
+///
+/// Returns `(subject_vcid, struct_ref_name, bound_si)` on success.
+fn match_representation_within_shape(
+    expr: &CompiledExpr,
+) -> Option<(ValueCellId, String, f64)> {
+    // Gate 2: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1]).
+    let (function_name, args) = match &expr.kind {
+        CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => (function_name, args),
+        _ => return None,
+    };
+    if function_name != "RepresentationWithin" {
+        return None;
+    }
+    if args.len() != 2 {
+        return None;
+    }
+
+    // Gate 3: arg0 must be a ValueRef whose result_type is StructureRef(name).
+    let subject_arg = &args[0];
+    let vcid = match &subject_arg.kind {
+        CompiledExprKind::ValueRef(id) => id.clone(),
+        _ => return None,
+    };
+    let struct_name = match &subject_arg.result_type {
+        Type::StructureRef(name) => name.clone(),
+        _ => return None,
+    };
+
+    // Gate 4: arg1 must be a Literal(Scalar { dimension == LENGTH, si_value })
+    // with finite, non-negative si_value (4b/c via is_valid_tolerance_si).
+    let tol_arg = &args[1];
+    let si_value = match &tol_arg.kind {
+        CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *dimension == DimensionVector::LENGTH => *si_value,
+        _ => return None,
+    };
+    if !crate::tolerance_gate::is_valid_tolerance_si(si_value) {
+        return None;
+    }
+
+    Some((vcid, struct_name, si_value))
+}
+
+// ── Assertion recognizer ──────────────────────────────────────────────────────
+
+/// Recognise a single `RepresentationWithin` constraint expression and return
+/// its three parsed components, or `None` if the expression does not match the
+/// canonical shape.
+///
+/// Delegates directly to [`match_representation_within_shape`] — see that
+/// function for the gate definitions. This function is the public asserter
+/// entry point; [`extract_output_tolerance_bound`] is the budget-extractor
+/// entry point. Both share the same gate implementation so they cannot drift.
+///
+/// ## Return value
+///
+/// `Some((subject_vcid, struct_ref_name, bound_si_metres))` on a match;
+/// `None` on any gate failure (silent-skip posture).
+pub fn recognize_representation_within(
+    expr: &CompiledExpr,
+) -> Option<(ValueCellId, String, f64)> {
+    match_representation_within_shape(expr)
+}
+
+// ── Pure assertion eval helper ────────────────────────────────────────────────
+
+/// Planar quantization floor for the C4 zero-bound comparator (SI metres).
+///
+/// β B1 validates that a planar box's achieved deviation is ≤ 1e-5 m at unit
+/// scale (~1e-6 m f32 quantization — NOT exactly 0.0). Flooring a zero
+/// ("exact") bound at this ceiling makes a planar subject Satisfied while a
+/// coarse curved subject (β B2: ≫ 1e-5) is Violated, WITHOUT loosening any
+/// non-zero (C3) bound.
+pub const PLANAR_FLOOR: f64 = 1e-5;
+
+/// Evaluate a single `RepresentationWithin` assertion expression against the
+/// current value map and the post-tessellation achieved-repr-tol map.
+///
+/// # Contract
+///
+/// * Returns `None` when `expr` is not a `RepresentationWithin` shape (so
+///   callers can pass arbitrary constraint expressions through safely).
+/// * Returns `Some((Indeterminate, None))` when the subject cannot be resolved
+///   to a key in `achieved_repr_tol` — encodes C1 (realization not run ⇒
+///   never a false `Violated`).
+/// * Returns `Some((Satisfied, None))` when `achieved ≤ eff_bound`.
+/// * Returns `Some((Violated, Some(diag)))` when `achieved > eff_bound`;
+///   the diagnostic message follows PRD §8.3 ("sampled facet deviation"
+///   semantics — the metric is a sampled lower bound, so `Violated` means the
+///   **measured** deviation exceeded the bound, not that a tighter bound is
+///   provably unachievable).
+///
+/// # Subject → key resolution (hybrid)
+///
+/// 1. **Value-based:** look up `vcid` in `values`. If the result is a
+///    `GeometryHandle`, its `realization_ref.to_string()` is the key. If it is
+///    a `StructureInstance`, scan its `fields` for any `GeometryHandle` field.
+/// 2. **Type-name fallback:** scan `achieved_repr_tol` keys for the prefix
+///    `"{struct_name}#realization["`. If multiple keys match, take the one with
+///    the **maximum** achieved value (conservative — avoids a false `Satisfied`
+///    when a module has multiple realizations with varying quality). This path
+///    is hydration-independent and works for the post-tessellate `check()` call
+///    whose fresh `eval()` may not re-hydrate the subject's `GeometryHandle`.
+///
+/// # Zero-bound comparator (C4)
+///
+/// `eff = if bound <= 0.0 { PLANAR_FLOOR } else { bound }`. See [`PLANAR_FLOOR`].
+pub fn eval_representation_within(
+    id: &ConstraintNodeId,
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    achieved_repr_tol: &BTreeMap<String, f64>,
+) -> Option<(Satisfaction, Option<Diagnostic>)> {
+    // Step 1: recognise the shape. None → caller should treat as non-assertion.
+    let (vcid, struct_name, bound) = match_representation_within_shape(expr)?;
+
+    // Step 2: resolve the subject to an achieved_repr_tol key.
+    let key = resolve_repr_tol_key(&vcid, &struct_name, values, achieved_repr_tol);
+
+    // Step 3: look up achieved value (absent key ⇒ Indeterminate, C1).
+    let achieved_opt = key.and_then(|k| achieved_repr_tol.get(&k).copied());
+
+    // Step 4: three-valued comparison with C4 zero-bound floor.
+    match achieved_opt {
+        None => Some((Satisfaction::Indeterminate, None)),
+        Some(achieved) => {
+            let eff = if bound <= 0.0 { PLANAR_FLOOR } else { bound };
+            if achieved <= eff {
+                Some((Satisfaction::Satisfied, None))
+            } else {
+                // PRD §8.3: "sampled facet deviation exceeds bound" — the
+                // metric is a sampled lower bound on the achievable deviation,
+                // so this diagnostic means the measured deviation exceeded the
+                // bound, not that a tighter mesh cannot satisfy it.
+                let diag = Diagnostic::error(format!(
+                    "RepresentationWithin: sampled facet deviation {achieved:.3e} m \
+                     exceeds bound {bound:.3e} m for {}",
+                    id.entity
+                ));
+                Some((Satisfaction::Violated, Some(diag)))
+            }
+        }
+    }
+}
+
+/// Resolve the `RepresentationWithin` subject `vcid` to an
+/// `achieved_repr_tol` map key (a `"{entity}#realization[{idx}]"` string).
+///
+/// Returns `None` when neither value-based resolution nor the type-name scan
+/// finds a key — the caller interprets this as Indeterminate (C1).
+fn resolve_repr_tol_key(
+    vcid: &ValueCellId,
+    struct_name: &str,
+    values: &ValueMap,
+    achieved_repr_tol: &BTreeMap<String, f64>,
+) -> Option<String> {
+    // — Value-based resolution (hydration-dependent path) ——————————————————
+    if let Some(v) = values.get(vcid) {
+        // Direct GeometryHandle.
+        if let Some(ghr) = GeometryHandleRef::from_geometry_handle(v) {
+            return Some(ghr.realization_ref.to_string());
+        }
+        // StructureInstance: scan fields for any GeometryHandle field.
+        if let Value::StructureInstance(data) = v {
+            for field_val in data.fields.values() {
+                if let Some(ghr) = GeometryHandleRef::from_geometry_handle(field_val) {
+                    return Some(ghr.realization_ref.to_string());
+                }
+            }
+        }
+    }
+
+    // — Type-name scan fallback (hydration-independent) ————————————————————
+    // Scan achieved_repr_tol keys for the prefix "{struct_name}#realization[".
+    // If multiple keys match, take the one with the MAXIMUM achieved value
+    // (conservative — guards against a false Satisfied when a module has
+    // multiple realizations of the same type with varying quality).
+    let prefix = format!("{}#realization[", struct_name);
+    let mut best_key: Option<String> = None;
+    let mut best_val: f64 = f64::NEG_INFINITY;
+    for (k, &v) in achieved_repr_tol.iter() {
+        if k.starts_with(&prefix) && v > best_val {
+            best_val = v;
+            best_key = Some(k.clone());
+        }
+    }
+    best_key
 }
 
 /// Extract the tightest `RepresentationWithin` tolerance bound declared on
@@ -135,18 +343,15 @@ pub fn extract_output_tolerance_bound(
     // Silent-skip audit (locked by `extract_output_tolerance_bound_skips_
     // non_finite_non_length_and_unrelated_entity`):
     //   Gate 1 (entity filter)        skips unrelated-entity entries
-    //   Gate 2 (UserFunctionCall +    skips non-RepresentationWithin or
-    //           name + arity)         wrong-arity outer shapes
-    //   Gate 3 (ValueRef +             skips non-ValueRef subjects or non-
-    //           StructureRef)         StructureRef result types
-    //   Gate 4a (LENGTH dimension)    skips non-LENGTH Scalar literals
-    //   Gate 4b (is_finite())         skips NaN / ±Inf tolerance literals
-    //   Gate 4c (>= 0.0)              skips negative finite tolerance
-    //                                 literals (contract symmetry with
-    //                                 `combine_demanded_tolerance`'s
-    //                                 debug-assert `is_finite() && >= 0.0`)
-    // Every non-match path uses `continue` — no `panic!`, `expect`, or
-    // `unwrap` is reachable, so a malformed graph never crashes the engine.
+    //   Gates 2-4 (shape match)       delegated to
+    //                                 `match_representation_within_shape` —
+    //                                 see that function for the per-gate
+    //                                 breakdown (UFC name+arity, ValueRef
+    //                                 :StructureRef, Literal Scalar LENGTH
+    //                                 finite≥0). Every non-match returns None
+    //                                 → `continue` here.
+    // No `panic!`, `expect`, or `unwrap` is reachable — malformed graphs
+    // are silently skipped.
     let mut tightest: Option<f64> = None;
     for (id, data) in constraints.iter() {
         // Gate 1: entity exact-match filter.
@@ -154,54 +359,15 @@ pub fn extract_output_tolerance_bound(
             continue;
         }
 
-        // Gate 2: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1]).
-        let (function_name, args) = match &data.expr.kind {
-            CompiledExprKind::UserFunctionCall {
-                function_name,
-                args,
-            } => (function_name, args),
-            _ => continue,
+        // Gates 2-4: shared recognition shape (UFC + ValueRef:StructureRef +
+        // Literal Scalar LENGTH finite≥0). Only the bound (si_value) is needed
+        // here — subject vcid and StructureRef name are discarded (C2: public
+        // signature and behavior are byte-identical to the pre-factoring impl).
+        let Some((_vcid, _struct_name, si_value)) =
+            match_representation_within_shape(&data.expr)
+        else {
+            continue;
         };
-        if function_name != "RepresentationWithin" {
-            continue;
-        }
-        if args.len() != 2 {
-            continue;
-        }
-
-        // Gate 3: arg0 must be a ValueRef whose result_type is StructureRef(_).
-        // Note: the purpose-param-membership check from
-        // `tolerance_scope::extract_tolerance_bindings` is dropped here —
-        // output occurrences have a fixed `param subject : Structure` binding
-        // pattern at the template level, so the StructureRef type-tag gate
-        // alone is sufficient to identify the subject argument.
-        let subject_arg = &args[0];
-        if !matches!(subject_arg.kind, CompiledExprKind::ValueRef(_)) {
-            continue;
-        }
-        if !matches!(subject_arg.result_type, Type::StructureRef(_)) {
-            continue;
-        }
-
-        // Gate 4: arg1 must be a Literal(Value::Scalar { dimension == LENGTH, .. })
-        // with finite, non-negative si_value. NaN/±Inf would propagate into
-        // the bound and stick (NaN comparisons always evaluate false).
-        // Negative finite values are also silently skipped here so the
-        // extractor stays in lockstep with `combine_demanded_tolerance`'s
-        // debug-assert `is_finite() && >= 0.0` invariant — without this gate,
-        // a negative bound would survive extraction, then crash the engine in
-        // debug builds and win an `o.min(p)` race in release builds.
-        let tol_arg = &args[1];
-        let si_value = match &tol_arg.kind {
-            CompiledExprKind::Literal(Value::Scalar {
-                si_value,
-                dimension,
-            }) if *dimension == DimensionVector::LENGTH => *si_value,
-            _ => continue,
-        };
-        if !crate::tolerance_gate::is_valid_tolerance_si(si_value) {
-            continue;
-        }
 
         // Min-fold under partial-order "tighter satisfies looser" semantics.
         tightest = Some(match tightest {
