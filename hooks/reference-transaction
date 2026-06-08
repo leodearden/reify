@@ -49,6 +49,23 @@ fi
 while read -r _old _new _ref; do
     [ "$_ref" = "refs/heads/main" ] || continue
 
+    # Only a GENUINE move of an existing main to a DIFFERENT existing commit is a
+    # landing worth gating. Skip housekeeping transactions, which are NOT landings
+    # and carry no code change to verify:
+    #   old == new      no-op self-update (fetch / read / defensive re-assert)
+    #   old all-zero    ref CREATION   (pack-refs / gc / worktree ref churn)
+    #   new all-zero    ref DELETION   (pack-refs / gc ref churn)
+    # Gating these adds zero safety, and under REIFY_MAIN_GATE_ENFORCE=1 it would
+    # abort `git gc` / `git pack-refs` / `git fetch` and wedge the repo. (Measured:
+    # a 4-day warn-only window logged ~48 such housekeeping events against
+    # refs/heads/main alongside the genuine task landings.) Skipped silently — the
+    # audit log records only genuine landings, sanctioned or not. ${v//0/} strips
+    # every '0'; empty result means an all-zero oid, so this is hash-agnostic
+    # (SHA-1 and SHA-256 zero oids both match).
+    [ "$_old" = "$_new" ] && continue
+    [ -z "${_old//0/}" ] && continue
+    [ -z "${_new//0/}" ] && continue
+
     if [ "${REIFY_MAIN_GATE_BYPASS:-}" = "1" ]; then
         main_gate_log "bypass (REIFY_MAIN_GATE_BYPASS=1) main move ${_old} -> ${_new}"
         continue
