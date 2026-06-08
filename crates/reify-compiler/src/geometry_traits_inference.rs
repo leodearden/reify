@@ -697,7 +697,7 @@ pub fn try_infer_traits_for_function_call_in_env(
         "intersection_all" => Some(fold_geometry_args_in_env(args, combine_intersection, env)),
 
         // ─── Transform combinators → recurse + combine_transform ────────
-        "translate" | "rotate" | "scale" | "rotate_around" => {
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_transform(t))
         }
