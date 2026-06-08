@@ -342,19 +342,29 @@ install_build_services() {
 
     cat > "$unit_dir/sccache.service" <<EOF
 [Unit]
-Description=sccache build cache server (${size} cap) for reify verify/builds
+Description=sccache build cache server (${size} cap, systemd-monitored) for reify verify/builds
 Documentation=https://github.com/mozilla/sccache
 After=network.target
 Before=orchestrator-reify.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+# Type=simple + Restart=always: systemd OWNS the foreground server process, so a
+# crashed/OOM'd server is restarted BY SYSTEMD carrying this Environment (the ${size}
+# cap + no idle timeout) — NOT silently respawned at sccache's 10G default by the next
+# cargo client. That respawn-at-default was the 2026-06-08 regression: the old
+# Type=oneshot daemon died, a client started a replacement without SCCACHE_CACHE_SIZE,
+# and the cap sat at 10G for days (LRU-thrashing the debug+release working set).
+# SCCACHE_START_SERVER=1 + SCCACHE_NO_DAEMON=1 run the server in the FOREGROUND so
+# systemd can monitor it; a daemonized \`--start-server\` detaches and escapes Restart=.
+Type=simple
 Environment=SCCACHE_CACHE_SIZE=${size}
 Environment=SCCACHE_IDLE_TIMEOUT=0
+Environment=SCCACHE_START_SERVER=1
+Environment=SCCACHE_NO_DAEMON=1
 ExecStartPre=-${sccache_bin} --stop-server
-ExecStart=${sccache_bin} --start-server
-ExecStop=${sccache_bin} --stop-server
+ExecStart=${sccache_bin}
+Restart=always
+RestartSec=2
 
 [Install]
 WantedBy=default.target
