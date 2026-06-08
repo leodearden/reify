@@ -260,6 +260,61 @@ structure def TNet {
     }
 }
 
+/// Regression: `Tensegrity(nodes, struts, cables)` with NO `surfaces` argument
+/// compiles and evaluates successfully to a `Value::StructureInstance`. The
+/// `surfaces` field is ABSENT from the resulting fields map — the SIR
+/// ctor-lowering (expr.rs:1433-1488) silently drops uncovered required params
+/// rather than defaulting them. This contracts the backward-compatibility
+/// invariant that makes `surfaces` safely addable as a required (no-default)
+/// param: all pre-existing call sites remain valid by language semantics.
+///
+/// If this test ever fails it signals that the ctor-lowering behavior has
+/// changed and the design decision must be re-evaluated.
+#[test]
+fn tensegrity_ctor_without_surfaces_evals_without_surfaces_field() {
+    const SOURCE: &str = r#"
+structure def TNet {
+    let t = Tensegrity(
+        nodes: [point3(0m, 0m, 0m), point3(1m, 0m, 0m)],
+        struts: [[0, 1]],
+        cables: []
+    )
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let id = ValueCellId::new("TNet", "t");
+    let v = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("TNet.t cell missing from eval result"));
+
+    match v {
+        Value::StructureInstance(data) => {
+            assert_eq!(
+                data.type_name, "Tensegrity",
+                "type_name should be Tensegrity, got {:?}",
+                data.type_name
+            );
+            // surfaces field must be ABSENT — the ctor-lowering drops uncovered
+            // required params rather than filling them with a default value.
+            assert!(
+                field(&data.fields, "surfaces").is_none(),
+                "Tensegrity(nodes,struts,cables) should have no surfaces field \
+                 (ctor-lowering drops uncovered required params); \
+                 unexpectedly found: {:?}",
+                field(&data.fields, "surfaces")
+            );
+        }
+        other => panic!(
+            "expected Value::StructureInstance for TNet.t, got {:?}",
+            other
+        ),
+    }
+}
+
 // ── step-5: shape-guard tests for tensegrity_wires ───────────────────────────
 
 // Shared helpers for building Tensegrity-shaped Values directly (bypassing

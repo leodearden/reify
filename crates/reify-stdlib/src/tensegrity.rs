@@ -66,22 +66,59 @@ fn build_wire(kind: &str, from: i64, to: i64, p_from: &(Value, Value, Value), p_
     }))
 }
 
-/// Extract index pairs from a `List<List<Int>>` field value.
+/// Shared accessor prologue: validate arity==1 and arg is a `Tensegrity`
+/// `StructureInstance`. Returns a reference to the fields map on success,
+/// `None` (→ `Value::Undef`) otherwise. Used by both `tensegrity_wires` and
+/// `tensegrity_surfaces` to eliminate the duplicated arity+type-guard block.
+fn check_tensegrity_args(args: &[Value]) -> Option<&PersistentMap<String, Value>> {
+    if args.len() != 1 {
+        return None;
+    }
+    match &args[0] {
+        Value::StructureInstance(data) if data.type_name == "Tensegrity" => Some(&data.fields),
+        _ => None,
+    }
+}
+
+/// Extract and validate node XYZ tuples from a Tensegrity fields map.
+/// Returns `Some(node_xyzs)` if `fields["nodes"]` is a valid `List<Point3>`,
+/// `None` (→ `Value::Undef`) otherwise.
+fn extract_nodes(fields: &PersistentMap<String, Value>) -> Option<Vec<(Value, Value, Value)>> {
+    match fields.get(&"nodes".to_string()) {
+        Some(Value::List(ns)) => {
+            let mut v = Vec::with_capacity(ns.len());
+            for n in ns.iter() {
+                v.push(extract_node_xyz(n)?);
+            }
+            Some(v)
+        }
+        _ => None,
+    }
+}
+
+/// Extract index tuples from a `List<List<Int>>` field value.
 ///
-/// Each inner list must be exactly `[from_index, to_index]` with both entries
-/// being `Value::Int`. Out-of-range indices are validated against `n_nodes`
-/// by the caller. Returns `None` on any shape violation.
-fn extract_index_pairs(v: &Value) -> Option<Vec<(i64, i64)>> {
+/// Each inner list must be exactly `arity` elements, all `Value::Int`.
+/// Generalises the old `extract_index_pairs` (arity=2) and
+/// `extract_index_triples` (arity=3) into a single helper so future
+/// typed-element groups (DD2 seam) can reuse the same validation without
+/// another near-verbatim copy. Returns `None` on any shape violation
+/// (wrong outer type, wrong inner length, non-Int inner element).
+fn extract_index_tuples(v: &Value, arity: usize) -> Option<Vec<Vec<i64>>> {
     match v {
-        Value::List(pairs) => {
-            let mut result = Vec::with_capacity(pairs.len());
-            for pair in pairs {
-                match pair {
-                    Value::List(indices) if indices.len() == 2 => {
-                        match (&indices[0], &indices[1]) {
-                            (Value::Int(from), Value::Int(to)) => result.push((*from, *to)),
-                            _ => return None,
+        Value::List(items) => {
+            let mut result = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    Value::List(indices) if indices.len() == arity => {
+                        let mut tuple = Vec::with_capacity(arity);
+                        for idx in indices {
+                            match idx {
+                                Value::Int(i) => tuple.push(*i),
+                                _ => return None,
+                            }
                         }
+                        result.push(tuple);
                     }
                     _ => return None,
                 }
@@ -114,46 +151,29 @@ fn extract_index_pairs(v: &Value) -> Option<Vec<(i64, i64)>> {
 /// Struts precede cables (declaration order per DD2 / open-groups seam).
 /// Within each group, pairs are emitted in declaration order.
 fn tensegrity_wires(args: &[Value]) -> Value {
-    // Arity guard.
-    if args.len() != 1 {
-        return Value::Undef;
-    }
-
-    // arg must be a Tensegrity StructureInstance.
-    let fields = match &args[0] {
-        Value::StructureInstance(data) if data.type_name == "Tensegrity" => &data.fields,
-        _ => return Value::Undef,
+    // Shared arity + type guard.
+    let fields = match check_tensegrity_args(args) {
+        Some(f) => f,
+        None => return Value::Undef,
     };
 
-    // Extract nodes list.
-    let nodes = match fields.get(&"nodes".to_string()) {
-        Some(Value::List(ns)) => ns,
-        _ => return Value::Undef,
-    };
-
-    // Pre-extract node XYZ tuples; validate each is a 3-component Point.
-    let node_xyzs: Vec<(Value, Value, Value)> = {
-        let mut v = Vec::with_capacity(nodes.len());
-        for n in nodes.iter() {
-            match extract_node_xyz(n) {
-                Some(xyz) => v.push(xyz),
-                None => return Value::Undef,
-            }
-        }
-        v
+    // Extract and validate nodes.
+    let node_xyzs = match extract_nodes(fields) {
+        Some(v) => v,
+        None => return Value::Undef,
     };
     let n_nodes = node_xyzs.len();
 
-    // Extract strut and cable index pair lists.
+    // Extract strut and cable index pair lists (arity=2).
     let struts = match fields.get(&"struts".to_string()) {
-        Some(v) => match extract_index_pairs(v) {
+        Some(v) => match extract_index_tuples(v, 2) {
             Some(pairs) => pairs,
             None => return Value::Undef,
         },
         None => return Value::Undef,
     };
     let cables = match fields.get(&"cables".to_string()) {
-        Some(v) => match extract_index_pairs(v) {
+        Some(v) => match extract_index_tuples(v, 2) {
             Some(pairs) => pairs,
             None => return Value::Undef,
         },
@@ -163,9 +183,9 @@ fn tensegrity_wires(args: &[Value]) -> Value {
     // Emit wires: struts first, then cables (DD2 declaration order).
     let mut wires = Vec::with_capacity(struts.len() + cables.len());
 
-    for (from, to) in &struts {
-        let from = *from;
-        let to = *to;
+    for pair in &struts {
+        let from = pair[0];
+        let to = pair[1];
         // Validate index range.
         if from < 0 || from as usize >= n_nodes || to < 0 || to as usize >= n_nodes {
             return Value::Undef;
@@ -173,9 +193,9 @@ fn tensegrity_wires(args: &[Value]) -> Value {
         wires.push(build_wire("strut", from, to, &node_xyzs[from as usize], &node_xyzs[to as usize]));
     }
 
-    for (from, to) in &cables {
-        let from = *from;
-        let to = *to;
+    for pair in &cables {
+        let from = pair[0];
+        let to = pair[1];
         if from < 0 || from as usize >= n_nodes || to < 0 || to as usize >= n_nodes {
             return Value::Undef;
         }
@@ -183,35 +203,6 @@ fn tensegrity_wires(args: &[Value]) -> Value {
     }
 
     Value::List(wires)
-}
-
-/// Extract index triples from a `List<List<Int>>` field value.
-///
-/// Each inner list must be exactly `[i0, i1, i2]` with all three entries
-/// being `Value::Int`. Out-of-range indices are validated against `n_nodes`
-/// by the caller. Returns `None` on any shape violation (inner length != 3
-/// or non-Int element).
-fn extract_index_triples(v: &Value) -> Option<Vec<(i64, i64, i64)>> {
-    match v {
-        Value::List(triples) => {
-            let mut result = Vec::with_capacity(triples.len());
-            for triple in triples {
-                match triple {
-                    Value::List(indices) if indices.len() == 3 => {
-                        match (&indices[0], &indices[1], &indices[2]) {
-                            (Value::Int(i0), Value::Int(i1), Value::Int(i2)) => {
-                                result.push((*i0, *i1, *i2))
-                            }
-                            _ => return None,
-                        }
-                    }
-                    _ => return None,
-                }
-            }
-            Some(result)
-        }
-        _ => None,
-    }
 }
 
 /// Build a `TensegritySurface` `Value::StructureInstance` using `StructureTypeId(0)`
@@ -272,57 +263,44 @@ fn build_surface(
 ///
 /// Facets are emitted in declaration order (matching `surfaces` list order).
 fn tensegrity_surfaces(args: &[Value]) -> Value {
-    // Arity guard.
-    if args.len() != 1 {
-        return Value::Undef;
-    }
-
-    // arg must be a Tensegrity StructureInstance.
-    let fields = match &args[0] {
-        Value::StructureInstance(data) if data.type_name == "Tensegrity" => &data.fields,
-        _ => return Value::Undef,
+    // Shared arity + type guard.
+    let fields = match check_tensegrity_args(args) {
+        Some(f) => f,
+        None => return Value::Undef,
     };
 
-    // Extract nodes list.
-    let nodes = match fields.get(&"nodes".to_string()) {
-        Some(Value::List(ns)) => ns,
-        _ => return Value::Undef,
-    };
-
-    // Pre-extract node XYZ tuples; validate each is a 3-component Point.
-    let node_xyzs: Vec<(Value, Value, Value)> = {
-        let mut v = Vec::with_capacity(nodes.len());
-        for n in nodes.iter() {
-            match extract_node_xyz(n) {
-                Some(xyz) => v.push(xyz),
-                None => return Value::Undef,
-            }
-        }
-        v
-    };
-    let n_nodes = node_xyzs.len();
-
-    // Extract surfaces — ABSENT or EMPTY → return empty list (not Undef).
-    // Design Decision: surfaces is legitimately absent for non-membrane nets.
-    let triples = match fields.get(&"surfaces".to_string()) {
+    // SHORT-CIRCUIT: check surfaces before extracting nodes. For non-membrane
+    // nets the surfaces field is legitimately absent — extracting and validating
+    // the entire nodes table would be wasted work in that common case.
+    // Design Decision: absent or empty surfaces → [] (not Undef).
+    let surfaces_val = match fields.get(&"surfaces".to_string()) {
         None => return Value::List(vec![]),
-        Some(v) => match extract_index_triples(v) {
-            Some(ts) => ts,
-            None => return Value::Undef,
-        },
+        Some(v) => v,
+    };
+
+    let triples = match extract_index_tuples(surfaces_val, 3) {
+        Some(ts) => ts,
+        None => return Value::Undef,
     };
 
     if triples.is_empty() {
         return Value::List(vec![]);
     }
 
+    // Only extract and validate nodes when there are surface triples to emit.
+    let node_xyzs = match extract_nodes(fields) {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let n_nodes = node_xyzs.len();
+
     // Emit facets: validate and build each TensegritySurface.
     let mut facets = Vec::with_capacity(triples.len());
 
-    for (i0, i1, i2) in &triples {
-        let i0 = *i0;
-        let i1 = *i1;
-        let i2 = *i2;
+    for triple in &triples {
+        let i0 = triple[0];
+        let i1 = triple[1];
+        let i2 = triple[2];
         // Validate all three indices (negative or out-of-range → Undef).
         if i0 < 0 || i0 as usize >= n_nodes
             || i1 < 0 || i1 as usize >= n_nodes
@@ -633,6 +611,66 @@ mod tests {
         assert!(
             tensegrity_surfaces(&[t]).is_undef(),
             "negative index should be Undef"
+        );
+    }
+
+    /// surfaces=[[Real(0.0), 1, 2]] (non-Int element in inner triple) → Undef.
+    /// Exercises the `_ => return None` arm of `extract_index_tuples` for
+    /// non-Int inner elements (previously untested branch).
+    #[test]
+    fn surfaces_undef_on_non_int_triple_element() {
+        let bad = Value::List(vec![
+            Value::List(vec![Value::Real(0.0), Value::Int(1), Value::Int(2)]),
+        ]);
+        let t = tensegrity_with_surfaces(bad);
+        assert!(
+            tensegrity_surfaces(&[t]).is_undef(),
+            "non-Int triple element (Real) should be Undef"
+        );
+    }
+
+    /// surfaces=Value::Int(5) (surfaces field is not a List) → Undef.
+    /// Exercises the outer `_ => None` arm of `extract_index_tuples` for
+    /// non-List surfaces values (previously untested branch).
+    #[test]
+    fn surfaces_undef_on_surfaces_not_a_list() {
+        let t = tensegrity_with_surfaces(Value::Int(5));
+        assert!(
+            tensegrity_surfaces(&[t]).is_undef(),
+            "surfaces=Int(5) (not a List) should be Undef"
+        );
+    }
+
+    /// Tensegrity with a malformed node (2-component Point, not 3) and a
+    /// non-empty surfaces field → Undef. Exercises the `extract_nodes` path
+    /// for non-3-component Points via `tensegrity_surfaces` (previously
+    /// only covered for `tensegrity_wires`).
+    #[test]
+    fn surfaces_undef_on_malformed_node() {
+        // 2-component Point — extract_node_xyz returns None → extract_nodes → None → Undef.
+        let bad_node = Value::Point(vec![length(0.0), length(0.0)]); // only 2 components
+        let nodes = Value::List(vec![
+            bad_node,
+            node(1.0, 0.0, 0.0),
+            node(0.5, 1.0, 0.0),
+        ]);
+        let fields: PersistentMap<String, Value> = [
+            ("nodes".to_string(), nodes),
+            ("struts".to_string(), Value::List(vec![])),
+            ("cables".to_string(), Value::List(vec![])),
+            ("surfaces".to_string(), one_triangle()), // non-empty so nodes are extracted
+        ]
+        .into_iter()
+        .collect();
+        let t = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Tensegrity".to_string(),
+            version: 1,
+            fields,
+        }));
+        assert!(
+            tensegrity_surfaces(&[t]).is_undef(),
+            "malformed node (2-component Point) should be Undef"
         );
     }
 }
