@@ -223,6 +223,33 @@ mod tests {
         assert!(!cfg_satisfied(&p, &active));
     }
 
+    #[test]
+    fn empty_string_value_matches_empty_string_in_kv() {
+        // feature="" against kv:{feature:""} → true (empty string is a valid match)
+        let p = cfg_pragma(vec![kv_string("feature", "")]);
+        assert!(cfg_satisfied(&p, &kv_set(&[("feature", "")])));
+    }
+
+    #[test]
+    fn empty_string_value_absent_key_is_false() {
+        // feature="" with kv:{} (absent key) → false (absent ≠ empty string)
+        let p = cfg_pragma(vec![kv_string("feature", "")]);
+        assert!(!cfg_satisfied(&p, &kv_set(&[])));
+    }
+
+    #[test]
+    fn superset_active_does_not_cause_false_positive() {
+        // Extra unrelated flags/kv entries in active set must not cause a false positive.
+        // #cfg(linux) should be satisfied when flags⊃{linux, extra_flag} and kv has extras too.
+        let p = cfg_pragma(vec![bare_ident("linux")]);
+        let active = CfgSet {
+            flags: ["linux".into(), "extra_flag".into()].into_iter().collect(),
+            kv: [("unrelated".into(), "value".into())].into_iter().collect(),
+            target: Some("wasm".into()),
+        };
+        assert!(cfg_satisfied(&p, &active));
+    }
+
     // -------------------------------------------------------------------------
     // Step 7: degenerate/unsatisfiable shapes → false; mixed AND sanity
     // -------------------------------------------------------------------------
