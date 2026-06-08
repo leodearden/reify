@@ -119,10 +119,10 @@ fn solver_progress_sink_receives_cg_iterations_on_cantilever() {
 
     // ── Cadence hardening (task 4366 step-5) ─────────────────────────────────
 
-    // PROGRESS_STRIDE is private to the reify-eval crate; mirror it here with
-    // a comment so a future const-change is an obvious two-site update.
-    // (elastic_static.rs:542: `const PROGRESS_STRIDE: usize = 10;`)
-    const STRIDE: u32 = 10;
+    // Reference the real PROGRESS_STRIDE constant from reify-eval (re-exported
+    // via #[doc(hidden)] pub use in lib.rs for test use) so this value has a
+    // single source of truth and cannot silently drift.
+    const STRIDE: u32 = reify_eval::PROGRESS_STRIDE as u32;
 
     // (1) Cadence: every emitted iter must be 1 or a multiple of STRIDE.
     for (_kind, iter, _residual) in recorded.iter() {

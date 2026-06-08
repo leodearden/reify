@@ -257,6 +257,17 @@ pub(crate) struct CantileverFeaSolve {
     pub nz: usize,
 }
 
+// ── Progress-emit throttle ────────────────────────────────────────────────────
+
+/// Emit a `SolverProgressUpdate` on iteration 1 and every `PROGRESS_STRIDE`
+/// iterations thereafter, bounding IPC overhead for non-converging solves
+/// (e.g. max_iter=2000 → ≤200 sink calls rather than 2000).
+///
+/// Exposed `pub(crate)` so integration tests can assert cadence without
+/// duplicating the constant.  Re-exported via `#[doc(hidden)] pub use` in
+/// `lib.rs` for tests/ access.
+pub const PROGRESS_STRIDE: usize = 10;
+
 /// Trampoline for `solver::elastic_static`.
 ///
 /// Accepts the seven `value_inputs` corresponding to:
@@ -539,7 +550,7 @@ pub fn solve_elastic_static_trampoline(
     // Emit every PROGRESS_STRIDE iterations (and always on iter 1) to bound IPC
     // overhead — a non-converging solve with max_iter=2000 fires at most
     // ~200 emit calls rather than 2000.  The cancel poll is unaffected.
-    const PROGRESS_STRIDE: usize = 10;
+    // (`PROGRESS_STRIDE` is the module-level pub(crate) const above.)
     let mut progress_closure = |iter: usize, residual: f64| -> CgIterationControl {
         if let Some(ref sink) = ctx_sink
             && (iter == 1 || iter.is_multiple_of(PROGRESS_STRIDE))
@@ -1081,12 +1092,23 @@ pub(crate) fn solve_cantilever_fea(
     //
     // Detection predicate: `!converged && iterations < max_iter`
     //
-    // The cg_loop exit-condition contract (solver.rs:994-1045) guarantees this
-    // predicate is true *if and only if* a cooperative cancel fired:
-    //   - Convergence            → converged = true            (predicate false)
-    //   - max_iter exhaustion    → iterations == max_iter       (predicate false)
-    //   - Degenerate system      → panics on p·Kp > 0 assert   (never reaches here)
-    //   - Cooperative cancel     → converged = false, iterations < max_iter (predicate true)
+    // The cg_loop exit-condition contract (solver.rs:994-1045) maps to this
+    // predicate as follows:
+    //   - Convergence                          → converged = true       (predicate false)
+    //   - max_iter exhaustion                  → iterations == max_iter  (predicate false)
+    //   - Degenerate system                    → panics on p·Kp > 0     (never reaches here)
+    //   - Cooperative cancel at iter < max_iter → converged = false,
+    //                                             iterations < max_iter  (predicate TRUE)
+    //   - Cooperative cancel at iter == max_iter → converged = false,
+    //                                              iterations == max_iter (predicate false)
+    //
+    // The predicate is true for the overwhelmingly common cancel case.  A cancel
+    // firing on the exact final iteration (iter + 1 == max_iter) makes
+    // iterations == max_iter so the predicate is false — stress recovery runs
+    // on partial displacements, but the §6b post-solve cancel check
+    // (elastic_static.rs:~580) still returns ComputeOutcome::Cancelled so
+    // correctness is preserved.  The wasted stress-recovery work is accepted for
+    // this rare edge case; it does not affect the common-case latency improvement.
     //
     // The no-callback entry point (solve_cg_with_warm_state) can never cancel,
     // so it only reaches non-converged at iterations == max_iter — predicate
