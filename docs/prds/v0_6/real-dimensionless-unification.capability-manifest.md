@@ -13,11 +13,12 @@ All tasks `grammar_confirmed=true` — **no novel grammar**; `Real`/`Dimensionle
 - **canonical bridge site** (dimensionless literal = `Value::Real` + `Scalar{DIMENSIONLESS}` type) → PASS `grep:crates/reify-compiler/src/expr.rs:719` (today `(Value::Real(f), Type::Real)`; α rewrites the type half).
 - **`is_representable_cell_type` admits `Scalar`** (so a `Scalar{DL}` cell holding `Value::Real` is representable) → PASS `grep:crates/reify-eval/src/engine_eval.rs:68` (predicate exists; admits `Scalar { .. }`). α must keep this true — leak-guard in η (invariant T).
 - **no `Value::Real`↔`Type::Real` coupling assert** (asymmetric canon is safe) → PASS: grep for such an assert returned none (engine_eval/value.rs).
-- DAG-direction: upstream of β, γ, ε, η. ✓
+- DAG-direction: upstream of β, γ, η (ε folded into 4318). Cross-batch seam: `4234 depends_on α` (Leo, 2026-06-08). ✓
 
 ## β — value-layer chokepoint
 - **`Value::from_real_scalar` collapses dimensionless→Real** (the chokepoint) → PASS `grep:crates/reify-ir/src/value.rs:1045` (returns `Value::Real` when `is_dimensionless()`).
-- **producers currently bypass it** (the gap β closes) → PASS `grep:crates/reify-expr/src/lib.rs:2718` (`eval_mul` Scalar×Scalar builds `Value::Scalar{ad.mul(bd)}` un-collapsed), `:eval_div` (`a/b` un-collapsed), `:2451`/`:2532` (`eval_add`/`eval_sub` no `(Real,Scalar)` arm → `_ => Undef`).
+- **producers currently bypass it** (the gap β closes) → PASS `grep:crates/reify-expr/src/lib.rs:2718` (`eval_mul` Scalar×Scalar builds `Value::Scalar{ad.mul(bd)}` un-collapsed; the comment `:2746` "Intentionally returns Scalar{dimension} even when dimension is DIMENSIONLESS" marks the leak), `eval_div`/`eval_pow` likewise; plus external geometry/tolerance/modal producers in reify-eval.
+- **RE-SCOPED at decompose (task 4319 DONE, merged `a2348f81`):** the additive `(Real,Scalar{DL})`/`(Scalar{DL},Real)` arms in `eval_add`/`eval_sub` are **already on main** (`grep:crates/reify-expr/src/lib.rs:2799,2805` `if dimension.is_dimensionless()`); β no longer re-fixes the additive `Undef` (4319 did). β = route the multiplicative + external **producers** through `from_real_scalar` so `Value::Scalar{DL}` is never constructed, add the leak-guard test, and simplify 4319's now-defensive additive arms. Does **not** re-file 4319.
 - **dead consumer guards to delete** → PASS `grep:crates/reify-expr/src/lib.rs:3225,3269` (eval_eq/eval_cmp dimensionless arms), `crates/reify-stdlib/src/fea.rs:190`, `crates/reify-eval/src/compute_targets/elastic_static.rs:1303`.
 - **G6 field-population:** N/A — β reads/produces scalar arithmetic, not result-fields.
 - DAG-direction: upstream of η; downstream of α. ✓
@@ -28,9 +29,10 @@ All tasks `grammar_confirmed=true` — **no novel grammar**; `Real`/`Dimensionle
 - **`Vector3<Real>` parses** (only resolution rejected it) → PASS: probe `/tmp/ri-probes/p2` — error was "cannot resolve 'Real' to a dimension type" (resolution, not parse). γ fixes resolution.
 - DAG-direction: upstream of ζ, η; downstream of α, δ. ✓
 
-## ε — struct-param default type-check (LEAF)
+## ε — struct-param default type-check — **DROPPED at decompose; folded into task 4318 (PENDING)**
+ε's `param t : Length = 1.0` default-literal case is a subset of 4318 ("declared-type vs initializer-dimension cross-check at the declaration", same `FnParamDefaultTypeMismatch` mechanism; 4318's corpus-sweep note already enumerates literal-default firing sites). Not filed separately. Substrate below remains valid evidence for 4318.
 - **reuse existing diagnostic** → PASS `grep:crates/reify-core/src/diagnostics.rs:344` (`FnParamDefaultTypeMismatch`).
-- **strict-equality helper exists** → PASS `grep:crates/reify-compiler/src/type_compat.rs:280` (`fn_param_default_compatible`, exact-equality; ε reuses for struct params).
+- **strict-equality helper exists** → PASS `grep:crates/reify-compiler/src/type_compat.rs:280` (`fn_param_default_compatible`, exact-equality; 4318 reuses for struct params).
 - **the hole is real** → PASS: probe `/tmp/ri-probes/p5` — `param t : Scalar = 1.0` accepted, `t=1`, `t + 5mm` = `undef` silently.
 - **G6:** signal asserts a diagnostic emission (no numeric premise) → trivial PASS.
 
