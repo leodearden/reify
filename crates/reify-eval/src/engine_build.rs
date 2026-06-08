@@ -2959,6 +2959,10 @@ impl Engine {
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
+        // Determinacy β (task 4198): clear the achieved-tol map at the start
+        // of each tessellate_realizations call so stale entries from a prior
+        // call do not leak into the new result.
+        self.achieved_repr_tol.clear();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -2975,6 +2979,8 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            self.capture_repr_tol,
+            &mut self.achieved_repr_tol,
         );
 
         TessellateResult {
@@ -3314,6 +3320,18 @@ impl Engine {
         // fn's signature mirrors the disjoint-field-borrow shape already in
         // use for the other &mut params.
         dispatch_count: &mut usize,
+        // Determinacy β (task 4198): when `true`, `surface_subtree` calls
+        // `kernel.measure_mesh_deviation` and populates `achieved_repr_tol`.
+        // `false` by default — zero hot-path overhead when γ assertions
+        // (`RepresentationWithin`) are not active.  Mirrors `capture_undef_causes`.
+        capture_repr_tol: bool,
+        // Determinacy β (task 4198): cleared at entry to each
+        // `tessellate_realizations` / `tessellate_snapshot` call by the
+        // caller; populated inside `surface_subtree` after each successful
+        // tessellation when `capture_repr_tol` is true. Threaded here as a
+        // sibling of the other &mut tables (feature_tag_table /
+        // topology_attribute_table / swept_kind_table).
+        achieved_repr_tol: &mut std::collections::BTreeMap<String, f64>,
     ) -> Vec<MeshSurface> {
         let mut meshes = Vec::new();
 
@@ -3558,6 +3576,8 @@ impl Engine {
                 meta_map,
                 &mut meshes,
                 diagnostics,
+                capture_repr_tol,
+                achieved_repr_tol,
             );
         }
 
@@ -3593,6 +3613,8 @@ impl Engine {
                 meta_map,
                 &mut meshes,
                 diagnostics,
+                capture_repr_tol,
+                achieved_repr_tol,
             );
             covered.extend(crate::geometry_ops::reachable_template_indices(
                 module,
@@ -5580,6 +5602,9 @@ impl Engine {
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
+        // Determinacy β (task 4198): clear the achieved-tol map at the start
+        // of each tessellate_snapshot call (mirrors tessellate_realizations).
+        self.achieved_repr_tol.clear();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -5596,6 +5621,8 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            self.capture_repr_tol,
+            &mut self.achieved_repr_tol,
         );
 
         Some(TessellateResult {
@@ -10258,6 +10285,7 @@ mod tests {
         let desc = dispatch_test_descriptor_all_brep();
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
         registry.insert(Engine::DEFAULT_KERNEL_NAME.to_string(), &desc);
+        let mut achieved_repr_tol = std::collections::BTreeMap::new();
         Engine::tessellate_from_values(
             &mut geometry_kernels,
             &registry,
@@ -10274,6 +10302,8 @@ mod tests {
             &[],               // ← OOB: empty demanded_tols
             &[vec![1e-4_f64]], // correctly shaped tessellation_budgets
             &mut 0usize,
+            false,
+            &mut achieved_repr_tol,
         );
     }
 
@@ -10317,6 +10347,7 @@ mod tests {
         let desc = dispatch_test_descriptor_all_brep();
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
         registry.insert(Engine::DEFAULT_KERNEL_NAME.to_string(), &desc);
+        let mut achieved_repr_tol = std::collections::BTreeMap::new();
         Engine::tessellate_from_values(
             &mut geometry_kernels,
             &registry,
@@ -10333,6 +10364,8 @@ mod tests {
             &[vec![None]], // correctly shaped demanded_tols
             &[],           // ← OOB: empty tessellation_budgets
             &mut 0usize,
+            false,
+            &mut achieved_repr_tol,
         );
     }
 

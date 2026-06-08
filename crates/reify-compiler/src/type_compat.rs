@@ -320,6 +320,269 @@ pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
     }
 }
 
+/// Returns `true` when `t` is, or recursively wraps, a `Type::TypeParam`.
+///
+/// Recurses through the **same** inner-`Type`-bearing constructor set as
+/// [`unify`] and [`crate::type_resolution::substitute_type_params`] —
+/// `List`/`Set`/`Keyed`/`Option`/`Complex`/`Range`,
+/// `Point`/`Vector`/`Tensor`/`Matrix` (quantity slot), `Map`, `Field`,
+/// `Function` (params + return), and `Union` — so a generic param that embeds a
+/// type-param inside ANY of those (e.g. `Field<T, Real>`, `List<Field<T>>`) is
+/// recognized. Keeping this predicate aligned with the unify/substitute walks
+/// avoids the asymmetry where overload resolution would reject a param shape
+/// the downstream inference machinery can actually handle.
+///
+/// Used by `resolve_function_overload` to make a *generic* candidate's
+/// type-param-carrying params act as resolution wildcards (match any arg type),
+/// gated on `!f.type_params.is_empty()` so non-generic fns are completely
+/// unaffected (INV-6, task 4231 β).
+///
+/// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
+/// variant forces a compile-time decision here, in lock-step with the sibling
+/// `unify` / `substitute_type_params` walks.
+pub(crate) fn type_carries_type_param(t: &Type) -> bool {
+    match t {
+        // The type-parameter leaf itself.
+        Type::TypeParam(_) => true,
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_carries_type_param(inner),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_carries_type_param(quantity),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => type_carries_type_param(key) || type_carries_type_param(val),
+        Type::Field { domain, codomain } => {
+            type_carries_type_param(domain) || type_carries_type_param(codomain)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => params.iter().any(type_carries_type_param) || type_carries_type_param(return_type),
+
+        // Union: any arm.
+        Type::Union(arms) => arms.iter().any(type_carries_type_param),
+
+        // All remaining leaves carry no inner `Type`.
+        Type::Bool
+        | Type::Int
+        | Type::Real
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::Error => false,
+    }
+}
+
+/// A call-site type-argument inference conflict: the same type parameter was
+/// bound to two different concrete types across a generic call's arguments.
+///
+/// Raised by [`unify`] when an earlier argument bound type parameter `param`
+/// to `existing` and a later argument requires the incompatible `incoming`.
+/// The call site (expr.rs) consumes this to emit
+/// `DiagnosticCode::FnTypeArgConflict` (task 4231 β, PRD D2 / §4.2).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TypeArgConflict {
+    pub(crate) param: String,
+    pub(crate) existing: Type,
+    pub(crate) incoming: Type,
+}
+
+/// Conservative, single-pass structural unification of a generic function's
+/// declared parameter type against a concrete argument type.
+///
+/// Binds `Type::TypeParam` leaves in `declared` to the corresponding sub-type
+/// of `arg`, accumulating into `subst`. Recurses through matching constructors
+/// (List/Set/Keyed/Option/Complex/Range, Map, Field, Function of equal arity,
+/// Point/Vector/Tensor/Matrix of equal shape, Union of equal length).
+///
+/// Conservative by design (PRD D2): the ONLY error is a type-parameter
+/// double-binding (`Err(TypeArgConflict)`). A structural mismatch where
+/// `declared` is not a `TypeParam` and its constructor does not match `arg`'s
+/// returns `Ok(())` with no binding — eval is type-erased (INV-2), so a
+/// declared/arg shape divergence is not itself a type error at this seam;
+/// overload resolution is the separate match gate.
+///
+/// Pure and side-effect-free apart from mutating `subst`: it takes no
+/// diagnostics sink, leaving emission to the call site.
+pub(crate) fn unify(
+    declared: &Type,
+    arg: &Type,
+    subst: &mut HashMap<String, Type>,
+) -> Result<(), TypeArgConflict> {
+    match (declared, arg) {
+        // Type-parameter leaf: bind if absent; re-bind to the same type is Ok;
+        // re-bind to a different type is the sole error case.
+        (Type::TypeParam(p), _) => match subst.get(p) {
+            None => {
+                subst.insert(p.clone(), arg.clone());
+                Ok(())
+            }
+            Some(existing) if existing == arg => Ok(()),
+            Some(existing) => Err(TypeArgConflict {
+                param: p.clone(),
+                existing: existing.clone(),
+                incoming: arg.clone(),
+            }),
+        },
+
+        // Single-inner-Type constructors: recurse on the child.
+        (Type::List(d), Type::List(a))
+        | (Type::Set(d), Type::Set(a))
+        | (Type::Keyed(d), Type::Keyed(a))
+        | (Type::Option(d), Type::Option(a))
+        | (Type::Complex(d), Type::Complex(a))
+        | (Type::Range(d), Type::Range(a)) => unify(d, a, subst),
+
+        // Two-inner-Type constructors.
+        (Type::Map(dk, dv), Type::Map(ak, av)) => {
+            unify(dk, ak, subst)?;
+            unify(dv, av, subst)
+        }
+        (
+            Type::Field {
+                domain: dd,
+                codomain: dc,
+            },
+            Type::Field {
+                domain: ad,
+                codomain: ac,
+            },
+        ) => {
+            unify(dd, ad, subst)?;
+            unify(dc, ac, subst)
+        }
+
+        // Function: equal arity → unify each param then the return type.
+        (
+            Type::Function {
+                params: dp,
+                return_type: dr,
+            },
+            Type::Function {
+                params: ap,
+                return_type: ar,
+            },
+        ) if dp.len() == ap.len() => {
+            for (d, a) in dp.iter().zip(ap.iter()) {
+                unify(d, a, subst)?;
+            }
+            unify(dr, ar, subst)
+        }
+
+        // Quantity-bearing aggregates: equal shape → unify the quantity slot.
+        (
+            Type::Point { n: dn, quantity: dq },
+            Type::Point { n: an, quantity: aq },
+        ) if dn == an => unify(dq, aq, subst),
+        (
+            Type::Vector { n: dn, quantity: dq },
+            Type::Vector { n: an, quantity: aq },
+        ) if dn == an => unify(dq, aq, subst),
+        (
+            Type::Tensor {
+                rank: drk,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Tensor {
+                rank: ark,
+                n: an,
+                quantity: aq,
+            },
+        ) if drk == ark && dn == an => unify(dq, aq, subst),
+        (
+            Type::Matrix {
+                m: dm,
+                n: dn,
+                quantity: dq,
+            },
+            Type::Matrix {
+                m: am,
+                n: an,
+                quantity: aq,
+            },
+        ) if dm == am && dn == an => unify(dq, aq, subst),
+
+        // Union: equal length → unify arm-by-arm.
+        (Type::Union(da), Type::Union(aa)) if da.len() == aa.len() => {
+            for (d, a) in da.iter().zip(aa.iter()) {
+                unify(d, a, subst)?;
+            }
+            Ok(())
+        }
+
+        // Conservative fallthrough — listed explicitly with NO `_` wildcard so
+        // a future `Type` variant forces a compile-time decision here, in
+        // lock-step with `type_carries_type_param` and the exhaustive
+        // `substitute_type_params`. Every arm below binds nothing and never
+        // errors: reaching it means either (a) `declared` is an
+        // inner-Type-bearing constructor whose matching-pair arm above did not
+        // fire — a structural mismatch (e.g. declared `List<T>` vs arg `Int`,
+        // or `Point` of a different `n`), which a type-erased seam (INV-2)
+        // treats as a non-error; or (b) `declared` is a leaf with no inner
+        // `Type`. (`TypeParam` is consumed by the first arm above.)
+        //
+        // Inner-Type-bearing constructors (structural mismatch → no binding):
+        (Type::List(_), _)
+        | (Type::Set(_), _)
+        | (Type::Keyed(_), _)
+        | (Type::Option(_), _)
+        | (Type::Complex(_), _)
+        | (Type::Range(_), _)
+        | (Type::Map(_, _), _)
+        | (Type::Field { .. }, _)
+        | (Type::Function { .. }, _)
+        | (Type::Point { .. }, _)
+        | (Type::Vector { .. }, _)
+        | (Type::Tensor { .. }, _)
+        | (Type::Matrix { .. }, _)
+        | (Type::Union(_), _) => Ok(()),
+
+        // True leaves (no inner `Type` to bind):
+        (Type::Bool, _)
+        | (Type::Int, _)
+        | (Type::Real, _)
+        | (Type::String, _)
+        | (Type::Scalar { .. }, _)
+        | (Type::Enum(_), _)
+        | (Type::StructureRef(_), _)
+        | (Type::TraitObject(_), _)
+        | (Type::Geometry, _)
+        | (Type::Orientation(_), _)
+        | (Type::Frame(_), _)
+        | (Type::Transform(_), _)
+        | (Type::AffineMap(_), _)
+        | (Type::Plane, _)
+        | (Type::Axis, _)
+        | (Type::BoundingBox, _)
+        | (Type::Selector(_), _)
+        | (Type::Error, _) => Ok(()),
+    }
+}
+
 /// Resolve a function call against the list of compiled user functions.
 ///
 /// Uses **exact** type matching for concrete params; trait-object-carrying params
@@ -353,12 +616,30 @@ pub(crate) fn resolve_function_overload<'a>(
         .iter()
         .copied()
         .filter(|f| {
+            // For a GENERIC candidate, a type-param-carrying param is a
+            // resolution wildcard (matches any arg) — mirroring the trait-object
+            // wildcard. Gated on `is_generic` so non-generic fns (empty
+            // type_params) are bit-for-bit unchanged (INV-6). A full wildcard
+            // (not structural unify) is deliberate: a conflicting generic call
+            // (e.g. `pair(1, 1.5)`) still SELECTS the candidate so the call site
+            // can emit `E_FN_TYPE_ARG_CONFLICT` rather than a generic no-match.
+            //
+            // D4 (task-4232 γ): A type-param-carrying ARG also acts as a
+            // resolution wildcard (matches any param). This lets a generic fn
+            // body pass a TypeParam-typed value to a concrete-param function
+            // without a spurious NoMatch. It is self-scoping: TypeParam args only
+            // arise inside generic fn bodies, so concrete-arg calls (non-generic
+            // callers) are bit-for-bit unchanged — type_carries_type_param(concrete) = false.
+            let is_generic = !f.type_params.is_empty();
             f.params.len() == arg_types.len()
                 && f.params
                     .iter()
                     .zip(arg_types.iter())
                     .all(|((_, param_ty), arg_ty)| {
-                        type_carries_trait_object(param_ty) || param_ty == arg_ty
+                        type_carries_trait_object(param_ty)
+                            || (is_generic && type_carries_type_param(param_ty))
+                            || type_carries_type_param(arg_ty)
+                            || param_ty == arg_ty
                     })
         })
         .collect();
@@ -1302,5 +1583,239 @@ mod tests {
         // candidate has more params than provided (1 > 0) — the invariant
         // check fires before any other filtering.
         let _ = try_default_padding(&[&bad_cand], &[]);
+    }
+
+    // ── task 4231 β: unify (call-site type-arg inference) ────────────────────
+    //
+    // Structural single-pass unification: bind TypeParam leaves from argument
+    // types; the ONLY error is a type-param double-binding (TypeArgConflict).
+    // Conservative on structural mismatch (Ok, no binding). PRD D2.
+
+    fn tp(name: &str) -> Type {
+        Type::TypeParam(name.to_string())
+    }
+
+    #[test]
+    fn unify_binds_bare_type_param() {
+        // (a) unify(TypeParam("T"), Real) → Ok, subst == {T: Real}.
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("T"), &Type::Real, &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::Real));
+        assert_eq!(subst.len(), 1);
+    }
+
+    #[test]
+    fn unify_recurses_into_list() {
+        // (b) unify(List(TypeParam("T")), List(Int)) → Ok, {T: Int}.
+        let mut subst = HashMap::new();
+        assert!(
+            unify(
+                &Type::List(Box::new(tp("T"))),
+                &Type::List(Box::new(Type::Int)),
+                &mut subst,
+            )
+            .is_ok()
+        );
+        assert_eq!(subst.get("T"), Some(&Type::Int));
+        assert_eq!(subst.len(), 1);
+    }
+
+    #[test]
+    fn unify_recurses_into_field_both_positions() {
+        // (c) unify(Field{B, C}, Field{Real, Length}) → Ok, {B: Real, C: Length}.
+        let mut subst = HashMap::new();
+        assert!(
+            unify(
+                &Type::Field {
+                    domain: Box::new(tp("B")),
+                    codomain: Box::new(tp("C")),
+                },
+                &Type::Field {
+                    domain: Box::new(Type::Real),
+                    codomain: Box::new(Type::length()),
+                },
+                &mut subst,
+            )
+            .is_ok()
+        );
+        assert_eq!(subst.get("B"), Some(&Type::Real));
+        assert_eq!(subst.get("C"), Some(&Type::length()));
+        assert_eq!(subst.len(), 2);
+    }
+
+    #[test]
+    fn unify_double_bind_conflict_errors() {
+        // (d) bind T:Int then T:Real with the SAME subst → second call Errs,
+        //     conflict.param == "T".
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("T"), &Type::Int, &mut subst).is_ok());
+        let err = unify(&tp("T"), &Type::Real, &mut subst)
+            .expect_err("re-binding T to a different type must conflict");
+        assert_eq!(err.param, "T");
+        assert_eq!(err.existing, Type::Int);
+        assert_eq!(err.incoming, Type::Real);
+    }
+
+    #[test]
+    fn unify_consistent_rebind_ok() {
+        // (e) unify T against Int twice → both Ok, no error, single binding.
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("T"), &Type::Int, &mut subst).is_ok());
+        assert!(unify(&tp("T"), &Type::Int, &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::Int));
+        assert_eq!(subst.len(), 1);
+    }
+
+    #[test]
+    fn unify_conservative_on_structural_mismatch() {
+        // (f) unify(List(TypeParam("T")), Int) → Ok with EMPTY subst
+        //     (declared constructor != arg constructor: no binding, no error).
+        let mut subst = HashMap::new();
+        assert!(unify(&Type::List(Box::new(tp("T"))), &Type::Int, &mut subst).is_ok());
+        assert!(subst.is_empty());
+    }
+
+    #[test]
+    fn unify_accumulates_across_calls() {
+        // (g) two unify calls sharing one subst accumulate distinct params.
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("A"), &Type::Int, &mut subst).is_ok());
+        assert!(unify(&tp("B"), &Type::length(), &mut subst).is_ok());
+        assert_eq!(subst.get("A"), Some(&Type::Int));
+        assert_eq!(subst.get("B"), Some(&Type::length()));
+        assert_eq!(subst.len(), 2);
+    }
+
+    // ── task 4231 β: resolve_function_overload selects generic candidates ─────
+
+    /// `make_fn` + non-empty `type_params` + a chosen return type.
+    fn make_generic_fn(
+        name: &str,
+        params: Vec<(&str, Type)>,
+        type_param_names: &[&str],
+        return_type: Type,
+    ) -> CompiledFunction {
+        let mut f = make_fn(name, params);
+        f.type_params = type_param_names
+            .iter()
+            .map(|n| reify_ir::TypeParam {
+                name: n.to_string(),
+                bounds: vec![],
+                default: None,
+            })
+            .collect();
+        f.return_type = return_type;
+        f
+    }
+
+    #[test]
+    fn overload_selects_generic_candidate() {
+        // A generic fn `id<T>(x: T) -> T` must resolve against a concrete arg.
+        // RED until step-6: a TypeParam param fails exact-equality → NoMatch.
+        let fns = vec![make_generic_fn("id", vec![("x", tp("T"))], &["T"], tp("T"))];
+        assert!(
+            matches!(
+                resolve_function_overload("id", &[Type::length()], &fns),
+                OverloadResolution::Resolved(_)
+            ),
+            "generic candidate should resolve against a concrete arg"
+        );
+    }
+
+    #[test]
+    fn overload_concrete_beats_generic_on_exact_match() {
+        // Tie-break (INV-6 guard): concrete f(Real)->Real + generic f<T>(x:T)->T
+        // called with Real resolves to the CONCRETE overload (exact match wins).
+        let concrete = make_fn("f", vec![("x", Type::Real)]); // non-generic, returns Real
+        let generic = make_generic_fn("f", vec![("x", tp("T"))], &["T"], tp("T"));
+        let fns = vec![concrete, generic];
+        match resolve_function_overload("f", &[Type::Real], &fns) {
+            OverloadResolution::Resolved(matched) => {
+                assert!(
+                    matched.type_params.is_empty(),
+                    "exact concrete overload should win over the generic one"
+                );
+                assert_eq!(matched.return_type, Type::Real);
+            }
+            OverloadResolution::NoMatch(_) => panic!("expected Resolved(concrete), got NoMatch"),
+            OverloadResolution::Ambiguous(_) => {
+                panic!("expected Resolved(concrete), got Ambiguous")
+            }
+            OverloadResolution::NoUserFunctions => {
+                panic!("expected Resolved(concrete), got NoUserFunctions")
+            }
+        }
+    }
+
+    // ── task 4231 β amendment: type_carries_type_param coverage parity ───────
+
+    #[test]
+    fn type_carries_type_param_recurses_through_all_constructors() {
+        // The predicate must recognize a type-param embedded in ANY
+        // inner-Type-bearing constructor, in parity with unify /
+        // substitute_type_params — not just the bare leaf + Option/List/Set/Map.
+        // Positive cases across the widened constructor set:
+        assert!(type_carries_type_param(&tp("T")));
+        assert!(type_carries_type_param(&Type::Field {
+            domain: Box::new(tp("D")),
+            codomain: Box::new(Type::Real),
+        }));
+        assert!(
+            type_carries_type_param(&Type::List(Box::new(Type::Field {
+                domain: Box::new(tp("D")),
+                codomain: Box::new(Type::Real),
+            }))),
+            "recursion must pass through List into Field"
+        );
+        assert!(type_carries_type_param(&Type::Function {
+            params: vec![Type::Real, tp("T")],
+            return_type: Box::new(Type::Real),
+        }));
+        assert!(type_carries_type_param(&Type::Union(vec![Type::Int, tp("T")])));
+        assert!(type_carries_type_param(&Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity: Box::new(tp("Q")),
+        }));
+        assert!(type_carries_type_param(&Type::Keyed(Box::new(tp("T")))));
+        assert!(type_carries_type_param(&Type::Complex(Box::new(tp("T")))));
+        assert!(type_carries_type_param(&Type::Range(Box::new(tp("T")))));
+
+        // Negative: no type-param anywhere → false (leaves + concrete nesting).
+        assert!(!type_carries_type_param(&Type::Real));
+        assert!(!type_carries_type_param(&Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::length()),
+        }));
+        assert!(!type_carries_type_param(&Type::List(Box::new(Type::Int))));
+    }
+
+    #[test]
+    fn overload_selects_generic_with_field_param() {
+        // A generic candidate whose param embeds a type-param inside a
+        // NON-collection constructor (Field) must be selectable as a wildcard.
+        // Before widening type_carries_type_param this resolved to NoMatch
+        // because recursion stopped at Option/List/Set/Map.
+        let field_param = Type::Field {
+            domain: Box::new(tp("D")),
+            codomain: Box::new(Type::Real),
+        };
+        let fns = vec![make_generic_fn(
+            "sample",
+            vec![("f", field_param)],
+            &["D"],
+            Type::Real,
+        )];
+        let arg = Type::Field {
+            domain: Box::new(Type::length()),
+            codomain: Box::new(Type::Real),
+        };
+        assert!(
+            matches!(
+                resolve_function_overload("sample", &[arg], &fns),
+                OverloadResolution::Resolved(_)
+            ),
+            "generic candidate with a Field<T, Real> param should resolve"
+        );
     }
 }

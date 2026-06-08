@@ -9053,9 +9053,14 @@ fn get_mechanism_descriptors_literal_then_param_bind_promotes_to_param_bound() {
 }
 
 /// Source for bind-on-fixed-joint test: a fixed joint j_f with a param bound
-/// to it via snapshot().  The binding should remain FixedNoMotion (structural
-/// default is authoritative for non-movable joints), while the flat field
-/// `driving_param_cell_id` is set anyway (best-effort, may diverge from binding).
+/// to it via snapshot().
+///
+/// After task β (mechanism β: joint_signatures.rs), `fixed()` resolves to
+/// `Type::StructureRef("Fixed")` at compile time.  The let-cell `j_f` therefore
+/// carries `StructureRef("Fixed")`, and γ's `check_expr_mechanism_joint_bound`
+/// fires via Path A when `bind(j_f, p)` is typechecked — producing a compile-time
+/// `E_MECHANISM_NONDRIVING_JOINT` error because `Fixed : Joint` but not
+/// `Fixed : DrivingJoint`.  The source never reaches eval.
 const SNAPSHOT_FIXED_JOINT_WITH_PARAM_SOURCE: &str = r#"
 structure Kinematic {
     param p: Length = 10mm
@@ -9066,42 +9071,31 @@ structure Kinematic {
 }
 "#;
 
-/// `bind(j_f, p)` on a fixed joint must NOT promote `binding` from `FixedNoMotion`
-/// to `ParamBound` — fixed joints are structurally immovable and the binding
-/// field is authoritative.
+/// `bind(j_f, p)` on a fixed joint is rejected at compile time.
 ///
-/// The flat `driving_param_cell_id` field may be populated anyway (best-effort,
-/// documented edge case): callers should treat `binding` as authoritative for
-/// non-LiteralBound joints and `driving_param_cell_id` as best-effort only.
+/// Before task β, `fixed()` returned a fallback (non-StructureRef) type so
+/// γ's DrivingJoint check could not identify the joint kind from the let-cell
+/// and the source would compile — but the binding kind would remain FixedNoMotion
+/// (structural overrides bind form).
+///
+/// After task β, `fixed()` resolves to `Type::StructureRef("Fixed")`, which lets
+/// γ's `check_expr_mechanism_joint_bound` detect the violation at compile time via
+/// Path A (`result_type == StructureRef`).  The source now fails to compile with
+/// `E_MECHANISM_NONDRIVING_JOINT` naming "Fixed".
+///
+/// This test documents that compile-time enforcement — `load_from_source` must
+/// return `Err` containing the DrivingJoint rejection message.
 #[test]
 fn get_mechanism_descriptors_bind_on_fixed_joint_does_not_promote_binding() {
     let mut session = make_session();
-    session
+    let err = session
         .load_from_source(SNAPSHOT_FIXED_JOINT_WITH_PARAM_SOURCE, "kinematic")
-        .expect("load fixed-joint-with-param source");
+        .expect_err("bind(fixed, param) must be rejected at compile time with E_MECHANISM_NONDRIVING_JOINT");
 
-    let descriptors = session.get_mechanism_descriptors();
-    let m1_desc = descriptors
-        .iter()
-        .find(|d| d.bodies_count == 1)
-        .expect("expected descriptor with bodies_count=1");
-
-    let fixed_joint = m1_desc
-        .joints
-        .iter()
-        .find(|j| j.kind == "fixed")
-        .expect("expected a fixed joint descriptor");
-
-    // Binding must remain FixedNoMotion — structural kind overrides bind() form.
-    assert_eq!(
-        fixed_joint.binding,
-        crate::types::JointBinding::FixedNoMotion,
-        "bind(fixed_j, param) must NOT promote binding to ParamBound; got {:?}",
-        fixed_joint.binding
+    assert!(
+        err.contains("DrivingJoint") || err.contains("Fixed"),
+        "compile error must mention DrivingJoint or Fixed; got: {err:?}"
     );
-    // Document expected flat-field behavior: best-effort, may be set for
-    // fixed joints even though binding is FixedNoMotion.
-    // (Not asserting a specific value here — the best-effort nature is the point.)
 }
 
 // ── T0b: tensegrity_wires extraction via build_gui_state ─────────────────────

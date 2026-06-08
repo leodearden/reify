@@ -303,6 +303,13 @@ impl Engine {
             // to guarantee zero overhead on the hot path.
             capture_undef_causes: false,
             last_undef_causes: HashMap::new(),
+            // Task 4198 (Determinacy β): capture disabled by default so the
+            // hot path pays zero overhead (no BRepExtrema projection) when γ
+            // assertions are not active. Enable via set_capture_repr_tol(true).
+            capture_repr_tol: false,
+            // Task 4198 (Determinacy β): empty until tessellate_realizations()
+            // / tessellate_snapshot() populates it via measure_mesh_deviation.
+            achieved_repr_tol: BTreeMap::new(),
         }
     }
 
@@ -400,6 +407,36 @@ impl Engine {
     /// entry. Task 2982.
     pub fn swept_kind_table(&self) -> &crate::sweep_classifier::SweptKindTable {
         &self.swept_kind_table
+    }
+
+    /// Return the achieved representation tolerance (SI metres) for the given
+    /// realized-occurrence name, or `None` if the occurrence was never
+    /// tessellated, its mesh was empty, the kernel has no exact surface to
+    /// project onto (non-OCCT kernels — B3 honest absence), or
+    /// [`set_capture_repr_tol`](Self::set_capture_repr_tol) was not called with
+    /// `true` before `tessellate_realizations()` / `tessellate_snapshot()`.
+    ///
+    /// The key format is `"{entity}#realization[{index}]"` — the same
+    /// `MeshSurface.entity_path` the surfacing layer computes.
+    ///
+    /// Populated by `tessellate_realizations()` / `tessellate_snapshot()` only
+    /// when `capture_repr_tol` is `true`; cleared at the start of each call.
+    /// A missing key is never a stale value — it always means "not recorded
+    /// this build" (either flag-off or B3 absence).
+    ///
+    /// # Sampled lower bound
+    ///
+    /// The returned value is a **sampled lower bound** on the true
+    /// Hausdorff / chord deviation (4 interior points per triangle — centroid
+    /// and 3 edge midpoints).  A mesh whose true deviation exceeds a tolerance
+    /// can still produce a value below it if the sample points land close to
+    /// the surface.  Task γ (`RepresentationWithin`) should document this at
+    /// the assertion site.
+    ///
+    /// Task 4198 (Determinacy β) — γ (`RepresentationWithin` assertion) reads
+    /// this to compare the measured deviation against the demanded tolerance.
+    pub fn achieved_repr_tol(&self, occurrence: &str) -> Option<f64> {
+        self.achieved_repr_tol.get(occurrence).copied()
     }
 
     /// **Test-instrumentation only — not a stable public surface.**
@@ -1580,6 +1617,18 @@ impl Engine {
     /// `last_dispatch_count`).
     pub fn set_capture_undef_causes(&mut self, on: bool) {
         self.capture_undef_causes = on;
+    }
+
+    /// Enable or disable the achieved-representation-tolerance metric.
+    ///
+    /// When `true`, `tessellate_realizations()` / `tessellate_snapshot()` call
+    /// `kernel.measure_mesh_deviation` for each successfully tessellated
+    /// occurrence and record the result in [`Self::achieved_repr_tol`].
+    ///
+    /// Defaults to `false` — zero overhead on the hot path when γ assertions
+    /// (`RepresentationWithin`) are not active. Mirrors `set_capture_undef_causes`.
+    pub fn set_capture_repr_tol(&mut self, on: bool) {
+        self.capture_repr_tol = on;
     }
 
     /// Returns the per-cell `UndefCause` map from the most recent `eval()` call.

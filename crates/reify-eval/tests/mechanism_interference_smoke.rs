@@ -357,3 +357,110 @@ fn fk_posed_cubes_no_interference_and_correct_clearance() {
         "min_clearance must be ~{expected} m (20mm FK-posed gap), got {clearance_m}",
     );
 }
+
+// ─── swept clearance: flat_map over FK-swept snapshots → monotonic to zero ───
+//
+// head: box(20mm,20mm,20mm) — centered; right face at x = v + 10mm (half-width 10mm).
+//       Moved by prismatic j (X-axis, 0..300mm).
+// dock: translate(box(200mm,20mm,20mm), 200mm, 0mm, 0mm) — fixed.
+//       box() is centered → spans [−100, +100] in x; translate +200mm → [100, 300] mm.
+//
+// 7 sweep steps: v = 0, 50, 100, 150, 200, 250, 300 mm
+// clearance(v) = max(0, dock_left(100) − head_right(v+10)) = max(0, 90 − v) mm
+//
+// Steps 0mm (90mm), 50mm (40mm): strictly positive.
+// Steps 100mm onward: head right face (v+10) ≥ 110 > 100 = dock left → 0 / interfering.
+//
+// Acceptance (PRD §11.1): clearances[0] > 1mm, sequence monotone non-increasing,
+// clearances.last() ≈ 0 (interfering); at least one positive AND one near-zero entry.
+//
+// RED on current main: `try_eval_kinematic_query` returns None for the `flat_map`
+// cell → clearances stays as List([Undef,…]) → `read_si_f64` panics on Undef.
+const SWEPT_CLEARANCE_SOURCE: &str = r#"
+structure def SweptClearance {
+    let head = box(20mm, 20mm, 20mm)
+    let dock = translate(box(200mm, 20mm, 20mm), 200mm, 0mm, 0mm)
+
+    let j = prismatic(vec3(1, 0, 0), 0mm .. 300mm)
+
+    let m0 = mechanism()
+    let m1 = body(m0, "head", j)
+    let m2 = body(m1, "dock", fixed())
+
+    let id_head = body_id_of(m2, "head")
+    let id_dock = body_id_of(m2, "dock")
+
+    let snaps = sweep(m2, j, 0mm .. 300mm, 7)
+    let clearances = flat_map(snaps, |s| [min_clearance(s, id_head, id_dock)])
+}
+"#;
+
+#[test]
+fn swept_min_clearance_monotonic_to_interference() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let compiled = compile_no_errors(SWEPT_CLEARANCE_SOURCE);
+    let mut engine = engine_with_occt();
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let clearances = cell(&result.values, "SweptClearance", "clearances");
+
+    let items = match clearances {
+        Value::List(v) => v,
+        other => panic!("clearances must be Value::List, got {other:?}"),
+    };
+    assert_eq!(
+        items.len(),
+        7,
+        "clearances must have 7 entries (one per sweep step), got {}",
+        items.len()
+    );
+
+    // Read all clearances as SI metres — panics on Value::Undef (RED signal).
+    let vals: Vec<f64> = items
+        .iter()
+        .enumerate()
+        .map(|(i, v)| read_si_f64(v, &format!("clearances[{i}]")))
+        .collect();
+
+    // clearances[0]: head right face at x=10mm (half-width 10mm, v=0),
+    // dock left face at x=100mm (centered box +200mm → spans [100,300]); gap = 90mm.
+    assert!(
+        vals[0] > 1e-3,
+        "clearances[0] must be strictly positive (>1mm), got {:.6} m",
+        vals[0]
+    );
+
+    // Monotone non-increasing: each step <= previous + 1µm tolerance.
+    for i in 1..vals.len() {
+        assert!(
+            vals[i] <= vals[i - 1] + 1e-6,
+            "clearances not monotone non-increasing at step {i}: \
+             vals[{i}]={:.6} > vals[{}]={:.6}",
+            vals[i],
+            i - 1,
+            vals[i - 1]
+        );
+    }
+
+    // Last entry ≈ 0 (head fully inside dock at x=300mm → interfering).
+    assert!(
+        vals[vals.len() - 1] < 1e-6,
+        "clearances.last() must be near-zero (interfering), got {:.6} m",
+        vals[vals.len() - 1]
+    );
+
+    // Must have at least one strictly-positive entry AND at least one near-zero entry
+    // (the monotone transition from clear to interfering must be present).
+    assert!(
+        vals.iter().any(|&v| v > 1e-3),
+        "clearances must have at least one strictly-positive entry (>1mm)"
+    );
+    assert!(
+        vals.iter().any(|&v| v < 1e-6),
+        "clearances must have at least one near-zero entry (interfering)"
+    );
+}

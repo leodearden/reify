@@ -1909,7 +1909,7 @@ structure S {
                 )
             })
             .collect();
-        to_apply.sort_by_key(|b| std::cmp::Reverse(b.0));
+        to_apply.sort_by_key(|e| std::cmp::Reverse(e.0));
         let mut buffer = source.to_string();
         for (start, end, text) in &to_apply {
             buffer.replace_range(*start..*end, text);

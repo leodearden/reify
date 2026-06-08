@@ -4537,4 +4537,109 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
     });
 }
 
+double measure_mesh_deviation(const OcctShape& shape, const TessResult& mesh) {
+    return wrap_occt_call("measure_mesh_deviation", [&]() -> double {
+        // Empty mesh → no deviation (B3: honest absence; caller skips empty meshes).
+        if (mesh.indices.empty()) {
+            return 0.0;
+        }
+
+        // Collect all FACES of the shape into a compound so that
+        // BRepExtrema_DistShapeShape measures distance to the ANALYTICAL SURFACE
+        // rather than the solid interior.  For a solid BRep,
+        // BRepExtrema(solid, interior_point) returns 0 because the point is
+        // "inside" the solid body; using the face compound forces projection
+        // onto the actual surface and yields the true chord deviation.
+        // Box faces are planar → centroids lie in the face plane → distance 0
+        // (B1 still holds); curved faces give the sagitta of the chord (B2).
+        BRep_Builder builder;
+        TopoDS_Compound face_cmp;
+        builder.MakeCompound(face_cmp);
+        bool has_face = false;
+        for (TopExp_Explorer exp(shape.shape, TopAbs_FACE); exp.More(); exp.Next()) {
+            builder.Add(face_cmp, exp.Current());
+            has_face = true;
+        }
+        if (!has_face) {
+            return 0.0; // no faces → no surface to measure against
+        }
+
+        const size_t n_verts = mesh.vertices.size() / 3;
+        double max_dev = 0.0;
+
+        // Initialise the extrema solver once on the face compound; its BVH
+        // and projection structures (S1 side) are built once here and reused
+        // for every sample query via LoadS2 / Perform — avoiding repeated
+        // BRepExtrema construction across potentially thousands of triangles
+        // on fine meshes (4 calls per triangle × N triangles → 1 + 4N instead).
+        BRepExtrema_DistShapeShape dist;
+        dist.LoadS1(face_cmp);
+
+        for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+            uint32_t i0 = mesh.indices[i];
+            uint32_t i1 = mesh.indices[i + 1];
+            uint32_t i2 = mesh.indices[i + 2];
+
+            // Bounds check — malformed index → throw → Err in Rust.
+            if (i0 >= n_verts || i1 >= n_verts || i2 >= n_verts) {
+                throw std::runtime_error(
+                    "measure_mesh_deviation: vertex index out of range");
+            }
+
+            // Widen f32 → f64 for the 4 interior sample computations.
+            double ax = static_cast<double>(mesh.vertices[i0 * 3]);
+            double ay = static_cast<double>(mesh.vertices[i0 * 3 + 1]);
+            double az = static_cast<double>(mesh.vertices[i0 * 3 + 2]);
+
+            double bx = static_cast<double>(mesh.vertices[i1 * 3]);
+            double by = static_cast<double>(mesh.vertices[i1 * 3 + 1]);
+            double bz = static_cast<double>(mesh.vertices[i1 * 3 + 2]);
+
+            double cx = static_cast<double>(mesh.vertices[i2 * 3]);
+            double cy = static_cast<double>(mesh.vertices[i2 * 3 + 1]);
+            double cz = static_cast<double>(mesh.vertices[i2 * 3 + 2]);
+
+            // 4 interior samples: centroid + 3 edge midpoints.
+            // Mesh vertices lie on the surface by construction (deviation 0),
+            // so only interior samples reveal chord error.
+            const double samples[4][3] = {
+                // centroid
+                { (ax + bx + cx) / 3.0, (ay + by + cy) / 3.0, (az + bz + cz) / 3.0 },
+                // edge midpoint AB
+                { (ax + bx) / 2.0, (ay + by) / 2.0, (az + bz) / 2.0 },
+                // edge midpoint BC
+                { (bx + cx) / 2.0, (by + cy) / 2.0, (bz + cz) / 2.0 },
+                // edge midpoint CA
+                { (cx + ax) / 2.0, (cy + ay) / 2.0, (cz + az) / 2.0 },
+            };
+
+            for (const auto& s : samples) {
+                gp_Pnt query_pnt(s[0], s[1], s[2]);
+                BRepBuilderAPI_MakeVertex vertex_maker(query_pnt);
+                if (!vertex_maker.IsDone()) {
+                    throw std::runtime_error(
+                        "measure_mesh_deviation: vertex construction failed");
+                }
+                // Load the new query vertex as S2 and Perform; S1 (face
+                // compound) stays loaded — its BVH is reused per query.
+                dist.LoadS2(vertex_maker.Vertex());
+                if (!dist.Perform()) {
+                    throw std::runtime_error(
+                        "measure_mesh_deviation: BRepExtrema_DistShapeShape failed");
+                }
+                if (dist.NbSolution() < 1) {
+                    throw std::runtime_error(
+                        "measure_mesh_deviation: no solution found");
+                }
+                double d = dist.Value();
+                if (d > max_dev) {
+                    max_dev = d;
+                }
+            }
+        }
+
+        return max_dev;
+    });
+}
+
 } // namespace occt
