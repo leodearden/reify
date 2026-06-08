@@ -9,7 +9,7 @@ use std::time::Instant;
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_core::{
     ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId,
-    ValueCellId, VersionId,
+    SourceSpan, ValueCellId, VersionId,
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
@@ -602,17 +602,47 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
 ///    structurally identical also collapse (under-reports by one).  Fixing this
 ///    would require per-call provenance tracking in the error Map; accepted as a
 ///    v0.1 limitation shared by all error-Map detectors.
+///
+/// Collect the [`SourceSpan`]s that the compiler already flagged with
+/// [`DiagnosticCode::MechanismNonDrivingJoint`].
+///
+/// Used by [`detect_nondriving_joint_errors`] to build the suppression set:
+/// if the compiler emitted a labelled `E_MECHANISM_NONDRIVING_JOINT` at a
+/// given source span, the eval pass can skip re-emitting the same diagnostic
+/// for any value cell whose `ValueCellDecl.span` matches that span.
+///
+/// Only diagnostics whose `code == Some(MechanismNonDrivingJoint)` *and* that
+/// carry at least one [`DiagnosticLabel`] contribute to the set — unlabelled
+/// diagnostics and diagnostics with a different code are ignored.  This is the
+/// exact-span join key described in the task analysis.
+fn nondriving_joint_compile_spans(diagnostics: &[Diagnostic]) -> HashSet<SourceSpan> {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .flat_map(|d| d.labels.iter().map(|l| l.span))
+        .collect()
+}
+
 /// 4. Emit `Diagnostic::error(msg).with_code(code)` per surviving entry,
 ///    using `error_message` from the Map or `fallback_msg` as a constant.
 ///
 /// **No source span / [`DiagnosticLabel`]:** [`ValueCellId`] carries only
 /// `{entity, member}` strings with no source-span, so no label is attached.
+///
+/// **Span-scoped suppression:** the optional `suppress` predicate is applied
+/// BEFORE structural dedup (step 3).  When `Some(pred)` and `pred(cell_id)`
+/// is `true`, that hit is skipped entirely.  This lets [`detect_nondriving_joint_errors`]
+/// suppress cells whose `ValueCellDecl.span` already appears in the
+/// compile-time `MechanismNonDrivingJoint` diagnostic set — implementing the
+/// exact-span join described in task 4364 — while leaving
+/// [`detect_mechanism_errors`] (which passes `None`) byte-for-byte unchanged.
 fn detect_error_map_diagnostics(
     values: &ValueMap,
     kind: Option<&str>,
     discriminator: &str,
     code: DiagnosticCode,
     fallback_msg: &str,
+    suppress: Option<&dyn Fn(&ValueCellId) -> bool>,
 ) -> Vec<Diagnostic> {
     let mut hits: Vec<(&ValueCellId, &Value)> = values
         .iter()
@@ -639,7 +669,14 @@ fn detect_error_map_diagnostics(
     let msg_key = Value::String("error_message".to_string());
     let mut seen = std::collections::BTreeSet::new();
     let mut diagnostics = Vec::new();
-    for (_, value) in hits {
+    for (cid, value) in hits {
+        // Span-scoped suppression: skip this hit BEFORE the structural dedup when
+        // the cell was already flagged at compile time at the exact same source span.
+        if let Some(pred) = suppress
+            && pred(cid)
+        {
+            continue;
+        }
         if seen.insert(value.clone()) {
             let msg = match value {
                 Value::Map(m) => match m.get(&msg_key) {
@@ -678,11 +715,13 @@ fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
         "duplicate_solid",
         DiagnosticCode::MechanismDuplicateSolid,
         "duplicate solid in mechanism",
+        None,
     )
 }
 
 /// Scan top-level eval cells for `E_MECHANISM_NONDRIVING_JOINT` errors
-/// (task 4309 — α).
+/// (task 4309 — α), suppressing cells whose compile-time span was already
+/// flagged by the compiler (task 4364).
 ///
 /// Called in both `eval` and `eval_cached` outside the solver gate, mirroring
 /// [`detect_mechanism_errors`].  Delegates to [`detect_error_map_diagnostics`]
@@ -691,13 +730,57 @@ fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
 /// returned by `bind`/`dim`/`sweep`/`sweep_grid` when a coupling or fixed joint
 /// is passed.  `kind` is `None` because that producer builds a fresh error Map
 /// with no `"kind"` field (only `error`/`error_message`/`joint`).
-fn detect_nondriving_joint_errors(values: &ValueMap) -> Vec<Diagnostic> {
+///
+/// **Suppression predicate (task 4364):** builds the set of source spans the
+/// compiler already flagged via [`nondriving_joint_compile_spans`], then builds
+/// a `ValueCellId → vc.span` map from `module.templates[*].value_cells`.  A
+/// cell whose `ValueCellDecl.span` is in the compile-span set is suppressed —
+/// it was statically caught at compile time and re-emitting would produce a
+/// duplicate diagnostic for the user.
+///
+/// Cells whose id is absent from `value_cells` (synthetic / sub-component
+/// cells) and cells whose static type the compiler could not resolve to
+/// `Coupling` (e.g. loop-bound `List<Joint>` elements) have no matching span
+/// in the compile-span set and fall through to emit — preserving the runtime
+/// defense-in-depth guard for cases the compiler cannot see statically.
+fn detect_nondriving_joint_errors(values: &ValueMap, module: &CompiledModule) -> Vec<Diagnostic> {
+    let compile_spans = nondriving_joint_compile_spans(&module.diagnostics);
+
+    // Short-circuit: when no compile-time spans are flagged, nothing can be
+    // suppressed.  Skip building the `cell_span` HashMap — an allocation that
+    // walks every template's value_cells — and delegate directly with
+    // `suppress = None`.  This is the common path for LSP/GUI incremental
+    // eval (eval_cached runs per-keystroke; most edits don't involve a
+    // non-driving-joint diagnostic).
+    if compile_spans.is_empty() {
+        return detect_error_map_diagnostics(
+            values,
+            None,
+            "nondriving_joint",
+            DiagnosticCode::MechanismNonDrivingJoint,
+            "joint has no free motion variable (coupling or fixed)",
+            None,
+        );
+    }
+
+    let cell_span: HashMap<&ValueCellId, SourceSpan> = module
+        .templates
+        .iter()
+        .flat_map(|t| t.value_cells.iter())
+        .map(|vc| (&vc.id, vc.span))
+        .collect();
+    let pred = |cid: &ValueCellId| {
+        cell_span
+            .get(cid)
+            .is_some_and(|s| compile_spans.contains(s))
+    };
     detect_error_map_diagnostics(
         values,
         None,
         "nondriving_joint",
         DiagnosticCode::MechanismNonDrivingJoint,
         "joint has no free motion variable (coupling or fixed)",
+        Some(&pred),
     )
 }
 
@@ -2725,7 +2808,9 @@ impl Engine {
         diagnostics.extend(detect_mechanism_errors(&values));
         // Non-driving-joint diagnostics (task 4309 — E_MECHANISM_NONDRIVING_JOINT).
         // Same gate placement and rationale as detect_mechanism_errors above.
-        diagnostics.extend(detect_nondriving_joint_errors(&values));
+        // Passes `module` so the compile-span suppression predicate (task 4364)
+        // can skip cells already flagged by the compiler at the same source span.
+        diagnostics.extend(detect_nondriving_joint_errors(&values, module));
 
         EvalResult {
             values,
@@ -3332,7 +3417,8 @@ impl Engine {
         diagnostics.extend(detect_mechanism_errors(&values));
         // Non-driving-joint diagnostics (task 4309 — E_MECHANISM_NONDRIVING_JOINT).
         // Mirrors eval() call site; eval_cached is the LSP/GUI incremental path.
-        diagnostics.extend(detect_nondriving_joint_errors(&values));
+        // Passes `module` for compile-span suppression parity with eval() (task 4364).
+        diagnostics.extend(detect_nondriving_joint_errors(&values, module));
 
         // Build and store a snapshot so that engine.snapshot() returns Some after
         // eval_cached() — preserving cross-path parity with eval() (spec §8.2,
@@ -5225,6 +5311,112 @@ mod revalidation_tests {
         assert_eq!(
             revalidate_geometry_handle(&Value::Undef, &map),
             RevalidationOutcome::Fresh
+        );
+    }
+}
+
+// --- Task 4364: suppress eval-side E_MECHANISM_NONDRIVING_JOINT double-emission ---
+//
+// Unit tests for the pure helper `nondriving_joint_compile_spans` (step-1/2)
+// and the `detect_error_map_diagnostics` suppress-predicate seam (step-3/4).
+// Mirror the `revalidation_tests` pattern: hand-built fixtures, `use super::...`,
+// no .ri files or CompiledModule construction needed.
+#[cfg(test)]
+mod nondriving_joint_suppression_tests {
+    use super::{detect_error_map_diagnostics, nondriving_joint_compile_spans};
+    use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, ValueCellId};
+    use reify_ir::{Value, ValueMap};
+    use std::collections::{BTreeMap, HashSet};
+
+    /// `nondriving_joint_compile_spans` must collect only the label spans of
+    /// `MechanismNonDrivingJoint`-coded diagnostics, ignoring:
+    /// - `MechanismNonDrivingJoint` diagnostics that carry NO label,
+    /// - diagnostics with a different code that DO carry a label.
+    ///
+    /// This pins the helper's filtering contract: only matching-code labelled
+    /// spans reach the eval-side suppression predicate.
+    #[test]
+    fn compile_spans_collects_only_matching_code_labelled_spans() {
+        let span = SourceSpan::new(10, 20);
+
+        let diagnostics = vec![
+            // (a) matching code + label → span is collected
+            Diagnostic::error("a")
+                .with_code(DiagnosticCode::MechanismNonDrivingJoint)
+                .with_label(DiagnosticLabel::new(span, "x")),
+            // (b) matching code but NO label → span is NOT collected
+            Diagnostic::error("b").with_code(DiagnosticCode::MechanismNonDrivingJoint),
+            // (c) different code but HAS a label → span is NOT collected
+            Diagnostic::error("c")
+                .with_code(DiagnosticCode::MechanismDuplicateSolid)
+                .with_label(DiagnosticLabel::new(SourceSpan::new(100, 200), "y")),
+        ];
+
+        let result = nondriving_joint_compile_spans(&diagnostics);
+        let expected: HashSet<SourceSpan> = [span].iter().copied().collect();
+        assert_eq!(
+            result, expected,
+            "must collect exactly the label spans of MechanismNonDrivingJoint diagnostics; \
+             unlabelled same-code and labelled different-code diagnostics must be excluded"
+        );
+    }
+
+    /// Helper: build a `Value::Map` that looks like a `make_nondriving_joint_error`
+    /// result — `error="nondriving_joint"` with a distinct `error_message` so two
+    /// such maps are structurally unequal and the dedup step does NOT merge them.
+    fn nondriving_error_map(msg: &str) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("error".to_string()),
+            Value::String("nondriving_joint".to_string()),
+        );
+        m.insert(
+            Value::String("error_message".to_string()),
+            Value::String(msg.to_string()),
+        );
+        Value::Map(m)
+    }
+
+    /// `detect_error_map_diagnostics` with a `suppress` predicate must skip the
+    /// suppressed cell while STILL emitting for the non-suppressed cell.
+    ///
+    /// Pins the "span-scoped, not blanket" contract: the defense-in-depth
+    /// guarantee that a compile-caught cell is suppressed but a distinct
+    /// loop-bound cell (whose id is NOT in the compile-span set) still emits.
+    ///
+    /// RED until the `suppress` parameter is added to `detect_error_map_diagnostics`
+    /// (step-4).
+    #[test]
+    fn detect_error_map_suppresses_one_cell_emits_other() {
+        let keep_id = ValueCellId::new("E", "keep");
+        let drop_id = ValueCellId::new("E", "drop");
+
+        // Two structurally distinct error Maps so dedup does NOT collapse them.
+        let mut values = ValueMap::new();
+        values.insert(keep_id.clone(), nondriving_error_map("keep msg"));
+        values.insert(drop_id.clone(), nondriving_error_map("drop msg"));
+
+        // Suppress only the "drop" cell; "keep" must still emit.
+        let result = detect_error_map_diagnostics(
+            &values,
+            None,
+            "nondriving_joint",
+            DiagnosticCode::MechanismNonDrivingJoint,
+            "fallback",
+            Some(&|cid: &ValueCellId| *cid == ValueCellId::new("E", "drop")),
+        );
+
+        assert_eq!(
+            result.len(),
+            1,
+            "exactly one diagnostic must be emitted for the unsuppressed 'keep' cell; \
+             got {} diagnostic(s)",
+            result.len(),
+        );
+        assert_eq!(
+            result[0].code,
+            Some(DiagnosticCode::MechanismNonDrivingJoint),
+            "the surviving diagnostic must carry MechanismNonDrivingJoint"
         );
     }
 }
