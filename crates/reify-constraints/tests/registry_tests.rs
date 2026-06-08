@@ -575,6 +575,88 @@ fn registry_dispatches_geometric_to_solvespace() {
     }
 }
 
+/// `SolverRegistry::production()` dispatches geometric constraints to SolveSpaceSolver.
+///
+/// Proves that the production factory installs SolveSpaceSolver as the geometric
+/// slot: feeds the same `pt_pt_distance` geometric ResolutionProblem used by
+/// `registry_dispatches_geometric_to_solvespace` but constructs the registry via
+/// `SolverRegistry::production()`.  This is the single source of truth that both
+/// the CLI and GUI engines install.
+#[test]
+fn production_registry_routes_geometric_to_solvespace() {
+    let registry = SolverRegistry::production();
+
+    let x_id = vcid("Point", "x");
+    let y_id = vcid("Point", "y");
+
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+
+    // point3d(x, y, 0) — auto params for x, y
+    let pt = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("Point", "x", Type::length()),
+            value_ref_typed("Point", "y", Type::length()),
+            zero.clone(),
+        ],
+        Type::dimensionless_scalar(),
+    );
+
+    // origin at (0, 0, 0)
+    let origin = geo_fn(
+        "point3d",
+        vec![zero.clone(), zero.clone(), zero],
+        Type::dimensionless_scalar(),
+    );
+
+    // distance(pt, origin) == 10mm
+    let dist_call = geo_fn("pt_pt_distance", vec![pt, origin], Type::length());
+    let constraint_expr = eq(dist_call, literal(mm(10.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: false,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: false,
+            },
+        ],
+        constraints: vec![(cnid("Point", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+    };
+
+    let result = registry.solve(&problem);
+    match result {
+        SolveResult::Solved { values, .. } => {
+            let x_val = values.get(&x_id).unwrap().as_f64().unwrap();
+            let y_val = values.get(&y_id).unwrap().as_f64().unwrap();
+            let actual_dist = (x_val * x_val + y_val * y_val).sqrt();
+            assert!(
+                (actual_dist - 0.01).abs() < 1e-6,
+                "production registry should dispatch to SolveSpaceSolver: \
+                 distance should be ~10mm (0.01m), got {} m",
+                actual_dist,
+            );
+        }
+        other => panic!(
+            "expected Solved via production registry (SolveSpaceSolver), got {:?}",
+            other
+        ),
+    }
+}
+
 /// Mixed dimensional + geometric constraints solved through SolverRegistry.
 ///
 /// Two independent sub-problems:
