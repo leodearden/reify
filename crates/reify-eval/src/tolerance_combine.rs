@@ -1010,4 +1010,268 @@ mod tests {
         let (_, _, bound) = result.unwrap();
         assert_eq!(bound, 0.0, "zero bound must be preserved exactly");
     }
+
+    // ── step-3 (task 4199 γ): eval_representation_within unit tests ───────────
+    //
+    // These tests verify the pure assertion eval helper using synthetic ValueMap
+    // and synthetic BTreeMap<String, f64> achieved_repr_tol inputs.
+    //
+    // Note: the implementation was added in step-2's commit alongside the
+    // recognizer; tests here provide regression coverage.
+
+    use reify_core::RealizationNodeId;
+    use reify_ir::{GeometryHandleId, StructureInstanceData, StructureTypeId};
+
+    /// Build a canonical `RepresentationWithin(ValueRef(subject.self):StructureRef(name), bound_m)`
+    /// expression for step-3 eval tests.
+    fn eval_test_expr(struct_name: &str, bound_m: f64) -> CompiledExpr {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef(struct_name.to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: bound_m,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        )
+    }
+
+    /// Build a `Value::GeometryHandle` for `{entity}#realization[{idx}]`.
+    fn geometry_handle_value(entity: &str, idx: u32) -> Value {
+        Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new(entity, idx),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId::INVALID,
+        }
+    }
+
+    /// (a) achieved < bound → Satisfied.
+    ///
+    /// The type-name scan fallback resolves the subject to
+    /// `"Curved#realization[0]"` (struct_name == "Curved") and compares
+    /// achieved (1e-7) < bound (1e-6) → Satisfied.
+    #[test]
+    fn eval_repr_within_satisfied_when_achieved_less_than_bound() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new();
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 1e-7);
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some(), "must return Some for a RepresentationWithin expr");
+        let (sat, diag) = result.unwrap();
+        assert_eq!(sat, Satisfaction::Satisfied, "achieved (1e-7) < bound (1e-6) → Satisfied");
+        assert!(diag.is_none(), "no diagnostic on Satisfied");
+    }
+
+    /// (b) achieved > bound → Violated with a diagnostic.
+    #[test]
+    fn eval_repr_within_violated_when_achieved_exceeds_bound() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new();
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 5e-3); // 5mm ≫ 1µm
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, diag) = result.unwrap();
+        assert_eq!(sat, Satisfaction::Violated, "achieved (5e-3) > bound (1e-6) → Violated");
+        assert!(diag.is_some(), "Violated must carry a diagnostic");
+        let msg = diag.unwrap().message;
+        assert!(
+            msg.contains("RepresentationWithin"),
+            "diagnostic must mention RepresentationWithin; got: {msg}"
+        );
+        assert!(
+            msg.contains("exceeds bound"),
+            "diagnostic must mention 'exceeds bound'; got: {msg}"
+        );
+    }
+
+    /// (c) Key ABSENT in map → Indeterminate (C1: realization not run → never a
+    /// false Violated).
+    #[test]
+    fn eval_repr_within_indeterminate_when_key_absent() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new();
+        let achieved: BTreeMap<String, f64> = BTreeMap::new(); // empty
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, diag) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Indeterminate,
+            "absent key → Indeterminate (C1: realization not run)"
+        );
+        assert!(diag.is_none(), "no diagnostic on Indeterminate");
+    }
+
+    /// (d) Subject unresolvable (no value in ValueMap, no matching key in
+    /// achieved_repr_tol for the struct_name) → Indeterminate.
+    #[test]
+    fn eval_repr_within_indeterminate_when_subject_unresolvable() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new(); // no entry for subject.self
+        // achieved_repr_tol has entries for a DIFFERENT name — no prefix match
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Other#realization[0]".to_string(), 5e-3);
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Indeterminate,
+            "unresolvable subject (no value, no matching key) → Indeterminate"
+        );
+    }
+
+    /// (e) C4 zero-bound floor — part 1: bound=0.0 with achieved ≤ PLANAR_FLOOR
+    /// (1e-5 m) → Satisfied.
+    #[test]
+    fn eval_repr_within_zero_bound_satisfied_below_planar_floor() {
+        let id = ConstraintNodeId::new("Planar", 0);
+        let expr = eval_test_expr("Planar", 0.0); // exact / zero bound
+        let values = ValueMap::new();
+        let mut achieved = BTreeMap::new();
+        // Planar box achieved ~1e-6 (β B1 validates ≤ 1e-5 m for planar).
+        achieved.insert("Planar#realization[0]".to_string(), 1e-6);
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Satisfied,
+            "bound=0.0 with achieved (1e-6) ≤ PLANAR_FLOOR (1e-5) → Satisfied (C4)"
+        );
+    }
+
+    /// (e) C4 zero-bound floor — part 2: bound=0.0 with achieved ≫ PLANAR_FLOOR
+    /// → Violated (coarse curved geometry, cf. β B2).
+    #[test]
+    fn eval_repr_within_zero_bound_violated_above_planar_floor() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 0.0); // exact / zero bound
+        let values = ValueMap::new();
+        let mut achieved = BTreeMap::new();
+        // Coarse curved geometry achieved ~50mm >> 1e-5 m.
+        achieved.insert("Curved#realization[0]".to_string(), 50e-3);
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, diag) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Violated,
+            "bound=0.0 with achieved (50e-3) ≫ PLANAR_FLOOR (1e-5) → Violated (C4)"
+        );
+        assert!(diag.is_some(), "Violated must carry a diagnostic");
+    }
+
+    /// (f) Value-based resolution: a `Value::GeometryHandle{realization_ref=
+    /// "Curved#realization[0]"}` subject value keys directly into
+    /// `achieved_repr_tol["Curved#realization[0]"]`.
+    #[test]
+    fn eval_repr_within_value_based_resolution_via_geometry_handle() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+
+        // Place a GeometryHandle value at subject.self.
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("subject", "self"),
+            geometry_handle_value("Curved", 0),
+        );
+
+        // achieved_repr_tol key has a non-standard name to verify value-based
+        // resolution was used (type-name scan would also match "Curved#realization[0]"
+        // here, but the value-based path should be tried first).
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 5e-7); // < 1e-6
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Satisfied,
+            "GeometryHandle value resolves to 'Curved#realization[0]'; achieved (5e-7) < bound (1e-6) → Satisfied"
+        );
+    }
+
+    /// (g) Type-name scan fallback: subject value is absent (Undef) but
+    /// `achieved_repr_tol` contains `"Curved#realization[0]"` and the
+    /// StructureRef name is `"Curved"` → resolves via type-name scan.
+    #[test]
+    fn eval_repr_within_type_name_scan_fallback_when_value_absent() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new(); // no entry — subject stays Undef
+
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 5e-7); // < 1e-6
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Satisfied,
+            "type-name scan resolves 'Curved#realization[0]' for struct_name 'Curved'; \
+             achieved (5e-7) < bound (1e-6) → Satisfied"
+        );
+    }
+
+    /// (g) multi-key scan takes MAX achieved (conservative) — multiple
+    /// `"Curved#realization[N]"` keys; the highest (1e-2) must be used so the
+    /// assertion correctly reports Violated even if some realizations are fine.
+    #[test]
+    fn eval_repr_within_type_name_scan_uses_max_achieved_on_multiple_keys() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new();
+
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 5e-7); // fine — Satisfied alone
+        achieved.insert("Curved#realization[1]".to_string(), 1e-2); // coarse — Violated
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Violated,
+            "max-achieved (1e-2) wins over the finer (5e-7) — conservative, no false Satisfied"
+        );
+    }
+
+    /// Non-RepresentationWithin expr → None (pass-through posture).
+    #[test]
+    fn eval_repr_within_returns_none_for_non_repr_within_expr() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let achieved: BTreeMap<String, f64> = BTreeMap::new();
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(
+            result.is_none(),
+            "non-RepresentationWithin expr must return None (pass-through)"
+        );
+    }
 }
