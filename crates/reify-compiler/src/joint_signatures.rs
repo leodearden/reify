@@ -376,7 +376,6 @@ mod tests {
     /// (name-only dispatch — the arg slice is currently unused).
     #[test]
     fn joint_ctor_result_type_is_args_agnostic() {
-        use reify_core::identity::ValueCellId;
         use reify_ir::Value;
         // A dummy non-empty arg slice.
         let dummy_arg =
@@ -398,7 +397,5 @@ mod tests {
             joint_ctor_result_type("joint_jacobian", &[]),
             "joint_jacobian result must be the same regardless of args"
         );
-        // Suppress unused-import warning by ensuring the use is reachable.
-        let _ = ValueCellId::new("S", "x");
     }
 }
