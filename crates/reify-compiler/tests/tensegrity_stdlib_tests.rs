@@ -82,13 +82,14 @@ fn std_tensegrity_module_loads_with_no_errors() {
     );
 }
 
-/// The std/tensegrity module must declare exactly six top-level structures:
-/// Strut, Cable, Membrane, Tensegrity, TensegrityWire, FormFindResult.
+/// The std/tensegrity module must declare exactly seven top-level structures:
+/// Strut, Cable, Membrane, Tensegrity, TensegrityWire, TensegritySurface,
+/// FormFindResult.
 ///
-/// RED (step-3): expects 6 — fails until `structure def Membrane` is added
-/// to tensegrity.ri in step-4.
+/// RED (step-5): expects 7 — fails until `structure def TensegritySurface` is
+/// added to tensegrity.ri in step-6.
 #[test]
-fn std_tensegrity_module_has_six_structures() {
+fn std_tensegrity_module_has_seven_structures() {
     let module = load_stdlib_module();
 
     let structures: Vec<&str> = module
@@ -98,7 +99,10 @@ fn std_tensegrity_module_has_six_structures() {
         .map(|t| t.name.as_str())
         .collect();
 
-    let expected = ["Strut", "Cable", "Membrane", "Tensegrity", "TensegrityWire", "FormFindResult"];
+    let expected = [
+        "Strut", "Cable", "Membrane", "Tensegrity", "TensegrityWire",
+        "TensegritySurface", "FormFindResult",
+    ];
     assert_eq!(
         structures.len(),
         expected.len(),
@@ -533,6 +537,75 @@ fn tensegrity_wire_structure_has_nine_params() {
             cell.cell_type, *expected_ty,
             "TensegrityWire.{} should be {:?}, got {:?}",
             member, expected_ty, cell.cell_type
+        );
+    }
+}
+
+// ─── TensegritySurface structure ──────────────────────────────────────────────
+
+/// `TensegritySurface` has 13 params, all required (no defaults):
+///   kind : String
+///   i0, i1, i2 : Int   (0-based node indices)
+///   x0,y0,z0 : Length  (corner 0 coordinates)
+///   x1,y1,z1 : Length  (corner 1 coordinates)
+///   x2,y2,z2 : Length  (corner 2 coordinates)
+///
+/// This structure is Rust-side constructed by `tensegrity_surfaces`; the .ri
+/// declaration exists so the CLI dump shows `TensegritySurface { ... }`.
+///
+/// RED (step-5): fails until `structure def TensegritySurface` is added in step-6.
+#[test]
+fn tensegrity_surface_structure_has_thirteen_params() {
+    let template = find_structure("TensegritySurface");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        13,
+        "TensegritySurface should have exactly 13 param cells \
+         (kind, i0, i1, i2, x0, y0, z0, x1, y1, z1, x2, y2, z2), got: {:?}",
+        names
+    );
+
+    let length = Type::Scalar { dimension: DimensionVector::LENGTH };
+
+    let expected: &[(&str, Type)] = &[
+        ("kind", Type::String),
+        ("i0",   Type::Int),
+        ("i1",   Type::Int),
+        ("i2",   Type::Int),
+        ("x0",   length.clone()),
+        ("y0",   length.clone()),
+        ("z0",   length.clone()),
+        ("x1",   length.clone()),
+        ("y1",   length.clone()),
+        ("z1",   length.clone()),
+        ("x2",   length.clone()),
+        ("y2",   length.clone()),
+        ("z2",   length.clone()),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "TensegritySurface missing '{}' param; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "TensegritySurface.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+        // All params must be required (no default).
+        assert!(
+            cell.default_expr.is_none(),
+            "TensegritySurface.{} should have no default (required param, never user-constructed)",
+            member
         );
     }
 }
