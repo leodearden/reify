@@ -154,6 +154,13 @@ impl ReverseDependencyIndex {
         // Auto cells are solver-owned leaves — no default expression to extract.
         // Param cells with a literal default (no ValueRef reads) produce an empty
         // trace, so they register no reverse edges and remain pure roots.
+        //
+        // Value-cell→realization edges (step-4): for each read cell that is itself
+        // backed by a realization (i.e. present in realization_by_cell), register
+        // the reverse edge realization → Value(node). This covers selectors, whole-
+        // handle queries, param defaults like `param v = volume(body)`, and any Let
+        // that reads a geometry handle. Uniform rule: "reads a geometry cell" →
+        // realization_reads edge, regardless of Param vs Let (post-4317).
         for (_, node) in graph.value_cells.iter() {
             if node.kind.is_auto() {
                 continue;
@@ -163,6 +170,16 @@ impl ReverseDependencyIndex {
                 let node_id = NodeId::Value(node.id.clone());
                 for cell in &trace.reads {
                     index.add(cell.clone(), node_id.clone());
+                }
+                // Resolve reads that are geometry cells to their backing realizations.
+                // Use a temporary set to dedup (collect_value_refs preserves duplicates).
+                let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
+                for cell in &trace.reads {
+                    if let Some(rid) = realization_by_cell.get(cell) {
+                        if seen_rids.insert(rid.clone()) {
+                            index.add_realization(rid.clone(), node_id.clone());
+                        }
+                    }
                 }
             }
         }
@@ -367,7 +384,7 @@ pub fn build_trace_map_and_fields(
     let realization_by_cell = realization_by_cell(graph);
 
     for (_, node) in graph.value_cells.iter() {
-        let trace = if node.kind.is_auto() {
+        let mut trace = if node.kind.is_auto() {
             // Auto cells are solver-owned leaves; no default expression to extract.
             DependencyTrace::default()
         } else {
@@ -379,6 +396,20 @@ pub fn build_trace_map_and_fields(
                 .map(extract_dependency_trace)
                 .unwrap_or_default()
         };
+        // Value-cell→realization edges (step-4): for each read cell backed by a
+        // realization, push the realization into this node's forward trace.
+        // Covers selectors, queries, param defaults — all non-auto cells uniformly
+        // (post-4317 rule). Dedup via seen_rids (collect_value_refs keeps dupes).
+        if !trace.reads.is_empty() {
+            let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
+            for cell in &trace.reads {
+                if let Some(rid) = realization_by_cell.get(cell) {
+                    if seen_rids.insert(rid.clone()) {
+                        trace.realization_reads.push(rid.clone());
+                    }
+                }
+            }
+        }
         traces.insert(NodeId::Value(node.id.clone()), trace);
     }
 
