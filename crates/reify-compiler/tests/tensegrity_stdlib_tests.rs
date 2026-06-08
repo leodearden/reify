@@ -228,18 +228,22 @@ fn cable_structure_has_required_fields_and_pretension_default() {
 
 // ─── Tensegrity structure ─────────────────────────────────────────────────────
 
-/// `Tensegrity` has exactly 3 required params: `nodes : List<Point3<Length>>`,
-/// `struts : List<List<Int>>`, `cables : List<List<Int>>`. All required.
+/// `Tensegrity` has exactly 4 required params: `nodes : List<Point3<Length>>`,
+/// `struts : List<List<Int>>`, `cables : List<List<Int>>`,
+/// `surfaces : List<List<Int>>`. All required (no defaults).
+///
+/// RED (step-1): expects 4 params — fails until `param surfaces` is added to
+/// tensegrity.ri in step-2.
 #[test]
-fn tensegrity_structure_has_nodes_struts_cables_params() {
+fn tensegrity_structure_has_nodes_struts_cables_surfaces_params() {
     let template = find_structure("Tensegrity");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
 
     assert_eq!(
         params.len(),
-        3,
-        "Tensegrity should have exactly 3 param cells (nodes, struts, cables), got: {:?}",
+        4,
+        "Tensegrity should have exactly 4 param cells (nodes, struts, cables, surfaces), got: {:?}",
         names
     );
 
@@ -284,13 +288,29 @@ fn tensegrity_structure_has_nodes_struts_cables_params() {
         .unwrap_or_else(|| panic!("Tensegrity missing 'cables' param; got: {:?}", names));
     assert_eq!(
         cables.cell_type,
-        list_list_int,
+        list_list_int.clone(),
         "Tensegrity.cables should be List<List<Int>>, got {:?}",
         cables.cell_type
     );
     assert!(
         cables.default_expr.is_none(),
         "Tensegrity.cables should have no default (required param)"
+    );
+
+    // step-1: surfaces param — List<List<Int>>, required, no default.
+    let surfaces = params
+        .iter()
+        .find(|vc| vc.id.member == "surfaces")
+        .unwrap_or_else(|| panic!("Tensegrity missing 'surfaces' param; got: {:?}", names));
+    assert_eq!(
+        surfaces.cell_type,
+        list_list_int,
+        "Tensegrity.surfaces should be List<List<Int>>, got {:?}",
+        surfaces.cell_type
+    );
+    assert!(
+        surfaces.default_expr.is_none(),
+        "Tensegrity.surfaces should have no default (required param)"
     );
 }
 
