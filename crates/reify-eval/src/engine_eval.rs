@@ -2734,6 +2734,26 @@ impl Engine {
         }
     }
 
+    /// Build an `EvalContext` that ALWAYS carries `.with_meta + .with_determinacy +
+    /// .with_runtime_diagnostics`.
+    ///
+    /// All five warm/edit cell-eval sites must route through this constructor so
+    /// that `DeterminacyPredicate` cells never silently return `Value::Undef`
+    /// due to a missing determinacy map (task 4356).
+    ///
+    /// Declared `pub(crate)` so `engine_edit.rs` and `concurrent.rs` (which live
+    /// in separate modules in the same crate) can call it.
+    pub(crate) fn cell_eval_ctx<'a>(
+        &'a self,
+        values: &'a ValueMap,
+        snapshot_values: &'a PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        runtime_sink: &'a RefCell<Vec<Diagnostic>>,
+    ) -> reify_expr::EvalContext<'a> {
+        eval_ctx_with_meta(values, &self.functions, &self.meta_map)
+            .with_determinacy(snapshot_values)
+            .with_runtime_diagnostics(runtime_sink)
+    }
+
     /// Evaluate a compiled module with caching and early cutoff.
     ///
     /// On first call (cold start), behaves like eval() but populates the cache.
@@ -2744,6 +2764,14 @@ impl Engine {
         let mut values = ValueMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let mut stats = CacheStats::default();
+        // Determinacy accumulator for cell_eval_ctx (task 4356): mirrors the
+        // snapshot_values approach in eval() so DeterminacyPredicate cells see
+        // the correct DeterminacyState for every referent cell.
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        // Runtime-diagnostics sink for cell_eval_ctx (field-OOB warnings etc.).
+        // Drained into `diagnostics` after the template loop (parity with eval()).
+        let runtime_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
 
         // Reset per-call test-instrumentation counters (same as eval()).
         self.last_param_override_type_kind_rejections = 0;
@@ -2777,7 +2805,7 @@ impl Engine {
                     let node_id = NodeId::Value(cell.id.clone());
 
                     // Check version fast path
-                    if let Some(CachedResult::Value(val, _)) =
+                    if let Some(CachedResult::Value(val, det)) =
                         self.cache.try_fast_path(&node_id, version)
                     {
                         self.journal.record(EvalEvent {
@@ -2787,6 +2815,7 @@ impl Engine {
                             version,
                             payload: None,
                         });
+                        snapshot_values.insert(cell.id.clone(), (val.clone(), det));
                         values.insert(cell.id.clone(), val);
                         stats.cache_hits += 1;
                         continue;
@@ -2798,10 +2827,11 @@ impl Engine {
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
-                        && let CachedResult::Value(ref val, _) = entry.result
+                        && let CachedResult::Value(ref val, det) = entry.result
                     {
                         let val = val.clone();
                         let preserved_freshness = entry.freshness.clone();
+                        snapshot_values.insert(cell.id.clone(), (val.clone(), det));
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
@@ -2863,6 +2893,7 @@ impl Engine {
                         stats.early_cutoffs += 1;
                     }
 
+                    snapshot_values.insert(cell.id.clone(), (val.clone(), det));
                     values.insert(cell.id.clone(), val);
                 }
             }
@@ -2963,7 +2994,7 @@ impl Engine {
                             // appear in sorted_combined.
 
                             // Cache fast-path (same-version result is always fresh).
-                            if let Some(CachedResult::Value(val, _)) =
+                            if let Some(CachedResult::Value(val, det)) =
                                 self.cache.try_fast_path(&node_id, version)
                             {
                                 self.journal.record(EvalEvent {
@@ -2973,6 +3004,7 @@ impl Engine {
                                     version,
                                     payload: None,
                                 });
+                                snapshot_values.insert(cell.id.clone(), (val.clone(), det));
                                 values.insert(cell.id.clone(), val);
                                 stats.cache_hits += 1;
                                 continue;
@@ -2983,10 +3015,11 @@ impl Engine {
                             if !self.param_overrides.contains_key(&cell.id)
                                 && !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
-                                && let CachedResult::Value(ref val, _) = entry.result
+                                && let CachedResult::Value(ref val, det) = entry.result
                             {
                                 let val = val.clone();
                                 let preserved_freshness = entry.freshness.clone();
+                                snapshot_values.insert(cell.id.clone(), (val.clone(), det));
                                 values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
                                 let result = entry.result.clone();
@@ -3022,6 +3055,8 @@ impl Engine {
 
                             // Evaluate default expression; mirrors the old Param branch
                             // (task 2273 validate-once / default_or invariant).
+                            // Uses cell_eval_ctx so DeterminacyPredicate defaults see
+                            // the determinacy map (task 4356).
                             let default_or = |no_default_state: DeterminacyState| -> (
                                 Value,
                                 DeterminacyState,
@@ -3034,7 +3069,9 @@ impl Engine {
                                                 &values,
                                                 &self.functions,
                                                 &self.meta_map,
-                                            ),
+                                            )
+                                            .with_determinacy(&snapshot_values)
+                                            .with_runtime_diagnostics(&runtime_sink),
                                         ),
                                         DeterminacyState::Determined,
                                     )
@@ -3051,6 +3088,9 @@ impl Engine {
                                 }
                                 None => default_or(DeterminacyState::Determined),
                             };
+                            // drop the closure to release borrows of &values, &snapshot_values,
+                            // &runtime_sink before the mutable snapshot_values.insert below.
+                            drop(default_or);
 
                             // Use the actual dependency trace from combined_traces so that
                             // dirty-cone propagation marks dependents when an upstream let
@@ -3082,6 +3122,7 @@ impl Engine {
                                 stats.early_cutoffs += 1;
                             }
 
+                            snapshot_values.insert(cell.id.clone(), (val.clone(), det));
                             values.insert(cell.id.clone(), val);
                         }
 
@@ -3093,7 +3134,7 @@ impl Engine {
                             };
 
                             // Cache fast-path.
-                            if let Some(CachedResult::Value(val, _)) =
+                            if let Some(CachedResult::Value(val, det)) =
                                 self.cache.try_fast_path(&node_id, version)
                             {
                                 self.journal.record(EvalEvent {
@@ -3103,6 +3144,7 @@ impl Engine {
                                     version,
                             payload: None,
                         });
+                        snapshot_values.insert(cell.id.clone(), (val.clone(), det));
                         values.insert(cell.id.clone(), val);
                         stats.cache_hits += 1;
                         continue;
@@ -3113,10 +3155,11 @@ impl Engine {
                             // See the detailed rationale in the old second-pass let-cell block.
                             if !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
-                                && let CachedResult::Value(ref val, _) = entry.result
+                                && let CachedResult::Value(ref val, det) = entry.result
                             {
                                 let val = val.clone();
                                 let preserved_freshness = entry.freshness.clone();
+                                snapshot_values.insert(cell.id.clone(), (val.clone(), det));
                                 values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
                                 let result = entry.result.clone();
@@ -3151,9 +3194,11 @@ impl Engine {
                                 payload: None,
                             });
 
+                            // Use cell_eval_ctx so DeterminacyPredicate cells (e.g.
+                            // `let r = determined(x)`) see the determinacy map (task 4356).
                             let val = reify_expr::eval_expr(
                                 expr,
-                                &eval_ctx_with_meta(&values, &self.functions, &self.meta_map),
+                                &self.cell_eval_ctx(&values, &snapshot_values, &runtime_sink),
                             );
 
                             // Use the actual trace from combined_traces (same as the eval()
@@ -3189,6 +3234,10 @@ impl Engine {
                                 self.cache.clear_dependents_dirty(&cell.id);
                             }
 
+                            snapshot_values.insert(
+                                cell.id.clone(),
+                                (val.clone(), DeterminacyState::Determined),
+                            );
                             values.insert(cell.id.clone(), val);
                         }
 
@@ -3267,6 +3316,10 @@ impl Engine {
                 }
             }
         }
+
+        // Drain runtime diagnostics (field-OOB warnings, etc.) collected via
+        // cell_eval_ctx during the template pass — parity with eval() (task 4356).
+        diagnostics.append(&mut runtime_sink.borrow_mut());
 
         // Mechanism error diagnostics (task 4308 — E_MECHANISM_DUPLICATE_SOLID).
         // Mirrors the eval() call site (above detect_scope_coupling).  eval_cached
