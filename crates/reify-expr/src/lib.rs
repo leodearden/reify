@@ -1114,6 +1114,38 @@ fn eval_ad_hoc_selector(
     }
 }
 
+/// Returns `true` when `t` is, or recursively wraps, a [`Type::TraitObject`].
+///
+/// Local mirror of `reify_compiler::type_compat::type_carries_trait_object`,
+/// kept VERBATIM with it. reify-expr's library deps are only reify-core +
+/// reify-ir (reify-compiler is a dev-dep), so the compiler helper cannot be
+/// imported here — the two MUST be kept in sync. If they drift, a call whose
+/// param is a trait object (e.g. `loads: List<Load>`) resolves at compile time
+/// (compile-side `resolve_function_overload` treats trait-carrying params as
+/// wildcards for ALL fns) but the eval-side resolver rejects it → the
+/// `@optimized` `ComputeNode` dispatch never fires and the call evals to
+/// `Value::Undef` / no targets (the esc-4093-152 divergence class — the FEA
+/// `solve_elastic_static(loads: List<Load>, supports: List<Support>)` signature
+/// tightening).
+///
+/// Covers bare `TraitObject(name)` and the `Option`/`List`/`Set`/`Map` wrappers,
+/// matching the compiler-side copy in `type_compat.rs`. Used by
+/// [`find_matching_compiled_function`] to make trait-carrying params act as
+/// eval-time resolution wildcards for non-generic fns too — unlike
+/// [`type_carries_type_param`], this is NOT gated on `!type_params.is_empty()`,
+/// because the compile-side `resolve_function_overload` applies the trait-object
+/// wildcard to every candidate regardless of genericity.
+fn type_carries_trait_object(t: &Type) -> bool {
+    match t {
+        Type::TraitObject(_) => true,
+        Type::Option(inner) => type_carries_trait_object(inner),
+        Type::List(inner) => type_carries_trait_object(inner),
+        Type::Set(inner) => type_carries_trait_object(inner),
+        Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
+        _ => false,
+    }
+}
+
 /// Returns `true` when `t` is, or recursively wraps, a [`Type::TypeParam`].
 ///
 /// Local mirror of `reify_compiler::type_compat::type_carries_type_param`,
@@ -1204,8 +1236,12 @@ fn type_carries_type_param(t: &Type) -> bool {
 ///
 /// Mirrors the compile-time `reify_compiler::type_compat::resolve_function_overload`
 /// so eval re-selects the SAME overload the compiler chose (task 4231 β-eval):
-/// - For a non-generic candidate (`type_params` empty) every param keeps **exact**
-///   type equality — non-generic fns are bit-for-bit unchanged (INV-6).
+/// - For a non-generic candidate (`type_params` empty) every *concrete* param keeps
+///   **exact** type equality, but a **trait-object**-carrying param (e.g.
+///   `List<Load>`) acts as a wildcard — mirroring compile-side
+///   `resolve_function_overload`, which applies the trait-object wildcard to ALL
+///   candidates regardless of genericity (esc-4093-152). Non-generic fns with no
+///   trait-object params are bit-for-bit unchanged (INV-6).
 /// - For a *generic* candidate a type-param-carrying param acts as a **wildcard**
 ///   (matches any arg type) — eval is type-erased (INV-2), so the concrete arg
 ///   binds the param positionally with no runtime type check.
@@ -1236,13 +1272,23 @@ pub fn find_matching_compiled_function<'a>(
         return Some(f);
     }
 
-    // No exact overload — allow a generic candidate's type-param-carrying params
-    // to act as wildcards. Gated on `!type_params.is_empty()` so this pass can
-    // never relax a non-generic fn.
+    // No exact overload — allow wildcard params to match:
+    //   * a *generic* candidate's type-param-carrying params (gated on
+    //     `!type_params.is_empty()` so this pass can never relax a non-generic
+    //     fn via type-params), and
+    //   * ANY candidate's trait-object-carrying params (NOT gated on genericity),
+    //     mirroring compile-side `resolve_function_overload` which treats
+    //     trait-carrying params as wildcards for every candidate. Without this,
+    //     a non-generic fn like
+    //     `solve_elastic_static(loads: List<Load>, supports: List<Support>)`
+    //     resolves at compile time but the eval-side resolver returns None →
+    //     the `@optimized` ComputeNode dispatch never fires (esc-4093-152).
     fns.iter().filter(arity_match).find(|f| {
         let is_generic = !f.type_params.is_empty();
         f.params.iter().zip(args.iter()).all(|((_, param_ty), arg)| {
-            (is_generic && type_carries_type_param(param_ty)) || *param_ty == arg.result_type
+            (is_generic && type_carries_type_param(param_ty))
+                || type_carries_trait_object(param_ty)
+                || *param_ty == arg.result_type
         })
     })
 }
@@ -5382,6 +5428,52 @@ mod tests {
         assert!(
             find_matching_compiled_function(&fns, "f", &args).is_some(),
             "generic fn with a Field<T, Real> param should resolve for a Field<Real, Real> arg"
+        );
+    }
+
+    #[test]
+    fn find_matching_resolves_trait_object_param_for_non_generic_fn() {
+        // Parity guard (esc-4093-152): a NON-generic candidate whose param is a
+        // trait object inside a `List` (`List<Load>`) must be selected by the
+        // eval-side resolver for a concrete `List<StructureRef("PointLoad")>` arg,
+        // mirroring compile-time `resolve_function_overload` which treats
+        // trait-carrying params as wildcards for EVERY candidate (not just generic
+        // ones). Before the local `type_carries_trait_object` mirror was added, the
+        // wildcard pass was gated on `!type_params.is_empty()`, so the FEA
+        // `solve_elastic_static(loads: List<Load>, supports: List<Support>)`
+        // signature resolved at compile time but the eval-side resolver returned
+        // None → the `@optimized` ComputeNode dispatch never fired ("found
+        // targets: []").
+        let params = vec![(
+            "loads".to_string(),
+            Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+        )];
+        let non_generic_fn = CompiledFunction {
+            name: "solve".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::Real,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: lit(Value::Real(1.0), Type::Real),
+            },
+            content_hash: ContentHash::of(b"non_generic_trait_obj_solve"),
+            annotations: vec![],
+            optimized_target: None,
+            // NON-generic: empty type_params is the crux of this regression.
+            type_params: vec![],
+        };
+        // Arg's result_type is the concrete List<StructureRef("PointLoad")>; the
+        // Value payload is irrelevant to overload resolution (keys on result_type).
+        let concrete_loads = Type::List(Box::new(Type::StructureRef("PointLoad".to_string())));
+        let args = vec![lit(Value::Undef, concrete_loads)];
+        let fns = [non_generic_fn];
+        assert!(
+            find_matching_compiled_function(&fns, "solve", &args).is_some(),
+            "non-generic fn with a List<Load> trait-object param should resolve \
+             for a List<StructureRef(\"PointLoad\")> arg"
         );
     }
 
