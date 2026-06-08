@@ -99,6 +99,23 @@ pub(crate) fn compile_transform_op(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // apply_transform(target, transform)
+        "apply_transform" => {
+            if !check_arg_count_exact("apply_transform", compiled_args.len(), 2, expr_span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let op = CompiledGeometryOp::Transform {
+                kind: TransformKind::ApplyTransform,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("transform".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
         _ => unreachable!(
             "compile_transform_op called with non-transform name: {}",
             name
