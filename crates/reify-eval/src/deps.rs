@@ -146,9 +146,10 @@ impl ReverseDependencyIndex {
 
         let mut index = Self::new();
 
-        // Build cell→realization resolver once (used for constraint→realization
-        // and value-cell→realization edges below).
+        // Build resolvers once: cell→realization (O(1) lookup for edges #1/#2)
+        // and member→[realization] (O(1) lookup for GeomRef::Sub edges #3).
         let realization_by_cell = realization_by_cell(graph);
+        let member_index = member_realization_index(graph);
 
         // Value cells: non-auto cells with a default_expr have static read-dependencies.
         // Auto cells are solver-owned leaves — no default expression to extract.
@@ -172,14 +173,8 @@ impl ReverseDependencyIndex {
                     index.add(cell.clone(), node_id.clone());
                 }
                 // Resolve reads that are geometry cells to their backing realizations.
-                // Use a temporary set to dedup (collect_value_refs preserves duplicates).
-                let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
-                for cell in &trace.reads {
-                    if let Some(rid) = realization_by_cell.get(cell)
-                        && seen_rids.insert(rid.clone())
-                    {
-                        index.add_realization(rid.clone(), node_id.clone());
-                    }
+                for rid in resolve_reads_to_realizations(&trace.reads, &realization_by_cell) {
+                    index.add_realization(rid, node_id.clone());
                 }
             }
         }
@@ -195,38 +190,27 @@ impl ReverseDependencyIndex {
             for cell in &trace.reads {
                 index.add(cell.clone(), node_id.clone());
             }
-            // Constraint→realization edge: walk expr for geometry-query calls.
-            let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
-            cnode.expr.walk(&mut |node| {
-                if crate::geometry_ops::is_geometry_query_call(node)
-                    && let reify_ir::CompiledExprKind::FunctionCall { args, .. } = &node.kind
-                    && let Some(arg) = args.first()
-                    && let reify_ir::CompiledExprKind::ValueRef(cell_id) = &arg.kind
-                    && let Some(rid) = realization_by_cell.get(cell_id)
-                    && seen_rids.insert(rid.clone())
-                {
-                    index.add_realization(rid.clone(), node_id.clone());
-                }
-            });
+            // Constraint→realization edge via geometry-query call detection.
+            for rid in collect_constraint_realization_reads(&cnode.expr, &realization_by_cell) {
+                index.add_realization(rid, node_id.clone());
+            }
         }
 
         // Realizations: extract VC deps from operation args (value-reads), plus
         // realization→realization edges from GeomRef::Sub operands (step-6: Boolean;
-        // step-8: Modify/Transform/Pattern/Sweep). Dedup producing rids per consumer.
+        // step-8: Modify/Transform/Pattern/Sweep). `add_realization` uses a HashSet
+        // sink so dedup is implicit — no separate `seen` set needed here.
         for (_, rnode) in graph.realizations.iter() {
             let trace = extract_realization_dependencies(&rnode.operations);
             let node_id = NodeId::Realization(rnode.id.clone());
             for cell in &trace.reads {
                 index.add(cell.clone(), node_id.clone());
             }
-            // Realization→realization reverse edges.
-            let mut seen: HashSet<RealizationNodeId> = HashSet::new();
+            // Realization→realization reverse edges (HashSet sink: dedup implicit).
             for producing_rid in
-                extract_realization_edges(&rnode.operations, &rnode.id.entity, graph)
+                extract_realization_edges(&rnode.operations, &rnode.id.entity, &member_index)
             {
-                if seen.insert(producing_rid.clone()) {
-                    index.add_realization(producing_rid, node_id.clone());
-                }
+                index.add_realization(producing_rid, node_id.clone());
             }
         }
 
@@ -331,6 +315,86 @@ fn realization_by_cell(
         .collect()
 }
 
+/// Build a member-name → `[RealizationNodeId]` index for O(1) lookup during
+/// `GeomRef::Sub` resolution (see [`resolve_sub_ref`]).
+///
+/// Keys on `geometry_cell.member` (the geometry member name exported by each
+/// realization). In the expected 1:1 case each `Vec` has exactly one entry;
+/// when two realizations share a member name the `Vec` has >1 entries and
+/// [`resolve_sub_ref`] returns `None` (conservative miss). Built once per
+/// graph-builder call and threaded into [`extract_realization_edges`], replacing
+/// the O(R) linear scan that `resolve_sub_ref` previously performed per operand.
+fn member_realization_index(
+    graph: &crate::graph::EvaluationGraph,
+) -> HashMap<String, Vec<RealizationNodeId>> {
+    let mut map: HashMap<String, Vec<RealizationNodeId>> = HashMap::new();
+    for (_, rnode) in graph.realizations.iter() {
+        if let Some(ref cell) = rnode.geometry_cell {
+            map.entry(cell.member.clone()).or_default().push(rnode.id.clone());
+        }
+    }
+    map
+}
+
+/// Collect the realization reads for a constraint expression by walking it for
+/// geometry-query calls (`volume`/`area`/`centroid`/`bounding_box`).
+///
+/// **Contract assumption:** geometry-query calls are assumed to always take a
+/// direct `ValueRef` to a geometry cell as their **first** argument (arg 0).
+/// A query whose geometry arg is wrapped in a nested expression
+/// (e.g. `volume(transform(body))`) or is not positionally first will not
+/// match and will silently produce no realization edge for that call. This
+/// holds for the currently recognised query set; document it here so future
+/// extensions can verify the assumption still holds.
+///
+/// Returns a deduplicated `Vec<RealizationNodeId>` — each backing realization
+/// appears at most once regardless of how many times the geometry cell is
+/// mentioned in the expression. This deduplication is required on the forward
+/// path (where the result feeds a `Vec`); it is a harmless no-op on the reverse
+/// path (where `add_realization` already deduplicates via `HashSet`).
+fn collect_constraint_realization_reads(
+    expr: &reify_ir::CompiledExpr,
+    realization_by_cell: &HashMap<ValueCellId, RealizationNodeId>,
+) -> Vec<RealizationNodeId> {
+    let mut result: Vec<RealizationNodeId> = Vec::new();
+    let mut seen: HashSet<RealizationNodeId> = HashSet::new();
+    expr.walk(&mut |node| {
+        if crate::geometry_ops::is_geometry_query_call(node)
+            && let reify_ir::CompiledExprKind::FunctionCall { args, .. } = &node.kind
+            && let Some(arg) = args.first()
+            && let reify_ir::CompiledExprKind::ValueRef(cell_id) = &arg.kind
+            && let Some(rid) = realization_by_cell.get(cell_id)
+            && seen.insert(rid.clone())
+        {
+            result.push(rid.clone());
+        }
+    });
+    result
+}
+
+/// Resolve a list of value-cell reads to their backing realizations, returning a
+/// deduplicated `Vec<RealizationNodeId>`.
+///
+/// For each `ValueCellId` in `reads` present in `realization_by_cell`, the
+/// backing realization is included once in the result. Deduplication is required
+/// on the forward path (where the result feeds a `Vec`); it is harmless on the
+/// reverse path (where `add_realization` already deduplicates via `HashSet`).
+fn resolve_reads_to_realizations(
+    reads: &[ValueCellId],
+    realization_by_cell: &HashMap<ValueCellId, RealizationNodeId>,
+) -> Vec<RealizationNodeId> {
+    let mut result: Vec<RealizationNodeId> = Vec::new();
+    let mut seen: HashSet<RealizationNodeId> = HashSet::new();
+    for cell in reads {
+        if let Some(rid) = realization_by_cell.get(cell)
+            && seen.insert(rid.clone())
+        {
+            result.push(rid.clone());
+        }
+    }
+    result
+}
+
 /// GHR-δ: fold [`geometry_cell_realization_links`] into a per-cell
 /// `realization_reads` list, accumulating (never overwriting) every realization
 /// that backs a given geometry cell.
@@ -386,9 +450,10 @@ pub fn build_trace_map_and_fields(
 
     let mut traces = HashMap::new();
 
-    // Build cell→realization resolver once (used for constraint→realization
-    // and value-cell→realization edges below).
+    // Build resolvers once: cell→realization (O(1) lookup for edges #1/#2)
+    // and member→[realization] (O(1) lookup for GeomRef::Sub edges #3).
     let realization_by_cell = realization_by_cell(graph);
+    let member_index = member_realization_index(graph);
 
     for (_, node) in graph.value_cells.iter() {
         let mut trace = if node.kind.is_auto() {
@@ -406,17 +471,8 @@ pub fn build_trace_map_and_fields(
         // Value-cell→realization edges (step-4): for each read cell backed by a
         // realization, push the realization into this node's forward trace.
         // Covers selectors, queries, param defaults — all non-auto cells uniformly
-        // (post-4317 rule). Dedup via seen_rids (collect_value_refs keeps dupes).
-        if !trace.reads.is_empty() {
-            let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
-            for cell in &trace.reads {
-                if let Some(rid) = realization_by_cell.get(cell)
-                    && seen_rids.insert(rid.clone())
-                {
-                    trace.realization_reads.push(rid.clone());
-                }
-            }
-        }
+        // (post-4317 rule).
+        trace.realization_reads = resolve_reads_to_realizations(&trace.reads, &realization_by_cell);
         traces.insert(NodeId::Value(node.id.clone()), trace);
     }
 
@@ -425,32 +481,20 @@ pub fn build_trace_map_and_fields(
     for (_, cnode) in graph.constraints.iter() {
         let mut trace = extract_dependency_trace(&cnode.expr);
         // Walk expr for geometry-query calls (volume/area/centroid/bounding_box).
-        // If the single arg is a ValueRef to a geometry cell backed by a
-        // realization, add that realization to the forward realization_reads.
-        let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
-        cnode.expr.walk(&mut |node| {
-            if crate::geometry_ops::is_geometry_query_call(node)
-                && let reify_ir::CompiledExprKind::FunctionCall { args, .. } = &node.kind
-                && let Some(arg) = args.first()
-                && let reify_ir::CompiledExprKind::ValueRef(cell_id) = &arg.kind
-                && let Some(rid) = realization_by_cell.get(cell_id)
-                && seen_rids.insert(rid.clone())
-            {
-                trace.realization_reads.push(rid.clone());
-            }
-        });
+        trace.realization_reads =
+            collect_constraint_realization_reads(&cnode.expr, &realization_by_cell);
         traces.insert(NodeId::Constraint(cnode.id.clone()), trace);
     }
 
     // Realizations: extract VC deps from operation args (value-reads), plus
     // realization→realization edges from GeomRef::Sub operands (step-6: Boolean;
-    // step-8: Modify/Transform/Pattern/Sweep). Dedup producing rids per consumer.
+    // step-8: Modify/Transform/Pattern/Sweep). Dedup via `seen` (Vec sink).
     for (_, rnode) in graph.realizations.iter() {
         let mut trace = extract_realization_dependencies(&rnode.operations);
-        // Realization→realization forward edges.
+        // Realization→realization forward edges (Vec sink: explicit dedup required).
         let mut seen: HashSet<RealizationNodeId> = HashSet::new();
         for producing_rid in
-            extract_realization_edges(&rnode.operations, &rnode.id.entity, graph)
+            extract_realization_edges(&rnode.operations, &rnode.id.entity, &member_index)
         {
             if seen.insert(producing_rid.clone()) {
                 trace.realization_reads.push(producing_rid);
@@ -532,11 +576,11 @@ pub fn extract_realization_dependencies(
 /// the geometry output within any single entity. Resolution:
 ///
 /// 1. Splits `name` on the first '.' and takes the **member** part (right side).
-/// 2. Scans `graph.realizations` for a realization R such that
-///    `R.geometry_cell.member == member` AND `R.id.entity != consuming_entity`
-///    (cross-component only: a consuming realization cannot nominate its own entity's
-///    geometry cell as a cross-sub source).
-/// 3. Returns `Some(R.id)` on an unambiguous match, `None` on zero or >1 matches.
+///    Returns `None` immediately if there is no '.' (malformed name; no panic).
+/// 2. Looks up `member` in `member_index` (O(1) vs the prior O(R) linear scan).
+/// 3. Among the candidates, finds a realization R such that
+///    `R.id.entity != consuming_entity` (cross-component only).
+/// 4. Returns `Some(R.id)` on an unambiguous match, `None` on zero or >1 matches.
 ///
 /// Returning `None` on ambiguity is safe (a missing edge is a conservative miss,
 /// caught by β's `assert_dag_complete` test). Robust cross-structure disambiguation
@@ -544,22 +588,19 @@ pub fn extract_realization_dependencies(
 fn resolve_sub_ref(
     name: &str,
     consuming_entity: &str,
-    graph: &crate::graph::EvaluationGraph,
+    member_index: &HashMap<String, Vec<RealizationNodeId>>,
 ) -> Option<RealizationNodeId> {
     let member = name.split_once('.')?.1;
+    let candidates = member_index.get(member)?;
     let mut found: Option<RealizationNodeId> = None;
-    for (_, rnode) in graph.realizations.iter() {
-        if rnode.id.entity == consuming_entity {
+    for rid in candidates {
+        if rid.entity == consuming_entity {
             continue; // own-entity — not a cross-component source
         }
-        if let Some(ref cell) = rnode.geometry_cell
-            && cell.member == member
-        {
-            if found.is_some() {
-                return None; // ambiguous — more than one entity exports this member name
-            }
-            found = Some(rnode.id.clone());
+        if found.is_some() {
+            return None; // ambiguous — more than one entity exports this member name
         }
+        found = Some(rid.clone());
     }
     found
 }
@@ -569,17 +610,21 @@ fn resolve_sub_ref(
 ///
 /// `consuming_entity` is the entity that owns the consuming realization; it is
 /// passed to [`resolve_sub_ref`] to exclude own-entity matches (cross-component only).
+/// `member_index` is the pre-built member-name → `[RealizationNodeId]` map (built
+/// once per graph-builder call by [`member_realization_index`]) that allows
+/// [`resolve_sub_ref`] to do O(1) lookup instead of O(R) linear scan.
 ///
 /// **Step-6** handles `Boolean { left, right, .. }` operands. Step-8 extends this
 /// function with Modify/Transform/Pattern `.target` and Sweep `.profiles`.
 ///
 /// `GeomRef::Step(_)` is always skipped (intra-node; no cross-realization edge).
 /// The returned Vec may contain duplicates; deduplication is the caller's
-/// responsibility (use a `seen` HashSet as done for `seen_rids` in the builders).
+/// responsibility (use a `seen` HashSet on the forward/Vec path; on the reverse/
+/// HashSet path `add_realization` already deduplicates implicitly).
 fn extract_realization_edges(
     ops: &[reify_compiler::CompiledGeometryOp],
     consuming_entity: &str,
-    graph: &crate::graph::EvaluationGraph,
+    member_index: &HashMap<String, Vec<RealizationNodeId>>,
 ) -> Vec<RealizationNodeId> {
     let mut result = Vec::new();
     for op in ops {
@@ -587,7 +632,7 @@ fn extract_realization_edges(
             reify_compiler::CompiledGeometryOp::Boolean { left, right, .. } => {
                 for geom_ref in [left, right] {
                     if let reify_compiler::GeomRef::Sub(ref name) = *geom_ref
-                        && let Some(rid) = resolve_sub_ref(name, consuming_entity, graph)
+                        && let Some(rid) = resolve_sub_ref(name, consuming_entity, member_index)
                     {
                         result.push(rid);
                     }
@@ -598,7 +643,7 @@ fn extract_realization_edges(
             | reify_compiler::CompiledGeometryOp::Transform { target, .. }
             | reify_compiler::CompiledGeometryOp::Pattern { target, .. } => {
                 if let reify_compiler::GeomRef::Sub(ref name) = *target
-                    && let Some(rid) = resolve_sub_ref(name, consuming_entity, graph)
+                    && let Some(rid) = resolve_sub_ref(name, consuming_entity, member_index)
                 {
                     result.push(rid);
                 }
@@ -607,7 +652,7 @@ fn extract_realization_edges(
             reify_compiler::CompiledGeometryOp::Sweep { profiles, .. } => {
                 for geom_ref in profiles {
                     if let reify_compiler::GeomRef::Sub(ref name) = *geom_ref
-                        && let Some(rid) = resolve_sub_ref(name, consuming_entity, graph)
+                        && let Some(rid) = resolve_sub_ref(name, consuming_entity, member_index)
                     {
                         result.push(rid);
                     }
@@ -2243,6 +2288,166 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
             step_trace.realization_reads.is_empty(),
             "Transform Step target must yield EMPTY realization_reads. Got: {:?}",
             step_trace.realization_reads
+        );
+    }
+
+    // ── Task 4354 amendment: resolve_sub_ref boundary contracts ─────────────
+    //
+    // Pin the two documented edge behaviors of resolve_sub_ref that are NOT
+    // covered by the positive tests above:
+    //   (a) member-name collision: >1 entity exports the same member name →
+    //       None (conservative miss — no edge produced).
+    //   (b) malformed name (no '.' separator) → None, no panic.
+
+    /// Two realizations in distinct entities ("A" and "B") both export member
+    /// "body". A consumer in entity "Outer" references "x.body" — ambiguous.
+    /// Assert NO realization→realization edge is produced in either direction,
+    /// pinning the conservative-miss contract documented on `resolve_sub_ref`.
+    #[test]
+    fn resolve_sub_ref_member_name_collision_yields_no_edge() {
+        use crate::graph::{EvaluationGraph, RealizationNodeData};
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+        use reify_core::{ContentHash, RealizationNodeId};
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+
+        // Two realizations in distinct entities, both exporting member "body".
+        let r_a = RealizationNodeId::new("A", 0);
+        graph.realizations.insert(
+            r_a.clone(),
+            RealizationNodeData {
+                id: r_a.clone(),
+                geometry_cell: Some(ValueCellId::new("A", "body")),
+                operations: vec![],
+                content_hash: ContentHash::of_str("r_a"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+        let r_b = RealizationNodeId::new("B", 0);
+        graph.realizations.insert(
+            r_b.clone(),
+            RealizationNodeData {
+                id: r_b.clone(),
+                geometry_cell: Some(ValueCellId::new("B", "body")), // same member name!
+                operations: vec![],
+                content_hash: ContentHash::of_str("r_b"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // Consumer in "Outer" references "x.body" — ambiguous between A.body and B.body.
+        let outer = RealizationNodeId::new("Outer", 0);
+        graph.realizations.insert(
+            outer.clone(),
+            RealizationNodeData {
+                id: outer.clone(),
+                geometry_cell: None,
+                operations: vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("x.body".into()),
+                    right: GeomRef::Sub("x.body".into()),
+                }],
+                content_hash: ContentHash::of_str("outer"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
+        let traces = build_trace_map_and_fields(&graph, &[]);
+
+        // Neither r_a nor r_b should gain outer as a dependent.
+        assert!(
+            !index
+                .realization_dependents_of(&r_a)
+                .contains(&NodeId::Realization(outer.clone())),
+            "ambiguous member 'body' (A and B both export it): r_a must NOT gain outer \
+             as a dependent (conservative miss). Got: {:?}",
+            index.realization_dependents_of(&r_a)
+        );
+        assert!(
+            !index
+                .realization_dependents_of(&r_b)
+                .contains(&NodeId::Realization(outer.clone())),
+            "ambiguous member 'body' (A and B both export it): r_b must NOT gain outer \
+             as a dependent (conservative miss). Got: {:?}",
+            index.realization_dependents_of(&r_b)
+        );
+
+        // outer's forward trace must have EMPTY realization_reads.
+        let outer_trace = traces
+            .get(&NodeId::Realization(outer.clone()))
+            .expect("trace map must contain Realization(outer)");
+        assert!(
+            outer_trace.realization_reads.is_empty(),
+            "ambiguous member collision must yield EMPTY realization_reads on outer. \
+             Got: {:?}",
+            outer_trace.realization_reads
+        );
+    }
+
+    /// A `GeomRef::Sub` name that contains no '.' (malformed — missing the
+    /// sub-instance prefix) must resolve to `None` without panicking.
+    ///
+    /// `resolve_sub_ref` uses `split_once('.')` which returns `None` on a name
+    /// with no '.', short-circuiting safely via the `?` operator.
+    #[test]
+    fn resolve_sub_ref_malformed_name_no_dot_produces_no_edge_and_no_panic() {
+        use crate::graph::{EvaluationGraph, RealizationNodeData};
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+        use reify_core::{ContentHash, RealizationNodeId};
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+
+        let inner = RealizationNodeId::new("Inner", 0);
+        graph.realizations.insert(
+            inner.clone(),
+            RealizationNodeData {
+                id: inner.clone(),
+                geometry_cell: Some(ValueCellId::new("Inner", "body")),
+                operations: vec![],
+                content_hash: ContentHash::of_str("inner"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // Consumer with a Sub name that has no '.' (malformed — no sub prefix).
+        let outer = RealizationNodeId::new("Outer", 0);
+        graph.realizations.insert(
+            outer.clone(),
+            RealizationNodeData {
+                id: outer.clone(),
+                geometry_cell: None,
+                operations: vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("nodot".into()), // no '.'
+                    right: GeomRef::Sub("nodot".into()),
+                }],
+                content_hash: ContentHash::of_str("outer"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // Must not panic; must not produce any edge.
+        let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
+        let traces = build_trace_map_and_fields(&graph, &[]);
+
+        assert!(
+            !index
+                .realization_dependents_of(&inner)
+                .contains(&NodeId::Realization(outer.clone())),
+            "malformed Sub('nodot') must NOT produce a realization→realization edge. \
+             Got: {:?}",
+            index.realization_dependents_of(&inner)
+        );
+        let outer_trace = traces
+            .get(&NodeId::Realization(outer.clone()))
+            .expect("trace map must contain Realization(outer)");
+        assert!(
+            outer_trace.realization_reads.is_empty(),
+            "malformed Sub('nodot') must yield EMPTY realization_reads. Got: {:?}",
+            outer_trace.realization_reads
         );
     }
 }
