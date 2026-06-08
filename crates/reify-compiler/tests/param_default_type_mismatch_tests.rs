@@ -222,6 +222,89 @@ structure S {
     );
 }
 
+// ─── Step-6 regression: untyped params must NOT trigger ParamDefaultTypeMismatch ──
+
+/// An untyped port-member param with an enum default must NOT produce a
+/// `ParamDefaultTypeMismatch` diagnostic.  For an untyped param the compiler
+/// assigns a `Type::Real` inference fallback (entity.rs port-member first pass),
+/// NOT a user-declared type, so the declared-vs-initializer cross-check must be
+/// suppressed entirely.
+///
+/// This is the reviewer's exact locus (enum-valued port-param override).
+/// RED until step-7 gates `check_param_default_type` on `has_explicit_type`.
+#[test]
+fn untyped_port_member_param_with_enum_default_does_not_error() {
+    let source = r#"
+enum FluidType { Liquid, Gas }
+trait T { param fluid_type : FluidType }
+structure S {
+    port p : out T { param fluid_type = FluidType.Liquid }
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let false_positive = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        false_positive.is_none(),
+        "untyped port-member param 'fluid_type = FluidType.Liquid' must NOT produce \
+         ParamDefaultTypeMismatch (no explicit type annotation; cell_type is only a \
+         Type::Real inference fallback, not a user contract); got: {:?}",
+        false_positive
+    );
+}
+
+/// An untyped top-level structure param with an enum default must NOT produce a
+/// `ParamDefaultTypeMismatch` diagnostic.
+#[test]
+fn untyped_top_level_param_with_enum_default_does_not_error() {
+    let source = r#"
+enum Color { Red, Green }
+structure S {
+    param c = Color.Red
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let false_positive = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        false_positive.is_none(),
+        "untyped top-level param 'c = Color.Red' must NOT produce ParamDefaultTypeMismatch \
+         (no explicit type annotation; Type::Real is only an inference fallback, not a \
+         user-declared type); got: {:?}",
+        false_positive
+    );
+}
+
+/// An untyped top-level structure param with a dimensioned-unit default must NOT
+/// produce a `ParamDefaultTypeMismatch` diagnostic.
+#[test]
+fn untyped_top_level_param_with_dimensioned_default_does_not_error() {
+    let source = r#"
+structure S {
+    param x = 5mm
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let false_positive = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        false_positive.is_none(),
+        "untyped top-level param 'x = 5mm' must NOT produce ParamDefaultTypeMismatch \
+         (no explicit type annotation; Type::Real is only an inference fallback, not a \
+         user contract for Length); got: {:?}",
+        false_positive
+    );
+}
+
 /// Known inference limitation: `1.0 / 1m` is inferred as `Type::Real`
 /// (dimensionless) rather than `Type::Scalar[1/m]` (reciprocal-length).
 ///
