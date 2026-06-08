@@ -115,6 +115,75 @@ mod tests {
     }
 
     #[test]
+    fn compile_transform_op_apply_transform_2_args() {
+        // apply_transform(target, transform) — 2 args
+        let args: Vec<CompiledExpr> = vec![scalar_literal(0.0), scalar_literal(0.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(0);
+        let result = compile_transform_op(
+            "apply_transform",
+            args,
+            target.clone(),
+            SourceSpan::new(0, 0),
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        let ops = result.expect("2-arg apply_transform should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Transform {
+                kind: TransformKind::ApplyTransform,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "transform"]);
+            }
+            other => panic!("expected Transform(ApplyTransform), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_transform_op_apply_transform_wrong_arg_count_1() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(0.0)];
+        let span = SourceSpan::new(5, 15);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_transform_op(
+            "apply_transform",
+            args,
+            GeomRef::Step(0),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(result.is_none(), "expected None for 1-arg apply_transform");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        assert!(!diagnostics[0].labels.is_empty(), "expected label on diagnostic");
+        assert_eq!(diagnostics[0].labels[0].span, span, "label span must match expr_span");
+    }
+
+    #[test]
+    fn compile_transform_op_apply_transform_wrong_arg_count_3() {
+        let args: Vec<CompiledExpr> = (0..3).map(|_| scalar_literal(0.0)).collect();
+        let span = SourceSpan::new(5, 15);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_transform_op(
+            "apply_transform",
+            args,
+            GeomRef::Step(0),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(result.is_none(), "expected None for 3-arg apply_transform");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        assert!(!diagnostics[0].labels.is_empty(), "expected label on diagnostic");
+        assert_eq!(diagnostics[0].labels[0].span, span, "label span must match expr_span");
+    }
+
+    #[test]
     fn compile_transform_op_translate_direct() {
         // translate(target, dx, dy, dz) — 4 args
         let args: Vec<CompiledExpr> = (1..=4).map(|i| scalar_literal(i as f64)).collect();
