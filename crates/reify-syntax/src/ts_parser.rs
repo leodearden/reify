@@ -521,6 +521,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             annotations: vec![],
+            cfg_predicates: vec![],
         })
     }
 
