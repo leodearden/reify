@@ -1631,6 +1631,27 @@ impl Engine {
         self.capture_repr_tol = on;
     }
 
+    /// **Test-instrumentation only — not a stable public surface.**
+    ///
+    /// Replace the engine's `achieved_repr_tol` map with the supplied
+    /// synthetic map, bypassing the normal `tessellate_realizations`
+    /// population path.
+    ///
+    /// Used by `representation_within_assertion.rs` non-OCCT tests to inject
+    /// known deviation values so that `dispatch_constraints`'s
+    /// `RepresentationWithin` interception can be exercised without a geometry
+    /// kernel.  Mirrors the gating pattern of `set_capture_repr_tol` and
+    /// `snapshot_mut`.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn set_achieved_repr_tol_for_test(
+        &mut self,
+        map: std::collections::BTreeMap<String, f64>,
+    ) {
+        self.achieved_repr_tol = map;
+    }
+
     /// Returns the per-cell `UndefCause` map from the most recent `eval()` call.
     ///
     /// Empty when `capture_undef_causes` is `false` (the default). Only
