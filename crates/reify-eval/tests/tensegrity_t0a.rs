@@ -616,8 +616,20 @@ fn tensegrity_wires_preserves_declaration_order_struts_then_cables() {
 /// golden at `crates/reify-eval/tests/golden/tensegrity_t_prism.txt`.
 /// Regenerate with `REIFY_REGENERATE_GOLDEN=1`.
 ///
-/// RED state: `examples/tensegrity_t_prism.ri` and the golden don't exist yet,
-/// so `cargo run` either fails to read the example or the golden read panics.
+/// `CARGO_BIN_EXE_reify` is only injected for `reify-cli`'s own integration
+/// tests, so this cross-crate test execs the pre-built `reify` binary
+/// directly. It deliberately does NOT use `cargo run`: even when the binary
+/// is already compiled, `cargo run` re-fingerprints the entire workspace and
+/// blocks on the global cargo build-lock before exec, and under concurrent
+/// multi-worktree verify load that overhead can push the test past its time
+/// budget (esc-4340-32, exit 124). The merge gate's debug `--workspace` pass
+/// builds all `[[bin]]` targets (including `reify`) at `target/debug/reify`;
+/// its release pass is scoped to release-sensitive crates and does NOT rebuild
+/// `reify-cli`, so the resolution below prefers the profile-local bin and falls
+/// back to the debug-profile one when it is absent. The cargo runner
+/// (`.cargo/run-with-occt.sh`) exports `LD_LIBRARY_PATH` into this test
+/// process's environment, which the spawned child inherits, so OCCT shared
+/// libraries resolve without going through cargo.
 #[test]
 fn cli_reify_eval_prints_t_prism_wireframe() {
     let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
@@ -629,21 +641,57 @@ fn cli_reify_eval_prints_t_prism_wireframe() {
     let example = workspace_root.join("examples/tensegrity_t_prism.ri");
     let golden = std::path::Path::new(manifest).join("tests/golden/tensegrity_t_prism.txt");
 
-    let output = std::process::Command::new(env!("CARGO"))
+    // Resolve the prebuilt `reify` binary from this test binary's own location.
+    // The integration-test binary lives at `…/target/<profile>/deps/<testbin>`,
+    // so its grandparent is `…/target/<profile>` and the `reify` bin sits beside
+    // it at `…/target/<profile>/reify`.
+    //
+    // Cross-task seam (task/4390 HAS LANDED): the merge gate's RELEASE pass
+    // (verify.sh, DF_VERIFY_ROLE=merge --profile both) is scoped to
+    // release-sensitive crates and deliberately does NOT build `reify-cli`, so
+    // `target/release/reify` is absent during the release test pass. The
+    // preceding DEBUG pass runs the full `--workspace` (building
+    // `target/debug/reify`), and the reify CLI's golden output is
+    // profile-independent (the release pass exists to re-check reify-eval's own
+    // overflow/debug-assert behaviour, not the spawned CLI). So prefer the
+    // profile-local bin but fall back to the debug-profile sibling when it is
+    // absent. (Per-task verifies are unaffected: a reify-eval change pulls
+    // `reify-cli` into the affected set as a reverse-dep, so the debug bin is
+    // built.)
+    let test_bin = std::env::current_exe().expect("current_exe");
+    let profile_dir = test_bin
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("test binary lives in target/<profile>/deps");
+    let profile_local = profile_dir.join("reify");
+    let reify_bin = if profile_local.exists() {
+        profile_local
+    } else {
+        // Release pass: target/release/reify is absent (reify-cli not built);
+        // fall back to the debug-profile bin the debug pass built.
+        profile_dir
+            .parent()
+            .map(|target_dir| target_dir.join("debug").join("reify"))
+            .filter(|p| p.exists())
+            .unwrap_or(profile_local)
+    };
+
+    let output = std::process::Command::new(&reify_bin)
         .current_dir(&workspace_root)
-        .args([
-            "run",
-            "-q",
-            "-p",
-            "reify-cli",
-            "--bin",
-            "reify",
-            "--",
-            "eval",
-        ])
+        .arg("eval")
         .arg(&example)
         .output()
-        .expect("failed to spawn `cargo run -p reify-cli -- eval`");
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn pre-built reify binary at {}: {e}; is it built? \
+                 The gated verify pass builds it when it compiles `reify-cli` \
+                 (`cargo test -p reify-cli`, or the merge gate's debug \
+                 `--workspace` pass that builds all `[[bin]]` targets). Note: an \
+                 ad-hoc `cargo test -p reify-eval` alone does NOT build the \
+                 `reify` bin.",
+                reify_bin.display()
+            )
+        });
 
     assert!(
         output.status.success(),
