@@ -2953,6 +2953,93 @@ mod tests {
         );
     }
 
+    // ── task 4366: cancel short-circuit + cadence ─────────────────────────────
+
+    /// step-1 RED (task 4366): when the progress closure returns
+    /// `CgIterationControl::Cancel` on its first call, `solve_cantilever_fea`
+    /// must NOT run the stress-recovery loop: `nodal_stress` must be empty and
+    /// `max_von_mises` must be 0.0.
+    ///
+    /// Contrast case: the same fixture solved with `None` progress (no cancel)
+    /// must converge, populate `nodal_stress`, and have `max_von_mises > 0`.
+    ///
+    /// RED on base: the cancel branch does not exist yet — stress recovery
+    /// always runs, so `nodal_stress.is_empty()` fails.
+    #[test]
+    fn solve_cantilever_fea_cancelled_skips_stress_recovery() {
+        let iso = IsotropicElastic { youngs_modulus: 200e9_f64, poisson_ratio: 0.3_f64 };
+        let model = MaterialModel::Isotropic(iso);
+        let length = 1.0_f64;
+        let width = 0.1_f64;
+        let height = 0.1_f64;
+        let tip_force = [0.0_f64, 0.0, -1000.0];
+
+        // ── Case 1: cancel on first iteration ──────────────────────────────────
+        let mut cancelled = false;
+        let (fea_cancelled, _) = solve_cantilever_fea(
+            &model,
+            length,
+            width,
+            height,
+            tip_force,
+            None,
+            &[],
+            true,
+            None,
+            Some(&mut |_iter: usize, _residual: f64| -> CgIterationControl {
+                cancelled = true;
+                CgIterationControl::Cancel
+            }),
+        );
+
+        assert!(cancelled, "progress closure must have been invoked at least once");
+        assert!(
+            !fea_cancelled.converged,
+            "cancelled solve must report converged=false"
+        );
+        assert!(
+            fea_cancelled.iterations >= 1,
+            "cancelled solve must report ≥1 iteration, got {}",
+            fea_cancelled.iterations
+        );
+        assert!(
+            fea_cancelled.nodal_stress.is_empty(),
+            "cancelled solve must skip stress recovery — nodal_stress must be empty, \
+             got {} entries",
+            fea_cancelled.nodal_stress.len()
+        );
+        assert_eq!(
+            fea_cancelled.max_von_mises,
+            0.0,
+            "cancelled solve must skip stress recovery — max_von_mises must be 0.0"
+        );
+
+        // ── Case 2: no cancel (None progress) → full stress recovery ───────────
+        let (fea_full, _) = solve_cantilever_fea(
+            &model,
+            length,
+            width,
+            height,
+            tip_force,
+            None,
+            &[],
+            true,
+            None,
+            None,
+        );
+
+        assert!(fea_full.converged, "uncancelled solve must converge");
+        assert!(
+            !fea_full.nodal_stress.is_empty(),
+            "uncancelled solve must populate nodal_stress"
+        );
+        assert!(
+            fea_full.max_von_mises > 0.0,
+            "uncancelled solve must have max_von_mises > 0, got {}",
+            fea_full.max_von_mises
+        );
+    }
+
     /// step-3 RED (task 4245): `solve_cantilever_fea` honours a -Y tip_force.
     ///
     /// tip_force = [0.0, -1000.0, 0.0] on a 1 m × 0.1 m × 0.1 m beam.
