@@ -3090,7 +3090,7 @@ impl Engine {
                             };
                             // drop the closure to release borrows of &values, &snapshot_values,
                             // &runtime_sink before the mutable snapshot_values.insert below.
-                            drop(default_or);
+                            let _ = default_or;
 
                             // Use the actual dependency trace from combined_traces so that
                             // dirty-cone propagation marks dependents when an upstream let
