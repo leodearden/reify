@@ -282,6 +282,11 @@ if git rev-parse --git-common-dir &>/dev/null; then
         elif [ -d "$_hooks_link" ]; then
             rm -rf "$_hooks_link.sample-bak"
             mv "$_hooks_link" "$_hooks_link.sample-bak"
+        else
+            # Stray non-symlink, non-directory file (e.g. a plain file left behind).
+            # Remove it gracefully rather than letting ln fail and abort all of setup-dev.sh.
+            warn ".git/hooks is a stray non-symlink file — removing it to relink"
+            rm -f "$_hooks_link"
         fi
         ln -s ../hooks "$_hooks_link"
         ok ".git/hooks -> ../hooks (gate immune to core.hooksPath value)"

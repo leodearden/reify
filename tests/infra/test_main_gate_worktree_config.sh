@@ -184,8 +184,12 @@ echo "--- (g) linked-worktree no-regression ---"
 
 REPO_G="$(make_repo)"
 make_commit "$REPO_G" "init" >/dev/null
-# Shared value (matches dark-factory's create_worktree write)
-git -C "$REPO_G" config core.hooksPath hooks
+# Use a distinct sentinel (not 'hooks') so the assertion can distinguish
+# "correctly inherits shared" from "never had any effect".  If the helper
+# accidentally wrote a per-worktree override into the linked worktree's gitdir,
+# the linked worktree would resolve to 'hooks' (from config.worktree) rather than
+# 'shared-marker', and the test would correctly fail.
+git -C "$REPO_G" config core.hooksPath shared-marker
 
 LINKED_G="$(mktemp -d)"; _TMPDIRS+=("$LINKED_G")
 rmdir "$LINKED_G"   # git worktree add requires the target path to not exist
@@ -194,9 +198,10 @@ git -C "$REPO_G" worktree add -q "$LINKED_G" HEAD
 # Seed only the main worktree — the linked worktree's gitdir gets no config.worktree
 "$HELPER" "$REPO_G" >/dev/null 2>&1
 
-# Linked worktree has no per-worktree override → falls back to shared 'hooks'
-assert "(g) linked worktree still inherits shared core.hooksPath=hooks" \
-    bash -c "[ \"\$(git -C '$LINKED_G' config --get core.hooksPath 2>/dev/null)\" = 'hooks' ]"
+# Linked worktree has no per-worktree override → falls back to shared 'shared-marker'
+# Proves the helper did NOT leak a per-worktree core.hooksPath into the linked worktree.
+assert "(g) linked worktree still inherits shared core.hooksPath=shared-marker" \
+    bash -c "[ \"\$(git -C '$LINKED_G' config --get core.hooksPath 2>/dev/null)\" = 'shared-marker' ]"
 
 # ==============================================================================
 # Leak-guard assertions (step-3): helper must abort when core.bare=true or
