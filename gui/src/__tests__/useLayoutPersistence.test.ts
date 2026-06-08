@@ -5,7 +5,9 @@ import {
   savePanelLayout,
   STORAGE_KEY,
   clampPanelHeightsToFit,
+  clampProblemsHeight,
   type ClampOptions,
+  type ProblemsClampOptions,
 } from '../hooks/useLayoutPersistence';
 
 describe('useLayoutPersistence', () => {
@@ -188,5 +190,51 @@ describe('clampPanelHeightsToFit', () => {
       property: opts.minPanelHeight,
       constraint: opts.minPanelHeight,
     });
+  });
+});
+
+describe('clampProblemsHeight', () => {
+  // Standard opts matching App.tsx production values.
+  const opts: ProblemsClampOptions = {
+    minPanelHeight: 80,
+    editorMinHeight: 80,
+    splitterThickness: 4,
+  };
+  // available = containerHeight - editorMinHeight - splitterThickness
+  //           = containerHeight - 80 - 4 = containerHeight - 84
+
+  it('returns preferred unchanged when it fits and is above min', () => {
+    // preferred=160, container=400 → available=316, fits.
+    const result = clampProblemsHeight(160, 400, opts);
+    expect(result).toBe(160);
+  });
+
+  it('returns preferred unchanged at the exact boundary (preferred === available)', () => {
+    // preferred=316, container=400 → available=316, exactly fits.
+    const result = clampProblemsHeight(316, 400, opts);
+    expect(result).toBe(316);
+  });
+
+  it('clamps down to available when preferred exceeds available', () => {
+    // preferred=350, container=400 → available=316, must clamp to 316.
+    const result = clampProblemsHeight(350, 400, opts);
+    expect(result).toBe(316);
+  });
+
+  it('raises up to minPanelHeight when preferred is below min', () => {
+    // preferred=40, min=80 → must return 80.
+    const result = clampProblemsHeight(40, 400, opts);
+    expect(result).toBe(80);
+  });
+
+  it('returns minPanelHeight for pathologically small container where available < min', () => {
+    // container=100 → available=16, less than minPanelHeight=80. Returns minPanelHeight.
+    const result = clampProblemsHeight(160, 100, opts);
+    expect(result).toBe(80);
+  });
+
+  it('returns minPanelHeight when preferred is 0', () => {
+    const result = clampProblemsHeight(0, 400, opts);
+    expect(result).toBe(80);
   });
 });
