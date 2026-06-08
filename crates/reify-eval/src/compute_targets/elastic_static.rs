@@ -1051,6 +1051,10 @@ pub(crate) fn solve_cantilever_fea(
         tolerance: 1e-6,
         max_iter: 2000,
     };
+    // Capture max_iter before `opts` is moved into the solve call (task 4366):
+    // the cancel short-circuit below needs it to distinguish cooperative cancel
+    // from max-iteration exhaustion without threading an extra parameter.
+    let max_iter = opts.max_iter;
     // Determinism contract (task 2926): bit-stability requires a *fixed* CG
     // starting vector. CG converges to the same solution from any initial guess,
     // but the iteration count — and thus the exact bit-pattern of the converged
@@ -1070,6 +1074,47 @@ pub(crate) fn solve_cantilever_fea(
     } else {
         solve_cg_with_warm_state(&k, &f, warm_start, opts, solver_mode)
     };
+
+    // ── Cancel short-circuit (task 4366) ──────────────────────────────────────
+    //
+    // Skip stress recovery entirely when the solve was cooperatively cancelled.
+    //
+    // Detection predicate: `!converged && iterations < max_iter`
+    //
+    // The cg_loop exit-condition contract (solver.rs:994-1045) guarantees this
+    // predicate is true *if and only if* a cooperative cancel fired:
+    //   - Convergence            → converged = true            (predicate false)
+    //   - max_iter exhaustion    → iterations == max_iter       (predicate false)
+    //   - Degenerate system      → panics on p·Kp > 0 assert   (never reaches here)
+    //   - Cooperative cancel     → converged = false, iterations < max_iter (predicate true)
+    //
+    // The no-callback entry point (solve_cg_with_warm_state) can never cancel,
+    // so it only reaches non-converged at iterations == max_iter — predicate
+    // stays false there too, leaving the existing callers completely unaffected.
+    //
+    // On the cancelled path the trampoline's §6b post-solve cancel check
+    // (elastic_static.rs:~580) returns ComputeOutcome::Cancelled and never reads
+    // stress fields, so a stress-less struct is correct.
+    let converged = cg_result.converged;
+    let iterations = cg_result.iterations;
+    if !converged && iterations < max_iter {
+        return (
+            CantileverFeaSolve {
+                u: cg_result.into_shared_u(),
+                coords,
+                tip_nodes,
+                max_von_mises: 0.0,
+                converged,
+                iterations,
+                tet_connectivity,
+                nodal_stress: Vec::new(),
+                nx,
+                ny,
+                nz,
+            },
+            fresh_warm,
+        );
+    }
 
     // ── Stress recovery: max von Mises across all elements ────────────────────
     //
@@ -1161,11 +1206,8 @@ pub(crate) fn solve_cantilever_fea(
 
     let nodal_stress = recover_nodal_stress_p1(n_nodes, &se_refs);
 
-    // Hoist the Copy scalars before into_shared_u() consumes cg_result.
-    // Struct-literal fields evaluate top-to-bottom; moving cg_result at `u:`
-    // would invalidate the later converged/iterations reads without this hoist.
-    let converged = cg_result.converged;
-    let iterations = cg_result.iterations;
+    // `converged` and `iterations` were hoisted before the cancel short-circuit
+    // above (task 4366); no re-declaration needed here.
     let fea = CantileverFeaSolve {
         u: cg_result.into_shared_u(),
         coords,
