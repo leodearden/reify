@@ -6,25 +6,27 @@
 //!
 //! ```ri
 //! structure def CurvatureSmoke {
-//!     let s       = sphere(5mm)
-//!     let cyl     = cylinder(10mm, 20mm)
-//!     let pt_s    = point3(5mm, 0mm, 0mm)
-//!     let pt_c    = point3(10mm, 0mm, 0mm)
-//!     let k_surf  = curvature(s, pt_s)
-//!     let k_curve = curvature(cyl, pt_c)
+//!     let s             = sphere(5mm)
+//!     let cyl           = cylinder(10mm, 20mm)
+//!     let pt_s          = point3(5mm, 0mm, 0mm)
+//!     let pt_c          = point3(10mm, 0mm, 0mm)
+//!     let k_surf        = curvature(s, pt_s)
+//!     let k_curve       = curvature(cyl, pt_c)
+//!     let k_surf_face   = curvature(faces(s)[0], pt_s)
+//!     let k_surf_face_t = transpose(k_surf_face)
 //! }
 //! ```
 //!
 //! Two assertions:
 //!
 //! 1. **COMPILE-LEVEL** (always) — `curvature_smoke.ri` parses and compiles
-//!    with no error-severity diagnostics. `curvature` is registered in
-//!    `units.rs` under `GEOMETRY_QUERY_NAMES` (task 3621, KGQ-μ), so the cell
-//!    type resolves to `Scalar<Curvature>`.  At DSL eval time both cells
-//!    resolve to `Value::Undef` because solid handles fail the
-//!    face/edge kernel queries (pre-Phase-3 sub-handle chaining); only
-//!    Warning diagnostics are emitted — not Errors — so the compile assertion
-//!    holds.
+//!    with no error-severity diagnostics. `k_surf` and `k_curve` (let-bound
+//!    solid args) type as `Scalar<Curvature>`; `k_surf_face` (inline
+//!    `faces(s)[0]` arg) types as `Matrix<2,2,Curvature>` via task-4315
+//!    arg-type-aware dispatch; `k_surf_face_t = transpose(k_surf_face)` also
+//!    types as `Matrix<2,2,Curvature>`. At DSL eval time all Undef-path cells
+//!    resolve to `Value::Undef`; only Warning diagnostics are emitted — not
+//!    Errors — so the compile assertion holds.
 //!
 //! 2. **OCCT-BACKED RUNTIME** (gated on `reify_kernel_occt::OCCT_AVAILABLE`) —
 //!    Spawn a real `OcctKernelHandle`, build the geometry directly at the kernel
@@ -43,6 +45,7 @@
 //! direct-query pattern) and `curve_curvature_integration.rs` (sphere/circle
 //! fixture shapes and tolerance conventions).
 
+use reify_core::{DimensionVector, Type};
 use reify_ir::{GeometryOp, GeometryQuery, Value};
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 use std::f64::consts::{PI, TAU};
@@ -189,5 +192,57 @@ fn curvature_smoke_compiles_and_occt_query_chain_live() {
         "CurveCurvatureAt circle r=10mm: expected |κ| = 1/r = {expected_curve} m⁻¹, \
          got κ = {kappa} (|κ| = {}, rel_err = {rel_err_curve})",
         kappa.abs()
+    );
+}
+
+/// Pins the task-4315 user-observable signal: `k_surf_face` (added in step-6)
+/// uses the inline `faces(s)[0]` form and must compile-type as
+/// `Matrix<2,2,Curvature>`.
+///
+/// This test is intentionally SEPARATE from `curvature_smoke_compiles_and_occt_query_chain_live`
+/// so the OCCT-direct numeric assertions are unaffected (they bypass the new cell).
+///
+/// Fails until step-6 adds `let k_surf_face = curvature(faces(s)[0], pt_s)` to
+/// curvature_smoke.ri — until then the cell is not found.
+#[test]
+fn curvature_smoke_surface_face_typechecks_as_matrix_2x2_curvature() {
+    let source = std::fs::read_to_string(CURVATURE_SMOKE_PATH)
+        .expect("examples/kernel_queries/curvature_smoke.ri should exist");
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+
+    // No error-severity diagnostics (Warnings from Undef eval are acceptable).
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "curvature_smoke.ri should compile with no error-severity diagnostics, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    // Locate the k_surf_face cell — added by step-6.
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least one template in curvature_smoke.ri");
+    let k_surf_face_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "k_surf_face")
+        .expect(
+            "expected 'k_surf_face' value cell — not found; \
+             step-6 must add `let k_surf_face = curvature(faces(s)[0], pt_s)` to curvature_smoke.ri",
+        );
+
+    let expected = Type::Matrix {
+        m: 2,
+        n: 2,
+        quantity: Box::new(Type::Scalar {
+            dimension: DimensionVector::CURVATURE,
+        }),
+    };
+    assert_eq!(
+        k_surf_face_cell.cell_type, expected,
+        "`curvature(faces(s)[0], pt_s)` in curvature_smoke.ri must compile-type \
+         as Matrix{{2,2,Curvature}}, got {:?}",
+        k_surf_face_cell.cell_type
     );
 }
