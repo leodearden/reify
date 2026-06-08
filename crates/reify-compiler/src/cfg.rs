@@ -56,6 +56,10 @@ fn arg_satisfied(arg: &reify_ast::PragmaArg, active: &CfgSet) -> bool {
     use reify_ast::{PragmaArg, PragmaValue};
     match arg {
         PragmaArg::Bare(PragmaValue::Ident(flag)) => active.flags.contains(flag),
+        PragmaArg::KeyValue {
+            key,
+            value: PragmaValue::String(v),
+        } if key == "target" => active.target.as_deref() == Some(v.as_str()),
         _ => false,
     }
 }
