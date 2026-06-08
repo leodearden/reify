@@ -196,7 +196,11 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     Value::Undef
                 });
             }
-            match kind {
+            // PRD §7.2: compute the per-kind motion transform first; apply origin ∘ motion
+            // ONCE below, outside all per-kind arms, so every consumer inherits the offset
+            // without duplicating the compose logic. Arms are unchanged — each produces a
+            // Value::Transform on success or escapes via `return Some(Value::Undef)` on error.
+            let motion = match kind {
                 "prismatic" | "revolute" => transform_at_simple_joint(kind, map, &args[1]),
                 // 0-DOF fixed joint: the canonical user form is now `transform_at(fixed_joint)`
                 // (1-arg, task 2688); this 2-arg arm is the chain-machinery path used by
@@ -466,6 +470,20 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     transform_at_simple_joint(parent_kind, parent_map, &coupled_value)
                 }
                 _ => Value::Undef,
+            };
+            // PRD §7.2: pre-compose origin ∘ motion uniformly, ONCE, outside all
+            // per-kind arms. None → return motion verbatim (byte-identical to pre-change,
+            // PRD §7.4). Some → origin ∘ motion via the typed compose_transforms helper
+            // (propagates Undef / dimension errors automatically).
+            match map.get(&Value::String("origin".to_string())) {
+                None => motion,
+                Some(origin) => {
+                    if motion.is_undef() {
+                        Value::Undef
+                    } else {
+                        crate::geometry::compose_transforms(origin, &motion)
+                    }
+                }
             }
         }
         "couple" => {
