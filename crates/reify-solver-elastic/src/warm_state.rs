@@ -74,6 +74,35 @@ impl CgWarmState {
     }
 }
 
+/// High-level Jacobi-CG producer wrapper with per-iteration progress callback
+/// (task #4079).
+///
+/// Identical to [`solve_cg_with_warm_state`] but forwards a `progress`
+/// callback to [`crate::solver::solve_cg_with_progress`], enabling
+/// per-iteration emit and `CgIterationControl::Cancel` interruption.
+///
+/// # Allocation sharing
+///
+/// Same zero-copy Arc-share contract as [`solve_cg_with_warm_state`]:
+/// `CgResult.u` and `CgWarmState.u` are the same `Arc<Vec<f64>>`
+/// (refcount bump only, no Vec copy).
+pub fn solve_cg_with_warm_state_progress(
+    k: &faer::sparse::SparseRowMat<usize, f64>,
+    f: &[f64],
+    prior: Option<&CgWarmState>,
+    opts: crate::solver::CgSolverOptions,
+    mode: crate::solver::SolverMode,
+    progress: &mut dyn FnMut(usize, f64) -> crate::solver::CgIterationControl,
+) -> (crate::solver::CgResult, CgWarmState) {
+    let prior_slice = prior.map(|p| p.u.as_slice());
+    let result = crate::solver::solve_cg_with_progress(k, f, prior_slice, opts, mode, progress);
+    // `CgResult.u` is private (accessor-only); `shared_u()` returns the
+    // `Arc<Vec<f64>>` with a refcount bump only (no Vec copy), preserving the
+    // single-allocation donate contract.
+    let fresh = CgWarmState::from_arc(result.shared_u());
+    (result, fresh)
+}
+
 /// High-level Jacobi-CG producer wrapper for engine wiring (PRD task #14).
 ///
 /// Solves `K·u = f` with optional prior warm state, and emits both the
@@ -91,11 +120,13 @@ impl CgWarmState {
 ///
 /// `CgResult.u` and `CgWarmState.u` are both `Arc<Vec<f64>>`. This
 /// function shares the single allocation produced by the underlying
-/// `solve_cg_warm` call between the two — `Arc::clone` bumps the
-/// refcount only (no `Vec` copy), so a single 10⁴–10⁶-DOF solve
-/// produces exactly one displacement-vector allocation regardless of
-/// whether the caller keeps the `CgResult`, the `CgWarmState`, or
-/// both.
+/// solver call between the two — `Arc::clone` bumps the refcount only
+/// (no `Vec` copy), so a single 10⁴–10⁶-DOF solve produces exactly one
+/// displacement-vector allocation regardless of whether the caller keeps
+/// the `CgResult`, the `CgWarmState`, or both.
+///
+/// Delegates to [`solve_cg_with_warm_state_progress`] with a no-op
+/// closure so the Arc-share/donate contract is maintained in one place.
 pub fn solve_cg_with_warm_state(
     k: &faer::sparse::SparseRowMat<usize, f64>,
     f: &[f64],
@@ -103,19 +134,15 @@ pub fn solve_cg_with_warm_state(
     opts: crate::solver::CgSolverOptions,
     mode: crate::solver::SolverMode,
 ) -> (crate::solver::CgResult, CgWarmState) {
-    let prior_slice = prior.map(|p| p.u.as_slice());
-    let result = crate::solver::solve_cg_warm(k, f, prior_slice, opts, mode);
-    // Share `u` between the result and the warm state via Arc::clone —
-    // refcount bump only, no Vec copy. Both pointers refer to the same
-    // 10⁴–10⁶-DOF `Vec<f64>` allocation.
-    let fresh = CgWarmState::from_arc(result.shared_u());
-    (result, fresh)
+    solve_cg_with_warm_state_progress(k, f, prior, opts, mode, &mut |_, _| {
+        crate::solver::CgIterationControl::Continue
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::solver::{CgSolverOptions, SolverMode};
+    use crate::solver::{CgIterationControl, CgSolverOptions, SolverMode};
     use faer::sparse::{SparseRowMat, Triplet};
 
     /// `CgWarmState::from_opaque_state` returns `None` (rather than
@@ -213,6 +240,144 @@ mod tests {
         assert!(
             result_warm.converged,
             "warm at exact solution must report converged"
+        );
+    }
+
+    // ── step-1 tests for solve_cg_with_warm_state_progress ──────────────────
+
+    /// Helper: build the 2×2 SPD fixture [[4,1],[1,3]] with RHS [1,2].
+    fn make_2x2_fixture() -> (SparseRowMat<usize, f64>, Vec<f64>, CgSolverOptions) {
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = vec![1.0_f64, 2.0];
+        let opts = CgSolverOptions { tolerance: 1e-10, max_iter: 100 };
+        (k, f, opts)
+    }
+
+    /// Test A: cold solve with a recording progress closure.
+    /// - result.converged == true
+    /// - recorded iters are 1-indexed (start at 1) with len == result.iterations
+    /// - last residual is finite and small
+    /// - fresh.u == result.u (Arc-shared donate)
+    #[test]
+    fn solve_cg_with_warm_state_progress_records_iters_and_donates() {
+        let (k, f, opts) = make_2x2_fixture();
+        let mut records: Vec<(usize, f64)> = Vec::new();
+
+        let (result, fresh) = solve_cg_with_warm_state_progress(
+            &k,
+            &f,
+            None,
+            opts,
+            SolverMode::Deterministic,
+            &mut |iter, residual| {
+                records.push((iter, residual));
+                CgIterationControl::Continue
+            },
+        );
+
+        assert!(result.converged, "cold solve must converge");
+        assert!(
+            !records.is_empty(),
+            "progress closure must have been called at least once"
+        );
+        // iters must be 1-indexed
+        assert_eq!(
+            records[0].0, 1,
+            "first recorded iter must be 1 (1-indexed), got {}",
+            records[0].0
+        );
+        assert_eq!(
+            records.len(),
+            result.iterations,
+            "recorded count must equal result.iterations: {} vs {}",
+            records.len(),
+            result.iterations
+        );
+        let last_residual = records.last().unwrap().1;
+        assert!(
+            last_residual.is_finite(),
+            "last residual must be finite"
+        );
+        assert!(
+            last_residual < 1e-5,
+            "last residual must be small, got {}",
+            last_residual
+        );
+        assert!(
+            Arc::ptr_eq(&fresh.u, &result.shared_u()),
+            "fresh warm state must share result.u (Arc donate)"
+        );
+    }
+
+    /// Test B: warm re-solve at the exact solution → 0 iterations, closure not invoked.
+    #[test]
+    fn solve_cg_with_warm_state_progress_warm_resolves_in_zero_iters() {
+        let (k, f, opts) = make_2x2_fixture();
+
+        // Cold solve to get the warm state.
+        let (_, fresh) = solve_cg_with_warm_state_progress(
+            &k,
+            &f,
+            None,
+            opts.clone(),
+            SolverMode::Deterministic,
+            &mut |_, _| CgIterationControl::Continue,
+        );
+
+        let mut records: Vec<(usize, f64)> = Vec::new();
+        let (result_warm, _) = solve_cg_with_warm_state_progress(
+            &k,
+            &f,
+            Some(&fresh),
+            opts,
+            SolverMode::Deterministic,
+            &mut |iter, residual| {
+                records.push((iter, residual));
+                CgIterationControl::Continue
+            },
+        );
+
+        assert_eq!(
+            result_warm.iterations, 0,
+            "warm at exact solution must return 0 iterations, got {}",
+            result_warm.iterations
+        );
+        assert!(result_warm.converged, "warm at exact solution must be converged");
+        assert!(
+            records.is_empty(),
+            "closure must NOT be invoked when 0 iterations are needed"
+        );
+    }
+
+    /// Test C: closure returning Cancel on first call → converged==false, iterations==1.
+    #[test]
+    fn solve_cg_with_warm_state_progress_cancel_on_first_iter() {
+        let (k, f, opts) = make_2x2_fixture();
+
+        let (result, _fresh) = solve_cg_with_warm_state_progress(
+            &k,
+            &f,
+            None,
+            opts,
+            SolverMode::Deterministic,
+            &mut |_, _| CgIterationControl::Cancel,
+        );
+
+        assert!(!result.converged, "cancelled solve must not converge");
+        assert_eq!(
+            result.iterations, 1,
+            "cancelled on first iteration must show iterations==1, got {}",
+            result.iterations
         );
     }
 }

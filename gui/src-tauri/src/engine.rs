@@ -530,6 +530,13 @@ pub struct EngineSession {
     /// `AppState.pending_solve_cancel` so `cancel_solve_impl` can read it.
     /// When `None` (the default), all lifecycle calls are no-ops.
     solve_cancel_sink: Option<Arc<dyn SolveCancellationSink>>,
+    /// Optional solver-progress sink installed by the GUI layer (task 4079).
+    ///
+    /// When `Some`, `set_solver_progress_sink` forwards the sink to the inner
+    /// `reify_eval::Engine`, which installs it in the thread-local dispatch
+    /// context around every trampoline call.  When `None` (the default) no
+    /// per-iteration progress events are emitted.
+    solver_progress_sink: Option<Arc<dyn reify_eval::SolverProgressSink>>,
     /// Error message from the most recent failed hot-reload attempt, or `None`
     /// when no failure is recorded (after construction, after a successful
     /// `commit_state` cycle, or before any reload has been attempted).
@@ -1007,6 +1014,7 @@ impl EngineSession {
             fea_case_emitter: None,
             mode_shape_frame_emitter: None,
             solve_cancel_sink: None,
+            solver_progress_sink: None,
             last_reload_error: None,
         }
     }
@@ -1060,6 +1068,30 @@ impl EngineSession {
         self.solve_cancel_sink = Some(sink);
     }
 
+    /// Install a solver-progress sink on this session (task 4079).
+    ///
+    /// Forwards the sink to the underlying `reify_eval::Engine`, which installs
+    /// it in the thread-local dispatch context around every trampoline call.
+    /// The production sink (`TauriSolverProgressEmitter` in `main.rs`) maps
+    /// `SolverProgressUpdate` → `types::SolverProgress` and emits it to the
+    /// frontend via the `"solver-progress"` IPC channel.
+    pub fn set_solver_progress_sink(&mut self, sink: Arc<dyn reify_eval::SolverProgressSink>) {
+        self.solver_progress_sink = Some(Arc::clone(&sink));
+        self.core.engine_mut().set_solver_progress_sink(sink);
+    }
+
+    /// Expose the engine's current `active_solve_cancel` handle for testing.
+    ///
+    /// Returns the same `Arc<AtomicBool>` that `with_solve_slot` installs on the
+    /// engine before each check.  Tests use this to assert that `H.cancel()`
+    /// propagates to the trampoline via the shared atomic.
+    #[cfg(test)]
+    pub(crate) fn engine_active_solve_cancel_for_test(
+        &self,
+    ) -> Option<reify_eval::CancellationHandle> {
+        self.core.engine().active_solve_cancel()
+    }
+
     /// Wrap any engine operation in the solve-cancellation slot lifecycle.
     ///
     /// If a `SolveCancellationSink` is installed, fires:
@@ -1067,11 +1099,11 @@ impl EngineSession {
     /// 2. `solve_finished()` — AFTER `f` returns, guaranteed by
     ///    [`SolveFinishedGuard`] even if `f` short-circuits via `?` or panics.
     ///
-    /// **Limitation:** the handle does NOT interrupt the in-flight solve.
-    /// The elastic_static trampoline ignores its `_cancellation` handle and
-    /// `solve_cantilever_fea` is a single blocking call.  True interruption
-    /// requires cross-cutting `reify-eval` handle-injection and cooperative
-    /// polling in the trampoline / solver — future work outside task γ's scope.
+    /// The handle is also installed on the inner `Engine` via
+    /// `set_active_solve_cancel(Some(handle.clone()))` (task 4079).  A fresh
+    /// non-cancelled handle is minted before every check, so stale handles from
+    /// prior checks are harmless — the install-before-every-check pattern means
+    /// no solve ever executes against a cancelled handle from a prior cycle.
     ///
     /// The Arc clone (cheap) releases the borrow on `self.solve_cancel_sink`
     /// before the mutable borrow of `self` is forwarded to `f` — required to
@@ -1082,9 +1114,20 @@ impl EngineSession {
         if let Some(ref sink) = sink_arc {
             sink.solve_started(handle.clone());
         }
+        // Install the same handle on the engine so the trampoline can poll it
+        // via the thread-local dispatch context (task 4079 step-10).
+        self.core
+            .engine_mut()
+            .set_active_solve_cancel(Some(handle));
         // Guard fires solve_finished() on drop — covers ? early-returns and panics.
         let _guard = SolveFinishedGuard(sink_arc);
-        f(self)
+        let result = f(self);
+        // Clear the cancel slot now that the solve window has closed.
+        // Prevents a stale cancelled handle from spuriously triggering
+        // ComputeOutcome::Cancelled on any future dispatch that bypasses
+        // with_solve_slot (e.g., a direct engine.eval() call in tests).
+        self.core.engine_mut().set_active_solve_cancel(None);
+        result
         // _guard drops here → solve_finished() called
     }
 

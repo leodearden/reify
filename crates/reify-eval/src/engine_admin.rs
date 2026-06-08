@@ -299,6 +299,10 @@ impl Engine {
             // for the matching cfg gates on the declaration and read site).
             #[cfg(any(test, feature = "test-instrumentation"))]
             panic_on_eval_cells: std::collections::HashSet::new(),
+            // Task #4079: progress sink and active cancel handle — both start
+            // unset; installed by the GUI before each solve via the setters.
+            solver_progress_sink: None,
+            active_solve_cancel: None,
             // undef-self-describing α (task 4321): capture disabled by default
             // to guarantee zero overhead on the hot path.
             capture_undef_causes: false,
@@ -867,6 +871,37 @@ impl Engine {
     /// See `docs/prds/v0_3/compute-node-contract.md` §4.
     pub fn compute_dispatch(&self, target: &str) -> Option<crate::engine_compute::ComputeFn> {
         self.compute_registry.fns.get(target).copied()
+    }
+
+    // ── Task #4079: solver-progress sink + active cancel handle ──────────────
+
+    /// Install a per-iteration progress sink.  The sink is cloned (via `Arc`)
+    /// into the thread-local `SolveDispatchContext` on each
+    /// `run_compute_dispatch` call, so the elastic-static trampoline can emit
+    /// `SolverProgressUpdate` events without changing the `ComputeFn` signature.
+    pub fn set_solver_progress_sink(
+        &mut self,
+        sink: std::sync::Arc<dyn crate::solver_progress::SolverProgressSink>,
+    ) {
+        self.solver_progress_sink = Some(sink);
+    }
+
+    /// Install (or clear) the in-flight cancellation handle for the current
+    /// solve.  `run_compute_dispatch` clones this handle into the thread-local
+    /// context before invoking the trampoline; a `None` clears the slot.
+    pub fn set_active_solve_cancel(
+        &mut self,
+        handle: Option<crate::graph::CancellationHandle>,
+    ) {
+        self.active_solve_cancel = handle;
+    }
+
+    /// Return a clone of the current active solve cancel handle, if any.
+    ///
+    /// Used by the GUI test suite to assert the shared `Arc<AtomicBool>` is
+    /// the same handle published via `with_solve_slot`.
+    pub fn active_solve_cancel(&self) -> Option<crate::graph::CancellationHandle> {
+        self.active_solve_cancel.clone()
     }
 
     /// Synchronous dispatch helper — invoke the trampoline registered for

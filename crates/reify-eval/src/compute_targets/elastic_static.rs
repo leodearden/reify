@@ -182,13 +182,14 @@ use reify_ir::{
 
 use crate::persistent_cache::ShellChannels;
 use reify_solver_elastic::{
-    AnisotropicMaterial, AssemblyElement, CgSolverOptions, CgWarmState,
+    AnisotropicMaterial, AssemblyElement, CgIterationControl, CgSolverOptions, CgWarmState,
     ConstantField, DirichletBc, ElementOrder, FaceOrder, GridSpec, IsotropicElastic,
     OrthotropicMaterial, StressElement, TransverseIsotropicMaterial,
     apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
     assemble_global_stiffness, element_stiffness, element_stiffness_p1_with_field,
     element_stress_p1, recover_nodal_stress_p1, resample_multi_nodal_to_grid,
-    resolve_execution_modes, solve_cg_with_warm_state, tet_volume_p1,
+    resolve_execution_modes, solve_cg_with_warm_state, solve_cg_with_warm_state_progress,
+    tet_volume_p1,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -522,6 +523,45 @@ pub fn solve_elastic_static_trampoline(
 
     // ── (6) Delegate to shared FEA helper ────────────────────────────────────
     //
+    // Read the thread-local dispatch context installed by `run_compute_dispatch`
+    // (task 4079). When a `SolverProgressSink` or cancel handle is present, build
+    // a per-iteration closure that: (a) emits a `SolverProgressUpdate` to the sink
+    // (throttled — see PROGRESS_STRIDE), THEN (b) polls the externally-set cancel
+    // handle and returns `Cancel` if set.  The sink has no access to the cancel
+    // handle and cannot raise a cancel through `on_iteration`; the emit-then-poll
+    // ordering simply ensures each iteration is reported before cancellation is
+    // checked.  The cancel check is NOT throttled so interruption is responsive.
+    let ctx = crate::solver_progress::current_solve_dispatch_context();
+    let (ctx_sink, ctx_cancel) = match ctx {
+        Some((s, c)) => (s, c),
+        None => (None, None),
+    };
+    // Emit every PROGRESS_STRIDE iterations (and always on iter 1) to bound IPC
+    // overhead — a non-converging solve with max_iter=2000 fires at most
+    // ~200 emit calls rather than 2000.  The cancel poll is unaffected.
+    const PROGRESS_STRIDE: usize = 10;
+    let mut progress_closure = |iter: usize, residual: f64| -> CgIterationControl {
+        if let Some(ref sink) = ctx_sink
+            && (iter == 1 || iter.is_multiple_of(PROGRESS_STRIDE))
+        {
+            sink.on_iteration(&crate::solver_progress::SolverProgressUpdate {
+                solver_kind: "cg",
+                iter: iter as u32,
+                residual,
+            });
+        }
+        if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            CgIterationControl::Cancel
+        } else {
+            CgIterationControl::Continue
+        }
+    };
+    let progress_opt: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl> =
+        if ctx_sink.is_some() || ctx_cancel.is_some() {
+            Some(&mut progress_closure)
+        } else {
+            None
+        };
     // Execution-mode knobs (task 2926): `ElasticOptions.deterministic` + `threads`
     // (value_inputs[6]) select the assembly/CG SolverMode inside the helper via
     // `resolve_execution_modes`. The flag is intentionally excluded from the FEA
@@ -529,7 +569,17 @@ pub fn solve_elastic_static_trampoline(
     let (deterministic, threads_opt) = extract_execution_params(&value_inputs[6]);
     let (fea, fresh_warm) = solve_cantilever_fea(
         &model, length, width, height, tip_force, prior_cg, &pressures, deterministic, threads_opt,
+        progress_opt,
     );
+
+    // ── (6b) Cancel check ─────────────────────────────────────────────────────
+    //
+    // After the solve, if the cancel handle was triggered, return `Cancelled`
+    // so that `run_compute_dispatch` leaves the output VC `Freshness::Pending`
+    // (per compute-node-contract §2 — no bogus partial result cached).
+    if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+        return ComputeOutcome::Cancelled;
+    }
 
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
     //
@@ -810,6 +860,7 @@ pub(crate) fn solve_cantilever_fea(
     pressures: &[PressureSpec],
     deterministic: bool,
     threads: Option<usize>,
+    progress: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl>,
 ) -> (CantileverFeaSolve, CgWarmState) {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
@@ -1009,9 +1060,16 @@ pub(crate) fn solve_cantilever_fea(
     // deterministic solve discards any prior warm state and starts cold (zero
     // initial guess), trading a few extra CG iterations for reproducibility;
     // bit-stability then holds for warm- and cold-lineage solves alike.
+    //
+    // Task 4079: when a progress sink / cancel handle is installed, route through
+    // the progress variant so the per-iteration closure (emit + cancel poll) runs;
+    // otherwise take the plain no-callback path (byte-identical solve).
     let warm_start = if deterministic { None } else { prior_cg.as_ref() };
-    let (cg_result, fresh_warm) =
-        solve_cg_with_warm_state(&k, &f, warm_start, opts, solver_mode);
+    let (cg_result, fresh_warm) = if let Some(cb) = progress {
+        solve_cg_with_warm_state_progress(&k, &f, warm_start, opts, solver_mode, cb)
+    } else {
+        solve_cg_with_warm_state(&k, &f, warm_start, opts, solver_mode)
+    };
 
     // ── Stress recovery: max von Mises across all elements ────────────────────
     //
@@ -1948,7 +2006,7 @@ mod tests {
 
         let (result, _warm) =
             solve_cantilever_fea(
-                &model, length, width, height, [0.0, 0.0, 0.0], None, &pressures, true, None,
+                &model, length, width, height, [0.0, 0.0, 0.0], None, &pressures, true, None, None,
             );
 
         assert!(result.converged, "FEA must converge under x_max pressure");
@@ -2018,6 +2076,7 @@ mod tests {
             None,
             &[],
             true,
+            None,
             None,
         );
 
@@ -2099,6 +2158,7 @@ mod tests {
             &[],
             true,
             None,
+            None,
         );
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
@@ -2110,6 +2170,7 @@ mod tests {
             None,
             &[],
             true,
+            None,
             None,
         );
 
@@ -2222,6 +2283,7 @@ mod tests {
             None,
             &[],
             true,
+            None,
             None,
         );
 
@@ -2382,6 +2444,7 @@ mod tests {
             None,
             &[],
             true,
+            None,
             None,
         );
 
@@ -2907,7 +2970,7 @@ mod tests {
 
         let (result, _) =
             solve_cantilever_fea(
-                &model, 1.0, 0.1, 0.1, [0.0, -1000.0, 0.0], None, &[], true, None,
+                &model, 1.0, 0.1, 0.1, [0.0, -1000.0, 0.0], None, &[], true, None, None,
             );
 
         assert!(result.converged, "directional Y-load solve must converge");
