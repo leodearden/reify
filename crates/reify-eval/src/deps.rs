@@ -1784,6 +1784,154 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
             "z does not depend on w, should not be dirtied by w changing"
         );
     }
+
+    // ── Task 4354 step-5: RED — realization→realization edge via Boolean cross-sub ──
+    //
+    // A consuming realization whose operations include a Boolean with GeomRef::Sub
+    // operands that name geometry outputs of OTHER child structures must register
+    // realization→realization edges in BOTH directions:
+    //   (a) reverse: build_from_graph_and_fields → realization_dependents_of(inner_a) ∋ Realization(outer)
+    //                                           → realization_dependents_of(inner_b) ∋ Realization(outer)
+    //   (b) forward: build_trace_map_and_fields → trace[Realization(outer)].realization_reads ∋ {inner_a, inner_b}
+    //
+    // RED today: Boolean arm `=> continue` at extract_realization_dependencies drops both
+    // operands; no builder walks GeomRef::Sub for realizations or resolves them to producing
+    // RealizationNodeIds.
+
+    /// Graph: inner_a (entity "A", geometry_cell = ValueCellId("A","body")),
+    /// inner_b (entity "B", geometry_cell = ValueCellId("B","body2")),
+    /// outer (entity "Outer") consuming both via Boolean { Union, Sub("a.body"), Sub("b.body2") }.
+    ///
+    /// Asserts BOTH operand edges, neither dropped; pins the GeomRef::Step negative
+    /// (intra-node Step operands must NOT produce a realization→realization edge).
+    #[test]
+    fn boolean_cross_sub_operands_register_realization_to_realization_edges_both_directions() {
+        use crate::graph::{EvaluationGraph, RealizationNodeData};
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+        use reify_core::{ContentHash, RealizationNodeId};
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+
+        // ── inner_a: entity "A", geometry_cell = ValueCellId("A","body") ─────────
+        let inner_a = RealizationNodeId::new("A", 0);
+        let body_a = ValueCellId::new("A", "body");
+        graph.realizations.insert(
+            inner_a.clone(),
+            RealizationNodeData {
+                id: inner_a.clone(),
+                geometry_cell: Some(body_a.clone()),
+                operations: vec![],
+                content_hash: ContentHash::of_str("inner_a"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // ── inner_b: entity "B", geometry_cell = ValueCellId("B","body2") ────────
+        let inner_b = RealizationNodeId::new("B", 0);
+        let body_b = ValueCellId::new("B", "body2");
+        graph.realizations.insert(
+            inner_b.clone(),
+            RealizationNodeData {
+                id: inner_b.clone(),
+                geometry_cell: Some(body_b.clone()),
+                operations: vec![],
+                content_hash: ContentHash::of_str("inner_b"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // ── outer: entity "Outer", Boolean { Union, Sub("a.body"), Sub("b.body2") }
+        // GeomRef::Sub("a.body") resolves to inner_a (member "body", entity "A" != "Outer").
+        // GeomRef::Sub("b.body2") resolves to inner_b (member "body2", entity "B" != "Outer").
+        let outer = RealizationNodeId::new("Outer", 0);
+        graph.realizations.insert(
+            outer.clone(),
+            RealizationNodeData {
+                id: outer.clone(),
+                geometry_cell: None,
+                operations: vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("a.body".into()),
+                    right: GeomRef::Sub("b.body2".into()),
+                }],
+                content_hash: ContentHash::of_str("outer"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // ── (a) reverse: both inner realizations list outer as a dependent ────────
+        let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
+        let inner_a_deps = index.realization_dependents_of(&inner_a);
+        assert!(
+            inner_a_deps.contains(&NodeId::Realization(outer.clone())),
+            "realization_dependents_of(inner_a) must contain Realization(outer) \
+             (Boolean left operand Sub(\"a.body\") resolved to inner_a). Got: {:?}",
+            inner_a_deps
+        );
+        let inner_b_deps = index.realization_dependents_of(&inner_b);
+        assert!(
+            inner_b_deps.contains(&NodeId::Realization(outer.clone())),
+            "realization_dependents_of(inner_b) must contain Realization(outer) \
+             (Boolean right operand Sub(\"b.body2\") resolved to inner_b). Got: {:?}",
+            inner_b_deps
+        );
+
+        // ── (b) forward: outer's trace carries both inner realizations in reads ───
+        let traces = build_trace_map_and_fields(&graph, &[]);
+        let outer_trace = traces
+            .get(&NodeId::Realization(outer.clone()))
+            .expect("trace map must contain Realization(outer)");
+        assert!(
+            outer_trace.realization_reads.contains(&inner_a),
+            "forward trace for Realization(outer) must have inner_a in realization_reads \
+             (Boolean left Sub resolved). Got: {:?}",
+            outer_trace.realization_reads
+        );
+        assert!(
+            outer_trace.realization_reads.contains(&inner_b),
+            "forward trace for Realization(outer) must have inner_b in realization_reads \
+             (Boolean right Sub resolved). Got: {:?}",
+            outer_trace.realization_reads
+        );
+
+        // ── NEGATIVE: GeomRef::Step operands must NOT produce realization edges ───
+        // Add a second consuming realization that uses only Step refs (intra-node).
+        let step_outer = RealizationNodeId::new("StepOuter", 0);
+        graph.realizations.insert(
+            step_outer.clone(),
+            RealizationNodeData {
+                id: step_outer.clone(),
+                geometry_cell: None,
+                operations: vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Step(0),
+                    right: GeomRef::Step(1),
+                }],
+                content_hash: ContentHash::of_str("step_outer"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+        let index2 = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
+        let traces2 = build_trace_map_and_fields(&graph, &[]);
+        // inner_a and inner_b must not gain StepOuter as a realization dependent.
+        assert!(
+            !index2
+                .realization_dependents_of(&inner_a)
+                .contains(&NodeId::Realization(step_outer.clone())),
+            "GeomRef::Step operand must NOT produce a realization→realization edge; \
+             inner_a should not list step_outer"
+        );
+        // step_outer's forward trace must have empty realization_reads.
+        let step_trace = traces2
+            .get(&NodeId::Realization(step_outer.clone()))
+            .expect("trace map must contain Realization(step_outer)");
+        assert!(
+            step_trace.realization_reads.is_empty(),
+            "Step-only Boolean must yield EMPTY realization_reads on outer. Got: {:?}",
+            step_trace.realization_reads
+        );
+    }
 }
 
 /// Extract value cell dependencies from an expression, returning deduplicated sorted Vec.
