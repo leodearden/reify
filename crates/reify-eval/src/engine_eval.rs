@@ -5255,13 +5255,12 @@ mod revalidation_tests {
 // and the `detect_error_map_diagnostics` suppress-predicate seam (step-3/4).
 // Mirror the `revalidation_tests` pattern: hand-built fixtures, `use super::...`,
 // no .ri files or CompiledModule construction needed.
-//
-// RED until `nondriving_joint_compile_spans` is defined (step-2).
 #[cfg(test)]
 mod nondriving_joint_suppression_tests {
-    use super::nondriving_joint_compile_spans;
-    use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
-    use std::collections::HashSet;
+    use super::{detect_error_map_diagnostics, nondriving_joint_compile_spans};
+    use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, ValueCellId};
+    use reify_ir::{Value, ValueMap};
+    use std::collections::{BTreeMap, HashSet};
 
     /// `nondriving_joint_compile_spans` must collect only the label spans of
     /// `MechanismNonDrivingJoint`-coded diagnostics, ignoring:
@@ -5293,6 +5292,65 @@ mod nondriving_joint_suppression_tests {
             result, expected,
             "must collect exactly the label spans of MechanismNonDrivingJoint diagnostics; \
              unlabelled same-code and labelled different-code diagnostics must be excluded"
+        );
+    }
+
+    /// Helper: build a `Value::Map` that looks like a `make_nondriving_joint_error`
+    /// result — `error="nondriving_joint"` with a distinct `error_message` so two
+    /// such maps are structurally unequal and the dedup step does NOT merge them.
+    fn nondriving_error_map(msg: &str) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("error".to_string()),
+            Value::String("nondriving_joint".to_string()),
+        );
+        m.insert(
+            Value::String("error_message".to_string()),
+            Value::String(msg.to_string()),
+        );
+        Value::Map(m)
+    }
+
+    /// `detect_error_map_diagnostics` with a `suppress` predicate must skip the
+    /// suppressed cell while STILL emitting for the non-suppressed cell.
+    ///
+    /// Pins the "span-scoped, not blanket" contract: the defense-in-depth
+    /// guarantee that a compile-caught cell is suppressed but a distinct
+    /// loop-bound cell (whose id is NOT in the compile-span set) still emits.
+    ///
+    /// RED until the `suppress` parameter is added to `detect_error_map_diagnostics`
+    /// (step-4).
+    #[test]
+    fn detect_error_map_suppresses_one_cell_emits_other() {
+        let keep_id = ValueCellId::new("E", "keep");
+        let drop_id = ValueCellId::new("E", "drop");
+
+        // Two structurally distinct error Maps so dedup does NOT collapse them.
+        let mut values = ValueMap::new();
+        values.insert(keep_id.clone(), nondriving_error_map("keep msg"));
+        values.insert(drop_id.clone(), nondriving_error_map("drop msg"));
+
+        // Suppress only the "drop" cell; "keep" must still emit.
+        let result = detect_error_map_diagnostics(
+            &values,
+            None,
+            "nondriving_joint",
+            DiagnosticCode::MechanismNonDrivingJoint,
+            "fallback",
+            Some(&|cid: &ValueCellId| *cid == ValueCellId::new("E", "drop")),
+        );
+
+        assert_eq!(
+            result.len(),
+            1,
+            "exactly one diagnostic must be emitted for the unsuppressed 'keep' cell; \
+             got {} diagnostic(s)",
+            result.len(),
+        );
+        assert_eq!(
+            result[0].code,
+            Some(DiagnosticCode::MechanismNonDrivingJoint),
+            "the surviving diagnostic must carry MechanismNonDrivingJoint"
         );
     }
 }
