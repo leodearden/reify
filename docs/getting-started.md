@@ -45,7 +45,7 @@ structure def Flange {
 
 Try changing `radius : Scalar = 50mm` to `200mm`. Re-run `reify build` and open the new STEP — bigger flange. Try setting `radius` smaller than `bolt_circle_radius` — `reify check` will tell you which constraint failed.
 
-The `mm` suffix is meaningful: parameters are dimensioned. Try `radius : Scalar = 50` (no unit) — `reify check` will flag a dimensional mismatch against `bolt_circle_radius`'s 35mm.
+The `mm` suffix is meaningful: parameters are dimensioned. Try `radius : Scalar = 50` (no unit) — `reify check` reports the `radius > bolt_circle_radius` constraint as indeterminate ("undefined inputs"), since a bare number isn't comparable to `bolt_circle_radius`'s 35mm length.
 
 ## 4. Open the GUI
 
