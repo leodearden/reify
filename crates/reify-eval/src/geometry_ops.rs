@@ -6179,6 +6179,100 @@ mod tests {
         }
     }
 
+    /// Helper: build a CompiledExpr literal from a Value::Transform
+    /// (quaternion [w,x,y,z] and SI-metre translation [tx,ty,tz]).
+    fn literal_transform(q: [f64; 4], t: [f64; 3]) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            transform_of(q, t),
+            reify_core::Type::transform(3),
+        )
+    }
+
+    #[test]
+    fn compile_geometry_op_apply_transform_happy_path() {
+        // orient_axis_angle(z, 90°) quaternion: [w, x, y, z] = [cos45°, 0, 0, sin45°]
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ApplyTransform,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_f64(0.0)), // placeholder; target resolved via GeomRef
+                ("transform".into(), literal_transform([w, 0.0, 0.0, w], [0.005, 0.0, 0.0])),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let geo_op = result.expect("compile_geometry_op should return Ok for ApplyTransform happy path");
+        match geo_op {
+            reify_ir::GeometryOp::ApplyTransform { target, rotation, translation } => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert!((rotation[0] - w).abs() < 1e-12, "rotation[0] (w) mismatch");
+                assert!(rotation[1].abs() < 1e-12, "rotation[1] (x) mismatch");
+                assert!(rotation[2].abs() < 1e-12, "rotation[2] (y) mismatch");
+                assert!((rotation[3] - w).abs() < 1e-12, "rotation[3] (z) mismatch");
+                assert!((translation[0] - 0.005).abs() < 1e-12, "translation[0] mismatch");
+                assert!(translation[1].abs() < 1e-12, "translation[1] mismatch");
+                assert!(translation[2].abs() < 1e-12, "translation[2] mismatch");
+            }
+            other => panic!("expected GeometryOp::ApplyTransform, got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "expected no diagnostics, got {:?}", diagnostics);
+    }
+
+    #[test]
+    fn compile_geometry_op_apply_transform_malformed_arg_produces_warning_and_err() {
+        let step_handles = vec![GeometryHandleId(7)];
+        let values = ValueMap::new();
+
+        // Pass a Real(5.0) instead of a Transform value — should be rejected.
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ApplyTransform,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_f64(0.0)),
+                ("transform".into(), literal_f64(5.0)),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_err(), "malformed transform arg must return Err");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic, got {:?}", diagnostics);
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic must be Warning severity"
+        );
+        assert!(
+            diag.message.contains("transform"),
+            "diagnostic message must name the 'transform' arg; got: {:?}",
+            diag.message
+        );
+    }
+
     #[test]
     fn compile_geometry_op_sweep_resolves_distinct_profiles() {
         // Two distinct step handles representing two wire profiles

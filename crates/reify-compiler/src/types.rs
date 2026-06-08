@@ -1588,6 +1588,7 @@ mod kind_display_tests {
             (TransformKind::Rotate, "rotate"),
             (TransformKind::Scale, "scale"),
             (TransformKind::RotateAround, "rotate_around"),
+            (TransformKind::ApplyTransform, "apply_transform"),
         ]);
     }
 
