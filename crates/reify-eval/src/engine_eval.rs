@@ -719,7 +719,8 @@ fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
 }
 
 /// Scan top-level eval cells for `E_MECHANISM_NONDRIVING_JOINT` errors
-/// (task 4309 — α).
+/// (task 4309 — α), suppressing cells whose compile-time span was already
+/// flagged by the compiler (task 4364).
 ///
 /// Called in both `eval` and `eval_cached` outside the solver gate, mirroring
 /// [`detect_mechanism_errors`].  Delegates to [`detect_error_map_diagnostics`]
@@ -728,14 +729,39 @@ fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
 /// returned by `bind`/`dim`/`sweep`/`sweep_grid` when a coupling or fixed joint
 /// is passed.  `kind` is `None` because that producer builds a fresh error Map
 /// with no `"kind"` field (only `error`/`error_message`/`joint`).
-fn detect_nondriving_joint_errors(values: &ValueMap) -> Vec<Diagnostic> {
+///
+/// **Suppression predicate (task 4364):** builds the set of source spans the
+/// compiler already flagged via [`nondriving_joint_compile_spans`], then builds
+/// a `ValueCellId → vc.span` map from `module.templates[*].value_cells`.  A
+/// cell whose `ValueCellDecl.span` is in the compile-span set is suppressed —
+/// it was statically caught at compile time and re-emitting would produce a
+/// duplicate diagnostic for the user.
+///
+/// Cells whose id is absent from `value_cells` (synthetic / sub-component
+/// cells) and cells whose static type the compiler could not resolve to
+/// `Coupling` (e.g. loop-bound `List<Joint>` elements) have no matching span
+/// in the compile-span set and fall through to emit — preserving the runtime
+/// defense-in-depth guard for cases the compiler cannot see statically.
+fn detect_nondriving_joint_errors(values: &ValueMap, module: &CompiledModule) -> Vec<Diagnostic> {
+    let compile_spans = nondriving_joint_compile_spans(&module.diagnostics);
+    let cell_span: HashMap<&ValueCellId, SourceSpan> = module
+        .templates
+        .iter()
+        .flat_map(|t| t.value_cells.iter())
+        .map(|vc| (&vc.id, vc.span))
+        .collect();
+    let pred = |cid: &ValueCellId| {
+        cell_span
+            .get(cid)
+            .is_some_and(|s| compile_spans.contains(s))
+    };
     detect_error_map_diagnostics(
         values,
         None,
         "nondriving_joint",
         DiagnosticCode::MechanismNonDrivingJoint,
         "joint has no free motion variable (coupling or fixed)",
-        None,
+        Some(&pred),
     )
 }
 
@@ -2763,7 +2789,9 @@ impl Engine {
         diagnostics.extend(detect_mechanism_errors(&values));
         // Non-driving-joint diagnostics (task 4309 — E_MECHANISM_NONDRIVING_JOINT).
         // Same gate placement and rationale as detect_mechanism_errors above.
-        diagnostics.extend(detect_nondriving_joint_errors(&values));
+        // Passes `module` so the compile-span suppression predicate (task 4364)
+        // can skip cells already flagged by the compiler at the same source span.
+        diagnostics.extend(detect_nondriving_joint_errors(&values, module));
 
         EvalResult {
             values,
@@ -3370,7 +3398,8 @@ impl Engine {
         diagnostics.extend(detect_mechanism_errors(&values));
         // Non-driving-joint diagnostics (task 4309 — E_MECHANISM_NONDRIVING_JOINT).
         // Mirrors eval() call site; eval_cached is the LSP/GUI incremental path.
-        diagnostics.extend(detect_nondriving_joint_errors(&values));
+        // Passes `module` for compile-span suppression parity with eval() (task 4364).
+        diagnostics.extend(detect_nondriving_joint_errors(&values, module));
 
         // Build and store a snapshot so that engine.snapshot() returns Some after
         // eval_cached() — preserving cross-path parity with eval() (spec §8.2,
