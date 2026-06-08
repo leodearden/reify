@@ -1,0 +1,80 @@
+// Tensegrity membrane patch — PRD v0_6/tensegrity-membrane.md §3, task-α (M0).
+//
+// A minimal flat membrane patch: a 1m × 1m square divided into two triangles.
+// This file exercises the M0 representation signal:
+//
+//   • `surfaces : List<List<Int>>` param on Tensegrity (triangle index-triples)
+//   • `structure def Membrane` carrying thickness / material / prestress
+//   • `tensegrity_surfaces(t)` builtin → List<TensegritySurface> (kind:"membrane")
+//
+// Running:
+//
+//     reify eval examples/tensegrity_membrane_patch.ri
+//
+// prints the MembranePatch instance and two TensegritySurface values tagged
+// kind: "membrane" (one per triangle).
+//
+// Scope note: this is a CLI-dump signal only (M0 layer). No kernel geometry,
+// no solver work (form-find / load analysis are γ/δ/ζ/η tasks), no GUI wiring
+// (β task). Quad/auto-triangulation is out of scope in M0 — triangles only,
+// per PRD §3.
+//
+// Node layout (top view, z = 0 plane):
+//
+//   node 3 ---- node 2
+//     |    \   /  |
+//     |  t1  X  t0|
+//     |    /   \  |
+//   node 0 ---- node 1
+//
+//   node 0: (0, 0, 0) m  — bottom-left
+//   node 1: (1, 0, 0) m  — bottom-right
+//   node 2: (1, 1, 0) m  — top-right
+//   node 3: (0, 1, 0) m  — top-left
+//
+// Triangles:
+//   triangle 0: [0, 1, 2]  — bottom-left → bottom-right → top-right
+//   triangle 1: [0, 2, 3]  — bottom-left → top-right    → top-left
+
+structure def MembranePatch {
+    // ── Topology ─────────────────────────────────────────────────────────────
+    //
+    // Four corner nodes of a 1m × 1m flat square at z=0.
+    // No struts, no cables — this is a pure surface element patch.
+    // Two triangles cover the square: [0,1,2] and [0,2,3].
+    let patch = Tensegrity(
+        nodes: [
+            point3(0m, 0m, 0m),   // node 0: bottom-left
+            point3(1m, 0m, 0m),   // node 1: bottom-right
+            point3(1m, 1m, 0m),   // node 2: top-right
+            point3(0m, 1m, 0m)    // node 3: top-left
+        ],
+        struts: [],
+        cables: [],
+        surfaces: [
+            [0, 1, 2],   // triangle 0
+            [0, 2, 3]    // triangle 1
+        ]
+    )
+
+    // ── Constitutive data ─────────────────────────────────────────────────────
+    //
+    // A steel membrane with 2mm thickness and 5kPa isotropic prestress.
+    // Steel_AISI_1045 is a landed ElasticMaterial conformer (used in
+    // Strut/Cable ctor tests in crates/reify-eval/tests/tensegrity_t0a.rs).
+    // prestress = 5kPa → surface tension n = σ·thickness = 5000 Pa · 0.002 m = 10 N/m.
+    let fabric = Membrane(
+        thickness: 2mm,
+        material: Steel_AISI_1045(),
+        prestress: 5 * 1kPa
+    )
+
+    // ── Surface geometry emission (M0) ────────────────────────────────────────
+    //
+    // `tensegrity_surfaces(t)` converts the Tensegrity instance into a
+    // List<TensegritySurface> — one TensegritySurface per triangle in the
+    // surfaces list, each carrying kind ("membrane"), corner indices i0/i1/i2,
+    // and inline corner coordinates x0..z2. Triangles are emitted in
+    // declaration order (surfaces[0] first).
+    let facets = tensegrity_surfaces(patch)
+}
