@@ -146,6 +146,10 @@ impl ReverseDependencyIndex {
 
         let mut index = Self::new();
 
+        // Build cell→realization resolver once (used for constraint→realization
+        // and value-cell→realization edges below).
+        let realization_by_cell = realization_by_cell(graph);
+
         // Value cells: non-auto cells with a default_expr have static read-dependencies.
         // Auto cells are solver-owned leaves — no default expression to extract.
         // Param cells with a literal default (no ValueRef reads) produce an empty
@@ -163,13 +167,34 @@ impl ReverseDependencyIndex {
             }
         }
 
-        // Constraints: extract deps from constraint expression
+        // Constraints: extract deps from constraint expression.
+        // Also extract constraint→realization edges: if the constraint contains a
+        // geometry-query call (volume/area/centroid/bounding_box) whose single arg
+        // is a ValueRef to a geometry cell backed by a realization, register the
+        // reverse edge (realization → Constraint node) in the realization_index.
         for (_, cnode) in graph.constraints.iter() {
             let trace = extract_dependency_trace(&cnode.expr);
             let node_id = NodeId::Constraint(cnode.id.clone());
             for cell in &trace.reads {
                 index.add(cell.clone(), node_id.clone());
             }
+            // Constraint→realization edge: walk expr for geometry-query calls.
+            let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
+            cnode.expr.walk(&mut |node| {
+                if crate::geometry_ops::is_geometry_query_call(node) {
+                    if let reify_ir::CompiledExprKind::FunctionCall { args, .. } = &node.kind {
+                        if let Some(arg) = args.first() {
+                            if let reify_ir::CompiledExprKind::ValueRef(cell_id) = &arg.kind {
+                                if let Some(rid) = realization_by_cell.get(cell_id) {
+                                    if seen_rids.insert(rid.clone()) {
+                                        index.add_realization(rid.clone(), node_id.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
         }
 
         // Realizations: extract deps from operation args
@@ -265,6 +290,23 @@ pub(crate) fn geometry_cell_realization_links(
     })
 }
 
+/// Build an inverted map from geometry `ValueCellId` → its backing
+/// `RealizationNodeId`. This is the resolver for edges #1 (selector/query
+/// cell → realization) and #2 (constraint → realization):
+///
+/// - `geometry_cell_realization_links` iterates `(rid, cell)` pairs from the
+///   graph — one per realization that has a `geometry_cell` set (GHR-δ S2).
+/// - Inverting it lets the edge-extraction code look up "which realization
+///   backs cell X?" in O(1) during the value-cells and constraints loops,
+///   without re-iterating the realizations map per cell.
+fn realization_by_cell(
+    graph: &crate::graph::EvaluationGraph,
+) -> HashMap<ValueCellId, RealizationNodeId> {
+    geometry_cell_realization_links(graph)
+        .map(|(rid, cell)| (cell, rid))
+        .collect()
+}
+
 /// GHR-δ: fold [`geometry_cell_realization_links`] into a per-cell
 /// `realization_reads` list, accumulating (never overwriting) every realization
 /// that backs a given geometry cell.
@@ -320,6 +362,10 @@ pub fn build_trace_map_and_fields(
 
     let mut traces = HashMap::new();
 
+    // Build cell→realization resolver once (used for constraint→realization
+    // and value-cell→realization edges below).
+    let realization_by_cell = realization_by_cell(graph);
+
     for (_, node) in graph.value_cells.iter() {
         let trace = if node.kind.is_auto() {
             // Auto cells are solver-owned leaves; no default expression to extract.
@@ -336,8 +382,29 @@ pub fn build_trace_map_and_fields(
         traces.insert(NodeId::Value(node.id.clone()), trace);
     }
 
+    // Constraints: base VC→Constraint deps from extract_dependency_trace, plus
+    // constraint→realization edges via geometry-query call detection.
     for (_, cnode) in graph.constraints.iter() {
-        let trace = extract_dependency_trace(&cnode.expr);
+        let mut trace = extract_dependency_trace(&cnode.expr);
+        // Walk expr for geometry-query calls (volume/area/centroid/bounding_box).
+        // If the single arg is a ValueRef to a geometry cell backed by a
+        // realization, add that realization to the forward realization_reads.
+        let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
+        cnode.expr.walk(&mut |node| {
+            if crate::geometry_ops::is_geometry_query_call(node) {
+                if let reify_ir::CompiledExprKind::FunctionCall { args, .. } = &node.kind {
+                    if let Some(arg) = args.first() {
+                        if let reify_ir::CompiledExprKind::ValueRef(cell_id) = &arg.kind {
+                            if let Some(rid) = realization_by_cell.get(cell_id) {
+                                if seen_rids.insert(rid.clone()) {
+                                    trace.realization_reads.push(rid.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
         traces.insert(NodeId::Constraint(cnode.id.clone()), trace);
     }
 
