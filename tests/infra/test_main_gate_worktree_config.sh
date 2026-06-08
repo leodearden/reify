@@ -233,4 +233,19 @@ assert "(leak-c) config.worktree does NOT contain core.bare" \
 assert "(leak-c) config.worktree does NOT contain core.worktree" \
     bash -c "! git -C '$REPO_LC' config --worktree --get core.worktree >/dev/null 2>&1"
 
+# ==============================================================================
+# Wiring assert (step-5): setup-dev.sh must have an UNCOMMENTED call to the helper.
+# Mirrors the content-check style of tests/infra/test_setup_dev_no_ldconfig.sh.
+# ==============================================================================
+echo ""
+echo "--- (wiring) setup-dev.sh calls setup-main-gate-worktree-config.sh ---"
+
+SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+
+assert "(wiring) scripts/setup-dev.sh exists" \
+    test -f "$SETUP_DEV"
+
+assert "(wiring) setup-dev.sh calls setup-main-gate-worktree-config.sh (uncommented)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -q 'setup-main-gate-worktree-config.sh'"
+
 test_summary
