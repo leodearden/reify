@@ -1757,23 +1757,33 @@ pub(crate) fn compile_expr_guarded(
                     } else if is_geometry_query(name) {
                         // volume / area / length / perimeter / centroid /
                         // bounding_box / distance / contains / intersects /
-                        // geo_equiv / angle / curvature: the GHR-α / PRD §1
-                        // Phase-1 geometry-query family (task 3603). The
-                        // per-name result type comes from
+                        // geo_equiv / angle / curvature / normal: the GHR-α /
+                        // PRD §1 Phase-1 geometry-query family (task 3603).
+                        //
+                        // curvature overload (task 4315): when the first
+                        // compiled arg is an inline `faces(...)[i]` form,
+                        // geometry_query_arg_aware_result_type returns
+                        // Some(Matrix{2,2,Curvature}); for a curve arg,
+                        // let-bound arg, or no arg it returns None and the
+                        // .or_else falls through to the default Scalar<Curvature>
+                        // below. All other names return None unconditionally.
+                        //
+                        // The per-name default table comes from
                         // `geometry_query_result_type`, which is the frozen
                         // PRD §1 table. Eval-time dispatch arrives in Phase 6
                         // (GHR-ζ); Phase 1 produces `Value::Undef` cells with
                         // the correct compile-time type so downstream
                         // user-asserted-constraint typing and trait conformance
-                        // (notably the spec-shape `Physical` trait's
-                        // `let mass = volume(geometry) * material.density`
-                        // and `let centroid = centroid(geometry)`) typecheck.
-                        // Falling through to the first-arg default would
-                        // mismatch — the first arg is a `Geometry` / `Solid` /
-                        // `Surface` / `Curve` handle, not the helper's actual
-                        // return type.
-                        geometry_query_result_type(name)
-                            .expect("is_geometry_query implies result type")
+                        // typecheck. Falling through to the first-arg default
+                        // would mismatch — the first arg is a `Geometry` /
+                        // `Solid` / `Surface` / `Curve` handle, not the
+                        // helper's actual return type.
+                        geometry_query_arg_aware_result_type(
+                            name,
+                            compiled_args.first(),
+                        )
+                        .or_else(|| geometry_query_result_type(name))
+                        .expect("is_geometry_query implies result type")
                     } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
                     } else if let Some(t) = infer_list_helper_return_type(name, &compiled_args) {
