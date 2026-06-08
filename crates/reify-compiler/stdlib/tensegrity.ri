@@ -1,29 +1,32 @@
 // Stdlib: Tensegrity Structure Types
 //
 // Provides the typed-element network types for tensegrity structures:
-// Strut, Cable, Tensegrity, and TensegrityWire.
+// Strut, Cable, Membrane, Tensegrity, TensegrityWire, TensegritySurface,
+// and FormFindResult.
 //
-// PRD reference: docs/prds/v0_6/tensegrity-structures.md
-//   §3 — Representation contract
-//   §9 — Tier-0 leaf (T0a)
+// PRD references:
+//   docs/prds/v0_6/tensegrity-structures.md §3, §9 (T0a)
+//   docs/prds/v0_6/tensegrity-membrane.md §3, §7 (task α / T4)
 //
 // Module exports:
-//   - `Strut`          — compression member: cross-section area + material
-//   - `Cable`          — tension member: cross-section area + material + pretension
-//   - `Tensegrity`     — typed network: node positions + member connectivity
-//   - `TensegrityWire` — emitted wire record: kind tag + endpoint geometry
+//   - `Strut`              — compression member: cross-section area + material
+//   - `Cable`              — tension member: cross-section area + material + pretension
+//   - `Membrane`           — surface element: thickness + material + prestress (α / T4)
+//   - `Tensegrity`         — typed network: nodes + struts + cables + surfaces
+//   - `TensegrityWire`     — emitted wire record: kind tag + endpoint geometry
+//   - `TensegritySurface`  — emitted facet record: kind + indices + corner coords (α / T4)
+//   - `FormFindResult`     — form-finding output container (T1a/T1b)
 //
-// Open typed-element-groups seam (Design Decision 2):
-//   `struts` and `cables` are explicit named fields on `Tensegrity`; the
-//   generic `tensegrity_wires(t)` builtin is the seam layers 2–4 consume.
-//   Adding a future `surfaces` group (§10 / T4) is two-line additive:
-//   (i) add `param surfaces : List<List<Int>>` to Tensegrity,
-//   (ii) add a sibling `tensegrity_surfaces(t)` accessor — existing
-//   wire-consuming call sites do not change.
+// Open typed-element-groups seam (Design Decision 2 — LANDED in task-α):
+//   `struts`, `cables`, and `surfaces` are explicit named fields on `Tensegrity`.
+//   `tensegrity_wires(t)` and `tensegrity_surfaces(t)` are the accessor seam that
+//   layers 2–4 consume.  Adding a future group is additive: add the param to
+//   Tensegrity and add a sibling accessor — existing wire/surface call sites
+//   do not change.
 //
 // Dependencies (all earlier in the growing-prelude sequence):
-//   - std.units        — Length, Area, Force dimensions
-//   - std.si_units     — 0N, mm², etc.
+//   - std.units         — Length, Area, Force, Pressure dimensions
+//   - std.si_units      — 0N, mm², Pa, etc.
 //   - std.materials.fea — ElasticMaterial trait
 
 // ── Strut ─────────────────────────────────────────────────────────────────────
@@ -60,21 +63,36 @@ structure def Cable {
 
 // ── Tensegrity ────────────────────────────────────────────────────────────────
 //
-// The typed network binding node positions to member connectivity. All three
+// The typed network binding node positions to member connectivity. All four
 // params are required; no defaults — a bare Tensegrity() is structurally
 // meaningless (no nodes, no members, no topology).
 //
-//   nodes  — ordered list of 3D node positions (Length-typed points)
-//   struts — connectivity index pairs [[from, to], ...] into nodes list
-//   cables — connectivity index pairs [[from, to], ...] into nodes list
+//   nodes    — ordered list of 3D node positions (Length-typed points)
+//   struts   — connectivity index pairs [[from, to], ...] into nodes list
+//   cables   — connectivity index pairs [[from, to], ...] into nodes list
+//   surfaces — triangle index-triples [[i0, i1, i2], ...] into nodes list
+//              (M0 surface element group; see PRD §3 / T4 / task-α).
+//              Each inner list is exactly [i0, i1, i2] — three 0-based indices
+//              into `nodes`. The `tensegrity_surfaces(t)` builtin validates each
+//              triple against nodes.len() and emits Value::Undef on violation;
+//              a MISSING or empty surfaces field returns an empty facet list []
+//              (not Undef) because surfaces is legitimately absent for
+//              non-membrane nets. Triangles-only in M0; no axis triad.
 //
-// Index convention: each inner list is exactly [from_index, to_index] where
-// both are 0-based indices into `nodes`. The `tensegrity_wires(t)` builtin
-// validates each pair against nodes.len() and emits Value::Undef on violation.
+// Open typed-element-groups invariant: existing Tensegrity(nodes,struts,cables)
+// call sites are unchanged — the uncovered `surfaces` required param is silently
+// dropped by the SIR ctor-lowering (expr.rs:1433-1488), so all prior goldens and
+// tests remain byte-identical. See Design Decision 1 in plan.json.
+//
+// Index convention (wire members): each inner list in struts/cables is exactly
+// [from_index, to_index] where both are 0-based indices into `nodes`. The
+// `tensegrity_wires(t)` builtin validates each pair against nodes.len() and
+// emits Value::Undef on violation.
 structure def Tensegrity {
     param nodes : List<Point3<Length>>
     param struts : List<List<Int>>
     param cables : List<List<Int>>
+    param surfaces : List<List<Int>>
 }
 
 // ── TensegrityWire ────────────────────────────────────────────────────────────
