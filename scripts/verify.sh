@@ -23,6 +23,9 @@
 #                                            tracked modifications — untracked new files not
 #                                            classified). Fails wide to all on error.
 #                                  Default: all.
+#   --narrow                       With --scope staged: narrow test/check/clippy passes to
+#                                  the affected-crate set. No-op for --scope branch (already
+#                                  narrowing) and --scope all (always full workspace, C1).
 #   --include-infra                Also run the cheap static infra checks
 #                                  (sync_comments / run_all on the test side;
 #                                  pm-standardization / event-inventory on the lint side).
@@ -101,7 +104,7 @@ fi
 source "$SCRIPT_DIR/affected-crates-lib.sh"
 
 usage() {
-    sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
@@ -236,6 +239,7 @@ ACTION=""
 PROFILE="debug"
 PROFILE_EXPLICIT=0   # set to 1 if --profile was given explicitly; keeps explicit authoritative
 SCOPE="all"
+NARROW=0             # --narrow: opt-in to affected-crate narrowing for --scope staged
 INCLUDE_INFRA=0
 PRINT_PLAN=0
 
@@ -255,6 +259,8 @@ while [ "$#" -gt 0 ]; do
             SCOPE="${2:?--scope requires an argument}"; shift 2 ;;
         --scope=*)
             SCOPE="${1#*=}"; shift ;;
+        --narrow)
+            NARROW=1; shift ;;
         --include-infra)
             INCLUDE_INFRA=1; shift ;;
         --print-plan)
@@ -504,8 +510,11 @@ decide_scope
 # ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
 #
-# Eligible when: scope=branch AND RUN_RUST=1.
-# (scope=staged + --narrow eligibility added in a later step.)
+# Eligible when: (scope=branch OR (scope=staged AND --narrow)) AND RUN_RUST=1.
+# scope=all is structurally unreachable for narrowing (C1 — returns early in
+# decide_scope, leaving CHANGED_FILES_RAW="", and the condition is never true).
+# --narrow is a no-op for scope=branch (already narrowing) and scope=all
+# (condition never true).
 #
 # REIFY_AFFECTED_CRATES_OVERRIDE — testability/operator knob (whitespace/newline-
 # separated crate names). When set AND narrowing is eligible, used verbatim in
@@ -519,7 +528,14 @@ AFFECTED_ALL_FLAGS=""
 AFFECTED_OCCT_FLAGS=""
 AFFECTED_UNGATED_FLAGS=""
 
+_narrowing_eligible=0
 if [ "$SCOPE" = "branch" ] && [ "$RUN_RUST" -eq 1 ]; then
+    _narrowing_eligible=1
+elif [ "$SCOPE" = "staged" ] && [ "$NARROW" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+    _narrowing_eligible=1
+fi
+
+if [ "$_narrowing_eligible" -eq 1 ]; then
     if [ -n "${REIFY_AFFECTED_CRATES_OVERRIDE:-}" ]; then
         # Operator/testability override: use verbatim crate list.
         AFFECTED="${REIFY_AFFECTED_CRATES_OVERRIDE}"
