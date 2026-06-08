@@ -376,9 +376,6 @@ fn dfmrule_trait_surface_has_rule_name_severity_and_process_applicability() {
 /// β conformance lock — DFMRule.subject (negative):
 /// A DFMRule conformer omitting `subject` must emit a missing-required-member
 /// Error diagnostic.
-///
-/// RED until impl (step-4): subject is not yet declared on DFMRule, so no
-/// missing-member diagnostic is emitted and this assertion fails.
 #[test]
 fn dfmrule_conformer_missing_subject_emits_missing_member_error() {
     let source = r#"
@@ -396,7 +393,6 @@ structure def MilledPart : Subtracting {
     param tool_access      : Solid  = box(200mm, 150mm, 100mm)
     param min_feature_size : Length = 0.5mm
     param achievable_finish: Length = 0.0016mm
-    param max_overhang_angle : Angle = 45deg
 }
 "#;
     // Note: `subject` is intentionally omitted from MinWallCheck.
@@ -426,9 +422,6 @@ structure def MilledPart : Subtracting {
 /// A complete DFMRule conformer supplying all four members including
 /// `param subject : Solid = box(...)` compiles with zero Error diagnostics
 /// and exposes a `subject` value cell of type Type::Geometry (the cell γ reads).
-///
-/// RED until impl (step-4): subject is not yet a trait member, so the value
-/// cell is absent and the assertion panics.
 #[test]
 fn dfmrule_conformer_with_subject_compiles_clean_and_exposes_subject() {
     let source = r#"
@@ -773,6 +766,23 @@ structure def CheckedPart {
     );
 }
 
+// Shared FdmPrinter : Adding fixture (all required params including max_overhang_angle).
+// Used by `fits_build_volume_over_adding_conformer_compiles_clean` and
+// `adding_conformer_with_all_params_compiles_clean_and_exposes_max_overhang_angle`
+// so both tests stay in sync when the Adding trait surface changes.
+const FDMPRINTER_ALL_PARAMS_SOURCE: &str = r#"
+import std.process
+
+structure def FdmPrinter : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 10USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 45deg
+}
+"#;
+
 // ─── step-7 (task-4274): FitsBuildVolume compile-clean + cardinality lock ─────
 
 /// γ compile-clean lock — `FitsBuildVolume` over a full Adding conformer.
@@ -790,26 +800,17 @@ structure def CheckedPart {
 /// RED: `FitsBuildVolume` does not exist yet → "unknown constraint def" error.
 #[test]
 fn fits_build_volume_over_adding_conformer_compiles_clean() {
-    let source = r#"
-import std.process
-
-structure def FdmPrinter : Adding {
-    param duration           : Time   = 60min
-    param cost               : Money  = 10USD
-    param layer_thickness    : Length = 0.2mm
-    param min_feature_size   : Length = 0.4mm
-    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
-    param max_overhang_angle : Angle  = 45deg
-}
-
-structure def SmallPart {
+    let source = format!(
+        r#"{}
+structure def SmallPart {{
     let proc = FdmPrinter()
     param part : Solid = box(50mm, 50mm, 50mm)
     constraint FitsBuildVolume(proc: proc, part: part)
-}
-"#;
+}}"#,
+        FDMPRINTER_ALL_PARAMS_SOURCE
+    );
 
-    let compiled = compile_source_with_stdlib(source);
+    let compiled = compile_source_with_stdlib(&source);
 
     let errors: Vec<_> = compiled
         .diagnostics
@@ -828,9 +829,6 @@ structure def SmallPart {
 /// β conformance lock — Adding.max_overhang_angle (negative):
 /// An FdmPrinter : Adding conformer omitting `max_overhang_angle` must
 /// emit a missing-required-member Error diagnostic.
-///
-/// RED until impl (step-2): max_overhang_angle is not yet declared on Adding,
-/// so no missing-member diagnostic is emitted and this assertion fails.
 #[test]
 fn adding_conformer_missing_max_overhang_angle_emits_missing_member_error() {
     let source = r#"
@@ -872,25 +870,9 @@ structure def FdmPrinter : Adding {
 /// `param max_overhang_angle : Angle = 45deg` compiles with zero Error
 /// diagnostics and exposes a `max_overhang_angle` value cell of type
 /// Type::Scalar{ANGLE} (the cell γ reads).
-///
-/// RED until impl (step-2): max_overhang_angle is not yet a trait member,
-/// so the value cell is absent and the assertion panics.
 #[test]
 fn adding_conformer_with_all_params_compiles_clean_and_exposes_max_overhang_angle() {
-    let source = r#"
-import std.process
-
-structure def FdmPrinter : Adding {
-    param duration           : Time   = 60min
-    param cost               : Money  = 10USD
-    param layer_thickness    : Length = 0.2mm
-    param min_feature_size   : Length = 0.4mm
-    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
-    param max_overhang_angle : Angle  = 45deg
-}
-"#;
-
-    let compiled = compile_source_with_stdlib(source);
+    let compiled = compile_source_with_stdlib(FDMPRINTER_ALL_PARAMS_SOURCE);
 
     // (a-1) Zero error-severity diagnostics.
     let errors: Vec<_> = compiled

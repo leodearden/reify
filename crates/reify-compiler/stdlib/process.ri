@@ -60,8 +60,10 @@ trait Subtracting : Process {
 // layer_thickness: slice height per deposited layer.
 // min_feature_size: smallest printable feature.
 // build_volume: maximum build envelope (Solid = Type::Geometry).
-// max_overhang_angle: steepest self-supporting overhang angle; the overhang
-//   DFM pass reads applies_to.max_overhang_angle.
+// max_overhang_angle: steepest self-supporting overhang angle (degrees).
+//   The overhang DFM pass reads this field after narrowing applies_to to an
+//   Adding conformer — direct access as applies_to.max_overhang_angle is not
+//   guaranteed by the type system without that narrowing.
 trait Adding : Process {
     param layer_thickness : Length
     param min_feature_size : Length
@@ -119,7 +121,9 @@ trait HeatTreating : Process {
 // `material : ElasticMaterial = ABS_Plastic()` pattern.
 // subject: the geometry handle the rule measures — Solid resolves to
 //   Type::Geometry; the auto-measurement pass realizes it.
-//   Activates the member process-dfm-completion §4 decision 6 left decorative.
+//   Realizes the previously-decorative §4 decision-6 member from
+//   process-dfm-completion: the auto-measurement pass binds subject to
+//   the live geometry handle.
 trait DFMRule {
     param rule_name : String
     param severity : DFMSeverity
