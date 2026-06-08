@@ -2033,6 +2033,206 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
             step_trace.realization_reads
         );
     }
+
+    // ── Task 4354 step-7: RED — realization→realization edges for
+    //    Modify/Transform/Pattern .target and Sweep .profiles ──────────────────
+    //
+    // Each cross-sub op variant that carries a GeomRef target or profiles must
+    // register a realization→realization edge when that ref is GeomRef::Sub.
+    //
+    // Cases covered (one consuming realization each):
+    //   - Transform { Translate, target: Sub("inner.body") }
+    //   - Modify { Fillet, target: Sub("inner.body") }
+    //   - Pattern { Linear, target: Sub("inner.body") }
+    //   - Sweep { Extrude, profiles: [Sub("inner.body")] }
+    //
+    // Negatives (pre-pinned from step-5; re-asserted here for coverage):
+    //   - Transform { Translate, target: Step(0) } → EMPTY realization_reads
+    //
+    // RED today: extract_realization_edges step-6 only handles Boolean; the `_ => {}`
+    // arm silently drops Modify/Transform/Pattern targets and Sweep profiles.
+
+    /// Source realization `inner` (entity "Inner", geometry_cell = ValueCellId("Inner","body")).
+    /// Consuming realizations for each op variant each use Sub("inner.body") as the target.
+    /// Asserts BOTH directions for each variant; asserts EMPTY for the Step negative.
+    #[test]
+    fn modify_transform_pattern_sweep_cross_sub_register_realization_to_realization_edges() {
+        use crate::graph::{EvaluationGraph, RealizationNodeData};
+        use reify_compiler::{CompiledGeometryOp, GeomRef, ModifyKind, PatternKind, SweepKind, TransformKind};
+        use reify_core::{ContentHash, RealizationNodeId};
+        use reify_ir::ReprKind;
+
+        // Helper to build a graph with `inner` + one consuming realization,
+        // return (graph, inner, consuming_rid).
+        fn make_graph(
+            consuming: RealizationNodeId,
+            ops: Vec<CompiledGeometryOp>,
+        ) -> (EvaluationGraph, RealizationNodeId) {
+            let mut graph = EvaluationGraph::default();
+            // inner: entity "Inner", geometry_cell = ValueCellId("Inner","body")
+            let inner = RealizationNodeId::new("Inner", 0);
+            graph.realizations.insert(
+                inner.clone(),
+                RealizationNodeData {
+                    id: inner.clone(),
+                    geometry_cell: Some(ValueCellId::new("Inner", "body")),
+                    operations: vec![],
+                    content_hash: ContentHash::of_str("inner"),
+                    produced_repr: ReprKind::BRep,
+                },
+            );
+            graph.realizations.insert(
+                consuming.clone(),
+                RealizationNodeData {
+                    id: consuming.clone(),
+                    geometry_cell: None,
+                    operations: ops,
+                    content_hash: ContentHash::of_str("consuming"),
+                    produced_repr: ReprKind::BRep,
+                },
+            );
+            (graph, inner)
+        }
+
+        // ── Transform { Translate, target: Sub("inner.body") } ───────────────
+        let t_outer = RealizationNodeId::new("TrOuter", 0);
+        let (graph_t, inner_t) = make_graph(
+            t_outer.clone(),
+            vec![CompiledGeometryOp::Transform {
+                kind: TransformKind::Translate,
+                target: GeomRef::Sub("inner.body".into()),
+                args: vec![],
+            }],
+        );
+        let idx_t = ReverseDependencyIndex::build_from_graph_and_fields(&graph_t, &[]);
+        assert!(
+            idx_t
+                .realization_dependents_of(&inner_t)
+                .contains(&NodeId::Realization(t_outer.clone())),
+            "Transform Sub target: realization_dependents_of(inner) must contain Realization(t_outer). Got: {:?}",
+            idx_t.realization_dependents_of(&inner_t)
+        );
+        let traces_t = build_trace_map_and_fields(&graph_t, &[]);
+        let t_trace = traces_t
+            .get(&NodeId::Realization(t_outer.clone()))
+            .expect("trace map must contain Realization(t_outer)");
+        assert!(
+            t_trace.realization_reads.contains(&inner_t),
+            "Transform Sub target: forward trace must have inner in realization_reads. Got: {:?}",
+            t_trace.realization_reads
+        );
+
+        // ── Modify { Fillet, target: Sub("inner.body") } ─────────────────────
+        let m_outer = RealizationNodeId::new("MoOuter", 0);
+        let (graph_m, inner_m) = make_graph(
+            m_outer.clone(),
+            vec![CompiledGeometryOp::Modify {
+                kind: ModifyKind::Fillet,
+                target: GeomRef::Sub("inner.body".into()),
+                args: vec![],
+            }],
+        );
+        let idx_m = ReverseDependencyIndex::build_from_graph_and_fields(&graph_m, &[]);
+        assert!(
+            idx_m
+                .realization_dependents_of(&inner_m)
+                .contains(&NodeId::Realization(m_outer.clone())),
+            "Modify Sub target: realization_dependents_of(inner) must contain Realization(m_outer). Got: {:?}",
+            idx_m.realization_dependents_of(&inner_m)
+        );
+        let traces_m = build_trace_map_and_fields(&graph_m, &[]);
+        let m_trace = traces_m
+            .get(&NodeId::Realization(m_outer.clone()))
+            .expect("trace map must contain Realization(m_outer)");
+        assert!(
+            m_trace.realization_reads.contains(&inner_m),
+            "Modify Sub target: forward trace must have inner in realization_reads. Got: {:?}",
+            m_trace.realization_reads
+        );
+
+        // ── Pattern { Linear, target: Sub("inner.body") } ────────────────────
+        let p_outer = RealizationNodeId::new("PaOuter", 0);
+        let (graph_p, inner_p) = make_graph(
+            p_outer.clone(),
+            vec![CompiledGeometryOp::Pattern {
+                kind: PatternKind::Linear,
+                target: GeomRef::Sub("inner.body".into()),
+                args: vec![],
+            }],
+        );
+        let idx_p = ReverseDependencyIndex::build_from_graph_and_fields(&graph_p, &[]);
+        assert!(
+            idx_p
+                .realization_dependents_of(&inner_p)
+                .contains(&NodeId::Realization(p_outer.clone())),
+            "Pattern Sub target: realization_dependents_of(inner) must contain Realization(p_outer). Got: {:?}",
+            idx_p.realization_dependents_of(&inner_p)
+        );
+        let traces_p = build_trace_map_and_fields(&graph_p, &[]);
+        let p_trace = traces_p
+            .get(&NodeId::Realization(p_outer.clone()))
+            .expect("trace map must contain Realization(p_outer)");
+        assert!(
+            p_trace.realization_reads.contains(&inner_p),
+            "Pattern Sub target: forward trace must have inner in realization_reads. Got: {:?}",
+            p_trace.realization_reads
+        );
+
+        // ── Sweep { Extrude, profiles: [Sub("inner.body")] } ─────────────────
+        let s_outer = RealizationNodeId::new("SwOuter", 0);
+        let (graph_s, inner_s) = make_graph(
+            s_outer.clone(),
+            vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Extrude,
+                profiles: vec![GeomRef::Sub("inner.body".into())],
+                args: vec![],
+            }],
+        );
+        let idx_s = ReverseDependencyIndex::build_from_graph_and_fields(&graph_s, &[]);
+        assert!(
+            idx_s
+                .realization_dependents_of(&inner_s)
+                .contains(&NodeId::Realization(s_outer.clone())),
+            "Sweep Sub profiles: realization_dependents_of(inner) must contain Realization(s_outer). Got: {:?}",
+            idx_s.realization_dependents_of(&inner_s)
+        );
+        let traces_s = build_trace_map_and_fields(&graph_s, &[]);
+        let s_trace = traces_s
+            .get(&NodeId::Realization(s_outer.clone()))
+            .expect("trace map must contain Realization(s_outer)");
+        assert!(
+            s_trace.realization_reads.contains(&inner_s),
+            "Sweep Sub profiles: forward trace must have inner in realization_reads. Got: {:?}",
+            s_trace.realization_reads
+        );
+
+        // ── NEGATIVE: Transform { Translate, target: Step(0) } → EMPTY reads ─
+        let step_outer = RealizationNodeId::new("StepTrOuter", 0);
+        let (graph_step, inner_step) = make_graph(
+            step_outer.clone(),
+            vec![CompiledGeometryOp::Transform {
+                kind: TransformKind::Translate,
+                target: GeomRef::Step(0),
+                args: vec![],
+            }],
+        );
+        let idx_step = ReverseDependencyIndex::build_from_graph_and_fields(&graph_step, &[]);
+        assert!(
+            !idx_step
+                .realization_dependents_of(&inner_step)
+                .contains(&NodeId::Realization(step_outer.clone())),
+            "Transform Step target must NOT produce a realization→realization edge"
+        );
+        let traces_step = build_trace_map_and_fields(&graph_step, &[]);
+        let step_trace = traces_step
+            .get(&NodeId::Realization(step_outer.clone()))
+            .expect("trace map must contain Realization(step_outer)");
+        assert!(
+            step_trace.realization_reads.is_empty(),
+            "Transform Step target must yield EMPTY realization_reads. Got: {:?}",
+            step_trace.realization_reads
+        );
+    }
 }
 
 /// Extract value cell dependencies from an expression, returning deduplicated sorted Vec.
