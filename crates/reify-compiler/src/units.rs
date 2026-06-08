@@ -2239,4 +2239,159 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4315 — geometry_query_arg_aware_result_type unit tests (step-1 RED)
+    // -----------------------------------------------------------------------
+    //
+    // Tests for geometry_query_arg_aware_result_type(name, first_arg):
+    //   curvature + inline faces(...)[i] → Some(Matrix{2,2,Curvature})
+    //   curvature + edges / ValueRef / bare-faces / None → None
+    //   non-curvature name → None
+    //   regression: geometry_query_result_type("curvature") unchanged
+    //
+    // Fixtures are hand-built CompiledExprs (mirroring math_signatures tests).
+    // These tests FAIL TO COMPILE until step-2 adds the function — that is the
+    // expected RED signal.
+
+    /// Build a bare FunctionCall CompiledExpr for `selector_name` with no args.
+    /// Represents the `faces(solid)` / `edges(solid)` / ... call before indexing.
+    fn make_selector_call(selector_name: &str) -> reify_ir::CompiledExpr {
+        use reify_core::hash::ContentHash;
+        use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction};
+        CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: selector_name.to_string(),
+                    qualified_name: format!("std::{}", selector_name),
+                },
+                args: vec![],
+            },
+            result_type: reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+            content_hash: ContentHash::of(selector_name.as_bytes()),
+        }
+    }
+
+    /// Wrap `object` in `IndexAccess { object, index: Literal(Int(0)) }`.
+    /// Result type is `Type::Geometry` (element of the selector's List<Geometry>).
+    fn index_0(object: reify_ir::CompiledExpr) -> reify_ir::CompiledExpr {
+        use reify_ir::{CompiledExpr, Value};
+        let idx = CompiledExpr::literal(Value::Int(0), reify_core::Type::Int);
+        CompiledExpr::index_access(object, idx, reify_core::Type::Geometry)
+    }
+
+    /// (a) curvature with inline faces(...)[0] → Some(Matrix{2,2,Curvature})
+    #[test]
+    fn curvature_faces_index_returns_matrix_2x2_curvature() {
+        use reify_core::{DimensionVector, Type};
+        let surface_arg = index_0(make_selector_call("faces"));
+        let expected = Type::Matrix {
+            m: 2,
+            n: 2,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::CURVATURE,
+            }),
+        };
+        assert_eq!(
+            geometry_query_arg_aware_result_type("curvature", Some(&surface_arg)),
+            Some(expected),
+            "curvature(faces(...)[i], pt) must compile-type as Matrix{{2,2,Curvature}}"
+        );
+    }
+
+    /// (a-ext) Other face-producing selectors: faces_by_area, faces_by_normal, adjacent_faces
+    #[test]
+    fn curvature_other_face_selectors_return_matrix_2x2_curvature() {
+        use reify_core::{DimensionVector, Type};
+        let expected = Type::Matrix {
+            m: 2,
+            n: 2,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::CURVATURE,
+            }),
+        };
+        for sel in ["faces_by_area", "faces_by_normal", "adjacent_faces"] {
+            let surface_arg = index_0(make_selector_call(sel));
+            assert_eq!(
+                geometry_query_arg_aware_result_type("curvature", Some(&surface_arg)),
+                Some(expected.clone()),
+                "curvature({sel}(...)[i], pt) must compile-type as Matrix{{2,2,Curvature}}"
+            );
+        }
+    }
+
+    /// (b) curvature with edges(...)[0] → None (curve selector, not surface)
+    #[test]
+    fn curvature_edges_index_returns_none() {
+        let edge_arg = index_0(make_selector_call("edges"));
+        assert_eq!(
+            geometry_query_arg_aware_result_type("curvature", Some(&edge_arg)),
+            None,
+            "curvature(edges(...)[i], pt) must return None (falls through to Scalar default)"
+        );
+    }
+
+    /// (c) curvature with a let-bound ValueRef arg → None
+    #[test]
+    fn curvature_value_ref_arg_returns_none() {
+        use reify_core::identity::ValueCellId;
+        use reify_ir::CompiledExpr;
+        let solid_arg = CompiledExpr::value_ref(
+            ValueCellId::new("S", "my_solid"),
+            reify_core::Type::Geometry,
+        );
+        assert_eq!(
+            geometry_query_arg_aware_result_type("curvature", Some(&solid_arg)),
+            None,
+            "curvature(let_bound_solid, pt) must return None (structural detector sees no inline faces(...)[i])"
+        );
+    }
+
+    /// (d) curvature with a bare faces() FunctionCall (not wrapped in IndexAccess) → None
+    #[test]
+    fn curvature_bare_faces_call_returns_none() {
+        let bare_faces = make_selector_call("faces");
+        assert_eq!(
+            geometry_query_arg_aware_result_type("curvature", Some(&bare_faces)),
+            None,
+            "curvature(faces(...), pt) without index must return None"
+        );
+    }
+
+    /// (e) Non-curvature name with an inline surface arg → None
+    #[test]
+    fn non_curvature_name_with_surface_arg_returns_none() {
+        let surface_arg = index_0(make_selector_call("faces"));
+        assert_eq!(
+            geometry_query_arg_aware_result_type("area", Some(&surface_arg)),
+            None,
+            "non-curvature name 'area' with surface arg must return None"
+        );
+    }
+
+    /// (f) curvature with no first arg → None
+    #[test]
+    fn curvature_no_arg_returns_none() {
+        use reify_ir::CompiledExpr;
+        assert_eq!(
+            geometry_query_arg_aware_result_type("curvature", None::<&CompiledExpr>),
+            None,
+            "curvature with no first arg must return None"
+        );
+    }
+
+    /// Regression pin: geometry_query_result_type("curvature") stays Scalar<Curvature>
+    /// (the arg-aware fn overrides it only for the inline-surface form; the table default
+    /// must remain unchanged so the .or_else fallthrough keeps working).
+    #[test]
+    fn geometry_query_result_type_curvature_unchanged() {
+        use reify_core::{DimensionVector, Type};
+        assert_eq!(
+            geometry_query_result_type("curvature"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::CURVATURE,
+            }),
+            "geometry_query_result_type(\"curvature\") must remain Scalar<Curvature> (default table)"
+        );
+    }
 }
