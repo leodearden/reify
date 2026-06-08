@@ -156,4 +156,62 @@ drive prepared "$ONE $TWO refs/heads/main"
 assert "(j) following genuine advance consumes the sentinel" bash -c "! test -e '$SENTINEL'"
 assert "(j) following genuine advance logged sanctioned" bash -c "grep -q 'sanctioned main move' '$LOG'"
 
+# ===========================================================================
+# Durable ENFORCE/BYPASS switch (task 4367 step 2): the policy must survive
+# WITHOUT an env var — the long-lived orchestrator merge worker cannot pass one
+# to the update-ref subprocess that fires this hook. main_gate_{enforce,bypass}_on
+# resolve, in precedence order: env var (override) -> git config
+# reify.mainGate.{enforce,bypass} -> flag file <git-common-dir>/reify-main-gate-{enforce,bypass}.
+# (Common git dir of the fixture is $FIX/.git, same place SENTINEL lives.)
+# ===========================================================================
+ENFORCE_FLAG="$FIX/.git/reify-main-gate-enforce"
+BYPASS_FLAG="$FIX/.git/reify-main-gate-bypass"
+reset_durable() {
+    git -C "$FIX" config --unset reify.mainGate.enforce 2>/dev/null || true
+    git -C "$FIX" config --unset reify.mainGate.bypass  2>/dev/null || true
+    rm -f "$ENFORCE_FLAG" "$BYPASS_FLAG"
+}
+
+# -- (k) durable enforce via git config, NO env var -> exit 1 (abort) ----------
+echo ""
+echo "--- (k) durable enforce (git config reify.mainGate.enforce), no env -> exit 1 ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"
+git -C "$FIX" config reify.mainGate.enforce true
+drive prepared "$MAIN_LINE"
+assert "(k) git-config enforce aborts with no env var (exit 1)" test "$DRIVE_RC" -eq 1
+assert "(k) UNSANCTIONED logged before abort" bash -c "grep -q 'UNSANCTIONED main move' '$LOG'"
+reset_durable
+
+# -- (l) durable enforce via flag file, NO env var -> exit 1 (abort) -----------
+echo ""
+echo "--- (l) durable enforce (flag file), no env -> exit 1 ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"
+: > "$ENFORCE_FLAG"
+drive prepared "$MAIN_LINE"
+assert "(l) flag-file enforce aborts with no env var (exit 1)" test "$DRIVE_RC" -eq 1
+reset_durable
+
+# -- (m) env var OVERRIDES a durable enforce-on -> exit 0 (warn-only) ----------
+# REIFY_MAIN_GATE_ENFORCE set to a non-1 value forces enforcement OFF even when a
+# durable source says on — the env var is the authoritative override.
+echo ""
+echo "--- (m) env REIFY_MAIN_GATE_ENFORCE=0 overrides durable enforce-on -> exit 0 ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"
+git -C "$FIX" config reify.mainGate.enforce true
+drive prepared "$MAIN_LINE" REIFY_MAIN_GATE_ENFORCE=0
+assert "(m) env=0 overrides durable enforce-on (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(m) still logged UNSANCTIONED (warn-only)" bash -c "grep -q 'UNSANCTIONED main move' '$LOG'"
+reset_durable
+
+# -- (n) durable bypass (git config) wins even under durable enforce -> exit 0 -
+echo ""
+echo "--- (n) durable bypass (git config) + durable enforce -> exit 0 (allowed) ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"
+git -C "$FIX" config reify.mainGate.enforce true
+git -C "$FIX" config reify.mainGate.bypass true
+drive prepared "$MAIN_LINE"
+assert "(n) durable bypass allows even with durable enforce (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(n) bypass logged" bash -c "grep -q 'bypass' '$LOG'"
+reset_durable
+
 test_summary
