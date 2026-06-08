@@ -420,7 +420,7 @@ mod tests {
         let position = Position::new(2, 10); // on 'width'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
-            md.contains("param width: Scalar"),
+            md.contains("param width: Length"),
             "should contain param signature, got: {md}"
         );
         assert!(
