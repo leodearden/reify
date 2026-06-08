@@ -16,6 +16,7 @@ import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition, gotoDefinitionCommand } from './gotoDefinition';
 import { occurrenceHighlightExtension } from './occurrenceHighlight';
 import { renameCommand, type RenameUi } from './rename';
+import { findUsesCommand, type ReferenceResult } from './references';
 import { createNavHistory } from '../hooks/useNavHistory';
 import type { NavEntry } from '../hooks/useNavHistory';
 import type { createEditorStore } from '../stores/editorStore';
@@ -64,6 +65,14 @@ export interface EditorProps {
    * not yet mounted.
    */
   liveContentRef?: (getter: () => string | null) => void;
+  /**
+   * Called when Shift+F12 (Find uses) resolves references for the symbol under
+   * the cursor.  App opens the Find-uses panel with these results.  Results are
+   * in native LSP (0-based) coordinates; the +1 conversion to the editor's
+   * 1-based SourceLocation happens at App's onNavigate click handler, mirroring
+   * the diagnostics setScrollToLocation path.
+   */
+  onShowReferences?: (results: ReferenceResult[]) => void;
 }
 
 export function Editor(props: EditorProps) {
@@ -321,6 +330,19 @@ export function Editor(props: EditorProps) {
           // through the updateListener below → markDirty + updateSource + didChange.
           key: 'F2',
           run: renameCommand(() => currentUri, lspClient, renameUi),
+          preventDefault: true,
+        },
+        {
+          // Shift+F12 "Find uses" — references provider (task 4202 β). Routed
+          // through the CM keymap (not the global useKeyboardShortcuts handler,
+          // which bails inside the contentEditable editor) because it needs the
+          // live cursor; mirrors the F12 goto-definition precedent above.
+          key: 'Shift-F12',
+          run: findUsesCommand(
+            () => currentUri,
+            lspClient,
+            (r) => props.onShowReferences?.(r),
+          ),
           preventDefault: true,
         },
         {

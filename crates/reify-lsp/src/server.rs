@@ -165,6 +165,7 @@ impl LanguageServer for ReifyLanguageServer {
                     prepare_provider: Some(true),
                     work_done_progress_options: Default::default(),
                 })),
+                references_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -488,6 +489,36 @@ impl LanguageServer for ReifyLanguageServer {
         // invalid names, so the handler is a thin forwarder.
         Ok(crate::references::compute_rename(
             &text, &parsed, &uri, position, &new_name,
+        ))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let include_declaration = params.context.include_declaration;
+
+        // Brief read lock: snapshot the document, then release before the
+        // (pure, CPU-only, single-file) reference walk — mirrors document_symbol.
+        // β is single-file: no spawn_blocking and no cross-file/filesystem
+        // resolution (unlike goto_definition); collect_references is a cheap
+        // in-memory AST walk scoped to one entity body.
+        let state = self.state.read().await;
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+        drop(state);
+
+        // Reuse the per-document cached parse (one parse per edit).
+        let text = doc.text.clone();
+        let parsed = doc.parsed_module();
+
+        Ok(crate::references::compute_references(
+            &text,
+            &parsed,
+            &uri,
+            position,
+            include_declaration,
         ))
     }
 
@@ -862,6 +893,21 @@ mod tests {
                 "expected rename_provider = Some(OneOf::Right(RenameOptions {{ prepare_provider: Some(true), .. }})), got {other:?}"
             ),
         }
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_references_provider() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let init_result = server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+
+        assert!(
+            init_result.capabilities.references_provider.is_some(),
+            "should advertise references_provider (task 4202 β)"
+        );
     }
 
     #[tokio::test]
@@ -1572,6 +1618,84 @@ mod tests {
                 .document_highlight_provider
                 .is_some(),
             "should advertise document_highlight_provider (task 4204 δ)"
+        );
+    }
+
+    // --- task 4202 β: references handler tests ---
+
+    /// Build a ReferenceParams at `pos` in `uri` with the given declaration flag.
+    fn ref_params(uri: Url, pos: Position, include_declaration: bool) -> ReferenceParams {
+        ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: pos,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: ReferenceContext {
+                include_declaration,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn references_handler_returns_locations_for_member() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        // `width` in bracket_source is used 3× (declaration + 3 uses = 4 spans).
+        // Cursor on the `width` token at line 1, char 10 — the same position the
+        // hover handler test uses for 'width'.
+        let with_decl = server
+            .references(ref_params(uri.clone(), Position::new(1, 10), true))
+            .await
+            .unwrap()
+            .expect("references should resolve for the width member");
+        assert_eq!(
+            with_decl.len(),
+            4,
+            "declaration ∪ 3 uses of width = 4 Locations"
+        );
+        assert!(
+            with_decl.iter().all(|l| l.uri == uri),
+            "every Location must carry the document uri"
+        );
+
+        // include_declaration=false drops the declaration token → the 3 use spans.
+        let without_decl = server
+            .references(ref_params(uri.clone(), Position::new(1, 10), false))
+            .await
+            .unwrap()
+            .expect("references resolve without the declaration");
+        assert_eq!(
+            without_decl.len(),
+            3,
+            "include_declaration=false yields the 3 use spans"
+        );
+
+        // A position off any identifier (column 0 = indentation whitespace) → None.
+        let off_ident = server
+            .references(ref_params(uri.clone(), Position::new(1, 0), true))
+            .await
+            .unwrap();
+        assert!(
+            off_ident.is_none(),
+            "a position off any identifier must return Ok(None)"
+        );
+
+        // An unknown URI → Ok(None) (mirrors document_symbol_unknown_uri_returns_none).
+        let unknown = server
+            .references(ref_params(
+                Url::parse("file:///never_opened.ri").unwrap(),
+                Position::new(1, 10),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            unknown.is_none(),
+            "references for an unknown URI must return Ok(None)"
         );
     }
 

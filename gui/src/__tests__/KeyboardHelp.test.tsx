@@ -108,4 +108,17 @@ describe('KeyboardHelp', () => {
     expect(overlay.textContent).toContain(backEntry!.description);
     expect(overlay.textContent).toContain(fwdEntry!.description);
   });
+
+  it('find-uses shortcut surfaces in the ? overlay (Shift+F12)', () => {
+    render(() => <KeyboardHelp onClose={() => {}} />);
+    const overlay = screen.getByTestId('keyboard-help');
+    // Shift+F12 is the key chip for the display-only findUses entry; it auto-renders
+    // from the SHORTCUTS registry (key && !disabled) with no KeyboardHelp source change.
+    expect(overlay.textContent).toContain('Shift+F12');
+    // Assert the registry entry exists first so this fails loud (rather than passing
+    // vacuously) if findUses is removed or renamed.
+    const findUsesEntry = SHORTCUTS.find((s) => s.id === 'findUses');
+    expect(findUsesEntry).toBeDefined();
+    expect(overlay.textContent).toContain(findUsesEntry!.description);
+  });
 });

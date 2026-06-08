@@ -236,6 +236,14 @@ impl InProcessLsp {
                     .map_err(|e| format!("rename error: {e}"))?;
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
+            "textDocument/references" => {
+                let p = parse_params::<ReferenceParams>(params, error_prefix::REFERENCES_PARAMS)?;
+                let result = server
+                    .references(p)
+                    .await
+                    .map_err(|e| format!("references error: {e}"))?;
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+            }
             "shutdown" => {
                 server
                     .shutdown()
@@ -306,6 +314,9 @@ pub mod error_prefix {
 
     /// Prefix for deserialization failures on `textDocument/rename` params.
     pub const RENAME_PARAMS: &str = "rename params error";
+
+    /// Prefix for deserialization failures on `textDocument/references` params.
+    pub const REFERENCES_PARAMS: &str = "references params error";
 
     /// Prefix used when an unrecognised LSP method name is requested.
     ///
@@ -636,6 +647,66 @@ fn area(w : Length) -> Scalar { w }
             null_value,
             Value::Null,
             "a non-resolvable position serializes to null (no occurrences)"
+        );
+    }
+
+    // --- task 4202 β: SIGNAL TEST — references through the bridge ---
+
+    /// End-to-end signal for task 4202 β: the GUI `lsp_request` Tauri command
+    /// dispatches through `InProcessLsp::handle_request`, so the Find-uses panel
+    /// can only reach the references provider if the bridge has a
+    /// `textDocument/references` arm. Drive a fixture with a member used twice
+    /// through that exact path and assert the returned Location set.
+    #[tokio::test]
+    async fn handle_request_references_returns_locations() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///signal.ri";
+        let source = "\
+structure Bracket {
+    param width : Scalar = 80mm
+    let footprint = width * width
+}
+";
+
+        lsp.handle_request(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "reify",
+                    "version": 1,
+                    "text": source
+                }
+            }),
+        )
+        .await
+        .expect("didOpen should succeed");
+
+        // Cursor on the `width` declaration token (line 1, char 10).
+        let value = lsp
+            .handle_request(
+                "textDocument/references",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 1, "character": 10 },
+                    "context": { "includeDeclaration": true }
+                }),
+            )
+            .await
+            .expect("references request should reach the provider via the bridge");
+
+        let locations: Vec<Location> =
+            serde_json::from_value(value).expect("response should deserialize as Vec<Location>");
+        // declaration ∪ 2 uses of width = 3 Locations, all in the same document.
+        assert_eq!(
+            locations.len(),
+            3,
+            "width: declaration + 2 uses = 3 Locations"
+        );
+        let expected_uri = Url::parse(uri).unwrap();
+        assert!(
+            locations.iter().all(|l| l.uri == expected_uri),
+            "every Location must carry the opened document uri"
         );
     }
 }

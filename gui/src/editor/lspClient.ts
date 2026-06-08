@@ -113,6 +113,12 @@ export interface LspClient {
     character: number,
     newName: string,
   ): Promise<WorkspaceEdit | null>;
+  references(
+    uri: string,
+    line: number,
+    character: number,
+    includeDeclaration: boolean,
+  ): Promise<Location[]>;
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────────
@@ -306,6 +312,25 @@ export function createLspClient(): LspClient {
       // A null payload (non-renameable / invalid name) parses to JS null → !parsed.
       if (!parsed) return null;
       return parsed as WorkspaceEdit;
+    },
+
+    async references(
+      uri: string,
+      line: number,
+      character: number,
+      includeDeclaration: boolean,
+    ): Promise<Location[]> {
+      // The server returns a JSON array of LSP Location[] (declaration ∪ uses),
+      // or `null` when the cursor is not on a local value-member binding / the
+      // URI is unknown (Ok(None)); treat any non-array as the empty set.
+      const response = await lspRequest('textDocument/references', {
+        textDocument: { uri },
+        position: { line, character },
+        context: { includeDeclaration },
+      });
+      const parsed = JSON.parse(response);
+      if (!Array.isArray(parsed)) return [];
+      return parsed as Location[];
     },
   };
 }
