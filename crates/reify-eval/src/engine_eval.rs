@@ -2737,9 +2737,13 @@ impl Engine {
     /// Build an `EvalContext` that ALWAYS carries `.with_meta + .with_determinacy +
     /// .with_runtime_diagnostics`.
     ///
-    /// All five warm/edit cell-eval sites must route through this constructor so
-    /// that `DeterminacyPredicate` cells never silently return `Value::Undef`
-    /// due to a missing determinacy map (task 4356).
+    /// Three of the five warm/edit cell-eval sites route through this constructor
+    /// directly: `edit_param` Let loop, concurrent wave-2, and `eval_cached` Let
+    /// branch.  The `eval_cached` Param-default closure (`default_or`) and the
+    /// `edit_source` Let loop instead build the context inline for borrow-scope
+    /// reasons, but they MUST keep both `.with_determinacy` and
+    /// `.with_runtime_diagnostics` — dropping either silently makes
+    /// `DeterminacyPredicate` cells return `Value::Undef` (task 4356).
     ///
     /// Declared `pub(crate)` so `engine_edit.rs` and `concurrent.rs` (which live
     /// in separate modules in the same crate) can call it.

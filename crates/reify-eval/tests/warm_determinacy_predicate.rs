@@ -15,9 +15,13 @@
 //!
 //! Task 4356: cell_eval_ctx determinacy unification.
 
+use std::collections::{HashMap, HashSet};
+
 use reify_core::{ValueCellId, VersionId};
-use reify_ir::Value;
-use reify_test_support::{make_engine, parse_and_compile};
+use reify_eval::{ConcurrentEditResult, Engine};
+use reify_ir::{SolveResult, Value};
+use reify_test_support::mocks::{MockConstraintChecker, SequencedMockConstraintSolver};
+use reify_test_support::{make_engine, mm, parse_and_compile};
 
 /// Source shared across all three warm tests:
 ///   param x  : Length = 10mm
@@ -145,6 +149,149 @@ fn edit_source_resolves_determinacy_predicate() {
         r_val,
         Value::Bool(true),
         "edit_source: determined(x) should be Bool(true) after changing x's default; got {:?}",
+        r_val
+    );
+}
+
+// ── Amendment: eval_cached Param-default closure ───────────────────────────
+
+/// `eval_cached` Param-default-closure DeterminacyPredicate regression.
+///
+/// The `default_or` closure inside `eval_cached`'s Param branch evaluates the
+/// param's `default_expr` using an inline context that carries BOTH
+/// `.with_determinacy(&snapshot_values)` AND `.with_runtime_diagnostics(&runtime_sink)`.
+/// This test ensures that path stays correct: `param y : Bool = determined(x)`
+/// (a param whose default is a DeterminacyPredicate) must return `Bool(true)`
+/// when `x` is a param with a concrete default (thus `Determined`).
+///
+/// Regression guard for the eval_cached Param-default-closure site in engine_eval.rs.
+#[test]
+fn eval_cached_param_default_resolves_determinacy_predicate() {
+    let module = parse_and_compile(
+        r#"
+        structure S {
+            param x : Length = 10mm
+            param y : Bool = determined(x)
+        }
+        "#,
+    );
+    let mut engine = make_engine();
+
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    let y_id = ValueCellId::new("S", "y");
+    let y_val = result
+        .eval_result
+        .values
+        .get(&y_id)
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "y should be present in eval_cached values; got {} keys",
+                result.eval_result.values.len()
+            )
+        });
+    assert_eq!(
+        y_val,
+        Value::Bool(true),
+        "eval_cached Param-default: param y = determined(x) should be Bool(true) \
+         for param x with default 10mm; got {:?}",
+        y_val
+    );
+}
+
+// ── Amendment: concurrent wave-2 ──────────────────────────────────────────
+
+/// Concurrent wave-2 DeterminacyPredicate regression.
+///
+/// Module: `param a : Length = 3mm`, `param x : Length = auto`,
+/// `let r = determined(x)`, `constraint x > a`.
+///
+/// After cold eval (solver call 1 → x = mm(5.0), `determined(x)` = `Bool(true)`),
+/// change `a → mm(8.0)` via `prepare_concurrent_edit`.  `resolve_concurrent_edit`
+/// re-runs the solver (call 2 → x = mm(20.0)) in wave-1 and then re-evaluates
+/// `r` in wave-2 via `cell_eval_ctx`.  Because `x` is still `Determined` after
+/// re-solve, `result.values["r"]` must remain `Bool(true)`.
+///
+/// Regression guard for the concurrent wave-2 cell-eval site in concurrent.rs.
+#[test]
+fn concurrent_wave2_resolves_determinacy_predicate() {
+    let x_id = ValueCellId::new("S", "x");
+    let a_id = ValueCellId::new("S", "a");
+    let r_id = ValueCellId::new("S", "r");
+
+    // Solver: call 1 → x = mm(5.0); call 2 (after prepare) → x = mm(20.0).
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), mm(20.0));
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
+    ]);
+
+    // Module with auto x, let r = determined(x), constraint x > a.
+    // The constraint forces the solver to resolve x so x becomes Determined.
+    let module = parse_and_compile(
+        r#"
+        structure S {
+            param a : Length = 3mm
+            param x : Length = auto
+            let r = determined(x)
+            constraint x > a
+        }
+        "#,
+    );
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    // Cold eval: solver call 1 → x = mm(5.0); r = Bool(true) (x is Determined).
+    let _cold = engine.eval(&module);
+
+    // Prepare concurrent edit: change a from mm(3.0) → mm(8.0).
+    let setup = engine
+        .prepare_concurrent_edit(a_id.clone(), mm(8.0))
+        .expect("prepare_concurrent_edit should succeed");
+
+    // Minimal ConcurrentEditResult seeded from setup (no pre-computed node results).
+    let mut result = ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: vec![],
+        actual_eval_set: setup.eval_set.clone(),
+        skipped: HashSet::new(),
+        resolved_params: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+
+    // resolve_concurrent_edit:
+    //   wave-1 — constraint dirty → solver call 2 → x = mm(20.0), still Determined
+    //   wave-2 — r depends on x → re-evaluated via cell_eval_ctx → Bool(true)
+    engine.resolve_concurrent_edit(&setup, &mut result);
+
+    let r_val = result
+        .values
+        .get(&r_id)
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "r should be present in ConcurrentEditResult values after resolve; \
+                 got {} keys",
+                result.values.len()
+            )
+        });
+    assert_eq!(
+        r_val,
+        Value::Bool(true),
+        "concurrent wave-2: determined(x) should be Bool(true) after x is re-solved; \
+         got {:?}",
         r_val
     );
 }
