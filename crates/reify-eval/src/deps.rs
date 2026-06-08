@@ -1243,6 +1243,194 @@ mod tests {
         );
     }
 
+    // ── Task 4354 step-3: RED — selector/query cell→realization edge ──────────
+    //
+    // A value cell (Let OR Param) whose default_expr reads a geometry cell that
+    // is backed by a realization must register as a dependent of that realization
+    // in BOTH directions.
+    //
+    // Step-3 covers the "all non-auto cells" generalization from task 4317:
+    //   - Let cell `top_edges` reading `b` via edges_at_height(b, h)
+    //   - Param cell `v` reading `b` via volume(b)
+    // Both must show up as dependents of r0 (which backs `b`).
+    //
+    // Additionally, a value cell reading only scalar params must NOT register
+    // any realization read (no over-approximation).
+    //
+    // RED today: neither builder resolves a cell's geometry reads to realizations.
+
+    /// Build a graph with geometry realization r0 backed by `b`, a Let cell
+    /// `top_edges` (reads `b` via edges_at_height), a Param cell `v` (reads `b`
+    /// via volume), and a Param cell `w` (reads only the scalar `h`).  Assert BOTH
+    /// directions for top_edges and v; assert EMPTY realization_reads for w.
+    #[test]
+    fn value_cell_reads_geometry_cell_registers_realization_edge_both_directions() {
+        use crate::graph::{EvaluationGraph, RealizationNodeData, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_core::{ContentHash, RealizationNodeId};
+        use reify_ir::{BinOp, ReprKind};
+        use reify_test_support::builders::expr as eb;
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // ── geometry cell `b` (Type::Geometry) backed by r0 ───────────────────
+        let b = ValueCellId::new(e, "b");
+        graph.value_cells.insert(
+            b.clone(),
+            ValueCellNode {
+                id: b.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Geometry,
+                default_expr: None,
+                content_hash: ContentHash::of_str("b"),
+            },
+        );
+
+        // ── scalar param `h` ──────────────────────────────────────────────────
+        let h = ValueCellId::new(e, "h");
+        graph.value_cells.insert(
+            h.clone(),
+            ValueCellNode {
+                id: h.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str("h"),
+            },
+        );
+
+        // ── realization r0 backed by `b` ───────────────────────────────────────
+        let r0 = RealizationNodeId::new(e, 0);
+        graph.realizations.insert(
+            r0.clone(),
+            RealizationNodeData {
+                id: r0.clone(),
+                geometry_cell: Some(b.clone()),
+                operations: vec![],
+                content_hash: ContentHash::of_str("r0"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // ── Let cell `top_edges`: edges_at_height(b, h) ───────────────────────
+        // edges_at_height is NOT a geometry-query call (not in the recognised set),
+        // but it reads `b` as a ValueRef — the "reads a geometry cell" rule should
+        // detect this via the realization_by_cell resolver on reads.
+        // Use a simple 2-arg fn_call that references b (geometry) and h (scalar).
+        let edges_expr = eb::fn_call(
+            "edges_at_height",
+            "std::edges_at_height",
+            vec![
+                CompiledExpr::value_ref(b.clone(), Type::Geometry),
+                CompiledExpr::value_ref(h.clone(), Type::Real),
+            ],
+            Type::Real, // selector return type (simplified)
+        );
+        let top_edges = ValueCellId::new(e, "top_edges");
+        graph.value_cells.insert(
+            top_edges.clone(),
+            ValueCellNode {
+                id: top_edges.clone(),
+                kind: ValueCellKind::Let,
+                cell_type: Type::Real,
+                default_expr: Some(edges_expr),
+                content_hash: ContentHash::of_str("top_edges"),
+            },
+        );
+
+        // ── Param cell `v`: volume(b) ──────────────────────────────────────────
+        // volume IS a geometry-query call but also reads `b` as a ValueRef, so
+        // the "reads a geometry cell" rule applies here too.
+        let vol_expr = eb::fn_call(
+            "volume",
+            "std::volume",
+            vec![CompiledExpr::value_ref(b.clone(), Type::Geometry)],
+            Type::Real,
+        );
+        let v = ValueCellId::new(e, "v");
+        graph.value_cells.insert(
+            v.clone(),
+            ValueCellNode {
+                id: v.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: Some(vol_expr),
+                content_hash: ContentHash::of_str("v"),
+            },
+        );
+
+        // ── Param cell `w`: reads only scalar `h` (no geometry) ───────────────
+        let w_expr = CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(h.clone(), Type::Real),
+            CompiledExpr::literal(reify_ir::Value::Real(2.0), Type::Real),
+            Type::Real,
+        );
+        let w = ValueCellId::new(e, "w");
+        graph.value_cells.insert(
+            w.clone(),
+            ValueCellNode {
+                id: w.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Real,
+                default_expr: Some(w_expr),
+                content_hash: ContentHash::of_str("w"),
+            },
+        );
+
+        // ── (a) reverse: top_edges and v are dependents of r0 ─────────────────
+        let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
+        let r0_deps = index.realization_dependents_of(&r0);
+
+        assert!(
+            r0_deps.contains(&NodeId::Value(top_edges.clone())),
+            "realization_dependents_of(r0) must contain Value(top_edges) \
+             (Let cell reads geometry cell b backed by r0). Got: {:?}",
+            r0_deps
+        );
+        assert!(
+            r0_deps.contains(&NodeId::Value(v.clone())),
+            "realization_dependents_of(r0) must contain Value(v) \
+             (Param cell reads geometry cell b backed by r0). Got: {:?}",
+            r0_deps
+        );
+
+        // ── (b) forward: top_edges and v traces have r0 in realization_reads ───
+        let traces = build_trace_map_and_fields(&graph, &[]);
+
+        let top_edges_trace = traces
+            .get(&NodeId::Value(top_edges.clone()))
+            .expect("trace map must contain Value(top_edges)");
+        assert!(
+            top_edges_trace.realization_reads.contains(&r0),
+            "forward trace for Value(top_edges) must have r0 in realization_reads. \
+             Got: {:?}",
+            top_edges_trace.realization_reads
+        );
+
+        let v_trace = traces
+            .get(&NodeId::Value(v.clone()))
+            .expect("trace map must contain Value(v)");
+        assert!(
+            v_trace.realization_reads.contains(&r0),
+            "forward trace for Value(v) must have r0 in realization_reads. \
+             Got: {:?}",
+            v_trace.realization_reads
+        );
+
+        // ── no over-approximation: w (scalar only) has EMPTY realization_reads ─
+        let w_trace = traces
+            .get(&NodeId::Value(w.clone()))
+            .expect("trace map must contain Value(w)");
+        assert!(
+            w_trace.realization_reads.is_empty(),
+            "scalar-only cell w (h * 2.0) must have EMPTY realization_reads. \
+             Got: {:?}",
+            w_trace.realization_reads
+        );
+    }
+
     // ── Task 4354 step-1: RED — constraint→realization edge ───────────────────
     //
     // A geometry-reading constraint (e.g. `volume(body) < max`) must register as
