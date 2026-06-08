@@ -256,6 +256,18 @@ info "Building manifold prebuilt C++ libs (one-time; ~5-10 min cold, fast on re-
 "$(dirname "${BASH_SOURCE[0]}")/build-manifold-deps.sh"
 ok "manifold prebuilt libs ready at /opt/reify-deps/manifold/lib"
 
+# ---------- main-gate worktree config isolation ----------
+#
+# Enables extensions.worktreeConfig and seeds this worktree's config.worktree
+# with core.hooksPath=hooks so the landing gate (hooks/reference-transaction,
+# hooks/pre-commit, hooks/pre-merge-commit) stays live even when Claude Code
+# rewrites the SHARED .git/config core.hooksPath on every worktree enter.
+# Idempotent. See CLAUDE.md "Landing on main" for rationale.
+
+info "Seeding per-worktree core.hooksPath via extensions.worktreeConfig..."
+"$(dirname "${BASH_SOURCE[0]}")/setup-main-gate-worktree-config.sh"
+ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
+
 # ---------- build-accelerator systemd --user services ----------
 #
 # Build infra installed as systemd --user units so it survives reboots and
