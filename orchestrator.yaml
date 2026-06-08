@@ -127,6 +127,15 @@ git:
   branch_prefix: "task/"
   remote: "origin"
   worktree_dir: ".worktrees"
+  # Main-gate sanction handshake (task 4367 step 1; dark_factory:1678 wired the
+  # orchestrator side). advance_main runs main_gate_mark_command BEFORE its CAS
+  # update-ref, so the reify reference-transaction hook records the orchestrator
+  # merge worker's ~28 landings/day as `sanctioned` (not UNSANCTIONED) in
+  # reify-main-gate.log. The sentinel path matches hooks/main-gate-lib.sh.
+  # Enforcement stays OFF (warn-only) — this only populates the re-observe
+  # window (4367 step 3); the durable ENFORCE flip is 4367 step 4.
+  main_gate_mark_command: 'touch "$(git rev-parse --git-common-dir)/reify-main-gate-ok"'
+  main_gate_unmark_command: 'rm -f "$(git rev-parse --git-common-dir)/reify-main-gate-ok"'
 
 # Project root (absolute path)
 project_root: "/home/leo/src/reify"

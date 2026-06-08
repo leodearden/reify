@@ -41,3 +41,38 @@ main_gate_log() {
     echo "$_line" >> "$(main_gate_logfile)" 2>/dev/null || true
     echo "$_line" >&2
 }
+
+# main_gate_enforce_on — is ENFORCE active? (return 0 = yes → abort unsanctioned
+# main moves). Resolved from a DURABLE, multi-source switch because an env var
+# does not reliably reach the `git update-ref` subprocess this hook fires under
+# (the orchestrator merge worker is a long-lived process; task 4367). Precedence:
+#   1. env REIFY_MAIN_GATE_ENFORCE — override when set non-empty: "1" => on,
+#      any other non-empty value => off (overrides a durable on).
+#   2. git config --bool reify.mainGate.enforce == true
+#   3. flag file  <git-common-dir>/reify-main-gate-enforce  exists
+# Unset/empty env falls through to the durable sources (config, then flag file).
+main_gate_enforce_on() {
+    case "${REIFY_MAIN_GATE_ENFORCE:-__unset__}" in
+        1) return 0 ;;
+        __unset__) ;;                  # unset/empty → consult durable sources
+        *) return 1 ;;                 # any explicit non-1 value → force off
+    esac
+    [ "$(git config --bool --get reify.mainGate.enforce 2>/dev/null)" = "true" ] && return 0
+    [ -e "$(git rev-parse --git-common-dir 2>/dev/null)/reify-main-gate-enforce" ] && return 0
+    return 1
+}
+
+# main_gate_bypass_on — is BYPASS active? (return 0 = yes → always allow,
+# break-glass). Same durable precedence shape as main_gate_enforce_on, over the
+# bypass sources: env REIFY_MAIN_GATE_BYPASS / git config reify.mainGate.bypass /
+# flag file <git-common-dir>/reify-main-gate-bypass.
+main_gate_bypass_on() {
+    case "${REIFY_MAIN_GATE_BYPASS:-__unset__}" in
+        1) return 0 ;;
+        __unset__) ;;
+        *) return 1 ;;
+    esac
+    [ "$(git config --bool --get reify.mainGate.bypass 2>/dev/null)" = "true" ] && return 0
+    [ -e "$(git rev-parse --git-common-dir 2>/dev/null)/reify-main-gate-bypass" ] && return 0
+    return 1
+}
