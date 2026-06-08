@@ -375,13 +375,30 @@ fn emit_outside_match_collision(
 /// Called at the two authoritative param-with-default sites (top-level structure-param
 /// arm and port-member param arm).  NOT called at the ctor-lowering mirror pass
 /// (~entity.rs:4129-4161) which writes into `throwaway_diags` by design.
+///
+/// `has_explicit_type` must be `param.type_expr.is_some()` at the call site.
+/// For an untyped param the compiler assigns a `Type::Real` inference fallback
+/// (entity.rs:882-884 top-level; entity.rs:1140-1142 port-member) — NOT a
+/// user-declared type.  Cross-checking that fallback against the initializer's
+/// real type produces false positives (e.g. an untyped enum-valued port member
+/// whose cell_type falls back to Real, task 4318 review finding).  The
+/// declared-vs-initializer contract exists ONLY when the user actually wrote a
+/// type annotation; for an untyped param the cell type IS conceptually the
+/// initializer's type so there is nothing to validate.
 fn check_param_default_type(
     name: &str,
     declared: &Type,
+    has_explicit_type: bool,
     default_expr: Option<&CompiledExpr>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    // Gate: only cross-check when the user wrote an explicit `: Type` annotation.
+    // For untyped params declared is only a Type::Real inference fallback (not a
+    // user contract), so checking it would produce false positives.
+    if !has_explicit_type {
+        return;
+    }
     // Anti-cascade: if the declared type failed to resolve, a root-cause
     // diagnostic was already emitted; skip to avoid a confusing secondary one.
     if declared.is_error() {
@@ -1448,9 +1465,12 @@ pub(crate) fn compile_entity(
                     });
 
                     // Site 1: top-level structure-param declared-vs-initializer check.
+                    // Pass `param.type_expr.is_some()` to suppress the check for
+                    // untyped params whose cell_type is only a Type::Real fallback.
                     check_param_default_type(
                         &param.name,
                         &cell_type,
+                        param.type_expr.is_some(),
                         default_expr.as_ref(),
                         param.span,
                         diagnostics,
@@ -2048,9 +2068,12 @@ pub(crate) fn compile_entity(
                                 });
 
                                 // Site 2: port-member param declared-vs-initializer check.
+                                // Pass `param.type_expr.is_some()` to suppress the check for
+                                // untyped params whose cell_type is only a Type::Real fallback.
                                 check_param_default_type(
                                     &param.name,
                                     &cell_type,
+                                    param.type_expr.is_some(),
                                     default_expr.as_ref(),
                                     param.span,
                                     diagnostics,
