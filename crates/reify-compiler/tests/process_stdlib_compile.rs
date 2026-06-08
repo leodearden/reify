@@ -309,8 +309,9 @@ fn process_category_traits_each_refine_process() {
 
 // ─── step-7: DFMRule trait surface ───────────────────────────────────────────
 
-/// DFMRule has no refinements and exactly three required params in order:
-/// rule_name : String, severity : DFMSeverity, applies_to : Process.
+/// DFMRule has no refinements and exactly four required params in order:
+/// rule_name : String, severity : DFMSeverity, applies_to : Process,
+/// subject : Solid (resolves to Type::Geometry).
 #[test]
 fn dfmrule_trait_surface_has_rule_name_severity_and_process_applicability() {
     let t = find_trait("DFMRule");
@@ -321,11 +322,11 @@ fn dfmrule_trait_surface_has_rule_name_severity_and_process_applicability() {
         t.refinements
     );
 
-    // Exactly three required members, in declaration order.
+    // Exactly four required members, in declaration order.
     assert_eq!(
         t.required_members.len(),
-        3,
-        "DFMRule should have exactly 3 required members; got: {:?}",
+        4,
+        "DFMRule should have exactly 4 required members; got: {:?}",
         t.required_members
             .iter()
             .map(|r| &r.name)
@@ -343,6 +344,10 @@ fn dfmrule_trait_surface_has_rule_name_severity_and_process_applicability() {
         t.required_members[2].name, "applies_to",
         "DFMRule required_members[2] should be 'applies_to'"
     );
+    assert_eq!(
+        t.required_members[3].name, "subject",
+        "DFMRule required_members[3] should be 'subject'"
+    );
 
     assert_eq!(
         param_type("DFMRule", "rule_name"),
@@ -358,6 +363,134 @@ fn dfmrule_trait_surface_has_rule_name_severity_and_process_applicability() {
         param_type("DFMRule", "applies_to"),
         Type::TraitObject("Process".into()),
         "DFMRule.applies_to must be Type::TraitObject(\"Process\")"
+    );
+    assert_eq!(
+        param_type("DFMRule", "subject"),
+        Type::Geometry,
+        "DFMRule.subject must be Type::Geometry (Solid resolves to Type::Geometry)"
+    );
+}
+
+// ─── task-4407 step-3: DFMRule.subject RED tests ─────────────────────────────
+
+/// β conformance lock — DFMRule.subject (negative):
+/// A DFMRule conformer omitting `subject` must emit a missing-required-member
+/// Error diagnostic.
+///
+/// RED until impl (step-4): subject is not yet declared on DFMRule, so no
+/// missing-member diagnostic is emitted and this assertion fails.
+#[test]
+fn dfmrule_conformer_missing_subject_emits_missing_member_error() {
+    let source = r#"
+import std.process
+
+structure def MinWallCheck : DFMRule {
+    param rule_name  : String      = "min_wall"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = MilledPart()
+}
+
+structure def MilledPart : Subtracting {
+    param duration         : Time   = 30min
+    param cost             : Money  = 50USD
+    param tool_access      : Solid  = box(200mm, 150mm, 100mm)
+    param min_feature_size : Length = 0.5mm
+    param achievable_finish: Length = 0.0016mm
+    param max_overhang_angle : Angle = 45deg
+}
+"#;
+    // Note: `subject` is intentionally omitted from MinWallCheck.
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "MinWallCheck omitting 'subject' should emit an error diagnostic"
+    );
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("missing required member") && error_msg.contains("subject"),
+        "error should mention 'missing required member' and 'subject', got: {}",
+        error_msg
+    );
+}
+
+/// β conformance lock — DFMRule.subject (positive):
+/// A complete DFMRule conformer supplying all four members including
+/// `param subject : Solid = box(...)` compiles with zero Error diagnostics
+/// and exposes a `subject` value cell of type Type::Geometry (the cell γ reads).
+///
+/// RED until impl (step-4): subject is not yet a trait member, so the value
+/// cell is absent and the assertion panics.
+#[test]
+fn dfmrule_conformer_with_subject_compiles_clean_and_exposes_subject() {
+    let source = r#"
+import std.process
+
+structure def MilledPart : Subtracting {
+    param duration           : Time   = 30min
+    param cost               : Money  = 50USD
+    param tool_access        : Solid  = box(200mm, 150mm, 100mm)
+    param min_feature_size   : Length = 0.5mm
+    param achievable_finish  : Length = 0.0016mm
+    param max_overhang_angle : Angle  = 45deg
+}
+
+structure def MinWallCheck : DFMRule {
+    param rule_name  : String      = "min_wall"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = MilledPart()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (a-1) Zero error-severity diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "MinWallCheck with all DFMRule params should compile clean; errors: {:?}",
+        errors
+    );
+
+    // (a-2) The compiled MinWallCheck template exposes a `subject` value cell
+    //       with the correct type (Type::Geometry — Solid resolves to Type::Geometry).
+    let rule = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "MinWallCheck")
+        .expect("MinWallCheck template should be present after clean compile");
+
+    let subject_cell = rule
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "subject")
+        .unwrap_or_else(|| {
+            panic!(
+                "MinWallCheck should have a 'subject' value cell; found: {:?}",
+                rule.value_cells
+                    .iter()
+                    .map(|vc| &vc.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        subject_cell.cell_type,
+        Type::Geometry,
+        "MinWallCheck.subject cell_type should be Type::Geometry"
     );
 }
 
