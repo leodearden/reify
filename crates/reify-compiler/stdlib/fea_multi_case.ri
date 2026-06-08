@@ -268,7 +268,7 @@ structure def MultiCaseResult {
 // task 3544's plan): PressureLoad's natural fields (magnitude/face/direction)
 // don't match PointLoad's force/point shape, and carrying dead fields on every
 // pressure load would violate Q-SIR-4 (preserve-don't-redesign). The
-// empty-marker form parallels `trait Support { }` already in this file, and
+// empty-marker form parallels `trait Support { }` in std.fea.types (fea_types.ri), and
 // is a strict relaxation for PointLoad (its structure def already declares
 // `point` and `force` explicitly so removing them from the trait body doesn't
 // break conformance).  Future wave-2 loads (TractionLoad, BodyForce, Gravity)
