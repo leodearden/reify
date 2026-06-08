@@ -11,6 +11,8 @@ export type PanelLayout = {
   designTreeHeight: number;
   propertyHeight: number;
   constraintHeight: number;
+  problemsHeight: number;
+  problemsCollapsed: boolean;
 };
 
 /** Load persisted panel layout from localStorage. Returns null if missing, invalid, or incomplete.
@@ -38,6 +40,8 @@ export function loadPanelLayout(): Partial<PanelLayout> | null {
     if (typeof parsed.designTreeHeight === 'number') out.designTreeHeight = parsed.designTreeHeight;
     if (typeof parsed.propertyHeight === 'number') out.propertyHeight = parsed.propertyHeight;
     if (typeof parsed.constraintHeight === 'number') out.constraintHeight = parsed.constraintHeight;
+    if (typeof parsed.problemsHeight === 'number') out.problemsHeight = parsed.problemsHeight;
+    if (typeof parsed.problemsCollapsed === 'boolean') out.problemsCollapsed = parsed.problemsCollapsed;
     return out;
   } catch {
     return null;
