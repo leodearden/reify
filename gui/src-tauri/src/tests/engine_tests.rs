@@ -8088,6 +8088,58 @@ fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path(
     }
 }
 
+// ── Production solver wiring test ────────────────────────────────────────────
+
+/// Production `EngineSession::with_registered_kernel` installs a working solver.
+///
+/// Constructs via the production boot path —
+/// `EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker))` —
+/// WITHOUT calling `with_solver_for_test`.
+/// Installs a `RecordingEmitter`, loads an inline source with one `auto` param and
+/// a `minimize` directive, then asserts the emitter fires
+/// `[Start, Iteration, Complete]`.
+///
+/// Combined with `production_registry_routes_geometric_to_solvespace` (step-1/step-2),
+/// this proves the production GUI engine carries a working dimensional solver and
+/// SolveSpaceSolver in its geometric slot.
+///
+/// RED today: `with_registered_kernel` delegates straight to `from_engine` which
+/// installs no solver → `resolved_params` is always empty → emitter never fires.
+#[test]
+fn with_registered_kernel_production_session_resolves_auto_param() {
+    use std::sync::Arc;
+
+    // Mirror auto_minimize.ri: one auto param + box constraints + minimize.
+    let source = r#"structure AutoMinimize {
+    param thickness: Scalar = auto
+    constraint thickness > 2mm
+    constraint thickness < 20mm
+    minimize thickness
+}"#;
+
+    let mut session = EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session
+        .load_from_source(source, "AutoMinimize")
+        .expect("load_from_source with auto-param source should succeed");
+
+    let events = events.lock().unwrap();
+    assert!(
+        !events.is_empty(),
+        "production GUI engine must have a solver installed: \
+         expected auto-resolve events, got none",
+    );
+    assert!(
+        matches!(events.last(), Some(EmitEvent::Complete)),
+        "expected Complete as the last event, got {:?}",
+        events.last()
+    );
+}
+
 // ── Structural lock-in test ──────────────────────────────────────────────────
 
 /// Structural lock-in test: verifies that `EngineSession` exposes `CoreState`
