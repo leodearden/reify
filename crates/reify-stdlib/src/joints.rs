@@ -6930,10 +6930,7 @@ mod tests {
 
         let result = eval_builtin("transform_at", &[joint_with_origin, Value::angle(theta)]);
 
-        // Main invariant: result == origin ∘ bare_motion.
-        assert_transform_approx(&result, exp_rot, exp_trans, 1e-12,
-            "revolute-z with origin=(0.2,0,0): transform_at should == origin∘bare_motion");
-
+        // --- Primary signal: concrete numeric invariants ---
         // Translation must reflect the pivot, invariant under joint angle.
         let [tx, ty, tz] = extract_translation_array(&result);
         assert!(
@@ -6956,6 +6953,15 @@ mod tests {
             "revolute-z with origin: rotation should be R_z(π/3) ≈ ({qw},0,0,{qz}) up to sign, \
              got ({w},{x},{y},{z})"
         );
+
+        // --- Secondary consistency check: result == origin ∘ bare_motion ---
+        // NOTE: this assertion re-invokes the production helper, so it does not
+        // independently verify the SE(3) math — the concrete numeric assertions
+        // above are the real signal.  This check detects accidental divergence
+        // between the two call sites (i.e., transform_at and compose_transforms
+        // taking different branches).
+        assert_transform_approx(&result, exp_rot, exp_trans, 1e-12,
+            "revolute-z with origin=(0.2,0,0): transform_at should == origin∘bare_motion (secondary)");
     }
 
     /// Cross-kind: prismatic-x joint with origin=(0.2,0,0) m.
@@ -7199,5 +7205,37 @@ mod tests {
             &[axis_z_unit(), angle_range_0_to_pi(), pivot, Value::Real(0.0)],
         );
         assert!(result.is_undef(), "4-arg revolute should give Undef, got {result:?}");
+    }
+
+    // ── Prismatic B9: confirm the prismatic arm wires pivot_to_origin's None → Undef
+    //    symmetrically with revolute (suggestion #4).
+
+    /// (d) B9 prismatic: dimensionless pivot → Undef.
+    ///
+    /// Confirms the prismatic constructor propagates `pivot_to_origin` returning
+    /// `None` to `Some(Value::Undef)`, mirroring the revolute arm.
+    #[test]
+    fn prismatic_3arg_dimensionless_pivot_returns_undef() {
+        let pivot = Value::Point(vec![Value::Real(25.0), Value::Real(0.0), Value::Real(0.0)]);
+        let result = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m(), pivot]);
+        assert!(
+            result.is_undef(),
+            "prismatic 3-arg with dimensionless pivot should give Undef, got {result:?}"
+        );
+    }
+
+    /// (d) B9 prismatic: NaN pivot component → Undef.
+    #[test]
+    fn prismatic_3arg_nan_pivot_returns_undef() {
+        let pivot = Value::Vector(vec![
+            Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let result = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m(), pivot]);
+        assert!(
+            result.is_undef(),
+            "prismatic 3-arg with NaN pivot component should give Undef, got {result:?}"
+        );
     }
 }

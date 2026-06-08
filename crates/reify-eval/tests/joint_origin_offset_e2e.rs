@@ -9,7 +9,8 @@
 //! - `t1 = transform_at(j, π/3 rad)`: translation == (0.04, 0, 0) m (invariant
 //!   under joint angle), rotation == R_z(π/3) = (cos π/6, 0, 0, sin π/6).
 //!
-//! RED: fails until `examples/kinematic/revolute_pivot_offset.ri` exists (step-6).
+//! Asserts the landed behavior: the fixture ships alongside this test and is
+//! evaluated clean (no error diagnostics).
 
 // Value::Map uses BTreeMap<Value, Value>; Value's interior-mutable SampledField
 // (AtomicBool) trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.
