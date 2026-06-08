@@ -860,6 +860,7 @@ const App: Component = () => {
       setPaletteMode('symbol');
       setShowPalette(true);
     },
+    onToggleDiagnostics: handleToggleDiagnostics,
   };
   useKeyboardShortcuts(shortcutCallbacks);
 

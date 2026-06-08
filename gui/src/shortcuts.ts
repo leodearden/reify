@@ -111,8 +111,9 @@ const _SHORTCUTS_DEF = [
   { id: 'rename',         key: 'F2',    description: 'Rename symbol',    category: 'Editor' },
   // Command palette and symbol-jump — global actions exempt from the typing-context
   // guard in useKeyboardShortcuts so they open from any focus state (including the CM editor).
-  { id: 'commandPalette', key: 'Ctrl+Shift+P', description: 'Command palette', category: 'View', bind: { key: 'p', ctrl: true, shift: true } },
-  { id: 'symbolJump',     key: 'Ctrl+Shift+O', description: 'Go to symbol',    category: 'View', bind: { key: 'o', ctrl: true, shift: true } },
+  { id: 'commandPalette',     key: 'Ctrl+Shift+P', description: 'Command palette',         category: 'View', bind: { key: 'p', ctrl: true, shift: true } },
+  { id: 'symbolJump',         key: 'Ctrl+Shift+O', description: 'Go to symbol',             category: 'View', bind: { key: 'o', ctrl: true, shift: true } },
+  { id: 'toggleDiagnostics',  key: 'Ctrl+Shift+M', description: 'Toggle diagnostics panel', category: 'View', bind: { key: 'm', ctrl: true, shift: true } },
 ] as const satisfies readonly ShortcutDef[];
 
 /**
