@@ -6,18 +6,20 @@
 //!
 //! # Recognition-shape twin
 //!
-//! The output-bound extractor below duplicates the `RepresentationWithin`
-//! shape-recognition gates from
-//! [`crate::tolerance_scope::extract_tolerance_bindings`] (top-level
-//! `UserFunctionCall("RepresentationWithin", [<ValueRef typed
-//! StructureRef>, <Literal Scalar LENGTH finite>])`). The duplication is a
-//! deliberate scope clip for task 2650 — a future shared helper would prevent
-//! drift between the two recognition sites at the cost of touching
-//! `tolerance_scope.rs`'s public surface (TODO).
+//! The `extract_output_tolerance_bound` extractor and the new
+//! `recognize_representation_within` asserter share recognition gates via the
+//! private `match_representation_within_shape` helper — both functions call it
+//! so there is a single gate implementation that cannot drift (retiring the
+//! TODO that lived in the extractor's doc before task 4199 γ).
+//!
+//! The canonical recognition shape:
+//! `UserFunctionCall("RepresentationWithin", [<ValueRef typed StructureRef>,
+//! <Literal Scalar LENGTH finite>=0])`
 
 use crate::graph::ConstraintNodeData;
-use reify_core::{ConstraintNodeId, DimensionVector, Type};
-use reify_ir::{CompiledExprKind, PersistentMap, Value};
+use reify_core::{ConstraintNodeId, DimensionVector, Diagnostic, Severity, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, PersistentMap, Satisfaction, Value, ValueMap};
+use std::collections::BTreeMap;
 
 /// Combine an output occurrence's tolerance bound with the active purpose's
 /// tolerance bound under partial-order "tighter satisfies looser" semantics.
@@ -519,5 +521,327 @@ mod tests {
             None,
             "both None must return None — no demand contributor exists"
         );
+    }
+
+    // ── step-1 (task 4199 γ): recognize_representation_within unit tests ───────
+    //
+    // These tests are RED until step-2 implements `recognize_representation_within`.
+
+    /// Build the canonical `RepresentationWithin(<ValueRef typed
+    /// StructureRef("Curved")>, <Scalar{1e-6, LENGTH}>)` expression used
+    /// across multiple step-1 test cases.
+    fn canonical_repr_within_expr() -> CompiledExpr {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1e-6,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        )
+    }
+
+    /// Canonical RepresentationWithin expression → Some((subject_vcid, "Curved", 1e-6)).
+    ///
+    /// This is the recognition-shape positive case: a well-formed
+    /// `RepresentationWithin(ValueRef(subject.self):StructureRef("Curved"),
+    /// Scalar{1e-6, LENGTH})` must yield the tuple
+    /// `(ValueCellId("subject","self"), "Curved", 1e-6)`.
+    #[test]
+    fn recognize_repr_within_returns_some_for_canonical_shape() {
+        let expr = canonical_repr_within_expr();
+        let result = recognize_representation_within(&expr);
+        assert!(
+            result.is_some(),
+            "canonical RepresentationWithin must be recognized as Some"
+        );
+        let (vcid, struct_name, bound) = result.unwrap();
+        assert_eq!(
+            vcid,
+            ValueCellId::new("subject", "self"),
+            "subject ValueCellId must match the ValueRef in arg0"
+        );
+        assert_eq!(
+            struct_name, "Curved",
+            "StructureRef inner name must be extracted from arg0.result_type"
+        );
+        assert!(
+            (bound - 1e-6).abs() < 1e-15,
+            "bound must match the Scalar si_value in arg1; got {bound}"
+        );
+    }
+
+    /// Non-RepresentationWithin function name → None (silent-skip gate 2 name check).
+    #[test]
+    fn recognize_repr_within_returns_none_for_wrong_function_name() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1e-6,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationBetween".to_string(), // wrong name
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "wrong function name must return None (gate 2 name check)"
+        );
+    }
+
+    /// Arity ≠ 2 (single arg) → None (silent-skip gate 2 arity check).
+    #[test]
+    fn recognize_repr_within_returns_none_for_wrong_arity() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg], // arity 1 — wrong
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "arity ≠ 2 must return None (gate 2 arity check)"
+        );
+    }
+
+    /// Arg0 is a Literal (not a ValueRef) → None (gate 3 ValueRef check).
+    #[test]
+    fn recognize_repr_within_returns_none_for_non_value_ref_arg0() {
+        // Use a Bool literal as arg0 — not a ValueRef.
+        let literal_arg = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1e-6,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![literal_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "non-ValueRef arg0 must return None (gate 3)"
+        );
+    }
+
+    /// Arg0 is a ValueRef but with non-StructureRef result_type (Real) → None (gate 3).
+    #[test]
+    fn recognize_repr_within_returns_none_for_non_structure_ref_result_type() {
+        // ValueRef with result_type = Real, not StructureRef.
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::Real, // wrong result_type
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1e-6,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "non-StructureRef result_type on arg0 must return None (gate 3)"
+        );
+    }
+
+    /// Arg1 has a DIMENSIONLESS dimension (not LENGTH) → None (gate 4a).
+    #[test]
+    fn recognize_repr_within_returns_none_for_non_length_dimension() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1e-6,
+                dimension: DimensionVector::DIMENSIONLESS, // wrong dimension
+            },
+            Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "non-LENGTH dimension in arg1 must return None (gate 4a)"
+        );
+    }
+
+    /// Arg1 is a NaN tolerance literal → None (gate 4b).
+    #[test]
+    fn recognize_repr_within_returns_none_for_nan_tolerance() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: f64::NAN,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "NaN tolerance must return None (gate 4b)"
+        );
+    }
+
+    /// Arg1 is +Infinity tolerance literal → None (gate 4b).
+    #[test]
+    fn recognize_repr_within_returns_none_for_infinite_tolerance() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: f64::INFINITY,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "+Infinity tolerance must return None (gate 4b)"
+        );
+    }
+
+    /// Arg1 is a negative (−1 mm) finite LENGTH tolerance literal → None (gate 4c).
+    #[test]
+    fn recognize_repr_within_returns_none_for_negative_tolerance() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: -1e-3, // negative finite
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "negative finite tolerance must return None (gate 4c)"
+        );
+    }
+
+    /// Non-UserFunctionCall outer kind (a Bool literal) → None.
+    ///
+    /// Pins that the matcher short-circuits on the outer kind, never reaching
+    /// the inner gates, so callers can pass arbitrary constraint expressions
+    /// through `recognize_representation_within` safely.
+    #[test]
+    fn recognize_repr_within_returns_none_for_non_ufc_outer_kind() {
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "non-UserFunctionCall outer kind must return None"
+        );
+    }
+
+    /// Zero bound (0.0) with LENGTH dimension → Some — zero is a valid non-negative
+    /// finite bound (the C4 PLANAR_FLOOR comparator handles it, not the gate).
+    ///
+    /// Mirrors the `>= 0.0` (not `> 0.0`) posture of `is_valid_tolerance_si`.
+    #[test]
+    fn recognize_repr_within_returns_some_for_zero_bound() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        let result = recognize_representation_within(&expr);
+        assert!(
+            result.is_some(),
+            "zero bound (0.0 m) is a valid non-negative finite LENGTH bound and \
+             must be recognized — the PLANAR_FLOOR comparator handles zero bounds, \
+             not the gate"
+        );
+        let (_, _, bound) = result.unwrap();
+        assert_eq!(bound, 0.0, "zero bound must be preserved exactly");
     }
 }
