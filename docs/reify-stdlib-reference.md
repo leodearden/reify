@@ -9,7 +9,7 @@
 
 This document is the complete API reference for the Reify standard library. It is a companion to the Reify Language Specification, which defines the core language. The prelude (automatically imported into every module) is defined in the language specification (Section 7.6). This document covers all `std.*` modules beyond the prelude.
 
-Many standard-library traits (e.g. `Sealed`, `Material`, geometry traits in §3.10) appear as bounds on `auto:` type parameters. For the resolution algorithm — per-parameter BFS, cap of 10 candidates, lexicographic tiebreak by FQN, and deferral of cross-parameter backtracking to v0.2 — see `docs/auto-type-param-resolution.md`.
+Many standard-library traits (e.g. `Sealed`, `MaterialSpec`, geometry traits in §3.10) appear as bounds on `auto:` type parameters. For the resolution algorithm — per-parameter BFS, cap of 10 candidates, lexicographic tiebreak by FQN, and deferral of cross-parameter backtracking to v0.2 — see `docs/auto-type-param-resolution.md`.
 
 ---
 
@@ -96,8 +96,8 @@ fn max<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>) -> Scalar<Q>
 fn clamp<Q: Dimension>(x: Scalar<Q>, lo: Scalar<Q>, hi: Scalar<Q>) -> Scalar<Q>
 fn lerp<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>, t: Real) -> Scalar<Q>
 fn remap(x: Real, from_lo: Real, from_hi: Real, to_lo: Real, to_hi: Real) -> Real
-fn sqrt<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q^(1/2)>   // Compiler intrinsic -- halves even exponents
-fn pow(base: Real, exp: Real) -> Real                      // Dimensionless only for non-integer exp
+fn sqrt<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q^(1/2)>   // Compiler signature (math_signatures.rs) + eval-time DimensionVector::root(2) (numeric.rs)
+fn pow(base: Real, exp: Real) -> Real                      // Dimensionless only; use the `^` operator for dimensioned integer powers
 fn log(x: Real) -> Real
 fn log10(x: Real) -> Real
 fn exp(x: Real) -> Real
@@ -108,7 +108,7 @@ fn round(x: Real) -> Int
 fn mod(x: Int, y: Int) -> Int
 ```
 
-**Dimensional `sqrt`:** `sqrt` is a compiler intrinsic that halves even exponents. `pow` with non-integer exponents is restricted to dimensionless in v0.1. `pow` with integer literal exponents on dimensioned quantities works through repeated multiplication.
+**Dimensional `sqrt`:** `sqrt` propagates dimension via a compiler signature wired in `math_signatures.rs` (halves each exponent to produce `Q^(1/2)`) plus eval-time `DimensionVector::root(2)` in `numeric.rs` — it is not a free-standing compiler intrinsic. `pow` is dimensionless-only (it always returns `Real`; see `numeric.rs:88`). Dimensioned integer powers are handled by the `^` operator (`eval_pow` in `reify-expr`, tasks 3805/4106), not by `pow`. `pow` with non-integer exponents is restricted to dimensionless in v0.1.
 
 ### 1.2 `std.math.trig`
 
@@ -135,12 +135,33 @@ fn cross<Q1: Dimension, Q2: Dimension>(a: Vector<3,Q1>, b: Vector<3,Q2>) -> Vect
 fn normalize<N: Nat, Q: Dimension>(v: Vector<N,Q>) -> Vector<N, Dimensionless>
 fn magnitude<N: Nat, Q: Dimension>(v: Vector<N,Q>) -> Scalar<Q>
 fn determinant<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Scalar<Q^N>
+                                                  // any N via dense LA (nalgebra); singular → det ≈ 0
 fn inverse<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Matrix<N,N,Q^(-1)>
+                                                  // any N via dense LA (nalgebra); singular → Undef
 fn transpose<M: Nat, N: Nat, Q: Dimension>(m: Matrix<M,N,Q>) -> Matrix<N,M,Q>
 fn outer<N: Nat, M: Nat, Q1: Dimension, Q2: Dimension>(a: Vector<N,Q1>, b: Vector<M,Q2>) -> Matrix<N,M,Q1*Q2>
 fn trace<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> Scalar<Q>
 fn eigenvalues<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> List<Scalar<Q>>
+                                                  // real spectrum only; returns Undef when any eigenvalue is non-real (documented, not silent)
+
+// Added in v0.6 (task γ)
+fn complex_eigenvalues<N: Nat, Q: Dimension>(m: Matrix<N,N,Q>) -> List<Complex<Q>>
+                                                  // general complex spectrum, any N (matrix.rs:248-287)
+
+// Added in v0.6 (task α) — construction
+fn vec<N: Nat, Q: Dimension>(list: List<Scalar<Q>>) -> Vector<N,Q>
+                                                  // N inferred from list length
+fn matrix<M: Nat, N: Nat, Q: Dimension>(rows: List<List<Scalar<Q>>>) -> Tensor<2,M,N,Q>
+                                                  // rank-2 (M rows × N cols) only; construct.rs:40-43
+fn diag<N: Nat, Q: Dimension>(list: List<Scalar<Q>>) -> Tensor<2,N,N,Q>
+                                                  // N×N diagonal matrix; N inferred from list length
+fn identity(n: Int) -> Tensor<2,N,N,Dimensionless>  // N = n (runtime value)
+                                                  // N×N identity matrix
 ```
+
+`determinant` and `inverse` evaluate for any N via dense linear algebra (nalgebra, task β); they are not limited to 2×2 or 3×3. `eigenvalues` returns the real spectrum `List<Scalar<Q>>` for symmetric or near-real matrices; if any eigenvalue has a non-negligible imaginary part the function returns `Undef` (not a silent projection). Use `complex_eigenvalues` (v0.6) for the full complex spectrum.
+
+`vec`, `matrix`, `diag`, and `identity` (v0.6, task α) build `Vector`/`Tensor` values from list literals (see `construct.rs`). `matrix` is rank-2 only (M×N); use `vec` for rank-1 vectors. Type signatures follow the frozen contract in PRD §3.
 
 ### 1.4 `std.math.complex`
 
@@ -552,27 +573,57 @@ trait Physical {
     param material : Material
     let mass = volume(geometry) * material.density
     let centroid = centroid(geometry)
+    constraint material.density > 0
 }
 
 trait Rigid : Physical {
-    let moment_of_inertia = moment_of_inertia(geometry, material.density)
+    param moment_of_inertia : MomentOfInertia
+    constraint moment_of_inertia > 0.0 * 1kg * 1m * 1m
 }
 
-trait Flexible : Physical {
-    param stiffness_model : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+trait Flexible {
+    param stiffness : Stiffness
+    param max_deflection : Length
+    constraint stiffness > 0.0 * 1N / 1m
+    constraint max_deflection > 0.0 * 1m
 }
 
-trait ElasticallyDeformable : Flexible
+trait ElasticallyDeformable : Flexible {
+    param max_elastic_strain : Real
+    constraint max_elastic_strain > 0
+}
+
 trait Plastic : Flexible {
-    param yield_point : Pressure
+    param plastic_strain : Real
+    param hardening_modulus : Pressure
+    constraint hardening_modulus > 0.0 * 1Pa
+    constraint plastic_strain >= 0
 }
 
-trait ThermallyConductive : Physical
-trait ElectricallyConductive : Physical
+trait ThermallyConductive : Physical {
+    param thermal_conductivity : ThermalConductivity
+    param max_service_temp : Temperature
+    constraint thermal_conductivity > 0W/(m*K)
+    constraint max_service_temp > 0.0 * 1K
+}
+
+trait ElectricallyConductive : Physical {
+    param electrical_conductivity : ElectricalConductivity
+    param resistivity : ElectricResistivity
+    constraint electrical_conductivity > 0.0 * 1S / 1m
+}
+
 trait Sealed {
-    param seal_rating : Pressure
+    param seal_pressure_rating : Pressure
+    constraint seal_pressure_rating > 0.0 * 1Pa
 }
 ```
+
+`Flexible` ships the lumped `stiffness` + `max_deflection` contract. A continuum spatially-varying stiffness field — `Field<Point3<Length>, Tensor<2,3,Pressure>>` — is deferred future work (PRD γ); no consumer today.
+
+Geometry-derived moment of inertia via the `moment_of_inertia(solid, density)` query builtin is a separate facility (returns a Tensor; auto-binding it into a `let` on `Rigid` is deferred — PRD δ).
+
+Yield strength is a material property, not a body member — see `materials_mechanical.Strong.yield_strength` / `Analysis.yield_strength`; that is why `Plastic` carries `plastic_strain` + `hardening_modulus` and `yield_point` is gone.
 
 ---
 
@@ -736,10 +787,29 @@ trait HydraulicPort : FluidPort + MechanicalPort {
 
 ### 6.1 Base
 
+> **Breaking change (task #1876 / #2411):** The identifier `Material` is now a canonical
+> first-class **struct** (see below); the base trait has been renamed to `MaterialSpec`.
+> Consumers referencing `: Material` as a trait base must use `: MaterialSpec`; consumers
+> referencing `param m : Material` as a trait-typed param must use `: MaterialSpec`; concrete
+> value slots (`param m : Material`) resolve to the struct unchanged.
+> No deprecation alias is provided (a trait and a struct cannot share the same identifier).
+
 ```
-trait Material {
+// Base trait — every material-conforming structure satisfies this contract.
+// Note: density shown as Density (aspirational dimensioned type); shipped MaterialSpec
+// uses density : Real pending dimensional-type tightening (#3111-family).
+trait MaterialSpec {
     param density : Density
     param name : String
+}
+
+// Canonical first-class material value type (shipped in materials_mechanical.ri,
+// task #1876 / #2411). Use MaterialSpec above for trait-typed params; use this struct
+// when you want a concrete material value (e.g. Material(name: "steel", ...)).
+structure def Material {
+    param name : String
+    param density : Real
+    param youngs_modulus : Real
 }
 
 trait TemperatureDependent {
@@ -750,84 +820,106 @@ trait TemperatureDependent {
 ### 6.2 `std.materials.mechanical`
 
 ```
-trait Elastic : Material {
-    param youngs_modulus : Pressure
+// Dimensioned-type note: the Pressure/Energy param types shown below (youngs_modulus,
+// yield_strength, ultimate_tensile_strength, compressive_strength, shear_modulus,
+// fatigue_limit, fatigue_strength_at, charpy_impact, izod_impact) are the target of the
+// deferred #3111-family dimensional tightening and are currently Real placeholders in the
+// shipped stdlib. The thermal/electrical/optical/fracture dimensioned types shown in §6.3–§6.5
+// have been realized by tasks #3112/#3113/#3115 (ThermalExpansion, ElectricResistivity,
+// DielectricStrength, AbsorptionCoeff, FractureToughness). Do not downgrade the Pressure/Energy
+// types shown here — they remain the documented aspiration pending #3111.
+
+// Elastic, Strong, Hard, Ductile are free-standing (no MaterialSpec base) — deliberate
+// design drift #3487. Conformers carry density/name via a separate `material : MaterialSpec`
+// slot rather than inheriting from the base trait directly.
+trait Elastic {
+    param youngs_modulus : Pressure  // shipped: Real (aspiration pending #3111)
     param poissons_ratio : Real
-    param shear_modulus : Pressure = undef
+    param shear_modulus : Pressure = undef  // shipped: Real (aspiration pending #3111)
     constraint 0 < poissons_ratio < 0.5
 }
-trait Strong : Material {
-    param yield_strength : Pressure
-    param ultimate_tensile_strength : Pressure
-    param compressive_strength : Pressure = undef
+trait Strong {
+    param yield_strength : Pressure  // shipped: Real (aspiration pending #3111)
+    param ultimate_tensile_strength : Pressure  // shipped: Real (aspiration pending #3111)
+    param compressive_strength : Pressure = undef  // shipped: Real (aspiration pending #3111)
     constraint ultimate_tensile_strength >= yield_strength
 }
-trait Hard : Material {
+trait Hard {
     param hardness_value : Real
     param hardness_scale : HardnessScale
 }
 enum HardnessScale { Rockwell_A, Rockwell_B, Rockwell_C, Brinell, Vickers, Shore_A, Shore_D }
-trait FatigueRated : Material {
-    param fatigue_limit : Pressure = undef
-    param fatigue_strength_at : Pressure = undef
+trait FatigueRated : MaterialSpec {
+    param fatigue_limit : Pressure = undef  // shipped: Real (aspiration pending #3111)
+    param fatigue_strength_at : Pressure = undef  // shipped: Real (aspiration pending #3111)
     param fatigue_cycles : Int = undef
 }
-trait FractureTough : Material {
-    param fracture_toughness : Scalar<Pressure * Length^(1/2)>
+trait FractureTough : MaterialSpec {
+    param fracture_toughness : FractureToughness  // Pa·√m — tightened from Scalar<> by task #3115
 }
-trait Ductile : Material {
+trait Ductile {
     param elongation_at_break : Real
     param reduction_of_area : Real = undef
 }
-trait ImpactResistant : Material {
-    param charpy_impact : Energy = undef
-    param izod_impact : Energy = undef
+trait ImpactResistant : MaterialSpec {
+    param charpy_impact : Energy = undef  // shipped: Real (aspiration pending #3111)
+    param izod_impact : Energy = undef  // shipped: Real (aspiration pending #3111)
 }
-trait Damping : Material {
-    param loss_factor : Real
+trait Damping : MaterialSpec {
+    param damping_ratio : Real  // fraction of critical damping (dimensionless)
+    param loss_factor : Real    // ratio of dissipated to stored energy per cycle (dimensionless)
 }
 ```
 
 ### 6.3 `std.materials.thermal`
 
 ```
-trait ThermallyCharacterized : Material {
+trait ThermallyCharacterized : MaterialSpec {
     param thermal_conductivity : ThermalConductivity
     param specific_heat : SpecificHeat
-    param thermal_expansion : Real / Temperature     // coefficient of linear expansion
+    param thermal_expansion : ThermalExpansion       // 1/K — tightened by task #3112/#3115
     param melting_point : Temperature = undef
     param max_service_temperature : Temperature = undef
     param glass_transition : Temperature = undef
 }
+// Refractory threshold: 1500.0 K (≈ 1226.85 °C). This is a substantive threshold
+// lowering from the former `>= 1500degC` aspiration — 1500 K is approximately 273 K
+// (≈ 273 °C) below 1500 °C, a significant relaxation of the physical refractory
+// criterion. The threshold was intentionally redefined at 1500 K in task #3112 (not a
+// neutral K-typed re-expression of 1500 °C; 1500 °C ≈ 1773 K).
 trait Refractory : ThermallyCharacterized {
-    constraint max_service_temperature >= 1500degC
+    constraint max_service_temperature >= 1500.0K
 }
 ```
 
 ### 6.4 `std.materials.electrical`
 
 ```
-trait ElectricallyCharacterized : Material {
-    param resistivity : Scalar<Voltage * Length / Current>
-    param dielectric_constant : Real = undef
-    param dielectric_strength : Scalar<Voltage / Length> = undef
-    param magnetic_permeability : Real = undef
+trait ElectricallyCharacterized : MaterialSpec {
+    param resistivity : ElectricResistivity         // Ω·m — tightened by task #3115
+    param dielectric_constant : Real = undef        // dimensionless
+    param dielectric_strength : DielectricStrength = undef  // V/m — tightened by task #3115
+    param magnetic_permeability : Real = undef      // dimensionless
 }
 trait Conductive : ElectricallyCharacterized {
-    constraint resistivity < 1e-4ohm*m
+    constraint resistivity < 0.0001ohm*m
 }
+// Insulating: dielectric_strength constraint replaced by a positivity bound (task #2484).
+// When a conformer omits dielectric_strength (optional), `> 0.0V/m` evaluates as
+// `Undef > 0.0V/m → Undef` (Kleene, arch §2.5), producing Satisfaction::Indeterminate
+// + a ConstraintIndeterminate Warning rather than a hard error.
 trait Insulating : ElectricallyCharacterized {
-    constraint resistivity > 1e6ohm*m
-    constraint determined(dielectric_strength)
+    constraint resistivity > 1000000ohm*m
+    constraint dielectric_strength > 0.0V/m
 }
 ```
 
 ### 6.5 `std.materials.optical`
 
 ```
-trait OpticallyCharacterized : Material {
+trait OpticallyCharacterized : MaterialSpec {
     param refractive_index : Real
-    param absorption_coefficient : Real = undef
+    param absorption_coefficient : AbsorptionCoeff = undef  // 1/m — tightened by task #3115
     param transmittance : Real = undef
     param reference_thickness : Length = undef
 }
@@ -836,11 +928,11 @@ trait OpticallyCharacterized : Material {
 ### 6.6 `std.materials.chemical`
 
 ```
-trait CorrosionResistant : Material {
+trait CorrosionResistant : MaterialSpec {
     param corrosion_class : CorrosionClass
 }
 enum CorrosionClass { C1, C2, C3, C4, C5 }
-trait Biocompatible : Material {
+trait Biocompatible : MaterialSpec {
     param biocompatibility_class : BiocompatibilityClass
 }
 enum BiocompatibilityClass { USP_Class_I, USP_Class_VI, ISO_10993 }
@@ -877,8 +969,9 @@ enum FitCategory { Clearance, Transition, Interference }
 
 structure def ISOToleranceGrade {
     param grade : Int
-    param nominal_range : Range<Length>
-    let tolerance_value = ...  // from standards tables
+    param nominal_min : Length
+    param nominal_max : Length
+    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)  // ISO 286-1 IT5–IT18, nominal ≤500mm
 }
 ```
 
@@ -889,7 +982,7 @@ trait GeometricTolerance {
     param tolerance_value : Length
     param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    let nominal_zone = ...
+    let nominal_zone = ...  // scalar effective zone SIZE (Length) = effective_tolerance_zone(tolerance_value, material_condition, departure); geometric-region form deferred (needs zone-construction kernel op — out of scope)
 }
 enum MaterialCondition { MMC, LMC, RFS }
 
@@ -941,7 +1034,7 @@ structure def SurfaceFinish {
     param parameter : SurfaceParameter
     param value : Length
     param direction : SurfaceDirection = SurfaceDirection.Multidirectional
-    param process : String = undef
+    param process : String = ""
 }
 enum SurfaceParameter { Ra, Rz, Rq, Rt, Rp, Rv, Rsk, Rku }
 enum SurfaceDirection { Parallel, Perpendicular, Crossed, Multidirectional, Circular, Radial }
@@ -1098,17 +1191,34 @@ enum PointCloudFormat { PLY, PCD, XYZ, LAS }
 
 ## 10. `std.analysis`
 
+**Type aliases.** `Stress` (= `Pressure`) and `Strain` (= `Dimensionless`) are user-facing spelling aliases — both resolve to the same `Type::Scalar` dimension as their base and are interchangeable in dimensional algebra.
+
 ```
 trait Analysis {
-    param mesh_resolution : Length = undef
-    param convergence_target : Real = undef
+    param yield_strength : Real        // material yield strength for safety-factor (Pa; Real placeholder)
+    constraint yield_strength > 0
 }
 
 trait AnalysisResult {
-    param source : String
-    param mesh : Geometry = undef
+    param von_mises_stress    : Real
+    param principal_stress_1  : Real
+    param principal_stress_2  : Real
+    param principal_stress_3  : Real
+    param max_shear_stress    : Real
+    param safety_factor_value : Real
+    constraint von_mises_stress >= 0
+    constraint max_shear_stress >= 0
+    constraint safety_factor_value > 0
 }
 ```
+
+`AnalysisResult` is a **structural contract**: each param uses `Real` as a
+dimension-agnostic placeholder (the runtime stress builtins below produce
+correctly-dimensioned values, e.g. `Scalar<Pressure>` for the stresses and a
+dimensionless `Real` for `safety_factor_value`), and the trait does **not**
+participate in dimension checking — it will not reject dimensioned conforming
+values. (The v0.1 doc's `mesh_resolution`/`convergence_target` on `Analysis`
+and `source`/`mesh` on `AnalysisResult` were never shipped — task 341.)
 
 **Stress post-processing (`std.analysis.stress`):**
 
@@ -1144,7 +1254,11 @@ fn remap_field<D, Q: Dimension>(field: Field<D, Scalar<Q>>, from_range: Range<Sc
 fn threshold<D, Q: Dimension>(field: Field<D, Scalar<Q>>, value: Scalar<Q>) -> Field<D, Bool>
 ```
 
-**Differential operators (all `@optimized`):**
+**Differential operators** — prelude builtins implemented natively in
+`reify-expr` (`calculus.rs`) / `reify-stdlib`, **not** `.ri` `fn` declarations.
+The `@optimized` annotation attaches only to `.ri` `fn` / `constraint def`
+bodies (e.g. the solver/modal/dynamics fns), so it does **not** apply to these
+built-in operators:
 
 ```
 fn gradient<N: Nat, Q: Dimension>(field: Field<Point<N,Length>, Scalar<Q>>) -> Field<Point<N,Length>, Vector<N, Q/Length>>

@@ -4,24 +4,10 @@ use reify_compiler::stdlib_loader;
 use reify_ast::Pragma;
 use reify_test_support::{
     CompiledModuleBuilder, EXPECTED_GEOMETRY_TRAITS, EXPECTED_MATERIAL_TRAITS, collect_errors,
-    steel_elastic_source, steel_strong_source,
+    collect_value_ref_members, steel_elastic_source, steel_strong_source,
 };
 use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction};
-
-/// Recursively collect ValueRef member names from a compiled expression tree.
-fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
-    match &expr.kind {
-        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
-        CompiledExprKind::BinOp { left, right, .. } => {
-            let mut refs = collect_value_ref_members(left);
-            refs.extend(collect_value_ref_members(right));
-            refs
-        }
-        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
-        _ => vec![],
-    }
-}
 
 // ─── step-1: basic loading ──────────────────────────────────────────────
 
@@ -47,6 +33,83 @@ fn all_stdlib_modules_have_no_errors() {
             module.path,
             errors
         );
+    }
+}
+
+// ─── task-4016 ζ: determinacy_purposes load-order invariant ─────────
+//
+// std.determinacy.purposes MUST be the last entry in the stdlib module list.
+// The sequential prelude build runs merge_prelude_purposes for every compile
+// including each intra-stdlib module compile, but no-ops because
+// std.determinacy.purposes is the only module with pub purposes and it is
+// registered last — no later stdlib module sees it as a prelude during
+// load_stdlib(), keeping stdlib-internal count/hash goldens byte-stable.
+//
+// These two tests make the prose invariant machine-checkable so that a future
+// contributor appending a module after std.determinacy.purposes is caught
+// immediately rather than by a silent golden drift.
+
+/// std.determinacy.purposes must be the last module compiled by load_stdlib().
+///
+/// If this fails it means a new stdlib module was appended AFTER
+/// std.determinacy.purposes in stdlib_loader.rs — move it before the
+/// determinacy module, or the sequential merge will leak standard purposes
+/// into that later module during intra-stdlib compilation.
+#[test]
+fn std_determinacy_purposes_is_last_stdlib_module() {
+    let modules = stdlib_loader::load_stdlib();
+    assert!(
+        !modules.is_empty(),
+        "stdlib should have at least one module"
+    );
+    let last = modules.last().unwrap();
+    let path_str = format!("{}", last.path);
+    assert_eq!(
+        path_str, "std/determinacy/purposes",
+        "std.determinacy.purposes must be the LAST stdlib module compiled \
+         (invariant: no later stdlib module may inherit its pub purposes \
+         via the sequential merge). \
+         Got last module: '{}'. \
+         Full order: {:?}",
+        path_str,
+        modules
+            .iter()
+            .map(|m| format!("{}", m.path))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// No stdlib module other than std.determinacy.purposes may have a compiled
+/// purpose named "simulation_ready" or "design_review" in its compiled_purposes.
+///
+/// If this fails it means a module compiled AFTER std.determinacy.purposes
+/// (or one that somehow directly declares these names) is inheriting/re-declaring
+/// the standard purposes, which would break the 'stdlib-internal counts stay
+/// stable' assumption and could cause golden test churn across the stdlib.
+#[test]
+fn no_stdlib_module_inherits_standard_purposes() {
+    let modules = stdlib_loader::load_stdlib();
+    let standard_purpose_names = ["simulation_ready", "design_review"];
+
+    for module in modules {
+        let path_str = format!("{}", module.path);
+        if path_str == "std/determinacy/purposes" {
+            // The declaring module itself is expected to have them.
+            continue;
+        }
+        for purpose in &module.compiled_purposes {
+            assert!(
+                !standard_purpose_names.contains(&purpose.name.as_str()),
+                "stdlib module '{}' unexpectedly has a purpose named '{}' in \
+                 its compiled_purposes. Standard purposes (simulation_ready, \
+                 design_review) must only appear in std.determinacy.purposes \
+                 and in user modules compiled against the full stdlib. \
+                 Check that std.determinacy.purposes is still the LAST entry \
+                 in stdlib_loader.rs's sources vec.",
+                path_str,
+                purpose.name
+            );
+        }
     }
 }
 
@@ -488,8 +551,8 @@ fn compile_with_prelude_makes_traits_visible() {
 
 /// compile_with_prelude injects trait constraint defaults from the prelude.
 /// A structure conforming to the prelude's Strong trait gets the
-/// `uts >= yield_strength` constraint injected. Verifies both presence
-/// and content of the injected constraint.
+/// `ultimate_tensile_strength >= yield_strength` constraint injected. Verifies
+/// both presence and content of the injected constraint.
 #[test]
 fn compile_with_prelude_injects_trait_constraints() {
     let source = steel_strong_source();
@@ -516,10 +579,10 @@ fn compile_with_prelude_injects_trait_constraints() {
         .expect("expected at least 1 template");
     assert!(
         !template.constraints.is_empty(),
-        "expected constraint from Strong trait (uts >= yield_strength) injected into Steel, but constraints is empty"
+        "expected constraint from Strong trait (ultimate_tensile_strength >= yield_strength) injected into Steel, but constraints is empty"
     );
 
-    // Structurally verify the constraint encodes uts >= yield_strength.
+    // Structurally verify the constraint encodes ultimate_tensile_strength >= yield_strength.
     // Pattern-match on CompiledExprKind variants rather than relying on Debug formatting.
     let ge_constraint = template
         .constraints
@@ -537,12 +600,12 @@ fn compile_with_prelude_injects_trait_constraints() {
     let ge_expr = &ge_constraint.unwrap().expr;
     let refs = collect_value_ref_members(ge_expr);
     assert!(
-        refs.contains(&"uts"),
-        "expected 'uts' ValueRef in >= constraint, got refs: {:?}",
+        refs.iter().any(|m| m.as_str() == "ultimate_tensile_strength"),
+        "expected 'ultimate_tensile_strength' ValueRef in >= constraint, got refs: {:?}",
         refs
     );
     assert!(
-        refs.contains(&"yield_strength"),
+        refs.iter().any(|m| m.as_str() == "yield_strength"),
         "expected 'yield_strength' ValueRef in >= constraint, got refs: {:?}",
         refs
     );
@@ -722,6 +785,7 @@ fn prelude_function_merging_path() {
         content_hash: ContentHash::of_str("fn_double"),
         annotations: vec![],
         optimized_target: None,
+        type_params: vec![],
     };
 
     let synthetic_prelude = CompiledModuleBuilder::new(ModulePath::single("synthetic"))

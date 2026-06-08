@@ -8,6 +8,8 @@ import {
   saveDiagnosticsPanelSize,
   computeDefaultDialogSize,
 } from '../hooks/diagnosticsPanelPersistence';
+import { filterDiagnostics, groupDiagnostics } from './diagnosticsView';
+import type { DiagnosticSource, GroupedDiagnostic } from './diagnosticsView';
 
 /** Panel-facing wrapper that extends the wire-format DiagnosticInfo with a
  *  frontend-only source tag. The `source` field is never sent by the Rust
@@ -24,8 +26,80 @@ export interface DiagnosticsPanelProps {
   onNavigate: (d: DiagnosticEntry) => void;
 }
 
+const ALL_SOURCES: DiagnosticSource[] = ['compile', 'tessellation'];
+const ALL_SEVERITIES = ['Error', 'Warning', 'Info'];
+
 export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
   const [lineWrap, setLineWrap] = createSignal(loadDiagnosticsLineWrap() ?? false);
+
+  // Filter state — default all-selected so every diagnostic is visible on open.
+  const [selectedSources, setSelectedSources] = createSignal<Set<DiagnosticSource>>(
+    new Set(ALL_SOURCES)
+  );
+  const [selectedSeverities, setSelectedSeverities] = createSignal<Set<string>>(
+    // Union ALL_SEVERITIES with any severities actually present at mount time so that
+    // unrecognized severity values (e.g. 'Hint', 'Note') are visible by default and
+    // receive a toggle chip rather than being silently filtered out.
+    new Set([...ALL_SEVERITIES, ...props.diagnostics.map(d => d.severity)])
+  );
+
+  // Available severity options derived from the full (unfiltered) props.diagnostics.
+  // Renders known severities in priority order first, then any unrecognized ones, so
+  // future backend severity values always get a chip.
+  const availableSeverities = createMemo(() => {
+    const seen = new Set<string>();
+    for (const d of props.diagnostics) seen.add(d.severity);
+    return [
+      ...ALL_SEVERITIES.filter(s => seen.has(s)),
+      ...[...seen].filter(s => !ALL_SEVERITIES.includes(s)),
+    ];
+  });
+
+  // Available source options derived from the full (unfiltered) props.diagnostics.
+  // Only sources actually present receive a chip, consistent with availableSeverities.
+  const availableSources = createMemo(() => {
+    const seen = new Set<DiagnosticSource>();
+    for (const d of props.diagnostics) seen.add(d.source);
+    return ALL_SOURCES.filter(s => seen.has(s));
+  });
+
+  // Filtered list used for rendering rows.
+  const filteredDiagnostics = createMemo(() =>
+    filterDiagnostics(props.diagnostics, {
+      sources: selectedSources(),
+      severities: selectedSeverities(),
+    })
+  );
+
+  // Grouping toggle — ON by default to collapse repeated identical diagnostics.
+  const [grouping, setGrouping] = createSignal(true);
+
+  // Displayed groups: either deduped (grouping ON) or 1:1 with count=1 (grouping OFF).
+  const displayedGroups = createMemo((): GroupedDiagnostic[] => {
+    const filtered = filteredDiagnostics();
+    if (grouping()) {
+      return groupDiagnostics(filtered);
+    }
+    return filtered.map(d => ({ diagnostic: d, count: 1 }));
+  });
+
+  function toggleSource(source: DiagnosticSource) {
+    setSelectedSources(prev => {
+      const next = new Set(prev);
+      if (next.has(source)) next.delete(source);
+      else next.add(source);
+      return next;
+    });
+  }
+
+  function toggleSeverity(severity: string) {
+    setSelectedSeverities(prev => {
+      const next = new Set(prev);
+      if (next.has(severity)) next.delete(severity);
+      else next.add(severity);
+      return next;
+    });
+  }
 
   let dialogRef: HTMLDivElement | undefined;
 
@@ -139,47 +213,110 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
             resize: 'both',
           }}
         >
-          <h2
-            id="diagnostics-panel-title"
-            data-testid="panel-title-diagnostics"
-            class={styles.title}
-          >
-            Diagnostics ({props.diagnostics.length})
-          </h2>
+          <div class={styles.dialogHeader}>
+            <h2
+              id="diagnostics-panel-title"
+              data-testid="panel-title-diagnostics"
+              class={styles.title}
+            >
+              Diagnostics ({props.diagnostics.length})
+            </h2>
+            <button
+              type="button"
+              class={styles.headerCloseButton}
+              data-testid="diagnostics-header-close"
+              aria-label="Close diagnostics"
+              onClick={() => props.onClose()}
+            >
+              ×
+            </button>
+          </div>
+
+          <Show when={props.diagnostics.length > 0}>
+            <div class={styles.filterBar}>
+              <For each={availableSources()}>
+                {(source) => (
+                  <button
+                    type="button"
+                    class={`${styles.filterChip}${selectedSources().has(source) ? ` ${styles.filterChipActive}` : ''}`}
+                    data-testid={`diagnostics-filter-source-${source}`}
+                    aria-pressed={selectedSources().has(source)}
+                    onClick={() => toggleSource(source)}
+                  >
+                    {source}
+                  </button>
+                )}
+              </For>
+              <For each={availableSeverities()}>
+                {(severity) => (
+                  <button
+                    type="button"
+                    class={`${styles.filterChip}${selectedSeverities().has(severity) ? ` ${styles.filterChipActive}` : ''}`}
+                    data-testid={`diagnostics-filter-severity-${severity}`}
+                    aria-pressed={selectedSeverities().has(severity)}
+                    onClick={() => toggleSeverity(severity)}
+                  >
+                    {severity}
+                  </button>
+                )}
+              </For>
+              <button
+                type="button"
+                class={`${styles.filterChip}${grouping() ? ` ${styles.filterChipActive}` : ''}`}
+                data-testid="diagnostics-group-toggle"
+                aria-pressed={grouping()}
+                onClick={() => setGrouping(g => !g)}
+              >
+                Collapse repeated
+              </button>
+            </div>
+          </Show>
 
           <Show
-            when={props.diagnostics.length > 0}
+            when={displayedGroups().length > 0}
             fallback={
-              <span class={styles.emptyState}>No diagnostics</span>
+              <span class={styles.emptyState}>
+                {props.diagnostics.length > 0
+                  ? 'No diagnostics match the current filters'
+                  : 'No diagnostics'}
+              </span>
             }
           >
             <div class={styles.list}>
-              <For each={props.diagnostics}>
-                {(diag) => (
+              <For each={displayedGroups()}>
+                {(group) => (
                   <div
                     class={styles.row}
                     data-testid="diagnostic-row"
-                    onClick={() => props.onNavigate(diag)}
+                    onClick={() => props.onNavigate(group.diagnostic)}
                     role="button"
                     tabindex="0"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        props.onNavigate(diag);
+                        props.onNavigate(group.diagnostic);
                       }
                     }}
                   >
-                    <span class={severityClass(diag.severity)}>
-                      {diag.severity}
+                    <span class={severityClass(group.diagnostic.severity)}>
+                      {group.diagnostic.severity}
                     </span>
                     <span
                       data-testid="diagnostic-source-chip"
-                      class={sourceChipClass(diag.source)}
+                      class={sourceChipClass(group.diagnostic.source)}
                     >
-                      {diag.source}
+                      {group.diagnostic.source}
                     </span>
-                    <span class={styles.location}>{locationLabel(diag)}</span>
-                    <span class={styles.message}>{diag.message}</span>
+                    <span class={styles.location}>{locationLabel(group.diagnostic)}</span>
+                    <span class={styles.message}>{group.diagnostic.message}</span>
+                    <Show when={group.count > 1}>
+                      <span
+                        class={styles.repeatCount}
+                        data-testid="diagnostic-repeat-count"
+                      >
+                        x{group.count}
+                      </span>
+                    </Show>
                   </div>
                 )}
               </For>

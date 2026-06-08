@@ -298,13 +298,13 @@ fn parse_elastic_options_from_value(
     let mut seg_opts = SegmentationOptions::default();
 
     if let Value::StructureInstance(data) = opts {
-        if let Some(Value::Real(v)) = data.fields.get(&"shell_threshold".to_string()) {
+        if let Some(Value::Real(v)) = data.fields.get("shell_threshold") {
             seg_opts.shell_threshold = *v;
         }
-        if let Some(Value::Real(v)) = data.fields.get(&"shell_voxel_size".to_string()) {
+        if let Some(Value::Real(v)) = data.fields.get("shell_voxel_size") {
             medial_opts.distance_tolerance = *v;
         }
-        if let Some(Value::Real(v)) = data.fields.get(&"shell_branch_prune_ratio".to_string()) {
+        if let Some(Value::Real(v)) = data.fields.get("shell_branch_prune_ratio") {
             prune_opts.shell_branch_prune_ratio = *v;
         }
     }
@@ -671,7 +671,7 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
         }
     };
 
-    let naming = match outer.fields.get(&"naming".to_string()) {
+    let naming = match outer.fields.get("naming") {
         Some(Value::StructureInstance(d)) => d,
         _ => {
             tracing::warn!(
@@ -682,7 +682,7 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
     };
 
     // ── face_records → MidSurfaceFace entries ────────────────────────────────
-    if let Some(Value::List(face_records)) = naming.fields.get(&"face_records".to_string()) {
+    if let Some(Value::List(face_records)) = naming.fields.get("face_records") {
         for (i, rec) in face_records.iter().enumerate() {
             let rec_data = match rec {
                 Value::StructureInstance(d) => d,
@@ -693,7 +693,7 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let feature_id_str = match rec_data.fields.get(&"feature_id".to_string()) {
+            let feature_id_str = match rec_data.fields.get("feature_id") {
                 Some(Value::String(s)) => s.as_str(),
                 _ => {
                     tracing::warn!(
@@ -702,7 +702,7 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let local_index = match rec_data.fields.get(&"local_index".to_string()) {
+            let local_index = match rec_data.fields.get("local_index") {
                 Some(Value::Int(n)) => *n as u32,
                 _ => {
                     tracing::warn!(
@@ -740,7 +740,7 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
     }
 
     // ── edges → MidSurfaceEdge entries ───────────────────────────────────────
-    if let Some(Value::List(edges)) = naming.fields.get(&"edges".to_string()) {
+    if let Some(Value::List(edges)) = naming.fields.get("edges") {
         for (i, rec) in edges.iter().enumerate() {
             let rec_data = match rec {
                 Value::StructureInstance(d) => d,
@@ -751,7 +751,7 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let feature_id_str = match rec_data.fields.get(&"feature_id".to_string()) {
+            let feature_id_str = match rec_data.fields.get("feature_id") {
                 Some(Value::String(s)) => s.as_str(),
                 _ => {
                     tracing::warn!(
@@ -760,7 +760,7 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     continue;
                 }
             };
-            let local_index = match rec_data.fields.get(&"local_index".to_string()) {
+            let local_index = match rec_data.fields.get("local_index") {
                 Some(Value::Int(n)) => *n as u32,
                 _ => {
                     tracing::warn!(

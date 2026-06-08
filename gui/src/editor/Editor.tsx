@@ -2,7 +2,7 @@ import { onMount, onCleanup, createEffect } from 'solid-js';
 import { EditorState, Transaction, type Extension } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { bracketMatching } from '@codemirror/language';
+import { bracketMatching, codeFolding, foldGutter, foldKeymap } from '@codemirror/language';
 import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { search, searchKeymap } from '@codemirror/search';
 import { linter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
@@ -11,13 +11,17 @@ import { reifyLanguage } from './reifyLanguage';
 import { updateSource, saveFile, openFile as bridgeOpenFile } from '../bridge';
 import { createLspClient } from './lspClient';
 import { reifyCompletionSource } from './completions';
-import { createDiagnosticsListener, lspDiagnosticToCodeMirror, type CmDiagnostic } from './diagnostics';
+import { createDiagnosticsListener, lspDiagnosticToCodeMirror, diagnosticInfoToCmDiagnostic, type CmDiagnostic } from './diagnostics';
 import { reifyHoverTooltip } from './hover';
-import { reifyGotoDefinition } from './gotoDefinition';
+import { reifyGotoDefinition, gotoDefinitionCommand } from './gotoDefinition';
+import { occurrenceHighlightExtension } from './occurrenceHighlight';
+import { renameCommand, type RenameUi } from './rename';
+import { createNavHistory } from '../hooks/useNavHistory';
+import type { NavEntry } from '../hooks/useNavHistory';
 import type { createEditorStore } from '../stores/editorStore';
-import type { FileData, SourceLocation } from '../types';
+import type { FileData, SourceLocation, DiagnosticInfo } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
-import { isSameFile, normalizePath } from '../utils/pathUtils';
+import { isSameFile, normalizePath, pathToUri } from '../utils/pathUtils';
 import styles from './Editor.module.css';
 
 // Intentionally shared by both the backend source-sync debounce (updateSource)
@@ -43,6 +47,23 @@ export interface EditorProps {
    * across call sites.
    */
   onSaveConflict?: (file: FileData) => void;
+  /**
+   * Compile-time diagnostics from the engine (via engineStore.compileDiagnostics).
+   * Filtered to the active file and merged with LSP diagnostics in the CodeMirror
+   * lint layer so neither channel clobbers the other.
+   */
+  compileDiagnostics?: DiagnosticInfo[];
+  /**
+   * Called once in onMount with a getter () => string | null that returns the
+   * LIVE CodeMirror document for the active file at call time.  App stores this
+   * getter and invokes it at save/re-evaluate time so those consumers read the
+   * actual buffer rather than the stale store snapshot.
+   *
+   * Mirrors the flyToEntityRef / fitToViewRef child→parent handle pattern
+   * (App.tsx:1507-1508).  Returns null if the view has been destroyed or is
+   * not yet mounted.
+   */
+  liveContentRef?: (getter: () => string | null) => void;
 }
 
 export function Editor(props: EditorProps) {
@@ -59,17 +80,51 @@ export function Editor(props: EditorProps) {
   let fileOpsPromise: Promise<void> = Promise.resolve();
   let destroyed = false;
 
+  // F2 inline-rename overlay: at most one transient element (the input field or
+  // the "can't rename here" message) lives in the editor container at a time.
+  // Tracked at component scope so onCleanup can tear it down.
+  let renameOverlayEl: HTMLElement | undefined;
+  let renameMessageTimer: ReturnType<typeof setTimeout> | undefined;
+  function clearRenameOverlay(): void {
+    clearTimeout(renameMessageTimer);
+    renameMessageTimer = undefined;
+    renameOverlayEl?.remove();
+    renameOverlayEl = undefined;
+  }
+
   // Current URI — updated on file switch, read by LSP extension getters
   let currentUri = 'file:///untitled.ri';
 
+  // Merge sinks for the two diagnostic channels.
+  // setDiagnostics replaces the entire lint set on each dispatch, so both
+  // producers (LSP listener + compile-diagnostics effect) update their own
+  // slot and then call applyMergedDiagnostics() which dispatches their union.
+  let lspCmDiagnostics: CmDiagnostic[] = [];
+  let compileCmDiagnostics: CmDiagnostic[] = [];
+
+  function applyMergedDiagnostics() {
+    if (!view) return;
+    const docLength = view.state.doc.length;
+    // Guard against stale offsets from BOTH channels: neither the compile-diagnostics
+    // effect nor the LSP listener re-runs on every keystroke.  Typing mutates the view
+    // doc directly, so if the doc shrinks before fresh diagnostics arrive, stored
+    // from/to values may exceed the new doc length and cause setDiagnostics'
+    // RangeSet build to throw.  The LSP/compile debounces share EDITOR_DEBOUNCE_MS,
+    // so the compile effect can re-dispatch a now-stale lspCmDiagnostics set whose
+    // offsets the LSP listener computed against a longer doc.  Filter the merged
+    // union against the live doc so neither channel can dispatch stale ranges.
+    const validDiags = [...lspCmDiagnostics, ...compileCmDiagnostics].filter(
+      (d) => d.from >= 0 && d.from <= d.to && d.to <= docLength,
+    );
+    view.dispatch(setDiagnostics(view.state, validDiags));
+  }
+
+  // Bounded back/forward navigation-history stack (max 50 entries).
+  // Pure closure, no SolidJS dependency.
+  const navHistory = createNavHistory();
+
   // Create LSP client for communicating with the in-process LSP server
   const lspClient = createLspClient();
-
-  /** Convert active file path to a file:// URI for LSP. */
-  function pathToUri(path: string): string {
-    if (path.startsWith('file://')) return path;
-    return `file://${path.startsWith('/') ? '' : '/'}${path}`;
-  }
 
   onMount(() => {
     const activeFile = props.store.state.activeFile;
@@ -78,11 +133,163 @@ export function Editor(props: EditorProps) {
     const doc = file?.content ?? '';
     currentUri = activeFile ? pathToUri(activeFile) : 'file:///untitled.ri';
 
+    // Named cross-file navigate callback shared by reifyGotoDefinition (Ctrl+Click)
+    // and gotoDefinitionCommand (F12). Extracted so both handlers use identical
+    // open-and-place logic and cannot diverge.
+    const onCrossFileNavigate = (targetUri: string, line: number, character: number): void => {
+      const path = normalizePath(targetUri);
+      bridgeOpenFile(path)
+        .then((fileData) => {
+          if (destroyed) return;
+          props.store.openFile(fileData);
+          // Defer cursor navigation until after SolidJS reactive file-switch
+          // effect has run and the EditorView has the new document.
+          setTimeout(() => {
+            if (view && !destroyed) {
+              const lineNum = line + 1;
+              if (lineNum >= 1 && lineNum <= view.state.doc.lines) {
+                const targetLine = view.state.doc.line(lineNum);
+                const targetPos = Math.min(targetLine.from + character, targetLine.to);
+                view.dispatch({
+                  selection: { anchor: targetPos },
+                  scrollIntoView: true,
+                });
+              }
+            }
+          }, 0);
+        })
+        .catch((err: unknown) => console.error('Cross-file goto-definition error:', err));
+    };
+
+    // Nav-history record hook: push origin then destination on a successful
+    // same-file goto-definition.  Called by both reifyGotoDefinition (Ctrl+Click)
+    // and gotoDefinitionCommand (F12).  Consecutive-dedupe in navHistory makes
+    // re-pushes of the same entry idempotent.
+    const onRecordJump = (origin: NavEntry, dest: NavEntry): void => {
+      navHistory.push(origin);
+      navHistory.push(dest);
+    };
+
+    // Apply a NavEntry by placing the cursor at entry.offset (same-file only).
+    //
+    // Navigation history is intentionally scoped to same-file positions in this
+    // task (phase ζ): all push sites use `currentUri` — onRecordJump records
+    // same-file goto-def jumps, and the scrollToLocation effect records same-file
+    // cross-pane reveals.  Cross-file jumps (Ctrl+Click / F12 to another file)
+    // are NOT yet tracked; when cross-file push support lands it will wire origin
+    // and destination through onCrossFileNavigate and add the cross-file branch
+    // here.  Until then, every entry.uri is guaranteed to equal currentUri, so
+    // the else branch would be dead code and is intentionally omitted.
+    //
+    // Pushes never happen here — only goto-def and scrollToLocation push.
+    const applyNavEntry = (entry: NavEntry): void => {
+      if (!view) return;
+      const docLen = view.state.doc.length;
+      const offset = Math.min(Math.max(0, entry.offset), docLen);
+      view.dispatch({ selection: { anchor: offset }, scrollIntoView: true });
+    };
+
+    // Position a rename overlay element near a document offset. coordsAtPos
+    // returns viewport coords; convert to container-relative. Falls back to the
+    // top-left corner when there is no layout (e.g. coordsAtPos returns null).
+    const positionRenameOverlay = (el: HTMLElement, offset: number): void => {
+      // coordsAtPos can throw when there is no layout (e.g. jsdom); treat any
+      // failure as "no coords" so positioning never breaks the rename flow.
+      let coords: { left: number; bottom: number } | null = null;
+      try {
+        coords = view?.coordsAtPos(offset) ?? null;
+      } catch {
+        coords = null;
+      }
+      const rect = containerRef.getBoundingClientRect();
+      if (coords) {
+        el.style.left = `${coords.left - rect.left}px`;
+        el.style.top = `${coords.bottom - rect.top}px`;
+      } else {
+        el.style.left = '8px';
+        el.style.top = '8px';
+      }
+    };
+
+    // Show a transient, auto-dismissing message overlay at the cursor — shared by
+    // the refusal (can't-rename-here) and post-submit failure (rename-failed)
+    // paths. Cleared after 2s or when a newer overlay replaces it.
+    const showTransientRenameMessage = (text: string, testid: string): void => {
+      clearRenameOverlay();
+      const msg = document.createElement('div');
+      msg.className = styles.renameMessage;
+      msg.setAttribute('data-testid', testid);
+      msg.textContent = text;
+      renameOverlayEl = msg;
+      containerRef.appendChild(msg);
+      positionRenameOverlay(msg, view!.state.selection.main.head);
+      renameMessageTimer = setTimeout(() => {
+        if (renameOverlayEl === msg) clearRenameOverlay();
+      }, 2000);
+    };
+
+    // Editor-owned UI for the F2 inline-rename flow. renameCommand injects these
+    // callbacks so its refuse/accept routing stays DOM-free and unit-testable.
+    const renameUi: RenameUi = {
+      promptNewName(_view, range, placeholder, onSubmit, onCancel) {
+        clearRenameOverlay();
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = placeholder;
+        input.spellcheck = false;
+        input.className = styles.renameField;
+        input.setAttribute('data-testid', 'rename-field');
+
+        // Resolve exactly once: Enter submits, Escape/blur cancels. Removing the
+        // focused input fires blur, so the `settled` guard prevents a double call.
+        let settled = false;
+        const settle = (action: () => void): void => {
+          if (settled) return;
+          settled = true;
+          clearRenameOverlay();
+          action();
+        };
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            e.stopPropagation();
+            const value = input.value;
+            settle(() => onSubmit(value));
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            settle(onCancel);
+          }
+        });
+        input.addEventListener('blur', () => settle(onCancel));
+
+        renameOverlayEl = input;
+        containerRef.appendChild(input);
+        const startOffset =
+          view!.state.doc.line(range.start.line + 1).from + range.start.character;
+        positionRenameOverlay(input, startOffset);
+        input.focus();
+        input.select();
+      },
+
+      showCannotRename(_view) {
+        showTransientRenameMessage("Can't rename here", 'rename-message');
+      },
+
+      showRenameFailed(_view) {
+        // The server refused an accepted name (invalid identifier / no-op) after
+        // the inline field already closed — give the user explicit feedback.
+        showTransientRenameMessage('Rename failed', 'rename-failed-message');
+      },
+    };
+
     // Extract extensions into a shared variable for reuse when creating
     // fresh EditorState instances for newly opened files
     extensions = [
       reifyLanguage(),
       lineNumbers(),
+      codeFolding(),
+      foldGutter(),
       bracketMatching(),
       closeBrackets(),
       reifyEditorTheme,
@@ -93,34 +300,48 @@ export function Editor(props: EditorProps) {
       // LSP-powered hover tooltips — dynamic URI getter
       reifyHoverTooltip(() => currentUri),
       // LSP-powered go-to-definition (Ctrl+Click) — dynamic URI getter
-      reifyGotoDefinition(() => currentUri, (targetUri, line, character) => {
-        const path = normalizePath(targetUri);
-        bridgeOpenFile(path)
-          .then((fileData) => {
-            if (destroyed) return;
-            props.store.openFile(fileData);
-            // Defer cursor navigation until after SolidJS reactive file-switch
-            // effect has run and the EditorView has the new document
-            setTimeout(() => {
-              if (view && !destroyed) {
-                const lineNum = line + 1;
-                if (lineNum >= 1 && lineNum <= view.state.doc.lines) {
-                  const targetLine = view.state.doc.line(lineNum);
-                  const targetPos = Math.min(targetLine.from + character, targetLine.to);
-                  view.dispatch({
-                    selection: { anchor: targetPos },
-                    scrollIntoView: true,
-                  });
-                }
-              }
-            }, 0);
-          })
-          .catch((err: unknown) => console.error('Cross-file goto-definition error:', err));
-      }),
+      reifyGotoDefinition(() => currentUri, onCrossFileNavigate, onRecordJump),
+      // LSP-powered occurrence highlights — appear on cursor-idle, clear on move
+      occurrenceHighlightExtension(() => currentUri, lspClient),
       // Find/replace (Ctrl+F, Ctrl+H)
       search(),
       // Diagnostic linter (diagnostics are pushed from LSP via Tauri events)
       linter(() => [] as Diagnostic[]),
+      // Navigation keymap — registered BEFORE the defaultKeymap keymap.of so
+      // F12 and Alt-Arrow bindings take higher precedence over word-group motion.
+      keymap.of([
+        {
+          key: 'F12',
+          run: gotoDefinitionCommand(() => currentUri, onCrossFileNavigate, onRecordJump),
+          preventDefault: true,
+        },
+        {
+          // F2 inline rename. prepareRename gates the edit (Invariant-4 refusal),
+          // and applying the WorkspaceEdit dispatches one CM change that flows
+          // through the updateListener below → markDirty + updateSource + didChange.
+          key: 'F2',
+          run: renameCommand(() => currentUri, lspClient, renameUi),
+          preventDefault: true,
+        },
+        {
+          key: 'Alt-ArrowLeft',
+          run: () => {
+            const entry = navHistory.back();
+            if (entry) applyNavEntry(entry);
+            return true; // always consume — prevents browser back-navigation
+          },
+          preventDefault: true,
+        },
+        {
+          key: 'Alt-ArrowRight',
+          run: () => {
+            const entry = navHistory.forward();
+            if (entry) applyNavEntry(entry);
+            return true; // always consume — prevents browser forward-navigation
+          },
+          preventDefault: true,
+        },
+      ]),
       keymap.of([
         {
           key: 'Mod-o',
@@ -132,7 +353,7 @@ export function Editor(props: EditorProps) {
         },
         {
           key: 'Mod-s',
-          run: () => {
+          run: (cmView) => {
             const path = props.store.state.activeFile;
             if (!path) return true;
             const result = props.store.canSave(path);
@@ -172,7 +393,14 @@ export function Editor(props: EditorProps) {
                 }
               }
             }
-            saveFile(result.file.path, result.file.content)
+            // Read the LIVE CodeMirror document rather than the stale store
+            // snapshot (result.file.content). The store's openFiles[].content is
+            // written only at file-open/reload time (anti-loop invariant), so it
+            // diverges from the buffer as soon as the user types.  Using the view
+            // arg provided by the CM6 keymap avoids any closure-over-undefined
+            // risk and requires no additional plumbing.
+            const liveContent = cmView.state.doc.toString();
+            saveFile(result.file.path, liveContent)
               .then(() => props.store.markClean(result.file.path))
               .catch((err: unknown) =>
                 props.onError?.(`Failed to save file: ${errorMessage(err)}`),
@@ -186,6 +414,7 @@ export function Editor(props: EditorProps) {
         ...defaultKeymap,
         ...historyKeymap,
       ]),
+      keymap.of(foldKeymap),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           // Bail out for sync-external transactions — these originate from the
@@ -236,6 +465,12 @@ export function Editor(props: EditorProps) {
 
     view = new EditorView({ state, parent: containerRef });
 
+    // Hand the parent a getter for the live buffer content so App can read the
+    // active file's current document at save/re-evaluate time.  The getter
+    // closes over the component-local `view` variable, which is always the live
+    // EditorView for whatever file is currently active.
+    props.liveContentRef?.(() => view?.state.doc.toString() ?? null);
+
     // Expose editor view for the debug bridge (REIFY_DEBUG=1)
     if (window.__REIFY_DEBUG__) {
       window.__REIFY_DEBUG__.editorView = view;
@@ -262,7 +497,7 @@ export function Editor(props: EditorProps) {
       if (!view) return;
       // Only apply diagnostics for the currently active file
       if (event.uri !== currentUri) return;
-      const diagnostics = event.diagnostics
+      lspCmDiagnostics = event.diagnostics
         .map((d) => {
           try {
             return lspDiagnosticToCodeMirror(d, view!.state.doc);
@@ -272,8 +507,8 @@ export function Editor(props: EditorProps) {
         })
         .filter((d): d is CmDiagnostic => d !== null);
 
-      // Apply diagnostics to the editor via setDiagnostics
-      view!.dispatch(setDiagnostics(view!.state, diagnostics));
+      // Merge with compile diagnostics and dispatch
+      applyMergedDiagnostics();
     }).then((unlisten) => {
       if (diagnosticsListenerCancelled) {
         unlisten?.(); // Component already unmounted — tear down immediately
@@ -291,6 +526,17 @@ export function Editor(props: EditorProps) {
     // Cancel any pending debounced operations from the previous file
     clearTimeout(debounceTimer);
     clearTimeout(lspDebounceTimer);
+
+    // Discard previous-file CmDiagnostics from both channels.  Their from/to
+    // offsets were computed against the old document; re-using them after the view
+    // switches to the new (possibly shorter) document would inject phantom squiggles
+    // (FLASH) or crash the CodeMirror RangeSet build (CRASH).  Both slots are reset
+    // here so the clearing is self-contained — correctness does not depend on the
+    // compile-diagnostics effect running after this one.  The URI-guarded LSP listener
+    // repopulates lspCmDiagnostics when the server re-publishes for the new file; the
+    // compile-diagnostics effect recomputes compileCmDiagnostics on the activeFile change.
+    lspCmDiagnostics = [];
+    compileCmDiagnostics = [];
 
     const oldUri = currentUri;
     previousActiveFile = activeFile;
@@ -313,6 +559,10 @@ export function Editor(props: EditorProps) {
       view.setState(EditorState.create({ doc: newContent, extensions }));
     }
 
+    // Dispatch the now-empty merged set so no stale squiggle persists after the
+    // document replacement above.  Self-contained — no cross-effect ordering needed.
+    applyMergedDiagnostics();
+
     // Close old document and open new one in the LSP server.
     // Chain off fileOpsPromise to serialize rapid file switches.
     lspVersion++;
@@ -324,6 +574,25 @@ export function Editor(props: EditorProps) {
         return lspClient.didOpen(newUri, newContent, version);
       })
       .catch((err: unknown) => console.error('LSP file switch error:', err));
+  });
+
+  // Map compile diagnostics from the engine store into the CodeMirror lint layer,
+  // merged with the existing LSP channel so neither clobbers the other.
+  createEffect(() => {
+    const diags = props.compileDiagnostics;
+    const activeFile = props.store.state.activeFile;
+    if (!view) return;
+    compileCmDiagnostics = (diags ?? [])
+      .filter((d) => activeFile && isSameFile(d.file_path, activeFile))
+      .map((d) => {
+        try {
+          return diagnosticInfoToCmDiagnostic(d, view!.state.doc);
+        } catch {
+          return null;
+        }
+      })
+      .filter((d): d is CmDiagnostic => d !== null);
+    applyMergedDiagnostics();
   });
 
   // Sync store content → CodeMirror view for the active file.
@@ -411,6 +680,14 @@ export function Editor(props: EditorProps) {
       head = Math.min(endLine.from + (location.end_column - 1), endLine.to);
     }
 
+    // Record nav history: push origin (current cursor) then destination (anchor).
+    // Consecutive-dedupe in navHistory makes this idempotent under SolidJS
+    // effect re-runs (e.g., when the activeFile signal changes with an unchanged
+    // scrollToLocation value) — no spurious duplicate entries are created.
+    const originOffset = view.state.selection.main.head;
+    navHistory.push({ uri: currentUri, offset: originOffset });
+    navHistory.push({ uri: currentUri, offset: anchor });
+
     view.dispatch({
       selection: { anchor, head },
       scrollIntoView: true,
@@ -420,6 +697,8 @@ export function Editor(props: EditorProps) {
   onCleanup(() => {
     clearTimeout(debounceTimer);
     clearTimeout(lspDebounceTimer);
+    // Tear down any open F2 rename overlay (field/message) + its dismiss timer.
+    clearRenameOverlay();
     // Mark diagnostics listener as cancelled so that if the listen
     // promise hasn't resolved yet, it will call unlisten() immediately
     // when it does resolve (preventing a leaked Tauri event listener).
@@ -439,6 +718,7 @@ export function Editor(props: EditorProps) {
       delete window.__REIFY_DEBUG__.editorView;
     }
     view?.destroy();
+    view = undefined;
   });
 
   return <div ref={containerRef} class={styles.container} data-testid="editor-container" />;

@@ -1,5 +1,6 @@
 import { type Component, createSignal, createMemo, For, Show, onCleanup } from 'solid-js';
 import type { ConstraintData, ValueData } from '../types';
+import { registerDebugPanel } from '../debug/types';
 import styles from './ConstraintPanel.module.css';
 
 export interface ConstraintPanelProps {
@@ -23,9 +24,19 @@ function statusIcon(status: string): string {
   }
 }
 
+function statusTitle(status: string): string {
+  switch (status) {
+    case 'satisfied': return 'Satisfied \u2014 constraint holds';
+    case 'violated': return 'Violated \u2014 constraint is not met';
+    default: return 'Indeterminate \u2014 not yet evaluated';
+  }
+}
+
 export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
   const [expandedNodes, setExpandedNodes] = createSignal<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = createSignal<{ constraint: ConstraintData; x: number; y: number } | null>(null);
+
+  registerDebugPanel('constraintPanel', { expandedNodes });
 
   const sortedConstraints = createMemo(() => {
     const list = Object.values(props.constraints);
@@ -64,11 +75,26 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
       .filter((v): v is ValueData => v != null);
   }
 
+  function openContextMenu(constraint: ConstraintData, x: number, y: number) {
+    setContextMenu({ constraint, x, y });
+    document.addEventListener('click', handleDismissMenu, { once: true });
+  }
+
   function handleContextMenu(e: MouseEvent, constraint: ConstraintData) {
     if (!props.onAskClaude) return;
     e.preventDefault();
-    setContextMenu({ constraint, x: e.clientX, y: e.clientY });
-    document.addEventListener('click', handleDismissMenu, { once: true });
+    openContextMenu(constraint, e.clientX, e.clientY);
+  }
+
+  function handleActionsClick(e: MouseEvent, constraint: ConstraintData) {
+    e.stopPropagation();
+    // Toggle: if the menu is already open (for any constraint), close it.
+    if (contextMenu() !== null) {
+      setContextMenu(null);
+      return;
+    }
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    openContextMenu(constraint, rect.right, rect.bottom);
   }
 
   function handleDismissMenu() {
@@ -130,9 +156,21 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
                     </span>
                   </Show>
                   <span class={styles.expression}>{constraint.expression}</span>
-                  <span class={styles.statusBadge} data-status={constraint.status} aria-label={constraint.status}>
+                  <span class={styles.statusBadge} data-status={constraint.status} aria-label={constraint.status} title={statusTitle(constraint.status)}>
                     {statusIcon(constraint.status)}
                   </span>
+                  <Show when={props.onAskClaude}>
+                    <button
+                      type="button"
+                      data-testid={`constraint-actions-${constraint.node_id}`}
+                      class={styles.actionsBtn}
+                      aria-label="Constraint actions"
+                      title="Constraint actions"
+                      onClick={(e: MouseEvent) => handleActionsClick(e, constraint)}
+                    >
+                      ⋯
+                    </button>
+                  </Show>
                 </div>
                 <Show when={isExpanded(constraint.node_id) && isExpandable(constraint.status)}>
                   <div class={styles.details}>
@@ -165,6 +203,7 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
             style={{ position: 'absolute', left: `${menu().x}px`, top: `${menu().y}px` }}
           >
             <button
+              type="button"
               class={styles.contextMenuItem}
               onClick={() => handleAskClaude(menu().constraint)}
             >

@@ -1,8 +1,14 @@
-// Stdlib: Port Interfaces — Directionality, Port
+// Stdlib: Port Interfaces — Directionality, Port, Frame3, LocatedPort, RegionPort
 // Provides the base trait surface for representing directional port interfaces
 // on parametric structures (connectors, interfaces, joints).
 //
-// Reference: docs/prds/v0_6/stdlib-reconstruction.md task α.
+// Reference: docs/prds/v0_6/ports-breadth-expansion.md task α (§7).
+//
+// This task (α) adds:
+//   - Port.direction default = Directionality.Bidi (§4 decision 1)
+//   - structure def Frame3  { origin/x_axis/y_axis/z_axis : Vector3<Length> }
+//   - trait LocatedPort : Port { param frame : Frame3 }
+//   - trait RegionPort : LocatedPort { param region : Geometry }
 //
 // Deviations from §11 spec (forced by current language scope):
 //   1. `Directionality` mirrors the Rust `PortDirection` enum at
@@ -13,6 +19,9 @@
 //      adding the pragma would violate the stdlib_loader_tests invariant that
 //      only {std/units, std/materials/mechanical, std/analysis, std/tolerancing}
 //      may carry it.
+//   3. Frame3 uses uniform Vector3<Length> for ALL members (including origin),
+//      per PRD §4 decision 1. This deviates from constitutive.ri MaterialFrame
+//      which uses Point3<Length> for origin.
 
 // ── Enumerations ─────────────────────────────────────────────────────────────
 
@@ -26,6 +35,44 @@ enum Directionality { In, Out, Bidi }
 
 // Base trait for any port interface on a parametric structure.
 // direction: which way the port is oriented (In/Out/Bidi).
+// Default is Bidi — most mechanical and bidirectional connections omit it.
+// (precedent: tolerancing.ri MaterialCondition.RFS / solver_buckling.ri ElementOrder.P1)
 trait Port {
-    param direction : Directionality
+    param direction : Directionality = Directionality.Bidi
+}
+
+// ── Port-frame structure ──────────────────────────────────────────────────────
+
+// A coordinate frame for a port attachment point in 3-D space.
+// All four members are Vector3<Length> (uniform, per PRD §4 decision 1).
+// Shape mirrors constitutive.ri MaterialFrame (origin + 3 axes, axes-as-vectors
+// convention), but uses Vector3<Length> for origin rather than Point3<Length>.
+// LocatedPort.frame uses this type so the compiler can route spatial-port
+// connections through the existing asymmetric-LocatedPort warning (connect.rs).
+structure def Frame3 {
+    param origin : Vector3<Length>
+    param x_axis : Vector3<Length>
+    param y_axis : Vector3<Length>
+    param z_axis : Vector3<Length>
+}
+
+// ── Spatial port traits ───────────────────────────────────────────────────────
+
+// Trait for ports with a defined spatial attachment frame.
+// The compiler has expected this trait BY NAME since task 370
+// (reify-core/src/identity.rs:115, LOCATED_PORT_TRAIT = "LocatedPort").
+// connect.rs:322 checks trait_satisfies(port_type, LOCATED_PORT_TRAIT) and
+// emits the asymmetric-LocatedPort warning (connect.rs:344) when only one side
+// of a connection satisfies it.
+trait LocatedPort : Port {
+    param frame : Frame3
+}
+
+// A port with a spatial attachment frame AND a bounding geometry region.
+// Refines LocatedPort (frame) and adds a `region` param typed as the canonical
+// Geometry surface alias (dep 4253 / task G: type_resolution.rs:564).
+// Useful for ports that represent spatial envelopes or connection regions,
+// e.g. an interface pad, a mating surface, or a spatial service volume.
+trait RegionPort : LocatedPort {
+    param region : Geometry
 }

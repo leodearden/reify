@@ -1,0 +1,12 @@
+// Fixture for simulation_ready stdlib test — geometry determined + determined material param.
+// The material guard (`where exists material_params constrained`) is INACTIVE here because
+// mat is determined (not auto/constrained), so the guard arm does not fire.
+// Result: geometry constraint passes (all geometric params determined) → AllSatisfied.
+structure Material {
+    param density : Real = 7850.0
+}
+
+structure Part {
+    param width : Length = 80mm
+    param mat : Material = Material(density: 7850.0)
+}

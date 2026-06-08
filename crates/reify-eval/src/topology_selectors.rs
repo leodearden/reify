@@ -48,6 +48,13 @@ pub(crate) enum SubKind {
     Edge = 0x01,
     /// A face sub-shape.  Discriminant byte: `0x02`.
     Face = 0x02,
+    /// A split-piece solid sub-shape (task 4190, ζ).  Discriminant byte: `0x03`.
+    ///
+    /// Domain-separates split-piece hashes from edge (`0x01`) and face
+    /// (`0x02`) hashes so a split piece and an edge at the same index never
+    /// collide.  Existing discriminants are unchanged (the comment at the
+    /// enum level forbids changing them; adding a new value is safe).
+    Solid = 0x03,
 }
 
 impl SubKind {
@@ -61,7 +68,7 @@ impl SubKind {
 ///
 /// The hash is a deterministic 32-byte digest derived from:
 ///   - `parent_hash`: the parent solid's `upstream_values_hash`
-///   - `sub_kind`: Edge (`0x01`) or Face (`0x02`) — domain separator
+///   - `sub_kind`: Edge (`0x01`), Face (`0x02`), or Solid (`0x03`) — domain separator
 ///   - `topexp_index`: 0-based canonical index from `TopExp::MapShapes`
 ///
 /// Uses the same `ContentHash` (XXH3-128) + lo/hi 32-byte packing as the
@@ -96,8 +103,9 @@ pub(crate) fn compose_sub_handle_hash(
 ///   (PRD §4 invariant i).
 /// - `parent_hash`: the parent's `upstream_values_hash` (used as input to
 ///   `compose_sub_handle_hash`).
-/// - `sub_kind`: `SubKind::Edge` or `SubKind::Face` — the domain-separation
-///   byte that distinguishes edge and face hashes at the same index.
+/// - `sub_kind`: `SubKind::Edge`, `SubKind::Face`, or `SubKind::Solid` — the
+///   domain-separation byte that distinguishes sub-shape hashes at the same
+///   index across different shape families.
 /// - `topexp_index`: 0-based index of this sub-shape in the canonical
 ///   `TopExp::MapShapes` order returned by `extract_edges` / `extract_faces`.
 /// - `sub_kernel_id`: the session-scoped kernel handle for this sub-shape.

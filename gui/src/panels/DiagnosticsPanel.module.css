@@ -18,14 +18,40 @@
   padding: 20px;
   min-width: 480px;
   max-height: 80vh;
-  overflow-y: auto;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+}
+
+.dialogHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  flex-shrink: 0;
 }
 
 .title {
   font-size: 16px;
   font-weight: 600;
-  margin: 0 0 16px 0;
+  margin: 0;
+}
+
+.headerCloseButton {
+  padding: 2px 8px;
+  border: none;
+  border-radius: 4px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+  color: var(--reify-text-muted, #6c7086);
+  flex-shrink: 0;
+}
+
+.headerCloseButton:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--reify-text, #cdd6f4);
 }
 
 .list {
@@ -34,6 +60,9 @@
   gap: 4px;
   margin-bottom: 16px;
   overflow-x: auto;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .row {
@@ -100,6 +129,48 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.repeatCount {
+  padding: 1px 5px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--reify-font-mono, monospace);
+  color: var(--reify-text-muted, #6c7086);
+  background: rgba(108, 112, 134, 0.2);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.filterBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 0;
+  flex-shrink: 0;
+}
+
+.filterChip {
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--reify-font-mono, monospace);
+  cursor: pointer;
+  border: 1px solid var(--reify-surface1, #45475a);
+  background: transparent;
+  color: var(--reify-text-muted, #6c7086);
+}
+
+.filterChip:hover {
+  border-color: var(--reify-text-muted, #6c7086);
+  color: var(--reify-text, #cdd6f4);
+}
+
+.filterChipActive {
+  background: var(--reify-surface1, #45475a);
+  color: var(--reify-text, #cdd6f4);
 }
 
 .emptyState {

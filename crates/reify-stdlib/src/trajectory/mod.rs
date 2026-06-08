@@ -18,6 +18,11 @@ mod sampling;
 mod simulate;
 mod spline;
 mod tots;
+// `pub(crate)` so the crate-root re-exports in `lib.rs` can name the
+// `trampoline` path segment for the cache keys + `*_value` composers that
+// `reify-eval/src/trajectory_ops.rs` consumes (task π, prereq-1). Mirrors the
+// `input_shape` visibility above and `dynamics::trampoline`.
+pub(crate) mod trampoline;
 
 /// Evaluate a trajectory stdlib function by name.
 ///
@@ -40,13 +45,16 @@ mod tots;
 /// name is kept so that the Rust eval-boundary tests in `mod.rs::tests` that call
 /// `eval_builtin("gcode_import", …)` directly remain green with zero churn.
 ///
-/// `input_shape` (task ζ) follows the identical delegate pattern: the stdlib
-/// `.ri` `input_shape` declaration delegates to the undeclared `input_shape_apply`
-/// name, so both route here to [`input_shape::eval_input_shape`], which builds the
-/// shaper's `ImpulseTrain` (the impulse arms ZV/ZVD/EI/Cascaded) and returns the
-/// shaped `Profile` as a `Value::StructureInstance` (or `Value::Undef` on bad args
-/// / an unrecognised shaper). See [`input_shape::eval_input_shape`] for the
-/// argument contract.
+/// `input_shape` (task ζ, extended by task λ) follows the identical delegate
+/// pattern: the stdlib `.ri` `input_shape` declaration delegates to the undeclared
+/// `input_shape_apply` name, so both route here to
+/// [`input_shape::eval_input_shape`]. The dispatcher first checks for
+/// `TOTSShaper` (λ arm) and runs the real SQP loop
+/// ([`input_shape::run_tots`] → [`super::tots::solve_tots`]); only then falls
+/// through to the impulse-train arms (ZV/ZVD/EI/Cascaded, ζ). Returns the
+/// shaped `Profile` as a `Value::StructureInstance` (or `Value::Undef` on bad
+/// args / infeasible TOTS / unrecognised shaper). See
+/// [`input_shape::eval_input_shape`] for the full argument contract.
 ///
 /// The Phase β spline intrinsics still unconditionally return `Some(Value::Undef)`:
 /// the pure-Rust spline math is implemented in the `spline` submodule but is
@@ -60,6 +68,22 @@ pub(crate) fn eval_trajectory(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "gcode_import" | "gcode_import_lower" => Some(gcode_import::eval_gcode_import(args)),
         "input_shape" | "input_shape_apply" => Some(input_shape::eval_input_shape(args)),
+        // η EndEffectorTrack accessor intrinsics (task π) — the `*_at` delegates
+        // the trajectory.ri accessor bodies call. Wrong arity → Undef (the
+        // bad-args convention); a malformed track / out-of-range location is
+        // handled gracefully inside each impl (empty list / 0, no panic).
+        "end_effector_track_at" => Some(match args {
+            [track, location] => trampoline::end_effector_track_at(track, location),
+            _ => Value::Undef,
+        }),
+        "deviation_from_nominal_at" => Some(match args {
+            [track, location] => trampoline::deviation_from_nominal_at(track, location),
+            _ => Value::Undef,
+        }),
+        "peak_deviation_at" => Some(match args {
+            [track, location] => trampoline::peak_deviation_at(track, location),
+            _ => Value::Undef,
+        }),
         "piecewise_polynomial"
         | "evaluate_profile"
         | "evaluate_profile_dot"

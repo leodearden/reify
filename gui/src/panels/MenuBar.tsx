@@ -5,6 +5,7 @@
 import { createSignal, onMount, onCleanup, Show, For } from 'solid-js';
 import type { Component } from 'solid-js';
 import { getShortcut, shortcutKey, type ShortcutId } from '../shortcuts';
+import { registerDebugPanel } from '../debug/types';
 import styles from './MenuBar.module.css';
 
 export interface MenuBarProps {
@@ -93,6 +94,8 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
     closeMenu();
   }
 
+  registerDebugPanel('menuBar', { openMenu });
+
   onMount(() => {
     function handleMouseDown(e: MouseEvent) {
       if (containerRef && e.target instanceof Node && !containerRef.contains(e.target)) {
@@ -127,6 +130,7 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
           <div style={{ position: 'relative' }}>
             <button
               class={openMenu() === menu.id ? `${styles.trigger} ${styles.triggerOpen}` : styles.trigger}
+              data-testid={`menu-trigger-${menu.id}`}
               onClick={() => toggleMenu(menu.id)}
               onMouseEnter={() => switchMenu(menu.id)}
             >
@@ -141,6 +145,7 @@ export const MenuBar: Component<MenuBarProps> = (props) => {
                       <button
                         class={isDisabled ? `${styles.item} ${styles.itemDisabled}` : styles.item}
                         role="menuitem"
+                        data-testid={`menu-item-${item.shortcutId}`}
                         disabled={isDisabled}
                         onClick={() => handleItemClick(item.action ? props[item.action] : undefined)}
                       >

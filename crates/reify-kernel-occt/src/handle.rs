@@ -65,6 +65,14 @@ enum OcctRequest {
         handle: GeometryHandleId,
         reply: oneshot::Sender<Result<Vec<GeometryHandleId>, QueryError>>,
     },
+    /// Split a solid with an unbounded plane via `BRepAlgoAPI_Splitter`,
+    /// returning the result solid handles. Mirrors `ExtractEdges` / `ExtractFaces`
+    /// but returns `GeometryError` (not `QueryError`) to match the
+    /// `GeometryKernel::execute_split` trait signature.
+    Split {
+        op: Box<GeometryOp>,
+        reply: oneshot::Sender<Result<Vec<GeometryHandleId>, GeometryError>>,
+    },
     ExtractVertices {
         handle: GeometryHandleId,
         reply: oneshot::Sender<Result<Vec<GeometryHandleId>, QueryError>>,
@@ -169,6 +177,22 @@ enum OcctRequest {
     FaceOutwardUnitNormalForTest {
         face: GeometryHandleId,
         reply: oneshot::Sender<Result<[f64; 3], QueryError>>,
+    },
+    /// Sampled max facet-chord deviation of a mesh from the exact BRep of
+    /// `handle`, in SI metres (Determinacy β, task 4198).
+    ///
+    /// Mesh data is carried as plain `Vec<f32>` / `Vec<u32>` (not as `Mesh`)
+    /// to keep the message type plain and avoid extra trait bounds.
+    /// The kernel-thread handler reconstructs a `Mesh` before calling
+    /// [`OcctKernel::measure_mesh_deviation`].
+    ///
+    /// On success the reply carries `Ok(f64)` (metres); the inherent wrapper
+    /// maps Ok→Some, Err→None for honest absence at the trait boundary.
+    MeasureMeshDeviation {
+        handle: GeometryHandleId,
+        vertices: Vec<f32>,
+        indices: Vec<u32>,
+        reply: oneshot::Sender<Result<f64, QueryError>>,
     },
 }
 
@@ -302,6 +326,40 @@ impl OcctKernelHandle {
         )?
     }
 
+    /// Compute the sampled max facet-chord deviation of `mesh` from the exact
+    /// BRep of `handle`, in SI metres.
+    ///
+    /// Sends a [`OcctRequest::MeasureMeshDeviation`] to the kernel thread and
+    /// blocks until the result arrives. Returns `Some(metres)` on success,
+    /// `None` on channel failure or kernel error (honest absence, B3).
+    ///
+    /// Mirrors [`OcctKernel::measure_mesh_deviation`] across the channel:
+    /// clones the mesh vertices/indices into the request, blocks on the reply,
+    /// maps `Ok(d)` → `Some(d)`, any `Err` → `None`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    pub fn measure_mesh_deviation(
+        &self,
+        handle: GeometryHandleId,
+        mesh: &Mesh,
+    ) -> Option<f64> {
+        let vertices = mesh.vertices.clone();
+        let indices = mesh.indices.clone();
+        self.send_request_blocking(
+            |reply| OcctRequest::MeasureMeshDeviation {
+                handle,
+                vertices,
+                indices,
+                reply,
+            },
+            || QueryError::QueryFailed("kernel thread died".into()),
+        )
+        .ok() // channel failure → None
+        .and_then(|r| r.ok()) // kernel error (InvalidHandle, FFI error) → None
+    }
+
     /// Extract the unique edges of a shape, storing each as a new handle on
     /// the kernel thread, and return the resulting list of handle ids.
     ///
@@ -325,6 +383,24 @@ impl OcctKernelHandle {
         let handles = handles.to_vec();
         self.send_request_blocking(
             |reply| OcctRequest::MakeCompound { handles, reply },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )?
+    }
+
+    /// Split `op.target` with a cutting plane via `BRepAlgoAPI_Splitter`,
+    /// returning the result solid handles. Sends an `OcctRequest::Split` to
+    /// the kernel thread and blocks until the result arrives.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    pub fn execute_split(
+        &self,
+        op: &GeometryOp,
+    ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+        let op = Box::new(op.clone());
+        self.send_request_blocking(
+            |reply| OcctRequest::Split { op, reply },
             || GeometryError::OperationFailed("kernel thread died".into()),
         )?
     }
@@ -911,6 +987,10 @@ impl OcctKernelHandle {
                         let result = kernel.make_compound(&handles);
                         let _ = reply.send(result);
                     }
+                    OcctRequest::Split { op, reply } => {
+                        let result = kernel.execute_split(&op);
+                        let _ = reply.send(result);
+                    }
                     OcctRequest::ExtractEdges { handle, reply } => {
                         let result = kernel.extract_edges(handle);
                         let _ = reply.send(result);
@@ -1052,6 +1132,22 @@ impl OcctKernelHandle {
                     #[cfg(feature = "test-fixtures")]
                     OcctRequest::FaceOutwardUnitNormalForTest { face, reply } => {
                         let result = kernel.face_outward_unit_normal_for_test(face);
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::MeasureMeshDeviation {
+                        handle,
+                        vertices,
+                        indices,
+                        reply,
+                    } => {
+                        // Reconstruct a `Mesh` from the cloned vertex/index data.
+                        // Normals are not needed by the metric.
+                        let mesh = Mesh {
+                            vertices,
+                            indices,
+                            normals: None,
+                        };
+                        let result = kernel.measure_mesh_deviation(handle, &mesh);
                         let _ = reply.send(result);
                     }
                 }
@@ -1411,6 +1507,15 @@ impl GeometryKernel for OcctKernelHandle {
     }
 
     /// Override the trait default with a real channel-routed implementation.
+    /// Delegates to the inherent `execute_split` (which only needs `&self`).
+    fn execute_split(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+        OcctKernelHandle::execute_split(self, op)
+    }
+
+    /// Override the trait default with a real channel-routed implementation.
     /// Delegates to the inherent `extract_edges` (which only needs `&self`).
     fn extract_edges(
         &mut self,
@@ -1447,6 +1552,21 @@ impl GeometryKernel for OcctKernelHandle {
         op: &GeometryOp,
     ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
         OcctKernelHandle::execute_with_history(self, op)
+    }
+
+    /// Override the default-absent trait method with a real channel-routed
+    /// implementation. Delegates to the inherent
+    /// [`measure_mesh_deviation`](OcctKernelHandle::measure_mesh_deviation)
+    /// (which only needs `&self`).
+    ///
+    /// Returns `Some(metres)` on success; `None` on channel failure or invalid
+    /// handle (honest absence, B3 — mirrors the default for non-OCCT kernels).
+    fn measure_mesh_deviation(
+        &self,
+        handle: GeometryHandleId,
+        mesh: &Mesh,
+    ) -> Option<f64> {
+        OcctKernelHandle::measure_mesh_deviation(self, handle, mesh)
     }
 }
 
@@ -1607,6 +1727,8 @@ mod tests {
 
     #[test]
     fn export_unsupported_format_returns_error() {
+        // Stl is now wired; use Obj (explicitly unsupported) to pin the
+        // error-path contract for an unsupported format.
         let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
             width: Value::Real(10.0),
@@ -1615,7 +1737,7 @@ mod tests {
         };
         let gh = handle.execute(&op).unwrap();
         let mut buf = Vec::new();
-        let result = handle.export(gh.id, reify_ir::ExportFormat::Stl, &mut buf);
+        let result = handle.export(gh.id, reify_ir::ExportFormat::Obj, &mut buf);
         assert!(result.is_err());
     }
 

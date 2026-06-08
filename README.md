@@ -13,7 +13,7 @@ Think OpenSCAD's text-first philosophy meets SolidWorks' constraint-driven param
 Reify is in active development. Two things to set expectations:
 
 - **Linux only right now.** Specifically Ubuntu 24.04. The setup script uses `apt` and the FreeCAD PPA for OCCT 7.8. macOS and Windows don't work yet.
-- **First-time build is slow.** 5–15 minutes for `cargo build --release` on a cold cache, plus apt installs. Once warm, incremental rebuilds are fast. The first `cargo build` of `reify-kernel-manifold` pulls and compiles the elalish/manifold C++ tree via cmake (~3–5 min cold); `manifold-csg-sys` caches by version+patch stamp and subsequent builds reuse the cache.
+- **First-time build is slow.** 5–15 minutes for `cargo build --release` on a cold cache, plus apt installs. Once warm, incremental rebuilds are fast. `setup-dev.sh` builds the elalish/manifold C++ libs once into `/opt/reify-deps/manifold/lib` (~5–10 min cold) via `scripts/build-manifold-deps.sh`; a `links`-override in `.cargo/config.toml` then links those prebuilt static libs, so `cargo build` never recompiles manifold from source.
 - **Things will break.** This is the first time anyone outside the core team has installed it. Please report what fails — see "Feedback" below.
 
 What does work, end-to-end:
@@ -47,7 +47,7 @@ scripts/setup-dev.sh
 cargo build --release
 ```
 
-`setup-dev.sh` is idempotent — re-run it any time. It installs rustup, clippy, sccache, tree-sitter-cli, OCCT 7.8 (via the FreeCAD PPA), libslvs, the Tauri webview deps, the GUI's npm packages, and a conda-forge env at `/opt/reify-deps` carrying gmsh 4.15.2 + openvdb 13.0.0 (via micromamba — installed automatically if no conda-family installer is on PATH). At the end it runs a smoke test against `examples/m5_geometry.ri`.
+`setup-dev.sh` is idempotent — re-run it any time. It installs rustup, clippy, sccache, tree-sitter-cli, OCCT 7.8 (via the FreeCAD PPA), libslvs, the Tauri webview deps, the GUI's npm packages, and a conda-forge env at `/opt/reify-deps` carrying gmsh 4.15.2 + openvdb 13.0.0 (via micromamba — installed automatically if no conda-family installer is on PATH). It also builds the manifold C++ libs once into `/opt/reify-deps/manifold/lib` (see `scripts/build-manifold-deps.sh`), which `.cargo/config.toml` links as prebuilt static libs instead of recompiling manifold per build. At the end it runs a smoke test against `examples/m5_geometry.ri`.
 
 ## Try it
 
@@ -79,6 +79,7 @@ For more, see [`docs/getting-started.md`](docs/getting-started.md).
 reify check  <file>                      Parse, type-check, solve constraints
 reify build  <file> -o <output>          Build geometry and export (.step / .stl)
 reify test   <file>                      Run @test-annotated structures
+reify eval   <file>                      Evaluate and print every top-level value cell
 reify gui    [--debug] <file>            Open file in GUI
 reify gui-debug <file>                   Alias for `gui --debug`
 reify lsp                                Start language server (stdin/stdout)
@@ -94,7 +95,7 @@ See [`docs/fea-cache.md`](docs/fea-cache.md) for the FEA cache surface (director
 ## Repository layout
 
 ```
-crates/                 26 Rust crates (kernel, eval, constraints, LSP, CLI…)
+crates/                 30 Rust crates (kernel, eval, constraints, LSP, CLI…)
 gui/                    Tauri 2 + SolidJS + Three.js frontend
 examples/               50+ .ri sample files
 docs/                   Language spec, stdlib reference, design notes

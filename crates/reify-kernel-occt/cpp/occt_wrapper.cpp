@@ -16,6 +16,8 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
+#include <BRepPrimAPI_MakeWedge.hxx>
 
 // OCCT booleans
 #include <BRepAlgoAPI_BooleanOperation.hxx>
@@ -50,6 +52,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 
@@ -90,6 +93,8 @@
 #include <gp_Quaternion.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Pln.hxx>
+#include <BRepAlgoAPI_Splitter.hxx>
 
 // OCCT properties + surface adaptor
 #include <BRepGProp.hxx>
@@ -333,6 +338,32 @@ std::unique_ptr<OcctShape> make_sphere(double radius) {
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepPrimAPI_MakeSphere failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_cone(double bottom_r, double top_r, double height) {
+    return wrap_occt_call("make_cone", [&]() {
+        BRepPrimAPI_MakeCone maker(bottom_r, top_r, height);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeCone failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_wedge(double dx, double dy, double dz, double ltx) {
+    return wrap_occt_call("make_wedge", [&]() {
+        BRepPrimAPI_MakeWedge maker(dx, dy, dz, ltx);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeWedge failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
@@ -2135,6 +2166,38 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
         BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
         if (!faceBuilder.IsDone()) {
             throw std::runtime_error("make_circle_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = faceBuilder.Face();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_rectangle_face(double width, double height, double z_height) {
+    return wrap_occt_call("make_rectangle_face", [&]() {
+        if (!(std::isfinite(width) && width > 0.0)) {
+            throw std::runtime_error("make_rectangle_face: width must be finite and positive");
+        }
+        if (!(std::isfinite(height) && height > 0.0)) {
+            throw std::runtime_error("make_rectangle_face: height must be finite and positive");
+        }
+        double hw = width / 2.0;
+        double hh = height / 2.0;
+        // Build a closed rectangular wire with corners (±hw, ±hh, z_height)
+        // in counter-clockwise order (normal = +Z).
+        BRepBuilderAPI_MakePolygon polyBuilder;
+        polyBuilder.Add(gp_Pnt(-hw, -hh, z_height));
+        polyBuilder.Add(gp_Pnt( hw, -hh, z_height));
+        polyBuilder.Add(gp_Pnt( hw,  hh, z_height));
+        polyBuilder.Add(gp_Pnt(-hw,  hh, z_height));
+        polyBuilder.Close();
+        if (!polyBuilder.IsDone()) {
+            throw std::runtime_error("make_rectangle_face: MakePolygon failed");
+        }
+        TopoDS_Wire wire = polyBuilder.Wire();
+        BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_rectangle_face: MakeFace failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = faceBuilder.Face();
@@ -4258,6 +4321,44 @@ std::unique_ptr<OcctShapeVec> get_vertices(const OcctShape& shape) {
     });
 }
 
+// --- Split ---
+
+std::unique_ptr<OcctShapeVec> split_shape(
+    const OcctShape& shape,
+    double ox, double oy, double oz,
+    double nx, double ny, double nz) {
+    return wrap_occt_call("split_shape", [&]() {
+        // Build the cutting plane from origin + normal.
+        gp_Pnt origin(ox, oy, oz);
+        gp_Dir normal(nx, ny, nz);
+        gp_Pln pln(origin, normal);
+        // Build an unbounded planar face as the splitting tool.
+        BRepBuilderAPI_MakeFace face_builder(pln);
+        if (!face_builder.IsDone()) {
+            throw std::runtime_error("split_shape: BRepBuilderAPI_MakeFace failed");
+        }
+        TopoDS_Shape tool_face = face_builder.Shape();
+        // Populate argument and tool lists.
+        TopTools_ListOfShape args, tools;
+        args.Append(shape.shape);
+        tools.Append(tool_face);
+        // Run the splitter.
+        BRepAlgoAPI_Splitter splitter;
+        splitter.SetArguments(args);
+        splitter.SetTools(tools);
+        splitter.Build();
+        if (!splitter.IsDone()) {
+            throw std::runtime_error("split_shape: BRepAlgoAPI_Splitter failed (IsDone=false)");
+        }
+        // Extract all solids from the result.
+        auto out = std::make_unique<OcctShapeVec>();
+        for (TopExp_Explorer ex(splitter.Shape(), TopAbs_SOLID); ex.More(); ex.Next()) {
+            out->shapes.push_back(ex.Current());
+        }
+        return out;
+    });
+}
+
 // --- Export ---
 
 // Process-global mutex for STEP export. OCCT's STEPControl_Writer (and its
@@ -4338,6 +4439,11 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
 
         for (TopExp_Explorer ex(shape.shape, TopAbs_FACE); ex.More(); ex.Next()) {
             TopoDS_Face face = TopoDS::Face(ex.Current());
+            // Emit triangles in the solid-outward sense.  OCCT triangulates
+            // each face in its NATURAL (FORWARD-surface) winding, so a face
+            // flagged TopAbs_REVERSED contributes inward-wound triangles
+            // unless we swap two indices.  Idiom reused from L2716/L2990.
+            bool reversed = (face.Orientation() == TopAbs_REVERSED);
             TopLoc_Location loc;
             Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
             if (tri.IsNull()) continue;
@@ -4356,12 +4462,19 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 result.vertices.push_back(static_cast<float>(p.Z()));
             }
 
-            // Extract normals — use stored normals if available, else compute from triangles
+            // Extract normals — use stored normals if available, else compute from triangles.
+            // In both branches, flip the normal for REVERSED faces so that supplied normals
+            // remain consistent with the outward winding emitted above.
+            // Idiom mirrors `if (face.Orientation() == TopAbs_REVERSED) { n.Reverse(); }`
+            // used elsewhere in this file (L270 surface_normal, L2990 curvature_at).
             if (tri->HasNormals()) {
                 for (int i = 1; i <= nb_nodes; ++i) {
                     gp_Dir n = tri->Normal(i);
                     if (!loc.IsIdentity()) {
                         n.Transform(loc.Transformation());
+                    }
+                    if (reversed) {
+                        n.Reverse();
                     }
                     result.normals.push_back(static_cast<float>(n.X()));
                     result.normals.push_back(static_cast<float>(n.Y()));
@@ -4385,6 +4498,9 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 }
                 for (int i = 0; i < nb_nodes; ++i) {
                     gp_Vec n = vertex_normals[i];
+                    if (reversed) {
+                        n.Reverse();
+                    }
                     double mag = n.Magnitude();
                     if (mag > CPP_DIR_MAG_MIN) {
                         n /= mag;
@@ -4398,19 +4514,131 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 }
             }
 
-            // Extract indices (1-based → 0-based + offset)
+            // Extract indices (1-based → 0-based + offset).
+            // For REVERSED faces, swap n2/n3 so every emitted triangle is
+            // consistently outward-wound regardless of the face orientation flag.
             for (int i = 1; i <= nb_tris; ++i) {
                 int n1, n2, n3;
                 tri->Triangle(i).Get(n1, n2, n3);
                 result.indices.push_back(vertex_offset + static_cast<uint32_t>(n1 - 1));
-                result.indices.push_back(vertex_offset + static_cast<uint32_t>(n2 - 1));
-                result.indices.push_back(vertex_offset + static_cast<uint32_t>(n3 - 1));
+                if (reversed) {
+                    result.indices.push_back(vertex_offset + static_cast<uint32_t>(n3 - 1));
+                    result.indices.push_back(vertex_offset + static_cast<uint32_t>(n2 - 1));
+                } else {
+                    result.indices.push_back(vertex_offset + static_cast<uint32_t>(n2 - 1));
+                    result.indices.push_back(vertex_offset + static_cast<uint32_t>(n3 - 1));
+                }
             }
 
             vertex_offset += static_cast<uint32_t>(nb_nodes);
         }
 
         return result;
+    });
+}
+
+double measure_mesh_deviation(const OcctShape& shape, const TessResult& mesh) {
+    return wrap_occt_call("measure_mesh_deviation", [&]() -> double {
+        // Empty mesh → no deviation (B3: honest absence; caller skips empty meshes).
+        if (mesh.indices.empty()) {
+            return 0.0;
+        }
+
+        // Collect all FACES of the shape into a compound so that
+        // BRepExtrema_DistShapeShape measures distance to the ANALYTICAL SURFACE
+        // rather than the solid interior.  For a solid BRep,
+        // BRepExtrema(solid, interior_point) returns 0 because the point is
+        // "inside" the solid body; using the face compound forces projection
+        // onto the actual surface and yields the true chord deviation.
+        // Box faces are planar → centroids lie in the face plane → distance 0
+        // (B1 still holds); curved faces give the sagitta of the chord (B2).
+        BRep_Builder builder;
+        TopoDS_Compound face_cmp;
+        builder.MakeCompound(face_cmp);
+        bool has_face = false;
+        for (TopExp_Explorer exp(shape.shape, TopAbs_FACE); exp.More(); exp.Next()) {
+            builder.Add(face_cmp, exp.Current());
+            has_face = true;
+        }
+        if (!has_face) {
+            return 0.0; // no faces → no surface to measure against
+        }
+
+        const size_t n_verts = mesh.vertices.size() / 3;
+        double max_dev = 0.0;
+
+        // Initialise the extrema solver once on the face compound; its BVH
+        // and projection structures (S1 side) are built once here and reused
+        // for every sample query via LoadS2 / Perform — avoiding repeated
+        // BRepExtrema construction across potentially thousands of triangles
+        // on fine meshes (4 calls per triangle × N triangles → 1 + 4N instead).
+        BRepExtrema_DistShapeShape dist;
+        dist.LoadS1(face_cmp);
+
+        for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+            uint32_t i0 = mesh.indices[i];
+            uint32_t i1 = mesh.indices[i + 1];
+            uint32_t i2 = mesh.indices[i + 2];
+
+            // Bounds check — malformed index → throw → Err in Rust.
+            if (i0 >= n_verts || i1 >= n_verts || i2 >= n_verts) {
+                throw std::runtime_error(
+                    "measure_mesh_deviation: vertex index out of range");
+            }
+
+            // Widen f32 → f64 for the 4 interior sample computations.
+            double ax = static_cast<double>(mesh.vertices[i0 * 3]);
+            double ay = static_cast<double>(mesh.vertices[i0 * 3 + 1]);
+            double az = static_cast<double>(mesh.vertices[i0 * 3 + 2]);
+
+            double bx = static_cast<double>(mesh.vertices[i1 * 3]);
+            double by = static_cast<double>(mesh.vertices[i1 * 3 + 1]);
+            double bz = static_cast<double>(mesh.vertices[i1 * 3 + 2]);
+
+            double cx = static_cast<double>(mesh.vertices[i2 * 3]);
+            double cy = static_cast<double>(mesh.vertices[i2 * 3 + 1]);
+            double cz = static_cast<double>(mesh.vertices[i2 * 3 + 2]);
+
+            // 4 interior samples: centroid + 3 edge midpoints.
+            // Mesh vertices lie on the surface by construction (deviation 0),
+            // so only interior samples reveal chord error.
+            const double samples[4][3] = {
+                // centroid
+                { (ax + bx + cx) / 3.0, (ay + by + cy) / 3.0, (az + bz + cz) / 3.0 },
+                // edge midpoint AB
+                { (ax + bx) / 2.0, (ay + by) / 2.0, (az + bz) / 2.0 },
+                // edge midpoint BC
+                { (bx + cx) / 2.0, (by + cy) / 2.0, (bz + cz) / 2.0 },
+                // edge midpoint CA
+                { (cx + ax) / 2.0, (cy + ay) / 2.0, (cz + az) / 2.0 },
+            };
+
+            for (const auto& s : samples) {
+                gp_Pnt query_pnt(s[0], s[1], s[2]);
+                BRepBuilderAPI_MakeVertex vertex_maker(query_pnt);
+                if (!vertex_maker.IsDone()) {
+                    throw std::runtime_error(
+                        "measure_mesh_deviation: vertex construction failed");
+                }
+                // Load the new query vertex as S2 and Perform; S1 (face
+                // compound) stays loaded — its BVH is reused per query.
+                dist.LoadS2(vertex_maker.Vertex());
+                if (!dist.Perform()) {
+                    throw std::runtime_error(
+                        "measure_mesh_deviation: BRepExtrema_DistShapeShape failed");
+                }
+                if (dist.NbSolution() < 1) {
+                    throw std::runtime_error(
+                        "measure_mesh_deviation: no solution found");
+                }
+                double d = dist.Value();
+                if (d > max_dev) {
+                    max_dev = d;
+                }
+            }
+        }
+
+        return max_dev;
     });
 }
 

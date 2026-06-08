@@ -561,6 +561,8 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
     match name {
         "Scalar" => Some(Type::length()), // Default scalar is length-dimensioned in M1
         "Solid" => Some(Type::Geometry),  // Surface-syntax alias for the geometry-handle type
+        "Geometry" => Some(Type::Geometry), // Canonical surface spelling of the geometry-handle type (Solid is the legacy alias)
+        "DatumRef" => Some(Type::Geometry), // datum-reference handle aliases the geometry-handle type (PRD §8 Q1 / task #3116)
         // Topology-selector builtin type names (PRD §4.4 / task 4117 β).
         // Fully-qualified path required: `use super::*` brings the *reify_ir* SelectorKind
         // (Face/Point/Edge) into scope, but Type::Selector requires *reify_core::ty::SelectorKind*
@@ -802,6 +804,7 @@ pub(crate) fn resolve_type_alias_expr(
                     &mut tmp_diags,
                     &HashSet::new(),
                     &HashSet::new(),
+                    &HashSet::new(),
                 ) {
                     diagnostics.extend(tmp_diags);
                     return Some(ty);
@@ -989,6 +992,7 @@ pub(crate) fn resolve_type_expr_with_aliases(
             diagnostics,
             structure_names,
             trait_names,
+            type_param_names,
         )
     {
         return Some(ty);
@@ -1138,6 +1142,104 @@ pub(crate) fn resolve_parameterized_alias(
     // Apply substitution to alias body
     let body = alias_entry.type_expr.as_ref()?;
     resolve_type_alias_expr_with_subst(body, alias_registry, &subst, diagnostics, depth + 1)
+}
+
+/// Substitute resolved type parameters in a `Type` from a name→`Type` map.
+///
+/// Walks a fully-resolved `Type` and rewrites every `Type::TypeParam(name)`
+/// leaf to `subst[name]` when bound, leaving unbound type-params unchanged
+/// (passthrough). This is the resolved-`Type`-walk analog of the AST-expr
+/// substitution in [`resolve_type_alias_expr_with_subst`] (PRD D3).
+///
+/// Used at generic-call sites (task 4231 β) to substitute the matched
+/// function's return type once `unify` has bound the type parameters from the
+/// argument types.
+///
+/// The `match` is intentionally exhaustive (no `_` wildcard) so that any future
+/// `Type` variant forces a compile error here rather than silently passing
+/// through unsubstituted — important for a recursive type walk.
+pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -> Type {
+    match ty {
+        // Type-parameter leaf: substitute when bound, else pass through.
+        Type::TypeParam(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
+
+        // Single-inner-Type wrappers: recurse and rebuild.
+        Type::List(inner) => Type::List(Box::new(substitute_type_params(inner, subst))),
+        Type::Set(inner) => Type::Set(Box::new(substitute_type_params(inner, subst))),
+        Type::Keyed(inner) => Type::Keyed(Box::new(substitute_type_params(inner, subst))),
+        Type::Option(inner) => Type::Option(Box::new(substitute_type_params(inner, subst))),
+        Type::Complex(inner) => Type::Complex(Box::new(substitute_type_params(inner, subst))),
+        Type::Range(inner) => Type::Range(Box::new(substitute_type_params(inner, subst))),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => Type::Map(
+            Box::new(substitute_type_params(key, subst)),
+            Box::new(substitute_type_params(val, subst)),
+        ),
+        Type::Field { domain, codomain } => Type::Field {
+            domain: Box::new(substitute_type_params(domain, subst)),
+            codomain: Box::new(substitute_type_params(codomain, subst)),
+        },
+
+        // Function: substitute each param + the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| substitute_type_params(p, subst))
+                .collect(),
+            return_type: Box::new(substitute_type_params(return_type, subst)),
+        },
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { n, quantity } => Type::Point {
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+        Type::Vector { n, quantity } => Type::Vector {
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+        Type::Tensor { rank, n, quantity } => Type::Tensor {
+            rank: *rank,
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+        Type::Matrix { m, n, quantity } => Type::Matrix {
+            m: *m,
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+
+        // Union: substitute each arm.
+        Type::Union(arms) => Type::Union(
+            arms.iter()
+                .map(|a| substitute_type_params(a, subst))
+                .collect(),
+        ),
+
+        // All remaining leaves carry no inner `Type` to substitute.
+        Type::Bool
+        | Type::Int
+        | Type::Real
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::Error => ty.clone(),
+    }
 }
 
 /// Resolve a type alias body TypeExpr with parameter substitutions applied.
@@ -1331,14 +1433,14 @@ pub(crate) fn resolve_parameterized_builtin_type(
     diagnostics: &mut Vec<Diagnostic>,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    type_param_names: &HashSet<String>,
 ) -> Option<Type> {
-    let empty_type_params = HashSet::new();
     let pre_diag_len = diagnostics.len();
     let result = match name {
         "List" if type_args.len() == 1 => {
             let inner = resolve_type_expr_with_aliases(
                 &type_args[0],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1349,7 +1451,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
         "Set" if type_args.len() == 1 => {
             let inner = resolve_type_expr_with_aliases(
                 &type_args[0],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1360,7 +1462,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
         "Map" if type_args.len() == 2 => {
             let key = resolve_type_expr_with_aliases(
                 &type_args[0],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1368,7 +1470,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             let val = resolve_type_expr_with_aliases(
                 &type_args[1],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1376,10 +1478,21 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             Some(Type::Map(Box::new(key), Box::new(val)))
         }
+        "Keyed" if type_args.len() == 1 => {
+            let inner = resolve_type_expr_with_aliases(
+                &type_args[0],
+                type_param_names,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::Keyed(Box::new(inner)))
+        }
         "Option" if type_args.len() == 1 => {
             let inner = resolve_type_expr_with_aliases(
                 &type_args[0],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1412,7 +1525,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
             let n = expect_integer_literal_type_arg(&type_args[1], "Tensor", "n", diagnostics)?;
             let quantity = resolve_type_expr_with_aliases(
                 &type_args[2],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1426,7 +1539,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
             let n = expect_integer_literal_type_arg(&type_args[1], "Matrix", "n", diagnostics)?;
             let quantity = resolve_type_expr_with_aliases(
                 &type_args[2],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1440,7 +1553,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
             // rather than resolve_type_alias_expr_to_dimension. Mirrors Map's two-arg shape.
             let domain = resolve_type_expr_with_aliases(
                 &type_args[0],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1448,7 +1561,7 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             let codomain = resolve_type_expr_with_aliases(
                 &type_args[1],
-                &empty_type_params,
+                type_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1565,6 +1678,16 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 depth,
             )?;
             Some(Type::Map(Box::new(key), Box::new(val)))
+        }
+        "Keyed" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::Keyed(Box::new(inner)))
         }
         "Option" if type_args.len() == 1 => {
             let inner = resolve_type_alias_expr_with_subst(
@@ -2099,6 +2222,15 @@ mod tests {
     }
 
     #[test]
+    fn geometry_resolves_to_geometry() {
+        assert_eq!(
+            resolve_type_name("Geometry"),
+            Some(Type::Geometry),
+            "\"Geometry\" should resolve to Type::Geometry as the canonical surface spelling"
+        );
+    }
+
+    #[test]
     fn resolve_enum_type_returns_some_for_matching_name() {
         let enum_defs = vec![reify_ir::EnumDef {
             name: "Direction".to_string(),
@@ -2260,6 +2392,149 @@ mod tests {
         );
     }
 
+    // ── Keyed<T> parameterized resolution (step-3 RED / task 3930 β) ──────────
+    // `Keyed<Vent>` must resolve to the keyed-collection kind, distinct from the
+    // `Map`/`List` resolutions of the same arg. Mirrors the List/Map resolver arms.
+
+    #[test]
+    fn resolve_parameterized_builtin_type_resolves_keyed_distinct_from_map_list() {
+        let reg = TypeAliasRegistry::new();
+        let structure_names: HashSet<String> = ["Vent".to_string()].into_iter().collect();
+        let trait_names = HashSet::new();
+        let args = [named_type_expr("Vent")];
+
+        // Keyed<Vent> → Type::Keyed(StructureRef(Vent)), no diagnostics.
+        let mut diags = Vec::new();
+        let keyed = resolve_parameterized_builtin_type(
+            "Keyed",
+            &args,
+            &reg,
+            &mut diags,
+            &structure_names,
+            &trait_names,
+            &HashSet::new(),
+        );
+        assert_eq!(
+            keyed,
+            Some(Type::Keyed(Box::new(Type::StructureRef("Vent".into())))),
+            "Keyed<Vent> should resolve to the keyed-collection kind",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+
+        // List<Vent> resolves to the list kind — distinct from Keyed.
+        let mut list_diags = Vec::new();
+        let list = resolve_parameterized_builtin_type(
+            "List",
+            &args,
+            &reg,
+            &mut list_diags,
+            &structure_names,
+            &trait_names,
+            &HashSet::new(),
+        );
+        assert_eq!(
+            list,
+            Some(Type::List(Box::new(Type::StructureRef("Vent".into())))),
+        );
+        assert_ne!(keyed, list, "Keyed<Vent> must be distinct from List<Vent>");
+
+        // Distinct from a Map kind as well.
+        assert_ne!(
+            keyed,
+            Some(Type::Map(
+                Box::new(Type::String),
+                Box::new(Type::StructureRef("Vent".into())),
+            )),
+        );
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_with_subst_resolves_keyed_distinct_from_list() {
+        let reg = TypeAliasRegistry::new();
+        // The subst path is structure-name-blind by design (alias DFS runs before
+        // structures are compiled — see the hardcoded empty `structure_names` in
+        // `resolve_type_alias_expr_with_subst`). The inner type arg is therefore
+        // supplied through the substitution map, which is exactly what this
+        // resolver variant exists to exercise: `Keyed<T>` with `T := Vent`.
+        let mut subst = HashMap::new();
+        subst.insert("T".to_string(), Type::StructureRef("Vent".into()));
+        let args = [named_type_expr("T")];
+
+        let mut diags = Vec::new();
+        let keyed = resolve_parameterized_builtin_type_with_subst(
+            "Keyed",
+            &args,
+            &reg,
+            &subst,
+            &mut diags,
+            0,
+        );
+        assert_eq!(
+            keyed,
+            Some(Type::Keyed(Box::new(Type::StructureRef("Vent".into())))),
+            "Keyed<T>[T:=Vent] (subst path) should resolve to the keyed-collection kind",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+
+        let mut list_diags = Vec::new();
+        let list = resolve_parameterized_builtin_type_with_subst(
+            "List",
+            &args,
+            &reg,
+            &subst,
+            &mut list_diags,
+            0,
+        );
+        assert_eq!(
+            list,
+            Some(Type::List(Box::new(Type::StructureRef("Vent".into())))),
+        );
+        assert_ne!(
+            keyed, list,
+            "Keyed<Vent> must be distinct from List<Vent> (subst path)",
+        );
+    }
+
+    // Type resolution is position-blind: `Keyed<T>` resolves to a well-formed
+    // `Type::Keyed` regardless of whether it appears in a `sub` position (its only
+    // intended use) or a value position such as `param x : Keyed<Vent>`. The
+    // resolver therefore emits NO diagnostic for the latter — rejecting a
+    // value-position `Keyed<T>` with a clear compile error is deferred to γ/δ
+    // (access-by-key resolution + structural classification own that guard).
+    // Until then, `reify_eval::is_representable_cell_type` returning `false` for
+    // `Type::Keyed` (engine_eval.rs, test `is_representable_cell_type_rejects_keyed`)
+    // is the eval-layer backstop. This test pins the position-blindness so the
+    // deferral is explicit and a future γ/δ guard has a documented anchor.
+    #[test]
+    fn resolve_parameterized_keyed_is_position_blind_value_guard_deferred() {
+        let reg = TypeAliasRegistry::new();
+        let structure_names: HashSet<String> = ["Vent".to_string()].into_iter().collect();
+        let trait_names = HashSet::new();
+        let args = [named_type_expr("Vent")];
+
+        let mut diags = Vec::new();
+        let keyed = resolve_parameterized_builtin_type(
+            "Keyed",
+            &args,
+            &reg,
+            &mut diags,
+            &structure_names,
+            &trait_names,
+            &HashSet::new(),
+        );
+        assert_eq!(
+            keyed,
+            Some(Type::Keyed(Box::new(Type::StructureRef("Vent".into())))),
+            "Keyed<Vent> resolves structurally even in a value position",
+        );
+        assert!(
+            diags.is_empty(),
+            "type resolution is position-blind: no value-position diagnostic is emitted \
+             here (the guard is deferred to γ/δ); got {:?}",
+            diags,
+        );
+    }
+
     #[test]
     fn should_emit_skipped_parametric_prelude_info_dedups_per_span() {
         let mut reg = TypeAliasRegistry::new();
@@ -2332,5 +2607,174 @@ mod tests {
             result[0].default, None,
             "QualifiedAssoc default must be deferred (None) until task ιₑ resolves it"
         );
+    }
+
+    // ── DatumRef resolver (task #3116) ────────────────────────────────────────
+
+    /// Regression: `resolve_type_name("Geometry")` must return `Some(Type::Geometry)`.
+    /// Already passes — used as an anchor alongside the new DatumRef test.
+    #[test]
+    fn resolve_type_name_recognises_geometry() {
+        assert_eq!(
+            resolve_type_name("Geometry"),
+            Some(Type::Geometry),
+            "\"Geometry\" should resolve to Type::Geometry"
+        );
+    }
+
+    /// Regression: `resolve_type_name("Solid")` must return `Some(Type::Geometry)` (legacy alias).
+    /// Already passes — used as an anchor alongside the new DatumRef test.
+    #[test]
+    fn resolve_type_name_recognises_solid_as_geometry_alias() {
+        assert_eq!(
+            resolve_type_name("Solid"),
+            Some(Type::Geometry),
+            "\"Solid\" should resolve to Type::Geometry (legacy alias)"
+        );
+    }
+
+    /// RED (step-1): `resolve_type_name("DatumRef")` must return `Some(Type::Geometry)`.
+    ///
+    /// `DatumRef` is the datum-reference handle type used in `tolerancing.ri`.
+    /// It aliases the existing geometry-handle type (PRD §8 Q1 / task #3116 D2).
+    /// Fails before step-2 adds `"DatumRef" => Some(Type::Geometry)` to `resolve_type_name`.
+    #[test]
+    fn resolve_type_name_recognises_datum_ref_as_geometry_handle() {
+        assert_eq!(
+            resolve_type_name("DatumRef"),
+            Some(Type::Geometry),
+            "\"DatumRef\" should resolve to Type::Geometry (datum-reference handle aliases the geometry-handle type)"
+        );
+    }
+
+    // ── task 4231 β: substitute_type_params (return-type substitution) ──────
+    //
+    // Pure-function unit tests for the resolved-`Type`-walk that rewrites
+    // `Type::TypeParam` leaves from a name→Type substitution map (PRD D3).
+
+    /// Build a substitution map from (name, Type) pairs.
+    fn subst_of(pairs: &[(&str, Type)]) -> HashMap<String, Type> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn substitute_bare_type_param_bound() {
+        // (a) bare TypeParam("T") with {T: Real} → Real.
+        let subst = subst_of(&[("T", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(&Type::TypeParam("T".to_string()), &subst),
+            Type::Real
+        );
+    }
+
+    #[test]
+    fn substitute_unbound_type_param_passthrough() {
+        // (b) unbound TypeParam("D") with {C: Real} → TypeParam("D") unchanged.
+        let subst = subst_of(&[("C", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(&Type::TypeParam("D".to_string()), &subst),
+            Type::TypeParam("D".to_string())
+        );
+    }
+
+    #[test]
+    fn substitute_inside_list() {
+        // (c) List(TypeParam("T")) with {T: Int} → List(Int).
+        let subst = subst_of(&[("T", Type::Int)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::List(Box::new(Type::TypeParam("T".to_string()))),
+                &subst
+            ),
+            Type::List(Box::new(Type::Int))
+        );
+    }
+
+    #[test]
+    fn substitute_field_partial() {
+        // (d) Field{domain: TypeParam("D"), codomain: TypeParam("C")} with
+        //     {C: Real} → Field{domain: TypeParam("D"), codomain: Real}.
+        //     D stays unbound (nested partial substitution).
+        let subst = subst_of(&[("C", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Field {
+                    domain: Box::new(Type::TypeParam("D".to_string())),
+                    codomain: Box::new(Type::TypeParam("C".to_string())),
+                },
+                &subst
+            ),
+            Type::Field {
+                domain: Box::new(Type::TypeParam("D".to_string())),
+                codomain: Box::new(Type::Real),
+            }
+        );
+    }
+
+    #[test]
+    fn substitute_map_both_bound() {
+        // (e) Map(TypeParam("K"), TypeParam("V")) both bound → Map of concretes.
+        let subst = subst_of(&[("K", Type::String), ("V", Type::Int)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Map(
+                    Box::new(Type::TypeParam("K".to_string())),
+                    Box::new(Type::TypeParam("V".to_string())),
+                ),
+                &subst
+            ),
+            Type::Map(Box::new(Type::String), Box::new(Type::Int))
+        );
+    }
+
+    #[test]
+    fn substitute_function_params_and_return() {
+        // (f) Function{params:[TypeParam("T")], return_type: List(TypeParam("T"))}
+        //     with {T: Real} → both positions substituted.
+        let subst = subst_of(&[("T", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Function {
+                    params: vec![Type::TypeParam("T".to_string())],
+                    return_type: Box::new(Type::List(Box::new(Type::TypeParam("T".to_string())))),
+                },
+                &subst
+            ),
+            Type::Function {
+                params: vec![Type::Real],
+                return_type: Box::new(Type::List(Box::new(Type::Real))),
+            }
+        );
+    }
+
+    #[test]
+    fn substitute_recurses_into_quantity() {
+        // (g) Tensor{rank, n, quantity: TypeParam("Q")} recurses into quantity.
+        let subst = subst_of(&[("Q", Type::length())]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity: Box::new(Type::TypeParam("Q".to_string())),
+                },
+                &subst
+            ),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::length()),
+            }
+        );
+    }
+
+    #[test]
+    fn substitute_non_typeparam_leaf_identity() {
+        // (h) non-typeparam leaf (Int) with empty subst → identity.
+        let subst = subst_of(&[]);
+        assert_eq!(substitute_type_params(&Type::Int, &subst), Type::Int);
     }
 }

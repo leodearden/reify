@@ -420,7 +420,7 @@ pub fn elasticity_morph_with_cg_opts(
     for i in 0..n_nodes {
         for axis in 0..3 {
             let old_v = old_mesh.vertices[3 * i + axis] as f64;
-            let new_v = old_v + cg_result.u[3 * i + axis];
+            let new_v = old_v + cg_result.u()[3 * i + axis];
             out_vertices.push(new_v as f32);
         }
     }

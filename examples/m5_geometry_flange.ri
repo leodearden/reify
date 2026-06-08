@@ -8,12 +8,12 @@ structure def BoltFlange : Rigid {
     param hole_radius : Length = 4mm
 
     // Rigid trait requirement (Rigid's own param; Physical's geometry +
-    // material slots are below)
-    param moment_of_inertia : Real = 0.000001
+    // material slots are below). Disc OD 120 mm, h 12 mm, mass ≈ 0.86 kg → I_z ≈ 0.002 kg·m²
+    param moment_of_inertia : MomentOfInertia = 0.002 * 1kg * 1m * 1m
 
     // Canonical Material struct — concrete default supplied here, callers may
     // override at instantiation by passing a different `Material(...)` value.
-    param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
     constraint outer_radius > bolt_circle_radius
     constraint hole_count > 0

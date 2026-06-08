@@ -81,6 +81,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arbitrary"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
+dependencies = [
+ "derive_arbitrary",
+]
+
+[[package]]
 name = "argmin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -869,6 +878,17 @@ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
  "powerfmt",
  "serde_core",
+]
+
+[[package]]
+name = "derive_arbitrary"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -2955,9 +2975,9 @@ dependencies = [
 
 [[package]]
 name = "manifold-csg"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3527339ef694b0e3052c07c3da997d8d64100cb0348189b202868ccf123f5385"
+checksum = "b7c4e4f0f76eadb8ab713b64d0702a32e3f80d8281173b574a337ed309505945"
 dependencies = [
  "log",
  "manifold-csg-sys",
@@ -2966,18 +2986,18 @@ dependencies = [
 
 [[package]]
 name = "manifold-csg-sys"
-version = "3.5.100"
+version = "3.5.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74bd993b1c232e3b0aaef722dd33b24c7240075e4d7398da6b93597bddcca173"
+checksum = "8c4a9823453e446bbbd356f4a7b3a9bac04d105991cdb4d0a4170ba789cad868"
 dependencies = [
  "cmake",
 ]
 
 [[package]]
 name = "manifold3d"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e429fdd4b11a3fe201bd6e6d53221ec6743dbaa92bf18640adc55b7e53875d76"
+checksum = "010fce33c6965b300f603f6cb678333670364b14422cccce8cb0cb2677279b65"
 dependencies = [
  "manifold-csg",
 ]
@@ -4349,6 +4369,8 @@ dependencies = [
  "reify-compiler",
  "reify-constraints",
  "reify-core",
+ "reify-doc",
+ "reify-doc-build",
  "reify-eval",
  "reify-expr",
  "reify-geometry",
@@ -4445,6 +4467,7 @@ dependencies = [
  "serde_json",
  "strum 0.26.3",
  "xxhash-rust",
+ "zip",
 ]
 
 [[package]]
@@ -4615,6 +4638,7 @@ name = "reify-stdlib"
 version = "0.1.0"
 dependencies = [
  "faer",
+ "nalgebra",
  "reify-core",
  "reify-gcode",
  "reify-ir",
@@ -7516,6 +7540,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "zip"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "crossbeam-utils",
+ "displaydoc",
+ "indexmap 2.14.0",
+ "memchr",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

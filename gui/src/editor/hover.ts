@@ -6,6 +6,7 @@
  */
 import { hoverTooltip, type Tooltip } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
+import { extractHoverMarkdown } from './lspClient';
 
 interface LspHoverResult {
   contents:
@@ -16,22 +17,6 @@ interface LspHoverResult {
     start: { line: number; character: number };
     end: { line: number; character: number };
   };
-}
-
-/**
- * Extract plain text from LSP hover contents.
- */
-function extractHoverText(contents: LspHoverResult['contents']): string {
-  if (typeof contents === 'string') return contents;
-  if (Array.isArray(contents)) {
-    return contents
-      .map((c) => (typeof c === 'string' ? c : c.value))
-      .join('\n');
-  }
-  if (contents && typeof contents === 'object' && 'value' in contents) {
-    return (contents as { value: string }).value;
-  }
-  return '';
 }
 
 /**
@@ -64,7 +49,7 @@ export function reifyHoverTooltip(uri: string | (() => string)) {
       const parsed = JSON.parse(response) as LspHoverResult | null;
       if (!parsed || !parsed.contents) return null;
 
-      const text = extractHoverText(parsed.contents);
+      const text = extractHoverMarkdown(parsed.contents);
       if (!text) return null;
 
       return {

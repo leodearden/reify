@@ -1,3 +1,23 @@
 # Use runner script to set LD_LIBRARY_PATH for OCCT shared libraries.
 [target.x86_64-unknown-linux-gnu]
 runner = ".cargo/run-with-occt.sh"
+
+# Link manifold's C++ stack from a prebuilt host install instead of letting
+# manifold-csg-sys's build.rs clone + cmake-build the elalish/manifold tree
+# from source in every worktree (~4× per worktree, 56 MB clone + ~227 MB
+# OUT_DIR each, and a cold-cache cliff that pushed merge verifies past their
+# timeouts → exit 124). This `links`-name override makes Cargo SKIP that build
+# script and use these directives as its output instead — bringing manifold in
+# line with OCCT / OpenVDB / gmsh, which all link prebuilt libs from
+# /opt/reify-deps. Produce/refresh the libs with `scripts/build-manifold-deps.sh`
+# (run by setup-dev.sh); `scripts/check-manifold-deps.sh` guards verify against
+# a missing or version-drifted prebuilt.
+#
+# Target-scoped to x86_64-unknown-linux-gnu on purpose: wasm32/emscripten
+# builds keep running the real build script (they need their own FetchContent
+# path). Link order mirrors build/build.rs exactly (manifoldc → manifold →
+# Clipper2 → tbb, then stdc++); the override is keyed on the `links = "manifold"`
+# name so it applies to every feature variant of manifold-csg-sys.
+[target.x86_64-unknown-linux-gnu.manifold]
+rustc-link-search = ["native=/opt/reify-deps/manifold/lib"]
+rustc-link-lib = ["static=manifoldc", "static=manifold", "static=Clipper2", "static=tbb", "stdc++"]

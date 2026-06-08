@@ -277,6 +277,10 @@ pub enum Operation {
     PrimitiveSphere,
     /// Tube primitive (hollow cylinder).
     PrimitiveTube,
+    /// Cone (or frustum) primitive along Z axis.
+    PrimitiveCone,
+    /// Wedge (trapezoidal prism) primitive with bbox corner at origin.
+    PrimitiveWedge,
 
     // ── Modify (local edits to a single shape) ──────────────────────────────
     /// Fillet (round) edges by radius.
@@ -347,6 +351,12 @@ pub enum Operation {
     CurveBezierCurve,
     /// NURBS curve.
     CurveNurbsCurve,
+
+    // ── Profile (2D face producers) ─────────────────────────────────────────
+    /// Axis-aligned rectangular face centred at origin in the XY plane.
+    ProfileRectangle,
+    /// Circular face (disk) centred at origin in the XY plane.
+    ProfileCircle,
 
     // ── Convert (representation change) ─────────────────────────────────────
     /// Convert geometry from one [`ReprKind`] family to another. The pair
@@ -533,6 +543,28 @@ pub enum GeometryOp {
         outer_r: Value,
         inner_r: Value,
         height: Value,
+    },
+    /// Create a cone or frustum primitive along Z axis.
+    ///
+    /// `bottom_radius` is the radius at Z=0; `top_radius` at Z=height.
+    /// Setting `top_radius == 0` yields a pointed cone (apex at top).
+    /// Requires at least one radius > 0 (both-zero is a degenerate line).
+    Cone {
+        bottom_radius: Value,
+        top_radius: Value,
+        height: Value,
+    },
+    /// Create a wedge (trapezoidal prism) with bbox corner at origin.
+    ///
+    /// The cross-section is a trapezoid with parallel sides `width` (at y=0)
+    /// and `top_width` (at y=depth), separated by `depth`, extruded by `height`.
+    /// `top_width == 0` is valid (degenerate triangular-prism wedge).
+    /// Volume = depth * height * (width + top_width) / 2.
+    Wedge {
+        width: Value,
+        depth: Value,
+        height: Value,
+        top_width: Value,
     },
     /// Boolean union.
     Union {
@@ -768,6 +800,42 @@ pub enum GeometryOp {
         thickness: Value,
         faces_to_remove: Vec<usize>,
     },
+
+    /// Split a solid into pieces by an unbounded planar cutting tool.
+    ///
+    /// `plane_origin` and `plane_normal` define the cutting plane in the same
+    /// metre-scaled coordinate system used by all other `GeometryOp` variants
+    /// (mirroring [`GeometryOp::Mirror`]'s field layout).  The normal need not
+    /// be unit-length; the C++ implementation normalises it before constructing
+    /// the `gp_Pln`.
+    ///
+    /// This variant is dispatched via [`GeometryKernel::execute_split`], NOT
+    /// [`GeometryKernel::execute`].  Calling `execute` with this variant returns
+    /// `Err(GeometryError::OperationFailed(_))` to preserve the single-handle
+    /// return contract.
+    ///
+    /// Joins the topology-selector family (GEOMETRY_TOPOLOGY_SELECTOR_NAMES in
+    /// `reify-compiler`): `let pieces = split(solid, plane)` is typed as
+    /// `List<Geometry>` at compile time and evaluated via
+    /// `GeometryKernel::execute_split` at eval time.
+    Split {
+        target: GeometryHandleId,
+        plane_origin: [f64; 3],
+        plane_normal: [f64; 3],
+    },
+
+    // ── Profile (2-D face producers) ─────────────────────────────────────
+    /// Axis-aligned rectangular face centred at origin in the XY plane at z=0.
+    ///
+    /// Corners at (±width/2, ±height/2, 0).  The resulting `BRep` face is
+    /// consumable by `Extrude`, `Revolve`, `Loft`, and any other sweep that
+    /// expects a `Surface`-dimension profile.
+    RectangleProfile { width: Value, height: Value },
+    /// Circular face (disk) centred at origin in the XY plane at z=0.
+    ///
+    /// The resulting `BRep` face is consumable by `Extrude`, `Revolve`,
+    /// `Loft`, and any other sweep that expects a `Surface`-dimension profile.
+    CircleProfile { radius: Value },
 }
 
 impl GeometryOp {
@@ -785,6 +853,8 @@ impl GeometryOp {
             GeometryOp::Cylinder { .. } => "Cylinder",
             GeometryOp::Sphere { .. } => "Sphere",
             GeometryOp::Tube { .. } => "Tube",
+            GeometryOp::Cone { .. } => "Cone",
+            GeometryOp::Wedge { .. } => "Wedge",
             GeometryOp::Union { .. } => "Union",
             GeometryOp::Difference { .. } => "Difference",
             GeometryOp::Intersection { .. } => "Intersection",
@@ -817,6 +887,9 @@ impl GeometryOp {
             GeometryOp::Draft { .. } => "Draft",
             GeometryOp::Thicken { .. } => "Thicken",
             GeometryOp::Shell { .. } => "Shell",
+            GeometryOp::Split { .. } => "Split",
+            GeometryOp::RectangleProfile { .. } => "RectangleProfile",
+            GeometryOp::CircleProfile { .. } => "CircleProfile",
         }
     }
 }
@@ -1480,6 +1553,7 @@ pub enum ExportFormat {
     Step,
     Stl,
     Obj,
+    ThreeMF,
 }
 
 /// Tessellated mesh for visualization.
@@ -1491,6 +1565,384 @@ pub struct Mesh {
     pub indices: Vec<u32>,
     /// Optional vertex normals, flat like vertices.
     pub normals: Option<Vec<f32>>,
+}
+
+// ── STL serializers ──────────────────────────────────────────────────────────
+
+/// Compute the geometric facet normal for a triangle given its three XYZ
+/// vertices as `[f32; 3]` arrays.  Returns the normalized cross product of
+/// `(b-a) × (c-a)`.  Returns `[0.0, 0.0, 0.0]` for a degenerate (zero-area)
+/// triangle.  The result is independent of `Mesh::normals` (per-vertex, optional)
+/// and is the canonical value written into STL binary/ascii files.
+fn compute_facet_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
+    // Edge vectors
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    // Cross product ab × ac
+    let n = [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    ];
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if len == 0.0 {
+        [0.0, 0.0, 0.0]
+    } else {
+        [n[0] / len, n[1] / len, n[2] / len]
+    }
+}
+
+/// Fetch the XYZ position of vertex `idx` from the flat `vertices` buffer.
+/// Returns `None` if `idx` is out of bounds.
+fn mesh_vertex(vertices: &[f32], idx: u32) -> Option<[f32; 3]> {
+    let base = (idx as usize).checked_mul(3)?;
+    let end = base.checked_add(3)?;
+    if end > vertices.len() {
+        return None;
+    }
+    Some([vertices[base], vertices[base + 1], vertices[base + 2]])
+}
+
+/// Fetch the three vertex positions for a triangle index chunk.
+///
+/// Returns `(v0, v1, v2)` as `[f32; 3]` positions, or `Err(InvalidData)`
+/// if any index is out of bounds.  Shared by `write_stl_binary` and
+/// `write_stl_ascii` to avoid duplicating the vertex-lookup and error
+/// construction in each serializer.
+fn triangle_verts(
+    vertices: &[f32],
+    chunk: &[u32],
+) -> std::io::Result<([f32; 3], [f32; 3], [f32; 3])> {
+    use std::io::{Error, ErrorKind};
+    let i0 = chunk[0];
+    let i1 = chunk[1];
+    let i2 = chunk[2];
+    let v0 = mesh_vertex(vertices, i0)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i0} out of bounds")))?;
+    let v1 = mesh_vertex(vertices, i1)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i1} out of bounds")))?;
+    let v2 = mesh_vertex(vertices, i2)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("vertex index {i2} out of bounds")))?;
+    Ok((v0, v1, v2))
+}
+
+/// Write a mesh to the STL binary format.
+///
+/// **Format** (LITTLE-ENDIAN):
+/// - 80-byte header (fixed ASCII label, NOT starting with "solid")
+/// - `u32`: number of triangles (`indices.len() / 3`)
+/// - Per triangle (50 bytes): 3×f32 facet normal + 3×(3×f32) vertices + `u16` attribute count 0
+///
+/// Facet normals are computed geometrically from the edge cross-product.
+/// `mesh.normals` is intentionally ignored: it is per-vertex and optional;
+/// ManifoldKernel meshes always carry `None`.
+///
+/// Returns `Err(io::Error(InvalidData))` if `indices.len()` is not a multiple
+/// of 3 (non-triangular index buffer) or if any triangle index is out of bounds.
+/// Returns an 84-byte (zero-triangle) file for an empty mesh — no panic.
+///
+/// **Buffering:** each triangle is packed into a single 50-byte stack buffer
+/// and emitted with one `write_all`.  For very large meshes over an unbuffered
+/// sink, wrapping the writer in `BufWriter` before calling this function is
+/// recommended.
+pub fn write_stl_binary(
+    mesh: &Mesh,
+    writer: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+
+    // Reject malformed meshes with a non-triangular index buffer up front
+    // rather than silently dropping trailing indices via chunks_exact.
+    if !mesh.indices.len().is_multiple_of(3) {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "index buffer length {} is not a multiple of 3",
+                mesh.indices.len()
+            ),
+        ));
+    }
+
+    // 80-byte header — deliberately does NOT start with "solid" to avoid
+    // misclassification by naive ascii/binary discriminators.
+    let mut header = [0u8; 80];
+    let label = b"Reify binary STL";
+    let copy_len = label.len().min(80);
+    header[..copy_len].copy_from_slice(&label[..copy_len]);
+    writer.write_all(&header)?;
+
+    // Triangle count
+    let tri_count = (mesh.indices.len() / 3) as u32;
+    writer.write_all(&tri_count.to_le_bytes())?;
+
+    // Per-triangle body: pack all 50 bytes into a stack buffer and write_all
+    // once per triangle, avoiding one tiny syscall per field for unbuffered sinks.
+    for chunk in mesh.indices.chunks_exact(3) {
+        let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
+        let n = compute_facet_normal(v0, v1, v2);
+
+        // Pack: 3×f32 normal + 3×(3×f32) vertices = 48 bytes, then 2-byte attr count.
+        let mut tri = [0u8; 50];
+        let mut off = 0usize;
+        for &c in n.iter().chain(v0.iter()).chain(v1.iter()).chain(v2.iter()) {
+            tri[off..off + 4].copy_from_slice(&c.to_le_bytes());
+            off += 4;
+        }
+        // tri[48..50] = attribute byte count 0 (already zero-initialized)
+        writer.write_all(&tri)?;
+    }
+
+    Ok(())
+}
+
+/// Write a mesh to the STL ASCII format.
+///
+/// Emits `solid reify\n … endsolid reify\n`.  Each triangle produces a
+/// `facet normal …` / `outer loop` / 3× `vertex …` / `endloop` / `endfacet`
+/// block.  Facet normals are computed geometrically (same as `write_stl_binary`).
+///
+/// Returns `Err(io::Error(InvalidData))` if `indices.len()` is not a multiple
+/// of 3 (non-triangular index buffer) or if any triangle index is out of bounds.
+///
+/// **Buffering:** a String buffer is reused across triangles (no per-triangle
+/// heap allocation) and each triangle's block is emitted with a single
+/// `write_all`.  For very large meshes over an unbuffered sink, wrapping the
+/// writer in `BufWriter` before calling is recommended.
+pub fn write_stl_ascii(
+    mesh: &Mesh,
+    writer: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    use std::fmt::Write as _;
+
+    // Reject malformed meshes with a non-triangular index buffer up front.
+    if !mesh.indices.len().is_multiple_of(3) {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "index buffer length {} is not a multiple of 3",
+                mesh.indices.len()
+            ),
+        ));
+    }
+
+    writer.write_all(b"solid reify\n")?;
+
+    // Reuse a String buffer to avoid a heap allocation per triangle.
+    // String::write_fmt (used by write!) is infallible — it always returns Ok(()).
+    let mut line_buf = String::with_capacity(200);
+    for chunk in mesh.indices.chunks_exact(3) {
+        let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
+        let n = compute_facet_normal(v0, v1, v2);
+        line_buf.clear();
+        let _ = write!(
+            line_buf,
+            "  facet normal {nx} {ny} {nz}\n    outer loop\n      vertex {x0} {y0} {z0}\n      vertex {x1} {y1} {z1}\n      vertex {x2} {y2} {z2}\n    endloop\n  endfacet\n",
+            nx = n[0], ny = n[1], nz = n[2],
+            x0 = v0[0], y0 = v0[1], z0 = v0[2],
+            x1 = v1[0], y1 = v1[1], z1 = v1[2],
+            x2 = v2[0], y2 = v2[1], z2 = v2[2],
+        );
+        writer.write_all(line_buf.as_bytes())?;
+    }
+
+    writer.write_all(b"endsolid reify\n")?;
+    Ok(())
+}
+
+// ── 3MF serializer ───────────────────────────────────────────────────────────
+
+/// Options for [`write_3mf`].
+///
+/// **Kernel wiring status (γ):** both `ManifoldKernel::export` and
+/// `OcctKernel::export` call `write_3mf` with `ThreeMfOptions::default()`
+/// (both flags `false`) and discard the returned warnings.  The kernel
+/// `export()` trait has no warning channel; wiring these options through
+/// occurrence parameters and surfacing warnings as build diagnostics is
+/// task δ's responsibility.
+#[derive(Debug, Clone, Default)]
+pub struct ThreeMfOptions {
+    /// Embed per-body material data in the output (γ: not yet implemented;
+    /// emits `W_3MF_NO_MATERIALS` while still writing geometry).
+    pub include_materials: bool,
+    /// Embed per-vertex color data in the output (γ: not yet implemented;
+    /// emits `W_3MF_NO_MATERIALS` while still writing geometry).
+    pub include_colors: bool,
+}
+
+/// Warnings returned by [`write_3mf`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreeMfWarning {
+    /// `include_materials` or `include_colors` was requested but no
+    /// material/color data is present in the mesh — geometry is still
+    /// written; materials are omitted.  Per PRD §4.2 this is an
+    /// "honest no-op with warning", NOT a silent ignore.
+    NoMaterials,
+}
+
+impl ThreeMfWarning {
+    /// Machine-stable warning code string.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ThreeMfWarning::NoMaterials => "W_3MF_NO_MATERIALS",
+        }
+    }
+}
+
+/// Write `mesh` to the 3MF format (OPC ZIP package).
+///
+/// Produces a valid 3MF/OPC ZIP holding three parts:
+///
+/// - `[Content_Types].xml` — OPC content-type declarations
+/// - `_rels/.rels` — OPC relationship pointing to the 3D model start-part
+/// - `3D/3dmodel.model` — 3MF core model XML
+///   (`<model>/<resources>/<object>/<mesh>/<vertices>/<triangles>`)
+///
+/// **Compression:** all parts use `Stored` (no compression), so the model XML
+/// bytes appear literally inside the archive.  Downstream tests can
+/// substring-count `<triangle ` / `3D/3dmodel.model` on raw bytes without a
+/// zip reader.
+///
+/// **Determinism:** all ZIP entries carry a pinned DOS-epoch timestamp
+/// (1980-01-01 00:00:00 via [`zip::DateTime::default()`]).  Two calls on the
+/// same `Mesh` with the same `ThreeMfOptions` are byte-identical.
+///
+/// Returns `Err(io::Error(InvalidData))` if `indices.len()` is not a
+/// multiple of 3, if `vertices.len()` is not a multiple of 3, or if any
+/// triangle index is out of bounds.
+/// Returns [`ThreeMfWarning::NoMaterials`] when either `include_materials` or
+/// `include_colors` is set (geometry is still written).
+///
+/// **NaN/Inf coordinates:** non-finite `f32` values are written as-is via
+/// `{}` formatting (matching `write_stl_ascii` behavior).  3MF consumers
+/// that require IEEE-finite coordinates will reject such packages.
+pub fn write_3mf(
+    mesh: &Mesh,
+    opts: ThreeMfOptions,
+    writer: &mut dyn std::io::Write,
+) -> std::io::Result<Vec<ThreeMfWarning>> {
+    use std::io::{Cursor, Error, ErrorKind, Write as _};
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
+
+    // Reject malformed meshes with a non-triangular index buffer up front.
+    if !mesh.indices.len().is_multiple_of(3) {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "index buffer length {} is not a multiple of 3",
+                mesh.indices.len()
+            ),
+        ));
+    }
+    // Mirror the index check: a partial vertex triple would be silently
+    // truncated by `len() / 3`, producing a mesh with a dropped float.
+    // Reject it symmetrically so both buffers fail loudly on malformed input.
+    if !mesh.vertices.len().is_multiple_of(3) {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "vertex buffer length {} is not a multiple of 3",
+                mesh.vertices.len()
+            ),
+        ));
+    }
+
+    // Pinned timestamp: DOS epoch (1980-01-01 00:00:00) for byte-determinism.
+    // zip::DateTime::default() gives the zeroed DOS epoch without the `time` feature.
+    let fixed_time = zip::DateTime::default();
+    let entry_opts = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Stored)
+        .last_modified_time(fixed_time);
+
+    // ZipWriter requires Write + Seek; build into an in-memory Cursor first.
+    let mut cursor = Cursor::new(Vec::<u8>::new());
+    {
+        let mut zw = ZipWriter::new(&mut cursor);
+
+        // ── [Content_Types].xml ──────────────────────────────────────────────
+        zw.start_file("[Content_Types].xml", entry_opts)?;
+        zw.write_all(
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+              <Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
+              <Default Extension=\"rels\" \
+                ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
+              <Default Extension=\"model\" \
+                ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/>\
+              </Types>",
+        )?;
+
+        // ── _rels/.rels ──────────────────────────────────────────────────────
+        zw.start_file("_rels/.rels", entry_opts)?;
+        zw.write_all(
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+              <Relationships \
+                xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
+              <Relationship Id=\"rel0\" \
+                Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\" \
+                Target=\"/3D/3dmodel.model\"/>\
+              </Relationships>",
+        )?;
+
+        // ── 3D/3dmodel.model ─────────────────────────────────────────────────
+        zw.start_file("3D/3dmodel.model", entry_opts)?;
+        zw.write_all(
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+              <model unit=\"millimeter\" \
+                xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\
+              <resources><object id=\"1\" type=\"model\"><mesh><vertices>",
+        )?;
+
+        // One <vertex x="…" y="…" z="…"/> per xyz triple in the vertex buffer.
+        let n_verts = mesh.vertices.len() / 3;
+        let mut line_buf = String::with_capacity(80);
+        for i in 0..n_verts {
+            let v = mesh_vertex(&mesh.vertices, i as u32).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidData, format!("vertex index {i} out of bounds"))
+            })?;
+            line_buf.clear();
+            // Using std::fmt::Write on String is infallible.
+            let _ = std::fmt::write(
+                &mut line_buf,
+                format_args!("<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", v[0], v[1], v[2]),
+            );
+            zw.write_all(line_buf.as_bytes())?;
+        }
+
+        zw.write_all(b"</vertices><triangles>")?;
+
+        // One <triangle v1="…" v2="…" v3="…"/> per index triple.
+        for chunk in mesh.indices.chunks_exact(3) {
+            // Validate indices (reuse triangle_verts OOB check).
+            let _ = triangle_verts(&mesh.vertices, chunk)?;
+            line_buf.clear();
+            let _ = std::fmt::write(
+                &mut line_buf,
+                format_args!(
+                    "<triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>",
+                    chunk[0], chunk[1], chunk[2]
+                ),
+            );
+            zw.write_all(line_buf.as_bytes())?;
+        }
+
+        zw.write_all(
+            b"</triangles></mesh></object></resources>\
+              <build><item objectid=\"1\"/></build></model>",
+        )?;
+
+        zw.finish()?;
+    }
+
+    // Copy the complete in-memory ZIP to the outer (non-Seek) writer.
+    writer.write_all(cursor.get_ref())?;
+
+    // Warning gate: honest no-op with warning per PRD §4.2.
+    let mut warnings = Vec::new();
+    if opts.include_materials || opts.include_colors {
+        warnings.push(ThreeMfWarning::NoMaterials);
+    }
+    Ok(warnings)
 }
 
 /// FEA element-order discriminator for a tet-based [`VolumeMesh`].
@@ -1930,6 +2382,13 @@ pub trait GeometryKernel: Send + Sync {
     }
 
     /// Export a handle to the given format, writing to the provided writer.
+    ///
+    /// **STL tessellation tolerance** is currently kernel-chosen until task δ
+    /// wires `STLOutput.resolution` into the export call.  OCCT uses its own
+    /// `DEFAULT_STL_TESSELLATION_TOLERANCE` (0.1 linear deflection); Manifold
+    /// passes `0.0` (tolerance is ignored — manifold meshes are exact).
+    /// Callers must not rely on a specific tessellation tolerance for STL output
+    /// until task δ lands the demanded-tolerance plumbing.
     fn export(
         &self,
         handle: GeometryHandleId,
@@ -1994,6 +2453,30 @@ pub trait GeometryKernel: Send + Sync {
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         Err(QueryError::QueryFailed(
             "topology extraction not supported by this kernel".into(),
+        ))
+    }
+
+    /// Split a solid into pieces by an unbounded planar cutting tool
+    /// (`BRepAlgoAPI_Splitter`).
+    ///
+    /// `op` must be a [`GeometryOp::Split`]; passing any other variant is a
+    /// logic error (the caller in `reify-eval` guarantees this invariant).
+    ///
+    /// Returns a `Vec<GeometryHandleId>` where each id names a freshly-stored
+    /// result solid (with `BRepKind::Solid`).  A plane that does not intersect
+    /// the solid yields a length-1 `Vec` containing the original shape.
+    ///
+    /// Default implementation returns
+    /// `Err(GeometryError::OperationFailed("execute_split not supported by this kernel"))`,
+    /// keeping non-OCCT kernels (mocks, stubs, Manifold, Fidget) compiling
+    /// without per-impl edits.  Mirrors the `make_compound` / `extract_edges` /
+    /// `extract_faces` default-Err pattern.
+    fn execute_split(
+        &mut self,
+        _op: &GeometryOp,
+    ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+        Err(GeometryError::OperationFailed(
+            "execute_split not supported by this kernel".into(),
         ))
     }
 
@@ -2092,6 +2575,40 @@ pub trait GeometryKernel: Send + Sync {
     fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
         None
     }
+
+    /// Returns the sampled max facet-chord deviation (SI metres) of `mesh` from
+    /// the exact representation of `handle`, or `None` for kernels without an
+    /// exact surface to project onto (non-OCCT kernels: mocks, stubs, Fidget,
+    /// OpenVDB, Manifold).
+    ///
+    /// The metric samples 4 interior points per triangle (centroid + 3 edge
+    /// midpoints) and projects each onto the exact BRep via
+    /// `BRepExtrema_DistShapeShape`, returning the global maximum distance.
+    /// Mesh vertices lie on the surface by construction and are excluded; only
+    /// interior samples reveal chord error.
+    ///
+    /// # Sampled lower bound — implication for γ (`RepresentationWithin`)
+    ///
+    /// With 4 samples per triangle the returned value is a **sampled lower
+    /// bound** on the true Hausdorff / chord deviation.  A mesh that actually
+    /// exceeds a tolerance can still pass if all 4 per-facet sample points
+    /// happen to land close to the surface.  Task γ consumers of this value
+    /// should document this limitation at the assertion site and, if tighter
+    /// guarantees are required, request denser sampling (deferred).
+    ///
+    /// This is the B3 honest-absence default: non-OCCT kernels inherit `None`
+    /// with zero per-impl edits, mirroring the established
+    /// `extract_edges`/`make_compound`/`ingest_mesh` default-absent pattern.
+    /// The absence of an override IS the "not supported" contract.
+    ///
+    /// `&self` (read-only): only a projection query is needed, no shape mutation.
+    fn measure_mesh_deviation(
+        &self,
+        _handle: GeometryHandleId,
+        _mesh: &Mesh,
+    ) -> Option<f64> {
+        None
+    }
 }
 
 /// Debug-build invariant check for kernel implementors that override
@@ -2137,6 +2654,8 @@ pub enum StepKind {
     Sweep,
     /// A curve construction op (line_segment, arc, helix, …).
     Curve,
+    /// A 2-D face profile op (rectangle, circle).
+    Profile,
 }
 
 /// A feature tag attached to a compiler-generated geometry op.
@@ -2188,6 +2707,20 @@ impl FeatureTagTable {
     /// Look up the tag for a given geometry handle, if any.
     pub fn lookup(&self, id: GeometryHandleId) -> Option<&FeatureTag> {
         self.entries.get(&id)
+    }
+
+    /// Remove the entry for `id`, returning it if present.
+    ///
+    /// Used by the cache-hit short-circuit in `Engine::execute_realization_ops`
+    /// to evict any cross-kernel colliding entry at `id` before pushing the
+    /// cached handle — so a subsequent `lookup(id)` correctly returns `None`
+    /// (the #3226 spec: a cache-served handle has no entries in the tag table
+    /// on the second build).
+    ///
+    /// Returns `None` silently when `id` is absent (no-op in the common
+    /// single-kernel case where the per-build reset already cleared the table).
+    pub fn remove(&mut self, id: GeometryHandleId) -> Option<FeatureTag> {
+        self.entries.remove(&id)
     }
 
     /// Number of entries currently in the table.
@@ -2482,6 +3015,20 @@ impl TopologyAttributeTable {
     /// Returns `true` if the table has no entries.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Remove the entry for `id`, returning it if present.
+    ///
+    /// Used by the cache-hit short-circuit in `Engine::execute_realization_ops`
+    /// to evict any cross-kernel colliding entry at `id` before pushing the
+    /// cached handle — so a subsequent `lookup(id)` correctly returns `None`
+    /// (the #3226 spec: a cache-served handle has no entries in the attribute
+    /// table on the second build).
+    ///
+    /// Returns `None` silently when `id` is absent (no-op in the common
+    /// single-kernel case where the per-build reset already cleared the table).
+    pub fn remove(&mut self, id: GeometryHandleId) -> Option<TopologyAttribute> {
+        self.entries.remove(&id)
     }
 
     /// Iterate over all `(GeometryHandleId, &TopologyAttribute)` pairs in the table.
@@ -5182,11 +5729,13 @@ mod tests {
             Operation::BooleanUnion,
             Operation::BooleanDifference,
             Operation::BooleanIntersection,
-            // Primitives (4)
+            // Primitives (6)
             Operation::PrimitiveBox,
             Operation::PrimitiveCylinder,
             Operation::PrimitiveSphere,
             Operation::PrimitiveTube,
+            Operation::PrimitiveCone,
+            Operation::PrimitiveWedge,
             // Modify (5)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
@@ -5287,6 +5836,8 @@ mod tests {
             Operation::PrimitiveCylinder => {}
             Operation::PrimitiveSphere => {}
             Operation::PrimitiveTube => {}
+            Operation::PrimitiveCone => {}
+            Operation::PrimitiveWedge => {}
             Operation::ModifyFillet => {}
             Operation::ModifyChamfer => {}
             Operation::ModifyShell => {}
@@ -5316,6 +5867,8 @@ mod tests {
             Operation::CurveInterpCurve => {}
             Operation::CurveBezierCurve => {}
             Operation::CurveNurbsCurve => {}
+            Operation::ProfileRectangle => {}
+            Operation::ProfileCircle => {}
             Operation::Convert { from: _ } => {}
         }
     }
@@ -5753,6 +6306,23 @@ mod tests {
                 },
             ),
             (
+                "Cone",
+                GeometryOp::Cone {
+                    bottom_radius: Value::Real(0.01),
+                    top_radius: Value::Real(0.005),
+                    height: Value::Real(0.02),
+                },
+            ),
+            (
+                "Wedge",
+                GeometryOp::Wedge {
+                    width: Value::Real(0.02),
+                    depth: Value::Real(0.01),
+                    height: Value::Real(0.015),
+                    top_width: Value::Real(0.005),
+                },
+            ),
+            (
                 "Union",
                 GeometryOp::Union {
                     left: GeometryHandleId(1),
@@ -6005,12 +6575,34 @@ mod tests {
                     faces_to_remove: vec![0],
                 },
             ),
+            // task-4160: 2-D profile face producers
+            (
+                "RectangleProfile",
+                GeometryOp::RectangleProfile {
+                    width: Value::Real(0.02),
+                    height: Value::Real(0.01),
+                },
+            ),
+            (
+                "CircleProfile",
+                GeometryOp::CircleProfile {
+                    radius: Value::Real(0.008),
+                },
+            ),
+            (
+                "Split",
+                GeometryOp::Split {
+                    target: GeometryHandleId(1),
+                    plane_origin: [0.0, 0.0, 0.0],
+                    plane_normal: [0.0, 0.0, 1.0],
+                },
+            ),
         ];
         // Changing this constant forces the test to be updated whenever a
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 36;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 41;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
@@ -6023,6 +6615,61 @@ mod tests {
                 "kind_name() mismatch for GeometryOp::{expected}"
             );
         }
+    }
+
+    /// RED step-1 (task 4190): GeometryOp::Split.kind_name() must return "Split".
+    ///
+    /// References the not-yet-existing variant — compile-fails RED until step-2
+    /// adds `GeometryOp::Split { target, plane_origin, plane_normal }` and the
+    /// "Split" arm in `kind_name()`.
+    #[test]
+    fn geometry_op_split_kind_name_is_split() {
+        let op = GeometryOp::Split {
+            target: GeometryHandleId(1),
+            plane_origin: [0.0, 0.0, 0.0],
+            plane_normal: [0.0, 0.0, 1.0],
+        };
+        assert_eq!(
+            op.kind_name(),
+            "Split",
+            "GeometryOp::Split must return \"Split\" from kind_name()"
+        );
+    }
+
+    /// RED step-1 (task 4190): the default `execute_split` impl on
+    /// `GeometryKernel` must return `Err(GeometryError::OperationFailed(_))`.
+    ///
+    /// `DefaultsOnlyKernel` overrides nothing, so it inherits the default.
+    /// Mirrors the pattern of `default_geometry_kernel_extract_vertices_returns_topology_not_supported_error`
+    /// (see ~line 5988) but for `execute_split`.
+    ///
+    /// RED until step-2 adds `GeometryKernel::execute_split` with a default Err impl.
+    #[test]
+    fn default_geometry_kernel_execute_split_returns_operation_failed_error() {
+        let op = GeometryOp::Split {
+            target: GeometryHandleId(1),
+            plane_origin: [0.0, 0.0, 0.0],
+            plane_normal: [0.0, 0.0, 1.0],
+        };
+        let mut kernel = DefaultsOnlyKernel;
+        let result = kernel.execute_split(&op);
+        assert!(
+            matches!(result, Err(GeometryError::OperationFailed(_))),
+            "expected Err(GeometryError::OperationFailed(_)), got: {result:?}",
+        );
+    }
+
+    /// Standalone pin for GeometryOp::Wedge.kind_name() == "Wedge".
+    /// RED until step-4 adds GeometryOp::Wedge.
+    #[test]
+    fn geometry_op_wedge_kind_name_is_wedge() {
+        let op = GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.010),
+            height: Value::Real(0.015),
+            top_width: Value::Real(0.005),
+        };
+        assert_eq!(op.kind_name(), "Wedge");
     }
 
     #[test]
@@ -6319,5 +6966,517 @@ mod tests {
                 "expected Err(OperationFailed(_)) from trait-object ingest_mesh; got {other:?}"
             ),
         }
+    }
+
+    // ── STL serializer unit tests ────────────────────────────────────────────
+
+    /// Helper: parse a u32 from little-endian bytes at `buf[offset..offset+4]`.
+    fn le_u32(buf: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap())
+    }
+
+    /// Helper: parse an f32 from little-endian bytes at `buf[offset..offset+4]`.
+    fn le_f32(buf: &[u8], offset: usize) -> f32 {
+        f32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn write_stl_binary_single_triangle_byte_layout() {
+        // Single CCW triangle in the z=0 plane.
+        let mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+            ],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_binary(&mesh, &mut buf).expect("write_stl_binary should succeed");
+
+        // Byte length: 80 header + 4 triangle count + 1*(12 normal + 36 verts + 2 attr) = 84+50
+        assert_eq!(buf.len(), 134, "single triangle: expected 84+50=134 bytes");
+
+        // Header must be exactly 80 bytes and must NOT start with b"solid"
+        let header = &buf[0..80];
+        assert_ne!(
+            &header[0..5],
+            b"solid",
+            "binary STL header must NOT start with 'solid'"
+        );
+
+        // Triangle count == 1
+        assert_eq!(le_u32(&buf, 80), 1, "triangle count must be 1");
+
+        // Facet normal for z=0 CCW triangle: |nz| ≈ 1, nx ≈ ny ≈ 0
+        let nx = le_f32(&buf, 84);
+        let ny = le_f32(&buf, 88);
+        let nz = le_f32(&buf, 92);
+        assert!(
+            nx.abs() < 1e-5,
+            "nx should be ≈0 for z=0 triangle, got {nx}"
+        );
+        assert!(
+            ny.abs() < 1e-5,
+            "ny should be ≈0 for z=0 triangle, got {ny}"
+        );
+        assert!(
+            nz.abs() > 0.999,
+            "|nz| should be ≈1 for z=0 triangle, got {nz}"
+        );
+
+        // Vertex 0 at bytes 96..108: must round-trip exactly
+        assert_eq!(le_f32(&buf, 96), 0.0_f32, "v0.x");
+        assert_eq!(le_f32(&buf, 100), 0.0_f32, "v0.y");
+        assert_eq!(le_f32(&buf, 104), 0.0_f32, "v0.z");
+        // Vertex 1 at bytes 108..120
+        assert_eq!(le_f32(&buf, 108), 1.0_f32, "v1.x");
+        assert_eq!(le_f32(&buf, 112), 0.0_f32, "v1.y");
+        assert_eq!(le_f32(&buf, 116), 0.0_f32, "v1.z");
+        // Vertex 2 at bytes 120..132
+        assert_eq!(le_f32(&buf, 120), 0.0_f32, "v2.x");
+        assert_eq!(le_f32(&buf, 124), 1.0_f32, "v2.y");
+        assert_eq!(le_f32(&buf, 128), 0.0_f32, "v2.z");
+
+        // Attribute byte count at bytes 132..134 must be 0
+        let attr = u16::from_le_bytes(buf[132..134].try_into().unwrap());
+        assert_eq!(attr, 0, "attribute byte count must be 0");
+    }
+
+    #[test]
+    fn write_stl_binary_two_triangle_quad() {
+        // Two-triangle quad (4 verts, 2 triangles)
+        let mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                1.0, 1.0, 0.0, // v2
+                0.0, 1.0, 0.0, // v3
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_binary(&mesh, &mut buf).expect("write_stl_binary should succeed");
+
+        // Byte length: 84 + 2*50 = 184
+        assert_eq!(buf.len(), 184, "two-triangle quad: expected 84+100=184 bytes");
+
+        // Triangle count == 2
+        assert_eq!(le_u32(&buf, 80), 2, "triangle count must be 2");
+    }
+
+    #[test]
+    fn write_stl_binary_empty_mesh() {
+        let mesh = Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_binary(&mesh, &mut buf).expect("empty mesh should not panic");
+
+        // Byte length: 84 (header + 0 triangles)
+        assert_eq!(buf.len(), 84, "empty mesh: expected 84 bytes");
+        assert_eq!(le_u32(&buf, 80), 0, "triangle count must be 0");
+    }
+
+    #[test]
+    fn write_stl_binary_out_of_bounds_index_returns_error() {
+        // Triangle index 5 is out of bounds for 3-vertex mesh
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 5], // index 5 is out of bounds
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_stl_binary(&mesh, &mut buf);
+        assert!(result.is_err(), "out-of-bounds index should return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
+        );
+    }
+
+    // ── ASCII serializer unit tests ──────────────────────────────────────────
+
+    #[test]
+    fn write_stl_ascii_single_triangle_structure() {
+        let mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+            ],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_ascii(&mesh, &mut buf).expect("write_stl_ascii should succeed");
+        let text = std::str::from_utf8(&buf).expect("ascii output must be valid UTF-8");
+
+        // Must start with "solid" and end with "endsolid"
+        assert!(
+            text.starts_with("solid"),
+            "ascii STL must start with 'solid'"
+        );
+        assert!(
+            text.contains("endsolid"),
+            "ascii STL must contain 'endsolid'"
+        );
+
+        // Exactly 1 "facet normal" and 1 "outer loop"
+        assert_eq!(
+            text.matches("facet normal").count(),
+            1,
+            "single triangle: expected 1 'facet normal'"
+        );
+        assert_eq!(
+            text.matches("outer loop").count(),
+            1,
+            "single triangle: expected 1 'outer loop'"
+        );
+
+        // Exactly 3 "vertex " lines
+        assert_eq!(
+            text.matches("vertex ").count(),
+            3,
+            "single triangle: expected 3 'vertex ' entries"
+        );
+
+        // Each specific vertex line must appear verbatim in the output.
+        // (Rust formats 0.0f32 as "0" and 1.0f32 as "1" via Display.)
+        assert!(
+            text.contains("vertex 0 0 0"),
+            "vertex (0,0,0) must appear in ascii output"
+        );
+        assert!(
+            text.contains("vertex 1 0 0"),
+            "vertex (1,0,0) must appear in ascii output"
+        );
+        assert!(
+            text.contains("vertex 0 1 0"),
+            "vertex (0,1,0) must appear in ascii output"
+        );
+    }
+
+    #[test]
+    fn write_stl_ascii_two_triangle_quad() {
+        let mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                1.0, 1.0, 0.0, // v2
+                0.0, 1.0, 0.0, // v3
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_ascii(&mesh, &mut buf).expect("write_stl_ascii should succeed");
+        let text = std::str::from_utf8(&buf).expect("ascii output must be valid UTF-8");
+
+        assert_eq!(
+            text.matches("facet normal").count(),
+            2,
+            "two-triangle quad: expected 2 'facet normal'"
+        );
+        assert_eq!(
+            text.matches("outer loop").count(),
+            2,
+            "two-triangle quad: expected 2 'outer loop'"
+        );
+        assert_eq!(
+            text.matches("vertex ").count(),
+            6,
+            "two-triangle quad: expected 6 'vertex ' entries"
+        );
+    }
+
+    #[test]
+    fn write_stl_ascii_empty_mesh() {
+        let mesh = Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        write_stl_ascii(&mesh, &mut buf).expect("empty mesh should not panic");
+        let text = std::str::from_utf8(&buf).expect("must be valid UTF-8");
+        assert!(text.starts_with("solid"), "must start with solid");
+        assert!(text.contains("endsolid"), "must contain endsolid");
+        assert_eq!(
+            text.matches("facet normal").count(),
+            0,
+            "empty mesh: no facets"
+        );
+    }
+
+    // ── % 3 validation tests ────────────────────────────────────────────────
+
+    #[test]
+    fn write_stl_binary_non_multiple_of_three_indices_returns_error() {
+        // 2 indices — indices.len() % 3 == 2; trailing indices must not be silently dropped.
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0],
+            indices: vec![0, 1],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_stl_binary(&mesh, &mut buf);
+        assert!(result.is_err(), "non-multiple-of-3 index buffer must return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
+        );
+    }
+
+    #[test]
+    fn write_stl_ascii_non_multiple_of_three_indices_returns_error() {
+        // 4 indices — indices.len() % 3 == 1; trailing index must not be silently dropped.
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 1.0],
+            indices: vec![0, 1, 2, 3],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_stl_ascii(&mesh, &mut buf);
+        assert!(result.is_err(), "non-multiple-of-3 index buffer must return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
+        );
+    }
+
+    // ── 3MF serializer tests ─────────────────────────────────────────────────
+
+    /// Helper: build a 12-triangle unit cube mesh (8 vertices, 36 indices).
+    fn unit_cube_mesh() -> Mesh {
+        // 8 corners of a unit cube [0,1]^3
+        #[rustfmt::skip]
+        let vertices: Vec<f32> = vec![
+            0.0, 0.0, 0.0, // v0
+            1.0, 0.0, 0.0, // v1
+            1.0, 1.0, 0.0, // v2
+            0.0, 1.0, 0.0, // v3
+            0.0, 0.0, 1.0, // v4
+            1.0, 0.0, 1.0, // v5
+            1.0, 1.0, 1.0, // v6
+            0.0, 1.0, 1.0, // v7
+        ];
+        // 12 triangles (2 per face, 6 faces)
+        #[rustfmt::skip]
+        let indices: Vec<u32> = vec![
+            // -Z face
+            0, 2, 1,  0, 3, 2,
+            // +Z face
+            4, 5, 6,  4, 6, 7,
+            // -Y face
+            0, 1, 5,  0, 5, 4,
+            // +Y face
+            3, 6, 2,  3, 7, 6,
+            // -X face
+            0, 4, 7,  0, 7, 3,
+            // +X face
+            1, 2, 6,  1, 6, 5,
+        ];
+        Mesh { vertices, indices, normals: None }
+    }
+
+    #[test]
+    fn write_3mf_box_produces_valid_3mf_package() {
+        use std::io::Cursor;
+        let mesh = unit_cube_mesh();
+        let tri_count = mesh.indices.len() / 3; // 12
+        let vert_count = mesh.vertices.len() / 3; // 8
+
+        let mut buf = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+            .expect("write_3mf should succeed");
+
+        // --- ZIP structure assertions ---
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf))
+            .expect("output should be a valid ZIP archive");
+
+        // Required OPC parts
+        let names: std::collections::HashSet<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(names.contains("[Content_Types].xml"), "missing [Content_Types].xml");
+        assert!(names.contains("_rels/.rels"), "missing _rels/.rels");
+        assert!(names.contains("3D/3dmodel.model"), "missing 3D/3dmodel.model");
+
+        // --- 3dmodel.model content assertions ---
+        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+        let mut model_xml = String::new();
+        std::io::Read::read_to_string(&mut model_file, &mut model_xml).unwrap();
+
+        let actual_triangles = model_xml.matches("<triangle ").count();
+        assert_eq!(actual_triangles, tri_count,
+            "expected {tri_count} <triangle> elements, got {actual_triangles}");
+
+        let actual_verts = model_xml.matches("<vertex ").count();
+        assert_eq!(actual_verts, vert_count,
+            "expected {vert_count} <vertex> elements, got {actual_verts}");
+
+        // --- Determinism: two calls on the same mesh produce byte-identical output ---
+        let mut buf2 = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf2)
+            .expect("second write_3mf should succeed");
+        assert_eq!(buf, buf2, "write_3mf must be byte-deterministic");
+    }
+
+    #[test]
+    fn write_3mf_malformed_mesh_returns_err() {
+        // 4 indices — not a multiple of 3; must be rejected.
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 1.0],
+            indices: vec![0, 1, 2, 3],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_3mf(&mesh, ThreeMfOptions::default(), &mut buf);
+        assert!(result.is_err(), "non-multiple-of-3 index buffer must return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
+        );
+    }
+
+    #[test]
+    fn write_3mf_malformed_vertex_buffer_returns_err() {
+        // 7 floats — not a multiple of 3; the trailing dangling float must be
+        // rejected rather than silently truncated (asymmetric-validation fix).
+        let mesh = Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5],
+            indices: vec![],
+            normals: None,
+        };
+        let mut buf = Vec::new();
+        let result = write_3mf(&mesh, ThreeMfOptions::default(), &mut buf);
+        assert!(result.is_err(), "non-multiple-of-3 vertex buffer must return Err");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData,
+            "error kind must be InvalidData"
+        );
+    }
+
+    #[test]
+    fn write_3mf_materials_gate_emits_w_3mf_no_materials() {
+        use std::io::Cursor;
+        let mesh = unit_cube_mesh();
+
+        // (a) include_materials: true → warning emitted, geometry still written
+        {
+            let mut buf = Vec::new();
+            let warnings = write_3mf(
+                &mesh,
+                ThreeMfOptions { include_materials: true, include_colors: false },
+                &mut buf,
+            )
+            .expect("write_3mf with include_materials should succeed");
+
+            assert_eq!(warnings, vec![ThreeMfWarning::NoMaterials],
+                "include_materials:true must emit NoMaterials warning");
+            assert_eq!(warnings[0].code(), "W_3MF_NO_MATERIALS",
+                "NoMaterials.code() must return 'W_3MF_NO_MATERIALS'");
+
+            // Geometry must still be present
+            let mut archive = zip::ZipArchive::new(Cursor::new(&buf)).unwrap();
+            let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+            let mut xml = String::new();
+            std::io::Read::read_to_string(&mut model_file, &mut xml).unwrap();
+            assert!(xml.matches("<triangle ").count() > 0,
+                "geometry must be written even when include_materials:true");
+        }
+
+        // (b) include_colors: true → warning emitted
+        {
+            let mut buf = Vec::new();
+            let warnings = write_3mf(
+                &mesh,
+                ThreeMfOptions { include_materials: false, include_colors: true },
+                &mut buf,
+            )
+            .expect("write_3mf with include_colors should succeed");
+
+            assert_eq!(warnings, vec![ThreeMfWarning::NoMaterials],
+                "include_colors:true must emit NoMaterials warning");
+        }
+
+        // (c) default (both false) → no warnings
+        {
+            let mut buf = Vec::new();
+            let warnings = write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+                .expect("write_3mf with defaults should succeed");
+
+            assert!(warnings.is_empty(),
+                "default ThreeMfOptions (both flags false) must produce no warnings");
+        }
+    }
+
+    // ── FeatureTagTable::remove unit tests (task 4349) ────────────────────────
+
+    /// `remove` returns `Some(tag)` after a `record` and the entry is gone.
+    #[test]
+    fn feature_tag_table_remove_returns_some_and_empties_entry() {
+        let mut table = FeatureTagTable::default();
+        let id = GeometryHandleId(1);
+        let tag = FeatureTag {
+            source_span: reify_core::diagnostics::SourceSpan::new(0, 0),
+            step_kind: StepKind::Primitive,
+            sub_index: 0,
+        };
+        table.record(id, tag);
+        let removed = table.remove(id);
+        assert!(removed.is_some(), "remove must return Some after record");
+        assert!(table.lookup(id).is_none(), "entry must be gone after remove");
+        assert!(table.is_empty(), "table must be empty after removing the only entry");
+    }
+
+    /// `remove` returns `None` when the id was never recorded.
+    #[test]
+    fn feature_tag_table_remove_absent_returns_none() {
+        let mut table = FeatureTagTable::default();
+        let removed = table.remove(GeometryHandleId(99));
+        assert!(removed.is_none(), "remove of absent id must return None");
+    }
+
+    // ── TopologyAttributeTable::remove unit tests (task 4349) ─────────────────
+
+    fn make_topology_attribute() -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: FeatureId::new("test_entity"),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: Vec::new(),
+        }
+    }
+
+    /// `remove` returns `Some(attr)` after a `record` and the entry is gone.
+    #[test]
+    fn topology_attribute_table_remove_returns_some_and_empties_entry() {
+        let mut table = TopologyAttributeTable::default();
+        let id = GeometryHandleId(1);
+        table.record(id, make_topology_attribute());
+        let removed = table.remove(id);
+        assert!(removed.is_some(), "remove must return Some after record");
+        assert!(table.lookup(id).is_none(), "entry must be gone after remove");
+        assert!(table.is_empty(), "table must be empty after removing the only entry");
+    }
+
+    /// `remove` returns `None` when the id was never recorded.
+    #[test]
+    fn topology_attribute_table_remove_absent_returns_none() {
+        let mut table = TopologyAttributeTable::default();
+        let removed = table.remove(GeometryHandleId(99));
+        assert!(removed.is_none(), "remove of absent id must return None");
     }
 }

@@ -206,8 +206,8 @@
 //! let cg_opts = CgSolverOptions::default();
 //! let cg_result: CgResult = solve_cg(&k_cg, &f_cg, cg_opts, SolverMode::Deterministic);
 //! assert!(cg_result.converged, "1×1 identity CG must converge");
-//! assert_eq!(cg_result.u.len(), 1, "CgResult.u must have length 1");
-//! assert!((cg_result.u[0] - 3.0).abs() < 1e-9, "u[0] = {}", cg_result.u[0]);
+//! assert_eq!(cg_result.u().len(), 1, "CgResult.u must have length 1");
+//! assert!((cg_result.u()[0] - 3.0).abs() < 1e-9, "u[0] = {}", cg_result.u()[0]);
 //!
 //! // Task 2921: warm-state plumbing smoke test — exercises solve_cg_warm
 //! // (None-shim equivalence vs solve_cg), solve_cg_with_warm_state (producer
@@ -216,7 +216,7 @@
 //! let cold_via_solve_cg = solve_cg(&k_cg, &f_cg, cg_opts_2921.clone(), SolverMode::Deterministic);
 //! let cold_via_warm = solve_cg_warm(&k_cg, &f_cg, None, cg_opts_2921.clone(), SolverMode::Deterministic);
 //! assert_eq!(
-//!     cold_via_solve_cg.u, cold_via_warm.u,
+//!     cold_via_solve_cg.u(), cold_via_warm.u(),
 //!     "solve_cg_warm(None) must match solve_cg on 1×1 identity"
 //! );
 //! let (_r, fresh) = solve_cg_with_warm_state(
@@ -585,8 +585,8 @@ pub use mass_matrix::consistent_element_mass_tet_p1;
 // `K φ = λ M φ`; assembled via the same `assemble_global_stiffness` scatter.
 pub use p2_tet::consistent_element_mass_tet_p2;
 pub use solver::{
-    CgIterationControl, CgResult, CgSolverOptions, SolverMode, solve_cg, solve_cg_warm,
-    solve_cg_with_progress,
+    CgIterationControl, CgResult, CgSolverOptions, PARALLEL_DOF_THRESHOLD, SolverMode,
+    resolve_execution_modes, solve_cg, solve_cg_warm, solve_cg_with_progress,
 };
 pub use warm_state::{CgWarmState, solve_cg_with_warm_state, solve_cg_with_warm_state_progress};
 // Task 2987: 2D cross-section meshing surface for the hex/wedge swept-body

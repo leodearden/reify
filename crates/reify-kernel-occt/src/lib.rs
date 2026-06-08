@@ -106,7 +106,7 @@ pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 use std::collections::HashMap;
 
 #[cfg(has_occt)]
-use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, Value, WarmStartable};
+use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, ThreeMfOptions, Value, WarmStartable, write_3mf, write_stl_binary};
 
 #[cfg(has_occt)]
 /// Send-safe payload for OCCT warm-start state.
@@ -761,6 +761,60 @@ impl OcctKernel {
             ids.push(h.id);
         }
         self.extracted_vertices.insert(handle.0, ids.clone());
+        Ok(ids)
+    }
+
+    /// Split `target` with an unbounded cutting plane defined by
+    /// `plane_origin` and `plane_normal` (metres). Returns a
+    /// `Vec<GeometryHandleId>` of the result solids (length 1 for a
+    /// non-intersecting plane; ≥ 2 for an intersecting one). Each result
+    /// solid is registered with `BRepKind::Solid`.
+    ///
+    /// Mirrors [`Self::extract_edges`] / [`Self::extract_faces`] but calls
+    /// `ffi::split_shape` instead of `ffi::get_edges` / `ffi::get_faces`.
+    /// Unlike extraction there is no idempotency cache — splitting the same
+    /// solid with the same plane twice legitimately creates fresh handles.
+    pub fn execute_split(
+        &mut self,
+        op: &reify_ir::GeometryOp,
+    ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+        let (target, plane_origin, plane_normal) = match op {
+            reify_ir::GeometryOp::Split {
+                target,
+                plane_origin,
+                plane_normal,
+            } => (*target, *plane_origin, *plane_normal),
+            other => {
+                return Err(GeometryError::OperationFailed(format!(
+                    "execute_split called with non-Split op: {}",
+                    other.kind_name()
+                )));
+            }
+        };
+        let [ox, oy, oz] = plane_origin;
+        let [nx, ny, nz] = plane_normal;
+        // Collect UniquePtr<OcctShape> pieces in a scope that ends the
+        // immutable borrow on `self` before we call `store_with_repr`.
+        let materialized: Vec<cxx::UniquePtr<ffi::ffi::OcctShape>> = {
+            let shape = self
+                .get_shape(target)
+                .map_err(|_| GeometryError::OperationFailed(format!("unknown handle {target:?}")))?;
+            let vec = ffi::ffi::split_shape(shape, ox, oy, oz, nx, ny, nz)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+            let len = ffi::ffi::shape_vec_len(&vec);
+            let mut buf = Vec::with_capacity(len);
+            for i in 0..len {
+                let sub = ffi::ffi::shape_vec_at(&vec, i)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                buf.push(sub);
+            }
+            buf
+        };
+        let mut ids = Vec::with_capacity(materialized.len());
+        for sub in materialized {
+            let h = self.store_with_repr(sub, BRepKind::Solid);
+            ids.push(h.id);
+        }
         Ok(ids)
     }
 
@@ -1981,6 +2035,58 @@ impl OcctKernel {
                 ffi::ffi::boolean_cut(&outer_shape, &inner_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::Cone {
+                bottom_radius,
+                top_radius,
+                height,
+            } => {
+                let bottom_r = extract_f64(bottom_radius)?;
+                let top_r = extract_f64(top_radius)?;
+                let h = extract_f64(height)?;
+                if !(bottom_r.is_finite() && bottom_r >= 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "cone bottom_radius must be finite and non-negative".into(),
+                    ));
+                }
+                if !(top_r.is_finite() && top_r >= 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "cone top_radius must be finite and non-negative".into(),
+                    ));
+                }
+                if bottom_r == 0.0 && top_r == 0.0 {
+                    return Err(GeometryError::OperationFailed(
+                        "cone both radii are zero — degenerate line, at least one radius must be positive".into(),
+                    ));
+                }
+                if !(h.is_finite() && h > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "cone height must be a finite positive value".into(),
+                    ));
+                }
+                ffi::ffi::make_cone(bottom_r, top_r, h)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::Wedge {
+                width,
+                depth,
+                height,
+                top_width,
+            } => {
+                let w = extract_f64(width)?;
+                let d = extract_f64(depth)?;
+                let h = extract_f64(height)?;
+                let ltx = extract_f64(top_width)?;
+                validate_positive_finite(w, "wedge width")?;
+                validate_positive_finite(d, "wedge depth")?;
+                validate_positive_finite(h, "wedge height")?;
+                if !(ltx.is_finite() && ltx >= 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "wedge top_width must be finite and non-negative".into(),
+                    ));
+                }
+                ffi::ffi::make_wedge(w, d, h, ltx)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
@@ -2628,6 +2734,42 @@ impl OcctKernel {
                 ffi::ffi::arbitrary_pattern(shape, &flat_transforms, num_transforms)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::RectangleProfile { width, height } => {
+                let w = extract_f64(width)?;
+                let h = extract_f64(height)?;
+                if !(w.is_finite() && w > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "rectangle_profile width must be a finite positive value".into(),
+                    ));
+                }
+                if !(h.is_finite() && h > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "rectangle_profile height must be a finite positive value".into(),
+                    ));
+                }
+                let shape = ffi::ffi::make_rectangle_face(w, h, 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, BRepKind::Face));
+            }
+            GeometryOp::CircleProfile { radius } => {
+                let r = extract_f64(radius)?;
+                if !(r.is_finite() && r > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "circle_profile radius must be a finite positive value".into(),
+                    ));
+                }
+                let shape = ffi::ffi::make_circle_face(r, 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, BRepKind::Face));
+            }
+            // Split is a multi-output topology selector; it cannot return a
+            // single GeometryHandle. Callers must use execute_split() instead.
+            GeometryOp::Split { .. } => {
+                return Err(GeometryError::OperationFailed(
+                    "GeometryOp::Split is multi-output; use execute_split() instead of execute()"
+                        .into(),
+                ));
+            }
         };
         Ok(self.store(shape))
     }
@@ -2961,6 +3103,14 @@ impl OcctKernel {
         Ok([p.x, p.y, p.z])
     }
 
+    /// Linear deflection used by the CLI `export(handle, Stl, writer)` arm.
+    ///
+    /// 0.1 mm: a reasonable general-purpose tessellation default for the
+    /// binary-STL path.  The engine's `DEFAULT_TESSELLATION_TOLERANCE` (0.0001)
+    /// lives in `reify-eval`, a higher crate that this kernel cannot import.
+    /// Demanded-tolerance plumbing into `export()` is task δ's responsibility.
+    const DEFAULT_STL_TESSELLATION_TOLERANCE: f64 = 0.1;
+
     pub fn export(
         &self,
         handle: GeometryHandleId,
@@ -2979,7 +3129,26 @@ impl OcctKernel {
                     .write_all(content.as_bytes())
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
-            _ => Err(ExportError::FormatError(format!(
+            ExportFormat::Stl => {
+                let mesh = self
+                    .tessellate(handle, Self::DEFAULT_STL_TESSELLATION_TOLERANCE)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                write_stl_binary(&mesh, writer)
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            ExportFormat::ThreeMF => {
+                let mesh = self
+                    .tessellate(handle, Self::DEFAULT_STL_TESSELLATION_TOLERANCE)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                // default() → include_materials/include_colors both false → no warnings.
+                // Warnings are intentionally discarded: export() has no warning channel.
+                // Task δ wires include_materials/include_colors via occurrence params
+                // and surfaces W_3MF_NO_MATERIALS as a build diagnostic.
+                write_3mf(&mesh, ThreeMfOptions::default(), writer)
+                    .map(|_warnings| ())
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            ExportFormat::Obj => Err(ExportError::FormatError(format!(
                 "unsupported export format: {:?}",
                 format
             ))),
@@ -3003,6 +3172,38 @@ impl OcctKernel {
                 Some(result.normals)
             },
         })
+    }
+
+    /// Sampled max facet-chord deviation (SI metres) of `mesh` from the exact
+    /// BRep stored under `handle`.
+    ///
+    /// Mirrors [`OcctKernel::tessellate`]: resolves the shape via
+    /// [`OcctKernel::get_shape`] (returns `QueryError::InvalidHandle` on miss),
+    /// builds a [`ffi::ffi::TessResult`] from the mesh (normals unused by the
+    /// metric), then calls the FFI, mapping any error to
+    /// `QueryError::QueryFailed`.
+    ///
+    /// See [`ffi::ffi::measure_mesh_deviation`] for the sampling algorithm.
+    ///
+    /// No tolerance argument — cannot echo the configured deflection
+    /// (structural anti-circularity, PRD §8.3 CRITICAL).
+    pub fn measure_mesh_deviation(
+        &self,
+        handle: GeometryHandleId,
+        mesh: &Mesh,
+    ) -> Result<f64, QueryError> {
+        let shape = self
+            .get_shape(handle)
+            .map_err(|_| QueryError::InvalidHandle(handle))?;
+
+        let tess_result = ffi::ffi::TessResult {
+            vertices: mesh.vertices.clone(),
+            indices: mesh.indices.clone(),
+            normals: Vec::new(), // normals unused by the metric
+        };
+
+        ffi::ffi::measure_mesh_deviation(shape, &tess_result)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 }
 
@@ -5610,6 +5811,64 @@ mod tests {
             content2.contains("ISO-10303-21"),
             "pattern STEP should contain ISO header"
         );
+    }
+
+    #[test]
+    fn new_ops_export_stl() {
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+
+        let mut buf = Vec::new();
+        kernel
+            .export(box_h.id, ExportFormat::Stl, &mut buf)
+            .expect("OCCT Stl export of a 10x10x10 box must succeed");
+
+        // Binary STL structure checks (B1/B2 from the PRD)
+        let count = u32::from_le_bytes(buf[80..84].try_into().unwrap());
+        assert!(count > 0, "STL triangle count must be > 0 for a solid box");
+        assert_eq!(
+            buf.len(),
+            84 + 50 * count as usize,
+            "STL byte length must equal 84 + 50*count"
+        );
+
+        // AABB check: parse all vertex positions from the binary body and assert
+        // each axis extent ≈ 10.0 (within 1e-2).
+        let mut min = [f32::MAX; 3];
+        let mut max = [f32::MIN; 3];
+        for tri in 0..count as usize {
+            let base = 84 + tri * 50;
+            // Skip 12-byte facet normal; each of the 3 vertices is 12 bytes
+            for v in 0..3usize {
+                let vbase = base + 12 + v * 12;
+                for axis in 0..3usize {
+                    let bytes: [u8; 4] = buf[vbase + axis * 4..vbase + axis * 4 + 4]
+                        .try_into()
+                        .unwrap();
+                    let coord = f32::from_le_bytes(bytes);
+                    if coord < min[axis] {
+                        min[axis] = coord;
+                    }
+                    if coord > max[axis] {
+                        max[axis] = coord;
+                    }
+                }
+            }
+        }
+        for axis in 0..3usize {
+            let extent = max[axis] - min[axis];
+            assert!(
+                (extent - 10.0).abs() < 1e-2,
+                "axis {} extent should be ≈10.0, got {extent}",
+                axis
+            );
+        }
     }
 
     #[test]
@@ -8687,5 +8946,489 @@ mod tests {
             solid_count,
             &step_text
         );
+    }
+
+    // --- Cone tests (task-4156) ---
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_frustum_volume_matches_closed_form() {
+        // Frustum: bottom_r=0.010, top_r=0.005, height=0.020.
+        // Volume = (π/3)·h·(r1²+r1·r2+r2²)
+        //        = (π/3)·0.020·(1e-4 + 5e-5 + 2.5e-5) ≈ 3.665e-6 m³.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Cone {
+                bottom_radius: Value::Real(0.010),
+                top_radius: Value::Real(0.005),
+                height: Value::Real(0.020),
+            })
+            .expect("Cone frustum execute should succeed");
+
+        let r1: f64 = 0.010;
+        let r2: f64 = 0.005;
+        let h: f64 = 0.020;
+        let expected = (std::f64::consts::PI / 3.0) * h * (r1 * r1 + r1 * r2 + r2 * r2);
+        assert_volume_near(&mut kernel, handle.id, expected, 0.02, "cone frustum");
+    }
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_pointed_volume_matches_closed_form() {
+        // Pointed cone: bottom_r=0.010, top_r=0.0, height=0.020.
+        // Volume = (π/3)·h·r1² ≈ 2.094e-6 m³.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Cone {
+                bottom_radius: Value::Real(0.010),
+                top_radius: Value::Real(0.0),
+                height: Value::Real(0.020),
+            })
+            .expect("Pointed cone execute should succeed");
+
+        let r1: f64 = 0.010;
+        let h: f64 = 0.020;
+        let expected = (std::f64::consts::PI / 3.0) * h * r1 * r1;
+        assert_volume_near(&mut kernel, handle.id, expected, 0.02, "cone pointed");
+    }
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_negative_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cone {
+            bottom_radius: Value::Real(-0.001),
+            top_radius: Value::Real(0.005),
+            height: Value::Real(0.020),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for negative bottom_radius"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_both_zero_radii_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cone {
+            bottom_radius: Value::Real(0.0),
+            top_radius: Value::Real(0.0),
+            height: Value::Real(0.020),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for both-zero radii (degenerate line)"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_negative_top_radius_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Cone {
+            bottom_radius: Value::Real(0.010),
+            top_radius: Value::Real(-0.001),
+            height: Value::Real(0.020),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for negative top_radius"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_cone_non_positive_height_returns_error() {
+        let mut kernel = OcctKernel::new();
+        // height == 0 is a degenerate flat disk — must be rejected.
+        let result = kernel.execute(&GeometryOp::Cone {
+            bottom_radius: Value::Real(0.010),
+            top_radius: Value::Real(0.005),
+            height: Value::Real(0.0),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for zero height"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    // --- Wedge kernel-execute tests (task-4158, step-3) ---
+
+    /// Kernel execute: wedge(20mm,10mm,15mm,5mm) → Ok; volume ≈ 1.875e-6 m³
+    /// within 2%; exactly 6 faces.
+    ///
+    /// V = depth·height·(width+top_width)/2 = 0.010·0.015·(0.020+0.005)/2 = 1.875e-6 m³.
+    /// Face count 6 = 2 trapezoid end-caps + 4 lateral faces.
+    ///
+    /// RED until step-4 adds GeometryOp::Wedge and wires the execute arm.
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_wedge_volume_and_face_count_match_expected() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Wedge {
+                width: Value::Real(0.020),
+                depth: Value::Real(0.010),
+                height: Value::Real(0.015),
+                top_width: Value::Real(0.005),
+            })
+            .expect("Wedge execute should succeed");
+
+        let expected = 0.010_f64 * 0.015 * (0.020 + 0.005) / 2.0; // 1.875e-6 m³
+        assert_volume_near(&mut kernel, handle.id, expected, 0.02, "wedge 20×10×15 top5");
+
+        let face_ids = kernel
+            .extract_faces(handle.id)
+            .expect("extract_faces on wedge should succeed");
+        assert_eq!(
+            face_ids.len(),
+            6,
+            "wedge should have exactly 6 faces, got {}",
+            face_ids.len()
+        );
+    }
+
+    /// top_width=0 is valid (degenerate triangular-prism wedge — analogous to
+    /// cone with top_radius=0). Should succeed with 5 faces.
+    #[test]
+    #[cfg(has_occt)]
+    fn kernel_wedge_zero_top_width_degenerate_succeeds() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.010),
+            height: Value::Real(0.015),
+            top_width: Value::Real(0.0),
+        });
+        assert!(
+            result.is_ok(),
+            "top_width=0 should produce a valid degenerate wedge, got {:?}",
+            result.err()
+        );
+    }
+
+    /// Negative width must be rejected with OperationFailed.
+    #[test]
+    fn kernel_wedge_negative_width_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Wedge {
+            width: Value::Real(-0.001),
+            depth: Value::Real(0.010),
+            height: Value::Real(0.015),
+            top_width: Value::Real(0.005),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for negative width"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// Zero depth must be rejected.
+    #[test]
+    fn kernel_wedge_zero_depth_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.0),
+            height: Value::Real(0.015),
+            top_width: Value::Real(0.005),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for zero depth"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// Non-finite height must be rejected.
+    #[test]
+    fn kernel_wedge_infinite_height_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.010),
+            height: Value::Real(f64::INFINITY),
+            top_width: Value::Real(0.005),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for infinite height"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// Negative top_width must be rejected.
+    #[test]
+    fn kernel_wedge_negative_top_width_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Wedge {
+            width: Value::Real(0.020),
+            depth: Value::Real(0.010),
+            height: Value::Real(0.015),
+            top_width: Value::Real(-0.001),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected error for negative top_width"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    // --- Wedge FFI tests (task-4158, step-1) ---
+
+    /// FFI-level test: make_wedge produces a solid with the expected volume and
+    /// face count.
+    ///
+    /// V = depth·height·(width+top_width)/2 = 0.010·0.015·(0.020+0.005)/2
+    ///   = 1.875e-6 m³ (exact for flat-faced OCCT BRepPrimAPI_MakeWedge).
+    /// Face count = 6: 2 trapezoid end-caps + 4 lateral faces.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_wedge.
+    #[test]
+    fn make_wedge_ffi_produces_solid_with_expected_volume_and_face_count() {
+        let shape = ffi::ffi::make_wedge(0.020, 0.010, 0.015, 0.005)
+            .expect("make_wedge(0.020, 0.010, 0.015, 0.005) should succeed");
+
+        // Volume: V = depth·height·(width+top_width)/2
+        let expected_vol: f64 = 0.010 * 0.015 * (0.020 + 0.005) / 2.0; // 1.875e-6 m³
+        let vol = ffi::ffi::query_volume(&shape).expect("query_volume should succeed");
+        let rel_err = (vol - expected_vol).abs() / expected_vol;
+        assert!(
+            rel_err < 0.02,
+            "wedge volume: expected ≈ {expected_vol:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+
+        // Face count: 6 (2 trapezoid caps + 4 lateral faces)
+        let faces = ffi::ffi::get_faces(&shape).expect("get_faces should succeed");
+        let face_count = ffi::ffi::shape_vec_len(&faces);
+        assert_eq!(
+            face_count, 6,
+            "wedge should have exactly 6 faces, got {face_count}"
+        );
+    }
+
+    // --- RectangleProfile FFI tests (task-4160, step-1) ---
+
+    /// FFI-level test: make_rectangle_face produces a face that can be extruded
+    /// to a solid with the expected volume.
+    ///
+    /// Rectangle w=0.020 m, h=0.010 m, extruded by d=0.003 m →
+    /// V = w·h·d = 0.020·0.010·0.003 = 6.0e-7 m³ (exact for rectangular prism).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_rectangle_face.
+    #[test]
+    fn make_rectangle_face_ffi_extrude_volume() {
+        let face = ffi::ffi::make_rectangle_face(0.020, 0.010, 0.0)
+            .expect("make_rectangle_face(0.020, 0.010, 0.0) should succeed");
+        let prism = ffi::ffi::make_prism(&face, 0.0, 0.0, 0.003)
+            .expect("make_prism should succeed for rectangle face");
+        let vol =
+            ffi::ffi::query_volume(&prism).expect("query_volume should work for extruded rect");
+        let expected = 0.020_f64 * 0.010 * 0.003; // w·h·d = 6.0e-7 m³
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "rectangle extrude volume: expected ≈ {expected:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// Degenerate input: width=0 must return Err (not panic).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_rectangle_face.
+    #[test]
+    fn make_rectangle_face_ffi_zero_width_returns_err() {
+        let result = ffi::ffi::make_rectangle_face(0.0, 0.010, 0.0);
+        assert!(
+            result.is_err(),
+            "make_rectangle_face with width=0 should return Err, got Ok"
+        );
+    }
+
+    /// Degenerate input: negative height must return Err (not panic).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_rectangle_face.
+    #[test]
+    fn make_rectangle_face_ffi_negative_height_returns_err() {
+        let result = ffi::ffi::make_rectangle_face(0.020, -0.010, 0.0);
+        assert!(
+            result.is_err(),
+            "make_rectangle_face with height=-0.01 should return Err, got Ok"
+        );
+    }
+
+    // --- Profile IR → kernel execute tests (task-4160, step-3) ---
+    // These exercise OcctKernel::execute() for the new GeometryOp::RectangleProfile
+    // and GeometryOp::CircleProfile variants.  RED until step-4 adds those variants.
+
+    /// RectangleProfile execute → extrude → volume ≈ w·h·d.
+    ///
+    /// w=0.020, h=0.010, d=0.003 → V = 6.0e-7 m³ (exact rectangular prism;
+    /// OCCT error ~1e-12 relative, so the 2 % bound is met with enormous margin).
+    ///
+    /// RED until step-4 adds GeometryOp::RectangleProfile.
+    #[test]
+    fn rectangle_profile_executes_and_extrude_volume() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_h = kernel
+            .execute(&GeometryOp::RectangleProfile {
+                width: Value::Real(0.020),
+                height: Value::Real(0.010),
+            })
+            .expect("RectangleProfile execute should succeed");
+        let solid_h = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: profile_h.id,
+                distance: Value::Real(0.003),
+            })
+            .expect("Extrude of RectangleProfile should succeed");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(solid_h.id))
+            .expect("Volume query should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+        let expected = 0.020_f64 * 0.010 * 0.003; // w·h·d = 6.0e-7 m³
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "RectangleProfile extrude volume: expected ≈ {expected:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// CircleProfile execute → SurfaceArea ≈ π·r².
+    ///
+    /// r=0.008 → A = π·0.064e-3 = 2.0106e-4 m² (OCCT analytic Geom_Circle; exact).
+    ///
+    /// RED until step-4 adds GeometryOp::CircleProfile.
+    #[test]
+    fn circle_profile_executes_surface_area() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_h = kernel
+            .execute(&GeometryOp::CircleProfile {
+                radius: Value::Real(0.008),
+            })
+            .expect("CircleProfile execute should succeed");
+        let area = kernel
+            .query(&GeometryQuery::SurfaceArea(profile_h.id))
+            .expect("SurfaceArea query should succeed")
+            .as_f64()
+            .expect("SurfaceArea should be numeric");
+        let expected = std::f64::consts::PI * 0.008_f64 * 0.008; // π·r² = 2.0106e-4 m²
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "CircleProfile surface area: expected ≈ {expected:.4e}, got {area:.4e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// Degenerate input: RectangleProfile with width=0 returns GeometryError::OperationFailed.
+    ///
+    /// RED until step-4 adds GeometryOp::RectangleProfile.
+    #[test]
+    fn rectangle_profile_zero_width_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::RectangleProfile {
+            width: Value::Real(0.0),
+            height: Value::Real(0.010),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for width=0, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// Degenerate input: CircleProfile with negative radius returns GeometryError::OperationFailed.
+    ///
+    /// Export a 10×10×10 box to 3MF via the OCCT kernel and assert valid OPC
+    /// package structure on raw bytes (Stored=uncompressed, no zip reader needed).
+    ///
+    /// Mirrors `new_ops_export_stl` (:5711). RED before step-6: `ExportFormat::ThreeMF`
+    /// does not exist → workspace compile fails.
+    #[test]
+    fn new_ops_export_3mf() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+
+        let mut buf = Vec::new();
+        kernel
+            .export(box_h.id, ExportFormat::ThreeMF, &mut buf)
+            .expect("OCCT ThreeMF export of a 10x10x10 box must succeed");
+
+        // Stored/uncompressed: OPC part names and model XML appear literally in raw bytes.
+        let raw = &buf;
+
+        // The ZIP local-file-header entry for 3D/3dmodel.model must be present.
+        assert!(
+            raw.windows(b"3D/3dmodel.model".len())
+                .any(|w| w == b"3D/3dmodel.model"),
+            "raw bytes must contain '3D/3dmodel.model'"
+        );
+
+        // At least one <triangle element must appear in the model XML.
+        let tri_needle = b"<triangle ";
+        let tri_count = raw.windows(tri_needle.len()).filter(|w| *w == tri_needle).count();
+        assert!(tri_count > 0, "OCCT 3MF export must contain at least one <triangle>");
+    }
+
+    /// RED until step-4 adds GeometryOp::CircleProfile.
+    #[test]
+    fn circle_profile_negative_radius_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(-0.008),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for negative radius, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
     }
 }

@@ -765,6 +765,116 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
     joint_range_midpoint(joint)
 }
 
+/// Compute the loop-closure residual Jacobian with respect to caller-supplied
+/// tree-joint targets by central-difference of the full two-chain residual.
+///
+/// # GAP 1 resolution
+///
+/// Unlike [`chain_jacobian_fd`], which differentiates a single chain w.r.t.
+/// that chain's free joints, this function differentiates the full two-chain
+/// residual `loop_residual_twist(chain_a, vals_a, chain_b, vals_b)` w.r.t.
+/// each caller-supplied target joint.  For each target joint the perturbation
+/// is applied **everywhere that joint appears in either chain** (located by
+/// structural `Value::Eq`) so that a joint shared between chain_a and chain_b
+/// (a world-rooted prefix joint) is perturbed consistently in both chains,
+/// yielding the correct total derivative.
+///
+/// The closing joint — not being a tree `at` joint — is never passed as a
+/// target and therefore never perturbed; its direction is removed by
+/// [`reduce_constraint_rank`](crate::dynamics::closed_chain::reduce_constraint_rank).
+///
+/// # Parameters
+/// - `chain_a`, `vals_a`: spanning-tree side of the loop; `vals_a.len()` must
+///   equal `chain_a.len()`.
+/// - `chain_b`, `vals_b`: closing side; `vals_b.len()` must equal
+///   `chain_b.len()`.
+/// - `target_joints`: the ordered list of tree `at` joints to differentiate
+///   w.r.t.  Each single-DOF joint contributes one `[f64; 6]` column;
+///   multi-DOF joints contribute `JointValue::as_f64_slice().len()` columns.
+///   A joint **absent from both chains** contributes a zero column (it has no
+///   perturbation site — the resulting constraint Jacobian column is genuinely
+///   zero for that coordinate).
+/// - `eps`: central-difference step size.  Must be positive and finite.
+///
+/// # Returns
+/// `Some(columns)` — one `[f64; 6]` column per storage component per target
+/// joint, in target order (single-DOF: one column; multi-DOF: flat).
+///
+/// Returns `None` on:
+///   * `eps <= 0` or non-finite,
+///   * `chain_a.len() != vals_a.len()` or `chain_b.len() != vals_b.len()`,
+///   * any call to `loop_residual_twist` returns `None` (malformed chain,
+///     unknown joint kind, or transform Undef).
+pub fn loop_residual_jacobian_by_joint(
+    chain_a: &[Value],
+    vals_a: &[JointValue],
+    chain_b: &[Value],
+    vals_b: &[JointValue],
+    target_joints: &[Value],
+    eps: f64,
+) -> Option<Vec<[f64; 6]>> {
+    if eps <= 0.0 || !eps.is_finite() {
+        return None;
+    }
+    if chain_a.len() != vals_a.len() || chain_b.len() != vals_b.len() {
+        return None;
+    }
+
+    let mut columns: Vec<[f64; 6]> = Vec::new();
+
+    for target in target_joints {
+        // Determine the storage width for this target by scanning either chain
+        // for a matching joint (same structural value).  If absent from both,
+        // the width defaults to 1 (scalar single-DOF fallback); the resulting
+        // zero perturbation produces a zero column regardless.
+        let width: usize = chain_a
+            .iter()
+            .zip(vals_a.iter())
+            .find_map(|(j, v)| if j == target { Some(v.as_f64_slice().len()) } else { None })
+            .or_else(|| {
+                chain_b
+                    .iter()
+                    .zip(vals_b.iter())
+                    .find_map(|(j, v)| if j == target { Some(v.as_f64_slice().len()) } else { None })
+            })
+            .unwrap_or(1);
+
+        for c in 0..width {
+            let mut va_plus = vals_a.to_vec();
+            let mut va_minus = vals_a.to_vec();
+            let mut vb_plus = vals_b.to_vec();
+            let mut vb_minus = vals_b.to_vec();
+
+            // Perturb every occurrence of `target` in chain_a.
+            for (i, j) in chain_a.iter().enumerate() {
+                if j == target {
+                    perturb_storage_component(&mut va_plus[i], c, eps);
+                    perturb_storage_component(&mut va_minus[i], c, -eps);
+                }
+            }
+            // Perturb every occurrence of `target` in chain_b.
+            for (i, j) in chain_b.iter().enumerate() {
+                if j == target {
+                    perturb_storage_component(&mut vb_plus[i], c, eps);
+                    perturb_storage_component(&mut vb_minus[i], c, -eps);
+                }
+            }
+
+            let rp = loop_residual_twist(chain_a, &va_plus, chain_b, &vb_plus)?;
+            let rm = loop_residual_twist(chain_a, &va_minus, chain_b, &vb_minus)?;
+
+            let scale = 1.0 / (2.0 * eps);
+            let mut col = [0.0f64; 6];
+            for k in 0..6 {
+                col[k] = (rp[k] - rm[k]) * scale;
+            }
+            columns.push(col);
+        }
+    }
+
+    Some(columns)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
@@ -2071,6 +2181,150 @@ mod tests {
         assert!(
             super::extract_loop_closure_chains(&record, &bindings).is_none(),
             "extract_loop_closure_chains must return None for a record missing path_b"
+        );
+    }
+
+    // ── loop_residual_jacobian_by_joint tests ────────────────────────────
+    //
+    // Verifies GAP 1 resolution: the full two-chain residual Jacobian assembled
+    // by perturbing tree `at` joints in BOTH chains wherever they appear.
+    //
+    // Fixture:
+    //   jA = prismatic_x  (single-DOF, axis +X)
+    //   jB = revolute_z   (single-DOF, axis +Z)
+    //   jC = revolute_y   (third joint NOT in either chain)
+    //
+    //   chain_a = [jA]        vals_a = [0.3]
+    //   chain_b = [jA, jB]    vals_b = [0.3, 0.5]
+    //
+    // jA appears in BOTH chains at their first position — structurally
+    // identical Values (same eval_builtin output), so Value::Eq locates
+    // both occurrences correctly.
+    //
+    // For each target joint the independent FD reference is computed by
+    // perturbing that joint's value in ALL positions it appears:
+    //   jA: vals_a±=[0.3±ε], vals_b±=[0.3±ε, 0.5]
+    //   jB: vals_a unchanged, vals_b±=[0.3, 0.5±ε]
+    //   jC: absent from both chains → zero column (no perturbation site)
+    //
+    // Achievability: FD-vs-FD identity — both references use the same
+    // loop_residual_twist formula, so roundoff is the only divergence.
+    // Tolerance 1e-7 is well within central-difference O(ε²) accuracy.
+
+    /// Independent FD helper: central-difference column for perturbing
+    /// `target_idx.0` (index in vals_a, or None) AND `target_idx.1` (index
+    /// in vals_b, or None) simultaneously. The two indices travel as one
+    /// `(chain_a, chain_b)` pair — they describe a single target joint's
+    /// occurrence sites (also keeps the arg count within clippy's limit).
+    fn fd_column(
+        chain_a: &[Value],
+        vals_a: &[JointValue],
+        chain_b: &[Value],
+        vals_b: &[JointValue],
+        target_idx: (Option<usize>, Option<usize>),
+        storage_c: usize,
+        eps: f64,
+    ) -> [f64; 6] {
+        let (target_idx_a, target_idx_b) = target_idx;
+        let mut va_plus = vals_a.to_vec();
+        let mut va_minus = vals_a.to_vec();
+        let mut vb_plus = vals_b.to_vec();
+        let mut vb_minus = vals_b.to_vec();
+        if let Some(ia) = target_idx_a {
+            super::perturb_storage_component(&mut va_plus[ia], storage_c, eps);
+            super::perturb_storage_component(&mut va_minus[ia], storage_c, -eps);
+        }
+        if let Some(ib) = target_idx_b {
+            super::perturb_storage_component(&mut vb_plus[ib], storage_c, eps);
+            super::perturb_storage_component(&mut vb_minus[ib], storage_c, -eps);
+        }
+        let rp = super::loop_residual_twist(chain_a, &va_plus, chain_b, &vb_plus)
+            .expect("residual_plus");
+        let rm = super::loop_residual_twist(chain_a, &va_minus, chain_b, &vb_minus)
+            .expect("residual_minus");
+        let mut col = [0.0f64; 6];
+        for k in 0..6 {
+            col[k] = (rp[k] - rm[k]) / (2.0 * eps);
+        }
+        col
+    }
+
+    #[test]
+    fn loop_residual_jacobian_by_joint_central_difference() {
+        let eps = 1e-6_f64;
+        let tol = 1e-7_f64;
+
+        // Build three structurally-distinct joints.
+        let j_a = prismatic_x(); // axis +X, prismatic
+        let j_b = revolute_z(); // axis +Z, revolute
+        let j_c = eval_builtin("revolute", &[axis_y_unit(), angle_range_0_to_pi()]); // axis +Y
+
+        // chain_a = [jA], chain_b = [jA, jB] — jA appears in both chains.
+        let chain_a: Vec<Value> = vec![j_a.clone()];
+        let chain_b: Vec<Value> = vec![j_a.clone(), j_b.clone()];
+        let vals_a = vec![JointValue::Scalar(0.3_f64)];
+        let vals_b = vec![JointValue::Scalar(0.3_f64), JointValue::Scalar(0.5_f64)];
+
+        // ── case 1: target = [jA, jB] ─────────────────────────────────────────
+        let cols = super::loop_residual_jacobian_by_joint(
+            &chain_a, &vals_a, &chain_b, &vals_b, &[j_a.clone(), j_b.clone()], eps,
+        )
+        .expect("loop_residual_jacobian_by_joint must return Some for valid inputs");
+
+        assert_eq!(cols.len(), 2, "two single-DOF target joints → two columns");
+
+        // Column for jA: perturb jA in BOTH chains (index 0 in chain_a, index 0 in chain_b).
+        let expected_a = fd_column(
+            &chain_a, &vals_a, &chain_b, &vals_b,
+            (Some(0), Some(0)), // chain_a index 0, chain_b index 0
+            0,                  // storage component 0 (Scalar)
+            eps,
+        );
+        for k in 0..6 {
+            assert!(
+                (cols[0][k] - expected_a[k]).abs() < tol,
+                "col_jA[{k}]: got {:.6e}, want {:.6e}, diff {:.2e}",
+                cols[0][k], expected_a[k], (cols[0][k] - expected_a[k]).abs()
+            );
+        }
+
+        // Column for jB: perturb jB only in chain_b (index 1), chain_a unchanged.
+        let expected_b = fd_column(
+            &chain_a, &vals_a, &chain_b, &vals_b,
+            (None, Some(1)), // chain_a — jB absent; chain_b index 1
+            0,               // storage component 0 (Scalar)
+            eps,
+        );
+        for k in 0..6 {
+            assert!(
+                (cols[1][k] - expected_b[k]).abs() < tol,
+                "col_jB[{k}]: got {:.6e}, want {:.6e}, diff {:.2e}",
+                cols[1][k], expected_b[k], (cols[1][k] - expected_b[k]).abs()
+            );
+        }
+
+        // ── case 2: target = [jC] (absent from both chains) ──────────────────
+        // jC is not in chain_a or chain_b → zero column (no perturbation site).
+        let cols_c = super::loop_residual_jacobian_by_joint(
+            &chain_a, &vals_a, &chain_b, &vals_b, std::slice::from_ref(&j_c), eps,
+        )
+        .expect("jC absent → Some(zero-column), not None");
+
+        assert_eq!(cols_c.len(), 1, "one target joint → one column");
+        for (k, &col_val) in cols_c[0].iter().enumerate() {
+            assert!(
+                col_val.abs() < 1e-12,
+                "col_jC[{k}] expected zero (jC absent from both chains), got {col_val}"
+            );
+        }
+
+        // ── case 3: eps <= 0 → None ───────────────────────────────────────────
+        assert!(
+            super::loop_residual_jacobian_by_joint(
+                &chain_a, &vals_a, &chain_b, &vals_b, std::slice::from_ref(&j_a), 0.0
+            )
+            .is_none(),
+            "eps=0 must return None"
         );
     }
 }

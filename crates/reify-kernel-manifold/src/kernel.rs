@@ -37,7 +37,7 @@
 use std::collections::HashMap;
 
 use manifold3d::Manifold;
-use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, TopologyAttributeTable, Value};
+use reify_ir::{ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, ThreeMfOptions, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
 
 /// Error message used by the v0.2 stub paths (`query`/`export`) that
 /// have not yet been wired to real FFI. Boolean ops (`Union`,
@@ -47,21 +47,31 @@ const STUB_MSG: &str = "Manifold query/export not yet implemented for v0.2; \
     boolean ops and tessellate are wired via manifold3d 0.1, but query/export \
     are follow-up work (see docs/prds/v0_2/multi-kernel.md).";
 
-/// A sub-element (face triangle or edge segment) extracted from a parent
+/// A sub-element (planar face or edge segment) extracted from a parent
 /// Manifold mesh by [`GeometryKernel::extract_faces`] /
 /// [`GeometryKernel::extract_edges`].
 ///
-/// A single triangle or edge is **not** a closed [`Manifold`] and cannot live
+/// A planar face or edge is **not** a closed [`Manifold`] and cannot live
 /// in the [`ManifoldKernel::shapes`] store, so extracted sub-elements are
 /// persisted in a parallel typed store ([`ManifoldKernel::sub_shapes`]) keyed
 /// by the same id space. `query()` distinguishes a sub-handle from a full-mesh
 /// handle by store membership: an id present in `sub_shapes` answers
 /// per-element property queries (`SurfaceArea`, `FaceNormal`, `EdgeTangent`,
 /// `BoundingBox`); an id present in `shapes` answers whole-mesh queries.
-#[derive(Debug, Clone, Copy)]
+///
+/// # SubShape::Face semantics (post-task-4262 coplanar coalescing)
+///
+/// A `Face` now holds **all coplanar triangles** of a planar face as a
+/// `Vec<[[f64;3];3]>`.  Before coalescing, each `Face` held a single
+/// triangle (1-element Vec); after coalescing one `Face` covers a whole
+/// planar patch (e.g. a cube face = 2 coplanar triangles). `Copy` is
+/// dropped because `Vec` is not `Copy`; `Clone` is retained.
+#[derive(Debug, Clone)]
 pub(crate) enum SubShape {
-    /// A mesh triangle: three xyz corner points in winding order.
-    Face([[f64; 3]; 3]),
+    /// A planar face: all coplanar triangles (each is `[v0, v1, v2]` in winding
+    /// order). Area = sum of triangle areas; normal = shared coplanar normal;
+    /// bbox = over all corners.
+    Face(Vec<[[f64; 3]; 3]>),
     /// A mesh edge: two xyz endpoints.
     Edge([[f64; 3]; 2]),
 }
@@ -88,6 +98,24 @@ pub struct ManifoldKernel {
     /// Monotonic id counter; first allocated handle is `1` (matches OCCT).
     /// `0` and `u64::MAX` are reserved (the latter is `GeometryHandleId::INVALID`).
     next_id: u64,
+    /// Per-parent-handle memoization cache for `extract_faces` results.
+    ///
+    /// Mirrors `OcctKernel`'s `extracted_faces` field
+    /// (`crates/reify-kernel-occt/src/lib.rs:460-461` + the cache-first /
+    /// mint-then-insert pattern at `:677-710`).  Maps parent handle id →
+    /// the `Vec<GeometryHandleId>` returned by the first `extract_faces` call
+    /// for that parent; subsequent calls return `cached.clone()` so ids are
+    /// stable across calls (required for `resolve_unique_by_attribute` to
+    /// match seeded attributes to candidate handles).
+    ///
+    /// # No invalidation needed
+    ///
+    /// Unlike OCCT (which invalidates on `with_warm_state` when its shape table
+    /// is swapped), `ManifoldKernel` has no warm-state/reset path and mints
+    /// handle ids monotonically over an **append-only** `shapes` store.  A
+    /// given parent handle's mesh is immutable for the kernel's lifetime, so
+    /// its coalesced faces never change — caching once is always correct.
+    extracted_faces: HashMap<u64, Vec<GeometryHandleId>>,
 }
 
 impl ManifoldKernel {
@@ -97,6 +125,7 @@ impl ManifoldKernel {
             shapes: HashMap::new(),
             sub_shapes: HashMap::new(),
             next_id: 1,
+            extracted_faces: HashMap::new(),
         }
     }
 
@@ -152,6 +181,94 @@ impl Default for ManifoldKernel {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Convert a [`Mesh`] into a [`Manifold`] by (1) bit-exact vertex welding,
+/// then (2) flattening f32→f64 / u32→u64 and calling [`Manifold::from_mesh_f64`].
+///
+/// # Pre-ingest vertex weld
+///
+/// OCCT's tessellator emits per-face meshes: each quad face produces 4 fresh
+/// vertices even for corners shared with adjacent faces. Those bit-identical
+/// corner positions are NOT joined by index, so without welding
+/// `Manifold::from_mesh_f64` sees open boundary edges and returns
+/// `Err(ManifoldStatus(NotManifold))`.
+///
+/// The weld keys every xyz triple on its bit pattern
+/// `(x.to_bits(), y.to_bits(), z.to_bits())` (f32 → u32 triple) and replaces
+/// duplicates with the first-seen canonical vertex. Triangle winding is
+/// preserved because only vertex indices are remapped; corner order within
+/// each triangle is unchanged.
+///
+/// For already-welded input (every position unique) the dedup is a no-op and
+/// the indices are passed through unchanged, so existing well-formed meshes
+/// are unaffected.
+///
+/// # Signed-zero and NaN caveat
+///
+/// Keying on bit patterns means `+0.0` and `-0.0` are treated as **distinct**
+/// vertices (they have different bit representations despite being geometrically
+/// equal). To prevent this, each coordinate is normalised with `x + 0.0` before
+/// keying; IEEE 754 guarantees `-0.0 + 0.0 == +0.0` under default rounding, so
+/// the resulting bit pattern is always canonical `+0.0`. NaN coordinates produce
+/// a stable (per-bit-pattern) key and will weld with other NaN vertices sharing
+/// the same bit pattern; such inputs are geometrically degenerate and will be
+/// rejected by `Manifold::from_mesh_f64` regardless.
+///
+/// # Callers
+///
+/// This is the canonical ingestion helper called by both
+/// [`GeometryKernel::ingest_mesh`] (production path) and the
+/// `unit_cube_manifold` test fixture. Keeping the weld here ensures both
+/// callers benefit automatically.
+///
+/// Returns `Err(String)` (the `Debug` repr of the underlying manifold3d error)
+/// if the mesh is not a valid closed orientable manifold after welding, or if
+/// any triangle index references a vertex beyond the vertex array.
+pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, String> {
+    // --- bit-exact vertex weld ---
+    // Map (x.to_bits(), y.to_bits(), z.to_bits()) → canonical vertex index.
+    let mut seen: HashMap<(u32, u32, u32), u64> = HashMap::new();
+    let mut canonical_f64: Vec<f64> = Vec::new();
+    // old_to_new[i] = canonical index for the i-th source vertex.
+    let mut old_to_new: Vec<u64> = Vec::with_capacity(mesh.vertices.len() / 3);
+
+    for xyz in mesh.vertices.chunks_exact(3) {
+        // Normalise -0.0 → +0.0 before keying so that shared geometric corners
+        // on the origin plane weld correctly even when different per-face paths
+        // produce -0.0 vs +0.0. All other finite values are unchanged by + 0.0.
+        let (x, y, z) = (xyz[0] + 0.0, xyz[1] + 0.0, xyz[2] + 0.0);
+        let key = (x.to_bits(), y.to_bits(), z.to_bits());
+        let next = canonical_f64.len() as u64 / 3;
+        let canonical_idx = *seen.entry(key).or_insert_with(|| {
+            canonical_f64.push(x as f64);
+            canonical_f64.push(y as f64);
+            canonical_f64.push(z as f64);
+            next
+        });
+        old_to_new.push(canonical_idx);
+    }
+
+    // Remap triangle indices through the weld map.
+    // Use bounds-checked access so a malformed mesh with an out-of-range index
+    // returns Err instead of panicking — preserving the Result<_, String> contract
+    // that callers rely on (previously from_mesh_f64 would return Err for such
+    // inputs; the weld must not introduce a new panic path).
+    let tri_indices_u64: Vec<u64> = mesh
+        .indices
+        .iter()
+        .map(|&i| {
+            old_to_new.get(i as usize).copied().ok_or_else(|| {
+                format!(
+                    "triangle index {i} out of range for {} vertices",
+                    old_to_new.len()
+                )
+            })
+        })
+        .collect::<Result<_, String>>()?;
+
+    Manifold::from_mesh_f64(&canonical_f64, 3, &tri_indices_u64)
+        .map_err(|e| format!("{e:?}"))
 }
 
 impl GeometryKernel for ManifoldKernel {
@@ -241,13 +358,13 @@ impl GeometryKernel for ManifoldKernel {
                 Ok(Value::Bool(crate::queries::geo_equiv(l, r, *tolerance)))
             }
             // Surface area. Mirrors OCCT's SurfaceArea -> Value::Real
-            // (KGQ-π / task 3625). A face sub-handle answers with its single
-            // triangle's area; a whole-mesh handle answers with the
-            // Manifold's total surface area.
+            // (KGQ-π / task 3625). A face sub-handle answers with the sum
+            // of its coplanar triangles' areas; a whole-mesh handle answers
+            // with the Manifold's total surface area.
             GeometryQuery::SurfaceArea(id) => {
                 if let Some(sub) = self.sub_shapes.get(&id.0) {
                     match sub {
-                        SubShape::Face(tri) => Ok(Value::Real(crate::queries::tri_area(tri))),
+                        SubShape::Face(tris) => Ok(Value::Real(crate::queries::face_area(tris))),
                         SubShape::Edge(_) => Err(QueryError::QueryFailed(
                             "SurfaceArea: handle names an edge sub-shape, which has no area"
                                 .into(),
@@ -262,11 +379,11 @@ impl GeometryKernel for ManifoldKernel {
             // Face normal as the OCCT-compatible {"x","y","z"} JSON string.
             // Only a face sub-handle has a single normal; a whole mesh or an
             // edge sub-shape has none (matches OCCT, which answers FaceNormal
-            // only for a Face). Sign follows triangle winding — the contract
-            // is sign-agnostic.
+            // only for a Face). Normal is the shared coplanar normal of the
+            // planar face's triangles — sign follows winding, contract is sign-agnostic.
             GeometryQuery::FaceNormal(id) => match self.sub_shapes.get(&id.0) {
-                Some(SubShape::Face(tri)) => Ok(Value::String(crate::queries::json_xyz(
-                    crate::queries::tri_unit_normal(tri),
+                Some(SubShape::Face(tris)) => Ok(Value::String(crate::queries::json_xyz(
+                    crate::queries::face_unit_normal(tris),
                 ))),
                 Some(SubShape::Edge(_)) => Err(QueryError::QueryFailed(
                     "FaceNormal: handle names an edge sub-shape (no face normal)".into(),
@@ -309,11 +426,12 @@ impl GeometryKernel for ManifoldKernel {
             // Bounding box as the OCCT-compatible {"xmin"..."zmax"} JSON
             // string. A sub-shape (face/edge) bounds its stored points; a
             // whole mesh delegates to Manifold::bounding_box() (None =>
-            // empty/degenerate => QueryError).
+            // empty/degenerate => QueryError). For a planar face, the bbox
+            // spans all corners of all its coplanar triangles.
             GeometryQuery::BoundingBox(id) => {
                 if let Some(sub) = self.sub_shapes.get(&id.0) {
                     let (min, max) = match sub {
-                        SubShape::Face(tri) => crate::queries::points_bbox(tri),
+                        SubShape::Face(tris) => crate::queries::face_points_bbox(tris),
                         SubShape::Edge(edge) => crate::queries::points_bbox(edge),
                     };
                     Ok(Value::String(crate::queries::json_bbox(min, max)))
@@ -345,6 +463,12 @@ impl GeometryKernel for ManifoldKernel {
             // `face_index`, self excluded, ascending — Value::List<Value::Int>
             // mirroring OCCT's AdjacentFaces wire format. On the closed cube
             // each triangle has exactly 3 such neighbours. (KGQ-π / task 3625.)
+            //
+            // NOTE: `face_index` is a raw mesh-triangle index (0..num_triangles),
+            // NOT an index into the coalesced planar-face handles returned by
+            // `extract_faces`. These two index spaces are disjoint. A unit cube
+            // has 12 raw triangles (face_index in 0..12) and 6 planar-face
+            // handles from extract_faces; the two cannot be used interchangeably.
             GeometryQuery::AdjacentFaces { shape, face_index } => {
                 let (_verts, tris) = {
                     let m = self
@@ -369,6 +493,10 @@ impl GeometryKernel for ManifoldKernel {
             // face_b` yields an empty list (design decision). Edge indices are
             // into the same canonical_edges enumeration extract_edges exposes,
             // so SharedEdges and extract_edges agree. (KGQ-π / task 3625.)
+            //
+            // NOTE: `face_a` and `face_b` are raw mesh-triangle indices
+            // (0..num_triangles), NOT handles or indices from extract_faces'
+            // coalesced planar-face space. These two index spaces are disjoint.
             GeometryQuery::SharedEdges {
                 shape,
                 face_a,
@@ -451,11 +579,34 @@ impl GeometryKernel for ManifoldKernel {
 
     fn export(
         &self,
-        _handle: GeometryHandleId,
-        _format: ExportFormat,
-        _writer: &mut dyn std::io::Write,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        Err(ExportError::FormatError(STUB_MSG.into()))
+        match format {
+            ExportFormat::Stl => {
+                // Manifold tessellate ignores tolerance (exact meshes); pass 0.0.
+                let mesh = self
+                    .tessellate(handle, 0.0)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                write_stl_binary(&mesh, writer)
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            ExportFormat::ThreeMF => {
+                // Manifold tessellate ignores tolerance (exact meshes); pass 0.0.
+                let mesh = self
+                    .tessellate(handle, 0.0)
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                // default() → include_materials/include_colors both false → no warnings.
+                // Warnings are intentionally discarded: export() has no warning channel.
+                // Task δ wires include_materials/include_colors via occurrence params
+                // and surfaces W_3MF_NO_MATERIALS as a build diagnostic.
+                write_3mf(&mesh, ThreeMfOptions::default(), writer)
+                    .map(|_warnings| ())
+                    .map_err(|e| ExportError::IoError(e.to_string()))
+            }
+            _ => Err(ExportError::FormatError(STUB_MSG.into())),
+        }
     }
 
     /// Materialise the stored [`Manifold`] as a `reify_types::Mesh`.
@@ -544,27 +695,46 @@ impl GeometryKernel for ManifoldKernel {
             normals: None,
         })
     }
-    /// Extract the mesh triangles of the stored Manifold as face sub-handles.
+    /// Extract the mesh faces of the stored Manifold as coalesced planar-face
+    /// sub-handles (task-4262 steps 2 + 4).
     ///
-    /// # Manifold-face = mesh triangle (semantic gap)
+    /// # Coplanar-triangle coalescing
     ///
-    /// Unlike a B-rep kernel (where a "face" is a smooth parametric surface
-    /// patch), `manifold-csg` has no coalesced-surface concept — only mesh
-    /// facets. So this returns **one sub-handle per triangle**: the unit cube
-    /// yields 12 face handles, not the 6 a BRep box reports. See the
-    /// `queries` module-doc and PRD Open Question §10.5; `AdjacentFaces` /
-    /// `SharedEdges` therefore operate on triangle indices.
+    /// Triangles are grouped into planar faces by their supporting **plane key**
+    /// — a quantised `(unit_normal, signed_offset)` pair — via
+    /// [`crate::queries::coalesce_coplanar_faces`].  Degenerate (zero-area)
+    /// triangles are skipped; groups are sorted by their plane key so the
+    /// returned face order is deterministic across calls.
     ///
-    /// Each triangle's three xyz corners (in mesh winding order) are stored as
-    /// a [`SubShape::Face`] via [`Self::store_sub_shape`]; the returned
-    /// `Vec<GeometryHandleId>` is in triangle order, so `result[i]` names
-    /// triangle `i` of `to_mesh_f64`'s index list. An empty or degenerate mesh
-    /// (e.g. the empty `Manifold` from a disjoint intersection) yields
-    /// `Ok(empty vec)`.
+    /// For a unit cube (12 mesh triangles, 6 planar faces of 2 triangles each)
+    /// this yields **6** sub-handles — matching OCCT's BRep box face count and
+    /// resolving PRD Open Question §10.5 (`12 ≠ 6` semantic gap).
+    ///
+    /// # Per-parent memoization (idempotency contract)
+    ///
+    /// The first call for a given `handle` mints fresh ids for the coalesced
+    /// faces and caches them in [`Self::extracted_faces`].  Subsequent calls
+    /// with the same `handle` return `cached.clone()` immediately — the ids
+    /// and their order are **identical** across calls (same contract as OCCT's
+    /// `extracted_faces` cache, `crates/reify-kernel-occt/src/lib.rs:677-710`).
+    /// This stability is required for `resolve_unique_by_attribute` to match
+    /// seeded attributes (recorded against the first-call ids) to the candidate
+    /// ids produced at selector-eval time.
+    ///
+    /// No cache invalidation is needed: `ManifoldKernel` has no warm-state
+    /// swap and mints ids monotonically over an append-only `shapes` store, so
+    /// a parent handle's coalesced faces never change.
+    ///
+    /// An empty or degenerate mesh yields `Ok(empty vec)`.
     fn extract_faces(
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        // Cache-first: return the previously-minted ids if available.
+        if let Some(cached) = self.extracted_faces.get(&handle.0) {
+            return Ok(cached.clone());
+        }
+
         // Read the parent mesh, dropping the immutable borrow before the
         // mutable store_sub_shape calls below.
         let (verts, tris) = {
@@ -574,15 +744,19 @@ impl GeometryKernel for ManifoldKernel {
             crate::queries::mesh_geometry(m)
         };
         if verts.is_empty() || tris.is_empty() {
+            // Memoize the empty result so the cache-first branch covers
+            // this path too, keeping the contract uniform: every code path
+            // through extract_faces inserts into extracted_faces before returning.
+            self.extracted_faces.insert(handle.0, Vec::new());
             return Ok(Vec::new());
         }
-        let mut faces = Vec::with_capacity(tris.len() / 3);
-        for tri in tris.chunks_exact(3) {
-            let v0 = verts[tri[0] as usize];
-            let v1 = verts[tri[1] as usize];
-            let v2 = verts[tri[2] as usize];
-            faces.push(self.store_sub_shape(SubShape::Face([v0, v1, v2])));
+        let groups = crate::queries::coalesce_coplanar_faces(&verts, &tris);
+        let mut faces = Vec::with_capacity(groups.len());
+        for group in groups {
+            faces.push(self.store_sub_shape(SubShape::Face(group)));
         }
+        // Memoize: subsequent calls return the cached ids unchanged.
+        self.extracted_faces.insert(handle.0, faces.clone());
         Ok(faces)
     }
 
@@ -657,15 +831,19 @@ impl GeometryKernel for ManifoldKernel {
                 mesh.indices.len()
             )));
         }
-        let vert_props_f64: Vec<f64> = mesh.vertices.iter().map(|&v| v as f64).collect();
-        let tri_indices_u64: Vec<u64> = mesh.indices.iter().map(|&i| i as u64).collect();
-        let manifold =
-            Manifold::from_mesh_f64(&vert_props_f64, 3, &tri_indices_u64).map_err(|e| {
-                GeometryError::OperationFailed(format!(
-                    "ingest_mesh: input Mesh must be a valid manifold; \
-                     manifold3d::from_mesh_f64 reported: {e:?}"
-                ))
-            })?;
+        let manifold = manifold_from_reify_mesh(mesh).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "ingest_mesh: input Mesh must be a valid manifold; \
+                 manifold3d::from_mesh_f64 reported: {e}"
+            ))
+        })?;
+        // Tag each ingested mesh as an "original" so Manifold assigns it a stable,
+        // non-negative originalID that survives through boolean operations and
+        // appears in the result's `run_original_id` vector.  Without this call
+        // `original_id()` returns -1 and the provenance walk in
+        // `propagate_attributes` cannot correlate result triangles back to their
+        // source parent attribute.
+        let manifold = manifold.as_original();
         Ok(self.store(manifold))
     }
 
@@ -682,51 +860,96 @@ impl GeometryKernel for ManifoldKernel {
 
 /// First concrete impl of [`KernelAttributeHook`] — see PRD line 70.
 ///
-/// The body unconditionally returns `Ok(KernelAttributeOutcome::Discarded)`
-/// and emits a structured WARN diagnostic (required by the `Discarded`
-/// contract). The Manifold C++ FFI is wired (boolean ops + tessellate go
-/// through `manifold3d` 0.1) and the manifold3d accessors needed for real
-/// propagation (`originalID`, `MeshGL.run_*`, `merge_from_vert`/
-/// `merge_to_vert`, `face_id`) are reachable from this crate; the actual
-/// `MeshGL` walk is implemented in persistent-naming-v2 PRD task 9 (a
-/// separate task that depends on this crate's FFI wiring).
+/// Walks the Manifold `MeshGL64` provenance vectors (`run_original_id`,
+/// `run_index`, `face_id`) to correlate each surviving triangle of the
+/// boolean result back to a source [`TopologyAttribute`] from the parent
+/// table.  Returns `Ok(Propagated)` when the walk succeeds, and
+/// `Ok(Discarded)` with a WARN on the lossy path (empty parent map, missing
+/// result mesh, or degenerate empty result).
 ///
-/// When PRD task 9 lands, the body switches to walk `MeshGL` merge
-/// vectors + per-triangle `faceID` / `originalID` to copy parent
-/// attributes onto result face handles, returning `Propagated` on success
-/// and `Discarded` (with a `reason="heavy_remeshing"` flavoured WARN) on
-/// lossy remeshing — the trait surface is stable across that swap.
+/// # Degenerate (Discarded) path
+///
+/// Fires when any of the following hold:
+/// - No parent handle has both a stored `Manifold` with a non-negative
+///   `original_id()` **and** a `TopologyAttribute` in `table` (parent map
+///   is empty after the loop).
+/// - The result handle is not present in `self.shapes`.
+/// - The result manifold `is_empty()`.
+///
+/// In all these cases exactly one `tracing::warn!` is emitted at the
+/// `reify_kernel_manifold::kernel` target (operator visibility for the
+/// lossy-attribute diagnostic), and `Ok(Discarded)` is returned.
+///
+/// # Descriptor-keyed persistence
+///
+/// The correlation (`Vec<FacetProvenance>`) is computed and validated but
+/// **not** persisted into the `GeometryHandleId`-keyed
+/// `TopologyAttributeTable` — there is no descriptor-keyed store until
+/// task 4262, and `&self` is immutable.  The engine (`engine_build.rs:4414`)
+/// intentionally swallows all three `Ok` variants, so returning `Propagated`
+/// without writing the table is safe for the current call graph.
 impl KernelAttributeHook for ManifoldKernel {
     fn propagate_attributes(
         &self,
-        _table: &mut TopologyAttributeTable,
+        table: &mut TopologyAttributeTable,
         op: &GeometryOp,
         parent_handles: &[GeometryHandleId],
-        _result_handle: GeometryHandleId,
+        result_handle: GeometryHandleId,
         _splitting_feature_id: &FeatureId,
     ) -> Result<KernelAttributeOutcome, QueryError> {
-        // v0.2 stub: FFI is wired but the MeshGL walk that implements
-        // real attribute propagation is PRD task 9 (persistent-naming-v2).
-        // Emit a WARN diagnostic (operator visibility for the intentional
-        // attribute-loss path) and return Discarded. The
-        // `KernelAttributeOutcome::Discarded` contract mandates that hook
-        // impls emit their own diagnostic before returning, so consumers
-        // do not need to surface a duplicate.
-        //
-        // `target: "reify_kernel_manifold::kernel"` matches the module
-        // path of this impl so a `RUST_LOG=reify_kernel_manifold::kernel=warn`
-        // (or the broader `reify_kernel_manifold=warn`) operator filter
-        // sees the event. `reason="task_9_pending"` is the structured-
-        // fields key by which a future `reason="heavy_remeshing"` (when
-        // PRD task 9 lands the real walk) can be distinguished.
-        tracing::warn!(
-            target: "reify_kernel_manifold::kernel",
-            reason = "task_9_pending",
-            op = ?op,
-            parents = parent_handles.len(),
-            "Manifold attribute propagation discarded — MeshGL walk pending (PRD task 9)"
-        );
-        Ok(KernelAttributeOutcome::Discarded)
+        // Build a map from each parent's Manifold originalID → TopologyAttribute.
+        // Requires both a stored Manifold with a non-negative original_id() (set
+        // by ingest_mesh via as_original()) AND a table entry for the same handle.
+        let mut parent_map: std::collections::HashMap<u32, reify_ir::TopologyAttribute> =
+            std::collections::HashMap::new();
+        for &handle in parent_handles {
+            if let Some(m) = self.shapes.get(&handle.0) {
+                let oid = m.original_id();
+                if let (Some(id), Some(attr)) =
+                    (u32::try_from(oid).ok(), table.lookup(handle))
+                {
+                    parent_map.insert(id, attr.clone());
+                }
+            }
+        }
+
+        // Degenerate path: no trackable parent provenance or missing/empty result.
+        let result_manifold = self.shapes.get(&result_handle.0);
+        let is_degenerate = parent_map.is_empty()
+            || result_manifold.is_none()
+            || result_manifold.is_some_and(|m| m.is_empty());
+
+        if is_degenerate {
+            tracing::warn!(
+                target: "reify_kernel_manifold::kernel",
+                reason = "no_parent_provenance",
+                op = ?op,
+                parents = parent_handles.len(),
+                parent_map_len = parent_map.len(),
+                "Manifold attribute propagation discarded — no trackable parent provenance \
+                 or empty result mesh"
+            );
+            return Ok(KernelAttributeOutcome::Discarded);
+        }
+
+        // Walk the MeshGL64 provenance vectors to correlate result triangles
+        // with their source attributes.
+        let mg = result_manifold.unwrap().to_meshgl64();
+        match crate::provenance::correlate_facets(&mg, &parent_map) {
+            Ok(facets) => {
+                let source_count =
+                    facets.iter().filter(|f| f.source.is_some()).count();
+                tracing::debug!(
+                    target: "reify_kernel_manifold::kernel",
+                    facets = facets.len(),
+                    with_source = source_count,
+                    "Manifold attribute propagation completed — kernel-level walk done; \
+                     descriptor-keyed persistence deferred to task 4262"
+                );
+                Ok(KernelAttributeOutcome::Propagated)
+            }
+            Err(e) => Err(QueryError::QueryFailed(e)),
+        }
     }
 }
 
@@ -771,6 +994,23 @@ mod tests {
             other => panic!(
                 "{label} of two valid stored cubes must return Ok(GeometryHandle); got {other:?}"
             ),
+        }
+    }
+
+    /// Convenience constructor for a `TopologyAttribute` with `Role::Side`,
+    /// `local_index: 0`, and no label or modification history.
+    ///
+    /// Shared by the provenance-walk tests in this module.  A companion copy
+    /// lives in `provenance.rs` tests; full consolidation into `test_fixtures`
+    /// is deferred because `test_fixtures.rs` is outside this task's scope lock.
+    #[cfg(feature = "test-fixtures")]
+    fn make_attr(name: &str) -> reify_ir::TopologyAttribute {
+        reify_ir::TopologyAttribute {
+            feature_id: FeatureId::new(name),
+            role: reify_ir::Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![],
         }
     }
 
@@ -1035,17 +1275,20 @@ mod tests {
         );
     }
 
-    /// PRD line 70: heavy remeshing within tolerance (and, in this v0.2 stub,
-    /// the pending PRD task 9 MeshGL walk) discards attributes with a
-    /// `tracing::warn!` diagnostic.
+    /// Pins the degenerate-path contract of `propagate_attributes`: when the
+    /// kernel has no stored shapes for the given handles (empty `ManifoldKernel`,
+    /// synthetic handle ids), the parent map is empty and the hook must:
     ///
-    /// Three properties are pinned by this test:
-    /// (a) `propagate_attributes` returns `Ok(KernelAttributeOutcome::Discarded)`
-    ///     for the v0.2 stub regardless of inputs — the trait surface model.
-    /// (b) `table` is left unchanged: the stub does not write spurious entries.
-    /// (c) Exactly one WARN-level event fires at the `reify_kernel_manifold::kernel`
-    ///     target, matching the `Discarded` contract that hook impls emit
-    ///     their own diagnostic before returning.
+    /// (a) Return `Ok(KernelAttributeOutcome::Discarded)`.
+    /// (b) Leave `table` unchanged (no spurious writes on the lossy path).
+    /// (c) Emit exactly one WARN at the `reify_kernel_manifold::kernel` target.
+    ///
+    /// The degenerate path is reached whenever the parent map is empty — either
+    /// because the handles aren't in `self.shapes`, or because none of the
+    /// stored manifolds have a non-negative `original_id()`, or because no
+    /// parent has a table entry.  This test exercises the first case (empty
+    /// kernel), which is the cheapest fixture that hits the same branch.
+    /// Descriptor-keyed persistence is deferred to task 4262.
     ///
     /// Reuses the `CountingSubscriberBuilder` pattern from
     /// `crates/reify-eval/src/kernel_registry.rs:329-353`. Synthetic op +
@@ -1080,14 +1323,15 @@ mod tests {
             kernel.propagate_attributes(&mut table, &op, &parents, result, &feature_id)
         });
 
-        // (a) Outcome is Ok(Discarded) for the v0.2 stub.
+        // (a) Outcome is Ok(Discarded) on the degenerate (empty kernel) path.
         // Match-on-outcome rather than `assert_eq!` because `QueryError` does
         // not derive `PartialEq` (would require widening reify-types' surface
         // for a single test assertion).
         match outcome {
             Ok(KernelAttributeOutcome::Discarded) => {}
             other => panic!(
-                "v0.2 Manifold stub must return Ok(Discarded) — MeshGL walk pending PRD task 9; got {other:?}"
+                "propagate_attributes must return Ok(Discarded) when no parent provenance \
+                 is available (empty kernel, no shapes for synthetic handles); got {other:?}"
             ),
         }
 
@@ -1399,5 +1643,479 @@ mod tests {
                  got {other:?}",
             ),
         }
+    }
+
+    /// Proves that `Manifold::to_meshgl64()` (added in manifold3d 0.3) exposes
+    /// provenance data after a boolean union (run/face vectors non-trivial;
+    /// merge vectors validated structurally — see note below).
+    ///
+    /// Empirical probe (manifold3d 0.3.0 / manifold-csg-sys 3.5.101):
+    /// two overlapping unit cubes → union → to_meshgl64():
+    ///   run_original_id = [1, 2]        — 2 runs, both parents tracked
+    ///   run_index       = [0, 42, 84]   — len == num_run + 1
+    ///   face_id len     = 28            — one entry per triangle (== num_tri)
+    ///   merge_from_vert = []            — EMPTY for a 2-cube union; only the
+    ///   merge_to_vert   = []            —   structural pairing invariant asserted
+    ///
+    /// Deviation from literal "all four populated/non-trivial": merge vectors
+    /// are empirically empty for this geometry — asserting non-empty would be a
+    /// doomed RED. Flagged via esc-4247-56. The pairing invariant still proves
+    /// every merge egress accessor is reachable and returns consistent C++ data,
+    /// which is exactly what task 3525's attribute-map walk consumes.
+    ///
+    /// RED for task 4247 step-1: `to_meshgl64()` does not exist on manifold3d
+    /// 0.2 (compile error). GREEN (step-2) is the dependency bump 0.2→0.3.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn union_meshgl64_exposes_provenance_and_merge_pairing_invariant() {
+        use crate::test_fixtures::unit_cube_manifold;
+        use std::collections::HashSet;
+
+        let a = unit_cube_manifold([0.0, 0.0, 0.0]);
+        let b = unit_cube_manifold([0.5, 0.0, 0.0]);
+        let result = a.union(&b);
+
+        // to_meshgl64() is absent on manifold3d 0.2 — this is the RED
+        // compile-error; the dep bump in step-2 makes it GREEN.
+        let m = result.to_meshgl64();
+
+        let num_run = m.num_run();
+        let num_tri = m.num_tri();
+
+        // Basic structural sanity.
+        assert!(
+            num_tri > 0,
+            "union of two overlapping cubes must have > 0 triangles; got {num_tri}"
+        );
+        assert!(
+            num_run >= 2,
+            "union of two parent cubes must track >= 2 runs (one per parent); got {num_run}"
+        );
+
+        // run_original_id: non-empty, len == num_run, exactly 2 distinct parent ids.
+        let run_original_id = m.run_original_id();
+        assert!(
+            !run_original_id.is_empty(),
+            "run_original_id must be non-empty — C++ provenance vector missing"
+        );
+        assert_eq!(
+            run_original_id.len(),
+            num_run,
+            "run_original_id.len() must equal num_run ({num_run})"
+        );
+        let distinct: HashSet<_> = run_original_id.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            2,
+            "union of two cubes must carry exactly 2 distinct run_original_id values \
+             (one per parent input); got {distinct:?}"
+        );
+
+        // run_index: len == num_run + 1 (start offsets + sentinel).
+        let run_index = m.run_index();
+        assert_eq!(
+            run_index.len(),
+            num_run + 1,
+            "run_index.len() must equal num_run + 1 (start offsets + sentinel); \
+             got {}, expected {}",
+            run_index.len(),
+            num_run + 1
+        );
+
+        // face_id: one entry per triangle.
+        let face_id = m.face_id();
+        assert_eq!(
+            face_id.len(),
+            num_tri,
+            "face_id.len() must equal num_tri ({num_tri}); got {}",
+            face_id.len()
+        );
+
+        // merge vectors: structural pairing invariant only — empirically empty
+        // for a 2-cube union; asserting non-empty would be a doomed RED test.
+        assert_eq!(
+            m.merge_from_vert().len(),
+            m.merge_to_vert().len(),
+            "merge_from_vert and merge_to_vert must have equal length (structural \
+             pairing invariant — vectors may be empty for simple boolean results)"
+        );
+    }
+
+    /// Builds a deliberately un-welded unit cube mirroring OCCT's per-face vertex
+    /// emission: iterates `unit_cube_mesh([0.0, 0.0, 0.0])`'s `indices` in
+    /// `chunks_exact(6)` (each 6-index chunk = one face's 2 triangles), deduplicates
+    /// the 4 distinct corners of each face into fresh per-face vertices (xyz copied
+    /// from the welded fixture, winding order preserved) → 24 vertices / 12 triangles.
+    ///
+    /// The ONLY defect vs `unit_cube_mesh` is bit-identical shared corner positions
+    /// not shared by index (open boundary edges on every face-to-face seam).
+    /// Bit-exact welding collapses 24 → 8 canonical corners, reconstructing the
+    /// topology of the original closed cube.
+    ///
+    /// # Coverage note
+    ///
+    /// This fixture **only exercises the bit-identical-corner case**: shared corners
+    /// are copied byte-for-byte from a Rust literal (`0.0` / `1.0`), so they are
+    /// guaranteed to be bit-for-bit equal. It does **not** validate the production
+    /// assumption that OCCT's per-face tessellator emits bit-identical positions for
+    /// geometrically shared corners. Real OCCT tessellation computes each face
+    /// independently and may produce values that differ in the low bits (e.g. one
+    /// face yields `+0.0` and the adjacent face yields `-0.0` at the origin, or
+    /// floating-point rounding diverges on a curved surface), which a bit-exact weld
+    /// would **not** collapse. An integration test ingesting a real OCCT-tessellated
+    /// solid through `manifold_from_reify_mesh` is needed to verify that assumption
+    /// empirically for production meshes.
+    #[cfg(feature = "test-fixtures")]
+    fn unwelded_unit_cube_mesh() -> Mesh {
+        let welded = unit_cube_mesh([0.0, 0.0, 0.0]);
+        let src_verts = &welded.vertices;
+        let src_idx = &welded.indices;
+
+        let mut new_verts: Vec<f32> = Vec::with_capacity(24 * 3);
+        let mut new_idx: Vec<u32> = Vec::with_capacity(36);
+
+        for face_chunk in src_idx.chunks_exact(6) {
+            // Collect the 4 distinct corner indices in first-seen order.
+            let mut corner_old: Vec<u32> = Vec::with_capacity(4);
+            for &old_i in face_chunk {
+                if !corner_old.contains(&old_i) {
+                    corner_old.push(old_i);
+                }
+            }
+            // Global base for this face's vertices in new_verts.
+            let base = (new_verts.len() / 3) as u32;
+            // Push 4 per-face vertices (xyz copied from welded fixture).
+            for &old_vi in &corner_old {
+                let off = old_vi as usize * 3;
+                new_verts.push(src_verts[off]);
+                new_verts.push(src_verts[off + 1]);
+                new_verts.push(src_verts[off + 2]);
+            }
+            // Remap 6 face indices to per-face local index + global base.
+            for &old_i in face_chunk {
+                let local =
+                    corner_old.iter().position(|&c| c == old_i).unwrap() as u32;
+                new_idx.push(base + local);
+            }
+        }
+
+        Mesh { vertices: new_verts, indices: new_idx, normals: None }
+    }
+
+    /// Pins that bit-exact vertex welding inside `manifold_from_reify_mesh` lets
+    /// an OCCT-style un-welded cube (6 faces × 4 per-face vertices = 24 vertices
+    /// total, bit-identical shared corners NOT joined by index) ingest as a valid
+    /// closed `Manifold`.
+    ///
+    /// # RED → GREEN contract
+    ///
+    /// **RED (before step-2):** `manifold_from_reify_mesh` passes the 24-vertex
+    /// mesh directly to `Manifold::from_mesh_f64` with no dedup; per-face
+    /// disconnected quads create open boundary edges so `manifold_status` returns
+    /// `NotManifold` → `Err(...)` → `.expect` panics.
+    ///
+    /// **GREEN (after step-2):** the bit-exact dedup collapses 24 → 8 canonical
+    /// corners (identical topology to `unit_cube_mesh`) → closed mesh → accepted
+    /// by `from_mesh_f64` → `Ok(non-degenerate Manifold)`.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn weld_collapses_unwelded_occt_style_cube_for_manifold_ingest() {
+        let mesh = unwelded_unit_cube_mesh();
+
+        // Fixture structural invariants.
+        assert_eq!(
+            mesh.vertices.len(),
+            72, // 24 vertices × 3 floats
+            "unwelded fixture must have 24 vertices (6 faces × 4 corners × 3 floats); \
+             got {} floats",
+            mesh.vertices.len()
+        );
+        assert_eq!(
+            mesh.indices.len(),
+            36, // 12 triangles × 3 indices
+            "unwelded fixture must have 12 triangles (6 faces × 2 tris × 3 indices); \
+             got {}",
+            mesh.indices.len()
+        );
+
+        // RED → GREEN pivot: the weld in step-2 makes this succeed.
+        let m = manifold_from_reify_mesh(&mesh)
+            .expect("weld must let an un-welded OCCT-style cube ingest as a closed manifold");
+
+        // Non-degeneracy probe (mirrors union_meshgl64_exposes_provenance_and_merge_pairing_invariant).
+        assert!(
+            !m.is_empty() && m.num_tri() > 0 && m.volume() > 0.0 && m.bounding_box().is_some(),
+            "welded cube must be a real non-degenerate solid: \
+             is_empty={is_empty}, num_tri={num_tri}, volume={volume}, has_bbox={has_bbox}",
+            is_empty = m.is_empty(),
+            num_tri = m.num_tri(),
+            volume = m.volume(),
+            has_bbox = m.bounding_box().is_some(),
+        );
+
+        // Production seam: the un-welded mesh must also ingest via the public API.
+        assert!(
+            ManifoldKernel::new().ingest_mesh(&mesh).is_ok(),
+            "ManifoldKernel::ingest_mesh must accept an un-welded OCCT-style cube \
+             once the weld is in place"
+        );
+    }
+
+    /// Completion-condition test (task 3525): after a real Manifold union,
+    /// `correlate_facets` maps every surviving triangle back to a source attribute.
+    ///
+    /// # Premises pinned
+    ///
+    /// The property that `a.original_id()` and `b.original_id()` both appear in
+    /// the union's `run_original_id` is the Manifold provenance guarantee.  It is
+    /// verified-reachable from the landed egress test
+    /// `union_meshgl64_exposes_provenance_and_merge_pairing_invariant` (task 4247).
+    ///
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn union_walk_correlates_surviving_facets_to_source_features() {
+        use crate::test_fixtures::unit_cube_manifold;
+        use crate::provenance::correlate_facets;
+        use reify_ir::TopologyAttribute;
+        use std::collections::{HashMap, HashSet};
+
+        // Call as_original() to assign a stable non-negative tracking ID that
+        // survives through boolean operations and appears in run_original_id.
+        // This mirrors the production ingest_mesh path (which also calls
+        // as_original() before storing), ensuring the test exercises the same
+        // provenance-tracking contract.
+        let a = unit_cube_manifold([0.0, 0.0, 0.0]).as_original();
+        let b = unit_cube_manifold([0.5, 0.0, 0.0]).as_original();
+
+        // Premise: both parents have distinct non-negative original_ids.
+        let id_a = a.original_id();
+        let id_b = b.original_id();
+        assert!(id_a >= 0, "a.original_id() must be >= 0 (Manifold provenance guarantee)");
+        assert!(id_b >= 0, "b.original_id() must be >= 0 (Manifold provenance guarantee)");
+        assert_ne!(id_a, id_b, "two distinct inputs must have distinct original_ids");
+
+        let id_a = id_a as u32;
+        let id_b = id_b as u32;
+
+        let union = a.union(&b);
+        let m = union.to_meshgl64();
+
+        // Premise: both parent ids appear in the union's run_original_id.
+        let roi: HashSet<u32> = m.run_original_id().into_iter().collect();
+        assert!(
+            roi.contains(&id_a) && roi.contains(&id_b),
+            "union run_original_id must contain both parent ids {id_a} and {id_b}; got {roi:?}"
+        );
+
+        let attr_a = make_attr("featureA");
+        let attr_b = make_attr("featureB");
+
+        let mut parent: HashMap<u32, TopologyAttribute> = HashMap::new();
+        parent.insert(id_a, attr_a.clone());
+        parent.insert(id_b, attr_b.clone());
+
+        let facets = correlate_facets(&m, &parent)
+            .expect("correlate_facets must succeed on a well-formed union MeshGL64");
+
+        // Every surviving triangle must be present.
+        assert_eq!(
+            facets.len(),
+            m.num_tri(),
+            "correlate_facets must produce one entry per triangle; got {} for {} tris",
+            facets.len(),
+            m.num_tri()
+        );
+
+        // Every facet must have a source (both parents are in the map).
+        for (i, f) in facets.iter().enumerate() {
+            assert!(
+                f.source.is_some(),
+                "facet {i} has run_original_id={} which is in the parent map; source must be Some",
+                f.descriptor.run_original_id
+            );
+        }
+
+        // Both feature ids must appear in the output.
+        let feature_ids: HashSet<String> = facets
+            .iter()
+            .map(|f| f.source.as_ref().unwrap().feature_id.to_string())
+            .collect();
+        assert!(
+            feature_ids.contains("featureA") && feature_ids.contains("featureB"),
+            "both featureA and featureB must appear in facet sources; got {feature_ids:?}"
+        );
+
+        // Per-facet consistency: each facet's source feature_id matches its run_original_id.
+        for (i, f) in facets.iter().enumerate() {
+            let expected_feature = if f.descriptor.run_original_id == id_a {
+                "featureA"
+            } else {
+                "featureB"
+            };
+            let actual_feature = f.source.as_ref().unwrap().feature_id.to_string();
+            assert_eq!(
+                actual_feature, expected_feature,
+                "facet {i}: run_original_id={} must map to {expected_feature}, got {actual_feature}",
+                f.descriptor.run_original_id
+            );
+        }
+    }
+
+    /// Step-7 RED: `propagate_attributes` must return `Ok(Propagated)` when
+    /// both parent manifolds were ingested with `as_original()` (via the
+    /// production `ingest_mesh` path) and have corresponding entries in the
+    /// `TopologyAttributeTable`.
+    ///
+    /// # Two assertions in one test
+    ///
+    /// (a) **Happy path** — two ingested cubes unioned, both parents annotated:
+    ///     call must return `Ok(Propagated)`.
+    ///
+    /// (b) **Degenerate path** — empty kernel, synthetic parent/result handle
+    ///     ids that don't exist in `shapes`, empty table: must still return
+    ///     `Ok(Discarded)` (the existing contract from the empty-kernel tests).
+    ///
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn propagate_attributes_returns_propagated_when_parent_provenance_present() {
+        use crate::test_fixtures::unit_cube_mesh;
+        use reify_ir::{GeometryOp, KernelAttributeOutcome, TopologyAttributeTable};
+
+        // (a) Happy path: two ingested overlapping cubes, both annotated.
+        let mut kernel = ManifoldKernel::new();
+        let mesh_a = unit_cube_mesh([0.0, 0.0, 0.0]);
+        let mesh_b = unit_cube_mesh([0.5, 0.0, 0.0]);
+
+        let handle_a = kernel.ingest_mesh(&mesh_a)
+            .expect("ingest_mesh must accept a valid unit cube");
+        let handle_b = kernel.ingest_mesh(&mesh_b)
+            .expect("ingest_mesh must accept a valid unit cube");
+
+        let mut table = TopologyAttributeTable::default();
+        table.record(handle_a.id, make_attr("A"));
+        table.record(handle_b.id, make_attr("B"));
+
+        let result_handle = kernel
+            .execute(&GeometryOp::Union { left: handle_a.id, right: handle_b.id })
+            .expect("union of two valid cubes must succeed");
+
+        let feature_id = FeatureId::new("t#realization[0]");
+        let op = GeometryOp::Union { left: handle_a.id, right: handle_b.id };
+        let outcome = kernel.propagate_attributes(
+            &mut table,
+            &op,
+            &[handle_a.id, handle_b.id],
+            result_handle.id,
+            &feature_id,
+        );
+
+        match outcome {
+            Ok(KernelAttributeOutcome::Propagated) => {}
+            other => panic!(
+                "propagate_attributes must return Ok(Propagated) when both parents are annotated \
+                 and the result mesh is non-empty; got {other:?}"
+            ),
+        }
+
+        // The table must be unchanged on the Propagated path.  Descriptor-keyed
+        // persistence is deferred to task 4262 (`propagate_attributes` takes `&self`;
+        // there is no descriptor store until 4262 lands).
+        assert!(
+            table.lookup(result_handle.id).is_none(),
+            "propagate_attributes must not write a result-handle entry on the Propagated path \
+             (descriptor-keyed persistence deferred to task 4262)"
+        );
+        assert!(
+            table.lookup(handle_a.id).is_some(),
+            "handle_a entry must be unchanged in the table after propagate_attributes"
+        );
+        assert!(
+            table.lookup(handle_b.id).is_some(),
+            "handle_b entry must be unchanged in the table after propagate_attributes"
+        );
+
+        // (b) Degenerate path: empty kernel, synthetic handles not in shapes,
+        //     empty table — must still return Ok(Discarded).
+        let empty_kernel = ManifoldKernel::new();
+        let mut empty_table = TopologyAttributeTable::default();
+        let synthetic_op = GeometryOp::Union {
+            left: GeometryHandleId(1),
+            right: GeometryHandleId(2),
+        };
+        let degenerate_outcome = empty_kernel.propagate_attributes(
+            &mut empty_table,
+            &synthetic_op,
+            &[GeometryHandleId(1), GeometryHandleId(2)],
+            GeometryHandleId(3),
+            &FeatureId::new("t#realization[0]"),
+        );
+        match degenerate_outcome {
+            Ok(KernelAttributeOutcome::Discarded) => {}
+            other => panic!(
+                "propagate_attributes must return Ok(Discarded) for an empty kernel \
+                 (no shapes, no table entries); got {other:?}"
+            ),
+        }
+    }
+
+    /// Pins that `export(handle, Stl, buf)` on a stored `unit_cube_mesh`
+    /// writes a valid binary STL: the output is `84 + 50*count` bytes with
+    /// `count > 0`.
+    ///
+    /// Manifold meshes carry `normals: None`, so this also exercises the
+    /// geometric-facet-normal path inside `write_stl_binary` (normals are
+    /// computed from edge cross-products, not from the `Mesh::normals` field).
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn export_stl_of_unit_cube_writes_valid_binary() {
+        let mut kernel = ManifoldKernel::new();
+        let h = kernel
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
+
+        let mut buf = Vec::new();
+        kernel
+            .export(h, ExportFormat::Stl, &mut buf)
+            .expect("ManifoldKernel Stl export of a unit cube must succeed");
+
+        let count = u32::from_le_bytes(buf[80..84].try_into().unwrap());
+        assert!(count > 0, "STL triangle count must be > 0 for a solid cube");
+        assert_eq!(
+            buf.len(),
+            84 + 50 * count as usize,
+            "STL byte length must equal 84 + 50*count"
+        );
+    }
+
+    /// Mirrors `export_stl_of_unit_cube_writes_valid_binary` for 3MF.
+    /// Because Stored=uncompressed, OPC part names and model XML appear
+    /// literally in raw bytes — no zip reader needed.
+    ///
+    /// RED before step-8: Manifold export() routes ThreeMF to `_ => Err(STUB_MSG)`.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn export_3mf_of_unit_cube_writes_valid_package() {
+        let mut kernel = ManifoldKernel::new();
+        let h = kernel
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
+
+        let mut buf = Vec::new();
+        kernel
+            .export(h, ExportFormat::ThreeMF, &mut buf)
+            .expect("ManifoldKernel ThreeMF export of a unit cube must succeed");
+
+        // Stored/uncompressed: OPC part names and model XML appear literally in raw bytes.
+        assert!(
+            buf.windows(b"3D/3dmodel.model".len())
+                .any(|w| w == b"3D/3dmodel.model"),
+            "raw bytes must contain '3D/3dmodel.model'"
+        );
+
+        let tri_needle = b"<triangle ";
+        let tri_count = buf.windows(tri_needle.len()).filter(|w| *w == tri_needle).count();
+        assert!(tri_count > 0, "ManifoldKernel 3MF export must contain at least one <triangle>");
     }
 }

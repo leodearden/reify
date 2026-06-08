@@ -1,0 +1,7 @@
+// Fixture for B8 simulation_ready stdlib test — geometry-determined case.
+// All params are geometric (Length) with concrete defaults → determined(p)=true
+// for every param → simulation_ready passes.
+structure Part {
+    param width : Length = 80mm
+    param height : Length = 60mm
+}

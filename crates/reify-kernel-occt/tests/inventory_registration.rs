@@ -26,7 +26,7 @@ fn occt_capability_descriptor_lists_brep_primitives_and_booleans() {
 
     let descriptor = reify_kernel_occt::register::occt_capability_descriptor();
 
-    // Primitives ×4
+    // Primitives ×5
     assert!(
         descriptor.supports(Operation::PrimitiveBox, ReprKind::BRep),
         "OCCT must declare (PrimitiveBox, BRep)",
@@ -42,6 +42,14 @@ fn occt_capability_descriptor_lists_brep_primitives_and_booleans() {
     assert!(
         descriptor.supports(Operation::PrimitiveTube, ReprKind::BRep),
         "OCCT must declare (PrimitiveTube, BRep)",
+    );
+    assert!(
+        descriptor.supports(Operation::PrimitiveCone, ReprKind::BRep),
+        "OCCT must declare (PrimitiveCone, BRep)",
+    );
+    assert!(
+        descriptor.supports(Operation::PrimitiveWedge, ReprKind::BRep),
+        "OCCT must declare (PrimitiveWedge, BRep)",
     );
 
     // Booleans ×3

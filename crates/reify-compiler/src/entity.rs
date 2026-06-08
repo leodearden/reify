@@ -1172,6 +1172,17 @@ pub(crate) fn compile_entity(
                         &mut clusters_with_outside_collision,
                     );
                 }
+
+                // Duplicate keyed-member key detection (task 3930 β): each member
+                // of a `Keyed<T>` sub-collection carries an author-assigned String
+                // key that must be unique within the collection. Gated on a
+                // non-empty keyed block so plain/positional subs are unaffected.
+                if !sub.keyed_members.is_empty() {
+                    diagnostics.extend(crate::diagnostics::check_duplicate_member_keys(
+                        &sub.name,
+                        &sub.keyed_members,
+                    ));
+                }
             }
             reify_ast::MemberDecl::MetaBlock(meta) => {
                 if let Some(first_span) = first_meta_span {
@@ -1698,6 +1709,22 @@ pub(crate) fn compile_entity(
                         .map(|e| compile_expr(e, &scope, enum_defs, functions, diagnostics))
                 };
 
+                // Keep-first dedupe of the keyed-member keys. A duplicate key is
+                // always accompanied by a blocking `E_DUP_MEMBER_KEY` error (emitted
+                // in the member pre-pass above), so a duplicate-keyed template is
+                // never consumed downstream. We still dedupe defensively so that,
+                // even on that error path, no two `MemberKey`s collapse onto the same
+                // key-addressed `ValueCellId` (e.g. two `…vents["intake"]` cells) —
+                // colliding cells would be a latent trap for any future stage that
+                // consumes an error-carrying template.
+                let mut seen_keyed = HashSet::new();
+                let keyed_members: Vec<reify_ir::MemberKey> = sub
+                    .keyed_members
+                    .iter()
+                    .filter(|e| seen_keyed.insert(e.key.as_str()))
+                    .map(|e| reify_ir::MemberKey::new(&e.key))
+                    .collect();
+
                 sub_components.push(SubComponentDecl {
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
@@ -1705,6 +1732,7 @@ pub(crate) fn compile_entity(
                     args: compiled_args,
                     type_args: resolved_type_args,
                     is_collection: sub.is_collection,
+                    keyed_members,
                     count_cell: None,
                     guard_state,
                     pose,
@@ -3182,6 +3210,7 @@ fn compile_match_arm_decl_group(
                 args: compiled_args,
                 type_args: resolved_type_args,
                 is_collection: false,
+                keyed_members: Vec::new(),
                 count_cell: None,
                 guard_state: GuardState::Compiled(Box::new(arm_guard_expr.clone())),
                 pose,
@@ -4021,8 +4050,24 @@ pub(crate) fn build_structure_def_skeleton(
     // already recorded and silently skip its Info diagnostic (task 3895 bugfix).
     let local_alias_registry = alias_registry.clone();
 
-    // Neutral scope: unit registry set so quantity literals resolve;
-    // no sibling params registered (neutral-scope semantics).
+    // Compilation scope: unit registry set so quantity literals resolve.
+    // Params are registered incrementally in the first pass (see first-pass
+    // loop below), so that Let members compiled in the second pass can resolve
+    // sibling-param references without producing poison exprs.
+    //
+    // NOTE: `set_template_registry` is intentionally NOT called here.  The
+    // skeleton runs in `phase_functions`, before the full template registry is
+    // available (templates are built IN this same phase from the skeletons).
+    // As a consequence, a derived let whose RHS constructs another structure
+    // (e.g. `let h = InnerStruct(...)`) will compile to a generic FunctionCall
+    // rather than a StructureInstanceCtor, and will therefore NOT carry
+    // InnerStruct's own lets — introducing a narrow sub-consistency gap for
+    // nested-ctor-in-let cases on the fn-returned path.  The current test suite
+    // only exercises scalar / geometry derived lets in fn-returned structs
+    // (make_dt / make_g / make_h) so this gap is latent but untested.
+    // Future fix: pass the partially-built registry once all skeletons have been
+    // collected (a two-sub-pass split of phase_functions).  Until then, the
+    // limitation is documented here so a future regression is visible.
     let mut scope = CompilationScope::new(&structure.name);
     scope.set_unit_registry(unit_registry);
 
@@ -4042,9 +4087,25 @@ pub(crate) fn build_structure_def_skeleton(
     // Lower annotations so template.version() reflects @version(N) correctly.
     let annotations = lower_annotations(&structure.annotations, &mut throwaway_diags);
 
-    // Build value_cells for Param members only; Lets and other member kinds
-    // are irrelevant to the StructureInstanceCtor lowering path.
+    // Build value_cells for Param members; register each in scope so that Let
+    // members compiled in the second pass below can resolve sibling params
+    // without producing poison exprs (task-4342: skeleton now carries Let cells).
     let mut value_cells: Vec<ValueCellDecl> = Vec::new();
+
+    // Mirror the authoritative path's incremental geometry-let classification
+    // (entity.rs:623, 853-856).  `known_geometry_lets` tracks names that resolve
+    // to geometry — either a direct geometry function call, or an Ident/branch
+    // alias to an already-known geometry let or geometry param.  `is_geometry_let`
+    // consults this set for its Ident/Conditional/Match branches (geometry.rs),
+    // so it MUST be populated incrementally as the walk proceeds — otherwise an
+    // aliased geometry let (e.g. `let base = box(w,w,w); let shifted = base`) is
+    // skipped on the authoritative/sub path but NOT here, leaking a spurious
+    // Undef `shifted` field into the ctor `lets` and breaking the cross-path
+    // consistency this task exists to guarantee.  Geometry params are seeded in
+    // the first pass below (authoritative: entity.rs:822-831); geometry lets are
+    // accumulated in the second pass.
+    let mut known_geometry_lets: HashSet<&str> = HashSet::new();
+
     for member in &structure.members {
         if let reify_ast::MemberDecl::Param(param) = member {
             // Resolve cell_type; fall back to Real on None / unresolvable.
@@ -4073,6 +4134,21 @@ pub(crate) fn build_structure_def_skeleton(
             });
 
             let id = ValueCellId::new(&structure.name, &param.name);
+            // Seed `known_geometry_lets` with geometry-typed params whose default
+            // is a geometry expression, so a later let aliasing this param (e.g.
+            // `let shifted = base_solid`) is classified as geometry and routed out
+            // of value_cells.  Mirrors the authoritative path (entity.rs:822-831).
+            if cell_type == Type::Geometry
+                && param
+                    .default
+                    .as_ref()
+                    .map(|e| is_geometry_let(e, functions, &known_geometry_lets))
+                    .unwrap_or(false)
+            {
+                known_geometry_lets.insert(param.name.as_str());
+            }
+            // Register in scope so subsequent Let exprs can reference this param.
+            scope.register(&param.name, cell_type.clone());
             value_cells.push(ValueCellDecl {
                 id,
                 kind: ValueCellKind::Param,
@@ -4082,6 +4158,99 @@ pub(crate) fn build_structure_def_skeleton(
                 default_expr,
                 solver_hints: vec![],
                 span: param.span,
+            });
+        }
+    }
+
+    // Second pass: compile Let members against the scope that now has all params
+    // registered.  Two let categories are ROUTED OUT (excluded from value_cells),
+    // matching the authoritative path's routing:
+    //
+    //   1. Geometry-typed lets — skipped as on the authoritative path (is_geometry_let).
+    //   2. Per-decl GUARDED lets (where_clause.is_some()) — routed out here to match
+    //      the authoritative path (entity.rs:1457-1472), which diverts guarded lets into
+    //      guarded_groups and never into value_cells.  If a guarded let were included in
+    //      value_cells here, the ctor-lets collection at expr.rs:1425-1440 would harvest
+    //      it and `materialize_template_lets` would evaluate it eagerly, bypassing its
+    //      guard — while the same structure reached via sub or entity-scope ctor-in-let
+    //      (authoritative template) would NOT evaluate it.  That asymmetry breaks the
+    //      sub-consistency property this task exists to guarantee.  Excluding it here
+    //      (one `continue`) makes the skeleton's value_cells contents — and therefore the
+    //      ctor `lets` — identical across all arrival paths.  The skeleton is transient
+    //      and guarded_groups is vec![] anyway; guarded lets simply do not participate
+    //      in eager materialization on the fn-returned path.
+    //
+    // Solver-hints/annotation lowering and per-decl guard machinery
+    // (compile_per_decl_guard / guarded_groups population) are intentionally NOT
+    // replicated here — they require the full diagnostic machinery (alias registry,
+    // structure_names, trait_names) and are compiler-internal; the skeleton is transient
+    // and never participates in constraint solving.
+    //
+    // Amendment (task-4342 suggestion 1):
+    //   • `fixup_option_none_for_let` is called so that `let x: Option<T> = none`
+    //     gets the correct typed-none expr on both skeleton and authoritative paths.
+    //   • Visibility respects `let_decl.is_pub` (authoritative: entity.rs:1434) so
+    //     downstream callers (e.g. the ctor-lets lowering filter at expr.rs:1413) see
+    //     identical metadata on both paths.
+    for member in &structure.members {
+        if let reify_ast::MemberDecl::Let(let_decl) = member {
+            if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
+                // Accumulate this geometry let's name so subsequent lets that
+                // alias it (Ident/branch references) are also classified as
+                // geometry — matching the authoritative path (entity.rs:853-856).
+                known_geometry_lets.insert(let_decl.name.as_str());
+                continue;
+            }
+            // Per-decl guarded lets belong in guarded_groups on the authoritative path;
+            // exclude them here so value_cells (and thus ctor `lets`) are path-consistent.
+            //
+            // SUB-CONSISTENCY GAP (accepted, out-of-scope for task-4342):
+            // A guarded member (e.g. `let active_limit = nominal - dev where active`) is
+            // present in the authoritative template's `guarded_groups` and is materialised
+            // via `elaborate_child_lets_only` on the `sub` path when its guard evaluates to
+            // true.  On the ctor / fn-returned / param-held paths the member is simply
+            // absent from `ctor.lets`, so `instance.active_limit` yields Undef regardless
+            // of the guard condition.  This is intentional for task-4342 — the eager
+            // materialisation strategy does not carry the guard expression, so evaluating it
+            // conditionally would require a different IR representation.  A follow-up task
+            // should either (a) extend the `lets` vec to carry `(name, expr, Option<guard>)`
+            // and conditionally evaluate guarded lets in `materialize_template_lets`, or
+            // (b) accept the gap and document it as "guarded members are sub-only".
+            if let_decl.where_clause.is_some() {
+                continue;
+            }
+            let mut compiled_expr =
+                compile_expr(&let_decl.value, &scope, enum_defs, functions, &mut throwaway_diags);
+            // Mirror the authoritative path's fixup so `Option<T>` typed lets get the
+            // correct none type, not the parser's `Option<Real>` fallback.
+            fixup_option_none_for_let(
+                &mut compiled_expr,
+                let_decl.type_expr.as_ref(),
+                &type_param_names,
+                &local_alias_registry,
+                structure_names,
+                trait_names,
+                &mut throwaway_diags,
+            );
+            let cell_type = compiled_expr.result_type.clone();
+            let id = ValueCellId::new(&structure.name, &let_decl.name);
+            // Register in scope so later lets can reference earlier lets.
+            scope.register(&let_decl.name, cell_type.clone());
+            // Respect is_pub, matching the authoritative path (entity.rs:1434).
+            let let_visibility = if let_decl.is_pub {
+                Visibility::Public
+            } else {
+                Visibility::Private
+            };
+            value_cells.push(ValueCellDecl {
+                id,
+                kind: ValueCellKind::Let,
+                visibility: let_visibility,
+                is_aux: let_decl.is_aux,
+                cell_type,
+                default_expr: Some(compiled_expr),
+                solver_hints: vec![],
+                span: let_decl.span,
             });
         }
     }
@@ -4288,5 +4457,115 @@ mod tests {
                 diagnostics[0].message,
             );
         }
+    }
+
+    // ── Keyed<T> sub-collection: dup-key diagnostic + keyed_members (task 3930 β) ──
+
+    /// Two members of one `Keyed<Vent>` sub declaring the same key `"intake"`
+    /// must surface the `E_DUP_MEMBER_KEY` (`DiagnosticCode::DuplicateMemberKey`)
+    /// compile error.
+    #[test]
+    fn keyed_sub_duplicate_keys_emit_dup_member_key_error() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+        "intake" => { area = 8mm }
+    }
+}
+"#;
+        let module = compile_source(source);
+        assert!(
+            module
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::DuplicateMemberKey)),
+            "expected an E_DUP_MEMBER_KEY (DuplicateMemberKey) diagnostic for the \
+             duplicate keyed member key, got: {:?}",
+            module
+                .diagnostics
+                .iter()
+                .map(|d| (d.code, d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+
+        // Amendment (task 3930 β, robustness): even on the duplicate-key error
+        // path the compiled template must NOT carry two `MemberKey`s that collapse
+        // onto the same key-addressed `ValueCellId`. Lowering keep-first dedupes the
+        // keys, so `vents.keyed_members` holds `"intake"` exactly once.
+        let manifold = module
+            .templates
+            .iter()
+            .find(|t| t.name == "Manifold")
+            .expect("Manifold template should still compile alongside the error");
+        let vents = manifold
+            .sub_components
+            .iter()
+            .find(|s| s.name == "vents")
+            .expect("vents sub-component should be present");
+        assert_eq!(
+            vents.keyed_members,
+            vec![reify_ir::MemberKey::new("intake")],
+            "duplicate keys must be keep-first deduped so no two MemberKeys collide \
+             onto the same key-addressed ValueCellId",
+        );
+    }
+
+    /// A `Keyed<Vent>` sub with distinct keys compiles without a duplicate-key
+    /// error and records the author-assigned keys, in order, on the compiled
+    /// `SubComponentDecl.keyed_members`.
+    #[test]
+    fn keyed_sub_unique_keys_populate_keyed_members() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { area = 5mm }
+        "exhaust" => { area = 8mm }
+    }
+}
+"#;
+        let module = compile_source(source);
+
+        assert!(
+            !module
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::DuplicateMemberKey)),
+            "unexpected DuplicateMemberKey diagnostic for distinct keys: {:?}",
+            module
+                .diagnostics
+                .iter()
+                .map(|d| (d.code, d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+
+        let manifold = module
+            .templates
+            .iter()
+            .find(|t| t.name == "Manifold")
+            .expect("Manifold template should compile");
+        let vents = manifold
+            .sub_components
+            .iter()
+            .find(|s| s.name == "vents")
+            .expect("vents sub-component should be present");
+        assert_eq!(
+            vents.keyed_members,
+            vec![
+                reify_ir::MemberKey::new("intake"),
+                reify_ir::MemberKey::new("exhaust"),
+            ],
+            "vents keyed_members must carry the author-assigned keys in declaration order",
+        );
     }
 }

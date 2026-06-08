@@ -30,7 +30,7 @@ if [ "$#" -lt 1 ]; then
     echo "  <file>  path to a .ri source file" >&2
     echo "" >&2
     echo "Launches reify-gui in dev mode (vite dev server on :1420 by default, devtools," >&2
-    echo "MCP debug listener on :3939 via REIFY_DEBUG=1)." >&2
+    echo "MCP debug listener on :\${REIFY_DEBUG_PORT:-3939} via REIFY_DEBUG=1)." >&2
     echo "For release mode, use scripts/run-gui.sh." >&2
     exit 1
 fi
@@ -56,6 +56,12 @@ cd "$REPO_ROOT"
 # Used by tests/infra/test_run_gui_scripts.sh Test 25 to avoid collisions
 # with another worktree's vite already bound to :1420. See task 2308.
 REIFY_VITE_PORT="${REIFY_VITE_PORT:-1420}"
+
+# Debug server port: default 3939, overridable via REIFY_DEBUG_PORT.
+# Set per worktree to avoid collisions when running concurrent GUI smokes.
+# Exported so reify-gui binds the chosen port and the sidecar inherits it.
+REIFY_DEBUG_PORT="${REIFY_DEBUG_PORT:-3939}"
+export REIFY_DEBUG_PORT
 
 # -- 2. Install sidecar npm deps ---------------------------------------------
 # build-sidecar.sh runs `npx tsup`, which requires `typescript` to be present
@@ -144,9 +150,9 @@ echo "==> Building reify-gui (debug)..."
 cargo build -p reify-gui --bin reify-gui --features gui
 
 # -- 7. Set debug-mode env vars ----------------------------------------------
-# REIFY_DEBUG=1 enables the MCP debug listener on 127.0.0.1:3939 (see
-# gui/src-tauri/src/main.rs). LD_LIBRARY_PATH is required for direct binary
-# invocation since the cargo runner only fires for `cargo run`.
+# REIFY_DEBUG=1 enables the MCP debug listener on 127.0.0.1:$REIFY_DEBUG_PORT
+# (see gui/src-tauri/src/main.rs). LD_LIBRARY_PATH is required for direct
+# binary invocation since the cargo runner only fires for `cargo run`.
 export REIFY_DEBUG=1
 # Only prepend the snap path if it exists — the PPA install (default in
 # scripts/setup-dev.sh) puts OCCT in /usr/lib where the loader finds it
@@ -165,7 +171,7 @@ fi
 #     children block bash's signal delivery until they exit).
 #   - The cleanup trap can kill GUI_PID explicitly when the script is
 #     killed externally, instead of orphaning the GUI window.
-echo "==> Launching target/debug/reify-gui $FILE (REIFY_DEBUG=1)"
+echo "==> Launching target/debug/reify-gui $FILE (REIFY_DEBUG=1, port=$REIFY_DEBUG_PORT)"
 target/debug/reify-gui "$FILE" &
 GUI_PID=$!
 RC=0

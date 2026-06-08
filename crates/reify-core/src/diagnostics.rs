@@ -765,28 +765,49 @@ pub enum DiagnosticCode {
     /// it; out of scope for the v0.2 closed-chain → loop-closure migration.
     KinematicClosedChain,
     /// Origin: `crates/reify-stdlib/src/mechanism.rs` (task 2528 — `mechanism().body(...)`
-    /// builder). Reserved for the duplicate-solid detector that rejects a `body()` call
-    /// whose `solid` argument equals (by structural `Value::Eq`) the `solid` of an
-    /// already-recorded body in the same Mechanism.
+    /// builder). Emitted when a `body()` call attaches a solid that is already recorded
+    /// in the same Mechanism (detected by structural `Value::Eq`; the docs spec says
+    /// referential identity — gap documented in mechanism.rs and tracked in task 2538).
     ///
-    /// Canonical message form:
-    /// `"duplicate solid in mechanism: solid already bound to body <id>"`.
+    /// Canonical message form (sourced verbatim from the Map's `error_message` field,
+    /// as produced by `make_duplicate_solid_error` in `mechanism.rs`):
+    /// `"duplicate solid: solid value already attached to a body in this mechanism"`.
     ///
     /// The PRD-prose mnemonic for this code is `E_MECHANISM_DUPLICATE_SOLID`
     /// (see `docs/prds/kinematic-constraints.md` task 3 and
-    /// `docs/reify-stdlib-reference.md` §13.2). Note: v0.1 detects duplicates by
-    /// structural `Value::Eq` rather than by referential identity (the docs spec) —
-    /// a code-comment in `mechanism.rs` documents the gap; the docs note will be
-    /// updated in the follow-on docs task (2538).
+    /// `docs/reify-stdlib-reference.md` §13.2).
     ///
-    /// TODO: wired by the snapshot/eval-pipeline integration in the task family covering
-    /// 2585+. The v0.1 mechanism builder records the error condition on the returned
-    /// Mechanism `Value::Map` (`error`, `error_message` fields); a follow-on integration
-    /// translates the errored Map into a real `Diagnostic` carrying this code via
-    /// `EvalResult.diagnostics`. The variant is reserved now so that downstream tooling
-    /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from the
-    /// moment the diagnostic is emitted, with no further enum churn at integration time.
+    /// **Emitted** at the `reify-eval` eval boundary by
+    /// `detect_mechanism_errors` in `engine_eval.rs` (task 4308), which scans
+    /// the evaluated `ValueMap` for mechanism Maps carrying `error="duplicate_solid"`
+    /// and maps each distinct errored Map to one `Severity::Error` diagnostic.
+    /// Wired into both `Engine::eval` and `Engine::eval_cached` so the error
+    /// surfaces on `reify check` (no kernel) and in the GUI diagnostics panel.
     MechanismDuplicateSolid,
+    /// Origin (L1/eval): `crates/reify-stdlib/src/snapshot.rs` — `bind` arm
+    /// guard (task 4309 α) and `crates/reify-stdlib/src/sweep.rs` — `dim` /
+    /// `sweep` / `sweep_grid` arm guards (task 4309 α).
+    /// Origin (L2/compile): `crates/reify-compiler` — DrivingJoint-bound
+    /// enforcement (task γ; not yet landed).
+    ///
+    /// Canonical message form:
+    /// `"non-driving joint passed to bind/dim/sweep: coupling and fixed joints \
+    ///   have no free motion variable; use a driving joint (prismatic, revolute, \
+    ///   cylindrical, planar, or spherical)"`.
+    ///
+    /// Emitted as a `Severity::Error` by `detect_nondriving_joint_errors` in
+    /// `engine_eval.rs` (task 4309) when any top-level evaluated cell holds a
+    /// `Value::Map` carrying `error = "nondriving_joint"`.  Wired into both
+    /// `Engine::eval` and `Engine::eval_cached` so the diagnostic surfaces on
+    /// `reify check` (no kernel) and in the GUI diagnostics panel.
+    ///
+    /// Per PRD D6: **one code, two emission sites** — L1 (eval, task α/4309)
+    /// and L2 (compile, task γ/4310) share this same variant.
+    ///   - L1: `detect_nondriving_joint_errors` in `engine_eval.rs` (task α) — landed
+    ///   - L2: `check_expr_mechanism_joint_bound` in `conformance/mod.rs` (task γ) — **LANDED**
+    ///
+    /// The PRD-prose mnemonic for this code is `E_MECHANISM_NONDRIVING_JOINT`.
+    MechanismNonDrivingJoint,
     /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
     /// §"Singularity, over/under-constraint diagnostics").
@@ -1112,6 +1133,65 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_UNRESOLVED_TYPE`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     UnresolvedType,
+    /// A generic function signature references a type name that is neither a
+    /// declared type parameter of that function nor a known type alias, builtin,
+    /// or structure.
+    ///
+    /// Origin site: `crates/reify-compiler/src/functions.rs::compile_function`
+    /// (param-type and return-type resolution failure arms, gated on
+    /// `!type_param_names.is_empty()`).
+    ///
+    /// Only emitted when the enclosing function IS generic (`<T, …>`). Non-generic
+    /// functions with an unknown type name continue to emit `UnresolvedType` so
+    /// that the existing "unresolved type: <name>" message and code are preserved
+    /// bit-for-bit (INV-6 regression pin — see `fn_generic_signature_tests.rs`
+    /// `nongeneric_unknown_type_keeps_unresolved_type`).
+    ///
+    /// Canonical message form:
+    /// `"type '<expr>' in the signature of generic function '<name>' is not a declared type parameter or a known type"`
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FN_UNKNOWN_TYPE_PARAM`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FnUnknownTypeParam,
+    /// A generic function call binds the same type parameter to two different
+    /// concrete types across its arguments (call-site type-argument inference
+    /// conflict).
+    ///
+    /// Origin site: `crates/reify-compiler/src/expr.rs::compile_expr_guarded`
+    /// (the `OverloadResolution::Resolved` arm for a generic callee), emitted
+    /// when the call-site `type_compat::unify` pass returns
+    /// `Err(TypeArgConflict)` — i.e. an earlier argument bound type parameter
+    /// `P` to one type and a later argument requires a different one.
+    ///
+    /// Only reachable for generic user functions (`fn f<T>(…)`); non-generic
+    /// calls bypass unification entirely (INV-6).
+    ///
+    /// Canonical message form:
+    /// `"conflicting type arguments for type parameter '<P>' in call to '<name>': <existing> vs <incoming>"`
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FN_TYPE_ARG_CONFLICT`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FnTypeArgConflict,
+    /// A generic function call's type argument(s) cannot be inferred from the
+    /// supplied arguments, leaving the call's result type wholly undetermined.
+    ///
+    /// Origin site: `crates/reify-compiler/src/expr.rs::compile_expr_guarded`
+    /// (the `OverloadResolution::Resolved` arm for a generic callee), emitted
+    /// when the fully-substituted return type is a BARE top-level
+    /// `Type::TypeParam(_)` — nothing in the arguments pinned it (e.g.
+    /// `fn make<T>() -> T` called as `make()`). A NESTED unbound parameter
+    /// (e.g. `Field<TypeParam(D), Real>`) is tolerated, since an enclosing call
+    /// can still pin it.
+    ///
+    /// Only reachable for generic user functions (`fn f<T>(…)`); non-generic
+    /// calls keep `return_type.clone()` verbatim (INV-6).
+    ///
+    /// Canonical message form:
+    /// `"cannot infer type argument(s) for generic call to '<name>': result type is undetermined"`
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FN_TYPE_ARG_UNRESOLVED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FnTypeArgUnresolved,
     /// An expression references an unbound identifier at compile time.
     ///
     /// Origin sites (all carry this code):
@@ -1760,6 +1840,68 @@ pub enum DiagnosticCode {
     /// has no effect.  The solve continues with kernel defaults (this is advisory,
     /// not an error).
     BucklingOptionUnsupported,
+    /// Origin: `crates/reify-compiler/src/diagnostics.rs::dup_member_key_error`,
+    /// wired into the keyed-sub pre-pass in
+    /// `crates/reify-compiler/src/entity.rs` (`MemberDecl::Sub` arm).
+    ///
+    /// Canonical message form:
+    /// `"E_DUP_MEMBER_KEY: duplicate keyed member key '<key>' in keyed sub '<sub>'"`.
+    ///
+    /// Emitted as an `Error` when two members of the same `Keyed<T>`
+    /// sub-collection declare the same author-assigned String key. Keys must be
+    /// unique within one keyed collection (keys are author-assigned; no
+    /// auto-keys), so a duplicate is a compile-time identity collision. Carries
+    /// two labels: the duplicate occurrence ("duplicate key defined here") and
+    /// the first occurrence ("first defined here"), mirroring the duplicate
+    /// port-name / duplicate meta-key pre-pass diagnostics.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DUP_MEMBER_KEY`
+    /// (see `docs/prds/keyed-collection-identity.md` task β).
+    DuplicateMemberKey,
+    /// Origin: `crates/reify-compiler/src/expr.rs` — `ExprKind::FunctionCall`
+    /// compile path (task 4197 α).
+    ///
+    /// Canonical message form:
+    /// `"E_DETERMINACY_INTRINSIC_SCOPE: <name> is a purpose-body determinacy
+    /// intrinsic and may only appear as a top-level constraint inside a purpose body"`.
+    ///
+    /// Emitted as a `Severity::Error` when `AllParamsDetermined` or
+    /// `AllGeometryDetermined` is used outside a purpose body (or in a nested
+    /// sub-expression position that reaches `compile_expr` without being desugared
+    /// by `compile_purpose`). These names are reserved as compiler-sugar intrinsics;
+    /// they are not user-callable functions. The intrinsics are valid ONLY as
+    /// direct top-level `constraint` members of a purpose body, where
+    /// `compile_purpose` rewrites them to a `forall … determined(…)` AST before
+    /// calling `compile_expr`.
+    ///
+    /// Returns a non-cascading poison literal (`Value::Undef, Type::Error`) so
+    /// downstream expressions do not emit spurious follow-on errors.
+    ///
+    /// See also: `DeterminacyIntrinsicArg` (E_DETERMINACY_INTRINSIC_ARG) for
+    /// the bad-argument variant fired when the intrinsic IS in a purpose body
+    /// but with an invalid argument.
+    DeterminacyIntrinsicScope,
+    /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (task 4197 α).
+    ///
+    /// Canonical message form:
+    /// `"E_DETERMINACY_INTRINSIC_ARG: <name> expects exactly one purpose-parameter
+    /// (entity reference) argument"`.
+    ///
+    /// Emitted as a `Severity::Error` when `AllParamsDetermined` or
+    /// `AllGeometryDetermined` appears as a top-level `constraint` in a purpose
+    /// body but with an invalid argument: wrong arity (0 or ≥2 args), a
+    /// non-identifier argument (e.g. a literal or computed expression), or an
+    /// identifier that is not a registered purpose parameter. The argument MUST be
+    /// exactly one bare identifier that resolves to a purpose parameter via
+    /// `scope.purpose_param_root`.
+    ///
+    /// Returns a non-cascading poison placeholder constraint so constraint indices
+    /// remain stable and exactly one diagnostic is emitted (anti-cascade policy).
+    ///
+    /// See also: `DeterminacyIntrinsicScope` (E_DETERMINACY_INTRINSIC_SCOPE) for
+    /// the out-of-scope variant fired when the intrinsic is used outside a purpose
+    /// constraint position entirely.
+    DeterminacyIntrinsicArg,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -2946,6 +3088,37 @@ mod tests {
             let s = serde_json::to_string(&code).unwrap();
             assert_eq!(s, expected, "serde mismatch for {code:?}");
         }
+    }
+
+    // --- MechanismNonDrivingJoint tests (task 4309 — E_MECHANISM_NONDRIVING_JOINT) ---
+    // Pairs with the L1 eval guard in reify-stdlib snapshot.rs (bind arm) and
+    // sweep.rs (dim/sweep/sweep_grid arms), and reserves the variant for the
+    // L2 compile guard in reify-compiler (task γ). Per PRD D6: one code, two
+    // emission sites. Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug
+    // derives are already covered by `diagnostic_code_derives` above; only the
+    // variant-specific round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::MechanismNonDrivingJoint` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    /// Shape mirrors `diagnostic_code_unresolved_name_with_code_round_trips`
+    /// (which targets a different variant); a future enum reorganisation that
+    /// drops `MechanismNonDrivingJoint` is caught here.
+    #[test]
+    fn diagnostic_code_mechanism_nondriving_joint_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::MechanismNonDrivingJoint);
+        assert_eq!(d.code, Some(DiagnosticCode::MechanismNonDrivingJoint));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::MechanismNonDrivingJoint`
+    /// serializes as `"MechanismNonDrivingJoint"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_mechanism_nondriving_joint_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::MechanismNonDrivingJoint).unwrap();
+        assert_eq!(s, "\"MechanismNonDrivingJoint\"");
     }
 }
 

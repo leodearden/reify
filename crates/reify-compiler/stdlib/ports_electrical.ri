@@ -1,15 +1,29 @@
-// Stdlib: Electrical Port Interfaces — ElectricalPort, PowerPort, SignalPort
-// Provides the trait surface for electrical connection interfaces:
-// power delivery ports and signal ports with analog/digital/differential kinds.
+// Stdlib: Electrical Port Interfaces — ElectricalPort, PowerPort, SignalPort, PinPort
+// Provides the trait surface for electrical connection interfaces per
+// docs/prds/v0_6/ports-breadth-expansion.md task δ, §5.3.
 //
-// Reference: docs/prds/v0_6/stdlib-reconstruction.md task β, §11.4.
+// Surface (task δ):
+//   ElectricalPort : Port         — voltage_rating : Voltage; current_rating : Current
+//   PowerPort : ElectricalPort    — power_rating : Power (ratings inherited)
+//   SignalPort : ElectricalPort   — signal_kind : SignalKind; impedance : Option<Resistance> = none
+//   PinPort : ElectricalPort + LocatedPort — pin_id : String
+//   SignalKind enum               — Analog | Digital | PWM | Differential
 //
-// Deviations from §11 spec (forced by current language scope):
+// Reference: docs/prds/v0_6/ports-breadth-expansion.md task δ §5.3.
+//   Prior reference: docs/prds/v0_6/stdlib-reconstruction.md task β §11.4.
+//
+// Doc-reconcile: spec uses `SignalType`; this file uses `SignalKind` (task β
+//   precedent; name retained for backward compatibility).
+//
+// Deviations from spec (forced by current language scope):
 //   1. `impedance` carries the Resistance/Ω dimension. Reify has no distinct
 //      `Impedance` named dimension in reify-core/src/dimension.rs; electrical
 //      impedance is dimensionally identical to resistance (kg·m²·s⁻³·A⁻²).
 //      Using `Resistance` directly is safe — it is a named dim valid in param
 //      position like Voltage/Current. The param name `impedance` conveys intent.
+//      Task δ §5.3 uses `impedance : Resistance = undef`; the `= undef` grammar-
+//      fiction becomes `Option<Resistance> = none` per PRD §2 optional-param rule
+//      (precedent: flexures.ri:153, fdm_correlations.ri:242).
 //   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
 //   3. No `#no_prelude` pragma. std.ports.electrical refines Port from
 //      std.ports (inter-stdlib dependency), so the growing-prelude sequence
@@ -20,36 +34,50 @@
 // ── Signal kind enumeration ───────────────────────────────────────────────────
 
 // Classification of the signal carried by a signal port.
-// Analog    — continuous voltage/current signal.
-// Digital   — discrete high/low logic signal.
+// Analog       — continuous voltage/current signal.
+// Digital      — discrete high/low logic signal.
+// PWM          — pulse-width-modulated signal; duty cycle encodes the value.
 // Differential — balanced pair differential signal (e.g. RS-485, CAN).
-enum SignalKind { Analog, Digital, Differential }
+enum SignalKind { Analog, Digital, PWM, Differential }
 
 // ── Electrical port base ──────────────────────────────────────────────────────
 
 // Base trait for any electrical connection interface.
 // Inherits `direction` from Port via refinement.
-// Body is empty — conformers supply Port's direction requirement directly.
-trait ElectricalPort : Port {}
+// voltage_rating : Voltage — maximum continuous voltage the port can sustain (V).
+// current_rating : Current — maximum continuous current the port can carry (A).
+trait ElectricalPort : Port {
+    param voltage_rating : Voltage
+    param current_rating : Current
+}
 
 // ── Power port ────────────────────────────────────────────────────────────────
 
 // Electrical power delivery port.
-// voltage : Voltage — nominal operating voltage of the port (V).
-// max_current : Current — maximum continuous current the port can carry (A).
+// voltage_rating and current_rating are inherited from ElectricalPort.
+// power_rating : Power — rated continuous power delivery capacity (W).
 trait PowerPort : ElectricalPort {
-    param voltage : Voltage
-    param max_current : Current
+    param power_rating : Power
+}
+
+// ── Pin port ──────────────────────────────────────────────────────────────────
+
+// A spatially-located electrical pin — refines ElectricalPort for
+// voltage_rating/current_rating and LocatedPort for the spatial frame.
+// pin_id : String — connector pin label or identifier (e.g. "A1", "VCC").
+trait PinPort : ElectricalPort + LocatedPort {
+    param pin_id : String
 }
 
 // ── Signal port ───────────────────────────────────────────────────────────────
 
 // Electrical signal port — typed by signal kind and characteristic impedance.
-// signal_kind : SignalKind — Analog, Digital, or Differential.
-// impedance : Resistance — characteristic port impedance (Ω).
+// signal_kind : SignalKind — Analog, Digital, PWM, or Differential.
+// impedance : Option<Resistance> = none — characteristic port impedance (Ω);
+//   none means the impedance is unspecified (e.g. logic-level digital signals).
 //   Uses the Resistance dimension (no distinct Impedance named dim — see
 //   deviation #1 in header).
 trait SignalPort : ElectricalPort {
     param signal_kind : SignalKind
-    param impedance : Resistance
+    param impedance : Option<Resistance> = none
 }

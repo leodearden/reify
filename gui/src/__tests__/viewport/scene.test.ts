@@ -28,7 +28,17 @@ function makeMockVector3() {
   return v;
 }
 
-vi.mock('three', () => {
+vi.mock('three', async () => {
+  // Axis-label sprite mocks are shared with axisLabels.test.ts via threeAxisMocks.ts
+  // to prevent silent drift between the two suites.
+  const {
+    MockGroup,
+    MockSprite,
+    MockSpriteMaterial,
+    MockCanvasTexture,
+    MockColor: MockColorShared,
+  } = await import('./threeAxisMocks');
+
   class MockScene {
     children = mockSceneChildren;
     add = mockSceneAdd;
@@ -82,17 +92,17 @@ vi.mock('three', () => {
     type = 'GridHelper';
     visible = true;
     rotation = { x: 0, y: 0, z: 0 };
+    renderOrder = 0;
+    material = { depthTest: true, depthWrite: true };
     constructor(public size?: number, public divisions?: number) {}
   }
 
   class MockAxesHelper {
     type = 'AxesHelper';
     visible = true;
+    renderOrder = 0;
+    material = { depthTest: true, depthWrite: true };
     constructor(public size?: number) {}
-  }
-
-  class MockColor {
-    constructor(public color?: any) {}
   }
 
   class MockVector3 {
@@ -115,8 +125,12 @@ vi.mock('three', () => {
     DirectionalLight: MockDirectionalLight,
     GridHelper: MockGridHelper,
     AxesHelper: MockAxesHelper,
-    Color: MockColor,
+    Color: MockColorShared,
     Vector3: MockVector3,
+    Group: MockGroup,
+    Sprite: MockSprite,
+    SpriteMaterial: MockSpriteMaterial,
+    CanvasTexture: MockCanvasTexture,
   };
 });
 
@@ -319,5 +333,51 @@ describe('createScene', () => {
     expect(camera.near).toBe(origNear);
     expect(camera.far).toBe(origFar);
     expect(camera.updateProjectionMatrix).not.toHaveBeenCalled();
+  });
+
+  it('axes draw after the grid (renderOrder) so the grid cannot occlude them', () => {
+    const result = setup();
+    expect(result.axes.renderOrder).toBe(1);
+    expect(result.axes.renderOrder).toBeGreaterThan(result.grid.renderOrder);
+    // Pin the grid's own renderOrder at the default so a regression that also
+    // mutated the grid would be caught (the fix relies on the grid staying at 0).
+    expect(result.grid.renderOrder).toBe(0);
+  });
+
+  it('axes ignore the depth buffer so coplanar grid lines never z-fight over them', () => {
+    const result = setup();
+    const ax = result.axes as any;
+    expect(ax.material.depthTest).toBe(false);
+    expect(ax.material.depthWrite).toBe(false);
+    // Pin the grid's depth flags at defaults — the fix depends on the grid keeping
+    // normal depthTest/depthWrite so real 3D meshes still occlude it correctly.
+    const gr = result.grid as any;
+    expect(gr.material.depthTest).toBe(true);
+    expect(gr.material.depthWrite).toBe(true);
+  });
+
+  it('returns axisLabels property that is a Group', () => {
+    const result = setup();
+    expect(result).toHaveProperty('axisLabels');
+    expect((result as any).axisLabels.type).toBe('Group');
+  });
+
+  it('axisLabels group is added to the scene', () => {
+    const result = setup();
+    const axisLabels = (result as any).axisLabels;
+    const addedObjects = mockSceneAdd.mock.calls.map((c: any) => c[0]);
+    const found = addedObjects.find((obj: any) => obj === axisLabels);
+    expect(found).toBeDefined();
+  });
+
+  it('axisLabels group has 3 children (X, Y, Z sprites)', () => {
+    const result = setup();
+    const axisLabels = (result as any).axisLabels;
+    expect(axisLabels.children).toHaveLength(3);
+  });
+
+  it('exposes disposeAxisLabels function for GPU resource cleanup on unmount', () => {
+    const result = setup();
+    expect(typeof result.disposeAxisLabels).toBe('function');
   });
 });

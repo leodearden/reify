@@ -3,12 +3,16 @@
 // of engineering components.
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
-// Tightenable-now params: volume, centroid_x/y/z, moment_of_inertia, max_deflection,
-// hardening_modulus, max_service_temp, seal_pressure_rating (task #3114).
+// Task α (supersedes #3114): tightens 5 Real-placeholder params to named-dimension
+// aliases — moment_of_inertia→MomentOfInertia, max_deflection→Length,
+// hardening_modulus→Pressure, max_service_temp→Temperature,
+// seal_pressure_rating→Pressure (all aliases resolve in the dimension registry;
+// conformers cascade-migrated atomically — see plan for blast-radius details).
 // Previously blocked-composite params (stiffness, thermal_conductivity,
 // electrical_conductivity, resistivity) are now tightened to named-dimension
 // aliases (Stiffness, ThermalConductivity, ElectricalConductivity,
 // ElectricResistivity) by task #3115.
+// UNCHANGED (D5): max_elastic_strain, plastic_strain (genuine dimensionless, stay Real).
 
 // ── Physical body trait ─────────────────────────────────────────────────────
 
@@ -24,11 +28,13 @@
 //     PRD §1 frozen geometry-query family (Phase 1 typecheck-only; eval-time
 //     dispatch arrives in Phase 6 / GHR-ζ, currently produces `Value::Undef`).
 //   - `let centroid = centroid(geometry)` — same status as `mass`.
-//   - `constraint material.density > 0` — preserves the "Physical injects at
-//     least one positivity constraint" invariant from the legacy shape
+//   - `constraint material.density > 0kg/m^3` — preserves the "Physical injects
+//     at least one positivity constraint" invariant from the legacy shape
 //     (the prior `constraint volume > 0` is gone because `volume` is no
 //     longer a flat param; a geometry-derived positivity will be revived
-//     in Phase 6).
+//     in Phase 6). RHS is dimensioned (kg/m³) so `eval_cmp` dim-equality
+//     succeeds at runtime after task #3111 tightened Material.density from
+//     Real to Density; a bare `0` yields Indeterminate per esc-3115-112.
 //
 // Historical note: prior to task 1876 this refined a trait named `Material`,
 // later renamed to `MaterialSpec`. PRD Phase 1 retires the trait edge
@@ -39,16 +45,18 @@ trait Physical {
     param material : Material
     let mass = volume(geometry) * material.density
     let centroid = centroid(geometry)
-    constraint material.density > 0
+    constraint material.density > 0kg/m^3
 }
 
 // ── Rigidity ────────────────────────────────────────────────────────────────
 
 // Rigid refines Physical — a body that does not deform under load.
-// moment_of_inertia is the second moment of area (m^4, using Real).
+// moment_of_inertia is the mass moment of inertia (kg·m², MomentOfInertia alias
+// — tightened from Real by task α; RHS dimensioned so eval_cmp dim-equality
+// succeeds at runtime, per esc-3115-112 rationale).
 trait Rigid : Physical {
-    param moment_of_inertia : Real
-    constraint moment_of_inertia > 0
+    param moment_of_inertia : MomentOfInertia
+    constraint moment_of_inertia > 0.0 * 1kg * 1m * 1m
 }
 
 // ── Flexibility ─────────────────────────────────────────────────────────────
@@ -59,15 +67,15 @@ trait Rigid : Physical {
 // The reversible-vs-permanent distinction is delegated to refining traits:
 // ElasticallyDeformable (recoverable/reversible) and Plastic (permanent/irreversible).
 // stiffness (N/m, Stiffness alias — tightened by task #3115),
-// max_deflection (m, using Real — tightenable-now, task #3114).
+// max_deflection (m, Length alias — tightened from Real by task α).
 trait Flexible {
     param stiffness : Stiffness
-    param max_deflection : Real
-    // RHS is dimensioned (N/m = Stiffness) so `eval_cmp` dim-equality succeeds
-    // at runtime; a bare `0` would yield Indeterminate per task #3115
+    param max_deflection : Length
+    // RHS dimensioned (N/m = Stiffness; m = Length) so `eval_cmp` dim-equality
+    // succeeds at runtime; a bare `0` would yield Indeterminate per task #3115
     // esc-3115-112 (compile-time accepted bare-numeric, runtime rejected it).
     constraint stiffness > 0.0 * 1N / 1m
-    constraint max_deflection > 0
+    constraint max_deflection > 0.0 * 1m
 }
 
 // ── Elastic deformation ─────────────────────────────────────────────────────
@@ -94,15 +102,16 @@ trait ElasticallyDeformable : Flexible {
 // members; Plastic adds the permanent-regime members plastic_strain and
 // hardening_modulus. Inheriting Flexible does NOT imply reversibility: Flexible is
 // regime-agnostic; Plastic deformation is permanent/irreversible.
-// plastic_strain (dimensionless fraction, using Real),
-// hardening_modulus (Pa, using Real).
+// plastic_strain (dimensionless fraction, using Real — genuine dimensionless, D5),
+// hardening_modulus (Pa, Pressure alias — tightened from Real by task α).
 // Note: hardening_modulus > 0 is strictly positive — a zero modulus would mean
 // perfectly-plastic behaviour (no strain hardening), which is outside the scope
 // of this trait. Use a separate trait if perfectly-plastic models are required.
+// RHS dimensioned (Pa = Pressure) per esc-3115-112 rationale.
 trait Plastic : Flexible {
     param plastic_strain : Real // dimensionless
-    param hardening_modulus : Real
-    constraint hardening_modulus > 0
+    param hardening_modulus : Pressure
+    constraint hardening_modulus > 0.0 * 1Pa
     constraint plastic_strain >= 0
 }
 
@@ -111,13 +120,15 @@ trait Plastic : Flexible {
 // ThermallyConductive refines Physical: a thermally conductive body is also a
 // physical body, inheriting volume, centroid, and mass.
 // thermal_conductivity (W/(m·K), ThermalConductivity alias — tightened by #3115),
-// max_service_temp (K, using Real — tightenable-now, task #3114).
+// max_service_temp (K, Temperature alias — tightened from Real by task α).
+// RHS dimensioned (W/(m·K) = ThermalConductivity; K = Temperature) per esc-3115-112.
 trait ThermallyConductive : Physical {
     param thermal_conductivity : ThermalConductivity
-    param max_service_temp : Real
+    param max_service_temp : Temperature
     // RHS dimensioned (W/(m·K) = ThermalConductivity) — see Flexible above for
     // rationale (esc-3115-112).
     constraint thermal_conductivity > 0W/(m*K)
+    constraint max_service_temp > 0.0 * 1K
 }
 
 // ── Electrical conductivity ─────────────────────────────────────────────────
@@ -137,8 +148,9 @@ trait ElectricallyConductive : Physical {
 // ── Sealing ─────────────────────────────────────────────────────────────────
 
 // A sealed body that prevents fluid/gas passage.
-// seal_pressure_rating (Pa, using Real).
+// seal_pressure_rating (Pa, Pressure alias — tightened from Real by task α).
+// RHS dimensioned (Pa = Pressure) per esc-3115-112 rationale.
 trait Sealed {
-    param seal_pressure_rating : Real
-    constraint seal_pressure_rating > 0
+    param seal_pressure_rating : Pressure
+    constraint seal_pressure_rating > 0.0 * 1Pa
 }

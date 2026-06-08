@@ -174,4 +174,16 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
         "dynamics::inverse_dynamics",
         crate::dynamics_ops::solve_inverse_dynamics_trampoline as crate::ComputeFn,
     );
+    // The trajectory forward-sim and input-shape trampolines (task π, 3876) live
+    // in `crate::trajectory_ops`: they co-locate with `worst_case_residual_fraction`
+    // and the `SimulateTrajectoryCacheKey`/`InputShapeCacheKey` warm-state caches
+    // there, mirroring the modal/dynamics placement rationale above.
+    engine.register_compute_fn(
+        "trajectory::simulate",
+        crate::trajectory_ops::simulate_trajectory_trampoline as crate::ComputeFn,
+    );
+    engine.register_compute_fn(
+        "trajectory::input_shape",
+        crate::trajectory_ops::input_shape_trampoline as crate::ComputeFn,
+    );
 }

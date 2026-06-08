@@ -377,12 +377,32 @@ pub(crate) enum CompileFailureKind {
 ///
 /// `Clone` is required because `build_gui_state`'s early-return branch clones `diags`
 /// into the returned `GuiState`.
+///
+/// # One-snapshot invariant
+///
+/// `source` and `diags` are always from the SAME compile attempt: `diags` carry
+/// line/col positions computed against `source`, so indexing `source` by a
+/// diagnostic's `line`/`col` always yields the offending text.  `build_gui_state`
+/// surfaces `source` as `files[].content` whenever it reports `diags`, ensuring
+/// the MCP `engine_state` snapshot is internally consistent.
 #[derive(Debug, Clone)]
 pub(crate) struct CompileFailure {
     /// Structured diagnostics from the failed attempt.
     pub(crate) diags: Vec<DiagnosticInfo>,
     /// Which execution path produced this failure.
     pub(crate) kind: CompileFailureKind,
+    /// The exact source text the failing compile was run against.
+    ///
+    /// `build_gui_state` surfaces this as `files[].content` (overriding the
+    /// last-good `source_map` entry) so `compile_diagnostics` line/col positions
+    /// index into the correct buffer.  Set to the full entry-file text passed to
+    /// `compile_single_file_with_stdlib` or `compile_entry_with_imports`.
+    pub(crate) source: String,
+    /// Module key (e.g. `"bracket.ri"`) derived via `module_key(module_name)`.
+    ///
+    /// Identifies which `source_map` entry `build_gui_state`'s LiveEdit branch
+    /// should override with `source`.
+    pub(crate) file_key: String,
 }
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -517,6 +537,21 @@ pub struct EngineSession {
     /// context around every trampoline call.  When `None` (the default) no
     /// per-iteration progress events are emitted.
     solver_progress_sink: Option<Arc<dyn reify_eval::SolverProgressSink>>,
+    /// Error message from the most recent failed hot-reload attempt, or `None`
+    /// when no failure is recorded (after construction, after a successful
+    /// `commit_state` cycle, or before any reload has been attempted).
+    ///
+    /// Set by `record_reload_error` at the `commands::update_source_impl`
+    /// chokepoint — AFTER `with_engine_lock` has caught and converted any
+    /// `check()` panic to `Err` — so recording is panic-safe.  Covers both
+    /// the compile-error path and the check-panic path uniformly.
+    ///
+    /// Cleared in `commit_state` (alongside `compile_failure`) so any
+    /// successful reeval auto-resets staleness.
+    ///
+    /// Surfaced via `is_stale()` / `reload_error()` for the debug API and
+    /// via `build_gui_state`'s synthetic DiagnosticInfo for the GUI channel.
+    last_reload_error: Option<String>,
 }
 
 /// Trait for sinking auto-resolve loop events to the GUI transport layer.
@@ -962,6 +997,9 @@ impl EngineSession {
         // Install FEA / buckling / modal compute trampolines once at session
         // construction.  This is the single registration site — see doc above.
         reify_eval::compute_targets::register_compute_fns(&mut engine);
+        // Register the shell-extract trampoline so shell-classified bodies
+        // can produce a ShellExtractionResult (task θ / #3598 pre-1).
+        reify_eval::register_shell_extract_compute_fns(&mut engine);
 
         Self {
             core: CoreState::new(engine),
@@ -977,6 +1015,7 @@ impl EngineSession {
             mode_shape_frame_emitter: None,
             solve_cancel_sink: None,
             solver_progress_sink: None,
+            last_reload_error: None,
         }
     }
 
@@ -1596,7 +1635,7 @@ impl EngineSession {
     ) -> Result<GuiState, String> {
         let (parsed, compiled) =
             compile_single_file_with_stdlib(source, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags);
+                self.record_compile_failure(diags, source, module_name);
                 msg
             })?;
 
@@ -1703,7 +1742,7 @@ impl EngineSession {
 
         let (compiled, parsed) =
             compile_entry_with_imports(path, &source, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags);
+                self.record_compile_failure(diags, &source, module_name);
                 msg
             })?;
         // check_with_solve_slot fires the SolveCancellationSink lifecycle (task γ/4086).
@@ -1770,7 +1809,7 @@ impl EngineSession {
             // self.file_path.  See task 3318 (item 3), task 3228, and task 3370.
             let (compiled, parsed) = compile_entry_with_imports(&entry_path, content, module_name)
                 .map_err(|(msg, diags)| {
-                    self.record_compile_failure(diags);
+                    self.record_compile_failure(diags, content, module_name);
                     msg
                 })?;
             (parsed, compiled)
@@ -1778,7 +1817,7 @@ impl EngineSession {
             // Single-file flow — no prior load_file means no project_root anchor;
             // delegate to compile_single_file_with_stdlib (shared with load_from_source).
             compile_single_file_with_stdlib(content, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags);
+                self.record_compile_failure(diags, content, module_name);
                 msg
             })?
         };
@@ -1818,13 +1857,53 @@ impl EngineSession {
     ///
     /// `Option<CompileFailure>` makes the at-most-one-non-empty invariant a type-level
     /// guarantee — no `debug_assert!` guards are needed.
-    fn record_compile_failure(&mut self, diags: Vec<DiagnosticInfo>) {
+    ///
+    /// `source` is the full entry-file text that was compiled (the same buffer used
+    /// to compute `diags` line/col positions).  `module_name` is the bare module name
+    /// (without `.ri`); `module_key(module_name)` is stored as `file_key` so
+    /// `build_gui_state`'s LiveEdit branch can locate the right `source_map` entry.
+    fn record_compile_failure(
+        &mut self,
+        diags: Vec<DiagnosticInfo>,
+        source: &str,
+        module_name: &str,
+    ) {
         let kind = if self.core.compiled().is_none() {
             CompileFailureKind::ColdStart
         } else {
             CompileFailureKind::LiveEdit
         };
-        self.compile_failure = Some(CompileFailure { diags, kind });
+        self.compile_failure = Some(CompileFailure {
+            diags,
+            kind,
+            source: source.to_owned(),
+            file_key: module_key(module_name),
+        });
+    }
+
+    /// Record a hot-reload failure message as the authoritative staleness signal.
+    ///
+    /// Called from `commands::update_source_impl` AFTER `with_engine_lock` has
+    /// caught and converted any `check()` panic to `Err` — so this call is always
+    /// panic-safe.  Covers both the compile-error path and the check-panic path
+    /// uniformly: any `Err` return from `update_source` triggers this recording.
+    ///
+    /// Cleared in `commit_state` so a subsequent successful reeval auto-resets
+    /// the staleness flag.
+    pub fn record_reload_error(&mut self, message: String) {
+        self.last_reload_error = Some(message);
+    }
+
+    /// Return `true` when a hot-reload failure has been recorded and not yet
+    /// cleared by a successful `commit_state` cycle.
+    pub fn is_stale(&self) -> bool {
+        self.last_reload_error.is_some()
+    }
+
+    /// Return the most recently recorded hot-reload error message, or `None`
+    /// when the session is not stale.
+    pub fn reload_error(&self) -> Option<&str> {
+        self.last_reload_error.as_deref()
     }
 
     /// Atomically commit all session state after a successful parse+compile+check cycle.
@@ -1886,6 +1965,10 @@ impl EngineSession {
         // both the cold-start and live-edit cases; setting it to `None` atomically
         // satisfies the invariant that all fields listed in the doc comment move together.
         self.compile_failure = None;
+        // Clear hot-reload staleness signal — a successful commit means the user's
+        // source was fully evaluated, so any prior reload-error banner is now stale.
+        // Mirrors the compile_failure clear immediately above.
+        self.last_reload_error = None;
     }
 
     /// Export geometry to a file.
@@ -2016,6 +2099,25 @@ impl EngineSession {
     }
 
     /// Build the full GUI state from the current engine state.
+    ///
+    /// # One-snapshot invariant (task 4258)
+    ///
+    /// `files[].content` and `compile_diagnostics` are from the **same** source
+    /// snapshot, with one precision: **Error** diagnostics from the failing compile
+    /// have line/col positions guaranteed to index into the overridden
+    /// `files[].content`; **Warning/Info** diagnostics carried over from the
+    /// last-good compile retain their last-good positions and may be off if the
+    /// edit shifted lines.
+    ///
+    /// **`get_source_location` spans** are resolved against the last-good compiled
+    /// source (`source_map`).  They must NOT be applied as indices into
+    /// `files[].content` when the session is stale (failed-edit) — the two buffers
+    /// differ.  Use `get_source_location` spans only when `compile_failure` is
+    /// `None` (i.e. `stale == false` at the MCP layer).
+    ///
+    /// `meshes` and `values` intentionally remain last-good on failure so the
+    /// viewport stays populated.  See `commands::engine_state_json` for the full
+    /// contract as exposed by the MCP `engine_state` tool.
     pub fn build_gui_state(&mut self) -> Result<GuiState, String> {
         // When `compiled` is `None` (the session has never completed a successful
         // parse+compile+check cycle), surface the most recent failure diagnostics
@@ -2037,28 +2139,73 @@ impl EngineSession {
         // current `commit_state` atomic-commit (both fields are assigned together),
         // so this branch is reached only when `compiled` has never been set.
         if self.core.compiled().is_none() || self.core.last_check().is_none() {
+            // Build compile_diagnostics for the cold-start / never-committed path.
+            // Factor out the construction so we can append the last_reload_error
+            // synthetic diagnostic on this branch too — matching the main-branch
+            // synthesis at the bottom of this function.  Without this, a
+            // cold-start session where compile() succeeded but check() panicked
+            // (compile_failure is None, last_reload_error is Some) would return
+            // empty compile_diagnostics from this early-return, silently dropping
+            // the staleness signal from the GUI channel.
+            let mut compile_diagnostics_early = match &self.compile_failure {
+                Some(f) => {
+                    // `compiled` is `None` on this branch, so only `ColdStart`
+                    // failures are expected.  A `LiveEdit` failure here means
+                    // `self.compiled` was set back to `None` without clearing
+                    // `compile_failure`, which is an invariant violation.
+                    debug_assert!(
+                        matches!(f.kind, CompileFailureKind::ColdStart),
+                        "LiveEdit failure stored while compiled is None — invariant broken; kind = {:?}",
+                        f.kind
+                    );
+                    f.diags.clone()
+                }
+                None => Vec::new(),
+            };
+            // Mirror the main-branch reload-error synthesis: when no structured
+            // compile_failure exists but last_reload_error is set (e.g. a
+            // cold-start check()-panic), surface the Error diagnostic so a stale
+            // cold-start session still shows the diagnostic regardless of path.
+            // Gating on compile_failure.is_none() avoids double-reporting just
+            // as on the main branch.
+            if self.compile_failure.is_none()
+                && let Some(msg) = &self.last_reload_error
+            {
+                let file_path = self
+                    .resolve_source()
+                    .map(|(k, _)| k)
+                    .unwrap_or("<unknown>");
+                compile_diagnostics_early.push(DiagnosticInfo {
+                    file_path: file_path.to_owned(),
+                    line: 1,
+                    column: 1,
+                    end_line: 1,
+                    end_column: 1,
+                    severity: "Error".to_owned(),
+                    message: msg.clone(),
+                    code: Some("hot-reload-error".to_owned()),
+                });
+            }
+            // One-snapshot invariant (task 4258): surface the failing buffer as
+            // files[0] so compile_diagnostics (which carry line/col computed
+            // against that buffer) can be indexed.  The check()-panic path has no
+            // structured CompileFailure, so files stays empty there — the synthetic
+            // `last_reload_error` diagnostic has line=1 / col=1 and needs no
+            // buffer to index into.
+            let files_early = match &self.compile_failure {
+                Some(f) => vec![FileData {
+                    path: f.file_key.clone(),
+                    content: f.source.clone(),
+                }],
+                None => Vec::new(),
+            };
             return Ok(GuiState {
                 meshes: Vec::new(),
                 values: Vec::new(),
                 constraints: Vec::new(),
-                files: Vec::new(),
+                files: files_early,
                 tessellation_diagnostics: Vec::new(),
-                compile_diagnostics: match &self.compile_failure {
-                    Some(f) if f.kind == CompileFailureKind::ColdStart => f.diags.clone(),
-                    Some(f) => {
-                        // `compiled` is `None` on this branch, so only `ColdStart`
-                        // failures are expected.  A `LiveEdit` failure here means
-                        // `self.compiled` was set back to `None` without clearing
-                        // `compile_failure`, which is an invariant violation.
-                        debug_assert!(
-                            matches!(f.kind, CompileFailureKind::ColdStart),
-                            "LiveEdit failure stored while compiled is None — invariant broken; kind = {:?}",
-                            f.kind
-                        );
-                        f.diags.clone()
-                    }
-                    None => Vec::new(),
-                },
+                compile_diagnostics: compile_diagnostics_early,
                 tensegrity_wires: Vec::new(),
             });
         }
@@ -2150,13 +2297,23 @@ impl EngineSession {
                 if let Some(check) = self.core.last_check() {
                     apply_fea_channels(&mut meshes, &check.values);
                 }
+                // Populate shell-extract channels (element_kind, region_tags,
+                // vonMises_top/mid/bottom, per-face normals) for shell-classified
+                // bodies, replacing their displayed geometry with the extraction
+                // mid-surface. `shell_gui_mesh_data` returns owned data (the
+                // &Engine borrow ends at the call), so it does not conflict with
+                // the mutable `meshes` borrow; it scans the engine graph + cache
+                // and returns an empty Vec for non-shell scenes (one graph scan),
+                // so non-shell scenes are unaffected.
+                let shell_views = self.core.engine().shell_gui_mesh_data();
+                apply_shell_channels(&mut meshes, &shell_views);
                 (meshes, tess_diags)
             }
             None => (Vec::new(), Vec::new()),
         };
 
-        // Build files
-        let files: Vec<FileData> = self
+        // Build files from the last-good source_map.
+        let mut files: Vec<FileData> = self
             .core
             .source_map()
             .iter()
@@ -2165,6 +2322,30 @@ impl EngineSession {
                 content: content.clone(),
             })
             .collect();
+
+        // One-snapshot invariant (task 4258): when a LiveEdit failure is stored,
+        // override the matching files entry's content with the failing buffer so
+        // `files[].content` and `compile_diagnostics` are computed from the same
+        // source snapshot.  meshes/values/get_source_location intentionally stay
+        // last-good (they describe the last successfully compiled module) — only
+        // the SOURCE text is retargeted to the failing buffer.
+        //
+        // The `else` branch handles the unlikely edge case where the failing file
+        // was not present in source_map (e.g. a brand-new file on first load
+        // without a prior success for that key) — push a new entry so diagnostics
+        // can always be indexed against a source.
+        if let Some(f) = &self.compile_failure
+            && f.kind == CompileFailureKind::LiveEdit
+        {
+            if let Some(entry) = files.iter_mut().find(|fd| fd.path == f.file_key) {
+                entry.content = f.source.clone();
+            } else {
+                files.push(FileData {
+                    path: f.file_key.clone(),
+                    content: f.source.clone(),
+                });
+            }
+        }
 
         // Collect compile diagnostics (errors, warnings, info) from the most
         // recently compiled module. Called after tessellate_snapshot so the
@@ -2184,6 +2365,31 @@ impl EngineSession {
             && f.kind == CompileFailureKind::LiveEdit
         {
             compile_diagnostics.extend(f.diags.iter().cloned());
+        }
+        // Synthesize a reload-error DiagnosticInfo when the session is stale due
+        // to a hot-reload failure that did NOT produce a structured compile_failure
+        // (i.e. the check()-panic path where compile_failure is None).  Gating on
+        // `compile_failure.is_none()` avoids double-reporting: in the compile-error
+        // path both `compile_failure` (structured diags) and `last_reload_error`
+        // (joined message) are set; the structured diags already reach the frontend
+        // via the LiveEdit append above, so adding the message again would duplicate.
+        if self.compile_failure.is_none()
+            && let Some(msg) = &self.last_reload_error
+        {
+            let file_path = self
+                .resolve_source()
+                .map(|(k, _)| k)
+                .unwrap_or("<unknown>");
+            compile_diagnostics.push(DiagnosticInfo {
+                file_path: file_path.to_owned(),
+                line: 1,
+                column: 1,
+                end_line: 1,
+                end_column: 1,
+                severity: "Error".to_owned(),
+                message: msg.clone(),
+                code: Some("hot-reload-error".to_owned()),
+            });
         }
 
         // Extract tensegrity wire descriptors from value cells.
@@ -4678,6 +4884,80 @@ pub(crate) fn apply_fea_channels(
 
         mesh.scalar_channels.insert("vonMises".to_string(), vm_vec);
         mesh.displaced_positions = Some(disp_vec);
+    }
+}
+
+/// Match a tessellated `MeshData.entity_path` against a shell view's template
+/// `entity_path`.
+///
+/// The tessellation path carries a `#realization[N]` suffix
+/// (`RealizationNodeId` Display form, e.g. `"FeaShellFlexure#realization[0]"`),
+/// while the engine-side accessor keys its view by the bare compute-node entity
+/// (`"FeaShellFlexure"`). Comparing the prefix before the first `#` on BOTH
+/// sides reconciles them (and degrades to plain equality when neither carries a
+/// suffix), so the populator binds to the right body instead of silently
+/// no-op-ing.
+fn shell_entity_matches(mesh_path: &str, view_path: &str) -> bool {
+    fn template(p: &str) -> &str {
+        p.split('#').next().unwrap_or(p)
+    }
+    template(mesh_path) == template(view_path)
+}
+
+/// Populate shell-extract MeshData channels from the engine-side
+/// [`reify_eval::ShellGuiMeshData`] views produced by
+/// [`reify_eval::Engine::shell_gui_mesh_data`] (PRD
+/// `docs/prds/v0_4/shell-extract-engine-bridge.md` §9 Phase 6 task θ).
+///
+/// For each view, the [`MeshData`](crate::types::MeshData) whose `entity_path`
+/// matches (by [`shell_entity_matches`]) has the shell representation installed:
+///
+/// - `vertices` / `indices` are **replaced** by the view's extraction
+///   mid-surface mesh. Per PRD §11 OQ-2 the v0.4 stress solver's internal
+///   flat-plate mesh ≠ the extraction mid-surface, so the displayed shell uses
+///   the mid-surface geometry; this also makes every length contract close by
+///   construction (`region_tags` / `element_kind` are per-mid-triangle, the
+///   recovered von Mises is per-mid-vertex).
+/// - `element_kind` = `view.element_kind` (all `1` = shell triangle),
+///   `region_tags` = `view.region_tags` (`SegmentationResult` labels).
+/// - `scalar_channels` gains `vonMises_top` / `vonMises_mid` /
+///   `vonMises_bottom` (recovered per-vertex; `len == vertex_count`).
+/// - `vector_channels` gains `shell_normal_per_face` — the
+///   [`PER_FACE_CHANNEL_SUFFIX`](crate::types::PER_FACE_CHANNEL_SUFFIX) makes
+///   the serialize-time length check use `3 * face_count`.
+///
+/// Non-matching meshes (tet / non-FEA bodies) are left untouched. The accessor
+/// returns an empty slice for non-shell scenes, so this is a no-op there.
+pub(crate) fn apply_shell_channels(
+    meshes: &mut [crate::types::MeshData],
+    views: &[reify_eval::ShellGuiMeshData],
+) {
+    for view in views {
+        let Some(mesh) = meshes
+            .iter_mut()
+            .find(|m| shell_entity_matches(&m.entity_path, &view.entity_path))
+        else {
+            continue;
+        };
+
+        // Swap the displayed solid tessellation for the extraction mid-surface
+        // so the per-triangle / per-vertex shell channels line up exactly.
+        mesh.vertices = view.vertices.clone();
+        mesh.indices = view.indices.clone();
+        mesh.element_kind = Some(view.element_kind.clone());
+        mesh.region_tags = Some(view.region_tags.clone());
+
+        mesh.scalar_channels
+            .insert("vonMises_top".to_string(), view.von_mises_top.clone());
+        mesh.scalar_channels
+            .insert("vonMises_mid".to_string(), view.von_mises_mid.clone());
+        mesh.scalar_channels
+            .insert("vonMises_bottom".to_string(), view.von_mises_bottom.clone());
+
+        mesh.vector_channels.insert(
+            format!("shell_normal{}", crate::types::PER_FACE_CHANNEL_SUFFIX),
+            view.shell_normals_per_face.clone(),
+        );
     }
 }
 

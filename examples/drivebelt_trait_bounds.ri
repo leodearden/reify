@@ -34,7 +34,7 @@
 //   density, name              ← MaterialSpec (shared via IR ∩ D diamond merge)
 //   stiffness, max_deflection  ← Flexible (via ElasticallyDeformable)
 //   max_elastic_strain         ← ElasticallyDeformable
-//   impact_energy              ← ImpactResistant
+//   charpy_impact              ← ImpactResistant
 //   damping_ratio, loss_factor ← Damping
 //
 // Constraints injected by traits:
@@ -43,22 +43,22 @@
 //   max_elastic_strain > 0 (ElasticallyDeformable)
 //
 // stiffness uses the tightened Stiffness alias (N/m) introduced by task #3115;
-// other values are raw SI numerics (Real) — density in kg/m³, deflection in m,
-// energy in J, ratios dimensionless.
+// density uses Density (kg/m³), charpy_impact uses Energy (J) — both tightened
+// by task #3111; deflection in m, strain and ratios remain dimensionless (Real).
 structure def DriveBelt : ElasticallyDeformable + ImpactResistant + Damping {
     // MaterialSpec (shared root via ImpactResistant and Damping)
-    param density : Real = 1100.0          // kg/m³ — typical SBR/EPDM elastomer
+    param density : Density = 1100kg/m^3   // typical SBR/EPDM elastomer
     param name : String = "elastomer_belt"
 
     // Flexible (via ElasticallyDeformable) — stiffness > 0, max_deflection > 0
     param stiffness : Stiffness = 2000.0 * 1N / 1m   // moderate belt stiffness
-    param max_deflection : Real = 0.02     // m — 20mm rated deflection
+    param max_deflection : Length = 0.02 * 1m   // 20mm rated deflection (task α: Real→Length)
 
     // ElasticallyDeformable — max_elastic_strain > 0
     param max_elastic_strain : Real = 0.1  // 10% recoverable strain limit
 
     // ImpactResistant
-    param impact_energy : Real = 500.0     // J — Charpy/Izod equivalent
+    param charpy_impact : Energy = 500J    // Charpy impact energy
 
     // Damping
     param damping_ratio : Real = 0.15      // 15% of critical damping (typical rubber)
@@ -70,24 +70,25 @@ structure def DriveBelt : ElasticallyDeformable + ImpactResistant + Damping {
 // CeramicLiner is an alumina-based refractory liner.  It satisfies:
 //   Refractory : ThermallyCharacterized : MaterialSpec
 //
-// Constraint from Refractory: max_service_temperature >= 1500.0
-// CeramicLiner.max_service_temperature = 2050.0 — well above the guard.
+// Constraint from Refractory: max_service_temperature >= 1500.0K
+// CeramicLiner.max_service_temperature = 2050.0K — well above the guard.
 //
 // thermal_conductivity / specific_heat / thermal_expansion use the named-dim
-// aliases introduced by task #3115; temperatures remain Real pending task
-// #3112.
+// aliases introduced by task #3115; temperature params tightened to Temperature
+// type by task #3112.
 structure def CeramicLiner : Refractory {
     // MaterialSpec
-    param density : Real = 3900.0              // kg/m³ — alumina (Al₂O₃)
+    param density : Density = 3900kg/m^3       // alumina (Al₂O₃)
     param name : String = "alumina_ceramic"
 
     // ThermallyCharacterized
     param thermal_conductivity : ThermalConductivity = 30.0W/(m*K)
     param specific_heat : SpecificHeat = 880.0J/(kg*K)
     param thermal_expansion : ThermalExpansion = 0.000008 / 1K  // 8.0e-6 coefficient of linear expansion
-    param melting_point : Real = 2072.0        // K
-    param max_service_temperature : Real = 2050.0 // K — clears Refractory >= 1500 guard
-    param glass_transition : Real = 0.0        // K — not applicable; 0 sentinel
+    param melting_point : Temperature = 2072.0K
+    param max_service_temperature : Temperature = 2050.0K // clears Refractory >= 1500K guard
+    // glass_transition omitted — genuinely undefined for crystalline/refractory materials;
+    // defaults to undef, which is Indeterminate under Kleene three-valued logic (correct).
 }
 
 // ── (2b) §6.4 gap-fill sample: Copper : Conductive ──────────────────────────
@@ -104,7 +105,7 @@ structure def CeramicLiner : Refractory {
 // resistivity / dielectric_strength use named-dim aliases introduced by #3115.
 structure def Copper : Conductive {
     // MaterialSpec
-    param density : Real = 8960.0               // kg/m³ — pure copper
+    param density : Density = 8960kg/m^3        // pure copper
     param name : String = "copper"
 
     // ElectricallyCharacterized
@@ -123,15 +124,16 @@ structure def Copper : Conductive {
 // parameter-carrying trait.
 structure def BorosilicateGlass : OpticallyCharacterized {
     // MaterialSpec
-    param density : Real = 2230.0               // kg/m³ — Borosilicate 33 glass
+    param density : Density = 2230kg/m^3        // Borosilicate 33 glass
     param name : String = "borosilicate_glass"
 
     // OpticallyCharacterized — absorption_coefficient uses the AbsorptionCoeff
-    // alias introduced by #3115; the other three remain Real.
+    // alias introduced by #3115; reference_thickness tightened to Length by #3113;
+    // refractive_index and transmittance remain Real (genuine-dimensionless).
     param refractive_index : Real = 1.52        // dimensionless (BK7 / N-BK7)
     param absorption_coefficient : AbsorptionCoeff = 0.001 / 1m  // very low for optical glass
     param transmittance : Real = 0.92           // 92% at reference thickness
-    param reference_thickness : Real = 0.01    // 1cm reference sample thickness
+    param reference_thickness : Length = 1cm   // 1cm reference sample thickness
 }
 
 // ── (2d) §6.6 gap-fill sample: TitaniumImplant : Biocompatible + CorrosionResistant
@@ -147,7 +149,7 @@ structure def BorosilicateGlass : OpticallyCharacterized {
 // they are classification traits, not contractual bound traits.
 structure def TitaniumImplant : Biocompatible + CorrosionResistant {
     // MaterialSpec (shared via diamond merge)
-    param density : Real = 4500.0               // kg/m³ — Ti-6Al-4V
+    param density : Density = 4500kg/m^3        // Ti-6Al-4V
     param name : String = "titanium"
 
     // Biocompatible

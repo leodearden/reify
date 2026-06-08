@@ -5,6 +5,7 @@ import type { MenuAction } from './DesignTreeContextMenu';
 import { ViewSelector } from './ViewSelector';
 import type { ViewStateStore } from '../stores/viewStateStore';
 import type { EntityTreeNode } from '../types';
+import { registerDebugPanel } from '../debug/types';
 import styles from './DesignTree.module.css';
 
 interface Props {
@@ -19,6 +20,10 @@ interface Props {
   onOpenManage?: () => void;
   /** Optional callback for "Save views" action; forwarded to ViewSelector. */
   onSaveViews?: () => void;
+  /** Called with the entity path on mouseenter, null on mouseleave (Edge A hover sync). */
+  onHover?: (path: string | null) => void;
+  /** Viewport-originated hover: apply JS-driven .hovered highlight to the matching row (Edge B reverse). */
+  hoveredEntity?: string | null;
 }
 
 interface MenuState {
@@ -52,9 +57,58 @@ function flattenVisible(nodes: EntityTreeNode[], expandedSet: Set<string>): stri
   return result;
 }
 
+/**
+ * DFS search that returns the entity_path of every ancestor of `target` in
+ * `nodes` (exclusive of `target` itself). Returns an empty array when `target`
+ * is a root node or is not found. Modelled on `flattenVisible`.
+ *
+ * Each ancestor is pushed exactly once: the `path` accumulator is built on
+ * the way *down* and flushed in one `result.push(...path)` call at the leaf,
+ * so there are no duplicate entries even at deep nesting levels.
+ */
+function findAncestorPaths(nodes: EntityTreeNode[], target: string): string[] {
+  const result: string[] = [];
+  function visit(node: EntityTreeNode, path: string[]): boolean {
+    if (node.entity_path === target) {
+      result.push(...path); // all ancestors flushed once at the leaf — no duplicates
+      return true;
+    }
+    for (const child of node.children) {
+      if (visit(child, [...path, node.entity_path])) return true;
+    }
+    return false;
+  }
+  for (const node of nodes) visit(node, []);
+  return result;
+}
+
 const DesignTree: Component<Props> = (props) => {
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
   const [menu, setMenu] = createSignal<MenuState | null>(null);
+
+  registerDebugPanel('designTree', { expanded });
+
+  // Selected-row reveal: when the selected entity changes, auto-expand its
+  // ancestors (additive only — never collapses manual user expansion) and
+  // scroll the row into view once it is in the DOM.
+  createEffect(() => {
+    const target = props.selectedEntity;
+    if (!target) return;
+    const ancestors = findAncestorPaths(props.tree, target);
+    if (ancestors.length > 0) {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        for (const p of ancestors) next.add(p);
+        return next;
+      });
+    }
+    // Defer the scroll so the newly-expanded rows are committed to the DOM first.
+    // Guard with optional chaining: jsdom does not implement scrollIntoView.
+    queueMicrotask(() => {
+      const row = document.querySelector(`[data-testid="tree-row-${target}"]`);
+      (row as Element | null)?.scrollIntoView?.({ block: 'nearest' });
+    });
+  });
 
   // Stale paths: present in explicit overrides but absent from the current tree.
   // Used to apply greyed styling to forward-compat stale-row display.
@@ -147,6 +201,7 @@ const DesignTree: Component<Props> = (props) => {
     // bubbled click before it reaches the document listener.
     document.addEventListener('click', handleDocumentClick, { capture: true });
     document.addEventListener('keydown', handleDocumentKeyDown);
+
     onCleanup(() => {
       document.removeEventListener('click', handleDocumentClick, { capture: true });
       document.removeEventListener('keydown', handleDocumentKeyDown);
@@ -160,10 +215,13 @@ const DesignTree: Component<Props> = (props) => {
     return (
       <div class={styles.nodeWrapper} style={{ 'padding-left': `${depth * 16}px` }}>
         <div
-          classList={{ [styles.row]: true, [styles.selected]: effectiveSelected().has(node.entity_path), [styles.stale]: stalePaths().has(node.entity_path) }}
+          classList={{ [styles.row]: true, [styles.selected]: effectiveSelected().has(node.entity_path), [styles.stale]: stalePaths().has(node.entity_path), [styles.hovered]: props.hoveredEntity === node.entity_path }}
           data-testid={`tree-row-${node.entity_path}`}
           data-selected={effectiveSelected().has(node.entity_path) ? 'true' : undefined}
           data-stale={stalePaths().has(node.entity_path) ? 'true' : undefined}
+          data-hovered={props.hoveredEntity === node.entity_path ? 'true' : undefined}
+          onMouseEnter={() => props.onHover?.(node.entity_path)}
+          onMouseLeave={() => props.onHover?.(null)}
           onContextMenu={(e) => openMenu(node.entity_path, e)}
           onClick={(e) => {
             if (e.shiftKey && props.anchorEntity && props.onRangeSelect) {
@@ -187,6 +245,8 @@ const DesignTree: Component<Props> = (props) => {
               data-testid={`chevron-${node.entity_path}`}
               onClick={(e) => { e.stopPropagation(); toggleExpand(node.entity_path); }}
               aria-expanded={expanded().has(node.entity_path)}
+              aria-label={expanded().has(node.entity_path) ? 'Collapse' : 'Expand'}
+              title={expanded().has(node.entity_path) ? 'Collapse' : 'Expand'}
             >
               {expanded().has(node.entity_path) ? '▾' : '▸'}
             </button>
@@ -207,6 +267,7 @@ const DesignTree: Component<Props> = (props) => {
             class={styles.eyeIcon}
             data-testid={`eye-icon-${node.entity_path}`}
             aria-label={eff()}
+            title={`Visibility: ${eff()} — click to cycle`}
             onClick={(e) => {
               e.stopPropagation();
               const sel = effectiveSelected();

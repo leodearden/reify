@@ -562,6 +562,28 @@ pub(crate) fn extract_auto_free(expr: &reify_ast::Expr) -> Option<bool> {
     }
 }
 
+/// Map a determinacy-intrinsic name to its reflective member name.
+///
+/// Returns the `PurposeReflectiveAggregation` member name for the two
+/// compiler-sugar intrinsics (task-4197 α):
+///
+/// - `"AllParamsDetermined"`   → `Some("params")`
+/// - `"AllGeometryDetermined"` → `Some("geometric_params")`
+/// - anything else             → `None`
+///
+/// This is the **single source of truth** for the intrinsic→member mapping.
+/// It is consulted by:
+/// 1. `traits.rs::desugar_determinacy_intrinsic` — valid desugar in purpose bodies.
+/// 2. `expr.rs::compile_expr_guarded` FunctionCall arm — scope guard that fires
+///    for any intrinsic call that reaches `compile_expr` without desugaring.
+pub(crate) fn determinacy_intrinsic_member(name: &str) -> Option<&'static str> {
+    match name {
+        "AllParamsDetermined" => Some("params"),
+        "AllGeometryDetermined" => Some("geometric_params"),
+        _ => None,
+    }
+}
+
 pub(crate) fn compile_expr(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,
@@ -1327,6 +1349,31 @@ pub(crate) fn compile_expr_guarded(
                 return poison;
             }
 
+            // ── Determinacy intrinsic scope guard (det-α step-6) ──────────────────
+            // `AllParamsDetermined` / `AllGeometryDetermined` are COMPILER SUGAR that
+            // `compile_purpose` desugars into a reflective `forall` BEFORE
+            // `compile_expr` is ever called.  Any call that reaches this arm was NOT
+            // desugared — it was used outside a purpose-body top-level constraint
+            // (e.g. inside a structure or function body).  Emit
+            // `E_DETERMINACY_INTRINSIC_SCOPE` and return a non-cascading poison
+            // literal; do NOT fall through to overload resolution (invariant A3).
+            if determinacy_intrinsic_member(name).is_some() {
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "E_DETERMINACY_INTRINSIC_SCOPE: `{}` is a purpose-body \
+                         determinacy intrinsic and may only appear as a top-level \
+                         constraint inside a purpose body",
+                        name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        expr.span,
+                        "intrinsic used here",
+                    ))
+                    .with_code(DiagnosticCode::DeterminacyIntrinsicScope),
+                );
+            }
+
             // Intercept `some(expr)` before general function resolution.
             // some() is a language-level constructor, not a user-defined function.
             if name == "some" {
@@ -1404,12 +1451,47 @@ pub(crate) fn compile_expr_guarded(
                     .skip(covered)
                     .filter_map(|(n, d)| d.map(|e| ((*n).to_string(), e.clone())))
                     .collect();
+                // Collect the template's Let cells in declaration order (task-4342):
+                // each Let's compiled expr is stored in `default_expr`; the ctor
+                // carries them so eval can eagerly materialize derived members.
+                //
+                // Which Let kinds are intentionally included / excluded (suggestion 3):
+                //   INCLUDED:  all source-declared Let cells, whether Public or Private.
+                //     Private lets are included because they may be intermediate helpers
+                //     referenced by later Public lets (`priv let x = a*2; let y = x+1mm`).
+                //     Excluding them would silently break the Public let's evaluation.
+                //   EXCLUDED:  auto-synthesized `__count_<coll>` lets generated from
+                //     Constraint members (entity.rs:1483-1489).  These are compiler-internal
+                //     collection-count cells keyed by a private naming convention; they are
+                //     used by the engine's collection elaboration, not by ctor-path member
+                //     access, and their RHS may reference sub-component values unavailable
+                //     at ctor time.
+                //   EXCLUDED:  geometry-typed lets — already filtered out before they reach
+                //     `value_cells` by `is_geometry_let` (entity.rs:1411-1413), so the
+                //     `starts_with("__count_")` guard below is the only runtime filter needed.
+                let lets: Vec<(String, CompiledExpr)> = template
+                    .value_cells
+                    .iter()
+                    .filter(|vc| {
+                        matches!(vc.kind, ValueCellKind::Let)
+                            // Exclude auto-synthesized collection-count lets (entity.rs:1482-1493).
+                            // These are compiler-internal cells whose RHS may reference
+                            // sub-component values that are unavailable at ctor construction time.
+                            && !vc.id.member.starts_with("__count_")
+                    })
+                    .filter_map(|vc| {
+                        vc.default_expr
+                            .as_ref()
+                            .map(|e| (vc.id.member.clone(), e.clone()))
+                    })
+                    .collect();
                 return CompiledExpr::structure_instance_ctor(
                     reify_ir::StructureTypeId(0),
                     name.clone(),
                     template.version(),
                     ordered_args,
                     defaults,
+                    lets,
                     Type::StructureRef(name.clone()),
                 );
             }
@@ -1421,7 +1503,70 @@ pub(crate) fn compile_expr_guarded(
                     if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                         emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                     }
-                    let result_type = matched_fn.return_type.clone();
+                    // Generic call (task 4231 β): infer type arguments by unifying
+                    // each declared param type against the concrete arg type, then
+                    // substitute the bound type parameters into the return type.
+                    // Non-generic fns (empty type_params) keep the exact
+                    // return_type.clone() path bit-for-bit unchanged (INV-6/D10).
+                    let result_type = if matched_fn.type_params.is_empty() {
+                        matched_fn.return_type.clone()
+                    } else {
+                        let mut subst: std::collections::HashMap<String, Type> =
+                            std::collections::HashMap::new();
+                        for ((_, declared), arg_ty) in
+                            matched_fn.params.iter().zip(arg_types.iter())
+                        {
+                            // A type-param double-binding to two different types is
+                            // a call-site type-argument conflict (PRD D2 / §4.2).
+                            // Emit E_FN_TYPE_ARG_CONFLICT and poison the call to
+                            // prevent a follow-on cascade (mirror the Ambiguous arm).
+                            if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst)
+                            {
+                                return make_poison_literal(
+                                    diagnostics,
+                                    Diagnostic::error(format!(
+                                        "conflicting type arguments for type parameter '{}' \
+                                         in call to '{}': {} vs {}",
+                                        conflict.param,
+                                        name,
+                                        conflict.existing,
+                                        conflict.incoming
+                                    ))
+                                    .with_code(DiagnosticCode::FnTypeArgConflict)
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "conflicting type argument",
+                                    )),
+                                );
+                            }
+                        }
+                        let substituted = type_resolution::substitute_type_params(
+                            &matched_fn.return_type,
+                            &subst,
+                        );
+                        // A BARE top-level unbound type-param means nothing pinned
+                        // the result type (e.g. `make<T>() -> T` called as `make()`):
+                        // the call yields a wholly-undetermined type → error + poison.
+                        // A NESTED unbound param (e.g. `Field<TypeParam(D), Real>`)
+                        // is TOLERATED — it is pinned by an enclosing call (B5,
+                        // PRD §8 / D3-decision).
+                        if matches!(substituted, Type::TypeParam(_)) {
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "cannot infer type argument(s) for generic call to '{}': \
+                                     result type is undetermined",
+                                    name
+                                ))
+                                .with_code(DiagnosticCode::FnTypeArgUnresolved)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "unresolved type argument",
+                                )),
+                            );
+                        }
+                        substituted
+                    };
                     build_user_function_call_expr(name, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
@@ -1667,6 +1812,69 @@ pub(crate) fn compile_expr_guarded(
                         // determinant(AffineMap) → Real   (else falls through to first-arg)
                         // PRD §4.3 (task γ) algebra free-functions.
                         t
+                    } else if is_math_typed_fn(name) {
+                        // The math-linalg family, routed via two sibling
+                        // single-source-of-truth slices in `math_signatures`:
+                        //   • CONSTRUCTION (task 4179, MATH_CONSTRUCTION_NAMES):
+                        //     vec / matrix / diag / identity.
+                        //   • OPERATION / FUNCTION (task 4182 δ,
+                        //     MATH_OPERATION_NAMES): the §3 table — sqrt/abs/…,
+                        //     dot/cross/normalize/magnitude/outer,
+                        //     determinant/inverse/transpose/trace,
+                        //     eigenvalues/complex_eigenvalues, and the complex
+                        //     fns complex/real/imag/conjugate/complex_magnitude/
+                        //     phase/arg.
+                        // `math_fn_result_type` computes the per-call result type
+                        // for BOTH: for constructors it recovers the return
+                        // *shape* (`n`) from the COMPILED ARGUMENT STRUCTURE —
+                        // list length from a `ListLiteral`, the literal value
+                        // from `Literal(Value::Int)` — since `Type::List` carries
+                        // no length; for operations it computes the §3 DIMENSIONAL
+                        // return type from the args' quantity dimensions via the
+                        // `DimensionVector` algebra (e.g. sqrt=Q.root(2),
+                        // dot=Q1·Q2, determinant=Q^N, inverse=Q⁻¹).
+                        // Setting `vec(...)` → `Vector{n,..}`,
+                        // matrix/diag/identity → `Tensor{rank:2,n,..}`, and the
+                        // operations → their Scalar/Vector/Tensor/List/Complex
+                        // results up-front is load-bearing: the eval'd values are
+                        // real `Value::Vector` / `Value::Tensor` / `Value::List`
+                        // / `Value::Complex`, so falling through to the first-arg
+                        // `List`/`Int`/matrix fallback would make the assigned
+                        // cell type mismatch under `value_type_kind_matches` and
+                        // raise a runtime `TypeKindMismatch` (design decision
+                        // D6/D7). `math_fn_result_type` therefore NEVER returns
+                        // the first-arg type — it degrades to the correct
+                        // variant with a best-effort `n` when the shape is not
+                        // statically determinable. Both slices are pinned disjoint
+                        // from the geometry/dynamics families AND from each other
+                        // (units.rs `math_typed_fn_names_are_disjoint_from_other_families`
+                        // + `math_operation_fn_names_are_disjoint_from_other_families`),
+                        // so this arm's position in the ladder is unobservable.
+                        // NOTE: `determinant(AffineMap)` → Real is served by the
+                        // earlier `affine_map_algebra_result_type` arm above, so
+                        // only Tensor/Matrix determinant args reach here.
+                        math_fn_result_type(name, &compiled_args)
+                    } else if is_joint_typed_fn(name) {
+                        // §13 mechanism/joint constructor family (mechanism β,
+                        // task 4311). Set the cell type up-front to the nominal
+                        // StructureRef so the §13 tags become ENFORCED return
+                        // types consumed by γ's compile-time DrivingJoint-bound
+                        // check and by reify-lsp hover. Falling through to the
+                        // first-arg fallback would mis-type a joint as its
+                        // axis/parent arg's type (e.g. Real).
+                        //
+                        // Runtime: joints evaluate to Value::Map/Int/List
+                        // (esc-3845-91), NOT Value::Undef — but StructureRef is
+                        // a representable cell type (engine_eval.rs:122-124) and
+                        // value_type_kind_matches is not enforced on let-cells,
+                        // so the mismatch is safe. (Today these cells already
+                        // carry the first-arg Real mismatch; StructureRef is
+                        // strictly more correct.)
+                        //
+                        // The family is pinned disjoint from all sibling
+                        // families by the units.rs disjointness test, so this
+                        // arm's position in the ladder is unobservable.
+                        joint_ctor_result_type(name, &compiled_args)
                     } else {
                         compiled_args
                             .first()
@@ -3584,16 +3792,60 @@ pub(crate) fn compile_expr_guarded(
                 "not yet supported",
             )),
         ),
-        reify_ast::ExprKind::InterpolatedString(_) => make_poison_literal(
-            diagnostics,
-            Diagnostic::error(
-                "string interpolation is not yet supported (task γ)".to_string(),
-            )
-            .with_label(DiagnosticLabel::new(
-                expr.span,
-                "not yet supported",
-            )),
-        ),
+        reify_ast::ExprKind::InterpolatedString(parts) => {
+            // Render-then-concat fold (PRD §3 + §9.1).
+            //
+            // Each Hole is wrapped in __interp_render (std::__interp_render) so
+            // that ANY Value maps to String before the String+String concat.
+            // Without the render step, String + non-String falls through
+            // eval_add to Value::Undef (reify-expr/src/lib.rs:2718).
+            let part_exprs: Vec<CompiledExpr> = parts
+                .iter()
+                .map(|part| match part {
+                    reify_ast::StringPart::Literal(s) => {
+                        CompiledExpr::literal(Value::String(s.clone()), Type::String)
+                    }
+                    reify_ast::StringPart::Hole(e) => {
+                        let compiled = compile_expr_guarded(
+                            e,
+                            scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            current_guard,
+                            lambda_counter,
+                        );
+                        let content_hash = ContentHash::of(&[TAG_FUNCTION_CALL])
+                            .combine(ContentHash::of_str("std::__interp_render"))
+                            .combine(compiled.content_hash);
+                        CompiledExpr {
+                            kind: CompiledExprKind::FunctionCall {
+                                function: ResolvedFunction {
+                                    name: "__interp_render".to_string(),
+                                    qualified_name: "std::__interp_render".to_string(),
+                                },
+                                args: vec![compiled],
+                            },
+                            result_type: Type::String,
+                            content_hash,
+                        }
+                    }
+                })
+                .collect();
+
+            // No-seed left fold: first part seeds acc, then concat the rest.
+            // A single-hole "{x}" lowers to render(x) with no spurious "" +.
+            let mut iter = part_exprs.into_iter();
+            match iter.next() {
+                // Defensive: the parser always emits ≥1 part for InterpolatedString
+                // (empty `""` stays ExprKind::StringLiteral), so this is unreachable
+                // in practice.
+                None => CompiledExpr::literal(Value::String(String::new()), Type::String),
+                Some(first) => iter.fold(first, |acc, next| {
+                    CompiledExpr::binop(BinOp::Add, acc, next, Type::String)
+                }),
+            }
+        }
     }
 }
 
@@ -4482,6 +4734,62 @@ pub structure Rack {
         );
     }
 
+    /// End-to-end cell-type test for the §13 joint-constructor family (mechanism
+    /// β, task 4311). With an empty template registry (so the lowercase builtins
+    /// are NOT structure-def ctors) and empty user functions (so resolution lands
+    /// in `NoUserFunctions`), each joint-constructor call must lower to a
+    /// `CompiledExprKind::FunctionCall` whose `result_type` is the nominal
+    /// `Type::StructureRef(...)` — NOT the first-arg fallback (e.g. Real).
+    ///
+    /// Tests four names for cross-arm coverage:
+    /// - `prismatic` (driving kind) → StructureRef("Prismatic")
+    /// - `couple` (coupling kind) → StructureRef("Coupling")
+    /// - `bind` (JointBinding) → StructureRef("JointBinding")
+    /// - `joint_jacobian` (Twist) → StructureRef("Twist")
+    ///
+    /// Mirrors `body_mass_props_resolves_to_function_call_returning_mass_properties`.
+    /// RED until step-6 wires the `is_joint_typed_fn` arm into the ladder.
+    #[test]
+    fn joint_ctor_calls_resolve_to_function_calls_returning_nominal_struct_types() {
+        // Empty template registry → joint names are not structure-defs → FunctionCall.
+        let registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        // Helper: compile a call and assert the result type.
+        let check = |name: &str, n_args: usize, expected_type: Type| {
+            let args: Vec<reify_ast::Expr> = (0..n_args).map(|_| num_expr(1.0)).collect();
+            let mut diags: Vec<Diagnostic> = vec![];
+            let result = compile_expr(&call_expr(name, args), &scope, &[], &[], &mut diags);
+            match &result.kind {
+                CompiledExprKind::FunctionCall { function, .. } => {
+                    assert_eq!(
+                        function.name, name,
+                        "{name} must lower to a FunctionCall named {name}"
+                    );
+                }
+                other => panic!("{name} must lower to a stdlib FunctionCall, got {other:?}"),
+            }
+            assert_eq!(
+                result.result_type,
+                expected_type,
+                "{name} result_type must be {expected_type:?} (joint β arm), got {:?}",
+                result.result_type
+            );
+        };
+
+        // Driving kind → named kind type.
+        check("prismatic", 1, Type::StructureRef("Prismatic".to_string()));
+        // Coupling kind → Coupling.
+        check("couple", 1, Type::StructureRef("Coupling".to_string()));
+        // JointBinding → JointBinding.
+        check("bind", 2, Type::StructureRef("JointBinding".to_string()));
+        // Twist / joint Jacobian → Twist.
+        check("joint_jacobian", 1, Type::StructureRef("Twist".to_string()));
+    }
+
     /// `TraitStaticCall` dispatch arm (task η 3945) — after the placeholder is
     /// replaced with real dispatch, calling `C::make()` where trait `C` is unknown
     /// must emit exactly one unknown-trait-static-fn diagnostic.
@@ -4632,5 +4940,136 @@ pub structure Rack {
              got: {:?}",
             compiled_arms[1].patterns,
         );
+    }
+
+    // ── task-4342 step-3a: StructureInstanceCtor.lets collected at lowering ───
+
+    /// Build a `TopologyTemplate` with both Param and Let value_cells.
+    /// Params: nominal (Real), upper_deviation (Real), lower_deviation (Real).
+    /// Lets:   upper_limit = ValueRef("nominal") + ValueRef("upper_deviation")
+    ///         lower_limit = ValueRef("nominal") - ValueRef("lower_deviation")
+    fn sct_template_with_lets(
+        name: &str,
+        params: &[(&str, Option<CompiledExpr>)],
+        lets: &[(&str, CompiledExpr)],
+    ) -> crate::types::TopologyTemplate {
+        let mut value_cells: Vec<crate::types::ValueCellDecl> = params
+            .iter()
+            .map(|(pname, default)| crate::types::ValueCellDecl {
+                id: ValueCellId::new(name, *pname),
+                kind: crate::types::ValueCellKind::Param,
+                visibility: crate::types::Visibility::Public,
+                is_aux: false,
+                cell_type: Type::Real,
+                default_expr: default.clone(),
+                solver_hints: vec![],
+                span: SourceSpan::prelude(),
+            })
+            .collect();
+        for (lname, let_expr) in lets {
+            value_cells.push(crate::types::ValueCellDecl {
+                id: ValueCellId::new(name, *lname),
+                kind: crate::types::ValueCellKind::Let,
+                visibility: crate::types::Visibility::Public,
+                is_aux: false,
+                cell_type: let_expr.result_type.clone(),
+                default_expr: Some(let_expr.clone()),
+                solver_hints: vec![],
+                span: SourceSpan::prelude(),
+            });
+        }
+        crate::types::TopologyTemplate {
+            name: name.to_string(),
+            doc: None,
+            entity_kind: crate::types::EntityKind::Structure,
+            visibility: crate::types::Visibility::Public,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells,
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: std::collections::HashSet::new(),
+            objective: None,
+            meta: std::collections::HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+            assoc_fns: vec![],
+            assoc_types: vec![],
+        }
+    }
+
+    /// step_3a RED: compiling a FunctionCall to a template with Let cells must
+    /// produce a StructureInstanceCtor whose `lets` list the Let members in
+    /// declaration order with non-empty compiled exprs.
+    ///
+    /// RED on current base: `lets` is Vec::new() (step_4 will populate it).
+    #[test]
+    fn structure_def_with_let_cells_lowering_emits_lets_in_ctor() {
+        // Build a DimensionalTolerance-shaped template:
+        //   param nominal, param upper_deviation
+        //   let upper_limit = ValueRef(nominal) + ValueRef(upper_deviation)
+        let ref_nominal =
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "nominal"), Type::Real);
+        let ref_upper_dev =
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "upper_deviation"), Type::Real);
+        let upper_limit_expr =
+            CompiledExpr::binop(BinOp::Add, ref_nominal.clone(), ref_upper_dev.clone(), Type::Real);
+
+        let tmpl = sct_template_with_lets(
+            "DimTol",
+            &[
+                ("nominal", None),
+                ("upper_deviation", None),
+            ],
+            &[("upper_limit", upper_limit_expr.clone())],
+        );
+
+        let mut registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        registry.insert("DimTol".to_string(), &tmpl);
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        let mut diags: Vec<Diagnostic> = vec![];
+        // Call DimTol(5.0, 0.02) — both params supplied as positional args.
+        let result = compile_expr(
+            &call_expr("DimTol", vec![num_expr(5.0), num_expr(0.02)]),
+            &scope,
+            &[],
+            &[],
+            &mut diags,
+        );
+
+        // Must lower to StructureInstanceCtor.
+        match &result.kind {
+            CompiledExprKind::StructureInstanceCtor { ordered_args, defaults, lets, .. } => {
+                assert_eq!(ordered_args.len(), 2, "both params supplied as ordered_args");
+                assert!(defaults.is_empty(), "no uncovered defaults");
+                // RED: currently lets is Vec::new() because step_4 is not yet done.
+                assert_eq!(
+                    lets.len(), 1,
+                    "one Let cell (upper_limit) must be present in the ctor; got {} lets: {:?}",
+                    lets.len(),
+                    lets.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                );
+                assert_eq!(lets[0].0, "upper_limit", "Let member name must be upper_limit");
+                // The let expr must be non-trivial (not just Undef or Error).
+                assert_ne!(
+                    lets[0].1.result_type,
+                    Type::Error,
+                    "let expr result_type must not be Error (should be Real)"
+                );
+            }
+            other => panic!("expected StructureInstanceCtor, got {:?}", other),
+        }
     }
 }

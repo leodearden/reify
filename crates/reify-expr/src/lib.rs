@@ -185,6 +185,21 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 
         CompiledExprKind::FunctionCall { function, args } => {
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
+            // __interp_render intercept — MUST sit before the strict-Undef
+            // short-circuit below. This placement is load-bearing: the
+            // determinacy decision (PRD §6.3, task 3964) requires that an
+            // Undef interpolation hole renders as the literal string "undef"
+            // rather than poisoning the result with Value::Undef. A stdlib
+            // binding would be reached only AFTER the short-circuit and could
+            // never observe an Undef argument.
+            //
+            // Match on the fully qualified name ("std::__interp_render") rather
+            // than the bare name so that a user-defined symbol that happens to
+            // carry the unqualified name "__interp_render" is never silently
+            // intercepted and mis-rendered.
+            if function.qualified_name == "std::__interp_render" && evaluated_args.len() == 1 {
+                return Value::String(interp_render(&evaluated_args[0]));
+            }
             // Strict Undef propagation: if any arg is Undef, short-circuit
             if evaluated_args.iter().any(|v| v.is_undef()) {
                 return Value::Undef;
@@ -522,6 +537,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // `eval_worst_case_dispatch`; pinned by
                     // `eval_user_fn_recursion_depth_exceeded`).
                     emit_flexure_diagnostics(&function.name, &evaluated_args, &result, ctx);
+                    // DFM build-volume rules (task 4272) surface their severity
+                    // diagnostic on BOTH the success and Undef paths, like the
+                    // flexure hook above (not the post-Undef-only stackup/fea/geometry
+                    // hooks): a `fits_build_volume` evaluating to Bool(false) is a
+                    // build-volume VIOLATION (success path), while a Value::Undef is a
+                    // usage error. Extracted into `emit_dfm_diagnostics` for the same
+                    // stack-shrinking rationale as `emit_flexure_diagnostics`.
+                    emit_dfm_diagnostics(&function.name, &evaluated_args, &result, ctx);
                     result
                 }
             }
@@ -847,12 +870,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             version,
             ordered_args,
             defaults,
+            lets,
         } => eval_structure_instance_ctor(
             *type_id,
             type_name,
             *version,
             ordered_args,
             defaults,
+            lets,
             ctx,
         ),
     }
@@ -888,6 +913,7 @@ fn eval_structure_instance_ctor(
     version: u32,
     ordered_args: &[(String, CompiledExpr)],
     defaults: &[(String, CompiledExpr)],
+    lets: &[(String, CompiledExpr)],
     ctx: &EvalContext,
 ) -> Value {
     let mut fields: PersistentMap<String, Value> = PersistentMap::new();
@@ -899,12 +925,94 @@ fn eval_structure_instance_ctor(
             fields.insert(name.clone(), eval_expr(def, ctx));
         }
     }
+    if !lets.is_empty() {
+        materialize_template_lets(type_name, lets, &mut fields, ctx);
+    }
     Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
         type_id,
         type_name: type_name.to_string(),
         version,
         fields,
     }))
+}
+
+/// Eagerly materialize template `Let` cells into a just-built structure
+/// instance's `fields` map (task-4342, step-6).
+///
+/// Marked `#[inline(never)]` for the same reason `eval_structure_instance_ctor`
+/// is hoisted out: the locals here (a `ValueMap` plus loop temporaries) must
+/// NOT inflate `eval_expr`'s stack frame or widen the frame the
+/// `eval_user_fn_recursion_depth_exceeded` safety test relies on.  This
+/// function is called only when `!lets.is_empty()`, so the deep user-fn path
+/// (no struct lets) never pays the extra frame.
+///
+/// Algorithm: build a child `reify_ir::ValueMap` keyed by
+/// `ValueCellId::new(type_name, member)` from the already-populated `fields`,
+/// then iterate `lets` in declaration order.  For each let evaluate its
+/// compiled expr against `ctx.with_scope(&child)` (so earlier lets are visible
+/// to later ones), and write the result into BOTH the child map and `fields`.
+#[inline(never)]
+fn materialize_template_lets(
+    type_name: &str,
+    lets: &[(String, CompiledExpr)],
+    fields: &mut PersistentMap<String, Value>,
+    ctx: &EvalContext,
+) {
+    // Build a child ValueMap keyed by ValueCellId::new(type_name, member)
+    // from the already-populated `fields` (params + defaults filled in by
+    // eval_structure_instance_ctor).  The child scope lets the let exprs
+    // reference sibling params by their ValueCellId (entity == type_name).
+    //
+    // PERFORMANCE NOTE: this loop performs an O(fields) deep-clone — one
+    // `value.clone()` per param/default in the struct.  For structures with
+    // many fields instantiated in hot loops this adds up.  In practice,
+    // tolerancing-style derives are cheap arithmetic and this path is gated on
+    // `!lets.is_empty()` in the caller, so structs with no derived lets pay
+    // nothing.  If profiling ever shows this on a hot path, consider an
+    // overlay/COW scope that borrows from `fields` directly rather than copying
+    // every entry (analogous to how `ctx.with_scope` borrows without cloning the
+    // full value map).
+    let mut child = ValueMap::new();
+    for (member, value) in fields.iter() {
+        child.insert(ValueCellId::new(type_name, member.as_str()), value.clone());
+    }
+
+    // Evaluate lets in declaration order.  For each let:
+    //   1. evaluate its compiled expr against ctx.with_scope(&child) — the
+    //      temporary borrow is released after eval_expr returns, so
+    //      child.insert on the next line is safe;
+    //   2. insert the result into `child` so later lets see earlier ones;
+    //   3. insert into `fields` for the final StructureInstance.
+    //
+    // Declaration order is a valid eval order: the compiler enforces left-to-right
+    // scoping (a let can only reference earlier params/lets), so no topological
+    // sort or cycle guard is needed here (unlike elaborate_child_lets_only).
+    //
+    // SCOPE INVARIANT (suggestion 2): `ctx.with_scope(&child)` REPLACES the value
+    // map entirely.  This is intentional and correct for structure-def lets because:
+    //
+    //   (a) The compiler compiles each let expr in a `CompilationScope` that only
+    //       registers the structure's own param names and earlier lets
+    //       (entity.rs:1107 / entity.rs:4107,4136).  Any identifier not in that
+    //       scope produces a compile error or an unresolved-ICE Undef expr — so a
+    //       well-compiled let expr can only carry `ValueRef(ValueCellId{entity ==
+    //       type_name, ...})` refs, all of which are present in `child`.
+    //
+    //   (b) The `sub`-path reference implementation (`elaborate_child_lets_only`,
+    //       reify-eval/src/unfold.rs:570-574) ALSO evaluates let exprs against a
+    //       child-scoped context (`eval_ctx_with_meta(&child_values, ...)`), not
+    //       the full module ValueMap.  Our behavior is therefore identical to the
+    //       sub baseline, guaranteeing sub-consistency by construction.
+    //
+    // If a future language feature adds module-level constants accessible inside
+    // structure-def lets (analogous to C++ `static constexpr`), the child scope
+    // would need to be layered over `ctx.values` for unresolved ids.  For now no
+    // such feature exists; the invariant is enforced by the compiler.
+    for (name, let_expr) in lets {
+        let value = eval_expr(let_expr, &ctx.with_scope(&child));
+        child.insert(ValueCellId::new(type_name, name.as_str()), value.clone());
+        fields.insert(name.clone(), value);
+    }
 }
 
 /// Evaluate `CompiledExprKind::IndexAccess`. Extracted from `eval_expr`'s
@@ -1006,13 +1114,104 @@ fn eval_ad_hoc_selector(
     }
 }
 
-/// Find the first compiled function matching `name`, arity, and per-parameter
-/// [`Type`] equality against the compiled arguments' result types.
+/// Returns `true` when `t` is, or recursively wraps, a [`Type::TypeParam`].
 ///
-/// This is the canonical first-match-wins overload-resolution helper shared by:
+/// Local mirror of `reify_compiler::type_compat::type_carries_type_param`,
+/// kept VERBATIM with it. reify-expr's library deps are only reify-core +
+/// reify-ir (reify-compiler is a dev-dep), so the compiler helper cannot be
+/// imported here — the two MUST be kept in sync. If they drift, a generic call
+/// whose param embeds a type-param in a constructor covered by only one copy
+/// resolves at compile time but the eval-side resolver rejects it → an
+/// `id(..)`-style call falls back to `Value::Undef` (the esc-4231-120 /
+/// esc-4231-126 divergence class).
+///
+/// Recurses through the same inner-`Type`-bearing constructor set as the
+/// compiler-side `unify` / `substitute_type_params` walks —
+/// `List`/`Set`/`Keyed`/`Option`/`Complex`/`Range`,
+/// `Point`/`Vector`/`Tensor`/`Matrix` (quantity slot), `Map`, `Field`,
+/// `Function` (params + return), and `Union`. Used by
+/// [`find_matching_compiled_function`] to make a *generic* candidate's
+/// type-param-carrying params act as eval-time resolution wildcards, gated on
+/// `!f.type_params.is_empty()` so non-generic fns are bit-for-bit unchanged
+/// (INV-6, task 4231 β-eval).
+///
+/// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
+/// variant forces a compile-time decision here, in lock-step with the canonical
+/// compiler-side copy.
+fn type_carries_type_param(t: &Type) -> bool {
+    match t {
+        // The type-parameter leaf itself.
+        Type::TypeParam(_) => true,
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_carries_type_param(inner),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_carries_type_param(quantity),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => type_carries_type_param(key) || type_carries_type_param(val),
+        Type::Field { domain, codomain } => {
+            type_carries_type_param(domain) || type_carries_type_param(codomain)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => params.iter().any(type_carries_type_param) || type_carries_type_param(return_type),
+
+        // Union: any arm.
+        Type::Union(arms) => arms.iter().any(type_carries_type_param),
+
+        // All remaining leaves carry no inner `Type`.
+        Type::Bool
+        | Type::Int
+        | Type::Real
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::Error => false,
+    }
+}
+
+/// Find the compiled function matching `name`, arity, and per-parameter
+/// [`Type`] compatibility against the compiled arguments' result types.
+///
+/// This is the canonical overload-resolution helper shared by:
 /// - [`eval_user_function_call`] in this crate, and
 /// - the `@optimized` `UserFunctionCall` → `ComputeNode` lowering site in
 ///   `reify-eval/src/engine_eval.rs`.
+///
+/// Mirrors the compile-time `reify_compiler::type_compat::resolve_function_overload`
+/// so eval re-selects the SAME overload the compiler chose (task 4231 β-eval):
+/// - For a non-generic candidate (`type_params` empty) every param keeps **exact**
+///   type equality — non-generic fns are bit-for-bit unchanged (INV-6).
+/// - For a *generic* candidate a type-param-carrying param acts as a **wildcard**
+///   (matches any arg type) — eval is type-erased (INV-2), so the concrete arg
+///   binds the param positionally with no runtime type check.
+/// - **Exact-match-wins tie-break:** if any candidate matches ALL params by exact
+///   equality, generic wildcard matches are discarded first, so a concrete
+///   overload still beats a generic one (mirrors resolve_function_overload).
 ///
 /// If the resolution rule ever grows (e.g. subtyping, coercion ranking,
 /// operator-overloading nuance), update only this function; both call sites
@@ -1022,13 +1221,29 @@ pub fn find_matching_compiled_function<'a>(
     name: &str,
     args: &[CompiledExpr],
 ) -> Option<&'a CompiledFunction> {
-    fns.iter().find(|f| {
-        f.name == name
-            && f.params.len() == args.len()
-            && f.params
-                .iter()
-                .zip(args.iter())
-                .all(|((_, param_ty), arg)| *param_ty == arg.result_type)
+    let arity_match = |f: &&CompiledFunction| f.name == name && f.params.len() == args.len();
+    let exact = |((_, param_ty), arg): (&(String, Type), &CompiledExpr)| *param_ty == arg.result_type;
+
+    // First-match-wins among candidates whose params ALL match by exact equality.
+    // (Includes generic candidates only when their args happen to be exact —
+    // e.g. a TypeParam param vs a concrete arg is NOT exact, so generics fall
+    // through to the wildcard pass below.)
+    if let Some(f) = fns
+        .iter()
+        .filter(arity_match)
+        .find(|f| f.params.iter().zip(args.iter()).all(exact))
+    {
+        return Some(f);
+    }
+
+    // No exact overload — allow a generic candidate's type-param-carrying params
+    // to act as wildcards. Gated on `!type_params.is_empty()` so this pass can
+    // never relax a non-generic fn.
+    fns.iter().filter(arity_match).find(|f| {
+        let is_generic = !f.type_params.is_empty();
+        f.params.iter().zip(args.iter()).all(|((_, param_ty), arg)| {
+            (is_generic && type_carries_type_param(param_ty)) || *param_ty == arg.result_type
+        })
     })
 }
 
@@ -1242,6 +1457,41 @@ fn eval_quantifier(
     }
 }
 
+/// Render a [`Value`] to its human-display [`String`] for string-interpolation
+/// holes (task 3964, PRD §3).
+///
+/// Uses the `format_display` family — **never** the [`std::fmt::Display`] impl —
+/// to produce bare strings (not quoted), engineering units (5 mm not 0.005 m),
+/// and composite forms.
+///
+/// Render rules:
+/// - `Undef` → `"undef"` (the surface keyword; NOT `format_display`'s `"undefined"`)
+/// - `Scalar | Complex | Option(Some(_))` → `format_display_pair` joined
+///   `"{value} {unit}"` when the unit is non-empty (e.g. `5 mm`); plain value
+///   when the unit is empty (dimensionless scalars)
+/// - Everything else → `format_display` verbatim
+///
+/// # Nested Undef in composites
+///
+/// When `value` is a composite (e.g. `List`, `Map`, `Point`) whose *elements*
+/// contain `Undef`, those inner undefs are rendered by `format_display`, which
+/// emits `"undefined"` — **not** `"undef"`.  This divergence from the top-level
+/// case is intentional: PRD §3 specifies the `Undef → "undef"` rule only for
+/// the interpolation hole value itself, and `format_display` is the
+/// authoritative renderer for composite interiors.  A future revision could
+/// normalise the two spellings inside `format_display` if consistency becomes a
+/// requirement.
+fn interp_render(value: &Value) -> String {
+    match value {
+        Value::Undef => "undef".to_string(),
+        Value::Scalar { .. } | Value::Complex { .. } | Value::Option(Some(_)) => {
+            let (v, u) = value.format_display_pair();
+            if u.is_empty() { v } else { format!("{v} {u}") }
+        }
+        _ => value.format_display(),
+    }
+}
+
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
 /// FEA (`linear_combine`, task #10), and AffineMap constructors (PRD §4.2,
 /// task β) — for a builtin call whose `result` is `Value::Undef`.
@@ -1326,6 +1576,31 @@ fn emit_flexure_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &Ev
                 continue;
             }
         }
+        sink.borrow_mut().push(diag);
+    }
+}
+
+/// Emit DFM (design-for-manufacturing) diagnostics for a builtin call into the
+/// runtime sink (PRD v0_6 process-dfm-completion, task α).
+///
+/// Mirrors [`emit_flexure_diagnostics`]: a no-op when no sink is attached, else it
+/// pushes every `Diagnostic` returned by [`reify_stdlib::dfm_diagnose`] into the
+/// sink. Like the flexure hook — and unlike the post-`Undef`-only
+/// stackup/fea/geometry hooks consolidated in `emit_undef_builtin_diagnostics` —
+/// `dfm_diagnose` fires on BOTH paths: a `fits_build_volume` returning
+/// `Bool(false)` is a build-volume VIOLATION surfaced on the SUCCESS path, while a
+/// `Value::Undef` is a usage error. `dfm_diagnose` returns an empty `Vec` for every
+/// non-DFM name, so this is a cheap no-op for other builtins. Extracted
+/// `#[inline(never)]` for the same stack-shrinking reason as
+/// `emit_flexure_diagnostics` — keeping the per-`diag` owned-`Diagnostic` loop
+/// local off every recursive `eval_expr` frame (pinned by
+/// `eval_user_fn_recursion_depth_exceeded`).
+#[inline(never)]
+fn emit_dfm_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
+    let Some(sink) = ctx.diagnostics else {
+        return;
+    };
+    for diag in reify_stdlib::dfm_diagnose(name, args, result) {
         sink.borrow_mut().push(diag);
     }
 }
@@ -2468,6 +2743,9 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
             if ad != bd {
                 Value::Undef // dimension mismatch
             } else {
+                // Intentionally returns Scalar{dimension} even when dimension is DIMENSIONLESS.
+                // Scalar+Real/Int below returns Real for the mixed case — the asymmetry is
+                // accepted: eval_eq/eval_cmp normalize both forms via as_f64().
                 Value::Scalar {
                     si_value: a + b,
                     dimension: *ad,
@@ -2509,6 +2787,25 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         | (Value::Complex { re, im, dimension }, Value::Int(a)) => {
             guard_dimensionless_complex(*a as f64 + re, *im, *dimension)
         }
+        // Dimensionless Scalar + Real or Int: additive dimension-safety requires
+        // both operands to be dimensionless — you cannot add a bare number to a
+        // Length. The `is_dimensionless()` guard enforces this; DIMENSIONED scalars
+        // fall through to Undef. Result is Value::Real (not Scalar{DIMENSIONLESS})
+        // because the operand is already a bare number.
+        // Note: eval_mul/eval_div have no such guard — scaling a dimensioned quantity
+        // by a pure number is always legal and preserves the dimension.
+        (Value::Scalar { si_value, dimension }, Value::Real(r))
+        | (Value::Real(r), Value::Scalar { si_value, dimension })
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(si_value + r)
+        }
+        (Value::Scalar { si_value, dimension }, Value::Int(n))
+        | (Value::Int(n), Value::Scalar { si_value, dimension })
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(si_value + *n as f64)
+        }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
         // Component-wise Tensor addition (with rank-2 validation)
         (Value::Tensor(a), Value::Tensor(b)) => {
@@ -2548,6 +2845,9 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
             if ad != bd {
                 Value::Undef // dimension mismatch
             } else {
+                // Intentionally returns Scalar{dimension} even when dimension is DIMENSIONLESS.
+                // See the corresponding eval_add note for why this asymmetry with Scalar-Real
+                // is accepted.
                 Value::Scalar {
                     si_value: a - b,
                     dimension: *ad,
@@ -2595,6 +2895,33 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
         // Complex{re,im,DIMENSIONLESS} - Int(a) → Complex{ re: re-a, im }
         (Value::Complex { re, im, dimension }, Value::Int(a)) => {
             guard_dimensionless_complex(re - *a as f64, *im, *dimension)
+        }
+        // Dimensionless Scalar - Real/Int and Real/Int - dimensionless Scalar.
+        // Additive dimension-safety: both operands must be dimensionless (you
+        // cannot subtract a bare number from a Length). DIMENSIONED scalars fall
+        // through to Undef. Subtraction is non-commutative, so each ordering is
+        // a separate arm. Note: eval_mul/eval_div scale any-dimension scalars
+        // without this guard — scaling preserves dimension; addition/subtraction
+        // do not.
+        (Value::Scalar { si_value, dimension }, Value::Real(r))
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(si_value - r)
+        }
+        (Value::Real(r), Value::Scalar { si_value, dimension })
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(r - si_value)
+        }
+        (Value::Scalar { si_value, dimension }, Value::Int(n))
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(si_value - *n as f64)
+        }
+        (Value::Int(n), Value::Scalar { si_value, dimension })
+            if dimension.is_dimensionless() =>
+        {
+            Value::Real(*n as f64 - si_value)
         }
         // Component-wise Tensor subtraction (with rank-2 validation)
         (Value::Tensor(a), Value::Tensor(b)) => {
@@ -3633,6 +3960,171 @@ mod tests {
         }
     }
 
+    // ── task 4272 step-11: fits_build_volume DFM diagnostic via eval_expr ─────
+    //
+    // A `fits_build_volume(part, envelope, DFMSeverity.Warning)` builtin call
+    // whose design VIOLATES the rule (part bbox extent past the envelope →
+    // Bool(false)) must push a W_DFM Warning into the runtime diagnostics sink
+    // when evaluated through eval_expr's FunctionCall arm. Drives the
+    // emit_dfm_diagnostics wiring (step-12); mirrors the flexure diagnostic-sink
+    // emission, which likewise fires on the SUCCESS (non-Undef) path.
+    #[test]
+    fn fits_build_volume_violation_emits_dfm_warning_into_sink() {
+        // LENGTH scalar of `si` metres.
+        fn len(si: f64) -> Value {
+            Value::Scalar {
+                si_value: si,
+                dimension: DimensionVector::LENGTH,
+            }
+        }
+        // BoundingBox from two LENGTH Point3 corners (metres).
+        fn bbox(min: [f64; 3], max: [f64; 3]) -> Value {
+            Value::BoundingBox {
+                min: Box::new(Value::Point(vec![len(min[0]), len(min[1]), len(min[2])])),
+                max: Box::new(Value::Point(vec![len(max[0]), len(max[1]), len(max[2])])),
+            }
+        }
+
+        // Part X-extent 30 mm exceeds the 20 mm envelope → does not fit.
+        let part = bbox([0.0, 0.0, 0.0], [0.030, 0.010, 0.010]);
+        let env = bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let sev = Value::Enum {
+            type_name: "DFMSeverity".into(),
+            variant: "Warning".into(),
+        };
+
+        // The literal args' static Type is not consulted at runtime (eval_expr's
+        // Literal arm clones the value), so Type::Real is a neutral placeholder.
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x4f, 0x44, 0x46, 0x4d]),
+            result_type: Type::Bool,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "fits_build_volume".to_string(),
+                    qualified_name: "std::fits_build_volume".to_string(),
+                },
+                args: vec![
+                    lit(part, Type::Real),
+                    lit(env, Type::Real),
+                    lit(sev, Type::Real),
+                ],
+            },
+        };
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Bool(false), "part does not fit the envelope");
+
+        let diags = sink.borrow();
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Warning
+                    && d.message.contains("W_DFM")),
+            "expected a W_DFM Warning in the runtime sink, got {diags:?}"
+        );
+    }
+
+    // ── amend: fits_build_volume DFM diagnostics — fitting + usage-error paths ─
+    //
+    // The step-11 test above covers only the Bool(false) VIOLATION path through
+    // eval_expr. These two mirror it for the other two outcomes so the
+    // emit_dfm_diagnostics wiring itself (not just dfm.rs's unit-level diagnose) is
+    // exercised end-to-end: a regression dropping the Undef branch or always pushing
+    // a diagnostic would be caught here.
+
+    /// LENGTH scalar of `si` metres (shared shape with the step-11 test helpers).
+    fn dfm_len(si: f64) -> Value {
+        Value::Scalar {
+            si_value: si,
+            dimension: DimensionVector::LENGTH,
+        }
+    }
+
+    /// BoundingBox from two LENGTH Point3 corners (metres).
+    fn dfm_bbox(min: [f64; 3], max: [f64; 3]) -> Value {
+        Value::BoundingBox {
+            min: Box::new(Value::Point(vec![
+                dfm_len(min[0]),
+                dfm_len(min[1]),
+                dfm_len(min[2]),
+            ])),
+            max: Box::new(Value::Point(vec![
+                dfm_len(max[0]),
+                dfm_len(max[1]),
+                dfm_len(max[2]),
+            ])),
+        }
+    }
+
+    /// Build a `fits_build_volume(...)` FunctionCall expr over the given args.
+    fn dfm_call_expr(args: Vec<Value>) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x44, 0x46, 0x4d, 0x32]),
+            result_type: Type::Bool,
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "fits_build_volume".to_string(),
+                    qualified_name: "std::fits_build_volume".to_string(),
+                },
+                // Literal args' static Type is not consulted at runtime; Type::Real
+                // is a neutral placeholder (matches the step-11 test).
+                args: args.into_iter().map(|v| lit(v, Type::Real)).collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn fits_build_volume_fitting_emits_no_dfm_diagnostic_into_sink() {
+        // A fitting design (Bool(true)) is NOT a violation → the sink stays empty.
+        let part = dfm_bbox([0.0, 0.0, 0.0], [0.010, 0.010, 0.010]);
+        let env = dfm_bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let sev = Value::Enum {
+            type_name: "DFMSeverity".into(),
+            variant: "Warning".into(),
+        };
+        let expr = dfm_call_expr(vec![part, env, sev]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Bool(true), "part fits the envelope");
+        assert!(
+            sink.borrow().is_empty(),
+            "a fitting design emits no diagnostic, got {:?}",
+            sink.borrow()
+        );
+    }
+
+    #[test]
+    fn fits_build_volume_usage_error_emits_dfm_error_into_sink() {
+        // A non-BoundingBox part (a raw Real) makes fits_build_volume return Undef;
+        // emit_dfm_diagnostics must push exactly one Error E_DFM usage diagnostic.
+        let env = dfm_bbox([0.0, 0.0, 0.0], [0.020, 0.020, 0.020]);
+        let expr = dfm_call_expr(vec![Value::Real(1.0), env]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Undef, "a non-bbox arg yields Undef");
+
+        let diags = sink.borrow();
+        assert_eq!(diags.len(), 1, "exactly one usage-error diagnostic, got {diags:?}");
+        assert_eq!(diags[0].severity, reify_core::Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM"),
+            "usage error carries the E_DFM prefix: {}",
+            diags[0].message
+        );
+    }
+
     #[test]
     fn function_call_sin_with_angle() {
         let arg = lit(
@@ -4415,6 +4907,17 @@ mod tests {
         ordered: Vec<(&str, CompiledExpr)>,
         defaults: Vec<(&str, CompiledExpr)>,
     ) -> CompiledExpr {
+        sct_with_lets(name, version, ordered, defaults, vec![])
+    }
+
+    /// Like `sct` but also accepts template `Let` cells for step-5 / step-6.
+    fn sct_with_lets(
+        name: &str,
+        version: u32,
+        ordered: Vec<(&str, CompiledExpr)>,
+        defaults: Vec<(&str, CompiledExpr)>,
+        lets: Vec<(&str, CompiledExpr)>,
+    ) -> CompiledExpr {
         CompiledExpr::structure_instance_ctor(
             reify_ir::StructureTypeId(0),
             name.to_string(),
@@ -4425,6 +4928,9 @@ mod tests {
                 .collect(),
             defaults
                 .into_iter()
+                .map(|(n, e)| (n.to_string(), e))
+                .collect(),
+            lets.into_iter()
                 .map(|(n, e)| (n.to_string(), e))
                 .collect(),
             Type::StructureRef(name.to_string()),
@@ -4548,6 +5054,199 @@ mod tests {
         }
     }
 
+    // ── task-4342 step-5: StructureInstanceCtor let materialization (RED) ──────
+    //
+    // `eval_expr` on a `StructureInstanceCtor` carrying `lets` must eagerly
+    // materialize derived members into `fields`.  RED until step-6 implements
+    // `materialize_template_lets` (currently a stub that does nothing).
+
+    /// (a) single `let sum = a + b` over two Real params; (e) fields.len()
+    /// counts params + materialized lets.
+    ///
+    /// RED: stub does nothing — fields["sum"] is absent (None) and
+    /// fields.len() == 2 (params only), not 3.
+    #[test]
+    fn ctor_let_single_sum_materializes() {
+        // let sum = a + b
+        let sum_let = CompiledExpr::binop(
+            BinOp::Add,
+            vref("S", "a", Type::Real),
+            vref("S", "b", Type::Real),
+            Type::Real,
+        );
+        let expr = sct_with_lets(
+            "S",
+            1,
+            vec![
+                ("a", lit(Value::Real(3.0), Type::Real)),
+                ("b", lit(Value::Real(5.0), Type::Real)),
+            ],
+            vec![],
+            vec![("sum", sum_let)],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                let sum = data.fields.get(&"sum".to_string());
+                assert_eq!(
+                    sum,
+                    Some(&Value::Real(8.0)),
+                    "let sum = a + b must materialize to Real(8.0); got {:?}",
+                    sum
+                );
+                // (e) fields.len() must count params + materialized lets
+                assert_eq!(
+                    data.fields.len(),
+                    3,
+                    "fields must include both params and materialized lets (len 3); got {}",
+                    data.fields.len()
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    /// (b) a let referencing an EARLIER let resolves (declaration-order dependency).
+    ///
+    /// RED: stub; neither derived let is materialized → fields["double"] and
+    /// fields["quad"] are absent.
+    #[test]
+    fn ctor_let_chain_declaration_order() {
+        // param a = 2.0
+        // let double = a + a      → 4.0
+        // let quad   = double + double → 8.0
+        let double_let = CompiledExpr::binop(
+            BinOp::Add,
+            vref("S", "a", Type::Real),
+            vref("S", "a", Type::Real),
+            Type::Real,
+        );
+        let quad_let = CompiledExpr::binop(
+            BinOp::Add,
+            vref("S", "double", Type::Real),
+            vref("S", "double", Type::Real),
+            Type::Real,
+        );
+        let expr = sct_with_lets(
+            "S",
+            1,
+            vec![("a", lit(Value::Real(2.0), Type::Real))],
+            vec![],
+            vec![("double", double_let), ("quad", quad_let)],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.fields.get(&"double".to_string()),
+                    Some(&Value::Real(4.0)),
+                    "let double = a + a must be Real(4.0)"
+                );
+                assert_eq!(
+                    data.fields.get(&"quad".to_string()),
+                    Some(&Value::Real(8.0)),
+                    "let quad = double + double must be Real(8.0) (reads earlier let)"
+                );
+                assert_eq!(data.fields.len(), 3, "1 param + 2 lets = 3 fields total");
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    /// (c) a let reading a NESTED struct member resolves — nesting composition.
+    ///
+    /// Inner ctor S_inner { param x = 3.0; let derived = x + x } → derived = 6.0.
+    /// Outer ctor reads inner_s.derived via IndexAccess.
+    ///
+    /// RED: inner lets not materialized → inner.derived absent → outer let reads Undef.
+    #[test]
+    fn ctor_let_reads_nested_struct_member() {
+        // inner struct
+        let inner_derived_let = CompiledExpr::binop(
+            BinOp::Add,
+            vref("S_inner", "x", Type::Real),
+            vref("S_inner", "x", Type::Real),
+            Type::Real,
+        );
+        let inner_ctor = sct_with_lets(
+            "S_inner",
+            1,
+            vec![("x", lit(Value::Real(3.0), Type::Real))],
+            vec![],
+            vec![("derived", inner_derived_let)],
+        );
+
+        // outer struct: let outer_d = inner_s.derived
+        let inner_s_ref = vref("S_outer", "inner_s", Type::StructureRef("S_inner".to_string()));
+        let derived_key = CompiledExpr::literal(
+            Value::String("derived".to_string()),
+            Type::String,
+        );
+        let outer_let = CompiledExpr::index_access(inner_s_ref, derived_key, Type::Real);
+        let expr = sct_with_lets(
+            "S_outer",
+            1,
+            vec![("inner_s", inner_ctor)],
+            vec![],
+            vec![("outer_d", outer_let)],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.fields.get(&"outer_d".to_string()),
+                    Some(&Value::Real(6.0)),
+                    "let outer_d = inner_s.derived must be Real(6.0) (inner derived = x+x = 6.0); \
+                     got {:?}",
+                    data.fields.get(&"outer_d".to_string())
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    /// (d) an Undef param yields an Undef derived member kept IN ITS SLOT —
+    /// no short-circuit of the whole structure.
+    ///
+    /// RED: stub; the let slot is absent entirely (not Undef-in-slot).
+    #[test]
+    fn ctor_let_undef_param_yields_undef_in_slot() {
+        // param a = Undef (unbound vref), param b = 5.0
+        // let sum = a + b → Undef (Undef propagation)
+        let sum_let = CompiledExpr::binop(
+            BinOp::Add,
+            vref("S", "a", Type::Real),
+            vref("S", "b", Type::Real),
+            Type::Real,
+        );
+        let expr = sct_with_lets(
+            "S",
+            1,
+            vec![
+                ("a", vref("nowhere", "missing", Type::Real)), // unbound → Undef
+                ("b", lit(Value::Real(5.0), Type::Real)),
+            ],
+            vec![],
+            vec![("sum", sum_let)],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                // The whole struct must still be constructed (no Undef short-circuit).
+                assert!(
+                    data.fields.contains_key(&"sum".to_string()),
+                    "let sum slot must exist even when derived value is Undef (no short-circuit)"
+                );
+                assert_eq!(
+                    data.fields.get(&"sum".to_string()),
+                    Some(&Value::Undef),
+                    "let sum = a + b must be Undef when a is Undef"
+                );
+            }
+            other => panic!("expected StructureInstance (not Undef short-circuit), got {:?}", other),
+        }
+    }
+
     // ── User function evaluation tests ──────────────────────────────────
 
     use reify_core::ContentHash;
@@ -4575,6 +5274,7 @@ mod tests {
             content_hash: ContentHash::of(b"double"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         }
     }
 
@@ -4608,6 +5308,7 @@ mod tests {
             content_hash: ContentHash::of(b"f_with_let"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         }
     }
 
@@ -4630,6 +5331,58 @@ mod tests {
             Value::Real(v) => assert!((v - 10.0).abs() < 1e-12, "expected 10.0, got {}", v),
             other => panic!("expected Real(10.0), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn find_matching_resolves_generic_field_param_call() {
+        // Parity guard (esc-4231-126): a generic candidate whose param embeds a
+        // type-param inside a NON-collection constructor (`Field<T, Real>`) must
+        // be selected by the eval-side resolver for a concrete `Field<Real, Real>`
+        // arg, mirroring compile-time `resolve_function_overload`. Before the
+        // local `type_carries_type_param` mirror was widened it only covered the
+        // `Option`/`List`/`Set`/`Map` wrappers, so `Field<T, _>` fell through to
+        // the old `_ => false` arm → the generic param was NOT a wildcard → the
+        // call resolved at compile time but evaled to `Undef`. This locks the two
+        // copies (compiler-side + eval-side) in parity for the `Field` walk.
+        let params = vec![(
+            "x".to_string(),
+            Type::Field {
+                domain: Box::new(Type::TypeParam("T".to_string())),
+                codomain: Box::new(Type::Real),
+            },
+        )];
+        let generic_fn = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::Real,
+            body: CompiledFnBody {
+                let_bindings: vec![],
+                result_expr: lit(Value::Real(1.0), Type::Real),
+            },
+            content_hash: ContentHash::of(b"generic_field_f"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![reify_ir::TypeParam {
+                name: "T".to_string(),
+                bounds: vec![],
+                default: None,
+            }],
+        };
+        // Arg's result_type is the concrete Field<Real, Real>; the Value payload
+        // is irrelevant to overload resolution (which keys on result_type).
+        let concrete_field = Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::Real),
+        };
+        let args = vec![lit(Value::Undef, concrete_field)];
+        let fns = [generic_fn];
+        assert!(
+            find_matching_compiled_function(&fns, "f", &args).is_some(),
+            "generic fn with a Field<T, Real> param should resolve for a Field<Real, Real> arg"
+        );
     }
 
     fn make_factorial_fn() -> CompiledFunction {
@@ -4681,6 +5434,7 @@ mod tests {
             content_hash: ContentHash::of(b"factorial"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         }
     }
 
@@ -4708,6 +5462,7 @@ mod tests {
             content_hash: ContentHash::of(b"infinite"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         }
     }
 
@@ -4832,6 +5587,7 @@ mod tests {
             content_hash: ContentHash::of(b"area"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         };
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_area"),
@@ -4901,6 +5657,7 @@ mod tests {
             content_hash: ContentHash::of(b"process1"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         };
         // fn process(x: Real, y: Real) -> Real { x + y }
         let params2 = vec![("x".to_string(), Type::Real), ("y".to_string(), Type::Real)];
@@ -4923,6 +5680,7 @@ mod tests {
             content_hash: ContentHash::of(b"process2"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         };
 
         let functions = [process1, process2];
@@ -6130,5 +6888,146 @@ mod tests {
                 result,
             );
         }
+    }
+
+    fn dimensionless_val(v: f64) -> Value {
+        Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }
+    }
+
+    // ── eval_add: dimensionless Scalar mixed-arm tests (task 4319) ────────────
+
+    #[test]
+    fn dscalar_add_real_is_real() {
+        let left = lit(dimensionless_val(25.0), Type::Real);
+        let right = lit(Value::Real(4.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 29.0).abs() < 1e-12, "expected 29.0 got {v}"),
+            other => panic!("expected Real(29.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn real_add_dscalar_is_real() {
+        let left = lit(Value::Real(4.0), Type::Real);
+        let right = lit(dimensionless_val(25.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 29.0).abs() < 1e-12, "expected 29.0 got {v}"),
+            other => panic!("expected Real(29.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dscalar_add_int_is_real() {
+        let left = lit(dimensionless_val(25.0), Type::Real);
+        let right = lit(Value::Int(4), Type::Int);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 29.0).abs() < 1e-12, "expected 29.0 got {v}"),
+            other => panic!("expected Real(29.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn int_add_dscalar_is_real() {
+        let left = lit(Value::Int(4), Type::Int);
+        let right = lit(dimensionless_val(25.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 29.0).abs() < 1e-12, "expected 29.0 got {v}"),
+            other => panic!("expected Real(29.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dimensioned_scalar_add_real_is_undef() {
+        // Scalar{LENGTH} + Real must NOT match the new dimensionless arm → Undef
+        let left = lit(mm_val(80.0), Type::length());
+        let right = lit(Value::Real(4.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "expected Undef for dimensioned Scalar + Real"
+        );
+    }
+
+    // ── eval_sub: dimensionless Scalar mixed-arm tests (task 4319) ────────────
+
+    #[test]
+    fn dscalar_sub_real_is_real() {
+        let left = lit(dimensionless_val(25.0), Type::Real);
+        let right = lit(Value::Real(4.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 21.0).abs() < 1e-12, "expected 21.0 got {v}"),
+            other => panic!("expected Real(21.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn real_sub_dscalar_is_real() {
+        let left = lit(Value::Real(4.0), Type::Real);
+        let right = lit(dimensionless_val(25.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - (-21.0)).abs() < 1e-12, "expected -21.0 got {v}"),
+            other => panic!("expected Real(-21.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dscalar_sub_int_is_real() {
+        let left = lit(dimensionless_val(25.0), Type::Real);
+        let right = lit(Value::Int(4), Type::Int);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - 21.0).abs() < 1e-12, "expected 21.0 got {v}"),
+            other => panic!("expected Real(21.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn int_sub_dscalar_is_real() {
+        let left = lit(Value::Int(4), Type::Int);
+        let right = lit(dimensionless_val(25.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let values = ValueMap::new();
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        match result {
+            Value::Real(v) => assert!((v - (-21.0)).abs() < 1e-12, "expected -21.0 got {v}"),
+            other => panic!("expected Real(-21.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dimensioned_scalar_sub_real_is_undef() {
+        // Scalar{LENGTH} - Real must NOT match the new dimensionless arm → Undef
+        let left = lit(mm_val(80.0), Type::length());
+        let right = lit(Value::Real(4.0), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "expected Undef for dimensioned Scalar - Real"
+        );
     }
 }

@@ -356,7 +356,7 @@ fn solve_p1_pipeline(
         "solve_p1_pipeline: CG did not converge (iterations={})",
         result.iterations,
     );
-    result.u.to_vec()
+    result.u().to_vec()
 }
 
 /// `(nodes, p1_conns, clamp_bcs, end_face_nodes)` — returned by
@@ -556,7 +556,7 @@ fn solve_p2_pipeline_with_opts(
         result.iterations,
         max_iter,
     );
-    result.u.to_vec()
+    result.u().to_vec()
 }
 
 /// Assemble, apply BCs, and CG-solve a P2 tetrahedral FEA system using the

@@ -54,15 +54,19 @@ vi.mock('../viewport', () => ({
   },
 }));
 
-// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, and scrollToLocation for tests
+// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, compileDiagnostics, and liveContentRef for tests
 let capturedEditorStore: any = null;
 let capturedEditorOnOpen: (() => void) | undefined = undefined;
 let capturedEditorScrollToLocation: (() => any) | undefined = undefined;
+let capturedEditorCompileDiagnostics: any = undefined;
+let capturedEditorLiveContentRef: ((getter: () => string | null) => void) | undefined = undefined;
 vi.mock('../editor/Editor', () => ({
   Editor: (props: any) => {
     capturedEditorStore = props.store;
     capturedEditorOnOpen = props.onOpen;
     capturedEditorScrollToLocation = props.scrollToLocation;
+    capturedEditorCompileDiagnostics = props.compileDiagnostics;
+    capturedEditorLiveContentRef = props.liveContentRef;
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'editor-container');
     el.textContent = 'Editor Mock';
@@ -114,6 +118,7 @@ vi.mock('../bridge', () => ({
   claudeClearSession: vi.fn().mockResolvedValue(undefined),
   subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
   isDebugEnabled: vi.fn().mockResolvedValue(false),
+  onWarmPoolEvent: vi.fn().mockResolvedValue(() => {}),
   getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
@@ -129,6 +134,9 @@ vi.mock('../bridge', () => ({
   onSolverProgress: vi.fn().mockResolvedValue(() => {}),
   cancelSolve: vi.fn().mockResolvedValue(undefined),
 }));
+
+// Mock debug module so dynamic import('./debug') in App.tsx resolves without invoking the real bridge.
+vi.mock('../debug', () => ({ initDebugBridge: vi.fn().mockResolvedValue(() => {}) }));
 
 // Mock persistence modules so App.tsx's persistence calls can be intercepted.
 vi.mock('../stores/sidecarPersistence', () => ({
@@ -164,6 +172,8 @@ beforeEach(() => {
   capturedEditorStore = null;
   capturedEditorOnOpen = undefined;
   capturedEditorScrollToLocation = undefined;
+  capturedEditorCompileDiagnostics = undefined;
+  capturedEditorLiveContentRef = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
@@ -192,6 +202,8 @@ beforeEach(() => {
   vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([]);
   vi.mocked((bridge as any).onSolverProgress).mockResolvedValue(() => {});
   vi.mocked((bridge as any).cancelSolve).mockResolvedValue(undefined);
+  vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
+  vi.mocked(bridge.isDebugEnabled).mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -1631,6 +1643,52 @@ describe('App F5 re-evaluate multi-file', () => {
     expect(vi.mocked(bridge.updateSource)).not.toHaveBeenCalledWith(
       '/project/bracket.ri',
       expect.anything(),
+    );
+  });
+});
+
+describe('App F5 re-evaluate uses live buffer content', () => {
+  it('F5 sends the live buffer content (from liveContentRef getter), not the stale store snapshot', async () => {
+    // Arrange: one file loaded
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [{ path: '/project/bracket.ri', content: 'INITIAL' }],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+    });
+    vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
+
+    render(() => <App />);
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    await waitFor(() => expect(capturedEditorLiveContentRef).toBeDefined());
+
+    // Store snapshot stays 'INITIAL' — simulate that no updateFileContent was called
+    // (the store file content is still what it was at open time)
+    const storeFile = capturedEditorStore!.state.openFiles.find(
+      (f: any) => f.path === '/project/bracket.ri',
+    );
+    expect(storeFile?.content).toBe('INITIAL');
+
+    // Wire the live content getter to return 'LIVE-EVAL', simulating a user
+    // having typed into the editor (view doc diverged from store snapshot)
+    capturedEditorLiveContentRef!(() => 'LIVE-EVAL');
+
+    vi.mocked(bridge.updateSource).mockClear();
+
+    // Act: press F5 to trigger handleReEvaluate
+    fireEvent.keyDown(document, { key: 'F5' });
+
+    // Assert: updateSource must be called with the LIVE content, not 'INITIAL'
+    await waitFor(() => {
+      expect(vi.mocked(bridge.updateSource)).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(bridge.updateSource)).toHaveBeenCalledWith(
+      '/project/bracket.ri',
+      'LIVE-EVAL',
     );
   });
 });
@@ -3085,6 +3143,47 @@ describe('App handleSave dirty-indicator and error handling', () => {
       // sibling pattern at setParameter (line ~1356) and re-evaluate (line ~1396).
       expect(errorSpy).not.toHaveBeenCalledWith('Save failed:', expect.any(Error));
     });
+  });
+});
+
+describe('App handleSave uses live buffer content', () => {
+  it('Ctrl+S sends the live buffer content (from liveContentRef getter), not the stale store snapshot', async () => {
+    const path = '/project/test.ri';
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [{ path, content: 'STALE' }],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+    });
+
+    render(() => <App />);
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    await waitFor(() => expect(capturedEditorLiveContentRef).toBeDefined());
+
+    // Set store content to 'STALE' and mark file not externally-changed
+    // so canSave returns ok — only the content argument changes
+    capturedEditorStore!.setActiveFile(path);
+    capturedEditorStore!.markDirty(path);
+    // Store snapshot stays 'STALE' — no updateFileContent called after open
+
+    // Wire the live content getter to return 'LIVE-SAVE'
+    capturedEditorLiveContentRef!(() => 'LIVE-SAVE');
+
+    vi.mocked(bridge.saveFile).mockClear();
+
+    // Trigger handleSave via global Ctrl+S shortcut
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    // Assert live content was saved, NOT the stale store snapshot
+    await waitFor(() => {
+      expect(vi.mocked(bridge.saveFile)).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(bridge.saveFile)).toHaveBeenCalledWith(path, 'LIVE-SAVE');
   });
 });
 
@@ -5298,6 +5397,86 @@ describe('App handleSave conflict prompt: Overwrite', () => {
   });
 });
 
+// ─── Conflict prompt: Overwrite uses live buffer content ─────────────────────
+
+describe('App handleSave conflict prompt: Overwrite uses live buffer', () => {
+  const testState: GuiState = {
+    meshes: [],
+    values: [],
+    constraints: [],
+    files: [
+      { path: '/project/bracket.ri', content: 'STALE' },
+    ],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+    tensegrity_wires: [],
+  };
+
+  let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
+
+  beforeEach(() => {
+    fileChangedCallback = undefined;
+    vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+      fileChangedCallback = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+  });
+
+  it('clicking Overwrite saves the live buffer content (from liveContentRef), not the stale store snapshot', async () => {
+    // The conflict prompt is created when Ctrl+S fires on an externally-changed
+    // file.  The Overwrite action must save the live CM buffer, not the stale
+    // store snapshot that was captured at open time.
+    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/bracket.ri', content: 'unused' });
+
+    render(() => <App />);
+    await waitFor(() => expect(fileChangedCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    await waitFor(() => expect(capturedEditorLiveContentRef).toBeDefined());
+
+    // Set up dirty + externally-changed state; store snapshot stays 'STALE'
+    capturedEditorStore.setActiveFile('/project/bracket.ri');
+    capturedEditorStore.markDirty('/project/bracket.ri');
+    capturedEditorStore.markExternallyChanged('/project/bracket.ri');
+
+    // Wire the live content getter to simulate the user having typed
+    capturedEditorLiveContentRef!(() => 'LIVE-OVERWRITE');
+
+    // Trigger handleSave via Ctrl+S — shows conflict prompt (file is externally-changed)
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true });
+
+    // Wait for the conflict toast with Overwrite button to appear
+    let conflictToast: HTMLElement | undefined;
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      conflictToast = toasts.find((t) =>
+        t.textContent?.includes(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG),
+      );
+      expect(conflictToast).toBeTruthy();
+    });
+
+    // Simulate a tab-switch after the prompt appears: mutate the getter so any
+    // click-time read would return the wrong file's content.  The snapshot must
+    // have been taken at prompt-CREATION time (when Ctrl+S fired), so Overwrite
+    // should still save 'LIVE-OVERWRITE', not 'WRONG-FILE-AFTER-SWITCH'.
+    capturedEditorLiveContentRef!(() => 'WRONG-FILE-AFTER-SWITCH');
+
+    // Click the Overwrite action button
+    const overwriteBtn = within(conflictToast!).getByRole('button', { name: SAVE_CONFLICT_OVERWRITE_LABEL });
+    fireEvent.click(overwriteBtn);
+
+    // bridgeSaveFile must be called with the LIVE buffer content, not 'STALE'
+    // and not the post-switch 'WRONG-FILE-AFTER-SWITCH'.
+    await waitFor(() => {
+      expect(vi.mocked(bridge.saveFile)).toHaveBeenCalledWith(
+        '/project/bracket.ri',
+        'LIVE-OVERWRITE',
+      );
+    });
+  });
+});
+
 // ─── Save-conflict resolution clears the reload-prompt banner ────────────────
 
 describe('App save-conflict resolution clears the reload-prompt banner', () => {
@@ -5740,5 +5919,341 @@ describe('App SolverProgressOverlay integration', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// App hover sync wiring — Edge C (task-4209)
+// Edge C: editor cursor → createEditorHoverSync → store → DualViewport.hoveredEntity
+// ---------------------------------------------------------------------------
+
+describe('App hover sync wiring — Edge C', () => {
+  it('(a) editor cursor change routes hover through createEditorHoverSync to DualViewport.hoveredEntity', async () => {
+    // Bridge returns 'Bracket.width' for any source location lookup
+    vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue('Bracket.width');
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    vi.useFakeTimers();
+    try {
+      capturedEditorStore.setCursorPosition(2, 11);
+      await vi.advanceTimersByTimeAsync(250);
+      // Flush microtasks so Promise resolutions propagate
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // createEditorHoverSync must have resolved the position and called hoverEntity;
+      // do NOT constrain getEntityAtSourceLocation call count — both hover and selection
+      // sync hooks call it for the same cursor position.
+      await waitFor(() => {
+        expect(capturedDualViewportProps.hoveredEntity).toBe('Bracket.width');
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('(b) null cursor position clears DualViewport.hoveredEntity', async () => {
+    vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue('Bracket.width');
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    vi.useFakeTimers();
+    try {
+      // First set a cursor to establish hover
+      capturedEditorStore.setCursorPosition(2, 11);
+      await vi.advanceTimersByTimeAsync(250);
+      await Promise.resolve();
+      await Promise.resolve();
+      await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBe('Bracket.width'));
+
+      // Then clear cursor — hook must immediately call hoverEntity(null)
+      capturedEditorStore.setCursorPosition(null);
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBeNull());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// App hover sync wiring — Edges A & B (task-4209)
+// Edge A: DesignTree row mouseenter → store → DualViewport.hoveredEntity
+// Edge B: DualViewport.onHover → store → DesignTree row data-hovered
+// ---------------------------------------------------------------------------
+
+describe('App hover sync wiring — Edges A & B', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return { entity_path, kind: 'structure', type_name: null, has_mesh: false, trait_geometry: false, freshness: 'final', children };
+  }
+
+  it('(a) Edge A: DesignTree row mouseenter routes hover through store to DualViewport.hoveredEntity', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy());
+
+    fireEvent.mouseEnter(screen.getByTestId('tree-row-Root.A'));
+
+    // Outline hover → selectionStore.hoverEntity → DualViewport receives hoveredEntity prop
+    await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBe('Root.A'));
+  });
+
+  it('(a-clear) Edge A mouseleave clears DualViewport.hoveredEntity', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy());
+
+    // Hover on, then off
+    fireEvent.mouseEnter(screen.getByTestId('tree-row-Root.A'));
+    await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBe('Root.A'));
+    fireEvent.mouseLeave(screen.getByTestId('tree-row-Root.A'));
+    await waitFor(() => expect(capturedDualViewportProps.hoveredEntity).toBeNull());
+  });
+
+  it('(b) Edge B: DualViewport.onHover routes through store to DesignTree row data-hovered attribute', async () => {
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode('Root.A'), makeNode('Root.B')]);
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('tree-row-Root.A')).toBeTruthy());
+
+    // Simulate viewport hover arriving via the existing onHover prop
+    capturedDualViewportProps.onHover('Root.A');
+
+    // The matching row should receive data-hovered='true'; the other should not
+    await waitFor(() => expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-hovered')).toBe('true'));
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-hovered')).toBeNull();
+  });
+});
+
+// ── App reconcileToTree wiring (step-7) ─────────────────────────────────────
+describe('App refreshEntityTree wires reconcileToTree (step-7)', () => {
+  it('orphan mesh absent from getEntityTree tree is pruned after refreshEntityTree', async () => {
+    // Live mesh owner is in the tree; orphan mesh owner is NOT
+    const liveMeshKey = 'CapstanDrive.shuttle.plate#realization0';
+    const orphanMeshKey = 'ShuttlePlates#realization0';
+
+    const initialState: GuiState = {
+      meshes: [
+        { entity_path: liveMeshKey, vertices: new Float32Array([0, 1, 2]), indices: new Uint32Array([0, 1, 2]), normals: null },
+        { entity_path: orphanMeshKey, vertices: new Float32Array([3, 4, 5]), indices: new Uint32Array([0, 1, 2]), normals: null },
+      ],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+    };
+
+    // Seed both meshes via getInitialState
+    vi.mocked(bridge.getInitialState).mockResolvedValue(initialState);
+    // Only the live structure is in the tree
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      { entity_path: 'CapstanDrive.shuttle.plate', kind: 'structure', type_name: null, has_mesh: true, trait_geometry: false, freshness: 'final', children: [] },
+    ]);
+
+    await renderAndWaitForReady();
+    // Wait for the entity tree to be fetched (triggers reconcileToTree if wired up)
+    await waitFor(() => expect(bridge.getEntityTree).toHaveBeenCalledTimes(1));
+
+    // DualViewport receives engineStore as a prop; read meshes through it
+    const meshesRef = () => capturedDualViewportProps?.engineStore?.state?.meshes ?? {};
+
+    // After refreshEntityTree resolves, reconcileToTree should have pruned the orphan
+    await waitFor(() => {
+      const meshKeys = Object.keys(meshesRef());
+      expect(meshKeys).not.toContain(orphanMeshKey);
+      expect(meshKeys).toContain(liveMeshKey);
+    });
+  });
+});
+
+// ── App epoch/staleness guard (task 4251 step-3/step-4) ─────────────────────
+//
+// Scenario: an in-flight bridgeGetEntityTree() fetch that was issued BEFORE an
+// engine reinit (i.e. before a new design was loaded) must be DROPPED when it
+// resolves, so its (partially-stale) reconcileToTree call does not prune meshes
+// that belong to the freshly-loaded design.
+//
+// The stale snapshot is deliberately crafted to be a PARTIAL overlap with the
+// current design (it contains CapstanDrive.capstan but NOT
+// CapstanDrive.shuttle.plate). This means the step-2 cross-root guard does
+// NOT engage — the test isolates the epoch/staleness guard implemented in step-4.
+describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
+  function makeNode(entity_path: string, children: any[] = []) {
+    return {
+      entity_path,
+      kind: 'structure' as const,
+      type_name: null,
+      has_mesh: true,
+      trait_geometry: false,
+      freshness: 'final' as const,
+      children,
+    };
+  }
+
+  it('stale in-flight entity-tree snapshot fetched before an engine reinit does not prune the freshly-loaded design', async () => {
+    // Design A: loaded by getInitialState during initApp
+    const designAState: GuiState = {
+      meshes: [
+        {
+          entity_path: 'PrinterFrame.gantry#r0',
+          vertices: new Float32Array([0, 1, 2]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: null,
+        },
+      ],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+    };
+
+    // Design B: loaded directly via initFromState (simulates a file-switch reinit)
+    const designBState: GuiState = {
+      meshes: [
+        {
+          entity_path: 'CapstanDrive.capstan#r0',
+          vertices: new Float32Array([0, 1, 2]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: null,
+        },
+        {
+          entity_path: 'CapstanDrive.shuttle.plate#r0',
+          vertices: new Float32Array([3, 4, 5]),
+          indices: new Uint32Array([0, 1, 2]),
+          normals: null,
+        },
+      ],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+    };
+
+    // Deferred promise for the FIRST getEntityTree call (the stale in-flight fetch).
+    // It is issued during initApp → initFromState → onEngineReinitialized → refreshEntityTree.
+    const staleDeferred = deferred<any[]>();
+
+    vi.mocked(bridge.getInitialState).mockResolvedValue(designAState);
+    // First call: stale, stays in-flight for the duration of the test
+    vi.mocked(bridge.getEntityTree).mockReturnValueOnce(staleDeferred.promise);
+    // Subsequent calls (from the reinit's refreshEntityTree): return design B's tree immediately
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      makeNode('CapstanDrive.capstan'),
+      makeNode('CapstanDrive.shuttle.plate'),
+    ]);
+
+    await renderAndWaitForReady();
+
+    // Capture the engine store exposed through DualViewport props
+    const engine = capturedDualViewportProps.engineStore;
+    expect(engine).toBeDefined();
+
+    // Trigger a reinit with design B — fires onEngineReinitialized → epoch bump
+    // (step-4 will add this) + fresh refreshEntityTree against design B's tree.
+    engine.initFromState(designBState);
+
+    // Wait for the fresh post-reinit fetch to resolve and reconcile design B's meshes.
+    // Both B meshes are present because the fresh tree lists both.
+    await waitFor(() => {
+      const meshKeys = Object.keys(engine.state.meshes);
+      expect(meshKeys).toContain('CapstanDrive.capstan#r0');
+      expect(meshKeys).toContain('CapstanDrive.shuttle.plate#r0');
+    });
+
+    // Now resolve the stale in-flight fetch with a PARTIAL-overlap tree.
+    // It includes CapstanDrive.capstan (shared with design B) so the step-2
+    // cross-root guard does NOT engage. The only guard that should stop pruning
+    // is the epoch/staleness guard implemented in step-4.
+    staleDeferred.resolve([makeNode('CapstanDrive.capstan')]);
+
+    // Flush the macrotask queue so the stale .then callback (and any further
+    // microtask hops it spawns) is guaranteed to have run before we assert.
+    // Using flushMacrotasks() rather than bare await Promise.resolve() ticks
+    // is more durable: a setTimeout barrier drains all pending microtasks
+    // first, so if the resolve path ever gains an extra microtask hop the
+    // assertion ordering remains correct.
+    await flushMacrotasks();
+
+    // Epoch guard (step-4) must have dropped the stale snapshot.
+    // Both B meshes must survive — shuttle.plate must NOT have been pruned.
+    expect(Object.keys(engine.state.meshes)).toContain('CapstanDrive.capstan#r0');
+    expect(Object.keys(engine.state.meshes)).toContain('CapstanDrive.shuttle.plate#r0');
+    // The viewport must stay active (not collapse to 'No active viewport')
+    expect(capturedDualViewportProps.designViewportActive()).toBe(true);
+  });
+});
+
+describe('App forwards compileDiagnostics to Editor (task-4252)', () => {
+  it('passes engineStore.state.compileDiagnostics to the Editor compileDiagnostics prop', async () => {
+    const errorDiag = {
+      file_path: '/project/src/bracket.ri',
+      line: 3,
+      column: 5,
+      end_line: 3,
+      end_column: 14,
+      severity: 'Error',
+      message: 'unresolved name: rot_to_z',
+      code: null,
+    };
+
+    // Seed getInitialState with an Error compile diagnostic
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [errorDiag],
+      tensegrity_wires: [],
+    } as any);
+
+    await renderAndWaitForReady();
+
+    // App should forward the compile_diagnostics from the engine store to <Editor>
+    expect(capturedEditorCompileDiagnostics).toBeDefined();
+    expect(capturedEditorCompileDiagnostics).toContainEqual(
+      expect.objectContaining({ severity: 'Error', message: 'unresolved name: rot_to_z' }),
+    );
+  });
+});
+
+// ── WarmPoolDebugPanel placement (task 4279) ─────────────────────────────────
+
+describe('App warm-pool debug panel placement (task 4279)', () => {
+  it('DEBUG ON: panel renders outside side-panel grid, in floating overlay', async () => {
+    vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
+    await renderAndWaitForReady();
+
+    // Panel must be visible behind the debug affordance
+    await waitFor(() => expect(screen.getByTestId('warm-pool-debug-panel')).toBeTruthy());
+
+    // Overlay wrapper must exist
+    expect(screen.getByTestId('warm-pool-debug-overlay')).toBeTruthy();
+
+    // Panel must be inside the overlay wrapper
+    expect(screen.getByTestId('warm-pool-debug-overlay').contains(screen.getByTestId('warm-pool-debug-panel'))).toBe(true);
+
+    // Panel must NOT be a descendant of the side-panel grid
+    const sidePanel = screen.getByTestId('side-panel');
+    expect(sidePanel.contains(screen.getByTestId('warm-pool-debug-panel'))).toBe(false);
+
+    // Side-panel grid invariant: tracked children == template tracks (no 8px strip)
+    expect(countGridTracks(sidePanel.style.gridTemplateRows)).toBe(sidePanel.children.length);
+  });
+
+  it('DEBUG OFF: neither panel nor overlay renders in the layout', async () => {
+    await renderAndWaitForReady();
+
+    expect(screen.queryByTestId('warm-pool-debug-panel')).toBeNull();
+    expect(screen.queryByTestId('warm-pool-debug-overlay')).toBeNull();
   });
 });

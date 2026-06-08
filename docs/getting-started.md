@@ -55,7 +55,7 @@ scripts/run-gui.sh examples/m5_geometry.ri
 
 The GUI shows a 3D viewer, an outline of the design, parameter sliders, and a constraints panel. Edit a parameter — the geometry updates live.
 
-If you want hot-reload of frontend changes (e.g. you're poking at the SolidJS code), use `scripts/run-gui-dev.sh` instead. It also opens an MCP debug listener on `127.0.0.1:3939` for instrumented automation.
+If you want hot-reload of frontend changes (e.g. you're poking at the SolidJS code), use `scripts/run-gui-dev.sh` instead. It also opens an MCP debug listener on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}` for instrumented automation. Set `REIFY_DEBUG_PORT` to a different port to avoid collisions when running concurrent worktrees.
 
 ## 5. Try other examples
 

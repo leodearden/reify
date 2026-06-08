@@ -283,6 +283,157 @@ fn validate_pattern_count(
     Ok(raw as usize)
 }
 
+/// Extract three SI-valued `f64` components from a [`reify_ir::Value::Point`]
+/// or [`reify_ir::Value::Vector`] with exactly 3 numeric, finite components.
+///
+/// Returns `None` if:
+/// - the value is not a `Point` or `Vector`;
+/// - it does not have exactly 3 components;
+/// - any component does not yield a finite `f64` via [`reify_ir::Value::as_f64`].
+///
+/// Both `Point` (with LENGTH-dimensioned `Scalar` components — SI metres) and
+/// `Vector` (with dimensionless `Real` components) pass through correctly
+/// because `Value::as_f64` extracts `si_value` from `Scalar` and the raw
+/// float from `Real`.
+fn point3_components(value: &reify_ir::Value) -> Option<[f64; 3]> {
+    let comps = match value {
+        reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
+        _ => return None,
+    };
+    let a = comps[0].as_f64().filter(|v| v.is_finite())?;
+    let b = comps[1].as_f64().filter(|v| v.is_finite())?;
+    let c = comps[2].as_f64().filter(|v| v.is_finite())?;
+    Some([a, b, c])
+}
+
+/// Normalize a 3-component direction vector to unit length.
+///
+/// Returns `Err` when the vector magnitude is below [`GEOMETRY_EPSILON`]
+/// (zero or near-zero), preventing a degenerate `[0,0,0]` normal from
+/// propagating silently to the kernel.  The caller maps `Err(String)` to a
+/// `Diagnostic::error` via the standard `Err(String)` → diagnostic idiom
+/// (see `engine_build.rs`).
+fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
+    let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if mag < GEOMETRY_EPSILON {
+        return Err(format!(
+            "zero-magnitude vector [{:.6e}, {:.6e}, {:.6e}] cannot be normalized \
+             to a unit direction",
+            v[0], v[1], v[2]
+        ));
+    }
+    Ok([v[0] / mag, v[1] / mag, v[2] / mag])
+}
+
+/// Decode a [`Value::Plane`] into `(origin, unit_normal)` — a pair of SI
+/// metre triples returned as `([f64; 3], [f64; 3])`.
+///
+/// The normal is normalized to unit length.  Non-unit normals are accepted and
+/// normalized silently (the plane equation is invariant to normal scale).
+/// Zero-magnitude normals are always rejected.
+///
+/// # Returns
+/// - `Ok((origin, unit_normal))` — origin in metres, normal dimensionless unit vector.
+/// - `Err(message)` — for any of:
+///   - wrong value variant (not `Value::Plane`), including `Value::Undef`;
+///   - origin or normal with non-numeric / non-finite components;
+///   - zero-magnitude normal.
+///
+/// # Visibility
+/// `pub(crate)` — co-located with the mirror/circular_pattern eval consumers
+/// and available to sibling modules in `reify-eval`.  Widened to `pub` only
+/// when a cross-crate consumer lands (task 3465, design open).
+pub(crate) fn decode_plane(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3]), String> {
+    let (origin_val, normal_val) = match value {
+        reify_ir::Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
+        other => {
+            return Err(format!(
+                "expected a Plane value, got {}",
+                other
+            ));
+        }
+    };
+    let origin_arr = point3_components(origin_val).ok_or_else(|| {
+        "Plane origin is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let normal_raw = point3_components(normal_val).ok_or_else(|| {
+        "Plane normal is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let unit_normal = unit_vector3(normal_raw)
+        .map_err(|e| format!("Plane has a degenerate normal: {e}"))?;
+    Ok((origin_arr, unit_normal))
+}
+
+/// Decode a [`Value::Axis`] into `(origin, unit_direction)` — a pair of SI
+/// metre triples returned as `([f64; 3], [f64; 3])`.
+///
+/// The direction vector is normalized to unit length.  Non-unit directions are
+/// accepted and normalized silently.  Zero-magnitude directions are rejected.
+///
+/// # Returns
+/// - `Ok((origin, unit_direction))` — origin in metres, direction a
+///   dimensionless unit vector.
+/// - `Err(message)` — for any of:
+///   - wrong value variant (not `Value::Axis`), including `Value::Undef`;
+///   - origin or direction with non-numeric / non-finite components;
+///   - zero-magnitude direction.
+///
+/// Reuses the private helpers [`point3_components`] and [`unit_vector3`] from
+/// [`decode_plane`] — the single canonical decode surface for Axis values
+/// (task η, design decision A).
+///
+/// # Visibility
+/// `pub(crate)` — widened to `pub` only when a cross-crate consumer lands
+/// (task 3465, design open).
+pub(crate) fn decode_axis(value: &reify_ir::Value) -> Result<([f64; 3], [f64; 3]), String> {
+    let (origin_val, dir_val) = match value {
+        reify_ir::Value::Axis { origin, direction } => (origin.as_ref(), direction.as_ref()),
+        other => {
+            return Err(format!(
+                "expected an Axis value, got {}",
+                other
+            ));
+        }
+    };
+    let origin_arr = point3_components(origin_val).ok_or_else(|| {
+        "Axis origin is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let dir_raw = point3_components(dir_val).ok_or_else(|| {
+        "Axis direction is not a valid 3-component numeric Point/Vector".to_string()
+    })?;
+    let unit_dir = unit_vector3(dir_raw)
+        .map_err(|e| format!("Axis has a degenerate direction: {e}"))?;
+    Ok((origin_arr, unit_dir))
+}
+
+/// Convert a bare-numeric angle [`reify_ir::Value`] to radians, emitting a
+/// deprecation warning diagnostic.
+///
+/// CAD convention: a bare `Real` or `Int` angle (no unit suffix in source) is
+/// interpreted as degrees and converted to radians.  Values that already carry
+/// an `ANGLE` dimension (from `deg` / `rad` suffixes) pass through unchanged.
+///
+/// Extracted to a shared free function to prevent verbatim duplication between
+/// the value-form and scalar-form branches of the `circular_pattern` eval arm.
+fn resolve_bare_angle(raw: reify_ir::Value, diagnostics: &mut Vec<Diagnostic>) -> reify_ir::Value {
+    let as_deg: Option<f64> = match &raw {
+        reify_ir::Value::Real(v) => Some(*v),
+        reify_ir::Value::Int(i) => Some(*i as f64),
+        _ => None,
+    };
+    if let Some(deg) = as_deg {
+        let rad = deg * std::f64::consts::PI / 180.0;
+        diagnostics.push(Diagnostic::warning(format!(
+            "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
+             use `{}deg` or `{:.6}rad` for explicit units",
+            deg, deg, deg, rad
+        )));
+        reify_ir::Value::angle(rad)
+    } else {
+        raw
+    }
+}
+
 /// Translate a compiled geometry operation into a runtime `GeometryOp` by
 /// evaluating its argument expressions against the current value environment.
 ///
@@ -402,6 +553,17 @@ pub(crate) fn compile_geometry_op(
                     outer_r: eval_arg("outer_r")?,
                     inner_r: eval_arg("inner_r")?,
                     height: eval_arg("height")?,
+                }),
+                PrimitiveKind::Cone => Ok(reify_ir::GeometryOp::Cone {
+                    bottom_radius: eval_arg("bottom_radius")?,
+                    top_radius: eval_arg("top_radius")?,
+                    height: eval_arg("height")?,
+                }),
+                PrimitiveKind::Wedge => Ok(reify_ir::GeometryOp::Wedge {
+                    width: eval_arg("width")?,
+                    depth: eval_arg("depth")?,
+                    height: eval_arg("height")?,
+                    top_width: eval_arg("top_width")?,
                 }),
             }
         }
@@ -627,10 +789,10 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::PatternKind::Circular => {
-                    // Missing-arg coverage: build_circular_pattern_missing_{count,axis}_no_kernel_error
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
+                    if args.iter().any(|(n, _)| n == "axis") {
+                        // Value form: circular_pattern(target, axis_value, count, angle)
+                        let axis_val = eval_named_arg(
+                            "axis",
                             kind,
                             args,
                             values,
@@ -639,54 +801,98 @@ pub(crate) fn compile_geometry_op(
                             diagnostics,
                         )
                         .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                            format!("missing required argument 'axis' for {}", kind)
+                        })?;
+                        let (axis_origin, axis_dir) = decode_axis(&axis_val)
+                            .map_err(|e| format!("circular_pattern: {}", e))?;
+                        let count_raw = eval_named_arg_f64(
+                            "count",
+                            kind,
+                            args,
+                            values,
+                            functions,
+                            meta_map,
+                            diagnostics,
+                        )
+                        .ok_or_else(|| {
+                            format!("missing or non-finite argument 'count' for {}", kind)
+                        })?;
+                        let count =
+                            validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+                        let raw_angle = eval_named_arg(
+                            "angle",
+                            kind,
+                            args,
+                            values,
+                            functions,
+                            meta_map,
+                            diagnostics,
+                        )
+                        .ok_or_else(|| {
+                            format!("missing required argument 'angle' for {}", kind)
+                        })?;
+                        // CAD convention: bare numeric angle → degrees → radians with warning.
+                        let angle = resolve_bare_angle(raw_angle, diagnostics);
+                        Ok(reify_ir::GeometryOp::CircularPattern {
+                            target: target_id,
+                            axis_origin,
+                            axis_dir,
+                            count,
+                            angle,
                         })
-                    };
-                    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
-                    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
-                    let count_raw = f64_arg("count")?;
-                    let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-                    let raw_angle = eval_named_arg(
-                        "angle",
-                        kind,
-                        args,
-                        values,
-                        functions,
-                        meta_map,
-                        diagnostics,
-                    )
-                    .ok_or_else(|| format!("missing required argument 'angle' for {}", kind))?;
-                    // CAD convention: a bare numeric angle (no unit suffix) is
-                    // interpreted as degrees and converted to radians.  Values
-                    // that already carry an ANGLE dimension (from `deg`/`rad`
-                    // suffixes in source) pass through unchanged.
-                    let mut convert_bare_angle = |deg: f64| -> reify_ir::Value {
-                        let rad = deg * std::f64::consts::PI / 180.0;
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "circular_pattern: bare numeric angle `{}` interpreted as {}°; \
-                             use `{}deg` or `{:.6}rad` for explicit units",
-                            deg, deg, deg, rad
-                        )));
-                        reify_ir::Value::angle(rad)
-                    };
-                    let angle = match raw_angle {
-                        reify_ir::Value::Real(v) => convert_bare_angle(v),
-                        reify_ir::Value::Int(i) => convert_bare_angle(i as f64),
-                        other => other,
-                    };
-                    Ok(reify_ir::GeometryOp::CircularPattern {
-                        target: target_id,
-                        axis_origin,
-                        axis_dir,
-                        count,
-                        angle,
-                    })
+                    } else {
+                        // Scalar form (back-compat): ox, oy, oz, ax, ay, az, count, angle
+                        // Missing-arg coverage: build_circular_pattern_missing_{count,axis}_no_kernel_error
+                        let mut f64_arg = |name: &str| -> Result<f64, String> {
+                            eval_named_arg_f64(
+                                name,
+                                kind,
+                                args,
+                                values,
+                                functions,
+                                meta_map,
+                                diagnostics,
+                            )
+                            .ok_or_else(|| {
+                                format!(
+                                    "missing or non-finite argument '{}' for {}",
+                                    name, kind
+                                )
+                            })
+                        };
+                        let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
+                        let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
+                        let count_raw = f64_arg("count")?;
+                        let count =
+                            validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+                        let raw_angle = eval_named_arg(
+                            "angle",
+                            kind,
+                            args,
+                            values,
+                            functions,
+                            meta_map,
+                            diagnostics,
+                        )
+                        .ok_or_else(|| {
+                            format!("missing required argument 'angle' for {}", kind)
+                        })?;
+                        // CAD convention: same bare-angle path as the value form above.
+                        let angle = resolve_bare_angle(raw_angle, diagnostics);
+                        Ok(reify_ir::GeometryOp::CircularPattern {
+                            target: target_id,
+                            axis_origin,
+                            axis_dir,
+                            count,
+                            angle,
+                        })
+                    }
                 }
                 reify_compiler::PatternKind::Mirror => {
-                    // Missing-arg coverage: build_mirror_pattern_missing_plane_origin_no_kernel_error
-                    let mut f64_arg = |name: &str| -> Result<f64, String> {
-                        eval_named_arg_f64(
-                            name,
+                    if args.iter().any(|(n, _)| n == "plane") {
+                        // Value form: mirror(target, plane_value)
+                        let plane_val = eval_named_arg(
+                            "plane",
                             kind,
                             args,
                             values,
@@ -695,14 +901,41 @@ pub(crate) fn compile_geometry_op(
                             diagnostics,
                         )
                         .ok_or_else(|| {
-                            format!("missing or non-finite argument '{}' for {}", name, kind)
+                            format!("missing required argument 'plane' for {}", kind)
+                        })?;
+                        let (plane_origin, plane_normal) = decode_plane(&plane_val)
+                            .map_err(|e| format!("mirror: {}", e))?;
+                        Ok(reify_ir::GeometryOp::Mirror {
+                            target: target_id,
+                            plane_origin,
+                            plane_normal,
                         })
-                    };
-                    Ok(reify_ir::GeometryOp::Mirror {
-                        target: target_id,
-                        plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
-                        plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
-                    })
+                    } else {
+                        // Scalar form (back-compat): ox, oy, oz, nx, ny, nz
+                        // Missing-arg coverage: build_mirror_pattern_missing_plane_origin_no_kernel_error
+                        let mut f64_arg = |name: &str| -> Result<f64, String> {
+                            eval_named_arg_f64(
+                                name,
+                                kind,
+                                args,
+                                values,
+                                functions,
+                                meta_map,
+                                diagnostics,
+                            )
+                            .ok_or_else(|| {
+                                format!(
+                                    "missing or non-finite argument '{}' for {}",
+                                    name, kind
+                                )
+                            })
+                        };
+                        Ok(reify_ir::GeometryOp::Mirror {
+                            target: target_id,
+                            plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
+                            plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
+                        })
+                    }
                 }
                 reify_compiler::PatternKind::Linear2D => {
                     let mut f64_arg = |name: &str| -> Result<f64, String> {
@@ -1287,6 +1520,22 @@ pub(crate) fn compile_geometry_op(
                 }
             }
         }
+        CompiledGeometryOp::Profile { kind, args } => {
+            use reify_compiler::ProfileKind;
+            let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
+                eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+                    .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+            };
+            match kind {
+                ProfileKind::Rectangle => Ok(reify_ir::GeometryOp::RectangleProfile {
+                    width: eval_arg("width")?,
+                    height: eval_arg("height")?,
+                }),
+                ProfileKind::Circle => Ok(reify_ir::GeometryOp::CircleProfile {
+                    radius: eval_arg("radius")?,
+                }),
+            }
+        }
     }
 }
 
@@ -1543,7 +1792,7 @@ pub(crate) fn try_eval_geometry_query(
 /// direct-dispatch path and to locate fold leaves in the nested path.
 /// `length` / `perimeter` are intentionally excluded (topology-selector path —
 /// see the module note above `try_eval_geometry_query`).
-fn is_geometry_query_call(expr: &reify_ir::CompiledExpr) -> bool {
+pub(crate) fn is_geometry_query_call(expr: &reify_ir::CompiledExpr) -> bool {
     matches!(
         &expr.kind,
         reify_ir::CompiledExprKind::FunctionCall { function, args }
@@ -1837,6 +2086,22 @@ pub(crate) fn try_eval_kinematic_query(
         _ => return None,
     };
 
+    // (1b) Swept flat_map branch: flat_map(snaps, |s| [kin_helper(s, a, b)]).
+    // Checked before the helper-name match (step 2) so the `flat_map` name
+    // does not fall through to the `_ => return None` arm. Non-kinematic
+    // flat_map lambdas (e.g. `center_of_mass`) return None from
+    // `try_eval_swept_kinematic_query`, preserving the pure-eval value.
+    if function.name == "flat_map" {
+        return try_eval_swept_kinematic_query(
+            args,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+            pose_cache,
+        );
+    }
+
     // (2) Must be one of the three recognised helper names.
     let helper = match function.name.as_str() {
         "interferes" => KinematicHelper::Interferes,
@@ -1872,6 +2137,49 @@ pub(crate) fn try_eval_kinematic_query(
         None
     };
 
+    // (5–7) Delegate the per-snapshot core (extract bodies → build id→handle
+    // with FK ApplyTransform → dispatch per-helper) to
+    // `eval_kinematic_on_snapshot`. The swept flat_map branch calls the same
+    // function for each element of the snapshot list (task 3844).
+    eval_kinematic_on_snapshot(
+        helper,
+        &function.name,
+        snapshot_value,
+        body_id_args,
+        named_steps,
+        kernel,
+        diagnostics,
+        pose_cache,
+    )
+}
+
+/// Per-snapshot kinematic dispatch: resolve bodies from a Snapshot Map, apply
+/// FK world_transforms via `GeometryOp::ApplyTransform`, and run the
+/// per-helper kernel probe (`interferes`, `interferes_with`, `min_clearance`).
+///
+/// Extracted from `try_eval_kinematic_query` so the swept flat_map branch
+/// (`try_eval_swept_kinematic_query`) can invoke the same per-snapshot logic
+/// for each element of a snapshot list (task 3844, KCC-epsilon).
+///
+/// `fn_name` is used only in Warning diagnostics; pass the stdlib function
+/// name (e.g. `"min_clearance"`) for readable messages.
+///
+/// Returns:
+///   `Some(Value)` on success — List / Bool / length Scalar per helper.
+///   `Some(Value::Undef)` when the snapshot Map is malformed or a kernel
+///     operation fails — the caller receives the per-snapshot Undef rather
+///     than collapsing the entire swept result.
+#[allow(clippy::too_many_arguments)]
+fn eval_kinematic_on_snapshot(
+    helper: KinematicHelper,
+    fn_name: &str,
+    snapshot_value: &reify_ir::Value,
+    body_id_args: Option<(i64, i64)>,
+    named_steps: &HashMap<String, KernelHandle>,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+    pose_cache: &mut HashMap<(GeometryHandleId, [u64; 4], [u64; 3]), GeometryHandleId>,
+) -> Option<reify_ir::Value> {
     // (5) Read the Snapshot's bodies list. Returns Some(Value::Undef) (not
     // None) when the cell value isn't a well-formed Snapshot — the stdlib
     // stub already validated this on the value-eval pass, so reaching here
@@ -1929,9 +2237,8 @@ pub(crate) fn try_eval_kinematic_query(
                         if rotation != [1.0, 0.0, 0.0, 0.0] || translation != [0.0, 0.0, 0.0] =>
                     {
                         // Cache posed handles for the duration of the build
-                        // pass: a typical structure calls interferes(s),
-                        // interferes_with(s,…) and min_clearance(s,…) on the
-                        // same snapshot, so without a cache each non-identity
+                        // pass: a typical structure calls interferes/interferes_with/min_clearance on
+                        // the same snapshot, so without a cache each non-identity
                         // body is re-posed once per query (3× the kernel ops
                         // for the same geometry). The key is (source handle,
                         // rotation bits, translation bits) — bit-exact to avoid
@@ -1962,8 +2269,7 @@ pub(crate) fn try_eval_kinematic_query(
                                     // kernel_distance error arm) so the failure
                                     // is visible rather than silently wrong.
                                     diagnostics.push(Diagnostic::warning(format!(
-                                        "{}: ApplyTransform failed for body '{}': {e}",
-                                        function.name, solid_name
+                                        "{fn_name}: ApplyTransform failed for body '{solid_name}': {e}",
                                     )));
                                     return Some(reify_ir::Value::Undef);
                                 }
@@ -1989,7 +2295,7 @@ pub(crate) fn try_eval_kinematic_query(
                 for j in (i + 1)..id_to_handle.len() {
                     let (id_a, handle_a) = id_to_handle[i];
                     let (id_b, handle_b) = id_to_handle[j];
-                    match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+                    match kernel_distance(kernel, handle_a, handle_b, diagnostics, fn_name) {
                         Some(d) if d <= 0.0 => {
                             pairs.push(make_pair_map(id_a, id_b));
                         }
@@ -2019,7 +2325,7 @@ pub(crate) fn try_eval_kinematic_query(
                 Some(h) => h,
                 None => return Some(reify_ir::Value::Undef),
             };
-            match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+            match kernel_distance(kernel, handle_a, handle_b, diagnostics, fn_name) {
                 Some(d) => Some(reify_ir::Value::Bool(d <= 0.0)),
                 None => Some(reify_ir::Value::Undef),
             }
@@ -2040,12 +2346,122 @@ pub(crate) fn try_eval_kinematic_query(
                 Some(h) => h,
                 None => return Some(reify_ir::Value::Undef),
             };
-            match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+            match kernel_distance(kernel, handle_a, handle_b, diagnostics, fn_name) {
                 Some(d) => Some(reify_ir::Value::length(d)),
                 None => Some(reify_ir::Value::Undef),
             }
         }
     }
+}
+
+/// Swept kinematic-query dispatch for `flat_map(snaps, |s| [kin_helper(s, a, b)])`.
+///
+/// Called by `try_eval_kinematic_query` when the outer function name is
+/// `flat_map`. Validates that:
+///   - `args[0]` is a `ValueRef` to a `Value::List` of Snapshot Maps.
+///   - `args[1]` is a `Lambda { param_ids: [s_id], body: ListLiteral([inner]) }`.
+///   - `inner` is a binary kinematic helper call (`interferes_with` or
+///     `min_clearance`) with `args[0] == ValueRef(s_id)` (the lambda param)
+///     and `args[1..]` resolving to `Int` body ids in `values`.
+///
+/// On match: runs `eval_kinematic_on_snapshot` for each snapshot and returns
+/// `Some(Value::List(results))` — one result per snapshot (Undef on per-
+/// snapshot failure, rather than collapsing the whole list).
+///
+/// On any mismatch (non-kinematic inner, wrong shape, non-Int captures):
+/// returns `None` so the cell keeps the pure-eval value (e.g.
+/// `center_of_mass` swept cells computed by the regular eval pass).
+///
+/// The unary `interferes` swept form is intentionally not supported: it would
+/// concatenate pair-lists ambiguously. Falls through to None.
+fn try_eval_swept_kinematic_query(
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+    pose_cache: &mut HashMap<(GeometryHandleId, [u64; 4], [u64; 3]), GeometryHandleId>,
+) -> Option<reify_ir::Value> {
+    // flat_map must have exactly 2 args: (list_arg, lambda_arg).
+    if args.len() != 2 {
+        return None;
+    }
+
+    // args[0] must be a ValueRef to a list of Snapshots.
+    let list_id = match &args[0].kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    let snapshots = match values.get(list_id) {
+        Some(reify_ir::Value::List(snaps)) => snaps,
+        _ => return None,
+    };
+
+    // args[1] must be a Lambda with exactly one parameter (the snapshot `s`).
+    let (s_param_id, body) = match &args[1].kind {
+        reify_ir::CompiledExprKind::Lambda { param_ids, body, .. } if param_ids.len() == 1 => {
+            (&param_ids[0], body.as_ref())
+        }
+        _ => return None,
+    };
+
+    // Lambda body must be ListLiteral([inner]) — a single-element list.
+    let inner = match &body.kind {
+        reify_ir::CompiledExprKind::ListLiteral(elems) if elems.len() == 1 => &elems[0],
+        _ => return None,
+    };
+
+    // inner must be a binary kinematic helper call with 3 args.
+    let (inner_fn, inner_args) = match &inner.kind {
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => {
+            (function, args.as_slice())
+        }
+        _ => return None,
+    };
+    let helper = match inner_fn.name.as_str() {
+        "interferes_with" => KinematicHelper::InterferesWith,
+        "min_clearance" => KinematicHelper::MinClearance,
+        // Unary `interferes` and non-kinematic names (e.g. center_of_mass)
+        // → fall through so the pure-eval value is preserved.
+        _ => return None,
+    };
+    if inner_args.len() != 3 {
+        return None;
+    }
+
+    // inner_args[0] must be ValueRef to the lambda parameter (the snapshot `s`).
+    let arg0_ref = match &inner_args[0].kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    if arg0_ref != s_param_id {
+        return None;
+    }
+
+    // inner_args[1] and [2] must be ValueRefs resolving to Int body ids.
+    let id_a = resolve_int_value_ref(&inner_args[1], values)?;
+    let id_b = resolve_int_value_ref(&inner_args[2], values)?;
+    let body_id_args = Some((id_a, id_b));
+
+    // For each snapshot in the list run the per-snapshot dispatch core and
+    // collect results. Per-snapshot failures (None) become Value::Undef so
+    // the list length is always equal to the snapshot count.
+    let fn_name = inner_fn.name.as_str();
+    let mut out: Vec<reify_ir::Value> = Vec::with_capacity(snapshots.len());
+    for snap in snapshots {
+        let result = eval_kinematic_on_snapshot(
+            helper,
+            fn_name,
+            snap,
+            body_id_args,
+            named_steps,
+            kernel,
+            diagnostics,
+            pose_cache,
+        );
+        out.push(result.unwrap_or(reify_ir::Value::Undef));
+    }
+    Some(reify_ir::Value::List(out))
 }
 
 #[derive(Clone, Copy)]
@@ -2264,6 +2680,7 @@ pub(crate) fn try_eval_topology_selector(
         "perimeter" => TopologySelectorHelper::Perimeter,
         "distance" => TopologySelectorHelper::Distance,
         "intersects" => TopologySelectorHelper::Intersects,
+        "split" => TopologySelectorHelper::Split,
         _ => return None,
     };
 
@@ -2335,7 +2752,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Length
                 | TopologySelectorHelper::Perimeter
                 | TopologySelectorHelper::Distance
-                | TopologySelectorHelper::Intersects => {
+                | TopologySelectorHelper::Intersects
+                | TopologySelectorHelper::Split => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -2629,6 +3047,67 @@ pub(crate) fn try_eval_topology_selector(
                 None => Some(reify_ir::Value::Undef),
             }
         }
+        TopologySelectorHelper::Split => {
+            // `split(solid, plane) -> List<Geometry>` (task 4190, PRD ζ).
+            //
+            // args[0]: solid ValueRef → values map → full parent GeometryHandle.
+            //   Resolved via `resolve_parent_geometry_handle_arg` so we get the
+            //   parent's realization_ref + upstream_values_hash for sub-handle
+            //   construction (PRD §4).  Falls through to None when the arg cell
+            //   is not yet a hydrated Value::GeometryHandle (PRD invariant #2:
+            //   never partially construct a sub-handle).
+            // args[1]: plane ValueRef → values map → Value::Plane.
+            //   Decoded via `decode_plane` → (plane_origin, plane_normal [f64;3]).
+            //   Falls through to None when args[1] is not a Value::Plane (wrong
+            //   variant, unresolved, Undef, etc.) — same fall-through contract.
+            // Dispatch: `GeometryKernel::execute_split(&GeometryOp::Split{..})`.
+            //   On Ok(ids): build Value::List via make_sub_handle(SubKind::Solid).
+            //   On Err: emit Warning diagnostic, return Some(Value::Undef).
+            let (parent_rr, parent_hash, parent_kernel_handle) =
+                resolve_parent_geometry_handle_arg(&args[0], values)?;
+
+            // Resolve and decode the plane arg.
+            let plane_cell_id = match &args[1].kind {
+                reify_ir::CompiledExprKind::ValueRef(id) => id,
+                _ => return None,
+            };
+            let plane_val = values.get(plane_cell_id)?;
+            let (plane_origin, plane_normal) = match decode_plane(plane_val) {
+                Ok(pair) => pair,
+                Err(_) => return None,
+            };
+
+            let op = reify_ir::GeometryOp::Split {
+                target: parent_kernel_handle,
+                plane_origin,
+                plane_normal,
+            };
+            match kernel.execute_split(&op) {
+                Ok(piece_ids) => {
+                    let elements = piece_ids
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, piece_kernel_id)| {
+                            crate::topology_selectors::make_sub_handle(
+                                &parent_rr,
+                                &parent_hash,
+                                crate::topology_selectors::SubKind::Solid,
+                                i as u32,
+                                piece_kernel_id,
+                            )
+                        })
+                        .collect();
+                    Some(reify_ir::Value::List(elements))
+                }
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{}({:?}): kernel error: {}",
+                        function.name, parent_kernel_handle, err
+                    )));
+                    Some(reify_ir::Value::Undef)
+                }
+            }
+        }
         TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
             // args[0]: geometry ValueRef → values map → full parent GeometryHandle.
             // The parent's realization_ref + upstream_values_hash are needed to
@@ -2666,7 +3145,8 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Length
                 | TopologySelectorHelper::Perimeter
                 | TopologySelectorHelper::Distance
-                | TopologySelectorHelper::Intersects => {
+                | TopologySelectorHelper::Intersects
+                | TopologySelectorHelper::Split => {
                     unreachable!("Edges/Faces outer match guarantees this")
                 }
             };
@@ -3103,6 +3583,15 @@ fn dispatch_filtered_subhandles(
     let canonical = match sub_kind {
         crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
         crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
+        // SubKind::Solid is only used by the Split dispatch arm, which calls
+        // execute_split directly — it never reaches dispatch_filtered_subhandles.
+        crate::topology_selectors::SubKind::Solid => {
+            unreachable!(
+                "dispatch_filtered_subhandles called with SubKind::Solid — \
+                 split pieces are handled by the Split arm via execute_split, \
+                 not through the filter-subhandle path"
+            )
+        }
     };
     let canonical = match canonical {
         Ok(ids) => ids,
@@ -3282,6 +3771,25 @@ enum TopologySelectorHelper {
     /// before enabling the parity gate.  See also the "Known parity divergence"
     /// section in `crates/reify-kernel-manifold/src/queries.rs::intersects`.
     Intersects,
+    /// `split(solid, plane) -> List<Geometry>` — split a solid into pieces by
+    /// an unbounded planar cutting tool (task 4190, PRD ζ).
+    ///
+    /// Backed by `GeometryKernel::execute_split` →
+    /// `BRepAlgoAPI_Splitter` (OCCT kernel). A non-intersecting plane yields a
+    /// length-1 list containing the original solid unchanged.
+    ///
+    /// args[0]: solid `Value::GeometryHandle` (resolved from `values` via
+    ///   `resolve_parent_geometry_handle_arg`, providing the parent
+    ///   realization_ref + hash for sub-handle construction).
+    /// args[1]: cutting plane `Value::Plane` (resolved from `values`, decoded
+    ///   via `decode_plane` into (origin, unit_normal)).
+    ///
+    /// Each result piece is stored as a `Value::GeometryHandle` sub-handle via
+    /// `make_sub_handle` with `SubKind::Solid` (0x03) — domain-separated from
+    /// edge (0x01) and face (0x02) hashes.  On kernel error emits a Warning
+    /// diagnostic and returns `Some(Value::Undef)`.  Non-Plane args[1] or
+    /// unhydrated args[0] fall through to `None`.
+    Split,
 }
 
 impl TopologySelectorHelper {
@@ -3305,7 +3813,8 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::Normal
             | TopologySelectorHelper::Curvature
             | TopologySelectorHelper::Distance
-            | TopologySelectorHelper::Intersects => 2,
+            | TopologySelectorHelper::Intersects
+            | TopologySelectorHelper::Split => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
             | TopologySelectorHelper::Length
@@ -3340,6 +3849,15 @@ fn dispatch_extract_subshapes(
     let result = match sub_kind {
         crate::topology_selectors::SubKind::Edge => kernel.extract_edges(parent_kernel_handle),
         crate::topology_selectors::SubKind::Face => kernel.extract_faces(parent_kernel_handle),
+        // SubKind::Solid is only used by the Split dispatch arm, which calls
+        // execute_split directly and does NOT go through dispatch_extract_subshapes.
+        crate::topology_selectors::SubKind::Solid => {
+            unreachable!(
+                "dispatch_extract_subshapes called with SubKind::Solid — \
+                 split pieces are produced via execute_split in the Split arm, \
+                 not through the extract-subshapes path"
+            )
+        }
     };
     match result {
         Ok(sub_ids) => {
@@ -5266,6 +5784,18 @@ pub(crate) fn surface_subtree(
     meta_map: &HashMap<String, HashMap<String, String>>,
     meshes: &mut Vec<crate::MeshSurface>,
     diagnostics: &mut Vec<Diagnostic>,
+    // Determinacy β (task 4198): when `true`, call
+    // `kernel.measure_mesh_deviation` for each successfully tessellated
+    // occurrence and insert the result into `achieved_repr_tol`. `false`
+    // by default — zero overhead when γ assertions are not active.
+    capture_repr_tol: bool,
+    // Determinacy β (task 4198): per-build map from realized-occurrence name
+    // ("{entity}#realization[{index}]") to sampled max facet-chord deviation
+    // in SI metres. Populated here (the unique site holding kernel + placed_id
+    // + fresh mesh + entity_path simultaneously) when `capture_repr_tol` is
+    // true. Recording is skip-on-None and skip-on-empty-mesh so the map never
+    // contains misleading 0.0 entries (honest absence = missing key, B3).
+    achieved_repr_tol: &mut BTreeMap<String, f64>,
 ) {
     walk_placed_realizations(
         module,
@@ -5289,6 +5819,23 @@ pub(crate) fn surface_subtree(
             let budget = tessellation_budgets[t][r];
             match kernel.tessellate(placed_id, budget) {
                 Ok(mesh) => {
+                    // Determinacy β (task 4198): record the sampled max
+                    // facet-chord deviation BEFORE moving entity_path into
+                    // MeshSurface. Gated on `capture_repr_tol` so the hot
+                    // path pays zero overhead (no BRepExtrema projection,
+                    // no actor round-trip) when γ assertions are not active.
+                    // Only record for non-empty meshes — an empty mesh yields
+                    // honest absence (missing key), never 0.0.
+                    // measure_mesh_deviation returns None for non-OCCT kernels
+                    // (default-absent trait method, B3). Anti-circularity: the
+                    // metric takes no tolerance argument and measures actual
+                    // facet-chord error, NOT the configured deflection budget.
+                    if capture_repr_tol
+                        && !mesh.indices.is_empty()
+                        && let Some(dev) = kernel.measure_mesh_deviation(placed_id, &mesh)
+                    {
+                        achieved_repr_tol.insert(entity_path.clone(), dev);
+                    }
                     // step-6: hide iff any `aux` ancestor sub OR this realization's
                     // own `aux` let. aux bodies are still tessellated and shipped —
                     // only hidden by default.
@@ -9729,6 +10276,492 @@ mod tests {
             }
             other => panic!("expected ApplyTransform, got {:?}", other),
         }
+    }
+
+    /// Contract test (task 3844 KCC-ε): a `flat_map(snaps, |s| [center_of_mass(s)])`
+    /// cell must return `None` from `try_eval_kinematic_query` so the pure-eval value
+    /// (set by the regular eval pass) is preserved.
+    ///
+    /// The swept dispatch intercepts ALL `flat_map` calls in the kinematic post-process;
+    /// this test locks the fall-through contract for non-kinematic inner functions,
+    /// independent of OCCT availability.
+    #[test]
+    fn try_eval_swept_kinematic_query_non_kinematic_inner_falls_through_to_none() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // snaps cell → a single-element list.  The snapshot content is never
+        // accessed because the non-kinematic inner fn name triggers the
+        // fall-through before any snapshot body processing.
+        let snaps_cell = ValueCellId::new("Swept", "snaps");
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            snaps_cell.clone(),
+            reify_ir::Value::List(vec![reify_ir::Value::Undef]),
+        );
+
+        // Lambda param cell.
+        let s_param = ValueCellId::new("Swept", "s");
+
+        // Inner: FunctionCall("center_of_mass", [ValueRef(s_param)])
+        let s_ref = reify_ir::CompiledExpr::value_ref(s_param.clone(), Type::Geometry);
+        let inner = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "center_of_mass".to_string(),
+                    qualified_name: "center_of_mass".to_string(),
+                },
+                args: vec![s_ref],
+            },
+            result_type: Type::Real,
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        // Lambda body: ListLiteral([inner])
+        let lambda_body = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        // Lambda arg: Lambda { params, param_ids: [s_param], body, captures: [] }
+        let lambda_arg = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::Lambda {
+                params: vec![("s".to_string(), None)],
+                param_ids: vec![s_param],
+                body: Box::new(lambda_body),
+                captures: vec![],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        // flat_map(snaps, lambda_arg)
+        let snaps_ref =
+            reify_ir::CompiledExpr::value_ref(snaps_cell, Type::List(Box::new(Type::Geometry)));
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "flat_map".to_string(),
+                    qualified_name: "flat_map".to_string(),
+                },
+                args: vec![snaps_ref, lambda_arg],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+
+        let result = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+            &mut HashMap::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "flat_map with non-kinematic inner (center_of_mass) must return None \
+             so the pure-eval value is preserved; got {result:?}"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "fall-through must emit no diagnostics; got {diagnostics:?}"
+        );
+    }
+
+    /// Contract test (task 3844 KCC-ε): a well-formed
+    /// `flat_map(snaps, |s| [min_clearance(s, id_a, id_b)])` over a 2-element
+    /// snapshot list must return `Some(Value::List(len=2))` from
+    /// `try_eval_kinematic_query`.
+    ///
+    /// Uses identity world_transforms (no `ApplyTransform` ops emitted) so the
+    /// test can run without OCCT — only `MockGeometryKernel::with_distance_result`
+    /// is required.  Locks the happy-path list-length contract independent of OCCT
+    /// availability.
+    #[test]
+    fn try_eval_swept_kinematic_query_min_clearance_returns_list_of_correct_length() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let src_a = reify_ir::GeometryHandleId(10);
+        let src_b = reify_ir::GeometryHandleId(20);
+
+        // Identity world_transforms: no ApplyTransform ops, probe uses raw handles.
+        let mut kernel = MockGeometryKernel::new()
+            .with_distance_result(src_a, src_b, reify_ir::Value::Real(0.050)); // 50 mm
+
+        let make_transform_identity = || -> reify_ir::Value {
+            reify_ir::Value::Transform {
+                rotation: Box::new(reify_ir::Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+                translation: Box::new(reify_ir::Value::Vector(vec![
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ])),
+            }
+        };
+
+        let make_snapshot = |transform_a: reify_ir::Value,
+                              transform_b: reify_ir::Value|
+         -> reify_ir::Value {
+            let make_body = |id: i64, solid: &str, wt: reify_ir::Value| -> reify_ir::Value {
+                let mut m = std::collections::BTreeMap::new();
+                m.insert(
+                    reify_ir::Value::String("id".to_string()),
+                    reify_ir::Value::Int(id),
+                );
+                m.insert(
+                    reify_ir::Value::String("solid".to_string()),
+                    reify_ir::Value::String(solid.to_string()),
+                );
+                m.insert(reify_ir::Value::String("world_transform".to_string()), wt);
+                reify_ir::Value::Map(m)
+            };
+            let mut snap_map = std::collections::BTreeMap::new();
+            snap_map.insert(
+                reify_ir::Value::String("kind".to_string()),
+                reify_ir::Value::String("snapshot".to_string()),
+            );
+            snap_map.insert(
+                reify_ir::Value::String("bodies".to_string()),
+                reify_ir::Value::List(vec![
+                    make_body(1, "body_a", transform_a),
+                    make_body(2, "body_b", transform_b),
+                ]),
+            );
+            reify_ir::Value::Map(snap_map)
+        };
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "body_a".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_a,
+            },
+        );
+        named_steps.insert(
+            "body_b".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_b,
+            },
+        );
+
+        // Two snapshots, each with identity transforms.
+        let snaps_cell = ValueCellId::new("Swept", "snaps");
+        let id_a_cell = ValueCellId::new("Swept", "id_a");
+        let id_b_cell = ValueCellId::new("Swept", "id_b");
+        let s_param = ValueCellId::new("Swept", "s");
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            snaps_cell.clone(),
+            reify_ir::Value::List(vec![
+                make_snapshot(make_transform_identity(), make_transform_identity()),
+                make_snapshot(make_transform_identity(), make_transform_identity()),
+            ]),
+        );
+        values.insert(id_a_cell.clone(), reify_ir::Value::Int(1));
+        values.insert(id_b_cell.clone(), reify_ir::Value::Int(2));
+
+        // Build flat_map(snaps, |s| [min_clearance(s, id_a, id_b)])
+        let s_ref = reify_ir::CompiledExpr::value_ref(s_param.clone(), Type::Geometry);
+        let id_a_ref = reify_ir::CompiledExpr::value_ref(id_a_cell.clone(), Type::Int);
+        let id_b_ref = reify_ir::CompiledExpr::value_ref(id_b_cell.clone(), Type::Int);
+
+        let inner = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "min_clearance".to_string(),
+                    qualified_name: "min_clearance".to_string(),
+                },
+                args: vec![s_ref, id_a_ref, id_b_ref],
+            },
+            result_type: Type::Real,
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let lambda_body = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let lambda_arg = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::Lambda {
+                params: vec![("s".to_string(), None)],
+                param_ids: vec![s_param],
+                body: Box::new(lambda_body),
+                captures: vec![id_a_cell, id_b_cell],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let snaps_ref =
+            reify_ir::CompiledExpr::value_ref(snaps_cell, Type::List(Box::new(Type::Geometry)));
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "flat_map".to_string(),
+                    qualified_name: "flat_map".to_string(),
+                },
+                args: vec![snaps_ref, lambda_arg],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+            &mut HashMap::new(),
+        );
+
+        // Must return Some(Value::List) of length 2 (one result per snapshot).
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "swept min_clearance flat_map over a 2-snapshot list must return \
+                 Some(Value::List(len=2)), got {other:?}; diagnostics: {diagnostics:?}"
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            2,
+            "list length must equal snapshot count (2), got {}: {list:?}",
+            list.len()
+        );
+        // Each element must be a length Scalar with si_value ≈ 0.050 m.
+        // Without this check, a regression that returns Value::Undef or dispatches
+        // to the wrong helper would still pass the length-only assertion above.
+        for (i, elem) in list.iter().enumerate() {
+            match elem {
+                reify_ir::Value::Scalar { si_value, .. } => {
+                    let diff = (si_value - 0.050_f64).abs();
+                    assert!(
+                        diff < 1e-9,
+                        "clearances[{i}] expected ≈ 0.050 m, got {si_value:.9} m (delta {diff:.2e})"
+                    );
+                }
+                other => panic!(
+                    "clearances[{i}] expected Value::Scalar (length ≈ 0.050 m), got {other:?}"
+                ),
+            }
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+    }
+
+    /// Swept kinematic query: per-snapshot failures (malformed snapshot missing
+    /// `bodies`) become `Value::Undef` in the output list, while other snapshots
+    /// still resolve.  List length is always equal to the snapshot count.
+    ///
+    /// Pins the most subtle invariant documented in `try_eval_swept_kinematic_query`:
+    /// "Per-snapshot failures (None) become Value::Undef so the list length is
+    /// always equal to the snapshot count."
+    #[test]
+    fn try_eval_swept_kinematic_query_malformed_snapshot_yields_undef_element() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let src_a = reify_ir::GeometryHandleId(10);
+        let src_b = reify_ir::GeometryHandleId(20);
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_distance_result(src_a, src_b, reify_ir::Value::Real(0.030)); // 30 mm
+
+        // Well-formed snapshot with identity transforms.
+        let make_body = |id: i64, solid: &str| -> reify_ir::Value {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(
+                reify_ir::Value::String("id".to_string()),
+                reify_ir::Value::Int(id),
+            );
+            m.insert(
+                reify_ir::Value::String("solid".to_string()),
+                reify_ir::Value::String(solid.to_string()),
+            );
+            let identity_transform = reify_ir::Value::Transform {
+                rotation: Box::new(reify_ir::Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+                translation: Box::new(reify_ir::Value::Vector(vec![
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ])),
+            };
+            m.insert(
+                reify_ir::Value::String("world_transform".to_string()),
+                identity_transform,
+            );
+            reify_ir::Value::Map(m)
+        };
+
+        // snapshot_good: valid Snapshot Map with a `bodies` list.
+        let mut good_map = std::collections::BTreeMap::new();
+        good_map.insert(
+            reify_ir::Value::String("kind".to_string()),
+            reify_ir::Value::String("snapshot".to_string()),
+        );
+        good_map.insert(
+            reify_ir::Value::String("bodies".to_string()),
+            reify_ir::Value::List(vec![make_body(1, "body_a"), make_body(2, "body_b")]),
+        );
+        let snapshot_good = reify_ir::Value::Map(good_map);
+
+        // snapshot_malformed: Map has `kind="snapshot"` but is missing `bodies`.
+        // `extract_snapshot_bodies` returns None → `eval_kinematic_on_snapshot`
+        // returns Some(Value::Undef).
+        let mut bad_map = std::collections::BTreeMap::new();
+        bad_map.insert(
+            reify_ir::Value::String("kind".to_string()),
+            reify_ir::Value::String("snapshot".to_string()),
+        );
+        let snapshot_malformed = reify_ir::Value::Map(bad_map);
+
+        let snaps_cell = ValueCellId::new("Swept", "snaps");
+        let id_a_cell = ValueCellId::new("Swept", "id_a");
+        let id_b_cell = ValueCellId::new("Swept", "id_b");
+        let s_param = ValueCellId::new("Swept", "s");
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "body_a".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_a,
+            },
+        );
+        named_steps.insert(
+            "body_b".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_b,
+            },
+        );
+
+        // List: [snapshot_good, snapshot_malformed].
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            snaps_cell.clone(),
+            reify_ir::Value::List(vec![snapshot_good, snapshot_malformed]),
+        );
+        values.insert(id_a_cell.clone(), reify_ir::Value::Int(1));
+        values.insert(id_b_cell.clone(), reify_ir::Value::Int(2));
+
+        // Build flat_map(snaps, |s| [min_clearance(s, id_a, id_b)])
+        let s_ref = reify_ir::CompiledExpr::value_ref(s_param.clone(), Type::Geometry);
+        let id_a_ref = reify_ir::CompiledExpr::value_ref(id_a_cell.clone(), Type::Int);
+        let id_b_ref = reify_ir::CompiledExpr::value_ref(id_b_cell.clone(), Type::Int);
+
+        let inner = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "min_clearance".to_string(),
+                    qualified_name: "min_clearance".to_string(),
+                },
+                args: vec![s_ref, id_a_ref, id_b_ref],
+            },
+            result_type: Type::Real,
+            content_hash: reify_core::ContentHash(0),
+        };
+        let lambda_body = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+        let lambda_arg = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::Lambda {
+                params: vec![("s".to_string(), None)],
+                param_ids: vec![s_param],
+                body: Box::new(lambda_body),
+                captures: vec![id_a_cell, id_b_cell],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+        let snaps_ref =
+            reify_ir::CompiledExpr::value_ref(snaps_cell, Type::List(Box::new(Type::Geometry)));
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "flat_map".to_string(),
+                    qualified_name: "flat_map".to_string(),
+                },
+                args: vec![snaps_ref, lambda_arg],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+            &mut HashMap::new(),
+        );
+
+        // Must return Some(Value::List) of length 2 (one per snapshot, not one per resolution).
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "malformed-snapshot test must return Some(Value::List(len=2)), \
+                 got {other:?}; diagnostics: {diagnostics:?}"
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            2,
+            "list length must equal snapshot count (2) even with a malformed element, \
+             got {}: {list:?}",
+            list.len()
+        );
+
+        // Element 0 (good snapshot): resolved to a length Scalar ≈ 0.030 m.
+        match &list[0] {
+            reify_ir::Value::Scalar { si_value, .. } => {
+                let diff = (si_value - 0.030_f64).abs();
+                assert!(
+                    diff < 1e-9,
+                    "list[0] (good snapshot) expected ≈ 0.030 m, got {si_value:.9} m"
+                );
+            }
+            other => panic!("list[0] (good snapshot) expected Value::Scalar, got {other:?}"),
+        }
+
+        // Element 1 (malformed snapshot): must be Value::Undef.
+        assert_eq!(
+            list[1],
+            reify_ir::Value::Undef,
+            "list[1] (malformed snapshot missing 'bodies') must be Value::Undef, got {:?}",
+            list[1]
+        );
     }
 
     /// Contract test (task 4142, Cluster B RED — topology/resolve_geometry_handle_arg leaf):
@@ -16105,6 +17138,607 @@ mod tests {
         assert_eq!(
             got, expected,
             "single-element chain == transform_compose(identity, t)"
+        );
+    }
+
+    // ── decode_plane unit tests (task η, step-1) ─────────────────────────────
+
+    /// True producer→decode round-trip for plane_xy: the real stdlib producer
+    /// is used so the test exercises the full Plane value shape that consumers
+    /// will encounter at eval time.
+    #[test]
+    fn decode_plane_producer_round_trip_plane_xy() {
+        // plane_xy(3mm) → Plane at z=0.003 m, normal=[0,0,1]
+        let z_si = 0.003_f64;
+        let val = reify_stdlib::eval_builtin("plane_xy", &[reify_ir::Value::length(z_si)]);
+        let (origin, normal) = decode_plane(&val).expect("plane_xy should decode cleanly");
+        assert!((origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", origin[0]);
+        assert!((origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", origin[1]);
+        assert!((origin[2] - z_si).abs() < 1e-12, "oz must be {z_si}, got {}", origin[2]);
+        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
+        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
+        assert!((normal[2] - 1.0).abs() < 1e-12, "nz must be 1.0, got {}", normal[2]);
+    }
+
+    /// True producer→decode round-trip for plane_xz: offset lands in Y
+    /// (index 1) and the normal is [0,1,0].
+    #[test]
+    fn decode_plane_producer_round_trip_plane_xz() {
+        // plane_xz(5mm) → Plane at y=0.005 m, normal=[0,1,0]
+        let z_si = 0.005_f64;
+        let val = reify_stdlib::eval_builtin("plane_xz", &[reify_ir::Value::length(z_si)]);
+        let (origin, normal) = decode_plane(&val).expect("plane_xz should decode cleanly");
+        assert!((origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", origin[0]);
+        assert!((origin[1] - z_si).abs() < 1e-12, "oy must be {z_si}, got {}", origin[1]);
+        assert!((origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", origin[2]);
+        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
+        assert!((normal[1] - 1.0).abs() < 1e-12, "ny must be 1.0, got {}", normal[1]);
+        assert!((normal[2] - 0.0).abs() < 1e-12, "nz must be 0.0, got {}", normal[2]);
+    }
+
+    /// True producer→decode round-trip for plane_yz: offset lands in X
+    /// (index 0) and the normal is [1,0,0].
+    #[test]
+    fn decode_plane_producer_round_trip_plane_yz() {
+        // plane_yz(7mm) → Plane at x=0.007 m, normal=[1,0,0]
+        let z_si = 0.007_f64;
+        let val = reify_stdlib::eval_builtin("plane_yz", &[reify_ir::Value::length(z_si)]);
+        let (origin, normal) = decode_plane(&val).expect("plane_yz should decode cleanly");
+        assert!((origin[0] - z_si).abs() < 1e-12, "ox must be {z_si}, got {}", origin[0]);
+        assert!((origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", origin[1]);
+        assert!((origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", origin[2]);
+        assert!((normal[0] - 1.0).abs() < 1e-12, "nx must be 1.0, got {}", normal[0]);
+        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
+        assert!((normal[2] - 0.0).abs() < 1e-12, "nz must be 0.0, got {}", normal[2]);
+    }
+
+    /// A Plane whose normal vector has magnitude 2 (non-unit) must be
+    /// normalized to a unit normal by decode_plane — never returned as-is.
+    #[test]
+    fn decode_plane_normalizes_non_unit_normal() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let non_unit_normal = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(2.0),
+        ]);
+        let plane = reify_ir::Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(non_unit_normal),
+        };
+        let (_, normal) =
+            decode_plane(&plane).expect("non-unit normal [0,0,2] should normalize without error");
+        assert!((normal[0] - 0.0).abs() < 1e-12, "nx must be 0.0, got {}", normal[0]);
+        assert!((normal[1] - 0.0).abs() < 1e-12, "ny must be 0.0, got {}", normal[1]);
+        assert!((normal[2] - 1.0).abs() < 1e-12, "nz must be 1.0 after normalization, got {}", normal[2]);
+    }
+
+    /// Value::Axis must be rejected by decode_plane — wrong variant.
+    #[test]
+    fn decode_plane_rejects_axis_value() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let dir = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(1.0),
+        ]);
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(dir),
+        };
+        assert!(
+            decode_plane(&axis).is_err(),
+            "Value::Axis must be rejected by decode_plane (wrong variant)"
+        );
+    }
+
+    /// Value::Undef must be rejected by decode_plane — never silently pass through.
+    #[test]
+    fn decode_plane_rejects_undef() {
+        assert!(
+            decode_plane(&reify_ir::Value::Undef).is_err(),
+            "Value::Undef must be rejected by decode_plane"
+        );
+    }
+
+    /// A Plane with a zero-magnitude normal must be rejected — the decoder
+    /// must never return (0,0,0) as the unit normal.
+    #[test]
+    fn decode_plane_rejects_zero_magnitude_normal() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let zero_normal = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+        ]);
+        let plane = reify_ir::Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(zero_normal),
+        };
+        assert!(
+            decode_plane(&plane).is_err(),
+            "zero-magnitude normal must be rejected by decode_plane (never pass through as [0,0,0])"
+        );
+    }
+
+    // ── decode_axis unit tests (task η, step-3) ─────────────────────────────
+
+    /// Helper: build a Value::Point with three LENGTH-dimensioned components
+    /// (metres), as produced by point3() in the stdlib.
+    fn make_point3_length_val(x: f64, y: f64, z: f64) -> reify_ir::Value {
+        reify_ir::Value::Point(vec![
+            reify_ir::Value::length(x),
+            reify_ir::Value::length(y),
+            reify_ir::Value::length(z),
+        ])
+    }
+
+    /// True producer→decode round-trip for axis_z with origin at (0,0,0).
+    /// decode_axis must return origin=[0,0,0] and direction=[0,0,1].
+    #[test]
+    fn decode_axis_producer_round_trip_axis_z_origin() {
+        let origin = make_point3_length_val(0.0, 0.0, 0.0);
+        let val = reify_stdlib::eval_builtin("axis_z", std::slice::from_ref(&origin));
+        let (got_origin, got_dir) = decode_axis(&val).expect("axis_z should decode cleanly");
+        assert!((got_origin[0] - 0.0).abs() < 1e-12, "ox must be 0.0, got {}", got_origin[0]);
+        assert!((got_origin[1] - 0.0).abs() < 1e-12, "oy must be 0.0, got {}", got_origin[1]);
+        assert!((got_origin[2] - 0.0).abs() < 1e-12, "oz must be 0.0, got {}", got_origin[2]);
+        assert!((got_dir[0] - 0.0).abs() < 1e-12, "dx must be 0.0, got {}", got_dir[0]);
+        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy must be 0.0, got {}", got_dir[1]);
+        assert!((got_dir[2] - 1.0).abs() < 1e-12, "dz must be 1.0, got {}", got_dir[2]);
+    }
+
+    /// axis_x round-trip: direction=[1,0,0], origin passes through in SI metres.
+    #[test]
+    fn decode_axis_producer_round_trip_axis_x_with_offset_origin() {
+        // 1mm=0.001m, 2mm=0.002m, 3mm=0.003m
+        let origin = make_point3_length_val(0.001, 0.002, 0.003);
+        let val = reify_stdlib::eval_builtin("axis_x", std::slice::from_ref(&origin));
+        let (got_origin, got_dir) = decode_axis(&val).expect("axis_x with offset origin should decode");
+        assert!((got_origin[0] - 0.001).abs() < 1e-12, "ox must be 0.001, got {}", got_origin[0]);
+        assert!((got_origin[1] - 0.002).abs() < 1e-12, "oy must be 0.002, got {}", got_origin[1]);
+        assert!((got_origin[2] - 0.003).abs() < 1e-12, "oz must be 0.003, got {}", got_origin[2]);
+        assert!((got_dir[0] - 1.0).abs() < 1e-12, "dx must be 1.0, got {}", got_dir[0]);
+        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy must be 0.0, got {}", got_dir[1]);
+        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz must be 0.0, got {}", got_dir[2]);
+    }
+
+    /// axis_y round-trip: direction=[0,1,0].
+    #[test]
+    fn decode_axis_producer_round_trip_axis_y() {
+        let origin = make_point3_length_val(0.0, 0.0, 0.0);
+        let val = reify_stdlib::eval_builtin("axis_y", std::slice::from_ref(&origin));
+        let (got_origin, got_dir) = decode_axis(&val).expect("axis_y should decode cleanly");
+        assert!((got_dir[0] - 0.0).abs() < 1e-12, "dx must be 0.0, got {}", got_dir[0]);
+        assert!((got_dir[1] - 1.0).abs() < 1e-12, "dy must be 1.0, got {}", got_dir[1]);
+        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz must be 0.0, got {}", got_dir[2]);
+        // origin must be [0,0,0]
+        assert!((got_origin[0] - 0.0).abs() < 1e-12, "ox");
+        assert!((got_origin[1] - 0.0).abs() < 1e-12, "oy");
+        assert!((got_origin[2] - 0.0).abs() < 1e-12, "oz");
+    }
+
+    /// A non-unit direction (magnitude 2) must be normalized to unit length.
+    #[test]
+    fn decode_axis_normalizes_non_unit_direction() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let non_unit_dir = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(2.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+        ]);
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(non_unit_dir),
+        };
+        let (_, got_dir) =
+            decode_axis(&axis).expect("non-unit direction [2,0,0] should normalize without error");
+        assert!((got_dir[0] - 1.0).abs() < 1e-12, "dx must be 1.0 after normalization, got {}", got_dir[0]);
+        assert!((got_dir[1] - 0.0).abs() < 1e-12, "dy");
+        assert!((got_dir[2] - 0.0).abs() < 1e-12, "dz");
+    }
+
+    /// Value::Plane must be rejected by decode_axis — wrong variant.
+    #[test]
+    fn decode_axis_rejects_plane_value() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let normal = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(1.0),
+        ]);
+        let plane = reify_ir::Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(normal),
+        };
+        assert!(
+            decode_axis(&plane).is_err(),
+            "Value::Plane must be rejected by decode_axis (wrong variant)"
+        );
+    }
+
+    /// Value::Undef must be rejected by decode_axis.
+    #[test]
+    fn decode_axis_rejects_undef() {
+        assert!(
+            decode_axis(&reify_ir::Value::Undef).is_err(),
+            "Value::Undef must be rejected by decode_axis"
+        );
+    }
+
+    /// An Axis with a zero-magnitude direction must be rejected.
+    #[test]
+    fn decode_axis_rejects_zero_magnitude_direction() {
+        let origin = reify_ir::Value::Point(vec![
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+            reify_ir::Value::length(0.0),
+        ]);
+        let zero_dir = reify_ir::Value::Vector(vec![
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+            reify_ir::Value::Real(0.0),
+        ]);
+        let axis = reify_ir::Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(zero_dir),
+        };
+        assert!(
+            decode_axis(&axis).is_err(),
+            "zero-magnitude direction must be rejected by decode_axis"
+        );
+    }
+
+    // ── step-7 (task 4190): split dispatch unit tests ────────────────────────
+    //
+    // Tests for the `split(solid, plane) -> List<Geometry>` dispatch arm in
+    // `try_eval_topology_selector`.  These tests reference
+    // `crate::topology_selectors::SubKind::Solid` (added in step-8) and
+    // `TopologySelectorHelper::Split` (added in step-8), so the crate fails
+    // to compile until step-8 is done → RED.
+
+    /// Thin wrapper around `MockGeometryKernel` that overrides `execute_split`
+    /// to return a configurable success result.  All other trait methods
+    /// delegate to the inner mock.
+    ///
+    /// Required because `MockGeometryKernel` does not expose `execute_split`
+    /// configuration (it is not in the mock's in-scope file list for this
+    /// task), so we define a minimal delegating wrapper inline.
+    struct SplitMockKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        /// Returned by every `execute_split` call (cloned on each call).
+        split_ids: Vec<GeometryHandleId>,
+    }
+
+    impl SplitMockKernel {
+        fn new(
+            inner: reify_test_support::mocks::MockGeometryKernel,
+            split_ids: Vec<GeometryHandleId>,
+        ) -> Self {
+            Self { inner, split_ids }
+        }
+    }
+
+    impl reify_ir::GeometryKernel for SplitMockKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            query: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(query)
+        }
+
+        fn export(
+            &self,
+            handle: GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+
+        fn execute_split(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<Vec<GeometryHandleId>, reify_ir::GeometryError> {
+            Ok(self.split_ids.clone())
+        }
+    }
+
+    /// Build a `Value::Plane` with a z=0 normal (z-axis cutting plane) for use
+    /// as the plane argument in split dispatch tests.
+    fn z_plane_value() -> reify_ir::Value {
+        reify_ir::Value::Plane {
+            origin: Box::new(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+            normal: Box::new(reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ])),
+        }
+    }
+
+    /// `split(solid, plane)` dispatch returns `Value::List` of two
+    /// `Value::GeometryHandle` elements when the mock kernel returns
+    /// [GHId(5), GHId(6)] from `execute_split`.
+    ///
+    /// Each element must:
+    ///   (i)  carry the parent solid's `realization_ref` (unchanged, PRD §4 i);
+    ///   (ii) have a `upstream_values_hash` distinct from the other piece
+    ///        (PRD §4 iii) — derived from `SubKind::Solid` discriminant (0x03)
+    ///        via `compose_sub_handle_hash`.
+    ///
+    /// RED: `SubKind::Solid` does not exist yet → compile error.
+    #[test]
+    fn split_dispatch_returns_geometry_handle_list() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("MySolid", 0);
+        let parent_hash: [u8; 32] = [0xAB; 32];
+
+        let piece_ids = vec![GeometryHandleId(5), GeometryHandleId(6)];
+        let mut kernel = SplitMockKernel::new(
+            reify_test_support::mocks::MockGeometryKernel::new(),
+            piece_ids.clone(),
+        );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("solid".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[0]: parent solid as hydrated GeometryHandle in the values map.
+        values.insert(
+            ValueCellId::new("MySolid", "solid"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+        // args[1]: cutting plane as Value::Plane in the values map.
+        values.insert(ValueCellId::new("MySolid", "plane"), z_plane_value());
+
+        let expr = topology_selector_call_two_value_refs(
+            "split",
+            "MySolid",
+            "solid",
+            Type::Geometry,
+            "plane",
+            Type::Plane,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "split dispatch must return Some(Value::List(..)), got {:?}; \
+                 diagnostics: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(list.len(), 2, "expected 2 split pieces, got {}", list.len());
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for successful split, got: {:?}",
+            diagnostics
+        );
+
+        // Verify each piece: correct realization_ref, correct kernel_handle,
+        // distinct upstream_values_hash (SubKind::Solid domain-separation).
+        let expected_kernel_ids = [GeometryHandleId(5), GeometryHandleId(6)];
+        let mut hashes: Vec<[u8; 32]> = Vec::new();
+        for (i, (elem, expected_id)) in list.iter().zip(&expected_kernel_ids).enumerate() {
+            match elem {
+                reify_ir::Value::GeometryHandle {
+                    realization_ref,
+                    upstream_values_hash,
+                    kernel_handle,
+                } => {
+                    assert_eq!(
+                        realization_ref.entity, parent_rr.entity,
+                        "piece[{i}] realization_ref.entity must match parent"
+                    );
+                    assert_eq!(
+                        realization_ref.index, parent_rr.index,
+                        "piece[{i}] realization_ref.index must match parent"
+                    );
+                    assert_eq!(
+                        kernel_handle, expected_id,
+                        "piece[{i}] kernel_handle must be {expected_id:?}"
+                    );
+                    // Verify the hash uses SubKind::Solid (0x03) domain separator.
+                    let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+                        &parent_hash,
+                        crate::topology_selectors::SubKind::Solid, // RED: not yet defined
+                        i as u32,
+                    );
+                    assert_eq!(
+                        *upstream_values_hash, expected_hash,
+                        "piece[{i}] upstream_values_hash must use SubKind::Solid"
+                    );
+                    hashes.push(*upstream_values_hash);
+                }
+                other => panic!("piece[{i}] is not Value::GeometryHandle: {:?}", other),
+            }
+        }
+        // PRD §4 iii: per-index hashes must be distinct.
+        assert_ne!(
+            hashes[0], hashes[1],
+            "split piece 0 and piece 1 hashes must differ (PRD §4 iii)"
+        );
+    }
+
+    /// When args[1] is not a `Value::Plane` (e.g. a bare `Value::Real`),
+    /// `split` dispatch must fall through to `None` so the cell retains its
+    /// compiled default (`Value::Undef`).
+    #[test]
+    fn split_dispatch_falls_through_when_plane_arg_not_a_plane() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("solid".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        // args[0]: valid parent solid.
+        values.insert(
+            ValueCellId::new("MySolid", "solid"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: reify_core::identity::RealizationNodeId::new("MySolid", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent_handle,
+            },
+        );
+        // args[1]: NOT a Plane — should cause decode_plane to fail → fall through.
+        values.insert(
+            ValueCellId::new("MySolid", "plane"),
+            reify_ir::Value::Real(0.0),
+        );
+
+        let expr = topology_selector_call_two_value_refs(
+            "split",
+            "MySolid",
+            "solid",
+            Type::Geometry,
+            "plane",
+            Type::Real,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "non-Plane args[1] must fall through to None (cell stays Undef), got {:?}",
+            result
+        );
+    }
+
+    /// When `execute_split` returns an error, `split` dispatch must emit a
+    /// `Warning` diagnostic and return `Some(Value::Undef)` — the same
+    /// defensive-downgrade contract as other topology-selector dispatch arms.
+    #[test]
+    fn split_dispatch_emits_warning_and_undef_on_kernel_error() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        // Default MockGeometryKernel inherits the trait default for execute_split:
+        // Err(GeometryError::OperationFailed("execute_split not supported by this kernel")).
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("solid".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("MySolid", "solid"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: reify_core::identity::RealizationNodeId::new("MySolid", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent_handle,
+            },
+        );
+        values.insert(ValueCellId::new("MySolid", "plane"), z_plane_value());
+
+        let expr = topology_selector_call_two_value_refs(
+            "split",
+            "MySolid",
+            "solid",
+            Type::Geometry,
+            "plane",
+            Type::Plane,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "kernel Err must produce Some(Value::Undef), got {:?}; \
+             diagnostics: {:?}",
+            result,
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 Warning diagnostic on kernel error, \
+             got {} diagnostics: {:?}",
+            diagnostics.len(),
+            diagnostics
+        );
+        assert!(
+            matches!(diagnostics[0].severity, reify_core::Severity::Warning),
+            "diagnostic must be a Warning, got {:?}",
+            diagnostics[0].severity
         );
     }
 }

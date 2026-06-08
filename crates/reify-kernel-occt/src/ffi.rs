@@ -170,6 +170,8 @@ pub mod ffi {
         fn make_box(width: f64, height: f64, depth: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_sphere(radius: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_cone(bottom_r: f64, top_r: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_wedge(width: f64, depth: f64, height: f64, top_width: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Boolean operations ---
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
@@ -591,6 +593,11 @@ pub mod ffi {
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_rectangle_face(
+            width: f64,
+            height: f64,
+            z_height: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
         fn make_line_wire(
             x1: f64,
             y1: f64,
@@ -950,6 +957,21 @@ pub mod ffi {
         /// deduplicated by IsSame). Built per call (no `vertex_map()` cache).
         fn get_vertices(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
+        /// Split `shape` with an unbounded planar cutting tool defined by
+        /// `origin` (`ox`, `oy`, `oz`) and `normal` (`nx`, `ny`, `nz`), both
+        /// in metres. Returns an `OcctShapeVec` of result solids extracted from
+        /// the splitter output. A non-intersecting plane yields the original
+        /// solid in a length-1 vec. Throws if the splitter fails (`!IsDone()`).
+        fn split_shape(
+            shape: &OcctShape,
+            ox: f64,
+            oy: f64,
+            oz: f64,
+            nx: f64,
+            ny: f64,
+            nz: f64,
+        ) -> Result<UniquePtr<OcctShapeVec>>;
+
         // --- Conformance queries ---
 
         /// Check whether `shape` is watertight (closed, no free edges).
@@ -1026,6 +1048,24 @@ pub mod ffi {
 
         // --- Tessellation ---
         fn tessellate_shape(shape: &OcctShape, tolerance: f64) -> Result<TessResult>;
+
+        /// Sampled max facet-chord deviation (SI metres) of `mesh` from the
+        /// exact BRep `shape`.
+        ///
+        /// Samples 4 interior points per triangle (centroid + 3 edge midpoints)
+        /// and projects each onto `shape` via `BRepExtrema_DistShapeShape`,
+        /// returning the global maximum `dist.Value()` (metres).
+        ///
+        /// Mesh vertices lie on the surface by construction (deviation 0) and
+        /// are excluded; only interior samples reveal chord error.  This is a
+        /// sampled lower bound on the true Hausdorff distance (PRD §8.3).
+        ///
+        /// Returns `Ok(0.0)` for an empty `mesh.indices`.
+        /// Returns `Err` for out-of-range vertex indices or projection failure.
+        ///
+        /// No tolerance argument — the metric cannot echo the configured
+        /// deflection (structural anti-circularity, PRD §8.3 CRITICAL).
+        fn measure_mesh_deviation(shape: &OcctShape, mesh: &TessResult) -> Result<f64>;
 
     }
 }

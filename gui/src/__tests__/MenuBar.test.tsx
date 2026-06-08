@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@solidjs/testing-library';
 import { MenuBar } from '../panels/MenuBar';
 import { getShortcut } from '../shortcuts';
@@ -327,5 +327,110 @@ describe('MenuBar — File→New item', () => {
     const newItem = items.find((el) => el.textContent?.includes('New')) as HTMLButtonElement;
     expect(newItem).toBeDefined();
     expect(newItem.disabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-4295: menu-button testids
+// ---------------------------------------------------------------------------
+
+describe('MenuBar — trigger data-testid', () => {
+  it('File trigger has data-testid="menu-trigger-file"', () => {
+    render(() => <MenuBar />);
+    expect(screen.getByTestId('menu-trigger-file')).not.toBeNull();
+  });
+
+  it('Edit trigger has data-testid="menu-trigger-edit"', () => {
+    render(() => <MenuBar />);
+    expect(screen.getByTestId('menu-trigger-edit')).not.toBeNull();
+  });
+
+  it('View trigger has data-testid="menu-trigger-view"', () => {
+    render(() => <MenuBar />);
+    expect(screen.getByTestId('menu-trigger-view')).not.toBeNull();
+  });
+
+  it('Help trigger has data-testid="menu-trigger-help"', () => {
+    render(() => <MenuBar />);
+    expect(screen.getByTestId('menu-trigger-help')).not.toBeNull();
+  });
+
+  it('File items have data-testid="menu-item-new/open/save/export"', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-file'));
+    expect(screen.getByTestId('menu-item-new')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-open')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-save')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-export')).not.toBeNull();
+  });
+
+  it('View items have data-testid="menu-item-reEvaluate/fitToView/toggleChat"', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-view'));
+    expect(screen.getByTestId('menu-item-reEvaluate')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-fitToView')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-toggleChat')).not.toBeNull();
+  });
+
+  it('Help items have data-testid="menu-item-help"', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-help'));
+    expect(screen.getByTestId('menu-item-help')).not.toBeNull();
+  });
+
+  it('Edit items have data-testid="menu-item-undo/redo"', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-edit'));
+    expect(screen.getByTestId('menu-item-undo')).not.toBeNull();
+    expect(screen.getByTestId('menu-item-redo')).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-4295: MenuBar openMenu ctx exposure
+// ---------------------------------------------------------------------------
+
+describe('MenuBar — openMenu ctx exposure', () => {
+  beforeEach(() => {
+    (window as any).__REIFY_DEBUG__ = { stores: {} as any };
+  });
+  afterEach(() => {
+    delete (window as any).__REIFY_DEBUG__;
+  });
+
+  it('registers menuBar.openMenu as a function on __REIFY_DEBUG__ after render', () => {
+    render(() => <MenuBar />);
+    expect(typeof (window as any).__REIFY_DEBUG__.menuBar?.openMenu).toBe('function');
+  });
+
+  it('openMenu() returns null initially (no menu open)', () => {
+    render(() => <MenuBar />);
+    expect((window as any).__REIFY_DEBUG__.menuBar.openMenu()).toBeNull();
+  });
+
+  it('openMenu() returns "file" after clicking File trigger', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-file'));
+    expect((window as any).__REIFY_DEBUG__.menuBar.openMenu()).toBe('file');
+  });
+
+  it('openMenu() returns "view" after switching from File to View', () => {
+    render(() => <MenuBar />);
+    fireEvent.click(screen.getByTestId('menu-trigger-file'));
+    fireEvent.mouseEnter(screen.getByTestId('menu-trigger-view'));
+    expect((window as any).__REIFY_DEBUG__.menuBar.openMenu()).toBe('view');
+  });
+
+  it('deletes menuBar on unmount', () => {
+    const { unmount } = render(() => <MenuBar />);
+    unmount();
+    expect((window as any).__REIFY_DEBUG__.menuBar).toBeUndefined();
+  });
+});
+
+describe('MenuBar — no-ctx guard', () => {
+  it('renders without throwing when __REIFY_DEBUG__ is absent', () => {
+    delete (window as any).__REIFY_DEBUG__;
+    expect(() => render(() => <MenuBar />)).not.toThrow();
   });
 });

@@ -32,6 +32,7 @@ fn make_fn(name: &str, param_type: Type) -> CompiledFunction {
         content_hash: ContentHash::of(name.as_bytes()),
         annotations: vec![],
         optimized_target: None,
+        type_params: vec![],
     }
 }
 
@@ -52,6 +53,7 @@ fn make_fn_nullary(name: &str) -> CompiledFunction {
         content_hash: ContentHash::of(name.as_bytes()),
         annotations: vec![],
         optimized_target: None,
+        type_params: vec![],
     }
 }
 

@@ -301,7 +301,7 @@ fn biocompatible_refines_material_spec_with_enum_param() {
 fn titanium_implant_conforms_without_inline_enum_redeclarations() {
     let source = r#"
 structure def TitaniumImplant : Biocompatible + CorrosionResistant {
-    param density : Real = 4500.0
+    param density : Density = 4500kg/m^3
     param name : String = "titanium"
     param biocompatibility_class : BiocompatibilityClass = BiocompatibilityClass.USP_Class_VI
     param corrosion_class : CorrosionClass = CorrosionClass.C5

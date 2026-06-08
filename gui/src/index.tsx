@@ -1,3 +1,10 @@
+import { installConsoleErrorCapture } from './debug/consoleErrors';
+
+// Install the console-error ring buffer at the very top of the entry module so
+// that startup errors are captured BEFORE applyTheme()/render() and BEFORE the
+// late REIFY_DEBUG-gated initDebugBridge. Always-on — not gated on REIFY_DEBUG.
+installConsoleErrorCapture();
+
 import { render } from 'solid-js/web';
 import { ErrorBoundary } from 'solid-js';
 import { applyTheme } from './theme';

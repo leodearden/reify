@@ -294,22 +294,16 @@ pub(crate) fn validate_dimensionless_unit_axis_vec3(v: &Value) -> Option<[f64; 3
     Some([x, y, z])
 }
 
-/// Extract numeric components and consistent dimension from a Tensor value.
+/// Shared rank-1 guard loop: validates that `items` is non-empty, that all
+/// elements share the same dimension, and that all are numeric.
 ///
-/// Returns `Some((values, dimension))` if:
-/// - `v` is a `Value::Tensor`, `Value::Point`, or `Value::Vector` with at least one element.
-/// - All components support `as_f64()`.
-/// - All components share the same dimension (or all are dimensionless).
-///
-/// Returns `None` for non-Tensor/Point/Vector values, empty containers, non-numeric
-/// components, or containers with mixed dimensions.
-pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
-    let items = match v {
-        Value::Tensor(items) | Value::Point(items) | Value::Vector(items) if !items.is_empty() => {
-            items
-        }
-        _ => return None,
-    };
+/// Extracted so that [`tensor_components_f64`] (Tensor/Point/Vector containers)
+/// and [`list_components_f64`] (List container) share the same non-empty /
+/// dimension-consistency / numeric-extraction guards — guards live in ONE place.
+fn uniform_components_f64(items: &[Value]) -> Option<(Vec<f64>, DimensionVector)> {
+    if items.is_empty() {
+        return None;
+    }
     let first_dim = items[0].dimension();
     let mut vals = Vec::with_capacity(items.len());
     for item in items {
@@ -322,6 +316,40 @@ pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVec
         }
     }
     Some((vals, first_dim))
+}
+
+/// Extract numeric components and consistent dimension from a Tensor value.
+///
+/// Returns `Some((values, dimension))` if:
+/// - `v` is a `Value::Tensor`, `Value::Point`, or `Value::Vector` with at least one element.
+/// - All components support `as_f64()`.
+/// - All components share the same dimension (or all are dimensionless).
+///
+/// Returns `None` for non-Tensor/Point/Vector values, empty containers, non-numeric
+/// components, or containers with mixed dimensions. Returns `None` for `Value::List` —
+/// use [`list_components_f64`] for that container.
+pub(crate) fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
+    match v {
+        Value::Tensor(items) | Value::Point(items) | Value::Vector(items) => {
+            uniform_components_f64(items)
+        }
+        _ => None,
+    }
+}
+
+/// Extract numeric components and consistent dimension from a `Value::List`.
+///
+/// The `Value::List` container analogue of [`tensor_components_f64`]: both
+/// delegate to [`uniform_components_f64`] so the non-empty /
+/// dimension-consistency / numeric-extraction guards live in one place.
+/// `tensor_components_f64` still rejects `Value::List` (contract preserved;
+/// existing callers unaffected). Used by `construct::eval_vec` and
+/// `construct::eval_diag`.
+pub(crate) fn list_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
+    match v {
+        Value::List(items) => uniform_components_f64(items),
+        _ => None,
+    }
 }
 
 // SYNC: mirror of reify-expr::sanitize.rs tests — keep in sync
@@ -1862,6 +1890,104 @@ mod tests {
         assert_eq!(
             map.get(&Value::String("kind".to_string())),
             Some(&Value::String("only_kind".to_string())),
+        );
+    }
+
+    // --- list_components_f64 characterization tests (step-3 RED / step-4 GREEN) ---
+
+    /// (a-1) A non-empty Value::List of Reals → Some((vals, DIMENSIONLESS)).
+    #[test]
+    fn list_components_f64_reals_returns_values_and_dimensionless() {
+        let v = Value::List(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let (vals, dim) = list_components_f64(&v)
+            .expect("non-empty List of Reals should return Some");
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+        assert_eq!(dim, DimensionVector::DIMENSIONLESS);
+    }
+
+    /// (a-2) A non-empty Value::List of Ints → Some((vals, DIMENSIONLESS)).
+    #[test]
+    fn list_components_f64_ints_returns_values_and_dimensionless() {
+        let v = Value::List(vec![Value::Int(4), Value::Int(5)]);
+        let (vals, dim) = list_components_f64(&v)
+            .expect("non-empty List of Ints should return Some");
+        assert_eq!(vals, vec![4.0, 5.0]);
+        assert_eq!(dim, DimensionVector::DIMENSIONLESS);
+    }
+
+    /// (b) A Value::List of LENGTH Scalars → element dim = LENGTH.
+    #[test]
+    fn list_components_f64_length_scalars_returns_length_dim() {
+        let v = Value::List(vec![
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        let (vals, dim) = list_components_f64(&v)
+            .expect("List of LENGTH Scalars should return Some");
+        assert_eq!(vals, vec![0.5, 1.5]);
+        assert_eq!(dim, DimensionVector::LENGTH);
+    }
+
+    /// (c-1) Rejection: empty List → None.
+    #[test]
+    fn list_components_f64_empty_list_returns_none() {
+        assert!(
+            list_components_f64(&Value::List(vec![])).is_none(),
+            "empty List should return None"
+        );
+    }
+
+    /// (c-2) Rejection: mixed-dimension list → None.
+    #[test]
+    fn list_components_f64_mixed_dimension_returns_none() {
+        let v = Value::List(vec![
+            Value::Real(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        assert!(
+            list_components_f64(&v).is_none(),
+            "mixed-dimension List should return None"
+        );
+    }
+
+    /// (c-3) Rejection: non-numeric element (String) → None.
+    #[test]
+    fn list_components_f64_string_element_returns_none() {
+        let v = Value::List(vec![
+            Value::Real(1.0),
+            Value::String("x".to_string()),
+        ]);
+        assert!(
+            list_components_f64(&v).is_none(),
+            "List with a String element should return None"
+        );
+    }
+
+    /// (c-4) Rejection: non-List input Real → None (list_components_f64 accepts ONLY List).
+    #[test]
+    fn list_components_f64_real_returns_none() {
+        assert!(
+            list_components_f64(&Value::Real(1.0)).is_none(),
+            "Real input should return None"
+        );
+    }
+
+    /// (c-5) Rejection: non-List input Tensor → None (list_components_f64 accepts ONLY List).
+    #[test]
+    fn list_components_f64_tensor_returns_none() {
+        let v = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]);
+        assert!(
+            list_components_f64(&v).is_none(),
+            "Tensor input should return None (only List accepted)"
         );
     }
 }

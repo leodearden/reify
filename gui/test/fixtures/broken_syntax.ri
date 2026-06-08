@@ -1,0 +1,9 @@
+// broken_syntax.ri — intentionally INVALID syntax
+//
+// This file will NOT parse cleanly. It is used to test error-recovery paths
+// in the debug harness and diagnostics tools.
+// Exact parse-error behavior pinned by downstream diagnostics tool-leaf tasks.
+
+structure BrokenSyntax {
+    param x: Scalar =
+    let body = box(

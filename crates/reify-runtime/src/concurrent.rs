@@ -265,7 +265,7 @@ impl ConcurrentScheduler {
         traces: &HashMap<NodeId, DependencyTrace>,
         cancel: &CancellationToken,
         changed_cells: &HashSet<ValueCellId>,
-        config: SchedulerConfig<'_>,
+        mut config: SchedulerConfig<'_>,
     ) -> Result<SchedulerResult, SchedulerError> {
         // PRD §5 B5 / I-3 (M-013 fix): when a `WarmStartableRegistry` fixture
         // is attached to the config, fire the bidirectional coextension
@@ -296,15 +296,30 @@ impl ConcurrentScheduler {
         };
 
         // Per-dirty-node metadata bundle. Fields are named so every downstream
-        // loop reads `dn.id`, `dn.override_`, or `dn.has_non_final` rather than
-        // positional `(_, _, _)` destructuring.
+        // loop reads `dn.id`, `dn.override_`, `dn.has_non_final`, or
+        // `dn.priority` rather than positional `(_, _, _)` destructuring.
+        // `priority` is populated once at construction (after
+        // default_populate_priorities guarantees every eval-set node has an
+        // entry) so the promoter-register and sort_by_key loops each reuse it
+        // rather than issuing a second HashMap lookup.
         struct DirtyNode {
             id: NodeId,
             override_: NodeCommitmentOverride,
             has_non_final: bool,
+            priority: Priority,
         }
 
         let node_set: HashSet<NodeId> = eval_set.into_iter().collect();
+
+        // PRD §5 B2 / I-1: default-populate config.node_priorities for every
+        // eval-set node that has no explicit entry, using the kind-derived trait
+        // default (via node_traits.resolve). Explicit entries take precedence
+        // (level 1 > level 2 in the §6 priority-resolution chain).
+        // The existing `.unwrap_or(Priority::P3Speculative)` reads in the
+        // promoter/sort block below are kept as a defensive backstop but are now
+        // unreachable for eval-set nodes.
+        default_populate_priorities(&mut config.node_priorities, &node_set, &config.node_traits);
+
         let levels = reify_eval::dirty::compute_levels(&node_set, traces);
         let mut changed = HashSet::new();
         let mut skipped = HashSet::new();
@@ -348,10 +363,16 @@ impl ConcurrentScheduler {
                     {
                         skipped.insert(node);
                     } else {
+                        let priority = config
+                            .node_priorities
+                            .get(&node)
+                            .copied()
+                            .unwrap_or(Priority::P3Speculative);
                         dirty_nodes.push(DirtyNode {
                             id: node,
                             override_,
                             has_non_final: has_non_final_flag,
+                            priority,
                         });
                     }
                 } else {
@@ -362,26 +383,18 @@ impl ConcurrentScheduler {
             // Register dirty nodes in priority promoter and sort by priority
             if let Some(ref promoter) = config.priority_promoter {
                 for dn in &dirty_nodes {
-                    let priority = config
-                        .node_priorities
-                        .get(&dn.id)
-                        .copied()
-                        .unwrap_or(Priority::P3Speculative);
-                    promoter.register(dn.id.clone(), priority);
+                    // dn.priority was populated once at dirty-node construction;
+                    // no second HashMap lookup needed here.
+                    promoter.register(dn.id.clone(), dn.priority);
                 }
                 // Sort by config priority: ascending (P0 < P3 in Ord).
                 // At this point, nodes were just registered (lines above) with
                 // values from config.node_priorities and no promotions have
                 // occurred yet, so effective_priority == config priority.
-                // Sorting directly from config avoids O(N log N) mutex
-                // acquisitions through SharedPriorityPromoter.
-                dirty_nodes.sort_by_key(|dn| {
-                    config
-                        .node_priorities
-                        .get(&dn.id)
-                        .copied()
-                        .unwrap_or(Priority::P3Speculative)
-                });
+                // Sorting directly from dn.priority (already resolved above)
+                // avoids both a second HashMap lookup per node and O(N log N)
+                // mutex acquisitions through SharedPriorityPromoter.
+                dirty_nodes.sort_by_key(|dn| dn.priority);
             }
 
             // Register dirty nodes in commitment tracker before spawning,
@@ -481,6 +494,33 @@ impl ConcurrentScheduler {
 impl Default for CancellationToken {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Default-populate `node_priorities` for every node in `eval_nodes` that does
+/// not already have an explicit entry.
+///
+/// Implements the PRD §6 priority-resolution chain, level 2 (trait-derived):
+/// explicit entries (level 1) take precedence and are never overwritten.
+///
+/// For each node without an explicit entry, inserts
+/// `traits_to_priority(node_traits.resolve(node))` as the derived default.
+/// After this call every node in `eval_nodes` has an entry in
+/// `node_priorities` — invariant I-1.
+///
+/// Extracted as a `pub(crate)` helper so the two load-bearing guarantees
+/// (I-1 and explicit-entry precedence) can be verified in a synchronous,
+/// deterministic unit test independent of the async scheduler path.
+pub(crate) fn default_populate_priorities(
+    node_priorities: &mut HashMap<NodeId, Priority>,
+    eval_nodes: &HashSet<NodeId>,
+    node_traits: &NodeTraitsMap<NodeId>,
+) {
+    for node in eval_nodes {
+        if !node_priorities.contains_key(node) {
+            let derived = crate::traits_to_priority(node_traits.resolve(node));
+            node_priorities.insert(node.clone(), derived);
+        }
     }
 }
 
@@ -1515,5 +1555,86 @@ mod tests {
             0,
             "In-flight tasks should have been aborted, not detached"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // default_populate_priorities unit tests (step-3 RED / step-4 GREEN)
+    // ---------------------------------------------------------------------------
+
+    /// Verifies that `default_populate_priorities`:
+    /// 1. Does NOT overwrite an explicitly-set entry (precedence invariant).
+    /// 2. Derives P1Fast for an unset NodeId::Value (IMMEDIATE trait).
+    /// 3. Derives P1Slow for an unset NodeId::Compute (WARM_STARTABLE|COMMITTABLE).
+    /// 4. Derives P3Speculative for an unset NodeId::Constraint (empty traits).
+    /// 5. Invariant I-1: every eval-set node has an entry after the call.
+    #[test]
+    fn default_populate_priorities_derives_per_kind_and_preserves_explicit() {
+        use reify_eval::cache::NodeId;
+        use reify_core::{ComputeNodeId, ConstraintNodeId, ValueCellId};
+        use reify_ir::NodeTraitsMap;
+        use std::collections::{HashMap, HashSet};
+
+        // One pinned Compute at P0Interactive — simulates an external/GUI assignment.
+        let pinned_compute = NodeId::Compute(ComputeNodeId::new("T4", 0));
+        let unset_value = NodeId::Value(ValueCellId::new("T4", "v"));
+        let unset_compute = NodeId::Compute(ComputeNodeId::new("T4", 1));
+        let unset_constraint = NodeId::Constraint(ConstraintNodeId::new("T4", 0));
+
+        let mut node_priorities: HashMap<NodeId, crate::Priority> = HashMap::new();
+        node_priorities.insert(pinned_compute.clone(), crate::Priority::P0Interactive);
+
+        let eval_nodes: HashSet<NodeId> = [
+            pinned_compute.clone(),
+            unset_value.clone(),
+            unset_compute.clone(),
+            unset_constraint.clone(),
+        ]
+        .into_iter()
+        .collect();
+
+        let node_traits: NodeTraitsMap<NodeId> = NodeTraitsMap::default();
+
+        default_populate_priorities(&mut node_priorities, &eval_nodes, &node_traits);
+
+        // Explicit entry preserved — must NOT be overwritten to P1Slow.
+        assert_eq!(
+            node_priorities[&pinned_compute],
+            crate::Priority::P0Interactive,
+            "explicit P0Interactive entry must not be overwritten"
+        );
+
+        // Unset Value → IMMEDIATE → P1Fast.
+        assert_eq!(
+            node_priorities[&unset_value],
+            crate::Priority::P1Fast,
+            "unset Value node must derive P1Fast"
+        );
+
+        // Unset Compute → WARM_STARTABLE|COMMITTABLE → P1Slow.
+        assert_eq!(
+            node_priorities[&unset_compute],
+            crate::Priority::P1Slow,
+            "unset Compute node must derive P1Slow"
+        );
+
+        // Unset Constraint → empty traits → P3Speculative.
+        assert_eq!(
+            node_priorities[&unset_constraint],
+            crate::Priority::P3Speculative,
+            "unset Constraint node must derive P3Speculative"
+        );
+
+        // Invariant I-1: every eval-set node must have an entry.
+        assert_eq!(
+            node_priorities.len(),
+            4,
+            "every eval-set node must have an entry after default_populate_priorities"
+        );
+        for node in &eval_nodes {
+            assert!(
+                node_priorities.contains_key(node),
+                "eval-set node {node:?} must have an entry"
+            );
+        }
     }
 }

@@ -1,0 +1,3 @@
+pub fn clamp_field<D, Q: Dimension>(f: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: Scalar<Q>) -> Field<D, Scalar<Q>> {
+    fn_field(|p| clamp(sample(f, p), lo, hi))
+}

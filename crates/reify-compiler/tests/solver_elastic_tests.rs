@@ -17,6 +17,7 @@
 use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_test_support::collect_value_ref_members;
 
 /// Look up a structure template by name within the `std/solver/elastic` module.
 ///
@@ -163,7 +164,7 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
 // ─── step-5: ElasticOptions param shape ──────────────────────────────────────
 
 /// `ElasticOptions` is the FEA solver-input knob structure. It must declare
-/// exactly eleven params with the canonical names and types:
+/// exactly twelve params with the canonical names and types:
 ///
 ///   - `element_order          : ElementOrder`   (selects P1 / P2 elements)
 ///   - `mesh_size              : Option<Length>`  (none = solver derives from tolerance)
@@ -181,6 +182,8 @@ fn shell_force_enum_has_off_auto_on_variants_in_canonical_order() {
 ///     default false; PRD hex-wedge-meshing.md task #9)
 ///   - `require_hex_wedge      : Bool`            (upgrade tet fall-back to hard error;
 ///     default false; PRD hex-wedge-meshing.md task #9)
+///   - `deterministic          : Bool`            (force single-threaded + fixed-order
+///     reductions for bit-stable cross-machine results; default false; PRD task #18)
 ///
 /// `mesh_size`, `threads`, and `shell_voxel_size` are encoded as `Option<T> = none`
 /// rather than PRD-style sentinels (e.g., `auto`, `num_cpus::get()`) because the
@@ -195,8 +198,8 @@ fn elastic_options_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        11,
-        "ElasticOptions should have exactly 11 param cells, got: {:?}",
+        12,
+        "ElasticOptions should have exactly 12 param cells, got: {:?}",
         names
     );
 
@@ -222,6 +225,7 @@ fn elastic_options_struct_has_correct_param_shape() {
         ("shell_force", Type::Enum("ShellForce".to_string())),
         ("force_tet", Type::Bool),
         ("require_hex_wedge", Type::Bool),
+        ("deterministic", Type::Bool),
     ];
 
     for (member, expected_ty) in expected {
@@ -388,6 +392,21 @@ fn elastic_options_param_defaults_match_spec() {
             other
         ),
     }
+
+    // deterministic = false (PRD task #18). Default false keeps the standard
+    // performance path (multi-threaded for large problems); deterministic = true
+    // is an opt-in that forces single-threaded + fixed-order reductions for
+    // bit-stable cross-machine reproducibility.
+    let deterministic_default = require_default(template, "deterministic");
+    match &deterministic_default.kind {
+        CompiledExprKind::Literal(Value::Bool(v)) => {
+            assert!(!v, "deterministic default should be false, got: {}", v)
+        }
+        other => panic!(
+            "deterministic default should be Literal(Value::Bool(false)), got: {:?}",
+            other
+        ),
+    }
 }
 
 // ─── step-5 (shell params): ElasticOptions shell defaults ────────────────────
@@ -492,21 +511,6 @@ fn elastic_options_shell_param_defaults_match_spec() {
 
 // ─── step-9: ElasticOptions positivity constraints ───────────────────────────
 
-/// Recursively collect ValueRef member names from a compiled expression tree.
-/// Mirrors `collect_value_ref_members` in `stdlib_loader_tests.rs:14-23`.
-fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
-    match &expr.kind {
-        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
-        CompiledExprKind::BinOp { left, right, .. } => {
-            let mut refs = collect_value_ref_members(left);
-            refs.extend(collect_value_ref_members(right));
-            refs
-        }
-        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
-        _ => vec![],
-    }
-}
-
 /// `ElasticOptions` enforces strict-positivity invariants on four params via
 /// structure-level constraint declarations:
 ///
@@ -570,7 +574,7 @@ fn elastic_options_constrains_positivity_invariants() {
             // emit `Real(0.0)` here.
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt || !collect_value_ref_members(left).contains(required) {
+                    if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
                         return false;
                     }
                     match &right.kind {
@@ -632,7 +636,7 @@ fn elastic_options_caps_cg_tolerance_below_one() {
         // but the name + op check still passes.
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Lt || !collect_value_ref_members(left).contains(&"cg_tolerance") {
+                if *op != BinOp::Lt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "cg_tolerance") {
                     return false;
                 }
                 match &right.kind {
@@ -675,7 +679,7 @@ fn elastic_options_constrains_shell_threshold_below_one() {
         // future numeric-promotion change could legitimately emit Real(1.0).
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Lt || !collect_value_ref_members(left).contains(&"shell_threshold")
+                if *op != BinOp::Lt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "shell_threshold")
                 {
                     return false;
                 }
@@ -819,7 +823,7 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
             // changed to a negative value but the name + op check still passes.
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Ge || !collect_value_ref_members(left).contains(required) {
+                    if *op != BinOp::Ge || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
                         return false;
                     }
                     match &right.kind {

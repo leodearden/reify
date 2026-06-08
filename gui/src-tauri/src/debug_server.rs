@@ -41,7 +41,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "engine_state",
-            description: "Full engine state: meshes (entity paths + vertex/face counts, no raw arrays), values, constraints, eval status",
+            description: "Full engine state: meshes (entity paths + vertex/face counts), values, constraints, files, compile_diagnostics, tessellation_diagnostics, stale (bool), reload_error (string or null). stale=true means the last hot-reload failed; reload_error contains the failure message.",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -243,6 +243,70 @@ fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "load_fixture",
+            description: "Load a named test fixture .ri file into the editor and engine. The name must be one of the catalogue keys: all_severities, small_cube, empty, broken_syntax, large_assembly, overflow. Resolves to gui/test/fixtures/{name}.ri relative to the repository root (cwd when the debug server launches).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Fixture name (catalogue key). One of: all_severities, small_cube, empty, broken_syntax, large_assembly, overflow."
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDef {
+            name: "element_screenshot",
+            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" }. Frontend-mediated (no Rust dispatch arm).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "testId": {
+                        "type": "string",
+                        "description": "Value of the data-testid attribute on the target element (e.g. \"diagnostics-dialog\")."
+                    }
+                },
+                "required": ["testId"]
+            }),
+        },
+        ToolDef {
+            name: "inject_diagnostics",
+            description: "Inject SYNTHETIC diagnostics into the engine store for testing the diagnostics UI in isolation. The honest acceptance signal is the rendered DiagnosticsPanel (query_selector_all diagnostic-row / element_screenshot), NOT 'the store was set'. Normalises only omitted positional fields; never alters caller-supplied message or severity. Routes to compile diagnostics by default, or tessellation diagnostics when source='tessellation'. diagnostics must be non-empty (minItems:1). Frontend-mediated.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "diagnostics": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "Non-empty array of diagnostic entries to inject. Each entry must have severity and message; positional fields (file_path, line, column, end_line, end_column, code) are optional and filled with defaults when omitted.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "severity": { "type": "string" },
+                                "message":  { "type": "string" }
+                            },
+                            "required": ["severity", "message"]
+                        }
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["compile", "tessellation"],
+                        "description": "Which diagnostic channel to populate. Defaults to 'compile' so the StatusBar badge appears immediately."
+                    }
+                },
+                "required": ["diagnostics"]
+            }),
+        },
+        ToolDef {
+            name: "reset_app_state",
+            description: "Reset app-level store state: close all open files, clear the selection, reset the camera view, clear any injected diagnostics (compile and tessellation), and reset layout pane dimensions to their defaults. Does NOT reset the OCCT engine process. Frontend-mediated.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
             name: "set_test_mode",
             description: "Freeze CSS animations and transitions for pixel-stable DOM screenshots. Does NOT pause JS-driven animations or the Three.js render loop. Returns { ok: true, test_mode: bool }.",
             input_schema: json!({
@@ -310,6 +374,513 @@ fn tool_defs() -> Vec<ToolDef> {
                 }
             }),
         },
+        // --- DOM/style/layout/window inspection tools (R1) ---
+        ToolDef {
+            name: "query_selector",
+            description: "Query a single DOM element by raw CSS selector. Returns { exists, tagName, testId, text, bounds, visible } on match, { exists: false } when no element matches, { error } on invalid selector or missing param.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector string (e.g. '.cm-scroller', '[data-testid=\"editor\"]')"
+                    }
+                },
+                "required": ["selector"]
+            }),
+        },
+        ToolDef {
+            name: "query_selector_all",
+            description: "Query all DOM elements matching a raw CSS selector. Returns { count, elements: [...], truncated } (capped at 200 results), { count: 0, elements: [], truncated: false } when none match, { error } on invalid selector or missing param.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector string"
+                    }
+                },
+                "required": ["selector"]
+            }),
+        },
+        ToolDef {
+            name: "get_layout_metrics",
+            description: "Read scroll/client/bounds metrics for a DOM element. Returns { exists, bounds, scroll: { top, left, width, height }, client: { width, height }, overflow: { horizontal, vertical } } where overflow.horizontal is true when scrollWidth > clientWidth (clipped/overflowing text).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector string identifying the element to measure"
+                    }
+                },
+                "required": ["selector"]
+            }),
+        },
+        ToolDef {
+            name: "get_computed_style",
+            description: "Read computed CSS style for a DOM element. Returns { exists, style: { display, visibility, opacity, color, backgroundColor, fontSize, fontFamily, fontWeight, overflow, position, width, height } } by default; pass properties:[...] to request a custom subset.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector string"
+                    },
+                    "properties": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of CSS property names to return (camelCase). When omitted, returns the default curated subset."
+                    }
+                },
+                "required": ["selector"]
+            }),
+        },
+        ToolDef {
+            name: "active_element",
+            description: "Return the currently focused DOM element: { testId, role, tagName }. testId and role are null when the element has no data-testid/role attribute. Returns { tagName: 'body', testId: null, role: null } when nothing specific is focused.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "get_window_state",
+            description: "Return window geometry and focus state: { innerWidth, innerHeight, screenX, screenY, devicePixelRatio, focused }. All sizes are CSS/logical pixels. focused reflects document.hasFocus().",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        // C1 app-chrome tools (frontend-mediated via debug_bridge.query_frontend catch-all)
+        ToolDef {
+            name: "open_menu",
+            description: "Open a top-level app menu by name (file|edit|view|help) by driving the MenuBar trigger; returns {ok, open}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Menu name to open: file, edit, view, or help."
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDef {
+            name: "menu_state",
+            description: "Report the currently-open menu and the open menu's per-item enabled-state, read from the rendered DOM.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "press_tab",
+            description: "Advance keyboard focus to the next focusable element in document order and report where document.activeElement lands.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "tab_order",
+            description: "Report the forward-Tab focus traversal order (document-order focusable elements).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        // --- R2 inspection tools (task-4297) — frontend-mediated, dispatched via query_frontend ---
+        ToolDef {
+            name: "get_diagnostics",
+            description: "Structured dump of the engine's compile and tessellation diagnostics (severity, message, code, source range) read from the real engineStore.compileDiagnostics + tessellationDiagnostics. Returns { compile: Diag[], tessellation: Diag[], compileCount, tessellationCount } where Diag = { severity, message, code, file_path, range: { line, column, end_line, end_column } }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "ui_outline",
+            description: "DOM-derived semantic text snapshot of visible UI elements in document order. Returns { outline: Node[], count, truncated } where Node = { tagName, role, testId, text, enabled }. Captures buttons, inputs, [role], [data-testid], and other interactive elements visible in the render tree (computed display != none && visibility != hidden). This is a pragmatic DOM APPROXIMATION — NOT a true accessibility tree (true AX tree support deferred to tracker AX-1). Capped at 500 elements.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        // --- R3 tools (task-4298) — console-error capture + wait_for/wait_for_selector ---
+        ToolDef {
+            name: "list_console_errors",
+            description: "Return captured console.error/console.warn/window.onerror/unhandledrejection entries from the always-on ring buffer installed at app startup. Returns { errors: ConsoleErrorEntry[], count: number }. Optional { clear: true } drains the buffer after returning. Useful for detecting JS errors that occurred before or after the debug bridge initialized.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "clear": { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "wait_for",
+            description: "Poll until a predicate is satisfied or a timeout elapses. Returns { ok: true, waited_ms: number } on success or { error: 'timeout' } when the deadline expires. Predicate is a tagged union: { kind: 'selector', testId, state: 'visible'|'gone', text? } for DOM presence checks, or { kind: 'store', path, equals } for store dotted-path equality checks. Optional timeout_ms (default 5000, must be positive).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "predicate": {
+                        "type": "object",
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text? } or { kind: 'store', path, equals }"
+                    },
+                    "timeout_ms": { "type": "integer" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "wait_for_selector",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional timeout_ms (default 5000, must be positive).",
+            input_schema: json!({
+                "type": "object",
+                "required": ["testId"],
+                "properties": {
+                    "testId": { "type": "string" },
+                    "state": { "type": "string", "enum": ["visible", "gone"] },
+                    "text": { "type": "string" },
+                    "timeout_ms": { "type": "integer" }
+                }
+            }),
+        },
+        // --- C2 layout-control tools (task-4302) — frontend-mediated ---
+        ToolDef {
+            name: "resize_panes",
+            description: "Resize one or more layout panes by setting their pixel dimensions. \
+                          All five dimensions are optional; omit any to leave them unchanged. \
+                          Accepts non-negative finite numbers. Returns { ok, layout } on success.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "editorWidth":       { "type": "number", "description": "Width of the editor pane in pixels." },
+                    "sideWidth":         { "type": "number", "description": "Width of the side panel in pixels." },
+                    "designTreeHeight":  { "type": "number", "description": "Height of the design tree panel in pixels." },
+                    "propertyHeight":    { "type": "number", "description": "Height of the property panel in pixels." },
+                    "constraintHeight":  { "type": "number", "description": "Height of the constraint panel in pixels." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "set_window_size",
+            description: "Resize the application window to the specified logical-pixel dimensions. \
+                          Both width and height must be positive finite numbers. \
+                          Returns { ok, width, height } on success.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "width":  { "type": "number", "description": "Target window width in logical pixels (must be > 0)." },
+                    "height": { "type": "number", "description": "Target window height in logical pixels (must be > 0)." }
+                },
+                "required": ["width", "height"]
+            }),
+        },
+        ToolDef {
+            name: "expand_tree_node",
+            description: "Expand a node in the design tree or constraint panel by clicking its toggle control. \
+                          Idempotent: if the node is already expanded, no click is dispatched. \
+                          panel defaults to 'design'; pass panel:'constraint' for the constraint panel. \
+                          Returns { ok, path, expanded } where expanded reflects the post-operation state.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path":  { "type": "string", "description": "Entity path or node id to expand." },
+                    "panel": {
+                        "type": "string",
+                        "enum": ["design", "constraint"],
+                        "description": "Which panel's tree to operate on (default: 'design')."
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDef {
+            name: "collapse_tree_node",
+            description: "Collapse a node in the design tree or constraint panel by clicking its toggle control. \
+                          Idempotent: if the node is already collapsed, no click is dispatched. \
+                          panel defaults to 'design'; pass panel:'constraint' for the constraint panel. \
+                          Returns { ok, path, expanded } where expanded reflects the post-operation state.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path":  { "type": "string", "description": "Entity path or node id to collapse." },
+                    "panel": {
+                        "type": "string",
+                        "enum": ["design", "constraint"],
+                        "description": "Which panel's tree to operate on (default: 'design')."
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
+        // --- F2 LSP probe tools (task-4304) — frontend-mediated ---
+        ToolDef {
+            name: "hover_at",
+            description: "Request LSP hover information at a given 0-based (line, col) position in the active editor file. \
+                          Drives the in-process LSP via the editor's lspClient and returns the structured result: \
+                          { markdown, markdownLength, contents, range }. \
+                          Returns { error } when no file is active or line/col are invalid.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "line": { "type": "integer", "description": "0-based line number." },
+                    "col":  { "type": "integer", "description": "0-based column (character offset)." }
+                },
+                "required": ["line", "col"]
+            }),
+        },
+        ToolDef {
+            name: "completion_at",
+            description: "Request LSP completion items at a given 0-based (line, col) position in the active editor file. \
+                          Drives the in-process LSP via the editor's lspClient and returns the structured result: \
+                          { items, itemCount }. \
+                          Returns { error } when no file is active or line/col are invalid.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "line": { "type": "integer", "description": "0-based line number." },
+                    "col":  { "type": "integer", "description": "0-based column (character offset)." }
+                },
+                "required": ["line", "col"]
+            }),
+        },
+        ToolDef {
+            name: "definition_at",
+            description: "Request LSP go-to-definition at a given 0-based (line, col) position in the active editor file. \
+                          Drives the in-process LSP via the editor's lspClient and returns the structured result: \
+                          { uri, range, found }. found=false when the LSP returns no location. \
+                          Returns { error } when no file is active or line/col are invalid.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "line": { "type": "integer", "description": "0-based line number." },
+                    "col":  { "type": "integer", "description": "0-based column (character offset)." }
+                },
+                "required": ["line", "col"]
+            }),
+        },
+        // --- I1: Synthetic pointer/scroll/focus tools (task-4299) ---
+        // These are FRONTEND-MEDIATED: no Rust handler arm is added; dispatch_tool's
+        // default arm routes unknown names to debug_bridge.query_frontend (:693-697).
+        ToolDef {
+            name: "click_at",
+            description: "Simulate a pointer click at CSS-logical-pixel coordinates (x, y) measured from the window origin \
+                          (same frame as getBoundingClientRect / clientX/clientY; see contract §3). \
+                          Resolves the target element via document.elementFromPoint(x, y), then dispatches \
+                          pointerdown → pointerup → click events with clientX=x, clientY=y. \
+                          Fires JS click handlers (React onClick etc.); CSS :hover/:active is NOT applied \
+                          (synthetic-event fidelity gap — contract §4).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "x": {
+                        "type": "number",
+                        "description": "CSS-logical-px from the window origin (same frame as getBoundingClientRect / clientX/clientY; see contract §3)"
+                    },
+                    "y": {
+                        "type": "number",
+                        "description": "CSS-logical-px from the window origin (same frame as getBoundingClientRect / clientX/clientY; see contract §3)"
+                    }
+                },
+                "required": ["x", "y"]
+            }),
+        },
+        ToolDef {
+            name: "hover",
+            description: "Simulate a pointer move (hover) at CSS-logical-pixel coordinates (x, y). \
+                          Resolves the target element via document.elementFromPoint(x, y), then dispatches \
+                          pointermove + mousemove events with clientX=x, clientY=y. \
+                          Fires JS move handlers; CSS :hover pseudo-class is NOT applied \
+                          (synthetic-event fidelity gap — contract §4).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "x": {
+                        "type": "number",
+                        "description": "CSS-logical-px from the window origin (same frame as getBoundingClientRect / clientX/clientY; see contract §3)"
+                    },
+                    "y": {
+                        "type": "number",
+                        "description": "CSS-logical-px from the window origin (same frame as getBoundingClientRect / clientX/clientY; see contract §3)"
+                    }
+                },
+                "required": ["x", "y"]
+            }),
+        },
+        ToolDef {
+            name: "drag",
+            description: "Simulate a synthetic pointer drag from one coordinate to another. \
+                          Dispatches pointerdown+mousedown at 'from', pointermove at 'to', then \
+                          pointerup+mouseup at 'to'. Fires JS pointer/mouse handlers; \
+                          there is NO native HTML5 drag-and-drop (dragstart/drop are NOT fired) — \
+                          this is a synthetic pointer-move drag (contract §4).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "from": {
+                        "type": "object",
+                        "description": "Start coordinate {x, y} in CSS-logical-px from the window origin",
+                        "properties": {
+                            "x": { "type": "number" },
+                            "y": { "type": "number" }
+                        }
+                    },
+                    "to": {
+                        "type": "object",
+                        "description": "End coordinate {x, y} in CSS-logical-px from the window origin",
+                        "properties": {
+                            "x": { "type": "number" },
+                            "y": { "type": "number" }
+                        }
+                    }
+                },
+                "required": ["from", "to"]
+            }),
+        },
+        ToolDef {
+            name: "focus_element",
+            description: "Focus a DOM element by its data-testid attribute. \
+                          Calls el.focus() on the resolved element. \
+                          Returns {ok: true} on success or {error} if not found or testId is missing.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "testId": {
+                        "type": "string",
+                        "description": "The data-testid attribute value of the element to focus"
+                    }
+                },
+                "required": ["testId"]
+            }),
+        },
+        ToolDef {
+            name: "scroll",
+            description: "Scroll a DOM element or the CodeMirror editor. \
+                          DOM mode: pass testId to set scrollTop/scrollLeft on the resolved element. \
+                          Editor mode: pass target:'editor' to scroll the CodeMirror scrollDOM. \
+                          Returns {ok: true, scrollTop, scrollLeft} with the resulting scroll offsets \
+                          (enabling a get_layout_metrics round-trip to confirm the applied offset).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "testId": {
+                        "type": "string",
+                        "description": "data-testid of the DOM element to scroll (DOM mode)"
+                    },
+                    "target": {
+                        "type": "string",
+                        "enum": ["editor"],
+                        "description": "Pass 'editor' to scroll the CodeMirror scrollDOM (editor mode)"
+                    },
+                    "top": {
+                        "type": "number",
+                        "description": "scrollTop value to set (pixels)"
+                    },
+                    "left": {
+                        "type": "number",
+                        "description": "scrollLeft value to set (pixels)"
+                    }
+                }
+            }),
+        },
+        // task-4300 I2: canvas interaction tools — frontend-mediated (no dispatch arm needed;
+        // the default `_ =>` arm at :817-821 routes unknown names to DebugBridge::query_frontend).
+        ToolDef {
+            name: "pick_entity_at",
+            description: "Raycast at canvas CSS-px coords and return the entity hit (if any). \
+                          PURE QUERY — does NOT mutate selection (select_entity covers the mutate case). \
+                          Coords are CSS-logical-px from window origin (clientX/clientY). \
+                          Omitted x/y default to canvas center (NDC origin, ray through look-at target). \
+                          Returns {hit:true, entityPath, point:{x,y,z}, distance} on hit; \
+                          {hit:false} on miss; {error} for unknown viewport or non-finite coords.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "x": {
+                        "type": "number",
+                        "description": "CSS-px x coordinate from window origin (clientX). Omit for canvas center."
+                    },
+                    "y": {
+                        "type": "number",
+                        "description": "CSS-px y coordinate from window origin (clientY). Omit for canvas center."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "orbit_camera",
+            description: "Drive the viewport camera via OrbitControls' public rotateLeft/rotateUp API. \
+                          Units are RADIANS of azimuth/elevation delta (reproducible, resolution-independent). \
+                          Omitted deltas default to 0. \
+                          Returns {ok, azimuth, polar, azimuthDelta, polarDelta, camera:{position}}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "dazimuth": {
+                        "type": "number",
+                        "description": "Azimuth (yaw) delta in radians. Positive = rotate left. Defaults to 0."
+                    },
+                    "delevation": {
+                        "type": "number",
+                        "description": "Elevation (pitch) delta in radians. Positive = rotate up. Defaults to 0."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "pan_camera",
+            description: "Pan the viewport camera via OrbitControls' public pan API. \
+                          Units are pixels. Omitted deltas default to 0. \
+                          Returns {ok, target:{x,y,z}, camera:{position}}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "dx": {
+                        "type": "number",
+                        "description": "Horizontal pan in pixels. Positive = pan right. Defaults to 0."
+                    },
+                    "dy": {
+                        "type": "number",
+                        "description": "Vertical pan in pixels. Positive = pan down. Defaults to 0."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "zoom_camera",
+            description: "Zoom the viewport camera via OrbitControls' public dollyIn API. \
+                          scale is a multiplicative distance factor: scale>1 moves farther, scale<1 closer. \
+                          (dollyIn(scale) multiplies the orbit radius by scale per OrbitControls internals.) \
+                          Returns {ok, distance, distanceDelta, camera:{position}}.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "scale": {
+                        "type": "number",
+                        "description": "Multiplicative distance scale factor. Must be finite and >0. scale>1 = farther, scale<1 = closer."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional viewport id (e.g. 'design-main', 'def-preview'). When omitted, the first populated viewport is targeted."
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -371,7 +942,7 @@ struct DebugServerState {
 }
 
 fn is_image_tool(name: &str) -> bool {
-    matches!(name, "screenshot" | "screenshot_window")
+    matches!(name, "screenshot" | "screenshot_window" | "element_screenshot")
 }
 
 // --- Tool dispatch ---
@@ -399,9 +970,14 @@ async fn dispatch_tool(
         "engine_state" => handle_engine_state(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
         "open_file" => handle_open_file(state, params).await,
+        "load_fixture" => handle_load_fixture(state, params).await,
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
+        "wait_for" => handle_wait_for(state, params).await,
+        "wait_for_selector" => handle_wait_for_selector(state, params).await,
         _ => {
-            // Frontend-mediated: delegate to DebugBridge
+            // Frontend-mediated: delegate to DebugBridge.
+            // list_console_errors falls through here — it returns instantly so
+            // the default 5s query_frontend timeout is more than sufficient.
             state.debug_bridge.query_frontend(name, params).await
         }
     }
@@ -431,31 +1007,27 @@ where
 
 async fn handle_engine_state(state: &DebugServerState) -> Result<Value, String> {
     run_on_engine(&state.engine, |session| {
-        let gui_state = session
-            .build_gui_state()
-            .map_err(|e| format!("build_gui_state failed: {e}"))?;
-
-        let meshes: Vec<Value> = gui_state
-            .meshes
-            .iter()
-            .map(|m| {
-                json!({
-                    "entity_path": m.entity_path,
-                    "vertex_count": m.vertices.len() / 3,
-                    "face_count": m.indices.len() / 3,
-                    "has_normals": m.normals.is_some(),
-                })
-            })
-            .collect();
-
-        Ok(json!({
-            "meshes": meshes,
-            "values": gui_state.values,
-            "constraints": gui_state.constraints,
-            "files": gui_state.files,
-        }))
+        crate::commands::engine_state_json(session)
     })
     .await
+}
+
+/// Histogram of a mesh's per-face `element_kind` bytes.
+///
+/// Returns an empty map when `element_kind` is `None` (tet-only / non-shell
+/// meshes carry no per-face classification). `BTreeMap` keeps the byte keys in
+/// deterministic ascending order so the serialized JSON object
+/// (`{"1": <n>}`) is stable across runs — the PRD §9 θ observable signal.
+pub(crate) fn element_kind_count(
+    mesh: &crate::types::MeshData,
+) -> std::collections::BTreeMap<u8, usize> {
+    let mut counts = std::collections::BTreeMap::new();
+    if let Some(element_kind) = &mesh.element_kind {
+        for &kind in element_kind {
+            *counts.entry(kind).or_insert(0) += 1;
+        }
+    }
+    counts
 }
 
 async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
@@ -480,10 +1052,19 @@ async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
                     }
                 }
 
+                // Per-face element-kind histogram, byte→count as a JSON object
+                // with string keys (e.g. {"1": <n>}) — the PRD §9 θ signal.
+                let element_kind_hist: serde_json::Map<String, Value> =
+                    element_kind_count(m)
+                        .into_iter()
+                        .map(|(kind, count)| (kind.to_string(), json!(count)))
+                        .collect();
+
                 json!({
                     "entity_path": m.entity_path,
                     "vertex_count": vertex_count,
                     "face_count": face_count,
+                    "element_kind_count": element_kind_hist,
                     "bounding_box": if vertex_count > 0 {
                         json!({"min": min, "max": max})
                     } else {
@@ -586,11 +1167,26 @@ async fn handle_mesh_morph_stats(params: Value) -> Result<Value, String> {
     Ok(obj)
 }
 
-async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let raw_path = params["path"]
-        .as_str()
-        .ok_or_else(|| "path is required".to_string())?;
+/// Catalogue of allowed fixture names → repo-relative paths.
+/// Mirrors the TS FIXTURES keys in gui/test/visual/assertions.ts.
+/// The e2e harness launches reify-gui with cwd=REPO_ROOT, so these
+/// relative paths resolve correctly via canonicalize_debug_open_path.
+fn fixture_relpath(name: &str) -> Option<String> {
+    match name {
+        "all_severities" => Some("gui/test/fixtures/all_severities.ri".to_string()),
+        "small_cube"     => Some("gui/test/fixtures/small_cube.ri".to_string()),
+        "empty"          => Some("gui/test/fixtures/empty.ri".to_string()),
+        "broken_syntax"  => Some("gui/test/fixtures/broken_syntax.ri".to_string()),
+        "large_assembly" => Some("gui/test/fixtures/large_assembly.ri".to_string()),
+        "overflow"       => Some("gui/test/fixtures/overflow.ri".to_string()),
+        _                => None,
+    }
+}
 
+/// Shared file-open helper: canonicalise raw_path, read from disk, load into
+/// the engine on an OS thread (OCCT panics inside tokio), build GUI state, and
+/// tell the frontend to open the file.
+async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Result<Value, String> {
     // Canonicalise the path before reading so the frontend receives the same
     // absolute key regardless of whether the caller supplied a relative or
     // absolute spelling (fixes bug #3892: duplicate tabs via debug bridge).
@@ -627,6 +1223,22 @@ async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Val
         .debug_bridge
         .query_frontend("open_file", file_data)
         .await
+}
+
+async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let raw_path = params["path"]
+        .as_str()
+        .ok_or_else(|| "path is required".to_string())?;
+    open_path_into_engine(state, raw_path).await
+}
+
+async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let name = params["name"]
+        .as_str()
+        .ok_or_else(|| "name is required".to_string())?;
+    let relpath = fixture_relpath(name)
+        .ok_or_else(|| format!("unknown fixture: {name}"))?;
+    open_path_into_engine(state, &relpath).await
 }
 
 // --- MCP Streamable HTTP handler ---
@@ -782,6 +1394,86 @@ async fn handle_wait_for_idle(state: &DebugServerState, params: Value) -> Result
         .await
 }
 
+async fn handle_wait_for(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    // Validate and canonicalize timeout_ms. Default 5000ms (matching the frontend default).
+    let timeout_ms: u64 = match params.get("timeout_ms") {
+        None => 5_000,
+        Some(v) => match v.as_u64().filter(|&n| n > 0) {
+            Some(n) => n,
+            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
+        },
+    };
+
+    // Build canonical params: pass predicate through as-is so the frontend parses it.
+    let canonical_params = json!({
+        "predicate": params.get("predicate").cloned().unwrap_or(Value::Null),
+        "timeout_ms": timeout_ms
+    });
+    // Add a 5-second buffer so the Rust oneshot fires *after* the frontend
+    // has had a chance to return its own {error: "timeout"} response.
+    let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
+    state
+        .debug_bridge
+        .query_frontend_with_timeout("wait_for", canonical_params, rust_timeout)
+        .await
+}
+
+async fn handle_wait_for_selector(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    // Validate and canonicalize timeout_ms. Default 5000ms.
+    let timeout_ms: u64 = match params.get("timeout_ms") {
+        None => 5_000,
+        Some(v) => match v.as_u64().filter(|&n| n > 0) {
+            Some(n) => n,
+            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
+        },
+    };
+
+    // Build canonical params and pass through to the frontend.
+    let mut canonical_params = serde_json::Map::new();
+    canonical_params.insert("timeout_ms".to_string(), json!(timeout_ms));
+    if let Some(v) = params.get("testId") {
+        canonical_params.insert("testId".to_string(), v.clone());
+    }
+    if let Some(v) = params.get("state") {
+        canonical_params.insert("state".to_string(), v.clone());
+    }
+    if let Some(v) = params.get("text") {
+        canonical_params.insert("text".to_string(), v.clone());
+    }
+    let canonical_params = Value::Object(canonical_params);
+
+    let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
+    state
+        .debug_bridge
+        .query_frontend_with_timeout("wait_for_selector", canonical_params, rust_timeout)
+        .await
+}
+
+// --- Port resolution ---
+
+pub const DEFAULT_DEBUG_PORT: u16 = 3939;
+
+/// Parse a raw env-var value into a valid port (1..=65535), falling back to
+/// DEFAULT_DEBUG_PORT for unset, empty, non-numeric, zero, or out-of-range input.
+/// Whitespace is NOT stripped; " 4500 " falls back to 3939.
+pub fn parse_debug_port(raw: Option<&str>) -> u16 {
+    raw.and_then(|s| s.parse::<u32>().ok())
+        .and_then(|n| u16::try_from(n).ok())
+        .filter(|&p| p >= 1)
+        .unwrap_or(DEFAULT_DEBUG_PORT)
+}
+
+pub fn resolve_debug_port() -> u16 {
+    parse_debug_port(std::env::var("REIFY_DEBUG_PORT").ok().as_deref())
+}
+
+pub fn debug_endpoint_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/mcp")
+}
+
 // --- Server spawn ---
 
 pub async fn spawn_debug_server(
@@ -805,11 +1497,12 @@ pub async fn spawn_debug_server(
         .route("/debug/{command}", post(handle_rest))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3939")
+    let port = resolve_debug_port();
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
         .await
-        .map_err(|e| format!("failed to bind debug server on :3939: {e}"))?;
+        .map_err(|e| format!("failed to bind debug server on :{port}: {e}"))?;
 
-    tracing::info!("Debug server listening on http://127.0.0.1:3939");
+    tracing::info!("Debug server listening on {}", debug_endpoint_url(port));
 
     axum::serve(listener, app.into_make_service())
         .await
@@ -1222,6 +1915,205 @@ mod tests {
         );
     }
 
+    // step-1 RED → GREEN: all six new inspection tools must be registered in tool_defs()
+    // with the correct schema shape (object type, required arrays, non-empty description).
+    #[test]
+    fn tool_defs_registers_inspection_tools() {
+        let defs = tool_defs();
+
+        // Tools that require a "selector" param
+        let selector_tools = [
+            "query_selector",
+            "query_selector_all",
+            "get_layout_metrics",
+            "get_computed_style",
+        ];
+        for tool_name in selector_tools {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("selector")),
+                "{tool_name}: 'selector' must be listed in required"
+            );
+        }
+
+        // Tools that require nothing (no required array or empty)
+        let no_param_tools = ["active_element", "get_window_state"];
+        for tool_name in no_param_tools {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{tool_name}: required array must be empty; got {required:?}"
+                );
+            }
+        }
+    }
+
+    // task-4297 step-5 RED → step-6 GREEN: R2 tools get_diagnostics and ui_outline
+    // must be registered in tool_defs() with correct schema shape.
+    // Note: the ui_outline DOM-approximation / not-an-AX-tree label lives in the
+    // ToolDef source description (see debug_server.rs:402); it is not substring-pinned
+    // here to avoid brittle wording-pin failures on harmless rewording (step-9).
+    #[test]
+    fn tool_defs_registers_r2_inspection_tools() {
+        let defs = tool_defs();
+
+        // Both R2 tools take no required params.
+        let r2_tools = ["get_diagnostics", "ui_outline"];
+        for tool_name in r2_tools {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{tool_name}: required array must be empty; got {required:?}"
+                );
+            }
+        }
+    }
+
+    // task-4298 step-9 RED → step-10 GREEN: R3 tools list_console_errors, wait_for,
+    // wait_for_selector must be registered in tool_defs() with correct schema shapes.
+    // Schema-shape-only assertions — NO prose/substring pinning of descriptions (step-9 convention).
+    #[test]
+    fn tool_defs_includes_list_console_errors() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "list_console_errors")
+            .expect("list_console_errors must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "list_console_errors must have a non-empty description"
+        );
+        // 'clear' is optional — if a required array exists it must NOT force 'clear'
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("clear")),
+                "'clear' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_defs_includes_wait_for() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "wait_for")
+            .expect("wait_for must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "wait_for must have a non-empty description"
+        );
+        // Must have a 'predicate' property
+        assert!(
+            schema["properties"]["predicate"].is_object(),
+            "properties.predicate must be present and an object"
+        );
+        // timeout_ms is optional — if a required array exists it must NOT force timeout_ms
+        if let Some(required) = schema["required"].as_array() {
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("timeout_ms")),
+                "'timeout_ms' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_defs_includes_wait_for_selector() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "wait_for_selector")
+            .expect("wait_for_selector must be present in tool_defs()");
+
+        let schema = &entry.input_schema;
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "input_schema.type must be 'object'"
+        );
+        assert!(
+            !entry.description.is_empty(),
+            "wait_for_selector must have a non-empty description"
+        );
+        // testId must be a string property
+        assert_eq!(
+            schema["properties"]["testId"]["type"].as_str(),
+            Some("string"),
+            "properties.testId.type must be 'string'"
+        );
+        // testId IS required
+        let required = schema["required"]
+            .as_array()
+            .expect("input_schema.required must be an array for wait_for_selector");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("testId")),
+            "'testId' must be listed in required"
+        );
+        // timeout_ms is optional — must NOT be required
+        assert!(
+            !required.iter().any(|v| v.as_str() == Some("timeout_ms")),
+            "'timeout_ms' must NOT be listed in required (it is optional)"
+        );
+    }
+
     // step-5 RED → GREEN: all five viewport-aware tools must expose an optional
     // viewportId property in their schemas. Consolidated into one table-driven test
     // so adding a sixth tool is a one-line change (amend: suggestion-4).
@@ -1234,6 +2126,11 @@ mod tests {
             "screenshot_window",
             "fit_to_view",
             "set_camera",
+            // task-4300 I2: canvas interaction tools
+            "pick_entity_at",
+            "orbit_camera",
+            "pan_camera",
+            "zoom_camera",
         ];
         for tool_name in tools {
             let entry = defs
@@ -1253,5 +2150,613 @@ mod tests {
                 );
             }
         }
+    }
+
+    // step-9 RED → step-10 GREEN: four C1 app-chrome tools registered in tool_defs().
+    #[test]
+    fn tool_defs_registers_chrome_tools() {
+        let defs = tool_defs();
+
+        struct Expectation {
+            name: &'static str,
+            required_name: bool,
+        }
+        let tools = [
+            Expectation { name: "open_menu",  required_name: true  },
+            Expectation { name: "menu_state", required_name: false },
+            Expectation { name: "press_tab",  required_name: false },
+            Expectation { name: "tab_order",  required_name: false },
+        ];
+
+        for t in &tools {
+            let entry = defs
+                .iter()
+                .find(|d| d.name == t.name)
+                .unwrap_or_else(|| panic!("{} must be present in tool_defs()", t.name));
+            let schema = &entry.input_schema;
+            assert!(
+                !entry.description.is_empty(),
+                "{}: description must be non-empty", t.name
+            );
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{}: input_schema.type must be 'object'", t.name
+            );
+            if t.required_name {
+                assert_eq!(
+                    schema["properties"]["name"]["type"].as_str(),
+                    Some("string"),
+                    "{}: properties.name.type must be 'string'", t.name
+                );
+                let required = schema["required"].as_array()
+                    .unwrap_or_else(|| panic!("{}: required must be an array", t.name));
+                assert!(
+                    required.iter().any(|v| v.as_str() == Some("name")),
+                    "{}: 'name' must be listed in required", t.name
+                );
+            } else if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{}: required must be absent or empty; got {:?}", t.name, required
+                );
+            }
+        }
+    }
+
+    // ── parse_debug_port ────────────────────────────────────────────────────
+    #[test]
+    fn parse_debug_port_known_good_values() {
+        assert_eq!(parse_debug_port(Some("3939")), 3939u16);
+        assert_eq!(parse_debug_port(Some("4500")), 4500u16);
+        assert_eq!(parse_debug_port(Some("1")), 1u16);
+        assert_eq!(parse_debug_port(Some("65535")), 65535u16);
+    }
+
+    #[test]
+    fn parse_debug_port_fallback_to_default() {
+        assert_eq!(parse_debug_port(None), 3939u16);
+        assert_eq!(parse_debug_port(Some("")), 3939u16);
+        assert_eq!(parse_debug_port(Some("abc")), 3939u16);
+        assert_eq!(parse_debug_port(Some("0")), 3939u16);
+        // 70000 is out of u16 range (> 65535) — must fall back
+        assert_eq!(parse_debug_port(Some("70000")), 3939u16);
+        // leading/trailing whitespace is NOT stripped — falls back
+        assert_eq!(parse_debug_port(Some(" 4500 ")), 3939u16);
+    }
+
+    // ── debug_endpoint_url ──────────────────────────────────────────────────
+    #[test]
+    fn debug_endpoint_url_formats_correctly() {
+        assert_eq!(debug_endpoint_url(3939), "http://127.0.0.1:3939/mcp");
+        assert_eq!(debug_endpoint_url(51000), "http://127.0.0.1:51000/mcp");
+    }
+
+    // task-4302 step-7 RED → step-8 GREEN: C2 layout-control tools must be
+    // registered in tool_defs() with correct schema shapes.
+    #[test]
+    fn tool_defs_registers_layout_control_tools() {
+        let defs = tool_defs();
+
+        // --- resize_panes ---
+        let rp = defs
+            .iter()
+            .find(|t| t.name == "resize_panes")
+            .expect("resize_panes must be present in tool_defs()");
+        assert_eq!(rp.input_schema["type"].as_str(), Some("object"),
+            "resize_panes: input_schema.type must be 'object'");
+        assert!(!rp.description.is_empty(), "resize_panes: description must be non-empty");
+        // All 5 pane properties must be present and typed as number
+        for dim in &["editorWidth", "sideWidth", "designTreeHeight", "propertyHeight", "constraintHeight"] {
+            assert_eq!(
+                rp.input_schema["properties"][dim]["type"].as_str(),
+                Some("number"),
+                "resize_panes: properties.{dim} must be 'number'",
+            );
+        }
+        // None of the pane properties should be required (all optional)
+        if let Some(required) = rp.input_schema["required"].as_array() {
+            let pane_dims = ["editorWidth", "sideWidth", "designTreeHeight", "propertyHeight", "constraintHeight"];
+            for dim in pane_dims {
+                assert!(
+                    !required.iter().any(|v| v.as_str() == Some(dim)),
+                    "resize_panes: '{dim}' must NOT be listed in required (all pane dims are optional)"
+                );
+            }
+        }
+
+        // --- set_window_size ---
+        let sws = defs
+            .iter()
+            .find(|t| t.name == "set_window_size")
+            .expect("set_window_size must be present in tool_defs()");
+        assert_eq!(sws.input_schema["type"].as_str(), Some("object"),
+            "set_window_size: input_schema.type must be 'object'");
+        assert!(!sws.description.is_empty(), "set_window_size: description must be non-empty");
+        assert_eq!(sws.input_schema["properties"]["width"]["type"].as_str(), Some("number"),
+            "set_window_size: properties.width.type must be 'number'");
+        assert_eq!(sws.input_schema["properties"]["height"]["type"].as_str(), Some("number"),
+            "set_window_size: properties.height.type must be 'number'");
+        let sws_required = sws.input_schema["required"]
+            .as_array()
+            .expect("set_window_size: required must be an array");
+        assert!(sws_required.iter().any(|v| v.as_str() == Some("width")),
+            "set_window_size: 'width' must be in required");
+        assert!(sws_required.iter().any(|v| v.as_str() == Some("height")),
+            "set_window_size: 'height' must be in required");
+
+        // --- expand_tree_node and collapse_tree_node ---
+        for tool_name in &["expand_tree_node", "collapse_tree_node"] {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == *tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(schema["type"].as_str(), Some("object"),
+                "{tool_name}: input_schema.type must be 'object'");
+            assert!(!entry.description.is_empty(),
+                "{tool_name}: description must be non-empty");
+            // path is required
+            assert_eq!(schema["properties"]["path"]["type"].as_str(), Some("string"),
+                "{tool_name}: properties.path.type must be 'string'");
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(required.iter().any(|v| v.as_str() == Some("path")),
+                "{tool_name}: 'path' must be listed in required");
+            // panel is optional
+            assert!(
+                !required.iter().any(|v| v.as_str() == Some("panel")),
+                "{tool_name}: 'panel' must NOT be listed in required (it is optional)"
+            );
+        }
+    }
+
+    // task-4302 step-9 RED → step-10 GREEN: capabilities/default.json must
+    // grant core:window:allow-set-size for set_window_size to work at runtime.
+    #[test]
+    fn capabilities_default_grants_window_set_size() {
+        const CAPS: &str = include_str!("../capabilities/default.json");
+        let v: serde_json::Value = serde_json::from_str(CAPS)
+            .expect("capabilities/default.json must be valid JSON");
+        let permissions = v["permissions"]
+            .as_array()
+            .expect("capabilities/default.json must have a 'permissions' array");
+        let perm_strings: Vec<&str> = permissions
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+
+        assert!(
+            perm_strings.contains(&"core:window:allow-set-size"),
+            "capabilities/default.json must grant 'core:window:allow-set-size' \
+             so that set_window_size's getCurrentWindow().setSize() call is \
+             authorized at runtime. Add it to the permissions array."
+        );
+        // Regression guard: the pre-existing core:window:default must still be present.
+        assert!(
+            perm_strings.contains(&"core:window:default"),
+            "capabilities/default.json must still contain 'core:window:default' \
+             (regression: do not replace it with core:window:allow-set-size)."
+        );
+    }
+
+    // task-4299 step-1 RED → step-2 GREEN: five synthetic-interaction tools must be
+    // registered in tool_defs() with the correct schema shapes.
+    // Schema-shape-only — NO description-prose pinning (convention at :1668-1670).
+    #[test]
+    fn tool_defs_registers_synthetic_interaction_tools() {
+        let defs = tool_defs();
+
+        // click_at and hover both require exactly ["x", "y"]
+        for tool_name in ["click_at", "hover"] {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("x")),
+                "{tool_name}: 'x' must be listed in required"
+            );
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("y")),
+                "{tool_name}: 'y' must be listed in required"
+            );
+        }
+
+        // drag requires ["from", "to"]
+        {
+            let tool_name = "drag";
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("from")),
+                "{tool_name}: 'from' must be listed in required"
+            );
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("to")),
+                "{tool_name}: 'to' must be listed in required"
+            );
+        }
+
+        // focus_element requires ["testId"]
+        {
+            let tool_name = "focus_element";
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name}: required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("testId")),
+                "{tool_name}: 'testId' must be listed in required"
+            );
+        }
+
+        // scroll has no required array or an empty one
+        {
+            let tool_name = "scroll";
+            let entry = defs
+                .iter()
+                .find(|t| t.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{tool_name}: input_schema.type must be 'object'"
+            );
+            assert!(
+                !entry.description.is_empty(),
+                "{tool_name}: description must be non-empty"
+            );
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{tool_name}: required array must be empty; got {required:?}"
+                );
+            }
+        }
+    }
+
+    // F2 step-5 RED → step-6 GREEN: hover_at / completion_at / definition_at must be
+    // registered in tool_defs() with an object schema that requires integer line + col.
+    // Mirroring viewport_aware_tools_expose_optional_viewport_id (table-driven so adding
+    // a fourth probe is a one-line change).
+    #[test]
+    fn lsp_probe_tools_expose_required_integer_line_col() {
+        let defs = tool_defs();
+        let probes = ["hover_at", "completion_at", "definition_at"];
+        for probe_name in probes {
+            let entry = defs
+                .iter()
+                .find(|t| t.name == probe_name)
+                .unwrap_or_else(|| panic!("{probe_name} must be present in tool_defs()"));
+            let schema = &entry.input_schema;
+
+            // input_schema.type must be "object"
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{probe_name}: input_schema.type must be 'object'"
+            );
+
+            // must have a non-empty description
+            assert!(
+                !entry.description.is_empty(),
+                "{probe_name}: description must be non-empty"
+            );
+
+            // properties.line.type and properties.col.type must be "integer"
+            assert_eq!(
+                schema["properties"]["line"]["type"].as_str(),
+                Some("integer"),
+                "{probe_name}: properties.line.type must be 'integer'"
+            );
+            assert_eq!(
+                schema["properties"]["col"]["type"].as_str(),
+                Some("integer"),
+                "{probe_name}: properties.col.type must be 'integer'"
+            );
+
+            // both line and col must appear in required
+            let required = schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{probe_name}: input_schema.required must be an array"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("line")),
+                "{probe_name}: 'line' must be listed in required"
+            );
+            assert!(
+                required.iter().any(|v| v.as_str() == Some("col")),
+                "{probe_name}: 'col' must be listed in required"
+            );
+        }
+    }
+
+    // task-4300 step-1 RED → step-2 GREEN: four I2 canvas-interaction tools must be
+    // registered in tool_defs() with correct schema shapes.
+    #[test]
+    fn tool_defs_registers_canvas_interaction_tools() {
+        let defs = tool_defs();
+
+        struct Expectation {
+            name: &'static str,
+            numeric_props: &'static [&'static str],
+        }
+        let tools = [
+            Expectation { name: "pick_entity_at", numeric_props: &["x", "y"] },
+            Expectation { name: "orbit_camera",   numeric_props: &["dazimuth", "delevation"] },
+            Expectation { name: "pan_camera",     numeric_props: &["dx", "dy"] },
+            Expectation { name: "zoom_camera",    numeric_props: &["scale"] },
+        ];
+
+        for t in &tools {
+            let entry = defs
+                .iter()
+                .find(|d| d.name == t.name)
+                .unwrap_or_else(|| panic!("{} must be present in tool_defs()", t.name));
+            let schema = &entry.input_schema;
+
+            // Non-empty description
+            assert!(
+                !entry.description.is_empty(),
+                "{}: description must be non-empty", t.name
+            );
+
+            // type == "object"
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "{}: input_schema.type must be 'object'", t.name
+            );
+
+            // All params are optional — required must be absent or empty
+            if let Some(required) = schema["required"].as_array() {
+                assert!(
+                    required.is_empty(),
+                    "{}: required must be absent or empty; got {:?}", t.name, required
+                );
+            }
+
+            // Tool-specific numeric properties
+            for prop in t.numeric_props {
+                assert_eq!(
+                    schema["properties"][prop]["type"].as_str(),
+                    Some("number"),
+                    "{}: properties.{}.type must be 'number'", t.name, prop
+                );
+            }
+        }
+    }
+
+    // --- F1: load_fixture ---
+
+    #[test]
+    fn tool_defs_registers_load_fixture() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|d| d.name == "load_fixture")
+            .expect("load_fixture must be present in tool_defs()");
+        let schema = &entry.input_schema;
+
+        // Non-empty description
+        assert!(
+            !entry.description.is_empty(),
+            "load_fixture: description must be non-empty"
+        );
+
+        // type == "object"
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "load_fixture: input_schema.type must be 'object'"
+        );
+
+        // "name" must be in required
+        let required = schema["required"]
+            .as_array()
+            .expect("load_fixture: input_schema.required must be an array");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("name")),
+            "load_fixture: 'name' must be listed in required; got {required:?}"
+        );
+
+        // "name" property must be a string
+        assert_eq!(
+            schema["properties"]["name"]["type"].as_str(),
+            Some("string"),
+            "load_fixture: properties.name.type must be 'string'"
+        );
+    }
+
+    #[test]
+    fn fixture_relpath_resolves_catalogue() {
+        // Known catalogue keys
+        let known = [
+            ("all_severities", "gui/test/fixtures/all_severities.ri"),
+            ("small_cube",     "gui/test/fixtures/small_cube.ri"),
+            ("empty",          "gui/test/fixtures/empty.ri"),
+            ("broken_syntax",  "gui/test/fixtures/broken_syntax.ri"),
+            ("large_assembly", "gui/test/fixtures/large_assembly.ri"),
+            ("overflow",       "gui/test/fixtures/overflow.ri"),
+        ];
+        for (name, expected_relpath) in known {
+            let result = fixture_relpath(name);
+            assert_eq!(
+                result.as_deref(),
+                Some(expected_relpath),
+                "fixture_relpath({name:?}) should return Some({expected_relpath:?}), got {result:?}"
+            );
+        }
+
+        // Unknown name must return None
+        let bogus = fixture_relpath("bogus_name");
+        assert_eq!(
+            bogus,
+            None,
+            "fixture_relpath(\"bogus_name\") should return None, got {bogus:?}"
+        );
+    }
+
+    // --- F1: element_screenshot ---
+
+    #[test]
+    fn tool_defs_registers_element_screenshot() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|d| d.name == "element_screenshot")
+            .expect("element_screenshot must be present in tool_defs()");
+        let schema = &entry.input_schema;
+
+        // Non-empty description
+        assert!(
+            !entry.description.is_empty(),
+            "element_screenshot: description must be non-empty"
+        );
+
+        // type == "object"
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "element_screenshot: input_schema.type must be 'object'"
+        );
+
+        // "testId" must be in required
+        let required = schema["required"]
+            .as_array()
+            .expect("element_screenshot: input_schema.required must be an array");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("testId")),
+            "element_screenshot: 'testId' must be listed in required; got {required:?}"
+        );
+
+        // "testId" property must be a string
+        assert_eq!(
+            schema["properties"]["testId"]["type"].as_str(),
+            Some("string"),
+            "element_screenshot: properties.testId.type must be 'string'"
+        );
+    }
+
+    #[test]
+    fn is_image_tool_recognizes_element_screenshot() {
+        assert!(
+            is_image_tool("element_screenshot"),
+            "element_screenshot must be recognised as an image tool"
+        );
+        // Regression: existing variants still pass
+        assert!(is_image_tool("screenshot"));
+        assert!(is_image_tool("screenshot_window"));
+        // Non-image tools must not match
+        assert!(!is_image_tool("health"));
+        assert!(!is_image_tool(""));
+    }
+
+    // --- F1: inject_diagnostics + reset_app_state ---
+
+    #[test]
+    fn tool_defs_registers_inject_diagnostics_and_reset_app_state() {
+        let defs = tool_defs();
+
+        // --- inject_diagnostics ---
+        let inject = defs
+            .iter()
+            .find(|d| d.name == "inject_diagnostics")
+            .expect("inject_diagnostics must be present in tool_defs()");
+        let inject_schema = &inject.input_schema;
+
+        // Non-empty description
+        assert!(
+            !inject.description.is_empty(),
+            "inject_diagnostics: description must be non-empty"
+        );
+
+        // type == "object"
+        assert_eq!(
+            inject_schema["type"].as_str(),
+            Some("object"),
+            "inject_diagnostics: input_schema.type must be 'object'"
+        );
+
+        // "diagnostics" property must be an array type
+        assert_eq!(
+            inject_schema["properties"]["diagnostics"]["type"].as_str(),
+            Some("array"),
+            "inject_diagnostics: properties.diagnostics.type must be 'array'"
+        );
+
+        // --- reset_app_state ---
+        let reset = defs
+            .iter()
+            .find(|d| d.name == "reset_app_state")
+            .expect("reset_app_state must be present in tool_defs()");
+        let reset_schema = &reset.input_schema;
+
+        // Non-empty description
+        assert!(
+            !reset.description.is_empty(),
+            "reset_app_state: description must be non-empty"
+        );
+
+        // type == "object"
+        assert_eq!(
+            reset_schema["type"].as_str(),
+            Some("object"),
+            "reset_app_state: input_schema.type must be 'object'"
+        );
+
+        // required must be absent or empty (no required params)
+        let has_nonempty_required = reset_schema["required"]
+            .as_array()
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false);
+        assert!(
+            !has_nonempty_required,
+            "reset_app_state: required must be absent or empty; got {:?}",
+            reset_schema["required"]
+        );
     }
 }

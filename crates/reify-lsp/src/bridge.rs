@@ -93,7 +93,9 @@ impl InProcessLsp {
     ///
     /// - **`Ok(Value)`** — A JSON-serialized response payload for successful *requests*:
     ///   `initialize`, `textDocument/completion`, `textDocument/hover`,
-    ///   `textDocument/definition`.
+    ///   `textDocument/definition`, `textDocument/documentSymbol`,
+    ///   `textDocument/documentHighlight`, `textDocument/prepareRename`,
+    ///   `textDocument/rename`.
     /// - **`Ok(Value::Null)`** — For successfully processed *notifications* and `shutdown`:
     ///   `initialized`, `textDocument/didOpen`, `textDocument/didChange`,
     ///   `textDocument/didClose`, `shutdown`.
@@ -193,6 +195,47 @@ impl InProcessLsp {
                     .map_err(|e| format!("definition error: {e}"))?;
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
+            "textDocument/documentSymbol" => {
+                let p = parse_params::<DocumentSymbolParams>(
+                    params,
+                    error_prefix::DOCUMENT_SYMBOL_PARAMS,
+                )?;
+                let result = server
+                    .document_symbol(p)
+                    .await
+                    .map_err(|e| format!("documentSymbol error: {e}"))?;
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+            }
+            "textDocument/documentHighlight" => {
+                let p = parse_params::<DocumentHighlightParams>(
+                    params,
+                    error_prefix::DOCUMENT_HIGHLIGHT_PARAMS,
+                )?;
+                let result = server
+                    .document_highlight(p)
+                    .await
+                    .map_err(|e| format!("documentHighlight error: {e}"))?;
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+            }
+            "textDocument/prepareRename" => {
+                let p = parse_params::<TextDocumentPositionParams>(
+                    params,
+                    error_prefix::PREPARE_RENAME_PARAMS,
+                )?;
+                let result = server
+                    .prepare_rename(p)
+                    .await
+                    .map_err(|e| format!("prepareRename error: {e}"))?;
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+            }
+            "textDocument/rename" => {
+                let p = parse_params::<RenameParams>(params, error_prefix::RENAME_PARAMS)?;
+                let result = server
+                    .rename(p)
+                    .await
+                    .map_err(|e| format!("rename error: {e}"))?;
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+            }
             "shutdown" => {
                 server
                     .shutdown()
@@ -224,7 +267,7 @@ impl Default for InProcessLsp {
 /// import reflects the change automatically, turning any stale assertion into
 /// a compile error or immediate test failure.
 ///
-/// All eight deserializing arms of `handle_request` thread their error prefix
+/// Every deserializing arm of `handle_request` threads its error prefix
 /// through a constant defined here. There are no remaining hardcoded strings
 /// in the implementation.
 pub mod error_prefix {
@@ -252,6 +295,18 @@ pub mod error_prefix {
     /// Prefix for deserialization failures on `textDocument/definition` params.
     pub const DEFINITION_PARAMS: &str = "definition params error";
 
+    /// Prefix for deserialization failures on `textDocument/documentSymbol` params.
+    pub const DOCUMENT_SYMBOL_PARAMS: &str = "documentSymbol params error";
+
+    /// Prefix for deserialization failures on `textDocument/documentHighlight` params.
+    pub const DOCUMENT_HIGHLIGHT_PARAMS: &str = "documentHighlight params error";
+
+    /// Prefix for deserialization failures on `textDocument/prepareRename` params.
+    pub const PREPARE_RENAME_PARAMS: &str = "prepareRename params error";
+
+    /// Prefix for deserialization failures on `textDocument/rename` params.
+    pub const RENAME_PARAMS: &str = "rename params error";
+
     /// Prefix used when an unrecognised LSP method name is requested.
     ///
     /// The full error message is `"{UNSUPPORTED_METHOD} {method_name}"`.
@@ -277,6 +332,310 @@ mod tests {
             err.contains(error_prefix::INITIALIZE_PARAMS),
             "error should contain '{}', got: {err}",
             error_prefix::INITIALIZE_PARAMS
+        );
+    }
+
+    // --- task 4207 η: SIGNAL TEST — documentSymbol through the bridge ---
+
+    /// Recursively assert every symbol's `selection_range` lies within its
+    /// `range` (LSP requires `selection_range ⊆ range`).
+    fn assert_selection_within_range(syms: &[DocumentSymbol]) {
+        for s in syms {
+            let r = &s.range;
+            let sr = &s.selection_range;
+            assert!(
+                (sr.start.line, sr.start.character) >= (r.start.line, r.start.character)
+                    && (sr.end.line, sr.end.character) <= (r.end.line, r.end.character),
+                "selection_range {sr:?} not within range {r:?} for symbol {}",
+                s.name
+            );
+            if let Some(children) = &s.children {
+                assert_selection_within_range(children);
+            }
+        }
+    }
+
+    /// End-to-end signal for task 4207 η: the GUI `lsp_request` Tauri command
+    /// dispatches through `InProcessLsp::handle_request`, so the consumer
+    /// θ/4208 (command-palette symbol-jump) can only reach the provider if the
+    /// bridge has a `textDocument/documentSymbol` arm. This drives a
+    /// comprehensive fixture through that exact path and asserts the full
+    /// hierarchical symbol tree.
+    #[tokio::test]
+    async fn handle_request_document_symbol_returns_hierarchical_symbols() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///signal.ri";
+        let source = "\
+import std.math
+structure Bracket {
+    param width : Scalar = 80mm
+    let footprint = width * width
+}
+occurrence def Joint {
+    param diameter : Scalar = 10mm
+}
+trait Rigid {
+    param mass : Scalar = 5mm
+}
+enum Shape {
+    Point,
+    Circle
+}
+fn area(w : Scalar) -> Scalar { w }
+";
+
+        lsp.handle_request(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "reify",
+                    "version": 1,
+                    "text": source
+                }
+            }),
+        )
+        .await
+        .expect("didOpen should succeed");
+
+        let value = lsp
+            .handle_request(
+                "textDocument/documentSymbol",
+                json!({ "textDocument": { "uri": uri } }),
+            )
+            .await
+            .expect("documentSymbol request should reach the provider via the bridge");
+
+        let response: DocumentSymbolResponse = serde_json::from_value(value)
+            .expect("response should deserialize as DocumentSymbolResponse");
+        let symbols = match response {
+            DocumentSymbolResponse::Nested(s) => s,
+            DocumentSymbolResponse::Flat(_) => panic!("expected Nested document symbols"),
+        };
+
+        // `import std.math` is excluded; the 5 navigable top-level declarations
+        // remain in source order with their mapped kinds.
+        let top: Vec<(&str, SymbolKind)> =
+            symbols.iter().map(|s| (s.name.as_str(), s.kind)).collect();
+        assert_eq!(
+            top,
+            vec![
+                ("Bracket", SymbolKind::STRUCT),
+                ("Joint", SymbolKind::CLASS),
+                ("Rigid", SymbolKind::INTERFACE),
+                ("Shape", SymbolKind::ENUM),
+                ("area", SymbolKind::FUNCTION),
+            ],
+            "top-level symbols (import excluded) in source order"
+        );
+
+        // Structure children: param → FIELD, let → VARIABLE.
+        let bracket_children = symbols[0]
+            .children
+            .as_ref()
+            .expect("Bracket should have member children");
+        let bc: Vec<(&str, SymbolKind)> = bracket_children
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind))
+            .collect();
+        assert_eq!(
+            bc,
+            vec![
+                ("width", SymbolKind::FIELD),
+                ("footprint", SymbolKind::VARIABLE),
+            ],
+            "Bracket children: width FIELD then footprint VARIABLE"
+        );
+
+        // Enum children: the two variants as ENUM_MEMBER in source order.
+        let shape_children = symbols[3]
+            .children
+            .as_ref()
+            .expect("Shape should have variant children");
+        let sc: Vec<(&str, SymbolKind)> = shape_children
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind))
+            .collect();
+        assert_eq!(
+            sc,
+            vec![
+                ("Point", SymbolKind::ENUM_MEMBER),
+                ("Circle", SymbolKind::ENUM_MEMBER),
+            ],
+            "Shape variants: Point then Circle as ENUM_MEMBER"
+        );
+
+        // LSP invariant across the whole tree: selection_range ⊆ range.
+        assert_selection_within_range(&symbols);
+    }
+
+    // --- task 4203 γ: SIGNAL TESTS — prepareRename/rename through the bridge ---
+    //
+    // The GUI reaches the rename surface only through the Tauri `lsp_request`
+    // command -> `InProcessLsp::handle_request`, which dispatches strictly by
+    // method name. Without the "textDocument/prepareRename" and
+    // "textDocument/rename" arms the GUI would get Err("unsupported LSP
+    // method: …"); these drive the canonical bracket fixture through that exact
+    // path. Positions match the server-handler tests (width use at line 7
+    // col 17; `structure` keyword at line 0 col 0).
+
+    async fn open_bracket(lsp: &InProcessLsp, uri: &str) {
+        lsp.handle_request(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "reify",
+                    "version": 1,
+                    "text": reify_test_support::bracket_source()
+                }
+            }),
+        )
+        .await
+        .expect("didOpen should succeed");
+    }
+
+    #[tokio::test]
+    async fn handle_request_prepare_rename_returns_target_for_width() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///rename.ri";
+        open_bracket(&lsp, uri).await;
+
+        let value = lsp
+            .handle_request(
+                "textDocument/prepareRename",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 7, "character": 17 }
+                }),
+            )
+            .await
+            .expect("prepareRename request should reach the provider via the bridge");
+
+        let response: PrepareRenameResponse = serde_json::from_value(value)
+            .expect("response should deserialize as PrepareRenameResponse");
+        match response {
+            PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. } => {
+                assert_eq!(placeholder, "width", "placeholder is the current name");
+            }
+            other => panic!("expected RangeWithPlaceholder for a width use, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_request_prepare_rename_refuses_keyword_returns_null() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///rename.ri";
+        open_bracket(&lsp, uri).await;
+
+        // 'structure' keyword at line 0, col 0 — Invariant 4 refusal. The
+        // handler's Ok(None) serializes to JSON null so the editor refuses.
+        let value = lsp
+            .handle_request(
+                "textDocument/prepareRename",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 0 }
+                }),
+            )
+            .await
+            .expect("prepareRename on a keyword should succeed with a null payload");
+
+        assert_eq!(
+            value,
+            Value::Null,
+            "a non-renameable position serializes to null (editor refuses)"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_request_rename_returns_workspace_edit_with_four_changes() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///rename.ri";
+        open_bracket(&lsp, uri).await;
+
+        let value = lsp
+            .handle_request(
+                "textDocument/rename",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 7, "character": 17 },
+                    "newName": "girth"
+                }),
+            )
+            .await
+            .expect("rename request should reach the provider via the bridge");
+
+        let edit: WorkspaceEdit =
+            serde_json::from_value(value).expect("response should deserialize as WorkspaceEdit");
+        let changes = edit.changes.expect("rename edit should carry changes");
+        let parsed_uri = Url::parse(uri).unwrap();
+        let edits = changes
+            .get(&parsed_uri)
+            .expect("edits keyed by the document uri");
+        assert_eq!(edits.len(), 4, "bracket fixture: 1 decl + 3 uses of width");
+        assert!(
+            edits.iter().all(|e| e.new_text == "girth"),
+            "every edit writes the new name"
+        );
+    }
+
+    // --- task 4204 δ: SIGNAL TEST — documentHighlight through the bridge ---
+    //
+    // The GUI reaches the occurrence-highlight provider ONLY through the Tauri
+    // `lsp_request` command -> `InProcessLsp::handle_request`, dispatched strictly
+    // by method name. Without the "textDocument/documentHighlight" arm the GUI
+    // would get Err("unsupported LSP method: …"); this drives the canonical
+    // bracket fixture through that exact path. Positions match the server-handler
+    // tests (width use at line 7 col 17; `structure` keyword at line 0 col 0).
+
+    #[tokio::test]
+    async fn handle_request_document_highlight_returns_text_highlights() {
+        let lsp = InProcessLsp::new();
+        let uri = "file:///highlight.ri";
+        open_bracket(&lsp, uri).await;
+
+        let value = lsp
+            .handle_request(
+                "textDocument/documentHighlight",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 7, "character": 17 }
+                }),
+            )
+            .await
+            .expect("documentHighlight request should reach the provider via the bridge");
+
+        let highlights: Vec<DocumentHighlight> = serde_json::from_value(value)
+            .expect("response should deserialize as Vec<DocumentHighlight>");
+        assert_eq!(
+            highlights.len(),
+            4,
+            "bracket fixture: 1 decl + 3 uses of width"
+        );
+        assert!(
+            highlights
+                .iter()
+                .all(|h| h.kind == Some(DocumentHighlightKind::TEXT)),
+            "every occurrence highlight is kind TEXT, got {highlights:?}"
+        );
+
+        // A non-resolvable position (the `structure` keyword at line 0 col 0)
+        // yields Ok(None), which serializes to JSON null (no occurrences).
+        let null_value = lsp
+            .handle_request(
+                "textDocument/documentHighlight",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 0 }
+                }),
+            )
+            .await
+            .expect("documentHighlight on a keyword should succeed with a null payload");
+        assert_eq!(
+            null_value,
+            Value::Null,
+            "a non-resolvable position serializes to null (no occurrences)"
         );
     }
 }

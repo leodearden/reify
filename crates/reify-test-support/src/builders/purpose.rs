@@ -115,6 +115,10 @@ impl CompiledPurposeBuilder {
             content_hash,
             annotations: self.annotations,
             pragmas: Vec::new(),
+            // Test-support builder purposes are synthetic (not parsed from a source
+            // file), so use a zero-span as a benign placeholder. The prelude sentinel
+            // (u32::MAX / u32::MAX) is reserved for prelude-merged purposes only.
+            declaration_span: reify_core::SourceSpan::new(0, 0),
         }
     }
 }

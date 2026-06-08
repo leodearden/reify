@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, within } from '@solidjs/testing-library';
-import { createRoot } from 'solid-js';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { render, screen, fireEvent, within, waitFor } from '@solidjs/testing-library';
+import { createRoot, createSignal } from 'solid-js';
 import { DesignTree } from '../panels/DesignTree';
 import { createViewStateStore } from '../stores/viewStateStore';
 import type { EntityTreeNode } from '../types';
@@ -1013,5 +1013,379 @@ describe('DesignTree — freshness badge', () => {
     // Click the row (not the badge itself) — onSelect should still fire
     fireEvent.click(screen.getByTestId('tree-row-Root.A'));
     expect(onSelect).toHaveBeenCalledWith('Root.A', expect.objectContaining({ ctrl: false, shift: false }));
+  });
+});
+
+describe('DesignTree — reverse hover highlight (Edge B)', () => {
+  it('hoveredEntity="Root.A" sets data-hovered="true" on Root.A row and not Root.B', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} hoveredEntity="Root.A" />
+    ));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-hovered')).toBe('true');
+    expect(screen.getByTestId('tree-row-Root.B').getAttribute('data-hovered')).toBeNull();
+  });
+
+  it('hoveredEntity="Root.A" adds the hovered CSS class to the matching row', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} hoveredEntity="Root.A" />
+    ));
+    const row = screen.getByTestId('tree-row-Root.A');
+    // The .hovered class should be present (CSS module will mangle the name; check via data-hovered)
+    expect(row.getAttribute('data-hovered')).toBe('true');
+    // classList should contain some hovered class (the CSS module mangled name)
+    expect(Array.from(row.classList).some((c) => c.includes('hovered'))).toBe(true);
+  });
+
+  it('hoveredEntity={null} sets no data-hovered on any row', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} hoveredEntity={null} />
+    ));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-hovered')).toBeNull();
+  });
+
+  it('hoveredEntity prop omitted sets no data-hovered on any row', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} />
+    ));
+    expect(screen.getByTestId('tree-row-Root.A').getAttribute('data-hovered')).toBeNull();
+  });
+});
+
+describe('DesignTree — eye-icon title', () => {
+  it('eye-icon button has a title attribute containing "Visibility" and "cycle"', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const eyeBtn = screen.getByTestId('eye-icon-Root.A');
+    const title = eyeBtn.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('visibility');
+    expect(title.toLowerCase()).toContain('cycle');
+  });
+
+  it('eye-icon title includes current effective status', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const eyeBtn = screen.getByTestId('eye-icon-Root.A');
+    // Default effective is 'show' — title should mention it
+    const title = eyeBtn.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('show');
+  });
+
+  it('eye-icon existing aria-label still equals effective status (unchanged contract)', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const eyeBtn = screen.getByTestId('eye-icon-Root.A');
+    expect(eyeBtn.getAttribute('aria-label')).toBe('show');
+  });
+});
+
+describe('DesignTree — chevron affordance', () => {
+  it('collapsed chevron has aria-label and title containing "Expand"', () => {
+    const nodes = [
+      makeNode({
+        entity_path: 'Root.A',
+        children: [makeNode({ entity_path: 'Root.A.a1' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const chevron = screen.getByTestId('chevron-Root.A');
+    expect(chevron.getAttribute('aria-label')).toMatch(/expand/i);
+    expect(chevron.getAttribute('title')).toMatch(/expand/i);
+  });
+
+  it('expanded chevron has aria-label and title containing "Collapse"', () => {
+    const nodes = [
+      makeNode({
+        entity_path: 'Root.A',
+        children: [makeNode({ entity_path: 'Root.A.a1' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    const chevron = screen.getByTestId('chevron-Root.A');
+    fireEvent.click(chevron);
+    expect(chevron.getAttribute('aria-label')).toMatch(/collapse/i);
+    expect(chevron.getAttribute('title')).toMatch(/collapse/i);
+  });
+});
+
+describe('DesignTree — hover sync', () => {
+  it('mouseEnter on a row calls onHover with the entity path', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onHover = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onHover={onHover} />
+    ));
+    fireEvent.mouseEnter(screen.getByTestId('tree-row-Root.A'));
+    expect(onHover).toHaveBeenCalledWith('Root.A');
+  });
+
+  it('mouseLeave on a row calls onHover with null', () => {
+    const nodes = [makeNode({ entity_path: 'Root.A' })];
+    const store = makeStore(nodes);
+    const onHover = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onHover={onHover} />
+    ));
+    fireEvent.mouseLeave(screen.getByTestId('tree-row-Root.A'));
+    expect(onHover).toHaveBeenCalledWith(null);
+  });
+
+  it('mouseEnter/Leave on multiple rows each call onHover with correct path / null', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A' }),
+      makeNode({ entity_path: 'Root.B' }),
+    ];
+    const store = makeStore(nodes);
+    const onHover = vi.fn();
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} onHover={onHover} />
+    ));
+    fireEvent.mouseEnter(screen.getByTestId('tree-row-Root.A'));
+    expect(onHover).toHaveBeenLastCalledWith('Root.A');
+    fireEvent.mouseLeave(screen.getByTestId('tree-row-Root.A'));
+    expect(onHover).toHaveBeenLastCalledWith(null);
+    fireEvent.mouseEnter(screen.getByTestId('tree-row-Root.B'));
+    expect(onHover).toHaveBeenLastCalledWith('Root.B');
+  });
+});
+
+describe('DesignTree — selected-row reveal', () => {
+  let scrollSpy: ReturnType<typeof vi.fn>;
+
+  afterEach(() => {
+    // Restore the original (no-op or undefined) prototype method after each test.
+    // This ensures the spy does not leak between tests.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (Element.prototype as any).scrollIntoView;
+  });
+
+  it('(a) auto-expand: rendering with a deep selectedEntity reveals the row', () => {
+    // Build Root > A > a1 (starts fully collapsed)
+    const nodes = [
+      makeNode({
+        entity_path: 'Root',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            children: [makeNode({ entity_path: 'Root.A.a1' })],
+          }),
+        ],
+      }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} selectedEntity="Root.A.a1" />
+    ));
+    // The deep row must be visible (ancestors auto-expanded)
+    expect(screen.getByTestId('tree-row-Root.A.a1')).toBeTruthy();
+  });
+
+  it('(b) scrollIntoView: called on the selected row with { block: "nearest" }', async () => {
+    // Track which element's scrollIntoView was called via `this` context.
+    const scrolledElements: Element[] = [];
+    scrollSpy = vi.fn(function (this: Element, ...args: unknown[]) {
+      scrolledElements.push(this);
+      void args;
+    });
+    Element.prototype.scrollIntoView = scrollSpy;
+
+    const nodes = [
+      makeNode({
+        entity_path: 'Root',
+        children: [
+          makeNode({
+            entity_path: 'Root.A',
+            children: [makeNode({ entity_path: 'Root.A.a1' })],
+          }),
+        ],
+      }),
+    ];
+    const store = makeStore(nodes);
+    render(() => (
+      <DesignTree tree={nodes} viewStateStore={store} selectedEntity="Root.A.a1" />
+    ));
+    // The scroll must have used the correct options.
+    await waitFor(() =>
+      expect(scrollSpy).toHaveBeenCalledWith({ block: 'nearest' }),
+    );
+    // The element that was scrolled must be the selected row itself.
+    const row = screen.getByTestId('tree-row-Root.A.a1');
+    expect(scrolledElements).toContain(row);
+  });
+
+  it('(c) reactivity: switching selectedEntity to a different collapsed branch reveals new row', async () => {
+    // Two separate subtrees, each initially collapsed
+    const nodes = [
+      makeNode({
+        entity_path: 'Root.A',
+        children: [makeNode({ entity_path: 'Root.A.a1' })],
+      }),
+      makeNode({
+        entity_path: 'Root.B',
+        children: [makeNode({ entity_path: 'Root.B.b1' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    const [selectedEntity, setSelectedEntity] = createSignal<string>('Root.A.a1');
+
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntity={selectedEntity()}
+      />
+    ));
+
+    // First selection: Root.A.a1 should be visible
+    expect(screen.getByTestId('tree-row-Root.A.a1')).toBeTruthy();
+
+    // Switch to the other branch
+    setSelectedEntity('Root.B.b1');
+    await waitFor(() => expect(screen.queryByTestId('tree-row-Root.B.b1')).toBeTruthy());
+  });
+
+  it('(d) additive-only: a manually-expanded sibling branch stays expanded when selectedEntity moves', async () => {
+    // Branch B is manually expanded by the user, branch A is selected.
+    // Switching selection to A should expand A's ancestors but NOT collapse B.
+    const nodes = [
+      makeNode({
+        entity_path: 'Root.A',
+        children: [makeNode({ entity_path: 'Root.A.a1' })],
+      }),
+      makeNode({
+        entity_path: 'Root.B',
+        children: [makeNode({ entity_path: 'Root.B.b1' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    const [selectedEntity, setSelectedEntity] = createSignal<string | null>(null);
+
+    render(() => (
+      <DesignTree
+        tree={nodes}
+        viewStateStore={store}
+        selectedEntity={selectedEntity()}
+      />
+    ));
+
+    // Manually expand Root.B via chevron click
+    fireEvent.click(screen.getByTestId('chevron-Root.B'));
+    expect(screen.getByTestId('tree-row-Root.B.b1')).toBeTruthy();
+
+    // Now select something deep in branch A — this should expand Root.A
+    setSelectedEntity('Root.A.a1');
+    await waitFor(() => expect(screen.queryByTestId('tree-row-Root.A.a1')).toBeTruthy());
+
+    // Root.B.b1 must still be visible (manual expand was NOT collapsed)
+    expect(screen.getByTestId('tree-row-Root.B.b1')).toBeTruthy();
+  });
+
+  it('(e) root-node selected: no throw, no extra expansion', () => {
+    // Selecting a root node has no ancestors — the effect should be a no-op
+    // (no expansion changes, no error thrown).
+    const nodes = [
+      makeNode({
+        entity_path: 'Root',
+        children: [makeNode({ entity_path: 'Root.A' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    // Root is a top-level node: findAncestorPaths returns []
+    expect(() =>
+      render(() => (
+        <DesignTree tree={nodes} viewStateStore={store} selectedEntity="Root" />
+      )),
+    ).not.toThrow();
+    // Root.A must remain hidden (the root has no expandable ancestors)
+    expect(screen.queryByTestId('tree-row-Root.A')).toBeNull();
+  });
+
+  it('(f) non-existent selectedEntity: no throw, no expansion', () => {
+    const nodes = [
+      makeNode({
+        entity_path: 'Root',
+        children: [makeNode({ entity_path: 'Root.A' })],
+      }),
+    ];
+    const store = makeStore(nodes);
+    expect(() =>
+      render(() => (
+        <DesignTree
+          tree={nodes}
+          viewStateStore={store}
+          selectedEntity="Root.DoesNotExist.missing"
+        />
+      )),
+    ).not.toThrow();
+    // No ancestor expansion occurred for a missing path
+    expect(screen.queryByTestId('tree-row-Root.A')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-4295: DesignTree expanded ctx exposure
+// ---------------------------------------------------------------------------
+
+describe('DesignTree — expanded ctx exposure', () => {
+  beforeEach(() => {
+    (window as any).__REIFY_DEBUG__ = { stores: {} as any };
+  });
+  afterEach(() => {
+    delete (window as any).__REIFY_DEBUG__;
+  });
+
+  it('registers designTree.expanded as a function on __REIFY_DEBUG__ after render', () => {
+    const store = makeStore([]);
+    render(() => <DesignTree tree={[]} viewStateStore={store} />);
+    expect(typeof (window as any).__REIFY_DEBUG__.designTree?.expanded).toBe('function');
+  });
+
+  it('expanded() returns an empty Set initially', () => {
+    const store = makeStore([]);
+    render(() => <DesignTree tree={[]} viewStateStore={store} />);
+    const expanded = (window as any).__REIFY_DEBUG__.designTree.expanded();
+    expect(expanded instanceof Set).toBe(true);
+    expect(expanded.size).toBe(0);
+  });
+
+  it('expanded() reflects chevron click — contains entity path after toggle', () => {
+    const nodes = [
+      makeNode({ entity_path: 'Root.A', children: [makeNode({ entity_path: 'Root.A.a1' })] }),
+    ];
+    const store = makeStore(nodes);
+    render(() => <DesignTree tree={nodes} viewStateStore={store} />);
+    fireEvent.click(screen.getByTestId('chevron-Root.A'));
+    expect((window as any).__REIFY_DEBUG__.designTree.expanded().has('Root.A')).toBe(true);
+  });
+
+  it('deletes designTree on unmount', () => {
+    const store = makeStore([]);
+    const { unmount } = render(() => <DesignTree tree={[]} viewStateStore={store} />);
+    unmount();
+    expect((window as any).__REIFY_DEBUG__.designTree).toBeUndefined();
+  });
+});
+
+describe('DesignTree — no-ctx guard', () => {
+  it('renders without throwing when __REIFY_DEBUG__ is absent', () => {
+    delete (window as any).__REIFY_DEBUG__;
+    const store = makeStore([]);
+    expect(() => render(() => <DesignTree tree={[]} viewStateStore={store} />)).not.toThrow();
   });
 });

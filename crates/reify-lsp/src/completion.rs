@@ -121,24 +121,40 @@ fn starts_with_decl_keyword(trimmed: &str) -> bool {
 /// - DotAccess: member names only
 /// - TypePosition: type names and structure names only
 pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<CompletionItem> {
-    let mut items = Vec::new();
     let ctx = AnalysisContext::new(source, uri);
-    let cursor_ctx = determine_context(source, position, &ctx);
+    compute_completions_in_context(&ctx, source, position)
+}
+
+/// Compute completion items for `position` using a pre-built [`AnalysisContext`].
+///
+/// This is the injectable core shared by the per-request wrapper
+/// [`compute_completions`] and the server's cache-fed path: the server builds
+/// the context once from the per-document parse cache (one parse per edit) and
+/// calls this directly, while the wrapper builds a fresh context per call.
+/// Context classification ([`determine_context`]) depends only on `source` +
+/// `position` + the supplied context.
+pub fn compute_completions_in_context(
+    ctx: &AnalysisContext,
+    source: &str,
+    position: Position,
+) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    let cursor_ctx = determine_context(source, position, ctx);
 
     match cursor_ctx {
         CursorContext::TopLevel => {
             push_keywords(&mut items, TOP_LEVEL_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
-            push_entity_names(&mut items, &ctx);
+            push_entity_names(&mut items, ctx);
         }
         CursorContext::StructureBody { ref structure_name } => {
             push_keywords(&mut items, BODY_KEYWORDS);
             push_keywords(&mut items, EXPR_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
-            push_scoped_members(&mut items, &ctx, structure_name);
-            push_entity_names(&mut items, &ctx);
+            push_scoped_members(&mut items, ctx, structure_name);
+            push_entity_names(&mut items, ctx);
         }
         CursorContext::Expression {
             ref structure_name, ..
@@ -147,19 +163,19 @@ pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<C
             push_builtins(&mut items);
             push_type_names(&mut items);
             if let Some(name) = structure_name {
-                push_scoped_members(&mut items, &ctx, name);
+                push_scoped_members(&mut items, ctx, name);
             } else {
-                push_all_members(&mut items, &ctx);
+                push_all_members(&mut items, ctx);
             }
-            push_entity_names(&mut items, &ctx);
+            push_entity_names(&mut items, ctx);
         }
         CursorContext::DotAccess => {
-            push_all_members(&mut items, &ctx);
+            push_all_members(&mut items, ctx);
             push_complex_methods(&mut items);
         }
         CursorContext::TypePosition => {
             push_type_names(&mut items);
-            push_entity_names(&mut items, &ctx);
+            push_entity_names(&mut items, ctx);
         }
     }
 
@@ -791,6 +807,37 @@ mod tests {
     }
 
     const GUARDED_GROUP_SOURCE: &str = "structure S {\n    param cond : Bool = true\n    where cond {\n        param guarded_x : Scalar = 5mm\n    }\n}";
+
+    // --- step-07: injectable completion core over a shared AnalysisContext ---
+
+    /// `compute_completions_in_context`, fed a context built from a shared
+    /// parse, must return completion items identical to the
+    /// `compute_completions` wrapper — proving the cache-fed core path is
+    /// output-equivalent to the per-request path.
+    #[test]
+    fn compute_completions_in_context_matches_wrapper() {
+        let source = reify_test_support::bracket_source();
+        let uri = test_uri();
+        let position = Position::new(1, 0); // inside the structure body
+
+        let parsed = std::sync::Arc::new(reify_compiler::parse_with_stdlib(
+            source,
+            reify_core::ModulePath::single("test"),
+        ));
+        let ctx = AnalysisContext::from_parsed(parsed);
+
+        let via_context = compute_completions_in_context(&ctx, source, position);
+        let via_wrapper = compute_completions(source, &uri, position);
+
+        assert!(
+            !via_context.is_empty(),
+            "in-context completions should be non-empty in a structure body"
+        );
+        assert_eq!(
+            via_context, via_wrapper,
+            "in-context completions must match the wrapper output"
+        );
+    }
 
     // --- step-9: completion tests ---
 

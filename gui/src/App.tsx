@@ -25,18 +25,21 @@ import type { DiagnosticEntry } from './panels';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
-import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { CommandPalette } from './components/CommandPalette';
+import { useKeyboardShortcuts, paletteCommands, runCommand } from './hooks/useKeyboardShortcuts';
+import { createLspClient } from './editor/lspClient';
 import { createEngineStore } from './stores/engineStore';
 import { createEditorStore } from './stores/editorStore';
 import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore } from './stores/viewStateStore';
+import { createLayoutStore } from './stores/layoutStore';
 import { createViewportStore, type CameraState } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
-import { createEditorSelectionSync } from './hooks/useEditorSelectionSync';
+import { createEditorSelectionSync, createEditorHoverSync } from './hooks/useEditorSelectionSync';
 import {
   getInitialState,
   getEntityTree as bridgeGetEntityTree,
@@ -83,7 +86,7 @@ import {
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from './editor/messages';
-import { loadPanelLayout, savePanelLayout, clampPanelHeightsToFit } from './hooks/useLayoutPersistence';
+import { clampPanelHeightsToFit } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
 import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from './stores/viewPersistence';
@@ -94,11 +97,6 @@ import styles from './App.module.css';
 export const NEW_FILE_TEMPLATE = '// New design\n';
 const MIN_PANEL_WIDTH = 150;
 const MIN_PANEL_HEIGHT = 80;
-const DEFAULT_EDITOR_WIDTH = 300;
-const DEFAULT_SIDE_WIDTH = 300;
-const DEFAULT_DESIGN_TREE_HEIGHT = 160;
-const DEFAULT_PROPERTY_HEIGHT = 200;
-const DEFAULT_CONSTRAINT_HEIGHT = 140;
 const CHAT_MIN_HEIGHT = 160;
 const SPLITTER_THICKNESS = 4;
 
@@ -107,9 +105,19 @@ let toastIdCounter = 0;
 const App: Component = () => {
   const editorStore = createEditorStore();
   const selectionStore = createSelectionStore();
+  // Epoch counter: incremented once per engine (re)initialization so that any
+  // in-flight bridgeGetEntityTree() fetch that was issued before the latest
+  // engine load is recognized as stale when its .then resolves and dropped.
+  // This is the epoch/staleness guard described in the refreshEntityTree comment.
+  let engineLoadEpoch = 0;
+
   const engineStore = createEngineStore({
     onEntityRemoved: (id) => selectionStore.clearIfRemoved(id),
     onEngineReinitialized: () => {
+      // Bump the epoch BEFORE calling refreshEntityTree so the fresh fetch
+      // captures the new epoch value; any still-pending pre-reinit fetch
+      // will see a mismatch and be dropped.
+      engineLoadEpoch += 1;
       refreshEntityTree();
       mechanismStore.refresh().catch((err) =>
         console.error('[mechanism] refresh failed:', err),
@@ -247,15 +255,43 @@ const App: Component = () => {
     debounceMs: 200,
   });
 
+  // Deduplicate concurrent in-flight getEntityAtSourceLocation calls for the same
+  // (line, col): both createEditorSelectionSync and createEditorHoverSync debounce at
+  // 200ms and fire back-to-back after each cursor change. Sharing the same in-flight
+  // Promise halves the IPC round-trips — the second hook joins the first Promise
+  // rather than issuing a redundant bridge call. Entries are cleared in .finally()
+  // so the cache never holds stale results across distinct cursor positions.
+  const _pendingEntityResolves = new Map<string, Promise<string | null>>();
+  function sharedGetEntityAtSourceLocation(line: number, col: number): Promise<string | null> {
+    const key = `${line}:${col}`;
+    const inflight = _pendingEntityResolves.get(key);
+    if (inflight !== undefined) return inflight;
+    const promise = bridgeGetEntityAtSourceLocation(line, col).finally(() => {
+      _pendingEntityResolves.delete(key);
+    });
+    _pendingEntityResolves.set(key, promise);
+    return promise;
+  }
+
   // Editor→entity sync: watches editor cursor → debounces 200ms → resolves entity
   // at cursor position → updates selectionStore + flies to entity in viewport.
   // Equality-check guard prevents viewport-click → editor-scroll → cursor-move bounce.
   createEditorSelectionSync({
     editorStore,
     selectionStore,
-    getEntityAtSourceLocation: bridgeGetEntityAtSourceLocation,
+    getEntityAtSourceLocation: sharedGetEntityAtSourceLocation,
     selectEntity: (ep) => selectionStore.selectEntity(ep),
     flyToEntity: (ep) => flyToEntityFn?.(ep),
+    debounceMs: 200,
+  });
+
+  // Editor→hover sync: watches editor cursor → debounces 200ms → resolves entity
+  // at cursor position → updates selectionStore.hoveredEntity (transient; clears on
+  // null cursor or null resolution, unlike the selection hook which preserves selection).
+  createEditorHoverSync({
+    editorStore,
+    getEntityAtSourceLocation: sharedGetEntityAtSourceLocation,
+    hoverEntity: (ep) => selectionStore.hoverEntity(ep),
     debounceMs: 200,
   });
 
@@ -270,8 +306,29 @@ const App: Component = () => {
   const [entityTree, setEntityTree] = createSignal<EntityTreeNode[]>([]);
 
   function refreshEntityTree(): void {
+    // Epoch/staleness guard: capture the current epoch before the async fetch.
+    // If engineLoadEpoch advances while this fetch is in flight (because a
+    // newer engine load began — e.g. File→Open during the fetch window), the
+    // snapshot we receive predates the current design.  Applying it via
+    // reconcileToTree would prune the freshly-loaded design's meshes, blanking
+    // the viewport.  Dropping the stale result is safe because the reinit that
+    // advanced the epoch already kicked off a fresh refreshEntityTree that will
+    // reconcile against the correct tree.
+    //
+    // The cross-root guard in engineStore.reconcileToTree is a complementary
+    // defence-in-depth layer (catches wholly-disjoint snapshots at the store
+    // level), but it does not cover partial-overlap snapshots where some entities
+    // happen to share paths across designs.  The epoch guard is the surgical fix.
+    const epochAtFetch = engineLoadEpoch;
     bridgeGetEntityTree()
-      .then((t) => { if (alive) setEntityTree(t); })
+      .then((t) => {
+        if (!alive) return;
+        // Staleness guard: if the epoch advanced since this fetch was issued,
+        // the snapshot predates the current design — drop it.
+        if (epochAtFetch !== engineLoadEpoch) return;
+        setEntityTree(t);
+        engineStore.reconcileToTree(t);
+      })
       .catch((err) => console.error('[entity-tree] refresh failed:', err));
   }
 
@@ -408,26 +465,7 @@ const App: Component = () => {
     });
   }
 
-  const savedLayout = loadPanelLayout();
-  const [editorWidth, setEditorWidth] = createSignal(savedLayout?.editorWidth ?? DEFAULT_EDITOR_WIDTH);
-  const [sideWidth, setSideWidth] = createSignal(savedLayout?.sideWidth ?? DEFAULT_SIDE_WIDTH);
-  const [designTreeHeight, setDesignTreeHeight] = createSignal(savedLayout?.designTreeHeight ?? DEFAULT_DESIGN_TREE_HEIGHT);
-  const [propertyHeight, setPropertyHeight] = createSignal(savedLayout?.propertyHeight ?? DEFAULT_PROPERTY_HEIGHT);
-  const [constraintHeight, setConstraintHeight] = createSignal(savedLayout?.constraintHeight ?? DEFAULT_CONSTRAINT_HEIGHT);
-
-  // Debounced persistence of panel layout dimensions
-  let saveTimeout: ReturnType<typeof setTimeout> | undefined;
-  createEffect(() => {
-    const layout = {
-      editorWidth: editorWidth(),
-      sideWidth: sideWidth(),
-      designTreeHeight: designTreeHeight(),
-      propertyHeight: propertyHeight(),
-      constraintHeight: constraintHeight(),
-    };
-    clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => savePanelLayout(layout), 300);
-  });
+  const layoutStore = createLayoutStore();
 
   // Init phase: loading → ready | error
   const [initPhase, setInitPhase] = createSignal<'loading' | 'ready' | 'error'>('loading');
@@ -458,6 +496,10 @@ const App: Component = () => {
 
   // Keyboard help overlay state
   const [showHelp, setShowHelp] = createSignal(false);
+
+  // Command palette state
+  const [showPalette, setShowPalette] = createSignal(false);
+  const [paletteMode, setPaletteMode] = createSignal<'command' | 'symbol'>('command');
   const [exporting, setExporting] = createSignal(false);
   // Gate for REIFY_DEBUG=1 panels (WarmPoolDebugPanel, etc.) — set in initApp()
   const [debugEnabled, setDebugEnabled] = createSignal(false);
@@ -482,6 +524,10 @@ const App: Component = () => {
   const [scrollToLocation, setScrollToLocation] = createSignal<SourceLocation | null>(null);
   let flyToEntityFn: ((entityPath: string) => void) | undefined;
   let fitToViewFn: (() => void) | undefined;
+  // Live-buffer getter: Editor hands App a closure over the active CM view so
+  // save/re-evaluate consumers read the current doc rather than the stale store
+  // snapshot.  Mirrors the flyToEntityRef/fitToViewRef child→parent handle pattern.
+  let getLiveEditorContent: (() => string | null) | undefined;
 
   // Both the compile badge and the tessellation badge call this handler — both are
   // toggles. Clicking either badge while the panel is already open will close it rather
@@ -553,6 +599,12 @@ const App: Component = () => {
     if (toasts().some((t) => t.message === EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG)) {
       return;
     }
+    // Snapshot the live buffer at prompt-CREATION time.  The conflict prompt is
+    // an async toast; if the user switches tabs between seeing it and clicking
+    // Overwrite, a click-time live read would return the now-active file's
+    // content (wrong file).  Snapshotting here captures the buffer as of the
+    // Ctrl+S keypress, which is exactly what the user intended to save.
+    const liveContent = getLiveEditorContent?.() ?? file.content;
     showToast(EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG, 'error', [
       {
         label: SAVE_CONFLICT_RELOAD_LABEL,
@@ -560,7 +612,7 @@ const App: Component = () => {
       },
       {
         label: SAVE_CONFLICT_OVERWRITE_LABEL,
-        onClick: () => overwriteFile(file),
+        onClick: () => overwriteFile(file.path, liveContent),
       },
     ]);
   }
@@ -584,15 +636,16 @@ const App: Component = () => {
   }
 
   /**
-   * Save the buffer as-is, overwriting the newer on-disk content.
-   * Called by the Overwrite action in the save conflict prompt.
+   * Save the supplied content as-is, overwriting the newer on-disk content.
+   * Called by the Overwrite action in the save conflict prompt with the live
+   * buffer content snapshotted at prompt-creation time.
    */
-  async function overwriteFile(file: FileData) {
+  async function overwriteFile(path: string, content: string) {
     try {
-      await bridgeSaveFile(file.path, file.content);
-      editorStore.markClean(file.path);
+      await bridgeSaveFile(path, content);
+      editorStore.markClean(path);
       // Remove from changedFiles so the "N files changed" banner disappears.
-      removeFromChangedFiles(file.path);
+      removeFromChangedFiles(path);
     } catch (err) {
       showToast(`Save failed: ${errorMessage(err)}`, 'error');
     }
@@ -627,7 +680,11 @@ const App: Component = () => {
       }
     }
     try {
-      await bridgeSaveFile(result.file.path, result.file.content);
+      // Read the LIVE buffer rather than the stale store snapshot.
+      // Falls back to result.file.content when the handle is not wired
+      // (e.g. App tests that mock Editor without wiring liveContentRef).
+      const content = getLiveEditorContent?.() ?? result.file.content;
+      await bridgeSaveFile(result.file.path, content);
       editorStore.markClean(result.file.path);
     } catch (err) {
       showToast(`Save failed: ${errorMessage(err)}`, 'error');
@@ -748,20 +805,27 @@ const App: Component = () => {
   }
 
   function handleReEvaluate() {
-    // Re-evaluate the active file
+    // Re-evaluate the active file using the LIVE buffer content.
+    // getLiveEditorContent?.() reads the current CM view document rather than
+    // the stale store snapshot (anti-loop invariant: store content is only
+    // updated at file-open/reload time, never during typing).  Falls back to
+    // file.content when the handle is not wired (e.g. in App tests that don't
+    // opt in to the live-content handle).
     const activeFile = editorStore.state.activeFile;
     if (activeFile) {
       const file = editorStore.state.openFiles.find((f) => f.path === activeFile);
       if (file) {
-        bridgeUpdateSource(file.path, file.content).catch((err) =>
+        const content = getLiveEditorContent?.() ?? file.content;
+        bridgeUpdateSource(file.path, content).catch((err) =>
           showToast(`Re-evaluation failed: ${errorMessage(err)}`, 'error'),
         );
       }
     }
   }
 
-  // Keyboard shortcuts
-  useKeyboardShortcuts({
+  // Keyboard shortcuts — shared callback object used by both the global handler
+  // and the palette's runCommand() so the two can never drift.
+  const shortcutCallbacks = {
     onNew: handleNew,
     onOpen: handleOpen,
     onSave: handleSave,
@@ -790,7 +854,29 @@ const App: Component = () => {
       const target = viewStateStore.getOrderedViewIds()[i];
       if (target) viewStateStore.switchView(target);
     },
-  });
+    onCommandPalette: () => {
+      setPaletteMode('command');
+      setShowPalette(true);
+    },
+    onSymbolJump: () => {
+      setPaletteMode('symbol');
+      setShowPalette(true);
+    },
+  };
+  useKeyboardShortcuts(shortcutCallbacks);
+
+  // Palette symbol fetch — uses the same URI normalisation as Editor.tsx:104-108
+  // so the request URI matches the uri used at didOpen time.
+  function pathToUri(filePath: string): string {
+    if (filePath.startsWith('file://')) return filePath;
+    return `file://${filePath.startsWith('/') ? '' : '/'}${filePath}`;
+  }
+
+  async function fetchPaletteSymbols() {
+    const f = editorStore.state.activeFile;
+    if (!f) return [];
+    return createLspClient().documentSymbol(pathToUri(f));
+  }
 
   let alive = true;
   let unsub: (() => void) | undefined;
@@ -1038,6 +1124,8 @@ const App: Component = () => {
           editor: editorStore,
           selection: selectionStore,
           claude: claudeStore,
+          viewState: viewStateStore,
+          layout: layoutStore,
         });
         if (!alive) {
           unsub();
@@ -1219,14 +1307,14 @@ const App: Component = () => {
 
   function handleLeftResize(delta: number) {
     const cw = mainRef?.clientWidth ?? 0;
-    const maxWidth = cw > 0 ? cw - sideWidth() - MIN_PANEL_WIDTH - 8 : Infinity;
-    setEditorWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w + delta)));
+    const maxWidth = cw > 0 ? cw - layoutStore.state.sideWidth - MIN_PANEL_WIDTH - 8 : Infinity;
+    layoutStore.setEditorWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w + delta)));
   }
 
   function handleRightResize(delta: number) {
     const cw = mainRef?.clientWidth ?? 0;
-    const maxWidth = cw > 0 ? cw - editorWidth() - MIN_PANEL_WIDTH - 8 : Infinity;
-    setSideWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w - delta)));
+    const maxWidth = cw > 0 ? cw - layoutStore.state.editorWidth - MIN_PANEL_WIDTH - 8 : Infinity;
+    layoutStore.setSideWidth((w) => Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, w - delta)));
   }
 
   // Re-flow side-panel sub-panel heights so they fit `sidePanelRef.clientHeight`.
@@ -1240,9 +1328,9 @@ const App: Component = () => {
     if (ch <= 0) return;
     const clamped = clampPanelHeightsToFit(
       {
-        designTree: designTreeHeight(),
-        property: propertyHeight(),
-        constraint: constraintHeight(),
+        designTree: layoutStore.state.designTreeHeight,
+        property: layoutStore.state.propertyHeight,
+        constraint: layoutStore.state.constraintHeight,
       },
       ch,
       {
@@ -1253,14 +1341,14 @@ const App: Component = () => {
       },
     );
     if (
-      clamped.designTree !== designTreeHeight() ||
-      clamped.property !== propertyHeight() ||
-      clamped.constraint !== constraintHeight()
+      clamped.designTree !== layoutStore.state.designTreeHeight ||
+      clamped.property !== layoutStore.state.propertyHeight ||
+      clamped.constraint !== layoutStore.state.constraintHeight
     ) {
       batch(() => {
-        setDesignTreeHeight(clamped.designTree);
-        setPropertyHeight(clamped.property);
-        setConstraintHeight(clamped.constraint);
+        layoutStore.setDesignTreeHeight(clamped.designTree);
+        layoutStore.setPropertyHeight(clamped.property);
+        layoutStore.setConstraintHeight(clamped.constraint);
       });
     }
   }
@@ -1271,28 +1359,28 @@ const App: Component = () => {
   function reservedForOthers(currentSignal: 'designTree' | 'property' | 'constraint'): number {
     const splitters = (chatOpen() ? 3 : 2) * SPLITTER_THICKNESS;
     const chatFloor = chatOpen() ? CHAT_MIN_HEIGHT : 0;
-    const designTree = currentSignal === 'designTree' ? 0 : designTreeHeight();
-    const property = currentSignal === 'property' ? 0 : propertyHeight();
-    const constraint = currentSignal === 'constraint' ? 0 : constraintHeight();
+    const designTree = currentSignal === 'designTree' ? 0 : layoutStore.state.designTreeHeight;
+    const property = currentSignal === 'property' ? 0 : layoutStore.state.propertyHeight;
+    const constraint = currentSignal === 'constraint' ? 0 : layoutStore.state.constraintHeight;
     return designTree + property + constraint + chatFloor + splitters;
   }
 
   function handleDesignTreeResize(delta: number) {
     const ch = sidePanelRef?.clientHeight ?? 0;
     const maxHeight = ch > 0 ? ch - reservedForOthers('designTree') : Infinity;
-    setDesignTreeHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
+    layoutStore.setDesignTreeHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
   function handleSideResize(delta: number) {
     const ch = sidePanelRef?.clientHeight ?? 0;
     const maxHeight = ch > 0 ? ch - reservedForOthers('property') : Infinity;
-    setPropertyHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
+    layoutStore.setPropertyHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
   function handleConstraintResize(delta: number) {
     const ch = sidePanelRef?.clientHeight ?? 0;
     const maxHeight = ch > 0 ? ch - reservedForOthers('constraint') : Infinity;
-    setConstraintHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
+    layoutStore.setConstraintHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
   function handleViewportSelect(entityPath: string | null, modifiers?: { ctrl: boolean; shift: boolean }) {
@@ -1305,7 +1393,11 @@ const App: Component = () => {
       selectionStore.toggleSelect(entityPath);
       return;
     }
-    // Plain click or shift+click: navigate to source and single-select
+    // Plain click or shift+click: selection is applied unconditionally inside
+    // navigateToSource (mirrors the Ctrl+click toggleSelect path). Editor
+    // source-scroll is best-effort — silently skipped for realized/derived
+    // geometry (boolean results, patterns, auto-generated sub-entities) that
+    // has no 1:1 source span.
     navigateToSource(entityPath, {
       getSourceLocation: bridgeGetSourceLocation,
       scrollEditor: (loc) => setScrollToLocation(loc),
@@ -1360,6 +1452,17 @@ const App: Component = () => {
       <Show when={showHelp()}>
         <KeyboardHelp onClose={() => setShowHelp(false)} />
       </Show>
+      <Show when={showPalette()}>
+        <CommandPalette
+          getCommands={paletteCommands}
+          runCommand={(id) => runCommand(id, shortcutCallbacks)}
+          fetchSymbols={fetchPaletteSymbols}
+          filePath={editorStore.state.activeFile ?? ''}
+          onJumpToLocation={(loc) => setScrollToLocation(loc)}
+          onClose={() => setShowPalette(false)}
+          initialMode={paletteMode()}
+        />
+      </Show>
       <Show when={initPhase() === 'loading'}>
         <div data-testid="app-loading" class={styles.loading}>
           <div class={styles.spinner} />
@@ -1399,7 +1502,7 @@ const App: Component = () => {
           <div
             ref={mainRef}
             class={styles.main}
-            style={{ 'grid-template-columns': `${editorWidth()}px 4px 1fr 4px ${sideWidth()}px` }}
+            style={{ 'grid-template-columns': `${layoutStore.state.editorWidth}px 4px 1fr 4px ${layoutStore.state.sideWidth}px` }}
           >
             <div data-testid="editor-panel" class={styles.editorPanel}>
               <FileBrowser
@@ -1408,7 +1511,7 @@ const App: Component = () => {
                 onFileClick={handleFileClick}
               />
               <FileTabs store={editorStore} />
-              <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} />
+              <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} compileDiagnostics={engineStore.state.compileDiagnostics} liveContentRef={(fn) => { getLiveEditorContent = fn; }} />
             </div>
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
@@ -1440,7 +1543,7 @@ const App: Component = () => {
                 const hasMech = mechanismStore.state.descriptors.length > 0;
                 const hasAR = engineStore.state.autoResolve.active;
                 const hasChat = chatOpen();
-                const base = `${designTreeHeight()}px 4px ${propertyHeight()}px 4px`;
+                const base = `${layoutStore.state.designTreeHeight}px 4px ${layoutStore.state.propertyHeight}px 4px`;
                 // Middle tracks: one `auto` per optional panel present (autoResolve then
                 // mechanism). No splitter between cons and the first optional panel — adding
                 // one would shift subsequent children up a track and collapse chat into 4px.
@@ -1449,10 +1552,10 @@ const App: Component = () => {
                   ...(hasMech ? ['auto'] : []),
                 ];
                 const midStr = midTracks.length > 0
-                  ? `${constraintHeight()}px ${midTracks.join(' ')}`
+                  ? `${layoutStore.state.constraintHeight}px ${midTracks.join(' ')}`
                   : null;
                 if (hasChat) {
-                  return `${base} ${midStr ?? `${constraintHeight()}px`} 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`;
+                  return `${base} ${midStr ?? `${layoutStore.state.constraintHeight}px`} 4px minmax(${CHAT_MIN_HEIGHT}px, 1fr)`;
                 }
                 return midStr
                   ? `${base} ${midStr}`
@@ -1470,6 +1573,8 @@ const App: Component = () => {
                 onSelectAll={selectionStore.selectAll}
                 onOpenManage={() => setViewManageOpen(true)}
                 onSaveViews={handleSaveViews}
+                onHover={(path) => selectionStore.hoverEntity(path)}
+                hoveredEntity={selectionStore.state.hoveredEntity}
               />
               <Splitter orientation="horizontal" onResize={handleDesignTreeResize} data-testid="splitter-design-tree" />
               <PropertyEditor
@@ -1504,10 +1609,6 @@ const App: Component = () => {
               {/* BucklingPanel: shown when the buckling solver has emitted mode-shape data */}
               <Show when={(bucklingStore.state.base !== null) || bucklingStore.modes().length > 0}>
                 <BucklingPanel store={bucklingStore} />
-              </Show>
-              {/* WarmPoolDebugPanel: REIFY_DEBUG=1 only — PRD §11 Q6 resolution */}
-              <Show when={debugEnabled()}>
-                <WarmPoolDebugPanel />
               </Show>
               <Show when={mechanismStore.state.descriptors.length > 0}>
                 <MechanismPanel
@@ -1557,6 +1658,12 @@ const App: Component = () => {
             store={viewStateStore}
             onClose={() => setViewManageOpen(false)}
           />
+          {/* WarmPoolDebugPanel: REIFY_DEBUG=1 only — floating overlay, task 4279 */}
+          <Show when={debugEnabled()}>
+            <div class={styles.warmPoolDebugOverlay} data-testid="warm-pool-debug-overlay">
+              <WarmPoolDebugPanel />
+            </div>
+          </Show>
           <div class={styles.toastContainer}>
             <For each={toasts()}>
               {(t) => (

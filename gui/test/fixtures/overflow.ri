@@ -1,0 +1,5 @@
+// overflow-probe: this single-line comment is intentionally long so that opening this file in the no-wrap CodeMirror editor forces the .cm-scroller to overflow horizontally (scrollWidth > clientWidth), which makes it the 'deliberately-narrowed element' for the get_layout_metrics overflow SIGNAL. Padding: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx end.
+
+structure OverflowProbe {
+    let body = box(5mm, 5mm, 5mm)
+}

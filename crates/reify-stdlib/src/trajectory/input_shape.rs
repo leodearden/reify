@@ -1,6 +1,7 @@
 //! `input_shape(profile, shaper)` dispatcher + Profile/Shaper `Value`
 //! marshalling for the trajectory stdlib module (PRD
-//! `docs/prds/v0_3/trajectory-input-shaping.md` §5.3, §11 Phase 2 task ζ).
+//! `docs/prds/v0_3/trajectory-input-shaping.md` §5.3, §11 Phase 2 task ζ,
+//! Phase 4 task λ).
 //!
 //! Two pieces live here:
 //!
@@ -20,12 +21,27 @@
 //!    waypoints is deferred to task θ; ζ returns a registry-free shaped-Profile
 //!    stand-in that echoes the input profile (a valid `Shaper` is still
 //!    required — an unrecognised shaper ⇒ `Value::Undef`).
+//!
+//!    The dispatcher checks for `TOTSShaper` BEFORE the impulse-train path (λ):
+//!    when the shaper is a `TOTSShaper`, it runs the real SQP loop
+//!    ([`super::tots::solve_tots`], which calls `simulate_trajectory_core` +
+//!    `inverse_dynamics_open_chain` per iteration) on a canonical single-DOF
+//!    point-to-point stand-in parameterised by the shaper's readable scalar
+//!    fields. `ConstraintInfeasible` → `Value::Undef`; `Converged` /
+//!    `NonConvergence` → profile echo (identical to the impulse arms). Full
+//!    profile-waypoint / modes / actuator_limits Value marshalling is θ-deferred.
 
 use std::f64::consts::PI;
 
 use reify_ir::{StructureInstanceData, Value};
 
 use super::impulse_shaper::ImpulseTrain;
+use super::simulate::{EffectorLocation, MechanismModel, ModeDesc, ModalModel};
+use super::simulate::LinkDesc;
+use super::tots::{
+    JointWaypoints, SqpConfig, TotsModel, TotsOutcome, TotsParams, solve_tots,
+};
+use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 
 /// Read a numeric stdlib field as `f64`, accepting any spelling a shaper param
 /// takes: a dimensioned `Scalar { si_value }` (`target_frequency`, whose SI
@@ -131,6 +147,76 @@ pub fn build_train_for_shaper(shaper: &Value) -> Option<ImpulseTrain> {
     }
 }
 
+/// Build the canonical single-DOF gantry stand-in model for a `TOTSShaper`.
+///
+/// This is the θ-deferred placeholder: full Value marshalling of the
+/// `TOTSShaper`'s `modes` (`List<Mode>`) and `actuator_limits`
+/// (`List<JointLimit>`) into a multi-mode `TotsModel` waits until the
+/// Profile↔spline `Value` marshalling (`evaluate_profile`) is unblocked.
+///
+/// The canonical model mirrors the gantry fixture in `tots.rs` tests:
+/// * 1-DOF mechanism, 1 kg mass, X-axis translation subspace.
+/// * 1-mode modal model with a 10 Hz representative mode, ζ = 0.01.
+/// * 1 effector location with unit participation coefficient.
+fn canonical_tots_model() -> TotsModel {
+    let link = LinkDesc {
+        parent_to_child: SpatialTransform6::from_frame3(&Frame3::identity()),
+        subspace: vec![SpatialVector6::from_array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0])],
+        mass: 1.0,
+        com: [0.0; 3],
+        inertia_about_com: [[0.0; 3]; 3],
+    };
+    TotsModel {
+        mechanism: MechanismModel { links: vec![link] },
+        modal: ModalModel {
+            modes: vec![ModeDesc {
+                freq_hz: 10.0,
+                zeta: 0.01,
+                force_projection: vec![1.0],
+            }],
+        },
+        effector_locations: vec![EffectorLocation { mode_coeffs: vec![1.0] }],
+    }
+}
+
+/// Run the TOTS SQP loop for a `TOTSShaper`, using the readable scalar fields
+/// of `shaper_data` to parameterise a canonical single-DOF P2P stand-in.
+///
+/// Returns the [`TotsOutcome`] so the caller can map
+/// `ConstraintInfeasible` → `Value::Undef` and
+/// `Converged` / `NonConvergence` → profile echo.
+///
+/// Full Value marshalling of the profile waypoints and the shaper's
+/// `modes` / `actuator_limits` fields into the solver is θ-deferred.
+fn run_tots(shaper_data: &StructureInstanceData) -> TotsOutcome {
+    let vel_limit = field_f64(shaper_data, "velocity_limit", 100.0);
+    let acc_limit = field_f64(shaper_data, "acceleration_limit", 1000.0);
+    let vib_tol = field_f64(shaper_data, "vibration_tolerance", 0.02);
+    let max_iters = field_f64(shaper_data, "max_iters", 100.0) as usize;
+    let tol = field_f64(shaper_data, "tol", 1e-6);
+
+    let params = TotsParams {
+        joints: vec![JointWaypoints {
+            start: 0.0,
+            interior: vec![0.5],
+            end: 1.0,
+            vel_limit,
+            acc_limit,
+            max_force: 1000.0,
+        }],
+        t_initial: 3.0,
+        vib_tol,
+        n_grid: 30,
+    };
+    let model = canonical_tots_model();
+    let config = SqpConfig {
+        max_iters,
+        tol,
+        ..Default::default()
+    };
+    solve_tots(params, &model, &config).outcome
+}
+
 /// Evaluate `input_shape(profile, shaper)` — the thin `eval_trajectory`
 /// dispatch arm (wired for both the `input_shape` and `input_shape_apply`
 /// names; see [`crate::trajectory::eval_trajectory`]).
@@ -140,10 +226,13 @@ pub fn build_train_for_shaper(shaper: &Value) -> Option<ImpulseTrain> {
 /// - exactly two arguments `(profile, shaper)`;
 /// - both must be a [`Value::StructureInstance`];
 /// - the shaper must resolve to an [`ImpulseTrain`] via
-///   [`build_train_for_shaper`] — an unrecognised / unsupported shaper
-///   (`None`) returns `Value::Undef`. Building the train is what makes the
-///   dispatch *real*: ZV/ZVD/EI/Cascaded are recognised; anything else is
-///   rejected.
+///   [`build_train_for_shaper`] (ZV/ZVD/EI/Cascaded), or be a `TOTSShaper`
+///   whose SQP run is feasible. Any other shaper or infeasible TOTS problem
+///   returns `Value::Undef`.
+///
+/// **Dispatch order**: `TOTSShaper` is checked FIRST (λ arm), because
+/// `build_train_for_shaper` returns `None` for it and would otherwise
+/// immediately return `Value::Undef`. Impulse arms are structurally unchanged.
 ///
 /// On success the shaped `Profile` is returned as a registry-free
 /// [`Value::StructureInstance`] that **echoes the input profile's own**
@@ -151,7 +240,7 @@ pub fn build_train_for_shaper(shaper: &Value) -> Option<ImpulseTrain> {
 /// cleanly into a typed `Profile` cell whose `type_id` the engine may validate
 /// against the `StructureRegistry`), `type_name` (`"PiecewisePolynomialProfile"`),
 /// `version`, and `fields`. Command-waveform resampling to new waypoints (via
-/// `train.trailing_time` / `convolve_at`) is deferred to task θ — at ζ the
+/// `train.trailing_time` / `convolve_at`) is deferred to task θ — at ζ/λ the
 /// Profile↔spline `Value` marshalling (`evaluate_profile`) is still a stub, so a
 /// fully sample-evaluable shaped profile cannot be produced yet; echoing keeps
 /// the result type-correct and the shaping observable now.
@@ -164,9 +253,31 @@ pub(crate) fn eval_input_shape(args: &[Value]) -> Value {
     let Value::StructureInstance(profile_data) = profile else {
         return Value::Undef;
     };
-    let Value::StructureInstance(_) = shaper else {
+    let Value::StructureInstance(shaper_data) = shaper else {
         return Value::Undef;
     };
+
+    // ── λ: TOTSShaper arm — dispatch BEFORE impulse-train check ─────────────
+    // build_train_for_shaper returns None for TOTSShaper (it only knows
+    // ZV/ZVD/EI/Cascaded); placing this arm first prevents a TOTSShaper from
+    // being mis-rejected as an unknown shaper.
+    if shaper_data.type_name == "TOTSShaper" {
+        return match run_tots(shaper_data) {
+            // ConstraintInfeasible → Undef (no feasible shaped profile exists;
+            // surfaces E_TrajectoryConstraintInfeasible semantics).
+            TotsOutcome::ConstraintInfeasible => Value::Undef,
+            // Converged / NonConvergence → echo the profile stand-in.
+            // NonConvergence returns the solver's best feasible iterate (PRD:
+            // W_TrajectorySolverNonConvergence "returned best feasible iterate"),
+            // which is a valid shaped profile; echoing like Converged because
+            // command re-waypointing is θ-deferred.
+            TotsOutcome::Converged | TotsOutcome::NonConvergence => {
+                Value::StructureInstance(profile_data.clone())
+            }
+        };
+    }
+
+    // ── ζ: impulse-train arms (ZV/ZVD/EI/Cascaded) ─────────────────────────
     // A valid, recognised shaper is required: build (and validate) its impulse
     // train, returning Undef when the shaper is unknown / unsupported. The train
     // itself is not yet stored on the result (waveform resampling is θ's job);
@@ -361,6 +472,97 @@ mod tests {
         assert!(
             build_train_for_shaper(&cascade).is_none(),
             "a cascade with any unresolved child → None (not a silently-weakened shaper)"
+        );
+    }
+
+    // ── TOTSShaper builders ───────────────────────────────────────────────────
+
+    /// Build a minimal `PiecewisePolynomialProfile` `Value::StructureInstance`.
+    /// Registry-free sentinel type_id; `type_name` is what `eval_input_shape`
+    /// echoes back. Fields omitted — the dispatcher only reads type_name/type_id.
+    fn profile() -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX - 1),
+            type_name: "PiecewisePolynomialProfile".to_string(),
+            version: 1,
+            fields: PersistentMap::default(),
+        }))
+    }
+
+    /// Build a `TOTSShaper` `Value::StructureInstance` with the given fields,
+    /// exactly as the eval path receives it from the compiled `.ri` output.
+    fn tots_shaper(fields: Vec<(&str, Value)>) -> Value {
+        let fields: PersistentMap<String, Value> = fields
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "TOTSShaper".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    // ── TOTSShaper arm ────────────────────────────────────────────────────────
+
+    /// A feasible TOTSShaper causes `eval_input_shape` to take the λ arm:
+    /// `run_tots` → `solve_tots` → `Converged` or `NonConvergence` → echo the
+    /// input profile's `StructureInstanceData` as a shaped-profile stand-in.
+    /// (Command re-waypointing is θ-deferred; the echo is the type-correct
+    /// stand-in at this phase, mirroring the impulse-shaper arms.)
+    #[test]
+    fn tots_shaper_feasible_echoes_profile() {
+        let p = profile();
+        let s = tots_shaper(vec![
+            ("velocity_limit", Value::Real(300.0)),
+            ("acceleration_limit", Value::Real(5000.0)),
+            ("vibration_tolerance", Value::Real(0.02)),
+            ("max_iters", Value::Int(100)),
+            ("tol", Value::Real(1e-6)),
+        ]);
+        let result = eval_input_shape(&[p, s]);
+        match result {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.type_name, "PiecewisePolynomialProfile",
+                    "eval_input_shape with feasible TOTSShaper should echo the profile \
+                     (type_name = PiecewisePolynomialProfile), got: {:?}",
+                    data.type_name
+                );
+            }
+            other => panic!(
+                "expected Value::StructureInstance(PiecewisePolynomialProfile) for feasible \
+                 TOTSShaper, got {other:?}"
+            ),
+        }
+    }
+
+    /// `velocity_limit = 0` on the canonical nonzero P2P model causes `solve_tots`
+    /// to return `ConstraintInfeasible` (early-exit; see
+    /// `tots.rs::sqp_infeasible_zero_velocity_limit`), which the λ arm maps to
+    /// `Value::Undef` — there is no feasible shaped profile to return.
+    ///
+    /// `velocity_limit = 0` is constructible directly as a `StructureInstance`
+    /// (bypassing the `.ri` `velocity_limit > 0` ctor constraint), making it a
+    /// valid test vector for the infeasible path.
+    #[test]
+    fn tots_shaper_infeasible_returns_undef() {
+        let p = profile();
+        // velocity_limit = 0 → canonical P2P (start=0, end=1, nonzero) is
+        // infeasible; all other params are slack positives.
+        let s = tots_shaper(vec![
+            ("velocity_limit", Value::Real(0.0)),
+            ("acceleration_limit", Value::Real(5000.0)),
+            ("vibration_tolerance", Value::Real(0.02)),
+            ("max_iters", Value::Int(100)),
+            ("tol", Value::Real(1e-6)),
+        ]);
+        assert_eq!(
+            eval_input_shape(&[p, s]),
+            Value::Undef,
+            "eval_input_shape with velocity_limit=0 TOTSShaper should return Value::Undef \
+             (ConstraintInfeasible → Undef)"
         );
     }
 

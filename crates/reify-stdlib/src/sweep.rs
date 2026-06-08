@@ -20,6 +20,7 @@ use reify_core::DimensionVector;
 use reify_ir::Value;
 
 use crate::eval_builtin;
+use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_error};
 
 /// Evaluate a sweep stdlib function by name.
 ///
@@ -28,13 +29,18 @@ use crate::eval_builtin;
 pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "dim" => {
-            // Validation surface (each guard short-circuits to
-            // Value::Undef BEFORE constructing the SweepDim Map):
+            // Validation surface:
             //   args.len() == 3                        → arity guard
-            //   is_driving_joint(args[0])              → joint kind
-            //                                            (coupling/fixed/
-            //                                            world/non-Map all
-            //                                            rejected per §13.4)
+            //   is_joint_value(args[0]) &&
+            //     !is_driving_joint(args[0])           → non-driving guard:
+            //                                            coupling/fixed →
+            //                                            E_MECHANISM_NONDRIVING_JOINT
+            //                                            error Map (not Undef)
+            //   driving_joint_kind(args[0]).is_some()  → joint kind guard:
+            //                                            non-joints and multi-DOF
+            //                                            driving joints (planar/
+            //                                            spherical/cylindrical) →
+            //                                            Undef
             //   args[1] is Value::Range with both
             //     lower/upper bounds present, both
             //     SI-finite, and dimension == joint
@@ -43,6 +49,9 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
             //   args[2] is Value::Int(n) with n >= 0   → steps guard
             if args.len() != 3 {
                 return Some(Value::Undef);
+            }
+            if is_joint_value(&args[0]) && !is_driving_joint(&args[0]) {
+                return Some(make_nondriving_joint_error(args[0].clone()));
             }
             let expected_dim = match driving_joint_kind(&args[0]) {
                 Some(d) => d,
@@ -93,6 +102,9 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
             // guard, not this short-circuit.
             if mech_map.contains_key(&Value::String("error".to_string())) {
                 return Some(Value::Undef);
+            }
+            if is_joint_value(&args[1]) && !is_driving_joint(&args[1]) {
+                return Some(make_nondriving_joint_error(args[1].clone()));
             }
             let expected_dim = match driving_joint_kind(&args[1]) {
                 Some(d) => d,
@@ -183,6 +195,9 @@ pub(crate) fn eval_sweep(name: &str, args: &[Value]) -> Option<Value> {
                     Some(j) => j.clone(),
                     None => return Some(Value::Undef),
                 };
+                if is_joint_value(&joint) && !is_driving_joint(&joint) {
+                    return Some(make_nondriving_joint_error(joint));
+                }
                 let range = match emap.get(&Value::String("range".to_string())) {
                     Some(r) => r,
                     None => return Some(Value::Undef),
@@ -574,14 +589,10 @@ mod tests {
         assert!(eval_builtin("dim", &[j, r, n.clone(), n]).is_undef());
     }
 
-    /// `dim(non_driving_joint, range, steps)` returns Undef when args[0]
-    /// is not a prismatic/revolute joint. Covers Real, String, world
-    /// sentinel, fixed joint, and coupling joint — couplings are
-    /// rejected per §13.4 ("Couplings cannot appear in sweep dims —
-    /// their motion is derived from the driving joint that is already
-    /// being swept"). Fixed joints have no motion variable.
+    /// `dim(non_joint_arg, range, steps)` returns Undef when args[0] is
+    /// not a joint Map at all (Real, String, world sentinel).
     #[test]
-    fn dim_non_driving_joint_returns_undef() {
+    fn dim_non_joint_arg_returns_undef() {
         let r = length_range_0_to_1m();
         let n = Value::Int(11);
 
@@ -605,15 +616,58 @@ mod tests {
         assert!(
             eval_builtin("dim", &[eval_builtin("world", &[]), r.clone(), n.clone()]).is_undef()
         );
+    }
 
-        // fixed joint — kind="fixed" has no motion variable
+    /// `dim(coupling, ...)` and `dim(fixed, ...)` return a `Value::Map` with
+    /// `error == "nondriving_joint"`.  Coupling has no independent free motion
+    /// variable (its DOF is derived from a parent joint); fixed has zero DOF.
+    /// Both surface `E_MECHANISM_NONDRIVING_JOINT` rather than bare `Undef`.
+    ///
+    /// Regression pin: planar (a driving joint not handled by `driving_joint_kind`
+    /// for single-DOF sweeps) still returns plain `Undef` — NOT the nondriving
+    /// error — confirming the `is_driving_joint` guard only fires for coupling/fixed.
+    ///
+    /// RED: coupling and fixed currently return `Undef` (the `driving_joint_kind`
+    /// short-circuit fires before any nondriving guard is in place).
+    #[test]
+    fn dim_non_driving_joint_returns_nondriving_error() {
+        let r = length_range_0_to_1m();
+        let n = Value::Int(11);
+
+        // fixed joint — kind="fixed" has zero DOF
         let fixed = eval_builtin("fixed", &[]);
-        assert!(eval_builtin("dim", &[fixed, r.clone(), n.clone()]).is_undef());
+        let res_fixed = eval_builtin("dim", &[fixed, r.clone(), n.clone()]);
+        let map_fixed = match &res_fixed {
+            Value::Map(m) => m,
+            other => panic!("dim(fixed,...): expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map_fixed.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "dim(fixed,...) must return error='nondriving_joint'"
+        );
 
-        // coupling joint — derived from a driving joint, can't be swept
+        // coupling joint — DOF derived from parent joint
         let parent = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
         let coupling = eval_builtin("couple", &[parent, Value::Real(2.0)]);
-        assert!(eval_builtin("dim", &[coupling, r, n]).is_undef());
+        let res_coupling = eval_builtin("dim", &[coupling, r.clone(), n.clone()]);
+        let map_coupling = match &res_coupling {
+            Value::Map(m) => m,
+            other => panic!("dim(coupling,...): expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map_coupling.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "dim(coupling,...) must return error='nondriving_joint'"
+        );
+
+        // Regression pin: planar (a driving joint, but multi-DOF) → still Undef,
+        // NOT the nondriving error.
+        let planar = planar_xy_joint();
+        assert!(
+            eval_builtin("dim", &[planar, r, n]).is_undef(),
+            "dim(planar,...) must still return Undef, not the nondriving error"
+        );
     }
 
     /// `dim(joint, non_range, steps)` returns Undef when args[1] is not a
@@ -931,9 +985,10 @@ mod tests {
         assert!(eval_builtin("sweep", &[Value::Map(m), j, r, n]).is_undef());
     }
 
-    /// `sweep(m, non_driving_joint, range, steps)` returns Undef.
+    /// `sweep(m, non_joint_arg, range, steps)` returns Undef when args[1]
+    /// is not a joint Map at all (Real, world sentinel).
     #[test]
-    fn sweep_non_driving_joint_returns_undef() {
+    fn sweep_non_joint_arg_returns_undef() {
         let (m, _) = make_one_body_prismatic_mechanism();
         let r = length_range_0_to_1m();
         let n = Value::Int(11);
@@ -955,15 +1010,55 @@ mod tests {
             )
             .is_undef()
         );
+    }
+
+    /// `sweep(m, coupling, ...)` and `sweep(m, fixed, ...)` return a
+    /// `Value::Map` with `error == "nondriving_joint"`.
+    ///
+    /// Regression pin: planar (a driving joint, but multi-DOF for single-DOF
+    /// sweeps) still returns plain `Undef` — NOT the nondriving error.
+    ///
+    /// RED: coupling and fixed currently return `Undef`.
+    #[test]
+    fn sweep_non_driving_joint_returns_nondriving_error() {
+        let (m, _) = make_one_body_prismatic_mechanism();
+        let r = length_range_0_to_1m();
+        let n = Value::Int(11);
 
         // fixed joint
         let fixed = eval_builtin("fixed", &[]);
-        assert!(eval_builtin("sweep", &[m.clone(), fixed, r.clone(), n.clone()]).is_undef());
+        let res_fixed = eval_builtin("sweep", &[m.clone(), fixed, r.clone(), n.clone()]);
+        let map_fixed = match &res_fixed {
+            Value::Map(mf) => mf,
+            other => panic!("sweep(m, fixed,...): expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map_fixed.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "sweep(m, fixed,...) must return error='nondriving_joint'"
+        );
 
         // coupling joint
         let parent = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
         let coupling = eval_builtin("couple", &[parent, Value::Real(2.0)]);
-        assert!(eval_builtin("sweep", &[m, coupling, r, n]).is_undef());
+        let res_coupling = eval_builtin("sweep", &[m.clone(), coupling, r.clone(), n.clone()]);
+        let map_coupling = match &res_coupling {
+            Value::Map(mc) => mc,
+            other => panic!("sweep(m, coupling,...): expected Value::Map, got {:?}", other),
+        };
+        assert_eq!(
+            map_coupling.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "sweep(m, coupling,...) must return error='nondriving_joint'"
+        );
+
+        // Regression pin: planar (driving but multi-DOF) → still Undef
+        let mech = eval_builtin("mechanism", &[]);
+        let planar = planar_xy_joint();
+        assert!(
+            eval_builtin("sweep", &[mech, planar, r, n]).is_undef(),
+            "sweep(m, planar,...) must still return Undef, not the nondriving error"
+        );
     }
 
     /// `sweep(m, joint, non_range, steps)` returns Undef.
@@ -1421,6 +1516,76 @@ mod tests {
         assert!(
             eval_builtin("sweep_grid", &[errored, Value::List(vec![dim_b])]).is_undef(),
             "sweep_grid() on errored mechanism must yield Undef"
+        );
+    }
+
+    /// `sweep_grid(m, [sweep_dim_with_coupling])` and
+    /// `sweep_grid(m, [sweep_dim_with_fixed])` return a `Value::Map` with
+    /// `error == "nondriving_joint"`.  The SweepDim entries are hand-built
+    /// (bypassing `dim()` validation) so the coupling/fixed joint reaches
+    /// `sweep_grid`'s per-entry joint guard.
+    ///
+    /// RED: coupling/fixed currently short-circuit through `driving_joint_kind`
+    /// → `None` → `Value::Undef`; the nondriving guard is not yet in place.
+    #[test]
+    fn sweep_grid_non_driving_joint_returns_nondriving_error() {
+        let (m, _) = make_one_body_prismatic_mechanism();
+        let parent = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let coupling = eval_builtin("couple", &[parent, Value::Real(2.0)]);
+        let fixed = eval_builtin("fixed", &[]);
+
+        // Hand-build a SweepDim Map wrapping a coupling joint.
+        let mut dim_coupling = std::collections::BTreeMap::new();
+        dim_coupling.insert(
+            Value::String("kind".to_string()),
+            Value::String("sweep_dim".to_string()),
+        );
+        dim_coupling.insert(Value::String("joint".to_string()), coupling);
+        dim_coupling.insert(Value::String("range".to_string()), length_range_0_to_1m());
+        dim_coupling.insert(Value::String("steps".to_string()), Value::Int(2));
+
+        let res_coupling = eval_builtin(
+            "sweep_grid",
+            &[m.clone(), Value::List(vec![Value::Map(dim_coupling)])],
+        );
+        let map_c = match &res_coupling {
+            Value::Map(mc) => mc,
+            other => panic!(
+                "sweep_grid(m,[dim(coupling,...)]): expected Value::Map, got {:?}",
+                other
+            ),
+        };
+        assert_eq!(
+            map_c.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "sweep_grid with coupling dim must return error='nondriving_joint'"
+        );
+
+        // Hand-build a SweepDim Map wrapping a fixed joint.
+        let mut dim_fixed = std::collections::BTreeMap::new();
+        dim_fixed.insert(
+            Value::String("kind".to_string()),
+            Value::String("sweep_dim".to_string()),
+        );
+        dim_fixed.insert(Value::String("joint".to_string()), fixed);
+        dim_fixed.insert(Value::String("range".to_string()), length_range_0_to_1m());
+        dim_fixed.insert(Value::String("steps".to_string()), Value::Int(2));
+
+        let res_fixed = eval_builtin(
+            "sweep_grid",
+            &[m, Value::List(vec![Value::Map(dim_fixed)])],
+        );
+        let map_f = match &res_fixed {
+            Value::Map(mf) => mf,
+            other => panic!(
+                "sweep_grid(m,[dim(fixed,...)]): expected Value::Map, got {:?}",
+                other
+            ),
+        };
+        assert_eq!(
+            map_f.get(&Value::String("error".to_string())),
+            Some(&Value::String("nondriving_joint".to_string())),
+            "sweep_grid with fixed dim must return error='nondriving_joint'"
         );
     }
 

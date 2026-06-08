@@ -22,6 +22,7 @@
 //! behind test-fixtures so it never reaches production link closures).
 
 use reify_ir::Mesh;
+use crate::kernel::manifold_from_reify_mesh;
 
 /// Closed unit cube as a `reify_types::Mesh`: 8 vertices, 12 outward-
 /// facing triangles. Used by the boolean-op tests in this crate to
@@ -82,4 +83,28 @@ pub fn unit_cube_mesh(offset: [f32; 3]) -> Mesh {
         ],
         normals: None,
     }
+}
+
+/// Closed unit cube as a `manifold3d::Manifold` ready for boolean operations.
+///
+/// Delegates to [`unit_cube_mesh`] for the cube geometry, then calls
+/// [`crate::kernel::manifold_from_reify_mesh`] (the same shared helper used by
+/// the production `ingest_mesh` path) to do the f32→f64/u32→u64 conversion and
+/// construct the `Manifold`. This ensures the fixture exercises the real
+/// ingestion conversion and prevents the two callers from drifting independently.
+///
+/// Panics if the cube geometry is not a valid closed orientable manifold —
+/// that would indicate a regression in [`unit_cube_mesh`]'s winding, not a
+/// caller error.
+///
+/// Used by `union_meshgl64_exposes_provenance_and_merge_pairing_invariant` in
+/// `kernel.rs` to build a union result whose `MeshGL64` carries multi-parent
+/// provenance. This is the exact egress path that task 3525 (persistent-naming-v2
+/// PRD task 9) will walk.
+pub fn unit_cube_manifold(offset: [f32; 3]) -> manifold3d::Manifold {
+    let mesh = unit_cube_mesh(offset);
+    manifold_from_reify_mesh(&mesh)
+        .expect(
+            "unit_cube_manifold: unit_cube_mesh must be a valid closed orientable manifold",
+        )
 }

@@ -103,8 +103,10 @@ if ! command -v clang &>/dev/null; then
     APT_PACKAGES+=(clang)
 fi
 
-# cmake (needed by manifold3d crate's build.rs — it cmake-builds the
-# elalish/manifold C++ tree on first cargo build of reify-kernel-manifold)
+# cmake (used by scripts/build-manifold-deps.sh to build manifold's C++ libs
+# ONCE into /opt/reify-deps/manifold — see that step below. Cargo no longer
+# cmake-builds manifold per-worktree: a links-override in .cargo/config.toml
+# links the prebuilt static libs instead.)
 if ! command -v cmake &>/dev/null; then
     APT_PACKAGES+=(cmake)
 fi
@@ -239,6 +241,20 @@ else
     cargo install sccache --locked
     ok "sccache installed"
 fi
+
+# ---------- manifold prebuilt C++ libs ----------
+#
+# manifold is the one native kernel built from C++ source. Building it inside
+# every worktree (clone + cmake + ~227 MB OUT_DIR, ~4× per worktree) made cold
+# merge verifies overrun their timeouts. Instead, build it ONCE here into
+# /opt/reify-deps/manifold/lib; a links-override in .cargo/config.toml then
+# links the prebuilt static libs and skips the from-source build entirely —
+# the same prebuilt contract OCCT / OpenVDB / gmsh already use. Idempotent;
+# re-run after a `manifold-csg-sys` pin bump (the verify guard catches drift).
+
+info "Building manifold prebuilt C++ libs (one-time; ~5-10 min cold, fast on re-run)..."
+"$(dirname "${BASH_SOURCE[0]}")/build-manifold-deps.sh"
+ok "manifold prebuilt libs ready at /opt/reify-deps/manifold/lib"
 
 # ---------- build-accelerator systemd --user services ----------
 #

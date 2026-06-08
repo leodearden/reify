@@ -1,0 +1,108 @@
+/* CommandPalette overlay styles — mirrors KeyboardHelp.module.css conventions */
+
+.backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 80px;
+  z-index: 200;
+}
+
+.card {
+  background: var(--reify-surface, #2a2a3a);
+  color: var(--reify-text, #cdd6f4);
+  border: 1px solid var(--reify-border, #45475a);
+  border-radius: 8px;
+  width: 520px;
+  max-width: 90vw;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 16px;
+  font-size: 15px;
+  background: transparent;
+  color: var(--reify-text, #cdd6f4);
+  border: none;
+  border-bottom: 1px solid var(--reify-border, #45475a);
+  outline: none;
+}
+
+.input::placeholder {
+  color: var(--reify-text-muted, #6c7086);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  margin: 0 4px;
+  font-size: 14px;
+  gap: 8px;
+}
+
+.item:hover {
+  background: var(--reify-surface-hover, #313244);
+}
+
+.selected {
+  background: var(--reify-accent-muted, #2d3f6e);
+}
+
+.selected:hover {
+  background: var(--reify-accent-muted, #2d3f6e);
+}
+
+.cmdTitle {
+  flex: 1;
+  color: var(--reify-text, #cdd6f4);
+}
+
+.cmdKey {
+  flex-shrink: 0;
+  background: var(--reify-surface-hover, #313244);
+  border: 1px solid var(--reify-border, #45475a);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--reify-accent, #89b4fa);
+}
+
+.symbolName {
+  flex: 1;
+  color: var(--reify-text, #cdd6f4);
+}
+
+.containerName {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--reify-text-muted, #6c7086);
+}
+
+.emptyState {
+  color: var(--reify-text-muted, #6c7086);
+  font-style: italic;
+  cursor: default;
+  pointer-events: none;
+}

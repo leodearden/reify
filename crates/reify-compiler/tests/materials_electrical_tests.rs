@@ -65,20 +65,22 @@ fn electrical_module_loads_with_no_errors_and_three_traits() {
     );
 }
 
-// ─── (b) ElectricallyCharacterized refines MaterialSpec with 4 members ──────
+// ─── (b) ElectricallyCharacterized: one required + three optional params ─────
 
-/// ElectricallyCharacterized must refine MaterialSpec and declare four required
-/// members. Two composite-dimension params are now tightened to dimensioned
-/// scalar types by task #3115; dielectric_constant and magnetic_permeability
-/// stay Real (both are genuine-dimensionless ratios).
+/// ElectricallyCharacterized must refine MaterialSpec and declare exactly one
+/// required member (`resistivity`) plus three optional params in `defaults`
+/// (task δ — `= undef` added to dielectric_constant, dielectric_strength, and
+/// magnetic_permeability by task #3918-enabled optionality).
 ///
-/// Per-member expected type:
-///   resistivity            → Type::Scalar { dimension: ELECTRIC_RESISTIVITY }
-///   dielectric_constant    → Type::Real (genuine-dimensionless)
-///   dielectric_strength    → Type::Scalar { dimension: DIELECTRIC_STRENGTH }
-///   magnetic_permeability  → Type::Real (genuine-dimensionless)
+/// Contract after task δ:
+///   required_members (len 1):
+///     resistivity → RequirementKind::Param(Type::Scalar { ELECTRIC_RESISTIVITY })
+///   defaults (at least the three optional params):
+///     dielectric_constant   → DefaultKind::Param { cell_type: Type::Real }
+///     dielectric_strength   → DefaultKind::Param { cell_type: Type::Scalar { DIELECTRIC_STRENGTH } }
+///     magnetic_permeability → DefaultKind::Param { cell_type: Type::Real }
 #[test]
-fn electrically_characterized_refines_material_spec_with_four_members() {
+fn electrically_characterized_one_required_three_optional_params() {
     let module = load_stdlib_module();
 
     let ec = module
@@ -93,23 +95,42 @@ fn electrically_characterized_refines_material_spec_with_four_members() {
         ec.refinements
     );
 
+    // ── required_members: exactly resistivity (len 1 after task δ) ───────────
     assert_eq!(
         ec.required_members.len(),
-        4,
-        "ElectricallyCharacterized should have exactly 4 required members, got: {:?}",
+        1,
+        "ElectricallyCharacterized should have exactly 1 required member after \
+         task δ (dielectric_constant/strength/permeability are now optional), \
+         got: {:?}",
         ec.required_members
             .iter()
             .map(|r| &r.name)
             .collect::<Vec<_>>()
     );
 
-    let expected_members: [(&str, Type); 4] = [
-        (
-            "resistivity",
+    let resistivity_req = ec
+        .required_members
+        .iter()
+        .find(|r| r.name == "resistivity")
+        .expect("ElectricallyCharacterized must have 'resistivity' as required member");
+    match &resistivity_req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
             Type::Scalar {
                 dimension: DimensionVector::ELECTRIC_RESISTIVITY,
             },
+            "resistivity required member must have type Scalar{{ELECTRIC_RESISTIVITY}}, \
+             got {:?}",
+            ty
         ),
+        other => panic!(
+            "resistivity required member must be RequirementKind::Param, got {:?}",
+            other
+        ),
+    }
+
+    // ── defaults: three optional params (DefaultKind::Param) ─────────────────
+    let expected_defaults: [(&str, Type); 3] = [
         ("dielectric_constant", Type::Real),
         (
             "dielectric_strength",
@@ -120,30 +141,36 @@ fn electrically_characterized_refines_material_spec_with_four_members() {
         ("magnetic_permeability", Type::Real),
     ];
 
-    for (expected_name, expected_ty) in &expected_members {
-        let req = ec
-            .required_members
+    for (name, expected_cell_type) in &expected_defaults {
+        let default = ec
+            .defaults
             .iter()
-            .find(|r| r.name == *expected_name)
+            .find(|d| {
+                matches!(&d.kind, DefaultKind::Param { .. })
+                    && d.name.as_deref() == Some(*name)
+            })
             .unwrap_or_else(|| {
                 panic!(
-                    "ElectricallyCharacterized missing required member '{}', got: {:?}",
-                    expected_name,
-                    ec.required_members
+                    "ElectricallyCharacterized must have optional param '{}' in defaults, \
+                     got defaults: {:?}",
+                    name,
+                    ec.defaults
                         .iter()
-                        .map(|r| &r.name)
+                        .map(|d| &d.name)
                         .collect::<Vec<_>>()
                 )
             });
-        match &req.kind {
-            RequirementKind::Param(ty) => assert_eq!(
-                ty, expected_ty,
-                "ElectricallyCharacterized member '{}' expected {:?}, got {:?}",
-                expected_name, expected_ty, ty
+        match &default.kind {
+            DefaultKind::Param { cell_type, .. } => assert_eq!(
+                cell_type, expected_cell_type,
+                "ElectricallyCharacterized optional param '{}' expected cell_type {:?}, \
+                 got {:?}",
+                name, expected_cell_type, cell_type
             ),
             other => panic!(
-                "ElectricallyCharacterized member '{}' should be Param, got {:?}",
-                expected_name, other
+                "ElectricallyCharacterized optional param '{}' must be DefaultKind::Param, \
+                 got {:?}",
+                name, other
             ),
         }
     }
@@ -250,7 +277,7 @@ fn copper_conforms_to_conductive_with_constraint_injection() {
     // Avoids scientific notation with negative exponent which the parser mishandles.
     let source = r#"
 structure def Copper : Conductive {
-    param density : Real = 8960.0
+    param density : Density = 8960kg/m^3
     param name : String = "copper"
     param resistivity : ElectricResistivity = 0.000000017 * 1ohm * 1m
     param dielectric_constant : Real = 1.0
@@ -358,7 +385,7 @@ fn glass_conforms_to_insulating_with_constraint_injection() {
     // Decimal form avoids the parser's scientific-notation edge cases.
     let source = r#"
 structure def Glass : Insulating {
-    param density : Real = 2500.0
+    param density : Density = 2500kg/m^3
     param name : String = "glass"
     param resistivity : ElectricResistivity = 1000000000.0 * 1ohm * 1m
     param dielectric_constant : Real = 7.0

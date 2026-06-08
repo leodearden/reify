@@ -1,6 +1,7 @@
 import { type Component, createSignal, createMemo, For, Show } from 'solid-js';
 import type { ValueData } from '../types';
 import styles from './PropertyEditor.module.css';
+import { SelectionBreadcrumb } from './SelectionBreadcrumb';
 
 /**
  * Return a short glyph for the non-Final freshness variants.
@@ -174,6 +175,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   return (
     <div data-testid="property-editor" class={styles.container}>
       <div class="panel-title" data-testid="panel-title-parameters">Parameters</div>
+      <SelectionBreadcrumb path={props.selectedEntity} />
       <input
         type="text"
         placeholder="Filter properties..."
@@ -243,6 +245,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                               data-freshness={val.freshness}
                               data-testid={`freshness-badge-${val.cell_id}`}
                               aria-label={`freshness ${val.freshness}`}
+                              title={`freshness ${val.freshness}`}
                             >
                               {freshnessGlyph(val.freshness)}
                             </span>

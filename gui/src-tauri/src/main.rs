@@ -211,7 +211,13 @@ fn create_watcher(
                     emit_status(&handle, "evaluating");
                     {
                         let _idle = IdleGuard(handle.clone());
-                        if let Ok(gui_state) = reify_gui::commands::update_source_impl(
+                        // reload_for_watch_impl always returns Ok(GuiState): success
+                        // returns the fresh state; failure returns the last-good state
+                        // carrying the reload-error diagnostic in compile_diagnostics.
+                        // The failure path therefore surfaces a compile-diagnostics Tauri
+                        // event to the frontend instead of being silently dropped (the
+                        // former behaviour with update_source_impl's Err branch).
+                        if let Ok(gui_state) = reify_gui::commands::reload_for_watch_impl(
                             &state.engine,
                             &path_str,
                             &content,
@@ -301,7 +307,7 @@ fn update_source(
 ) -> Result<reify_gui::types::GuiState, String> {
     emit_status(&app, "evaluating");
     let _idle = IdleGuard(app.clone());
-    let result = reify_gui::commands::update_source_impl(&state.engine, &path, &content);
+    let result = reify_gui::commands::reload_for_watch_impl(&state.engine, &path, &content);
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
         emit_delta(&app, &delta);
@@ -781,7 +787,7 @@ fn main() {
                         eprintln!("Debug server failed: {e}");
                     }
                 });
-                eprintln!("REIFY_DEBUG=1: debug server starting on http://127.0.0.1:3939");
+                eprintln!("REIFY_DEBUG=1: debug server starting on {}", crate::debug_server::debug_endpoint_url(crate::debug_server::resolve_debug_port()));
             }
 
             // Notify the frontend of the kernel availability at startup.

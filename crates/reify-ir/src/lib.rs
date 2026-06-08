@@ -67,7 +67,7 @@ pub use geometry::{
     FeatureId, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
     KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LoftOpHistoryRecords,
-    Mesh, ModEntry, Operation,
+    Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
     QueryCapability, QueryError, ReprKind, Role, StepKind, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeMesh, debug_assert_query_many_invariant,
 };
@@ -81,8 +81,8 @@ pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
 pub use traits::{EnumDef, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
-    ResultRef, SampledField, SampledGridKind, Satisfaction, StructureInstanceData, Value, ValueMap,
-    quaternion_is_finite,
+    KeyedMember, MemberKey, ResultRef, SampledField, SampledGridKind, Satisfaction,
+    StructureInstanceData, UndefCause, Value, ValueMap, keyed_member_cell, quaternion_is_finite,
 };
 pub use warm::{OpaqueState, WarmStartable};
 pub use warm_registry::{WarmStartableRegistration, WarmStartableRegistry};

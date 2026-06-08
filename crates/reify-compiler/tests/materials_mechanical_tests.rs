@@ -59,10 +59,12 @@ fn stdlib_file_parses_and_compiles_without_errors() {
 
 // ─── step-3: Elastic trait ───────────────────────────────────────────────────
 
-/// Step 3: Elastic trait exists with 3 required members: youngs_modulus,
-/// poissons_ratio, shear_modulus — all typed as Real.
+/// Step 3: Elastic trait has 2 required members: youngs_modulus (Pressure)
+/// and poissons_ratio (Real, dimensionless). (task α #4239: shear_modulus is
+/// now `= undef` optional, so it lives in `defaults`, not `required_members`.)
+/// (task #3111: youngs_modulus tightened from Real to Pressure.)
 #[test]
-fn elastic_trait_has_three_real_members() {
+fn elastic_trait_required_members_have_correct_types() {
     let module = load_stdlib_module();
 
     let elastic = module
@@ -73,8 +75,8 @@ fn elastic_trait_has_three_real_members() {
 
     assert_eq!(
         elastic.required_members.len(),
-        3,
-        "Elastic should have exactly 3 required members, got: {:?}",
+        2,
+        "Elastic should have exactly 2 required members, got: {:?}",
         elastic
             .required_members
             .iter()
@@ -97,35 +99,54 @@ fn elastic_trait_has_three_real_members() {
         "expected 'poissons_ratio' in Elastic, got: {:?}",
         member_names
     );
+    // shear_modulus is now optional (`= undef`, task α #4239) → it lives in
+    // `defaults`, not `required_members`.
     assert!(
-        member_names.contains(&"shear_modulus"),
-        "expected 'shear_modulus' in Elastic, got: {:?}",
+        !member_names.contains(&"shear_modulus"),
+        "shear_modulus is now optional and should NOT be a required member, got: {:?}",
         member_names
     );
 
-    for req in &elastic.required_members {
-        match &req.kind {
-            RequirementKind::Param(ty) => {
-                assert_eq!(
-                    *ty,
-                    Type::Real,
-                    "Elastic member '{}' should be Real, got {:?}",
-                    req.name,
-                    ty
-                );
-            }
-            other => panic!(
-                "Elastic member '{}' should be Param, got {:?}",
-                req.name, other
-            ),
-        }
+    // youngs_modulus must be Pressure (dimensioned), not Real — task #3111.
+    let youngs = elastic
+        .required_members
+        .iter()
+        .find(|r| r.name == "youngs_modulus")
+        .expect("expected 'youngs_modulus' required member");
+    match &youngs.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+            "youngs_modulus should be Scalar{{PRESSURE}}, got {:?}",
+            ty
+        ),
+        other => panic!("youngs_modulus should be Param, got {:?}", other),
+    }
+
+    // poissons_ratio must stay Real (genuinely dimensionless).
+    let poissons = elastic
+        .required_members
+        .iter()
+        .find(|r| r.name == "poissons_ratio")
+        .expect("expected 'poissons_ratio' required member");
+    match &poissons.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Real,
+            "poissons_ratio should remain Real (dimensionless), got {:?}",
+            ty
+        ),
+        other => panic!("poissons_ratio should be Param, got {:?}", other),
     }
 }
 
 // ─── step-5: Strong trait ────────────────────────────────────────────────────
 
-/// Step 5: Strong trait has 3 required members and at least 1 constraint
-/// default (the `uts >= yield_strength` constraint).
+/// Step 5: Strong trait has 2 required members and at least 1 constraint
+/// default (the `ultimate_tensile_strength >= yield_strength` constraint). (task α #4239:
+/// compressive_strength is now `= undef` optional → in `defaults`.)
 #[test]
 fn strong_trait_has_members_and_constraint_default() {
     let module = load_stdlib_module();
@@ -138,8 +159,8 @@ fn strong_trait_has_members_and_constraint_default() {
 
     assert_eq!(
         strong.required_members.len(),
-        3,
-        "Strong should have exactly 3 required members, got: {:?}",
+        2,
+        "Strong should have exactly 2 required members, got: {:?}",
         strong
             .required_members
             .iter()
@@ -156,10 +177,15 @@ fn strong_trait_has_members_and_constraint_default() {
         member_names.contains(&"yield_strength"),
         "expected 'yield_strength' in Strong"
     );
-    assert!(member_names.contains(&"uts"), "expected 'uts' in Strong");
     assert!(
-        member_names.contains(&"compressive_strength"),
-        "expected 'compressive_strength' in Strong"
+        member_names.contains(&"ultimate_tensile_strength"),
+        "expected 'ultimate_tensile_strength' in Strong (β #4240 renamed from old name)"
+    );
+    // compressive_strength is now optional (`= undef`, task α #4239) → it lives
+    // in `defaults`, not `required_members`.
+    assert!(
+        !member_names.contains(&"compressive_strength"),
+        "compressive_strength is now optional and should NOT be a required member"
     );
 
     let constraint_defaults: Vec<_> = strong
@@ -169,8 +195,69 @@ fn strong_trait_has_members_and_constraint_default() {
         .collect();
     assert!(
         !constraint_defaults.is_empty(),
-        "Strong trait should have at least 1 constraint default (uts >= yield_strength)"
+        "Strong trait should have at least 1 constraint default (ultimate_tensile_strength >= yield_strength)"
     );
+
+    // Type assertions: yield_strength and ultimate_tensile_strength should be
+    // Pressure (dimensioned) after task #3111 tightening.
+    for name in &["yield_strength", "ultimate_tensile_strength"] {
+        let req = strong
+            .required_members
+            .iter()
+            .find(|r| r.name == *name)
+            .unwrap_or_else(|| panic!("Strong missing required member '{}'", name));
+        match &req.kind {
+            RequirementKind::Param(ty) => assert_eq!(
+                *ty,
+                Type::Scalar {
+                    dimension: DimensionVector::PRESSURE,
+                },
+                "Strong member '{}' should be Scalar{{PRESSURE}}, got {:?}",
+                name,
+                ty
+            ),
+            other => panic!(
+                "Strong member '{}' should be Param, got {:?}",
+                name, other
+            ),
+        }
+    }
+}
+
+// ─── MaterialSpec.density type pin ───────────────────────────────────────────
+
+/// MaterialSpec.density must be typed as Density (DimensionVector::MASS_DENSITY),
+/// not plain Real, after task #3111 tightening.
+#[test]
+fn material_spec_density_member_is_density_type() {
+    let module = load_stdlib_module();
+
+    let spec = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == "MaterialSpec")
+        .expect("expected 'MaterialSpec' trait in compiled module");
+
+    let density_req = spec
+        .required_members
+        .iter()
+        .find(|r| r.name == "density")
+        .expect("MaterialSpec should have 'density' as a required member");
+
+    match &density_req.kind {
+        RequirementKind::Param(ty) => assert_eq!(
+            *ty,
+            Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+            "MaterialSpec.density should be Scalar{{MASS_DENSITY}} (Density type), got {:?}",
+            ty
+        ),
+        other => panic!(
+            "MaterialSpec.density should be a Param requirement, got {:?}",
+            other
+        ),
+    }
 }
 
 // ─── step-7: HardnessScale enum and Hard trait ───────────────────────────────
@@ -278,9 +365,9 @@ trait Elastic {
 
 trait Strong {
     param yield_strength : Real
-    param uts : Real
+    param ultimate_tensile_strength : Real
     param compressive_strength : Real
-    constraint uts >= yield_strength
+    constraint ultimate_tensile_strength >= yield_strength
 }
 
 structure def Steel : Elastic + Strong {
@@ -288,7 +375,7 @@ structure def Steel : Elastic + Strong {
     param poissons_ratio : Real = 0.3
     param shear_modulus : Real = 77.0
     param yield_strength : Real = 250.0
-    param uts : Real = 400.0
+    param ultimate_tensile_strength : Real = 400.0
     param compressive_strength : Real = 250.0
 }
 "#;
@@ -318,21 +405,21 @@ structure def Steel : Elastic + Strong {
 
 // ─── step-11: constraint injection into Steel ─────────────────────────────────
 
-/// Step 11: The constraint from Strong (`uts >= yield_strength`) is injected
-/// into a conforming Steel structure — template.constraints is non-empty.
+/// Step 11: The constraint from Strong (`ultimate_tensile_strength >= yield_strength`)
+/// is injected into a conforming Steel structure — template.constraints is non-empty.
 #[test]
 fn strong_constraint_injected_into_steel() {
     let source = r#"
 trait Strong {
     param yield_strength : Real
-    param uts : Real
+    param ultimate_tensile_strength : Real
     param compressive_strength : Real
-    constraint uts >= yield_strength
+    constraint ultimate_tensile_strength >= yield_strength
 }
 
 structure def Steel : Strong {
     param yield_strength : Real = 250.0
-    param uts : Real = 400.0
+    param ultimate_tensile_strength : Real = 400.0
     param compressive_strength : Real = 250.0
 }
 "#;
@@ -397,7 +484,9 @@ structure def S {
 fn remaining_five_traits_exist() {
     let module = load_stdlib_module();
 
-    // FatigueRated: 1 member (endurance_limit)
+    // FatigueRated: 0 required members (all three new params are optional = undef).
+    // task β #4240: drop single endurance_limit (required); add fatigue_limit,
+    // fatigue_strength_at (Real = undef) and fatigue_cycles (Int = undef) — all optional.
     let fatigue = module
         .trait_defs
         .iter()
@@ -405,16 +494,23 @@ fn remaining_five_traits_exist() {
         .expect("expected 'FatigueRated' trait");
     assert_eq!(
         fatigue.required_members.len(),
-        1,
-        "FatigueRated should have 1 required member"
-    );
-    assert!(
+        0,
+        "FatigueRated should have 0 required members (all params optional = undef), got: {:?}",
         fatigue
             .required_members
             .iter()
-            .any(|r| r.name == "endurance_limit"),
-        "FatigueRated should have 'endurance_limit' member"
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
+    assert!(
+        !fatigue
+            .required_members
+            .iter()
+            .any(|r| r.name == "endurance_limit"),
+        "endurance_limit must no longer exist as a required member (dropped in β #4240)"
+    );
+    // Richer per-param defaults + cell_type assertions live in
+    // materials_param_surface_tests::fatigue_rated_optional_params_in_defaults.
 
     // FractureTough: 1 member (fracture_toughness)
     let fracture = module
@@ -435,7 +531,9 @@ fn remaining_five_traits_exist() {
         "FractureTough should have 'fracture_toughness' member"
     );
 
-    // Ductile: 2 members (elongation, reduction_of_area)
+    // Ductile: 1 required member (elongation_at_break). (task α #4239:
+    // reduction_of_area is now `= undef` optional → in `defaults`.
+    // task β #4240: elongation renamed → elongation_at_break.)
     let ductile = module
         .trait_defs
         .iter()
@@ -443,25 +541,27 @@ fn remaining_five_traits_exist() {
         .expect("expected 'Ductile' trait");
     assert_eq!(
         ductile.required_members.len(),
-        2,
-        "Ductile should have 2 required members"
+        1,
+        "Ductile should have 1 required member"
     );
     assert!(
         ductile
             .required_members
             .iter()
-            .any(|r| r.name == "elongation"),
-        "Ductile should have 'elongation' member"
+            .any(|r| r.name == "elongation_at_break"),
+        "Ductile should have 'elongation_at_break' member (β #4240 renamed from 'elongation')"
     );
     assert!(
-        ductile
+        !ductile
             .required_members
             .iter()
             .any(|r| r.name == "reduction_of_area"),
-        "Ductile should have 'reduction_of_area' member"
+        "reduction_of_area is now optional and should NOT be a required member"
     );
 
-    // ImpactResistant: 1 member (impact_energy)
+    // ImpactResistant: 0 required members (both new params are optional = undef).
+    // task β #4240: drop single impact_energy (required); add charpy_impact and
+    // izod_impact (Real = undef) — both optional.
     let impact = module
         .trait_defs
         .iter()
@@ -469,16 +569,23 @@ fn remaining_five_traits_exist() {
         .expect("expected 'ImpactResistant' trait");
     assert_eq!(
         impact.required_members.len(),
-        1,
-        "ImpactResistant should have 1 required member"
-    );
-    assert!(
+        0,
+        "ImpactResistant should have 0 required members (all params optional = undef), got: {:?}",
         impact
             .required_members
             .iter()
-            .any(|r| r.name == "impact_energy"),
-        "ImpactResistant should have 'impact_energy' member"
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
+    assert!(
+        !impact
+            .required_members
+            .iter()
+            .any(|r| r.name == "impact_energy"),
+        "impact_energy must no longer exist as a required member (dropped in β #4240)"
+    );
+    // Richer per-param defaults + cell_type assertions live in
+    // materials_param_surface_tests::impact_resistant_optional_params_in_defaults.
 
     // Damping: 2 members (damping_ratio, loss_factor)
     let damping = module
@@ -591,12 +698,12 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
     // (trait_name, trait-specific params to include in the structure — inherited
     // MaterialSpec params deliberately omitted to trigger the conformance error)
     let cases: &[(&str, &str)] = &[
-        ("FatigueRated", "    param endurance_limit : Real = 500.0"),
+        ("FatigueRated", "    param fatigue_limit : Real = 500.0"),
         (
             "FractureTough",
             "    param fracture_toughness : FractureToughness = 50.0 * 1Pa * sqrt(1m)",
         ),
-        ("ImpactResistant", "    param impact_energy : Real = 30.0"),
+        ("ImpactResistant", "    param charpy_impact : Real = 30.0"),
         (
             "Damping",
             "    param damping_ratio : Real = 0.05\n    param loss_factor : Real = 0.1",
@@ -649,12 +756,12 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
 fn four_refining_traits_with_all_material_members_conform_cleanly() {
     // (trait_name, trait-specific params to include alongside inherited density/name)
     let cases: &[(&str, &str)] = &[
-        ("FatigueRated", "    param endurance_limit : Real = 500.0"),
+        ("FatigueRated", "    param fatigue_limit : Pressure = 500MPa"),
         (
             "FractureTough",
             "    param fracture_toughness : FractureToughness = 50.0 * 1Pa * sqrt(1m)",
         ),
-        ("ImpactResistant", "    param impact_energy : Real = 30.0"),
+        ("ImpactResistant", "    param charpy_impact : Energy = 30J"),
         (
             "Damping",
             "    param damping_ratio : Real = 0.05\n    param loss_factor : Real = 0.1",
@@ -663,7 +770,7 @@ fn four_refining_traits_with_all_material_members_conform_cleanly() {
 
     for (trait_name, own_members) in cases {
         let source = format!(
-            "structure def Test{} : {} {{\n    param density : Real = 7850.0\n    param name : String = \"steel\"\n{}\n}}\n",
+            "structure def Test{} : {} {{\n    param density : Density = 7850kg/m^3\n    param name : String = \"steel\"\n{}\n}}\n",
             trait_name, trait_name, own_members
         );
         let compiled = compile_source_with_stdlib(&source);
@@ -708,8 +815,9 @@ fn four_refining_traits_with_all_material_members_conform_cleanly() {
 
 // ─── step-17: full integration ────────────────────────────────────────────────
 
-/// Step 17: The complete .ri file compiles to exactly 9 traits and 1 enum,
-/// with zero error-severity diagnostics.
+/// Step 17: The complete .ri file compiles to exactly 10 traits and 1 enum,
+/// with zero error-severity diagnostics. (task α #4239 added the
+/// free-standing `TemperatureDependent` base trait, §6.1.)
 #[test]
 fn full_module_has_nine_traits_and_one_enum() {
     let module = load_stdlib_module();
@@ -727,8 +835,8 @@ fn full_module_has_nine_traits_and_one_enum() {
 
     assert_eq!(
         module.trait_defs.len(),
-        9,
-        "expected exactly 9 traits, got: {:?}",
+        10,
+        "expected exactly 10 traits, got: {:?}",
         module
             .trait_defs
             .iter()
@@ -746,6 +854,7 @@ fn full_module_has_nine_traits_and_one_enum() {
     // Verify all expected trait names are present
     let expected_traits = [
         "MaterialSpec",
+        "TemperatureDependent",
         "Elastic",
         "Strong",
         "Hard",

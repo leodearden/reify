@@ -2,7 +2,7 @@
 //! `stdlib/materials_mechanical.ri` — task 1876.
 //!
 //! The task promotes `Material` from a trait to a concrete structure carrying
-//! fields `name : String`, `density : Real`, and `youngs_modulus : Real`. The
+//! fields `name : String`, `density : Density`, and `youngs_modulus : Pressure`. The
 //! original trait-level contract has been renamed to `MaterialSpec` so that
 //! the name `Material` is free to bind the new struct. These tests exercise
 //! the struct's surface: presence in the stdlib, type-resolution behaviour
@@ -13,14 +13,14 @@
 
 use reify_compiler::{EntityKind, stdlib_loader};
 use reify_test_support::compile_source_with_stdlib;
-use reify_core::{Severity, Type};
+use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::CompiledExprKind;
 
 // ─── step-3: canonical Material struct is present in the stdlib ─────────────
 
 /// The canonical `Material` struct must appear as a Structure template in the
-/// stdlib with exactly three params — `name : String`, `density : Real`, and
-/// `youngs_modulus : Real` — and none of the params may declare a default.
+/// stdlib with exactly three params — `name : String`, `density : Density`, and
+/// `youngs_modulus : Pressure` — and none of the params may declare a default.
 /// Callers are expected to supply values at construction.
 #[test]
 fn material_struct_present_in_stdlib() {
@@ -58,10 +58,22 @@ fn material_struct_present_in_stdlib() {
     );
 
     // Check each expected (name, type) pair is present.
-    let expected: &[(&str, reify_core::Type)] = &[
-        ("name", reify_core::Type::String),
-        ("density", reify_core::Type::Real),
-        ("youngs_modulus", reify_core::Type::Real),
+    // density → Density (DimensionVector::MASS_DENSITY), youngs_modulus → Pressure
+    // (DimensionVector::PRESSURE), per task #3111 tightening.
+    let expected: &[(&str, Type)] = &[
+        ("name", Type::String),
+        (
+            "density",
+            Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        ),
+        (
+            "youngs_modulus",
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE,
+            },
+        ),
     ];
     for (expected_name, expected_type) in expected {
         let cell = param_cells
@@ -144,7 +156,7 @@ fn param_material_resolves_to_struct_ref() {
 
 // ─── step-7: struct-call is a valid default for a struct-typed param ────────
 
-/// `param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)`
+/// `param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)`
 /// must compile cleanly: the param type is `Type::StructureRef("Material")`,
 /// and the default expression is recorded as a call to `Material` carrying the
 /// three supplied arguments. This is the core "`: Material = Material(...)` is
@@ -155,7 +167,7 @@ fn param_material_resolves_to_struct_ref() {
 fn material_struct_call_is_valid_param_default() {
     let source = r#"
         structure def Part {
-            param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+            param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
         }
     "#;
     let module = compile_source_with_stdlib(source);
@@ -249,12 +261,12 @@ const BOLTFLANGE_MIRROR_SOURCE: &str = r#"
             param hole_radius : Length = 4mm
 
             // Rigid trait requirement (Rigid's own param; Physical's geometry +
-            // material slots are below)
-            param moment_of_inertia : Real = 0.000001
+            // material slots are below). Disc OD 120 mm, h 12 mm, mass ≈ 0.86 kg → I_z ≈ 0.002 kg·m²
+            param moment_of_inertia : MomentOfInertia = 0.002 * 1kg * 1m * 1m
 
             // Canonical Material struct default — the task-1876 payoff this
             // test pins (recorded StructureInstanceCtor with 3 bound args).
-            param material : Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
+            param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
             constraint outer_radius > bolt_circle_radius
             constraint hole_count > 0
@@ -429,7 +441,7 @@ fn material_spec_trait_still_usable_as_trait_object() {
     let source = r#"
         structure def SomeSteel : MaterialSpec {
             param name : String = "steel"
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
         }
         trait HasMat { param m : MaterialSpec }
         structure def Widget : HasMat {

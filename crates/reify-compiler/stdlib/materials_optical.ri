@@ -2,7 +2,7 @@
 // Provides optical characterization trait definitions for engineering materials.
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
-// reference_thickness is tightenable-now (task #3113); absorption_coefficient was
+// reference_thickness tightened to Length by task #3113; absorption_coefficient was
 // tightened to AbsorptionCoeff (1/m) by task #3115; refractive_index and
 // transmittance are genuine-dimensionless (annotated below).
 //
@@ -17,16 +17,26 @@
 
 // ── OpticallyCharacterized ───────────────────────────────────────────────────
 
-// Root optical-material trait. Every optically characterised material must
-// supply the four scalar optical properties below (all Real pending dimensional
-// type wiring):
-//   refractive_index       — dimensionless (n, ratio of c/phase-velocity)
-//   absorption_coefficient — 1/m (attenuation of optical power per unit length)
-//   transmittance          — dimensionless fraction [0, 1]
-//   reference_thickness    — m (thickness at which transmittance is measured)
+// Root optical-material trait. One param is required; three are optional
+// (= undef) because not every optically characterised material has a
+// well-defined value for all three:
+//
+//   Required:
+//     refractive_index       — dimensionless (n, ratio of c/phase-velocity)
+//
+//   Optional (= undef):
+//     absorption_coefficient — 1/m (attenuation of optical power per unit
+//                              length); undef for opaque / non-characterised
+//                              materials (tightenable to AbsorptionCoeff;
+//                              type already tightened by task #3115)
+//     transmittance          — dimensionless fraction [0, 1]; undef for
+//                              opaque materials
+//     reference_thickness    — m (thickness at which transmittance is
+//                              measured); undef when transmittance is undef
+//                              (tightened to Length by task #3113)
 trait OpticallyCharacterized : MaterialSpec {
     param refractive_index : Real // dimensionless
-    param absorption_coefficient : AbsorptionCoeff
-    param transmittance : Real // dimensionless
-    param reference_thickness : Real
+    param absorption_coefficient : AbsorptionCoeff = undef
+    param transmittance : Real = undef // dimensionless
+    param reference_thickness : Length = undef
 }

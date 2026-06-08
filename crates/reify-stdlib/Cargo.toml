@@ -11,6 +11,11 @@ reify-gcode.workspace = true
 reify-ir.workspace = true
 tracing.workspace = true
 faer = { workspace = true }
+# nalgebra is used for the N≥4 dense determinant/inverse path (DMatrix LU).
+# faer is the FEA sparse backend and intentionally left untouched; adding an N≥4
+# path to faer would require migrating the full dense API surface — higher risk
+# for no gain at the 4×4 scale targeted by this task.
+nalgebra = "0.34"
 
 [dev-dependencies]
 reify-core.workspace = true

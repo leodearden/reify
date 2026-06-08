@@ -1060,6 +1060,63 @@ pub(crate) fn compile_geometry_call(
                 ],
             }])
         }
+        "cone" => {
+            if !check_arg_count_exact("cone", compiled_args.len(), 3, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Cone,
+                args: vec![
+                    ("bottom_radius".to_string(), it.next().unwrap()),
+                    ("top_radius".to_string(), it.next().unwrap()),
+                    ("height".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        "wedge" => {
+            if !check_arg_count_exact("wedge", compiled_args.len(), 4, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Wedge,
+                args: vec![
+                    ("width".to_string(), it.next().unwrap()),
+                    ("depth".to_string(), it.next().unwrap()),
+                    ("height".to_string(), it.next().unwrap()),
+                    ("top_width".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // --- 2-D profile face constructors ---
+        // rectangle(width, height) → CompiledGeometryOp::Profile(Rectangle)
+        "rectangle" => {
+            if !check_arg_count_exact("rectangle", compiled_args.len(), 2, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Profile {
+                kind: ProfileKind::Rectangle,
+                args: vec![
+                    ("width".to_string(), it.next().unwrap()),
+                    ("height".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // circle(radius) → CompiledGeometryOp::Profile(Circle)
+        "circle" => {
+            if !check_arg_count_exact("circle", compiled_args.len(), 1, expr.span, diagnostics) {
+                return None;
+            }
+            Some(vec![CompiledGeometryOp::Profile {
+                kind: ProfileKind::Circle,
+                args: vec![
+                    ("radius".to_string(), compiled_args.into_iter().next().unwrap()),
+                ],
+            }])
+        }
+
         // --- Patterns ---
         // linear_pattern(target, dx, dy, dz, count, spacing)
         "linear_pattern" => {
@@ -1090,58 +1147,97 @@ pub(crate) fn compile_geometry_call(
             Some(sub_ops)
         }
         // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)
+        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle) — scalar form (9 args)
+        // circular_pattern(target, axis_value, count, angle)              — value form  (4 args)
         "circular_pattern" => {
-            if !check_arg_count_exact(
-                "circular_pattern",
-                compiled_args.len(),
-                9,
-                expr.span,
-                diagnostics,
-            ) {
-                return None;
+            let n = compiled_args.len();
+            if n == 9 {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Circular,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("ox".to_string(), it.next().unwrap()),
+                        ("oy".to_string(), it.next().unwrap()),
+                        ("oz".to_string(), it.next().unwrap()),
+                        ("ax".to_string(), it.next().unwrap()),
+                        ("ay".to_string(), it.next().unwrap()),
+                        ("az".to_string(), it.next().unwrap()),
+                        ("count".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else if n == 4 {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Circular,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("axis".to_string(), it.next().unwrap()),
+                        ("count".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else {
+                push_labeled_arg_count_error(
+                    format!("circular_pattern() expects 9 arguments (scalar) or 4 (axis-value), got {n}"),
+                    expr.span,
+                    diagnostics,
+                );
+                None
             }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Pattern {
-                kind: PatternKind::Circular,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("ox".to_string(), it.next().unwrap()),
-                    ("oy".to_string(), it.next().unwrap()),
-                    ("oz".to_string(), it.next().unwrap()),
-                    ("ax".to_string(), it.next().unwrap()),
-                    ("ay".to_string(), it.next().unwrap()),
-                    ("az".to_string(), it.next().unwrap()),
-                    ("count".to_string(), it.next().unwrap()),
-                    ("angle".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
         }
-        // mirror(target, ox, oy, oz, nx, ny, nz)
+        // mirror(target, ox, oy, oz, nx, ny, nz) — scalar form (7 args)
+        // mirror(target, plane_value)            — value form  (2 args)
         "mirror" => {
-            if !check_arg_count_exact("mirror", compiled_args.len(), 7, expr.span, diagnostics) {
-                return None;
+            let n = compiled_args.len();
+            if n == 7 {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Mirror,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("ox".to_string(), it.next().unwrap()),
+                        ("oy".to_string(), it.next().unwrap()),
+                        ("oz".to_string(), it.next().unwrap()),
+                        ("nx".to_string(), it.next().unwrap()),
+                        ("ny".to_string(), it.next().unwrap()),
+                        ("nz".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else if n == 2 {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Mirror,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("plane".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            } else {
+                push_labeled_arg_count_error(
+                    format!("mirror() expects 7 arguments (scalar) or 2 (plane-value), got {n}"),
+                    expr.span,
+                    diagnostics,
+                );
+                None
             }
-            let mut it = compiled_args.into_iter();
-            let target = geom_ref(0);
-            let op = CompiledGeometryOp::Pattern {
-                kind: PatternKind::Mirror,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("ox".to_string(), it.next().unwrap()),
-                    ("oy".to_string(), it.next().unwrap()),
-                    ("oz".to_string(), it.next().unwrap()),
-                    ("nx".to_string(), it.next().unwrap()),
-                    ("ny".to_string(), it.next().unwrap()),
-                    ("nz".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
         }
         // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1, dx2, dy2, dz2, count2, spacing2)
         "linear_pattern_2d" => {
@@ -1607,6 +1703,7 @@ pub fn derive_feature_tags(
                 CompiledGeometryOp::Pattern { .. } => reify_ir::StepKind::Pattern,
                 CompiledGeometryOp::Sweep { .. } => reify_ir::StepKind::Sweep,
                 CompiledGeometryOp::Curve { .. } => reify_ir::StepKind::Curve,
+                CompiledGeometryOp::Profile { .. } => reify_ir::StepKind::Profile,
             };
             reify_ir::FeatureTag {
                 source_span: span,
@@ -1662,6 +1759,8 @@ mod tests {
         "cylinder_centered",
         "sphere",
         "tube",
+        "cone",
+        "wedge",
         "linear_pattern_2d",
         "arbitrary_pattern",
         "line_segment",
@@ -1670,6 +1769,8 @@ mod tests {
         "interp",
         "bezier",
         "nurbs",
+        "rectangle",
+        "circle",
     ];
 
     /// Boolean set-operation functions — handled by the early-return path to
@@ -1694,10 +1795,10 @@ mod tests {
     /// Breakdown at time of writing:
     /// ```text
     /// GEOM_ARG_FUNCTIONS    19
-    /// NO_GEOM_ARG_FUNCTIONS 14  (added box_centered, cylinder_centered)
+    /// NO_GEOM_ARG_FUNCTIONS 18  (added rectangle, circle for 2-D profile faces)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 40
+    /// Total                 44
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1709,7 +1810,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 40;
+    const EXPECTED_DISPATCH_COUNT: usize = 44;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
@@ -3457,6 +3558,7 @@ mod tests {
             content_hash: ContentHash::of_str("fn_box_shadow_hoist"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         };
         let functions = vec![box_shadow_fn];
 
@@ -3510,6 +3612,7 @@ mod tests {
             content_hash: ContentHash::of_str("fn_box_shadow_merge"),
             annotations: vec![],
             optimized_target: None,
+            type_params: vec![],
         };
         let functions = vec![box_shadow_fn];
 
@@ -3613,6 +3716,329 @@ mod tests {
         assert!(
             !error_diags[0].labels.is_empty(),
             "Error diagnostic must have a label at the conditional span"
+        );
+    }
+
+    // --- cone() compiler dispatch (task-4156, step-5 RED) ---
+
+    /// `cone(10mm, 5mm, 20mm)` must compile to a single
+    /// `CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cone }` with three
+    /// named args: `bottom_radius`, `top_radius`, `height`.
+    ///
+    /// RED until step-6 adds the "cone" arm in `compile_geometry_call` and
+    /// adds `PrimitiveKind::Cone` to `types.rs`.
+    #[test]
+    fn compile_geometry_call_cone_3args_returns_primitive_cone() {
+        let expr = make_call_with_arity("cone", 3);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("cone(_, _, _) should produce ops");
+        assert_eq!(ops.len(), 1, "cone must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Primitive { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    PrimitiveKind::Cone,
+                    "cone op must have kind PrimitiveKind::Cone"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["bottom_radius", "top_radius", "height"],
+                    "cone arg names must be bottom_radius / top_radius / height"
+                );
+            }
+            other => panic!("expected Primitive(Cone), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "cone(_, _, _) must emit no diagnostics");
+    }
+
+    /// `cone(10mm, 5mm)` (2 args) must emit an arity diagnostic and return `None`.
+    ///
+    /// RED until step-6 adds the "cone" arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_cone_wrong_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("cone", 2);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "cone with 2 args must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "cone with 2 args must emit at least one diagnostic"
+        );
+    }
+
+    // --- wedge() compiler dispatch (task-4158, step-7 RED) ---
+
+    /// `wedge(20mm,10mm,15mm,5mm)` must compile to a single
+    /// `CompiledGeometryOp::Primitive { kind: PrimitiveKind::Wedge }` with four
+    /// named args: `width`, `depth`, `height`, `top_width`.
+    ///
+    /// RED until step-8 adds the "wedge" arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_wedge_4args_returns_primitive_wedge() {
+        let expr = make_call_with_arity("wedge", 4);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("wedge(_, _, _, _) should produce ops");
+        assert_eq!(ops.len(), 1, "wedge must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Primitive { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    PrimitiveKind::Wedge,
+                    "wedge op must have kind PrimitiveKind::Wedge"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["width", "depth", "height", "top_width"],
+                    "wedge arg names must be width / depth / height / top_width"
+                );
+            }
+            other => panic!("expected Primitive(Wedge), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "wedge(_, _, _, _) must emit no diagnostics");
+    }
+
+    /// `wedge(10mm, 5mm, 20mm)` (3 args) must emit an arity diagnostic and return `None`.
+    ///
+    /// RED until step-8 adds the "wedge" arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_wedge_wrong_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("wedge", 3);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "wedge with 3 args must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "wedge with 3 args must emit at least one diagnostic"
+        );
+    }
+
+    // --- rectangle() compiler dispatch (task-4160, step-5 RED) ---
+
+    /// `rectangle(20mm, 10mm)` (2 args) must compile to a single
+    /// `CompiledGeometryOp::Profile { kind: ProfileKind::Rectangle }` with two
+    /// named args: `width` and `height`.
+    ///
+    /// RED until step-6 adds ProfileKind, CompiledGeometryOp::Profile, and the
+    /// "rectangle" arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_rectangle_2args_returns_profile_rectangle() {
+        let expr = make_call_with_arity("rectangle", 2);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("rectangle(_, _) should produce ops");
+        assert_eq!(ops.len(), 1, "rectangle must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Profile { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    ProfileKind::Rectangle,
+                    "rectangle op must have kind ProfileKind::Rectangle"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["width", "height"],
+                    "rectangle arg names must be width / height"
+                );
+            }
+            other => panic!("expected Profile(Rectangle), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "rectangle(_, _) must emit no diagnostics");
+    }
+
+    /// `rectangle(10mm)` (1 arg) must emit an arity diagnostic and return `None`.
+    ///
+    /// RED until step-6 adds the "rectangle" arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_rectangle_wrong_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("rectangle", 1);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "rectangle with 1 arg must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "rectangle with 1 arg must emit at least one diagnostic"
+        );
+    }
+
+    // --- circle() compiler dispatch (task-4160, step-5 RED) ---
+
+    /// `circle(8mm)` (1 arg) must compile to a single
+    /// `CompiledGeometryOp::Profile { kind: ProfileKind::Circle }` with one
+    /// named arg: `radius`.
+    ///
+    /// RED until step-6 adds ProfileKind, CompiledGeometryOp::Profile, and the
+    /// "circle" arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_circle_1arg_returns_profile_circle() {
+        let expr = make_call_with_arity("circle", 1);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("circle(_) should produce ops");
+        assert_eq!(ops.len(), 1, "circle must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Profile { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    ProfileKind::Circle,
+                    "circle op must have kind ProfileKind::Circle"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["radius"], "circle arg name must be radius");
+            }
+            other => panic!("expected Profile(Circle), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "circle(_) must emit no diagnostics");
+    }
+
+    /// `circle()` (0 args) must emit an arity diagnostic and return `None`.
+    ///
+    /// RED until step-6 adds the "circle" arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_circle_wrong_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("circle", 0);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "circle with 0 args must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "circle with 0 args must emit at least one diagnostic"
         );
     }
 }

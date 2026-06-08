@@ -96,7 +96,10 @@ pub fn solve_cg_with_warm_state_progress(
 ) -> (crate::solver::CgResult, CgWarmState) {
     let prior_slice = prior.map(|p| p.u.as_slice());
     let result = crate::solver::solve_cg_with_progress(k, f, prior_slice, opts, mode, progress);
-    let fresh = CgWarmState::from_arc(Arc::clone(&result.u));
+    // `CgResult.u` is private (accessor-only); `shared_u()` returns the
+    // `Arc<Vec<f64>>` with a refcount bump only (no Vec copy), preserving the
+    // single-allocation donate contract.
+    let fresh = CgWarmState::from_arc(result.shared_u());
     (result, fresh)
 }
 
@@ -217,8 +220,12 @@ mod tests {
             "cold solve_cg_with_warm_state must converge"
         );
         assert_eq!(
-            fresh.u, result.u,
+            result.u(), fresh.u.as_slice(),
             "fresh warm state must wrap the result's displacement"
+        );
+        assert!(
+            Arc::ptr_eq(&result.shared_u(), &fresh.u),
+            "fresh warm state must share the same Arc allocation as result (zero-copy)"
         );
 
         // Re-solve with prior = Some(&fresh) on the same (k, f) — already at
@@ -306,8 +313,8 @@ mod tests {
             "last residual must be small, got {}",
             last_residual
         );
-        assert_eq!(
-            fresh.u, result.u,
+        assert!(
+            Arc::ptr_eq(&fresh.u, &result.shared_u()),
             "fresh warm state must share result.u (Arc donate)"
         );
     }

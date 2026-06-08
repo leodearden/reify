@@ -58,6 +58,10 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "pipe",
     "box_centered",
     "cylinder_centered",
+    "cone",
+    "wedge",
+    "rectangle",
+    "circle",
 ];
 
 pub(crate) fn is_geometry_function(name: &str) -> bool {
@@ -185,6 +189,11 @@ pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     "shared_edges",
     "center_of_mass",
     "moment_of_inertia",
+    // Task 4190 — split(solid, plane) -> List<Solid> via BRepAlgoAPI_Splitter.
+    // Joins the topology-selector family (not GEOMETRY_FUNCTION_NAMES) because
+    // it returns a multi-output List<Geometry>, matching the topology-selector
+    // eval path (try_eval_topology_selector / execute_split).
+    "split",
 ];
 
 pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
@@ -229,6 +238,10 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         | "edges_parallel_to" | "edges_at_height" | "adjacent_faces" | "shared_edges" => {
             Type::List(Box::new(Type::Geometry))
         }
+        // Task 4190 — split(solid, plane) -> List<Solid>. Same List<Geometry>
+        // result type as the edge/face selectors; eval dispatch via
+        // TopologySelectorHelper::Split in try_eval_topology_selector.
+        "split" => Type::List(Box::new(Type::Geometry)),
         "center_of_mass" => Type::point3(Type::length()),
         "moment_of_inertia" => Type::tensor(
             2,
@@ -839,6 +852,19 @@ pub fn resolve_unit_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Math-linalg construction family (task 4179) — single source of truth in
+    // `crate::math_signatures`, imported here to pin disjointness from the five
+    // geometry families and the dynamics-query family (both directions).
+    use crate::math_signatures::MATH_CONSTRUCTION_NAMES;
+    // Math-linalg operation/function family (task 4182 δ) — sibling slice in
+    // `crate::math_signatures`, imported here to pin disjointness from the five
+    // geometry families, the dynamics-query family, AND the construction family.
+    use crate::math_signatures::MATH_OPERATION_NAMES;
+    // §13 joint-constructor family (mechanism β, task 4311) — single source of
+    // truth in `crate::joint_signatures`, imported here to pin disjointness from
+    // all eight sibling families (regression-lock: catches any future colliding
+    // name added to EITHER the joint slice or a sibling slice).
+    use crate::joint_signatures::JOINT_TYPED_FN_NAMES;
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
@@ -943,6 +969,14 @@ mod tests {
     #[test]
     fn is_geometry_function_cylinder_centered_recognized() {
         assert!(is_geometry_function("cylinder_centered"));
+    }
+
+    // --- Cone (task-4156) ---
+
+    #[test]
+    fn is_geometry_function_cone_recognized() {
+        // RED until step-6 adds "cone" to GEOMETRY_FUNCTION_NAMES.
+        assert!(is_geometry_function("cone"));
     }
 
     // --- Geometry query helpers (task 2320 step-1) ---
@@ -1340,6 +1374,16 @@ mod tests {
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
                  DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
             );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
         }
     }
 
@@ -1377,6 +1421,166 @@ mod tests {
                 !GEOMETRY_QUERY_NAMES.contains(name),
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+        }
+    }
+
+    /// Disjointness invariant for the math-linalg construction family (task
+    /// 4179). Every `MATH_CONSTRUCTION_NAMES` entry (`vec` / `matrix` / `diag`
+    /// / `identity`) must be absent from all five geometry families AND the
+    /// dynamics-query family, so a name can satisfy at most one classification
+    /// predicate in `expr.rs::resolve_function_overload`'s `NoUserFunctions`
+    /// ladder. Forward sibling to `is_math_typed_fn_rejects_other_family_…`
+    /// (the predicate-level reverse direction lives in `math_signatures.rs`);
+    /// the converse asserts in the geometry / dynamics disjointness tests above
+    /// pin the other direction. Because the names are pinned disjoint from
+    /// every other family, the new arm's position in the ladder is unobservable.
+    #[test]
+    fn math_typed_fn_names_are_disjoint_from_other_families() {
+        for name in MATH_CONSTRUCTION_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ — \
+                 constructors and operations are disjoint slices)"
+            );
+        }
+    }
+
+    /// Disjointness invariant for the math-linalg OPERATION family (task 4182
+    /// δ). Every `MATH_OPERATION_NAMES` entry (`sqrt` / `dot` / `determinant` /
+    /// `eigenvalues` / `complex` / …) must be absent from all five geometry
+    /// families, the dynamics-query family, AND the math-linalg CONSTRUCTION
+    /// family — so a name can satisfy at most one classification predicate in
+    /// `expr.rs::resolve_function_overload`'s `NoUserFunctions` ladder, and the
+    /// operation/construction split stays a partition (never overlapping
+    /// slices). Sibling to `math_typed_fn_names_are_disjoint_from_other_families`
+    /// (which pins the construction family); the converse asserts added to the
+    /// geometry / dynamics / construction disjointness tests above pin the other
+    /// direction.
+    ///
+    /// Also pins disjointness from the two EARLIER arms in the same
+    /// `NoUserFunctions` ladder that this six-family set didn't cover (amendment:
+    /// reviewer test_coverage): the affine constructor/algebra families
+    /// (`AFFINE_MAP_CONSTRUCTOR_NAMES` + `affine_map_algebra_result_type`'s arms)
+    /// and the list-helper family (`infer_list_helper_return_type`'s arms). A
+    /// math op sharing a name with an earlier arm would be silently shadowed and
+    /// produce a wrong cell type with no failing test. `determinant` is the one
+    /// DELIBERATE overlap with affine-algebra — the affine arm fires only for an
+    /// `AffineMap` first arg and otherwise falls through to the math arm (arg-type
+    /// disambiguated), so it is the documented exception.
+    #[test]
+    fn math_operation_fn_names_are_disjoint_from_other_families() {
+        // Affine ALGEBRA free-fn names (`affine_map_algebra_result_type`'s match
+        // arms) and list-helper names (`infer_list_helper_return_type`'s match
+        // arms) have no public single-source slice — they are hardcoded match
+        // arms — so these local fixtures mirror them. Keep in sync with those fns.
+        const AFFINE_ALGEBRA_NAMES: &[&str] = &["affine_compose", "affine_inverse", "determinant"];
+        const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
+
+        for name in MATH_OPERATION_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179 — \
+                 operations and constructors are disjoint slices)"
+            );
+            // Affine constructor family — an EARLIER arm in expr.rs's
+            // NoUserFunctions ladder; a same-named math op would be shadowed.
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family — earlier \
+                 arm in the NoUserFunctions ladder would shadow it)"
+            );
+            // Affine ALGEBRA free-fns — also an earlier arm. `determinant` is the
+            // ONE intentional overlap (arg-type disambiguated: the affine arm
+            // fires only for an AffineMap first arg, else falls through to the
+            // math arm), so it is the documented exception; every other
+            // affine-algebra name would UNCONDITIONALLY shadow a same-named math op.
+            assert!(
+                !AFFINE_ALGEBRA_NAMES.contains(name) || *name == "determinant",
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be an affine-algebra \
+                 free-fn (except the intentional, arg-type-disambiguated `determinant` \
+                 overlap)"
+            );
+            // List-helper family — also an earlier ladder arm; a collision would
+            // shadow the math arm.
+            assert!(
+                !LIST_HELPER_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be a list-helper \
+                 (`single` / `flat_map` — earlier arm in the NoUserFunctions ladder \
+                 would shadow it)"
             );
         }
     }
@@ -1919,5 +2123,120 @@ mod tests {
         assert_eq!(affine_map_algebra_result_type("affine_apply", None), None);
         assert_eq!(affine_map_algebra_result_type("box", None), None);
         assert_eq!(affine_map_algebra_result_type("", None), None);
+    }
+
+    // --- 2-D profile face producers (task-4160) ---
+    // RED until step-6 adds "rectangle" and "circle" to GEOMETRY_FUNCTION_NAMES.
+
+    #[test]
+    fn is_geometry_function_rectangle_recognized() {
+        // RED until step-6 adds "rectangle" to GEOMETRY_FUNCTION_NAMES.
+        assert!(is_geometry_function("rectangle"));
+    }
+
+    #[test]
+    fn is_geometry_function_circle_recognized() {
+        // RED until step-6 adds "circle" to GEOMETRY_FUNCTION_NAMES.
+        assert!(is_geometry_function("circle"));
+    }
+
+    // --- split topology selector (task 4190, step-5 RED / step-6 GREEN) ---
+    //
+    // `split(solid, plane) -> List<Solid>` joins the topology-selector family
+    // (GEOMETRY_TOPOLOGY_SELECTOR_NAMES), NOT GEOMETRY_FUNCTION_NAMES, because
+    // it returns List<Solid> (multi-output). Family-disjointness invariant: once
+    // "split" is added to GEOMETRY_TOPOLOGY_SELECTOR_NAMES, the existing
+    // disjointness test `geometry_query_names_are_disjoint_from_other_families`
+    // continues to pass because "split" is absent from all other families.
+
+    #[test]
+    fn is_geometry_topology_selector_recognises_split() {
+        // RED until step-6 adds "split" to GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+        assert!(is_geometry_topology_selector("split"));
+    }
+
+    #[test]
+    fn topology_selector_result_type_split_is_list_geometry() {
+        // RED until step-6 adds the "split" arm to topology_selector_result_type.
+        assert_eq!(
+            topology_selector_result_type("split"),
+            Some(reify_core::Type::List(Box::new(reify_core::Type::Geometry)))
+        );
+    }
+
+    #[test]
+    fn split_is_not_a_geometry_function() {
+        // split is in the topology-selector family, NOT the constructor family.
+        assert!(!is_geometry_function("split"));
+    }
+
+    #[test]
+    fn split_is_not_a_geometry_query_helper() {
+        assert!(!is_geometry_query_helper("split"));
+    }
+
+    #[test]
+    fn split_is_not_a_geometry_kinematic_query() {
+        assert!(!is_geometry_kinematic_query("split"));
+    }
+
+    /// Disjointness regression-lock for the §13 joint-constructor family
+    /// (mechanism β, task 4311). Every `JOINT_TYPED_FN_NAMES` entry must be
+    /// absent from all eight sibling slices so a name satisfies at most one
+    /// classification predicate in `expr.rs::resolve_function_overload`'s
+    /// `NoUserFunctions` ladder.
+    ///
+    /// This test is GREEN on arrival — the 17 joint names are inherently
+    /// disjoint from the existing families. It acts as a regression lock:
+    /// adding a colliding name to EITHER the joint slice OR a sibling slice
+    /// triggers a failure, catching the bug at test time rather than at
+    /// production call-time.
+    ///
+    /// Mirrors `math_typed_fn_names_are_disjoint_from_other_families` and
+    /// `dynamics_query_names_are_disjoint_from_other_families`.
+    #[test]
+    fn joint_typed_fn_names_are_disjoint_from_other_families() {
+        for name in JOINT_TYPED_FN_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+        }
     }
 }

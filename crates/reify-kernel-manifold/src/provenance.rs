@@ -1,0 +1,409 @@
+//! MeshGL64 provenance walk for Manifold boolean results.
+//!
+//! After a Manifold boolean, `to_meshgl64()` exposes per-run provenance
+//! (`run_original_id`, `run_index`) and per-triangle face identity
+//! (`face_id`) that links each surviving triangle back to a parent input.
+//! This module walks those vectors to produce a [`FacetProvenance`] entry
+//! for every triangle, correlating each with its source [`TopologyAttribute`]
+//! from the parent table.
+//!
+//! # Design decisions
+//!
+//! - Output is `Vec<FacetProvenance>` keyed by a stable `FacetDescriptor`
+//!   rather than minted `GeometryHandleId`s (which are non-deterministic).
+//!   Task 4262 will add the descriptor-keyed store; this module's output is
+//!   forward-compatible with that interface.
+//! - `correlate_from_vectors` is a pure function testable with synthetic
+//!   vectors, beneath `correlate_facets` which extracts vectors from the FFI.
+//! - Unmapped `run_original_id` values yield `source: None` — a
+//!   boolean result may legitimately contain runs from a parent that carried
+//!   no attribute (lossy-but-valid). This is not a contract violation.
+//! - The merge vectors are consumed only for structural pairing validation
+//!   (`merge_from_vert.len() == merge_to_vert.len()`). Per-vertex merge
+//!   resolution and per-planar-face identity are task 4262's scope.
+
+use std::collections::HashMap;
+
+use reify_ir::TopologyAttribute;
+
+/// Stable facet descriptor that identifies a result triangle by its Manifold
+/// provenance coordinates.
+///
+/// Forward-compatible with task 4262's descriptor-keyed attribute store.
+/// `run_original_id` matches the `Manifold::original_id()` of one of the
+/// parent inputs; `face_id` is the per-triangle face identifier from
+/// `MeshGL64::face_id()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FacetDescriptor {
+    /// The `run_original_id` of the run containing this triangle — links
+    /// back to a specific parent `Manifold` input via its `original_id()`.
+    pub run_original_id: u32,
+    /// Per-triangle face identifier from `MeshGL64::face_id()`.
+    pub face_id: u64,
+}
+
+/// Provenance record for one surviving triangle in a Manifold boolean result.
+///
+/// Produced by [`correlate_facets`] (one entry per triangle in the result
+/// mesh). The `source` field resolves to `None` when the run's
+/// `run_original_id` has no entry in the parent attribute map — a valid
+/// outcome when a parent carried no `TopologyAttribute`.
+#[derive(Debug, Clone)]
+pub struct FacetProvenance {
+    /// Zero-based triangle index in the result mesh.
+    pub triangle: usize,
+    /// Stable descriptor (run provenance + face id) for this triangle.
+    pub descriptor: FacetDescriptor,
+    /// The topology attribute from the parent input that contributed this
+    /// triangle, or `None` if the parent was untracked.
+    pub source: Option<TopologyAttribute>,
+}
+
+/// Walk the `MeshGL64` provenance vectors to correlate each surviving
+/// triangle with its source attribute.
+///
+/// Extracts `num_tri`, `run_index`, `run_original_id`, `face_id`,
+/// `merge_from_vert`, and `merge_to_vert` from `meshgl`, then delegates
+/// to [`correlate_from_vectors`].
+///
+/// Returns an `Err(String)` if the provenance vectors fail structural
+/// validation (see [`correlate_from_vectors`] for the contract).
+pub fn correlate_facets(
+    meshgl: &manifold3d::MeshGL64,
+    parent: &HashMap<u32, TopologyAttribute>,
+) -> Result<Vec<FacetProvenance>, String> {
+    let num_tri = meshgl.num_tri();
+    let run_index = meshgl.run_index();
+    let run_original_id = meshgl.run_original_id();
+    let face_id = meshgl.face_id();
+    let merge_from_vert = meshgl.merge_from_vert();
+    let merge_to_vert = meshgl.merge_to_vert();
+    correlate_from_vectors(
+        num_tri,
+        &run_index,
+        &run_original_id,
+        &face_id,
+        &merge_from_vert,
+        &merge_to_vert,
+        parent,
+    )
+}
+
+/// Core provenance walk over raw MeshGL64 vectors.
+///
+/// Validates the structural contract of the provenance vectors, then
+/// for each run `r` maps triangles `run_index[r]/3 .. run_index[r+1]/3`
+/// to a [`FacetProvenance`] carrying the run's `run_original_id`, the
+/// triangle's `face_id`, and the source attribute resolved from `parent`.
+///
+/// # Contract (all must hold; violators return `Err`)
+///
+/// - `run_index.len() == run_original_id.len() + 1`
+/// - `face_id.len() == num_tri`
+/// - Every `run_index` entry is divisible by 3
+/// - `run_index` is non-decreasing with `run_index[last] == num_tri * 3`
+/// - `merge_from_vert.len() == merge_to_vert.len()`
+fn correlate_from_vectors(
+    num_tri: usize,
+    run_index: &[u64],
+    run_original_id: &[u32],
+    face_id: &[u64],
+    merge_from_vert: &[u64],
+    merge_to_vert: &[u64],
+    parent: &HashMap<u32, TopologyAttribute>,
+) -> Result<Vec<FacetProvenance>, String> {
+    let num_run = run_original_id.len();
+
+    if run_index.len() != num_run + 1 {
+        return Err(format!(
+            "run_index.len()={} must equal run_original_id.len()+1={}",
+            run_index.len(),
+            num_run + 1
+        ));
+    }
+    if face_id.len() != num_tri {
+        return Err(format!(
+            "face_id.len()={} must equal num_tri={}",
+            face_id.len(),
+            num_tri
+        ));
+    }
+    let max_tri_vert = (num_tri as u64) * 3;
+    for (i, &v) in run_index.iter().enumerate() {
+        if v % 3 != 0 {
+            return Err(format!(
+                "run_index[{i}]={v} is not divisible by 3 (flat tri-vert units required)"
+            ));
+        }
+        if v > max_tri_vert {
+            return Err(format!(
+                "run_index[{i}]={v} exceeds num_tri*3={max_tri_vert}"
+            ));
+        }
+        if i + 1 < run_index.len() && v > run_index[i + 1] {
+            return Err(format!(
+                "run_index is non-monotonic: run_index[{i}]={v} > run_index[{}]={}",
+                i + 1,
+                run_index[i + 1]
+            ));
+        }
+    }
+    if run_index.last().copied().unwrap_or(0) != max_tri_vert {
+        return Err(format!(
+            "run_index last entry={} must equal num_tri*3={max_tri_vert}",
+            run_index.last().copied().unwrap_or(0),
+        ));
+    }
+    if merge_from_vert.len() != merge_to_vert.len() {
+        return Err(format!(
+            "merge_from_vert.len()={} != merge_to_vert.len()={}",
+            merge_from_vert.len(),
+            merge_to_vert.len()
+        ));
+    }
+
+    // Walk each run and emit one FacetProvenance per triangle.
+    let mut out = Vec::with_capacity(num_tri);
+    for r in 0..num_run {
+        let orig = run_original_id[r];
+        // run_index entries are in flat tri-vert units (3 indices per triangle).
+        let start = run_index[r] as usize / 3;
+        let end = run_index[r + 1] as usize / 3;
+        let source = parent.get(&orig).cloned();
+        for (i, &fid) in face_id[start..end].iter().enumerate() {
+            out.push(FacetProvenance {
+                triangle: start + i,
+                descriptor: FacetDescriptor {
+                    run_original_id: orig,
+                    face_id: fid,
+                },
+                source: source.clone(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_ir::{FeatureId, Role};
+
+    fn make_attr(feature_name: &str) -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: FeatureId::new(feature_name),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: vec![],
+        }
+    }
+
+    /// Verifies that `correlate_from_vectors` partitions triangles by run and
+    /// resolves source attributes from the parent map (or yields `None` for
+    /// unmapped original ids).
+    ///
+    /// Synthetic well-formed vectors:
+    ///   num_tri = 4
+    ///   run_index = [0, 6, 12]   (flat tri-vert units: ×3 per triangle)
+    ///     → run 0 covers tris 0..2 (run_index[0]/3=0 .. run_index[1]/3=2)
+    ///     → run 1 covers tris 2..4 (run_index[1]/3=2 .. run_index[2]/3=4)
+    ///   run_original_id = [10, 20]
+    ///   face_id = [100, 100, 200, 200]
+    ///   merge_from_vert = [] (empty — structurally valid)
+    ///   merge_to_vert   = [] (empty — structurally valid)
+    ///   parent = {10 → attrA} — id 20 deliberately unmapped
+    ///
+    /// Expected: Ok with 4 FacetProvenance entries.
+    ///   facets[0],[1]: descriptor{run_original_id:10, face_id:100}, source==Some(attrA)
+    ///   facets[2],[3]: descriptor{run_original_id:20, face_id:200}, source==None
+    ///   triangle indices 0, 1, 2, 3 in order
+    #[test]
+    fn correlate_from_vectors_partitions_runs_and_resolves_sources() {
+        let attr_a = make_attr("A");
+        let mut parent: HashMap<u32, TopologyAttribute> = HashMap::new();
+        parent.insert(10u32, attr_a.clone());
+        // id 20 is deliberately NOT inserted
+
+        let num_tri: usize = 4;
+        // run_index in flat tri-vert units: 0, 6 (=2*3), 12 (=4*3)
+        let run_index: &[u64] = &[0, 6, 12];
+        let run_original_id: &[u32] = &[10, 20];
+        let face_id: &[u64] = &[100, 100, 200, 200];
+        let merge_from_vert: &[u64] = &[];
+        let merge_to_vert: &[u64] = &[];
+
+        let result = correlate_from_vectors(
+            num_tri,
+            run_index,
+            run_original_id,
+            face_id,
+            merge_from_vert,
+            merge_to_vert,
+            &parent,
+        );
+
+        let facets = result.expect("well-formed vectors must produce Ok");
+        assert_eq!(facets.len(), 4, "must produce one FacetProvenance per triangle");
+
+        // Facets 0 and 1: run 0 (original_id 10, mapped → Some(attrA))
+        assert_eq!(facets[0].triangle, 0);
+        assert_eq!(
+            facets[0].descriptor,
+            FacetDescriptor { run_original_id: 10, face_id: 100 }
+        );
+        assert_eq!(
+            facets[0].source.as_ref(),
+            Some(&attr_a),
+            "facet 0 source must be Some(attrA) — id 10 is in parent map"
+        );
+
+        assert_eq!(facets[1].triangle, 1);
+        assert_eq!(
+            facets[1].descriptor,
+            FacetDescriptor { run_original_id: 10, face_id: 100 }
+        );
+        assert_eq!(
+            facets[1].source.as_ref(),
+            Some(&attr_a),
+            "facet 1 source must be Some(attrA)"
+        );
+
+        // Facets 2 and 3: run 1 (original_id 20, not in map → None)
+        assert_eq!(facets[2].triangle, 2);
+        assert_eq!(
+            facets[2].descriptor,
+            FacetDescriptor { run_original_id: 20, face_id: 200 }
+        );
+        assert!(
+            facets[2].source.is_none(),
+            "facet 2 source must be None — id 20 is not in parent map"
+        );
+
+        assert_eq!(facets[3].triangle, 3);
+        assert_eq!(
+            facets[3].descriptor,
+            FacetDescriptor { run_original_id: 20, face_id: 200 }
+        );
+        assert!(
+            facets[3].source.is_none(),
+            "facet 3 source must be None — id 20 is not in parent map"
+        );
+    }
+
+    /// Verifies that `correlate_from_vectors` returns `Err` for each structural
+    /// contract violation.  One sub-case per constraint — all checked before
+    /// the walk runs.
+    #[test]
+    fn correlate_from_vectors_rejects_malformed_provenance_vectors() {
+        let parent: HashMap<u32, TopologyAttribute> = HashMap::new();
+
+        // (a) run_index.len() != run_original_id.len() + 1
+        {
+            let result = correlate_from_vectors(
+                2,
+                &[0u64, 6, 12, 18], // 4 entries → implies 3 runs, but run_original_id has 2
+                &[10u32, 20],
+                &[100u64, 100, 200, 200],
+                &[],
+                &[],
+                &parent,
+            );
+            assert!(
+                result.is_err(),
+                "(a) mismatched run_index/run_original_id lengths must return Err"
+            );
+            assert!(!result.unwrap_err().is_empty());
+        }
+
+        // (b) face_id.len() != num_tri
+        {
+            let result = correlate_from_vectors(
+                4,
+                &[0u64, 6, 12],
+                &[10u32, 20],
+                &[100u64, 100, 200], // only 3 entries for 4 triangles
+                &[],
+                &[],
+                &parent,
+            );
+            assert!(result.is_err(), "(b) face_id shorter than num_tri must return Err");
+            assert!(!result.unwrap_err().is_empty());
+        }
+
+        // (c) run_index final entry != num_tri * 3
+        {
+            let result = correlate_from_vectors(
+                4,
+                &[0u64, 6, 9], // last entry 9 != 4*3=12
+                &[10u32, 20],
+                &[100u64, 100, 200, 200],
+                &[],
+                &[],
+                &parent,
+            );
+            assert!(
+                result.is_err(),
+                "(c) run_index last entry != num_tri*3 must return Err"
+            );
+            assert!(!result.unwrap_err().is_empty());
+        }
+
+        // (d) a run_index entry not divisible by 3
+        {
+            let result = correlate_from_vectors(
+                4,
+                &[0u64, 7, 12], // 7 is not divisible by 3
+                &[10u32, 20],
+                &[100u64, 100, 200, 200],
+                &[],
+                &[],
+                &parent,
+            );
+            assert!(
+                result.is_err(),
+                "(d) run_index entry not divisible by 3 must return Err"
+            );
+            assert!(!result.unwrap_err().is_empty());
+        }
+
+        // (e) merge_from_vert.len() != merge_to_vert.len()
+        {
+            let result = correlate_from_vectors(
+                4,
+                &[0u64, 6, 12],
+                &[10u32, 20],
+                &[100u64, 100, 200, 200],
+                &[1u64, 2], // 2 entries
+                &[3u64],    // 1 entry — mismatch
+                &parent,
+            );
+            assert!(
+                result.is_err(),
+                "(e) merge_from_vert/merge_to_vert length mismatch must return Err"
+            );
+            assert!(!result.unwrap_err().is_empty());
+        }
+
+        // (f) non-monotonic run_index (interior entry > subsequent, all within bounds)
+        {
+            // run_index = [0, 9, 6, 12]: all divisible by 3, all <= 4*3=12,
+            // last entry == 12 ✓ — but run_index[1]=9 > run_index[2]=6, violating
+            // the non-decreasing invariant documented in the # Contract section.
+            let result = correlate_from_vectors(
+                4,
+                &[0u64, 9, 6, 12],
+                &[10u32, 20, 30],
+                &[100u64, 100, 200, 200],
+                &[],
+                &[],
+                &parent,
+            );
+            assert!(
+                result.is_err(),
+                "(f) non-monotonic run_index must return Err"
+            );
+            assert!(!result.unwrap_err().is_empty());
+        }
+    }
+}

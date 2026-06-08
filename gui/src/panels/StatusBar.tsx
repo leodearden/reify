@@ -70,6 +70,10 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
 
   const compileSummary = createMemo(() => summarize(props.compileDiagnostics));
 
+  const diagnosticsTotal = createMemo(
+    () => (props.tessellationDiagnostics?.length ?? 0) + (props.compileDiagnostics?.length ?? 0),
+  );
+
   function claudeStatusText(status: SessionStatus): string {
     switch (status) {
       case 'thinking': return 'thinking...';
@@ -111,6 +115,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           aria-label={`Show ${pluralize(props.tessellationDiagnostics?.length ?? 0, 'tessellation diagnostic')}`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
+          <span class={styles.pipelineLabel}>Tessellation</span>
           <DiagBadgeContent getSummary={diagnosticSummary} />
         </button>
       </Show>
@@ -123,18 +128,49 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           aria-label={`Show ${pluralize(props.compileDiagnostics?.length ?? 0, 'compile diagnostic')}`}
           onClick={() => props.onToggleDiagnostics?.()}
         >
+          <span class={styles.pipelineLabel}>Compile</span>
           <DiagBadgeContent getSummary={compileSummary} />
         </button>
       </Show>
+      <Show
+        when={
+          (props.tessellationDiagnostics?.length ?? 0) > 0 &&
+          (props.compileDiagnostics?.length ?? 0) > 0
+        }
+      >
+        <span class={styles.divider} />
+        <span
+          class={`${styles.section} ${styles.diagnosticsTotal}`}
+          data-testid="diagnostics-total"
+          aria-label={`${diagnosticsTotal()} ${diagnosticsTotal() === 1 ? 'diagnostic' : 'diagnostics'} total`}
+        >
+          {diagnosticsTotal()}
+        </span>
+      </Show>
       <span class={styles.divider} />
       <span class={styles.section}>
-        <span class={styles.constraintCount} data-status="satisfied">
+        <span
+          class={styles.constraintCount}
+          data-status="satisfied"
+          title={`${constraintSummary().satisfied} satisfied`}
+          aria-label={`${constraintSummary().satisfied} satisfied`}
+        >
           {constraintSummary().satisfied}
         </span>
-        <span class={styles.constraintCount} data-status="violated">
+        <span
+          class={styles.constraintCount}
+          data-status="violated"
+          title={`${constraintSummary().violated} violated`}
+          aria-label={`${constraintSummary().violated} violated`}
+        >
           {constraintSummary().violated}
         </span>
-        <span class={styles.constraintCount} data-status="indeterminate">
+        <span
+          class={styles.constraintCount}
+          data-status="indeterminate"
+          title={`${constraintSummary().indeterminate} indeterminate`}
+          aria-label={`${constraintSummary().indeterminate} indeterminate`}
+        >
           {constraintSummary().indeterminate}
         </span>
       </span>

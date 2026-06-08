@@ -49,12 +49,14 @@ fn eval_with_prelude_trait_conformance() {
         eval_errors
     );
 
-    // Verify all 3 Elastic params are present with correct values
+    // Verify all 3 Elastic params are present with correct values.
+    // youngs_modulus and shear_modulus are Pressure (SI: Pa), so 200GPa = 2e11 Pa
+    // and 77GPa = 7.7e10 Pa. poissons_ratio is dimensionless (Real).
     let entity = "Steel";
     let expected_params: &[(&str, f64)] = &[
-        ("youngs_modulus", 200.0),
-        ("poissons_ratio", 0.3),
-        ("shear_modulus", 77.0),
+        ("youngs_modulus", 200.0e9),  // 200 GPa in Pa (SI)
+        ("poissons_ratio", 0.3),      // dimensionless
+        ("shear_modulus", 77.0e9),    // 77 GPa in Pa (SI)
     ];
     for (param, expected_val) in expected_params {
         let cell_id = ValueCellId::new(entity, *param);
@@ -162,11 +164,12 @@ structure S {
 ///
 /// Setup:
 ///   - User defines `symmetric_tolerance(x: Length) -> Length` (1-arg, returns x).
-///   - Prelude defines `symmetric_tolerance(nominal, deviation)` (2-arg, returns sum).
+///   - Prelude defines `symmetric_tolerance(nominal, deviation)` (2-arg, returns
+///     DimensionalTolerance; `.upper_limit` == nominal+deviation).
 ///
 /// Expected:
 ///   - `symmetric_tolerance(5mm)` → user impl → 5mm = 0.005 m
-///   - `symmetric_tolerance(5mm, 2mm)` → prelude impl → 7mm = 0.007 m
+///   - `symmetric_tolerance(5mm, 2mm).upper_limit` → prelude impl → upper_limit = 7mm = 0.007 m
 ///
 /// If the arity-mismatch were incorrectly treated as shadowing, the prelude's
 /// 2-arg form would be inaccessible and `b` would fail to resolve.
@@ -179,7 +182,7 @@ fn symmetric_tolerance(x: Length) -> Length {
 
 structure S {
     let a : Length = symmetric_tolerance(5mm)
-    let b : Length = symmetric_tolerance(5mm, 2mm)
+    let b : Length = symmetric_tolerance(5mm, 2mm).upper_limit
 }
 "#;
     let prelude = stdlib_loader::load_stdlib();
@@ -227,7 +230,8 @@ structure S {
         a
     );
 
-    // b = symmetric_tolerance(5mm, 2mm) → prelude impl (2-arg, returns sum) → 7mm = 0.007 m
+    // b = symmetric_tolerance(5mm, 2mm).upper_limit → prelude impl (2-arg, returns DimensionalTolerance;
+    //   .upper_limit == nominal+deviation = 5mm+2mm = 7mm = 0.007 m)
     let cell_b = ValueCellId::new("S", "b");
     let b = result
         .values
@@ -267,9 +271,11 @@ structure S {
 /// Without the fix at 1455, the post-solver `evaluate_let_bindings` uses
 /// `&module.functions` (empty) so `symmetric_tolerance(x, 1mm)` → Undef.
 ///
-/// Expected relationships (prelude `symmetric_tolerance(a, b) = a + b`):
+/// Expected relationships (prelude `symmetric_tolerance(a, b)` returns DimensionalTolerance;
+/// `.upper_limit = a + b`):
 ///   - `x` is finite and satisfies `x < 20mm` (solver produced a feasible point)
-///   - `y == x + 0.001` exactly (prelude was reachable in post-solver re-eval)
+///   - `y = symmetric_tolerance(x, 1mm).upper_limit = x + 0.001` exactly (prelude was
+///     reachable in post-solver re-eval)
 ///
 /// The exact value of `x` is not asserted — it depends on DimensionalSolver's
 /// feasibility-shortcut policy and pinning it would couple this test to solver
@@ -281,8 +287,8 @@ fn prelude_function_resolves_in_constraint_solver_path() {
     let source = r#"
 structure S {
     param x : Length = auto(free)
-    let y : Length = symmetric_tolerance(x, 1mm)
-    constraint x < symmetric_tolerance(15mm, 5mm)
+    let y : Length = symmetric_tolerance(x, 1mm).upper_limit
+    constraint x < symmetric_tolerance(15mm, 5mm).upper_limit
 }
 "#;
     let prelude = stdlib_loader::load_stdlib();
@@ -337,7 +343,8 @@ structure S {
         x
     );
 
-    // y = symmetric_tolerance(x, 1mm) = x + 0.001 (exact, by prelude definition).
+    // y = symmetric_tolerance(x, 1mm).upper_limit = x + 0.001 (exact, by prelude definition;
+    //   upper_limit = nominal + upper_deviation = x + 1mm).
     // This is the real regression guard: it proves the prelude function was reachable
     // from the post-solver let-binding re-evaluation, regardless of solver x choice.
     let cell_y = ValueCellId::new("S", "y");
@@ -357,7 +364,8 @@ structure S {
         });
     assert!(
         (y - (x + 0.001)).abs() < 1e-9,
-        "S.y: post-solver re-eval should give symmetric_tolerance(x, 1mm) = x + 0.001 = {}, got {}",
+        "S.y: post-solver re-eval should give symmetric_tolerance(x, 1mm).upper_limit \
+         = x + 0.001 = {}, got {}",
         x + 0.001,
         y
     );
@@ -470,7 +478,7 @@ fn prelude_function_resolves_in_downstream_dispatch_paths() {
     let source = r#"
 structure S {
     let y : Length = 5mm
-    constraint y > symmetric_tolerance(1mm, 1mm)
+    constraint y > symmetric_tolerance(1mm, 1mm).upper_limit
 }
 "#;
     let prelude = stdlib_loader::load_stdlib();
@@ -506,6 +514,83 @@ structure S {
         Satisfaction::Satisfied,
         "constraint y > symmetric_tolerance(1mm,1mm) should be Satisfied (5mm > 2mm), \
          got {:?}. All diagnostics: {:?}",
+        cr.satisfaction,
+        check_result.diagnostics
+    );
+}
+
+// ─── task-3111: density-positivity constraint eval-time satisfaction ─────────
+
+/// Eval-time pin: the injected `material.density > 0kg/m^3` constraint from
+/// `Physical` evaluates to `Satisfied` (not `Indeterminate`) for a conforming
+/// structure that supplies a dimensioned Density value.
+///
+/// Before task #3111 tightened `Material.density` from `Real` to `Density`
+/// (materials_mechanical.ri) and the Physical constraint RHS from bare `0` to
+/// `0kg/m^3` (structural_physical.ri), `eval_cmp` would compare a Real LHS
+/// against a Scalar RHS (or vice-versa), detect a dimension mismatch, and
+/// return `Indeterminate` (esc-3115-112). This test locks the post-#3111
+/// behavior: both sides are now Scalar{MASS_DENSITY} so `eval_cmp` succeeds
+/// and the constraint evaluates to `Satisfied`.
+///
+/// The IR-shape pin in `structural_physical_tests::assert_density_positive_constraint_present`
+/// guards the compiled RHS form; this test guards the runtime payoff.
+#[test]
+fn physical_density_constraint_evaluates_to_satisfied_not_indeterminate() {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_ir::Satisfaction;
+
+    // Minimal Physical conformer: geometry + material with a positive
+    // dimensioned density. The injected constraint is `material.density > 0kg/m^3`.
+    let source = r#"
+structure def Bracket : Physical {
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let check_result = engine.check(&compiled);
+
+    let check_errors = collect_errors(&check_result.diagnostics);
+    assert!(
+        check_errors.is_empty(),
+        "check() should produce no error diagnostics, got: {:?}",
+        check_errors
+    );
+
+    // Physical injects exactly one constraint: `material.density > 0kg/m^3`.
+    assert_eq!(
+        check_result.constraint_results.len(),
+        1,
+        "Bracket : Physical should have exactly 1 constraint result \
+         (material.density > 0kg/m^3), got {}: {:?}",
+        check_result.constraint_results.len(),
+        check_result
+            .constraint_results
+            .iter()
+            .map(|cr| &cr.satisfaction)
+            .collect::<Vec<_>>()
+    );
+    let cr = &check_result.constraint_results[0];
+    assert_eq!(
+        cr.satisfaction,
+        Satisfaction::Satisfied,
+        "material.density > 0kg/m^3 should evaluate to Satisfied \
+         (7850kg/m^3 > 0kg/m^3 — both sides are Scalar{{MASS_DENSITY}} after #3111), \
+         but got {:?}. Indeterminate here means a dimension mismatch at eval_cmp \
+         (esc-3115-112 regression). All diagnostics: {:?}",
         cr.satisfaction,
         check_result.diagnostics
     );

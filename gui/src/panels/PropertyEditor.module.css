@@ -63,6 +63,7 @@
   align-items: center;
   gap: 4px;
   width: 100%;
+  min-height: 26px;
   padding: 4px 6px;
   background: none;
   border: none;
@@ -81,9 +82,13 @@
 }
 
 .collapseIcon {
-  font-size: 8px;
-  width: 12px;
-  text-align: center;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
 }
 
 .groupBody {
@@ -96,7 +101,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 4px;
+  padding: 4px 4px;
+  min-height: 24px;
   border-radius: 2px;
 }
 

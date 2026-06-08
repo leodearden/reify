@@ -2,7 +2,13 @@
 # Rust + Tauri/TypeScript (GUI) project
 
 # Concurrency
-max_concurrent_tasks: 48
+# 48→24 (2026-06-04, escalation-watcher under AFK mandate): 48 concurrent tasks
+# on a 32-thread box livelocked the SERIAL merge queue — every post-merge verify
+# from 20:06-22:00 timed out (exit 124) because task workflows consumed the
+# jobserver tokens the 60m merge verify needed; main froze for 2h at full CPU
+# burn. 24 leaves the merge verify ~half the box. Revert to 48 if Leo prefers
+# throughput over merge latency once the backlog drains.
+max_concurrent_tasks: 24
 max_per_module: 1
 lock_depth: 4
 # Verification commands — thin delegations to scripts/verify.sh, the single

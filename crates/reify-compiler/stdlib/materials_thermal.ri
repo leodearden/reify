@@ -2,10 +2,11 @@
 // Provides thermal characterization trait definitions for engineering materials.
 //
 // Real-placeholder audit: see docs/notes/stdlib-real-placeholder-audit.md
-// Temperature params (melting_point, max_service_temperature, glass_transition) are
-// tightenable-now (task #3112); composite-dimension params (thermal_conductivity,
-// specific_heat, thermal_expansion) were tightened to dimensioned scalar types
-// (ThermalConductivity, SpecificHeat, ThermalExpansion) by task #3115.
+// Temperature params (melting_point, max_service_temperature, glass_transition) were
+// tightened from Real to Temperature by task #3112; composite-dimension params
+// (thermal_conductivity, specific_heat, thermal_expansion) were tightened to
+// dimensioned scalar types (ThermalConductivity, SpecificHeat, ThermalExpansion)
+// by task #3115.
 //
 // Spec reference: docs/reify-stdlib-reference.md §6.3 lines 680-694.
 // Audit reference: docs/notes/stdlib-trait-breadth-audit-v01.md §6.3 (CLOSED via task 2354).
@@ -19,37 +20,36 @@
 
 // ── ThermallyCharacterized ───────────────────────────────────────────────────
 
-// Root thermal-material trait. Every thermally characterised material must
-// supply the six scalar thermal properties below (all Real pending dimensional
-// type wiring):
-//   thermal_conductivity  — W/(m·K)
-//   specific_heat         — J/(kg·K)
-//   thermal_expansion     — 1/K (coefficient of linear thermal expansion)
-//   melting_point         — K
-//   max_service_temperature — K (upper operating limit)
-//   glass_transition      — K (Tg).  Pass 0.0 for crystalline / non-glass materials
-//                            (e.g. metals, ceramics) where Tg is physically undefined.
-//                            Convention: 0.0 is a sentinel meaning "not applicable";
-//                            no constraint references glass_transition, so the sentinel
-//                            value is inert in constraint checking.
-//                            Future work: a Glassy sub-trait may carry this param so
-//                            that only amorphous / glassy materials are required to
-//                            supply a meaningful Tg value.
+// Root thermal-material trait. Three scalar thermal properties are required;
+// three temperature-point params are optional (= undef) because not every
+// material has a well-defined value for all three:
+//
+//   Required (dimensioned scalar types tightened by task #3115):
+//     thermal_conductivity  — W/(m·K)
+//     specific_heat         — J/(kg·K)
+//     thermal_expansion     — 1/K (coefficient of linear thermal expansion)
+//
+//   Optional (= undef; Temperature type tightened by task #3112):
+//     melting_point         — K; undef for amorphous/composite materials
+//     max_service_temperature — K (upper operating limit); undef when not rated
+//     glass_transition      — K (Tg); genuinely undefined for crystalline
+//                             materials (metals, ceramics). Use undef rather
+//                             than the former 0.0 sentinel (PRD D6).
 trait ThermallyCharacterized : MaterialSpec {
     param thermal_conductivity : ThermalConductivity
     param specific_heat : SpecificHeat
     param thermal_expansion : ThermalExpansion
-    param melting_point : Real
-    param max_service_temperature : Real
-    param glass_transition : Real
+    param melting_point : Temperature = undef
+    param max_service_temperature : Temperature = undef
+    param glass_transition : Temperature = undef
 }
 
 // ── Refractory ───────────────────────────────────────────────────────────────
 
 // A refractory material is a ThermallyCharacterized material whose
-// max_service_temperature is at least 1500.0 (K-equivalent Real). The
-// constraint guards the contract that a refractory material retains
-// engineering utility at high-temperature operating conditions.
+// max_service_temperature is at least 1500 K. The constraint guards the
+// contract that a refractory material retains engineering utility at
+// high-temperature operating conditions.
 trait Refractory : ThermallyCharacterized {
-    constraint max_service_temperature >= 1500.0
+    constraint max_service_temperature >= 1500.0K
 }

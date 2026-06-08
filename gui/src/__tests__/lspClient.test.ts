@@ -10,7 +10,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import { invoke } from '@tauri-apps/api/core';
-import { createLspClient } from '../editor/lspClient';
+import { createLspClient, extractHoverMarkdown } from '../editor/lspClient';
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -156,5 +156,299 @@ describe('createLspClient', () => {
       method: 'textDocument/didClose',
       params: expect.stringContaining('"uri":"file:///project/main.ri"'),
     });
+  });
+
+  it('createLspClient() exposes a documentSymbol function', () => {
+    const client = createLspClient();
+    expect(typeof client.documentSymbol).toBe('function');
+  });
+
+  it('documentSymbol sends textDocument/documentSymbol with textDocument wrapper', async () => {
+    mockInvoke.mockResolvedValue('[]');
+
+    const client = createLspClient();
+    await client.documentSymbol('file:///test.ri');
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'textDocument/documentSymbol',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toHaveProperty('textDocument');
+    expect(params.textDocument).toHaveProperty('uri', 'file:///test.ri');
+  });
+
+  it('documentSymbol returns an array of DocumentSymbol objects from a nested response', async () => {
+    const mockSymbols = [
+      {
+        name: 'Bracket',
+        kind: 5,
+        range: { start: { line: 0, character: 0 }, end: { line: 10, character: 1 } },
+        selectionRange: { start: { line: 0, character: 10 }, end: { line: 0, character: 17 } },
+        children: [
+          {
+            name: 'width',
+            kind: 13,
+            range: { start: { line: 1, character: 2 }, end: { line: 1, character: 14 } },
+            selectionRange: { start: { line: 1, character: 2 }, end: { line: 1, character: 7 } },
+          },
+        ],
+      },
+    ];
+    mockInvoke.mockResolvedValue(JSON.stringify(mockSymbols));
+
+    const client = createLspClient();
+    const result = await client.documentSymbol('file:///test.ri');
+
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('Bracket');
+    expect(result[0].children).toHaveLength(1);
+    expect(result[0].children![0].name).toBe('width');
+    expect(result[0].selectionRange).toBeDefined();
+  });
+
+  it('documentSymbol returns [] when the response is null (unknown URI -> Ok(None))', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    const result = await client.documentSymbol('file:///unknown.ri');
+
+    expect(result).toEqual([]);
+  });
+
+  it('documentSymbol returns [] when the response is not an array', async () => {
+    // DocumentSymbolResponse::Flat would be an object; treat non-array as empty
+    mockInvoke.mockResolvedValue(JSON.stringify({ items: [] }));
+
+    const client = createLspClient();
+    const result = await client.documentSymbol('file:///test.ri');
+
+    expect(result).toEqual([]);
+  });
+
+  // --- task 4203 γ: prepareRename / rename ---
+
+  it('createLspClient() exposes prepareRename and rename functions', () => {
+    const client = createLspClient();
+    expect(typeof client.prepareRename).toBe('function');
+    expect(typeof client.rename).toBe('function');
+  });
+
+  it('prepareRename sends textDocument/prepareRename with the position and returns the target', async () => {
+    const mockTarget = {
+      range: { start: { line: 7, character: 17 }, end: { line: 7, character: 22 } },
+      placeholder: 'width',
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(mockTarget));
+
+    const client = createLspClient();
+    const result = await client.prepareRename('file:///test.ri', 7, 17);
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'textDocument/prepareRename',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({
+      textDocument: { uri: 'file:///test.ri' },
+      position: { line: 7, character: 17 },
+    });
+    expect(result).not.toBeNull();
+    expect(result!.placeholder).toBe('width');
+    expect(result!.range.start).toEqual({ line: 7, character: 17 });
+  });
+
+  it('prepareRename returns null when the response is null (Invariant-4 refusal)', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    const result = await client.prepareRename('file:///test.ri', 0, 0);
+
+    expect(result).toBeNull();
+  });
+
+  it('rename sends textDocument/rename with newName and returns the WorkspaceEdit', async () => {
+    const mockEdit = {
+      changes: {
+        'file:///test.ri': [
+          {
+            range: { start: { line: 1, character: 10 }, end: { line: 1, character: 15 } },
+            newText: 'girth',
+          },
+          {
+            range: { start: { line: 7, character: 17 }, end: { line: 7, character: 22 } },
+            newText: 'girth',
+          },
+        ],
+      },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(mockEdit));
+
+    const client = createLspClient();
+    const result = await client.rename('file:///test.ri', 7, 17, 'girth');
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'textDocument/rename',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({
+      textDocument: { uri: 'file:///test.ri' },
+      position: { line: 7, character: 17 },
+      newName: 'girth',
+    });
+    expect(result).not.toBeNull();
+    expect(result!.changes!['file:///test.ri']).toHaveLength(2);
+  });
+
+  it('rename returns null when the response is null', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    const result = await client.rename('file:///test.ri', 0, 0, 'girth');
+
+    expect(result).toBeNull();
+  });
+
+  // --- task 4204 δ: documentHighlight ---
+
+  it('createLspClient() exposes a documentHighlight function', () => {
+    const client = createLspClient();
+    expect(typeof client.documentHighlight).toBe('function');
+  });
+
+  it('documentHighlight sends textDocument/documentHighlight with the position', async () => {
+    mockInvoke.mockResolvedValue('[]');
+
+    const client = createLspClient();
+    await client.documentHighlight('file:///test.ri', 7, 17);
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'textDocument/documentHighlight',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({
+      textDocument: { uri: 'file:///test.ri' },
+      position: { line: 7, character: 17 },
+    });
+  });
+
+  it('documentHighlight returns the DocumentHighlight[] from an array response', async () => {
+    const mockHighlights = [
+      {
+        range: { start: { line: 1, character: 10 }, end: { line: 1, character: 15 } },
+        kind: 1,
+      },
+      {
+        range: { start: { line: 7, character: 17 }, end: { line: 7, character: 22 } },
+        kind: 1,
+      },
+    ];
+    mockInvoke.mockResolvedValue(JSON.stringify(mockHighlights));
+
+    const client = createLspClient();
+    const result = await client.documentHighlight('file:///test.ri', 7, 17);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].kind).toBe(1);
+    expect(result[0].range.start).toEqual({ line: 1, character: 10 });
+    expect(result[1].range.start).toEqual({ line: 7, character: 17 });
+  });
+
+  it('documentHighlight returns [] when the response is null (no occurrences)', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    const result = await client.documentHighlight('file:///unknown.ri', 0, 0);
+
+    expect(result).toEqual([]);
+  });
+
+  it('documentHighlight returns [] when the response is not an array', async () => {
+    mockInvoke.mockResolvedValue(JSON.stringify({ foo: 'bar' }));
+
+    const client = createLspClient();
+    const result = await client.documentHighlight('file:///test.ri', 7, 17);
+
+    expect(result).toEqual([]);
+  });
+});
+
+// --- F2 step-3: extractHoverMarkdown ---
+
+describe('extractHoverMarkdown', () => {
+  it('passes a string contents through unchanged', () => {
+    expect(extractHoverMarkdown('**size**: Scalar')).toBe('**size**: Scalar');
+  });
+
+  it('returns value from a MarkupContent { kind, value } object', () => {
+    expect(extractHoverMarkdown({ kind: 'markdown', value: '**size**: Scalar' })).toBe(
+      '**size**: Scalar',
+    );
+  });
+
+  it('returns value from a MarkupContent { kind, value } with plaintext kind', () => {
+    expect(extractHoverMarkdown({ kind: 'plaintext', value: 'size: Scalar' })).toBe(
+      'size: Scalar',
+    );
+  });
+
+  it('joins an array of strings with newlines', () => {
+    expect(extractHoverMarkdown(['line one', 'line two'])).toBe('line one\nline two');
+  });
+
+  it('joins a mixed array of strings and { language, value } objects', () => {
+    expect(
+      extractHoverMarkdown([
+        { language: 'reify', value: 'param size: Scalar' },
+        'Some documentation text',
+      ]),
+    ).toBe('param size: Scalar\nSome documentation text');
+  });
+
+  it('joins an array of { language, value } objects by extracting values', () => {
+    expect(
+      extractHoverMarkdown([
+        { language: 'reify', value: 'param size: Scalar' },
+        { language: 'text', value: 'a scalar value' },
+      ]),
+    ).toBe('param size: Scalar\na scalar value');
+  });
+
+  it('returns empty string for null', () => {
+    expect(extractHoverMarkdown(null)).toBe('');
+  });
+
+  it('returns empty string for undefined', () => {
+    expect(extractHoverMarkdown(undefined)).toBe('');
+  });
+
+  it('returns empty string for an object without a value property', () => {
+    expect(extractHoverMarkdown({ something: 'else' })).toBe('');
+  });
+
+  it('returns empty string for an empty array', () => {
+    expect(extractHoverMarkdown([])).toBe('');
+  });
+
+  it('skips array elements that are objects without a value property', () => {
+    // A malformed element (no `value` field) must not produce the literal text
+    // "undefined" — the array branch guards with an in-check and falls back to ''.
+    expect(
+      extractHoverMarkdown([
+        { language: 'reify', value: 'param size: Scalar' },
+        { malformed: true },
+        'trailing doc',
+      ]),
+    ).toBe('param size: Scalar\ntrailing doc');
+  });
+
+  it('returns empty string for an array containing only malformed elements', () => {
+    expect(extractHoverMarkdown([{ malformed: true }, { alsoMalformed: 42 }])).toBe('');
   });
 });

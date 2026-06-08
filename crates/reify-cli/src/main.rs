@@ -31,6 +31,10 @@ fn print_usage(out: &mut dyn std::io::Write) {
     );
     let _ = writeln!(
         out,
+        "  run <file>                Alias for eval (flagship: reify run <shell.ri>)"
+    );
+    let _ = writeln!(
+        out,
         "  eval <file>               Evaluate and print every top-level value cell"
     );
     let _ = writeln!(
@@ -109,7 +113,7 @@ fn main() -> ExitCode {
         "check" => cmd_check(&args[2..]),
         "test" => cmd_test(&args[2..]),
         "build" => cmd_build(&args[2..]),
-        "eval" => cmd_eval(&args[2..]),
+        "run" | "eval" => cmd_eval(&args[2..]),
         "doc" => cmd_doc(&args[2..]),
         "lsp" => cmd_lsp(),
         "gui" => cmd_gui(&args[2..]),
@@ -542,6 +546,8 @@ fn cmd_build(args: &[String]) -> ExitCode {
         ExportFormat::Step
     } else if output_path.ends_with(".stl") {
         ExportFormat::Stl
+    } else if output_path.ends_with(".3mf") {
+        ExportFormat::ThreeMF
     } else {
         eprintln!("Unknown output format, defaulting to STEP");
         ExportFormat::Step
@@ -606,9 +612,18 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// and the terminal `build()`/`eval()` call differ.  Factoring the shared setup
 /// here eliminates the duplicated `.with_solver` + `register_compute_fns` block
 /// that would otherwise appear verbatim in each branch.
+///
+/// Both the FEA/buckling/modal trampolines (`register_compute_fns`) and the
+/// shell-extract trampoline (`register_shell_extract_compute_fns`) are registered
+/// here, mirroring the GUI's call pair (gui/src-tauri/src/engine.rs).  Without
+/// the shell-extract registration, shell-classified `@optimized("solver::elastic_static")`
+/// solves would hit `DispatchError::Failed` in `insert_shell_extract_upstream` and
+/// emit a misleading "falling back to tet meshing" warning even though the FEA
+/// trampoline independently re-classifies and runs the correct shell solve.
 fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
     let mut engine = engine.with_solver(Box::new(reify_constraints::DimensionalSolver));
     reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
     engine
 }
 
@@ -719,7 +734,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
 
 /// Usage line printed to stderr for any `reify doc` usage error.
 const DOC_USAGE: &str =
-    "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]";
+    "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]\n       reify doc --stdlib --out <dir>";
 
 /// Output format for `reify doc`.
 ///
@@ -748,6 +763,7 @@ fn cmd_doc(args: &[String]) -> ExitCode {
     let mut output: Option<String> = None;
     let mut split = false;
     let mut compact = false;
+    let mut stdlib = false;
     let mut input: Option<&str> = None;
 
     let mut i = 0;
@@ -762,6 +778,10 @@ fn cmd_doc(args: &[String]) -> ExitCode {
                 compact = true;
                 i += 1;
             }
+            "--stdlib" => {
+                stdlib = true;
+                i += 1;
+            }
             "--format" => {
                 if i + 1 >= args.len() {
                     eprintln!("Error: --format requires a value");
@@ -771,9 +791,9 @@ fn cmd_doc(args: &[String]) -> ExitCode {
                 format = Some(args[i + 1].clone());
                 i += 2;
             }
-            "-o" => {
+            "-o" | "--out" => {
                 if i + 1 >= args.len() {
-                    eprintln!("Error: -o requires a path");
+                    eprintln!("Error: {} requires a path", a);
                     eprintln!("{}", DOC_USAGE);
                     return ExitCode::from(2u8);
                 }
@@ -795,6 +815,61 @@ fn cmd_doc(args: &[String]) -> ExitCode {
                 i += 1;
             }
         }
+    }
+
+    // --stdlib mode: HTML-only, directory-output-only.  Guard all conflicting
+    // flags before doing any compilation work.
+    if stdlib {
+        if output.is_none() {
+            eprintln!("Error: --stdlib requires --out <dir>");
+            eprintln!("{}", DOC_USAGE);
+            return ExitCode::from(2u8);
+        }
+        if input.is_some() {
+            eprintln!("Error: --stdlib does not accept an input file positional");
+            eprintln!("{}", DOC_USAGE);
+            return ExitCode::from(2u8);
+        }
+        if split {
+            eprintln!("Error: --split is not valid with --stdlib");
+            eprintln!("{}", DOC_USAGE);
+            return ExitCode::from(2u8);
+        }
+        if compact {
+            eprintln!("Error: --compact is not valid with --stdlib");
+            eprintln!("{}", DOC_USAGE);
+            return ExitCode::from(2u8);
+        }
+        if matches!(format.as_deref(), Some("json") | Some("markdown")) {
+            eprintln!("Error: --stdlib only supports --format html (the default)");
+            eprintln!("{}", DOC_USAGE);
+            return ExitCode::from(2u8);
+        }
+        // Build the stdlib doc model, render multi-page HTML, and write files.
+        let model = reify_doc_build::build_stdlib_doc_model();
+        // Cross-refs (trait conformance) are omitted for now: build_cross_refs
+        // operates on a single module's templates while the stdlib spans many.
+        // A combined cross-refs pass is deferred to a follow-up task.
+        let pages = reify_doc::fmt_html::render_html_pages(&model, None);
+        let out_dir = std::path::PathBuf::from(output.as_deref().unwrap());
+        if let Err(e) = std::fs::create_dir_all(&out_dir) {
+            eprintln!("Error writing {}: {}", out_dir.display(), e);
+            return ExitCode::FAILURE;
+        }
+        for (name, body) in pages {
+            let file_path = out_dir.join(&name);
+            if let Some(parent) = file_path.parent()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                eprintln!("Error writing {}: {}", parent.display(), e);
+                return ExitCode::FAILURE;
+            }
+            if let Err(e) = std::fs::write(&file_path, body.as_bytes()) {
+                eprintln!("Error writing {}: {}", file_path.display(), e);
+                return ExitCode::FAILURE;
+            }
+        }
+        return ExitCode::SUCCESS;
     }
 
     let input = match input {

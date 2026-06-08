@@ -275,6 +275,13 @@ pub struct CompiledPurpose {
     pub annotations: Vec<reify_ir::Annotation>,
     /// Block-level pragmas from the parsed declaration (e.g., `#solver(method="gradient")`).
     pub pragmas: Vec<reify_ast::Pragma>,
+    /// Byte span of the `purpose` keyword / declaration in the *declaring* module's source.
+    ///
+    /// Set to `SourceSpan::prelude()` (sentinel: start == end == u32::MAX) for purposes that
+    /// were merged from the prelude via `merge_prelude_purposes` (task-4016 ζ) — i.e., they
+    /// were not declared in the current module's source.  Doc-model builders use this to
+    /// distinguish user-declared purposes from globally-available stdlib purposes.
+    pub declaration_span: reify_core::SourceSpan,
 }
 
 /// Resolved `auto:` type-parameter substitutions for a compiled module, in
@@ -402,6 +409,15 @@ pub struct CompiledModule {
     /// the verbatim intent. Only malformed shapes (zero args, key=value-first,
     /// non-Ident bare values) leave the field as None.
     pub kernel_pragma: Option<String>,
+    /// Module-scope `#deterministic` flag (PRD task #18). `true` when a
+    /// well-formed `#deterministic` module-level pragma is present, else `false`.
+    ///
+    /// Populated by `module_pragmas::apply_module_pragmas` (first-wins; duplicate
+    /// pragmas emit a "subsequent #deterministic pragma ignored" warning). v0.3
+    /// records the flag at module scope only; the runtime determinism channel
+    /// that actually reaches the solver is the per-call `ElasticOptions.deterministic`
+    /// struct field, not this flag (block-/call-site pragma scoping is deferred).
+    pub deterministic: bool,
     /// Resolved `auto:` type-parameter substitutions for this module.
     ///
     /// See [`AutoTypeSubstitution`] for the uniqueness invariant, panic semantics,
@@ -872,6 +888,15 @@ pub struct SubComponentDecl {
     /// visibility. They are kept as separate fields so both states are
     /// independently representable.
     pub is_aux: bool,
+    /// Author-assigned keys for a `Keyed<T>` sub-collection (task 3930 β);
+    /// empty = not keyed.
+    ///
+    /// Distinct from `is_collection` (the positional `List<T>` form): a
+    /// non-empty `keyed_members` marks a `Keyed<T>` sub whose members are
+    /// addressed by these String keys rather than by position. Populated from
+    /// the AST `SubDecl.keyed_members` at the lowering site; γ/δ consume it to
+    /// resolve `coll["key"]` access.
+    pub keyed_members: Vec<reify_ir::MemberKey>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -1119,6 +1144,14 @@ pub enum CompiledGeometryOp {
         kind: CurveKind,
         args: Vec<(String, CompiledExpr)>,
     },
+    /// 2-D profile face construction (rectangle, circle).
+    ///
+    /// Produces a planar face in the XY plane at z=0 (Surface-dimension).
+    /// Consumable by extrude/revolve/loft/sweep as a profile operand.
+    Profile {
+        kind: ProfileKind,
+        args: Vec<(String, CompiledExpr)>,
+    },
 }
 
 /// Primitive geometry kinds.
@@ -1130,6 +1163,14 @@ pub enum PrimitiveKind {
     /// Hollow cylinder: `tube(outer_r, inner_r, height)`. Composed at the
     /// kernel layer as `boolean_cut` between two cylinders.
     Tube,
+    /// Cone or frustum: `cone(bottom_radius, top_radius, height)`.
+    /// Setting `top_radius == 0` yields a pointed apex natively via
+    /// `BRepPrimAPI_MakeCone`. Both radii zero is invalid (degenerate line).
+    Cone,
+    /// Wedge (trapezoidal prism): `wedge(width, depth, height, top_width)`.
+    /// Bbox corner at origin; top_width=0 degenerates to a triangular prism.
+    /// Implemented via `BRepPrimAPI_MakeWedge(dx=width, dy=depth, dz=height, ltx=top_width)`.
+    Wedge,
 }
 
 impl std::fmt::Display for PrimitiveKind {
@@ -1139,6 +1180,8 @@ impl std::fmt::Display for PrimitiveKind {
             PrimitiveKind::Cylinder => f.write_str("cylinder"),
             PrimitiveKind::Sphere => f.write_str("sphere"),
             PrimitiveKind::Tube => f.write_str("tube"),
+            PrimitiveKind::Cone => f.write_str("cone"),
+            PrimitiveKind::Wedge => f.write_str("wedge"),
         }
     }
 }
@@ -1309,6 +1352,29 @@ impl std::fmt::Display for CurveKind {
             CurveKind::InterpCurve => f.write_str("interp_curve"),
             CurveKind::BezierCurve => f.write_str("bezier_curve"),
             CurveKind::NurbsCurve => f.write_str("nurbs_curve"),
+        }
+    }
+}
+
+/// 2-D profile face kinds.
+///
+/// Each variant produces a planar closed face in the XY plane at z=0.
+/// Used by [`CompiledGeometryOp::Profile`] and mapped to
+/// [`reify_ir::GeometryOp::RectangleProfile`] / [`reify_ir::GeometryOp::CircleProfile`]
+/// at eval time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProfileKind {
+    /// Axis-aligned centred rectangle: `rectangle(width, height)`.
+    Rectangle,
+    /// Circle in the XY plane: `circle(radius)`.
+    Circle,
+}
+
+impl std::fmt::Display for ProfileKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProfileKind::Rectangle => f.write_str("rectangle"),
+            ProfileKind::Circle => f.write_str("circle"),
         }
     }
 }
@@ -1490,6 +1556,8 @@ mod kind_display_tests {
             (PrimitiveKind::Cylinder, "cylinder"),
             (PrimitiveKind::Sphere, "sphere"),
             (PrimitiveKind::Tube, "tube"),
+            (PrimitiveKind::Cone, "cone"),
+            (PrimitiveKind::Wedge, "wedge"),
         ]);
     }
 

@@ -14,10 +14,13 @@
 //!     `W_DynamicsDefaultDensity` on default-water fallback, and builds the
 //!     `MassProperties` instance. Kernel-free and unit-testable.
 //!   * [`try_eval_body_mass_props`] — dispatch recognition for a
-//!     `body_mass_props(...)` call cell: resolves the body + optional density
-//!     args, runs the density ladder (emitting `W_DynamicsDefaultDensity`), and
-//!     assembles a `MassProperties` whose geometric fields stay the deferred
-//!     `Value::Undef` sentinel until the KGQ kernel seam (task 3620) is wired.
+//!     `body_mass_props(...)` call cell: when the body is a
+//!     `Value::GeometryHandle`, builds a kernel-backed `geom_query` closure
+//!     (`Volume` / `CenterOfMass` / `InertiaTensor`) and routes it through
+//!     `eval_body_mass_props_core` so the density ladder runs once and its
+//!     resolved density feeds each KGQ query. On kernel failure or missing
+//!     handle, the geometric fields degrade to `Value::Undef` with a Warning
+//!     (mirrors `geometry_ops::dispatch_inertia_tensor`'s defensive contract).
 
 use std::sync::Arc;
 
@@ -172,11 +175,9 @@ fn assemble_mass_properties(mass: Value, com: Value, inertia: Value) -> Value {
 /// `geom_query` is the kernel seam abstracted as a closure `density -> (mass,
 /// com, inertia)`; this keeps the core kernel-free and exactly unit-testable
 /// (the tests inject `reify_stdlib::dynamics::mass_props::uniform_box_inertia`).
-/// The deferred-kernel dispatch path (`try_eval_body_mass_props`) does NOT route
-/// geometry through here — it reuses [`resolve_body_density`] +
-/// [`assemble_mass_properties`] with `Undef` geometric fields until task 3620
-/// lands; once it does, the supervisor routes the real kernel query through this
-/// core.
+/// `try_eval_body_mass_props` builds a kernel-backed `geom_query` closure
+/// (task 4237 / KGQ-λ seam) and routes it through this core so the density
+/// ladder resolves once and its result feeds each KGQ query.
 pub fn eval_body_mass_props_core(
     body: &Value,
     density_arg: Option<&Value>,
@@ -204,6 +205,58 @@ fn resolve_arg_value<'a>(
     }
 }
 
+/// Extract the `GeometryHandleId` from a `Value::GeometryHandle` body.
+/// Returns `None` for any other `Value` shape (e.g. a `Block` StructureInstance
+/// built by the dispatch unit tests, which falls through to the deferred-Undef
+/// path).
+fn body_geometry_handle(body: &Value) -> Option<reify_ir::GeometryHandleId> {
+    match body {
+        Value::GeometryHandle { kernel_handle, .. } => Some(*kernel_handle),
+        _ => None,
+    }
+}
+
+/// Issue the three density-aware KGQ queries for `body_mass_props` against a
+/// known geometry handle, using the resolved `density` (kg/m³) supplied by
+/// [`eval_body_mass_props_core`] so density resolution happens exactly once
+/// and all three queries see the same value.
+///
+/// Returns `(mass, com, inertia)` on success, or a [`reify_ir::QueryError`] on
+/// the first failing/malformed query. The caller is responsible for emitting
+/// diagnostics and downgrading to `Value::Undef` on error.
+#[allow(clippy::type_complexity)]
+fn query_body_mass_props_from_kernel(
+    kernel: &dyn reify_ir::GeometryKernel,
+    handle: reify_ir::GeometryHandleId,
+    density: f64,
+) -> Result<(f64, [f64; 3], [[f64; 3]; 3]), reify_ir::QueryError> {
+    // (a) Volume → mass = density × V
+    let vol_reply = kernel.query(&reify_ir::GeometryQuery::Volume(handle))?;
+    let volume = cell_f64(&vol_reply).ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!(
+            "body_mass_props Volume reply is not numeric: {vol_reply:?}"
+        ))
+    })?;
+    let mass = density * volume;
+
+    // (b) CenterOfMass{handle, density} → {"x":_,"y":_,"z":_} JSON → [f64;3]
+    let com_reply =
+        kernel.query(&reify_ir::GeometryQuery::CenterOfMass { handle, density })?;
+    let com =
+        crate::topology_selectors::parse_xyz_value(&com_reply, "body_mass_props CenterOfMass")?;
+
+    // (c) InertiaTensor{handle, density} → List-of-lists → [[f64;3];3]
+    let inertia_reply =
+        kernel.query(&reify_ir::GeometryQuery::InertiaTensor { handle, density })?;
+    let inertia = crate::dynamics_psd::inertia_3x3_from_value(&inertia_reply).ok_or_else(|| {
+        reify_ir::QueryError::QueryFailed(format!(
+            "body_mass_props InertiaTensor reply is not a 3×3 matrix: {inertia_reply:?}"
+        ))
+    })?;
+
+    Ok((mass, com, inertia))
+}
+
 /// Dispatch recognition for a `body_mass_props(body, density?)` call cell,
 /// mirroring `geometry_ops::try_eval_*`.
 ///
@@ -218,18 +271,16 @@ fn resolve_arg_value<'a>(
 /// [`resolve_body_density`], which emits `W_DynamicsDefaultDensity` when neither
 /// is present.
 ///
-/// ## Deferred kernel seam — TODO(3620 / KGQ-λ)
-/// The density-aware geometric mass/center-of-mass/inertia query
-/// (`moment_of_inertia(Solid, Density)`, KGQ Phase 4, task 3620) is **not wired
-/// by this batch** — the task description marks this as a cross-PRD edge the
-/// supervisor connects later. So the geometric fields of the assembled
-/// `MassProperties` are the deferred [`Value::Undef`] sentinel. The single
-/// wiring point is marked below: once 3620 lands, build a `geom_query` closure
-/// over `kernel` + `body.geometry` and route it through
-/// [`eval_body_mass_props_core`] so the concrete tensor replaces the `Undef`s
-/// (and is then validated by the existing engine MassProperties PSD hook,
-/// against [`uniform_box_inertia`](reify_stdlib::dynamics::mass_props::uniform_box_inertia)
-/// as ground truth).
+/// ## Kernel seam (task 4237 / KGQ-λ)
+/// When `body` is a `Value::GeometryHandle`, a kernel-backed `geom_query`
+/// closure is built over the three existing KGQ variants
+/// (`Volume` / `CenterOfMass{density}` / `InertiaTensor{density}`) and routed
+/// through [`eval_body_mass_props_core`] so density is resolved exactly once.
+/// On any kernel error or malformed reply, a `Diagnostic::warning` is emitted
+/// and the geometric fields downgrade to `Value::Undef` (mirrors
+/// `geometry_ops::dispatch_inertia_tensor`'s defensive contract). When `body`
+/// has no geometry handle (e.g. a Block StructureInstance), the deferred-Undef
+/// path is preserved so callers leaving such bodies stay green.
 pub fn try_eval_body_mass_props(
     default_expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -278,25 +329,66 @@ pub fn try_eval_body_mass_props(
     // Material / default-water rungs.
     let density_arg = args.get(1).and_then(|e| resolve_arg_value(e, values));
 
-    // (5) Run the fn-level density ladder for its `W_DynamicsDefaultDensity`
-    // side effect. The resolved magnitude is unused on this deferred path (no
-    // geometric query consumes it yet); once the kernel seam below is wired it
-    // will feed `geom_query`.
-    let _density = resolve_body_density(body, density_arg, diagnostics);
-
-    // (6) Kernel seam — TODO(3620 / KGQ-λ moment_of_inertia(Solid, Density)):
-    // this is the single wiring point. When the density-aware KGQ geometry
-    // query lands, replace the `Undef` geometric fields below by routing
-    //   geom_query = |rho| <kernel query over body.geometry at density rho>
-    // through `eval_body_mass_props_core(body, density_arg, geom_query,
-    // diagnostics)`. Until then the kernel is unused and the geometric fields
-    // are the deferred sentinel.
-    let _ = kernel;
-    Some(assemble_mass_properties(
-        Value::Undef,
-        Value::Undef,
-        Value::Undef,
-    ))
+    // (5)/(6) Kernel seam (task 4237 / KGQ-λ): if the body is a
+    // GeometryHandle, build a kernel-backed geom_query closure and route it
+    // through eval_body_mass_props_core so the density ladder runs once and
+    // its result feeds each KGQ query. On error, capture via RefCell and
+    // downgrade to Undef (with a Warning in step-4). No handle → deferred path.
+    match body_geometry_handle(body) {
+        Some(h) => {
+            let err: std::cell::RefCell<Option<reify_ir::QueryError>> =
+                std::cell::RefCell::new(None);
+            // INVARIANT: eval_body_mass_props_core calls geom_query exactly once
+            // (l.188 — single `geom_query(density)` call after density resolution).
+            // If the core ever called the closure more than once, only the LAST
+            // error would be captured and any prior successful triple would be
+            // silently overwritten with the (0,0,0) sentinel, producing wrong mass
+            // properties with no diagnostic. The debug_assert below makes that
+            // contract violation fail loudly under any test run.
+            let invocation_count = std::cell::Cell::new(0u32);
+            let q = |d: f64| {
+                invocation_count.set(invocation_count.get() + 1);
+                match query_body_mass_props_from_kernel(kernel, h, d) {
+                    Ok(triple) => triple,
+                    Err(e) => {
+                        *err.borrow_mut() = Some(e);
+                        (0.0_f64, [0.0_f64; 3], [[0.0_f64; 3]; 3])
+                    }
+                }
+            };
+            let mp = eval_body_mass_props_core(body, density_arg, q, diagnostics);
+            debug_assert_eq!(
+                invocation_count.get(),
+                1,
+                "eval_body_mass_props_core invoked geom_query {} time(s); expected \
+                 exactly 1 — the RefCell error-capture assumes a single call and \
+                 would silently overwrite errors with (0,0,0) sentinels on a \
+                 multi-call core",
+                invocation_count.get()
+            );
+            if let Some(e) = err.borrow().as_ref() {
+                // Defensive downgrade: a kernel error for any of the three
+                // mass-properties queries (Volume / CenterOfMass / InertiaTensor)
+                // degrades the geometric fields to Undef and emits one Warning
+                // (mirrors geometry_ops::dispatch_inertia_tensor's contract).
+                // The MassProperties PSD hook classifies Undef inertia as Skip,
+                // so no spurious E_DynamicsInertiaNotPSD is generated.
+                diagnostics.push(Diagnostic::warning(format!(
+                    "body_mass_props kernel query failed — geometric fields \
+                     (mass/com/inertia) set to Undef: {e}"
+                )));
+                Some(assemble_mass_properties(Value::Undef, Value::Undef, Value::Undef))
+            } else {
+                Some(mp)
+            }
+        }
+        None => {
+            // No geometry handle: run the density ladder for its diagnostic
+            // side effect, then return the deferred-Undef sentinel.
+            let _density = resolve_body_density(body, density_arg, diagnostics);
+            Some(assemble_mass_properties(Value::Undef, Value::Undef, Value::Undef))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -778,6 +870,255 @@ mod tests {
             Some(DiagnosticCode::DynamicsBodyMassPropsArity)
         );
     }
+
+    // ── step-3: kernel failure downgrades to Undef + Warning ─────────────────
+
+    #[test]
+    fn try_eval_body_mass_props_kernel_failure_downgrades_to_undef_with_warning() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        // Body holds a GeometryHandle for handle 9; bare kernel has no injected
+        // results so the first query (Volume) returns Err immediately.
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: GeometryHandleId(9),
+            },
+        );
+        // Explicit density suppresses W_DynamicsDefaultDensity so the only
+        // warning we see (after step-4) is the kernel-failure downgrade warning.
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+
+        // No injected results → every query returns Err.
+        let kernel = MockGeometryKernel::new();
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("kernel failure must still return Some(MassProperties)");
+
+        // All three geometric fields must be the deferred Undef sentinel.
+        assert_deferred_mass_props(&result);
+
+        // Must emit at least one Warning (the defensive kernel-failure downgrade).
+        // RED after step-2 because step-2 silently discards the error without
+        // emitting a diagnostic; step-4 adds the warning.
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert!(
+            !warnings.is_empty(),
+            "kernel failure must emit at least one Warning diagnostic, got: {diags:?}"
+        );
+    }
+
+    // ── step-1: GeometryHandle body routes kernel queries into geometric fields ─
+
+    #[test]
+    fn try_eval_body_mass_props_routes_kernel_query_into_geometric_fields() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        // Body cell holds a GeometryHandle with kernel_handle 7.
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: GeometryHandleId(7),
+            },
+        );
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+
+        // Injected inertia: distinct diagonal so all three diagonal entries differ.
+        let injected_inertia = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+        ]);
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(7), Value::Real(3.0))
+            .with_center_of_mass_result(
+                GeometryHandleId(7),
+                2000.0,
+                Value::String("{\"x\":0.01,\"y\":0.02,\"z\":0.03}".to_string()),
+            )
+            .with_inertia_tensor_result(GeometryHandleId(7), 2000.0, injected_inertia);
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("recognised body_mass_props with GeometryHandle must return Some");
+
+        // mass = density × volume = 2000.0 × 3.0 = 6000.0 kg
+        let (mass, com, inertia) = mass_props_fields(&result);
+        assert_close(mass, 6000.0, "mass");
+        assert_close(com[0], 0.01, "com[0]");
+        assert_close(com[1], 0.02, "com[1]");
+        assert_close(com[2], 0.03, "com[2]");
+        assert_close(inertia[0][0], 1.0, "inertia[0][0]");
+        assert_close(inertia[1][1], 2.0, "inertia[1][1]");
+        assert_close(inertia[2][2], 3.0, "inertia[2][2]");
+        assert_close(inertia[0][1], 0.0, "inertia[0][1]");
+        assert_close(inertia[1][0], 0.0, "inertia[1][0]");
+        // Explicit density suppresses the default-water warning.
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != Some(DiagnosticCode::DynamicsDefaultDensity)),
+            "explicit density must suppress the default-water warning, got: {diags:?}"
+        );
+    }
+
+    // ── malformed-reply defensive paths in query_body_mass_props_from_kernel ──
+    //
+    // The three ok_or_else / parse_xyz_value / inertia_3x3_from_value branches
+    // in query_body_mass_props_from_kernel are exercised below. Each should
+    // propagate the error through the closure capture, triggering the Undef
+    // downgrade and the kernel-failure Warning — the same contract as a missing
+    // kernel result.
+
+    /// Partial kernel failure: Volume query succeeds but CenterOfMass is not
+    /// injected (returns Err). The error must propagate out of the closure,
+    /// downgrading all geometric fields to Undef and emitting a Warning.
+    #[test]
+    fn try_eval_body_mass_props_partial_failure_after_volume_downgrades_to_undef() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: GeometryHandleId(11),
+            },
+        );
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+
+        // Volume injected and succeeds; CenterOfMass is NOT injected → Err on
+        // the second query, exercising the partial-failure path.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(11), Value::Real(5.0));
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("partial kernel failure must still return Some(MassProperties)");
+
+        assert_deferred_mass_props(&result);
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert!(
+            !warnings.is_empty(),
+            "partial kernel failure must emit at least one Warning, got: {diags:?}"
+        );
+    }
+
+    /// Malformed Volume reply: the mock returns `Value::String("not-a-number")`
+    /// for the Volume query. `cell_f64` returns `None`, which `ok_or_else`
+    /// converts to a `QueryError`. All geometric fields must downgrade to Undef
+    /// and exactly one Warning must be emitted.
+    #[test]
+    fn try_eval_body_mass_props_malformed_volume_reply_downgrades_to_undef() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: GeometryHandleId(13),
+            },
+        );
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+
+        // Volume reply is non-numeric: cell_f64 returns None → ok_or_else →
+        // QueryError → defensive Undef + Warning.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(13), Value::String("not-a-number".to_string()));
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("malformed Volume reply must still return Some(MassProperties)");
+
+        assert_deferred_mass_props(&result);
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert!(
+            !warnings.is_empty(),
+            "malformed Volume reply must emit at least one Warning, got: {diags:?}"
+        );
+    }
+
+    /// Malformed CenterOfMass JSON: Volume succeeds but the CoM reply is not a
+    /// valid `{"x":_,"y":_,"z":_}` JSON string. `parse_xyz_value` fails,
+    /// propagating a `QueryError` that triggers the Undef downgrade + Warning.
+    #[test]
+    fn try_eval_body_mass_props_malformed_com_json_downgrades_to_undef() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: GeometryHandleId(15),
+            },
+        );
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+
+        // Volume is valid; CenterOfMass reply is malformed JSON → parse_xyz_value
+        // fails → QueryError → defensive Undef + Warning.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(15), Value::Real(5.0))
+            .with_center_of_mass_result(
+                GeometryHandleId(15),
+                2000.0,
+                Value::String("not-valid-json".to_string()),
+            );
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("malformed CoM JSON must still return Some(MassProperties)");
+
+        assert_deferred_mass_props(&result);
+        let warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert!(
+            !warnings.is_empty(),
+            "malformed CenterOfMass JSON must emit at least one Warning, got: {diags:?}"
+        );
+    }
 }
 
 // ── inverse_dynamics ComputeNode trampoline (task RBD-ι) ─────────────────────
@@ -873,11 +1214,14 @@ fn value_size_estimate(v: &Value) -> usize {
     }
 }
 
-/// The malformed / closed-chain short-circuit outcome: η's `Value::Undef`
-/// convention surfaced as a `Completed` with no donated warm state — keeping the
+/// The malformed-input short-circuit outcome: η's `Value::Undef` convention
+/// surfaced as a `Completed` with no donated warm state — keeping the
 /// trampoline result bit-identical to the unregistered `inverse_dynamics_lower`
 /// body-inline fallback, and donating no warm state for an input that produced no
-/// real computation (design_decision #6).
+/// real computation (design_decision #6). (Closed-chain mechanisms no longer
+/// short-circuit here: since task 4146 the shared per-sample seam routes them
+/// through the closed-chain KKT bridge; `None` from the seam now means a
+/// malformed input or a failed loop solve / singular KKT.)
 fn undef_outcome() -> ComputeOutcome {
     ComputeOutcome::Completed {
         result: Value::Undef,
@@ -931,11 +1275,13 @@ fn completed_donating(cache: InverseDynamicsCache) -> ComputeOutcome {
 ///
 /// Drives the per-sample loop through the reify-stdlib seam
 /// ([`motion_trajectory_samples`] + [`inverse_dynamics_sample`]) so the result is
-/// bit-identical to the body-inline `inverse_dynamics_lower` fallback. A malformed
-/// trajectory, or a sample the seam rejects (a closed-chain mechanism, an
-/// arity/shape mismatch), yields [`undef_outcome`] — η's exact Undef convention —
-/// donating no warm state. Gravity is the constant [`default_gravity`] (PRD §12
-/// q1), folded into the cache key.
+/// bit-identical to the body-inline `inverse_dynamics_lower` fallback — including
+/// closed-chain mechanisms, which the seam routes through the closed-chain KKT
+/// bridge (task 4146). A malformed trajectory, or a sample the seam rejects (an
+/// arity/shape mismatch, a failed loop solve / singular KKT), yields
+/// [`undef_outcome`] — η's exact Undef convention — donating no warm state.
+/// Gravity is the constant [`default_gravity`] (PRD §12 q1), folded into the
+/// cache key.
 ///
 /// Honours cooperative cancellation (PRD §6/§9.1): polls `cancellation` on entry
 /// and at every per-sample boundary, returning [`ComputeOutcome::Cancelled`] (no
@@ -997,8 +1343,9 @@ pub(crate) fn run_inverse_dynamics(
     // ── cache MISS ───────────────────────────────────────────────────────────────
     // Record the body-granular solid-hash invalidation record, then drive the
     // per-sample RNEA loop through the shared stdlib seam so the result is
-    // single-sourced with the body-inline fallback. Any `None` (malformed
-    // trajectory, closed-chain mechanism, or shape mismatch) collapses to η's Undef.
+    // single-sourced with the body-inline fallback (closed-chain mechanisms route
+    // through the seam's KKT bridge, task 4146). Any `None` (malformed trajectory,
+    // shape mismatch, or failed loop solve) collapses to η's Undef.
     //
     // NOTE (speculative-generality, kept per design_decision #4): `body_solid_hashes`
     // is RECORDED but not yet CONSUMED by any HIT/MISS decision — that verdict is

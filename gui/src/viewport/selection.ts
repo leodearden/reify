@@ -12,7 +12,6 @@
 import {
   Raycaster,
   Vector2,
-  Vector3,
   Box3,
   Color,
   EdgesGeometry,
@@ -23,6 +22,7 @@ import {
 import type { Scene, PerspectiveCamera, MeshStandardMaterial } from 'three';
 import { acceleratedRaycast } from 'three-mesh-bvh';
 import { THEME_TOKENS } from '../theme';
+import { fitCameraToBox } from './fitCamera';
 
 // Patch Mesh prototype for BVH-accelerated raycasting
 Mesh.prototype.raycast = acceleratedRaycast;
@@ -55,9 +55,17 @@ export interface SelectionContext {
 /**
  * Creates a selection system for pointer-based hover/click detection
  * on meshes managed by meshManager.
+ *
+ * Color semantics:
+ *   HIGHLIGHT_COLOR (accent blue)  — hover emissive, applied via setHovered.
+ *   SELECTION_COLOR (orange)       — selection wireframe outline, applied via addWireframeFor.
+ * Keeping them distinct ensures a selected mesh and a hovered mesh are never
+ * visually identical (the original "subtle color changes" complaint).
  */
-/** Emissive highlight color derived from theme accent. */
+/** Emissive highlight color derived from theme accent (used for hover). */
 const HIGHLIGHT_COLOR = THEME_TOKENS.accent;
+/** High-contrast wireframe color for the selection overlay — distinct from hover. */
+const SELECTION_COLOR = THEME_TOKENS.selection;
 
 export function createSelection(options: SelectionOptions): SelectionContext {
   const { scene, camera, domElement, getMeshes, onHover, onSelect, controls } = options;
@@ -189,7 +197,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     const mesh = getMeshes().get(path);
     if (!mesh) return;
     const wireGeom = new EdgesGeometry(mesh.geometry);
-    const wireMat = new LineBasicMaterial({ color: HIGHLIGHT_COLOR });
+    const wireMat = new LineBasicMaterial({ color: SELECTION_COLOR });
     const wf = new LineSegments(wireGeom, wireMat);
     scene.add(wf);
     wireframes.set(path, wf);
@@ -260,24 +268,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
 
     if (box.isEmpty()) return;
 
-    const center = new Vector3();
-    const size = new Vector3();
-    box.getCenter(center);
-    box.getSize(size);
-
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const fovRad = (camera.fov / 2) * (Math.PI / 180);
-    const distance = maxDim / (2 * Math.tan(fovRad));
-
-    const viewDir = new Vector3();
-    camera.getWorldDirection(viewDir);
-    // Position camera at center - viewDir * distance (backing away from center along view direction)
-    camera.position.copy(center).sub(viewDir.multiplyScalar(distance));
-    camera.lookAt(center);
-    camera.updateProjectionMatrix();
-    if (controls) {
-      controls.target.copy(center);
-    }
+    fitCameraToBox(camera, box, controls ? { controls } : undefined);
   }
 
   function flyToEntity(entityPath: string): void {
@@ -289,23 +280,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
 
     if (box.isEmpty()) return;
 
-    const center = new Vector3();
-    const size = new Vector3();
-    box.getCenter(center);
-    box.getSize(size);
-
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const fovRad = (camera.fov / 2) * (Math.PI / 180);
-    const distance = maxDim / (2 * Math.tan(fovRad));
-
-    const viewDir = new Vector3();
-    camera.getWorldDirection(viewDir);
-    camera.position.copy(center).sub(viewDir.multiplyScalar(distance));
-    camera.lookAt(center);
-    camera.updateProjectionMatrix();
-    if (controls) {
-      controls.target.copy(center);
-    }
+    fitCameraToBox(camera, box, controls ? { controls } : undefined);
   }
 
   function dispose(): void {

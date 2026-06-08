@@ -186,6 +186,13 @@ pub enum CompiledExprKind {
         version: u32,
         ordered_args: Vec<(String, CompiledExpr)>,
         defaults: Vec<(String, CompiledExpr)>,
+        /// Template `Let` cells to eagerly materialize at construction time
+        /// (task-4342). Each entry is `(member_name, compiled_expr)` in
+        /// declaration order.  These reference template-local `ValueCellId`s
+        /// (`entity == type_name`) and are intentionally NOT traversed by
+        /// `walk` / `collect_value_refs_inner` / `remap_entity` / `remap_cell`
+        /// — those operations act on surrounding-scope refs only.
+        lets: Vec<(String, CompiledExpr)>,
     },
 }
 
@@ -289,6 +296,13 @@ pub struct CompiledFunction {
     /// (P3.4 ComputeNode) can probe the same field name regardless of whether
     /// the node originated from a constraint or function definition.
     pub optimized_target: Option<String>,
+    /// Type parameters declared on this function (e.g. `<D, C>` in
+    /// `fn f<D, C>(x: C) -> Field<D, C>`).
+    ///
+    /// Populated by `compile_function` in `reify-compiler/src/functions.rs` via
+    /// `convert_type_params` (same lowering aliases and traits use).  Empty for
+    /// non-generic functions.  Added by task 4230 (generic-user-fns α).
+    pub type_params: Vec<crate::TypeParam>,
 }
 
 impl CompiledFunction {
@@ -779,6 +793,7 @@ impl CompiledExpr {
                 version,
                 ordered_args,
                 defaults,
+                lets,
             } => {
                 // Rebuild via the constructor so content_hash is recomputed
                 // from the rewritten child expressions (hash-rebuild contract).
@@ -790,12 +805,38 @@ impl CompiledExpr {
                     .into_iter()
                     .map(|(n, e)| (n, e.map_value_refs(f)))
                     .collect();
+                // `lets` reference template-local ValueCellIds (entity ==
+                // type_name) — do NOT apply `f`, which remaps surrounding-scope
+                // refs.  Pass through cloned-unchanged so lets survive the
+                // map_value_refs rebuild without being dropped or wrongly remapped.
+                //
+                // INVARIANT ENFORCEMENT (suggestion 4): assert in debug/test builds
+                // that every ValueRef inside a let expr has entity == type_name.
+                // This makes the "no-traverse" contract visible and loud (rather than
+                // silently-wrong) if a future let ever captures a surrounding-scope ref.
+                // Walk + collect_value_refs_inner intentionally skip `lets` (they use
+                // `..`), so any cross-scope ref there would be missed by dependency
+                // analysis and remapping — this assert fires before that can happen.
+                #[cfg(debug_assertions)]
+                for (let_name, let_expr) in &lets {
+                    for ref_id in let_expr.collect_value_refs() {
+                        debug_assert_eq!(
+                            ref_id.entity, type_name,
+                            "StructureInstanceCtor let '{}' contains a ValueCellId \
+                             with entity '{}' != type_name '{}'; cross-scope refs in \
+                             lets are silently skipped by walk/collect_value_refs/\
+                             remap_entity — this is a compiler bug",
+                            let_name, ref_id.entity, type_name,
+                        );
+                    }
+                }
                 CompiledExpr::structure_instance_ctor(
                     type_id,
                     type_name,
                     version,
                     new_args,
                     new_defaults,
+                    lets,
                     result_type,
                 )
             }
@@ -1599,6 +1640,7 @@ impl CompiledExpr {
         version: u32,
         ordered_args: Vec<(String, CompiledExpr)>,
         defaults: Vec<(String, CompiledExpr)>,
+        lets: Vec<(String, CompiledExpr)>,
         result_type: Type,
     ) -> Self {
         let mut content_hash = ContentHash::of(&[TAG_STRUCTURE_INSTANCE_CTOR])
@@ -1614,6 +1656,14 @@ impl CompiledExpr {
                 .combine(ContentHash::of_str(name))
                 .combine(def.content_hash);
         }
+        // Fold lets into hash so ctor-with-lets and ctor-without-lets hash
+        // differently (task-4342).  Empty lets ⟹ no additional combining ⟹
+        // hash identical to the pre-task-4342 algorithm for let-free structures.
+        for (name, let_expr) in &lets {
+            content_hash = content_hash
+                .combine(ContentHash::of_str(name))
+                .combine(let_expr.content_hash);
+        }
         CompiledExpr {
             kind: CompiledExprKind::StructureInstanceCtor {
                 type_id,
@@ -1621,6 +1671,7 @@ impl CompiledExpr {
                 version,
                 ordered_args,
                 defaults,
+                lets,
             },
             result_type,
             content_hash,
@@ -2800,6 +2851,94 @@ mod tests {
         assert!(
             defaults2.iter().all(|d| d.is_none()),
             "arity-2: every param_defaults entry must be None"
+        );
+    }
+
+    // ── task-4342 tests: StructureInstanceCtor.lets ───────────────────────────
+
+    /// Step-1 RED: `structure_instance_ctor` with a non-empty `lets` argument
+    /// stores those lets verbatim, `map_value_refs` preserves them, and
+    /// content_hash is stable / differentiates by lets content.
+    ///
+    /// This test fails to COMPILE on base because the constructor accepts no
+    /// `lets` parameter and the variant has no `lets` field.
+    #[test]
+    fn structure_instance_ctor_lets_stored_and_preserved() {
+        let placeholder_type_id = crate::structure_registry::StructureTypeId(0);
+        let ref_a = CompiledExpr::value_ref(ValueCellId::new("MyStruct", "a"), Type::length());
+        let ref_b = CompiledExpr::value_ref(ValueCellId::new("MyStruct", "b"), Type::length());
+        let derived_expr =
+            CompiledExpr::binop(BinOp::Add, ref_a.clone(), ref_b.clone(), Type::length());
+
+        // Build a ctor WITH a lets entry.
+        let ctor_with_lets = CompiledExpr::structure_instance_ctor(
+            placeholder_type_id,
+            "MyStruct".to_string(),
+            1,
+            vec![("a".to_string(), ref_a.clone()), ("b".to_string(), ref_b.clone())],
+            vec![],
+            vec![("derived".to_string(), derived_expr.clone())], // <-- NEW lets param
+            Type::Bool, // placeholder result type
+        );
+
+        // (1) lets are stored verbatim.
+        match &ctor_with_lets.kind {
+            CompiledExprKind::StructureInstanceCtor { lets, .. } => {
+                assert_eq!(lets.len(), 1, "lets must have 1 entry");
+                assert_eq!(lets[0].0, "derived");
+                assert_eq!(lets[0].1.content_hash, derived_expr.content_hash);
+            }
+            other => panic!("expected StructureInstanceCtor, got {other:?}"),
+        }
+
+        // (2) map_value_refs(identity) preserves lets byte-for-byte.
+        let remapped = ctor_with_lets.clone().map_value_refs(&mut |id| id);
+        match &remapped.kind {
+            CompiledExprKind::StructureInstanceCtor { lets, .. } => {
+                assert_eq!(lets.len(), 1);
+                assert_eq!(lets[0].0, "derived");
+                assert_eq!(lets[0].1.content_hash, derived_expr.content_hash);
+            }
+            other => panic!("expected StructureInstanceCtor after map_value_refs, got {other:?}"),
+        }
+        // content_hash stable across identity remap.
+        assert_eq!(ctor_with_lets.content_hash, remapped.content_hash);
+
+        // (3a) A ctor with lets has a DIFFERENT content_hash than the identical
+        // ctor with NO lets (same type_name/version/args/defaults).
+        let ctor_no_lets = CompiledExpr::structure_instance_ctor(
+            placeholder_type_id,
+            "MyStruct".to_string(),
+            1,
+            vec![("a".to_string(), ref_a.clone()), ("b".to_string(), ref_b.clone())],
+            vec![],
+            vec![], // no lets
+            Type::Bool,
+        );
+        assert_ne!(
+            ctor_with_lets.content_hash, ctor_no_lets.content_hash,
+            "ctor with lets must hash differently from ctor without lets"
+        );
+
+        // (3b) A let-free ctor's hash must match what the old constructor
+        // produced (no-lets = empty fold = original hash chain).  Verify by
+        // recomputing the original algorithm manually.
+        let expected_no_lets_hash = {
+            let mut h = ContentHash::of(&[TAG_STRUCTURE_INSTANCE_CTOR])
+                .combine(ContentHash::of_str("MyStruct"))
+                .combine(ContentHash::of(&1u32.to_le_bytes()));
+            h = h
+                .combine(ContentHash::of_str("a"))
+                .combine(ref_a.content_hash);
+            h = h
+                .combine(ContentHash::of_str("b"))
+                .combine(ref_b.content_hash);
+            // no defaults, no lets
+            h
+        };
+        assert_eq!(
+            ctor_no_lets.content_hash, expected_no_lets_hash,
+            "let-free ctor hash must be unchanged from the original algorithm"
         );
     }
 }

@@ -1,0 +1,8 @@
+// Fixture for B8 simulation_ready stdlib test — geometry-undetermined case.
+// `width` is auto (solver variable) → determined(width)=false →
+// forall p in geometric_params: determined(p) = false → Violated → exit non-zero.
+// (B8 oracle: geometry-undef → VIOLATED/not-ready per Leo decision A / esc-4016-163.)
+structure Part {
+    param width : Length = auto
+    param height : Length = 60mm
+}

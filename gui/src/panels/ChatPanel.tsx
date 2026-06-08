@@ -214,11 +214,12 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
         <textarea
           data-testid="chat-input"
           class={styles.textarea}
+          aria-label="Ask Claude"
           placeholder="Ask Claude..."
           value={inputText()}
           onInput={(e) => setInputText(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
-          rows={1}
+          rows={2}
         />
         <Show
           when={isActive()}

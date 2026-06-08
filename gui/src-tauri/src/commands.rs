@@ -79,13 +79,148 @@ pub fn set_parameter_impl(
 }
 
 /// Update source code and return updated state.
+///
+/// On success: returns `Ok(GuiState)` and the session is not stale (commit_state
+/// cleared `last_reload_error`).
+///
+/// On failure: returns `Err(message)` (covering both compile-error and check()-panic
+/// paths) **and** records the error as the session's staleness signal via a second
+/// `with_engine_lock` call.  The second lock is panic-safe because the first call's
+/// panic was already caught and converted to `Err` by `with_engine_lock`; the second
+/// call cannot panic on a just-caught-panic session.
+///
+/// **Single-writer assumption:** recording staleness uses two separate lock
+/// acquisitions, so a concurrent writer (e.g. a second Tauri `update_source`
+/// command) that succeeds and clears `last_reload_error` between the two locks
+/// would have its success masked by this function re-setting the error flag.
+/// In practice both callers (the Tauri `update_source` command and the file
+/// watcher via `reload_for_watch_impl`) are single-event-driven and do not
+/// fire concurrently on the same engine instance — the Tauri command queue is
+/// single-threaded per app window and the watcher fires sequential debounced
+/// events — so this interleaving cannot occur in production.  If the calling
+/// model ever changes to allow concurrent writes, recording should be moved
+/// inside the first lock (e.g. by threading an error-recording callback into
+/// `update_source` itself).
 pub fn update_source_impl(
     engine: &Mutex<EngineSession>,
     path: &str,
     content: &str,
 ) -> Result<GuiState, String> {
-    crate::engine_lock::with_engine_lock(engine, |s| s.update_source(path, content))
-        .and_then(std::convert::identity)
+    let result =
+        crate::engine_lock::with_engine_lock(engine, |s| s.update_source(path, content))
+            .and_then(std::convert::identity);
+    if let Err(ref msg) = result {
+        // Record the reload error so is_stale() / build_gui_state() reflect the failure.
+        // Ignore the Result of this second lock: it can only fail if the mutex was
+        // re-poisoned between the two calls, which is not possible here.
+        let msg_clone = msg.clone();
+        let _ = crate::engine_lock::with_engine_lock(engine, |s| {
+            s.record_reload_error(msg_clone);
+        });
+    }
+    result
+}
+
+/// Build a debug-API JSON snapshot of the engine state.
+///
+/// Extracted from `debug_server::handle_engine_state` so tests can call it
+/// directly without requiring the `gui` feature gate or a Tauri runtime.
+///
+/// Returns a `serde_json::Value` containing:
+/// * Existing keys: `meshes` (entity path + vertex/face counts), `values`,
+///   `constraints`, `files`.
+/// * New staleness keys: `compile_diagnostics`, `tessellation_diagnostics`,
+///   `stale` (bool), `reload_error` (string or null).
+///
+/// # One-snapshot invariant (task 4258)
+///
+/// `files[].content` and `compile_diagnostics` are computed from the **same**
+/// source snapshot, with one precision:
+///
+/// - **On a failed edit** (`stale == true`, `compile_diagnostics` non-empty):
+///   `files[file_key].content` equals `CompileFailure.source` — the exact
+///   buffer the failing compile was run against.  **Error** diagnostics from
+///   the failing compile have `line`/`col` positions that correctly index into
+///   that content.  **Warning/Info** diagnostics that were carried over from
+///   the _last-good_ compile retain their last-good positions — those may not
+///   correctly index into the (overridden) `files[].content` if the edit
+///   shifted lines.  Consumers should key on `severity == "Error"` to get
+///   positions that are guaranteed consistent with the current content.
+/// - **On success** (`stale == false`): `files[].content` reflects the
+///   last-good committed source (`source_map`), and `compile_diagnostics`
+///   carries only warnings/info from that same committed compile — all
+///   positions correctly index into their respective `files[]` entry.
+///
+/// **Deliberate split**: `meshes` and `values` intentionally remain last-good
+/// on a failed edit — they describe the last successfully compiled module so
+/// the viewport stays populated.  Only `files[].content` is retargeted to the
+/// failing buffer so the diagnostic source is consistent.
+///
+/// **`get_source_location` spans**: the MCP `get_source_location` tool returns
+/// spans resolved against the last-good compiled source (`source_map`).  During
+/// a stale (failed-edit) snapshot, `files[].content` is the _failing_ buffer —
+/// applying last-good `get_source_location` spans as indices into
+/// `files[].content` will produce incorrect positions.  Use `get_source_location`
+/// spans only when `stale == false`.
+pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
+    let gui_state = session
+        .build_gui_state()
+        .map_err(|e| format!("build_gui_state failed: {e}"))?;
+
+    let meshes: Vec<serde_json::Value> = gui_state
+        .meshes
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "entity_path": m.entity_path,
+                "vertex_count": m.vertices.len() / 3,
+                "face_count": m.indices.len() / 3,
+                "has_normals": m.normals.is_some(),
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "meshes": meshes,
+        "values": gui_state.values,
+        "constraints": gui_state.constraints,
+        "files": gui_state.files,
+        "compile_diagnostics": gui_state.compile_diagnostics,
+        "tessellation_diagnostics": gui_state.tessellation_diagnostics,
+        "stale": session.is_stale(),
+        "reload_error": session.reload_error(),
+    }))
+}
+
+/// Reload source for the file watcher, always returning a `GuiState` to emit.
+///
+/// This is the watcher's entry point for hot-reload.  Unlike `update_source_impl`,
+/// which returns `Err` on failure, this function **never fails silently**:
+///
+/// * On success: returns `Ok(fresh GuiState)` identical to `update_source_impl`'s
+///   output.
+/// * On failure (compile error or check()-panic): records staleness via
+///   `update_source_impl`, then falls back to `get_initial_state_impl` which
+///   returns the retained last-good `GuiState` now carrying the reload-error
+///   diagnostic synthesised by `build_gui_state`.  The watcher can emit this
+///   state to push the Error-severity diagnostic to the frontend.
+///
+/// The function propagates an `Err` only if the fallback `build_gui_state` itself
+/// fails, which is not expected in normal operation.
+pub fn reload_for_watch_impl(
+    engine: &Mutex<EngineSession>,
+    path: &str,
+    content: &str,
+) -> Result<GuiState, String> {
+    match update_source_impl(engine, path, content) {
+        Ok(gui_state) => Ok(gui_state),
+        Err(_) => {
+            // update_source_impl already recorded the reload error.
+            // Return the retained last-good state; build_gui_state will
+            // synthesise the Error-severity diagnostic from last_reload_error.
+            get_initial_state_impl(engine)
+        }
+    }
 }
 
 /// Export geometry to a file.

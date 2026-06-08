@@ -20,13 +20,16 @@ import { parseRpcResponse, type RpcResult } from "./rpc.js";
 import { decideOutcome } from "./diff.js";
 import type { ImageData } from "./diff.js";
 import { resolveRepoRoot, assertRepoRootStructure } from "./paths.js";
+import { FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions.js";
+import { resolveDebugPort, debugUrlForPort, allocateFreePort } from "./endpoint.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const PIXEL_THRESHOLD = 0.1;
 const MISMATCH_PCT_LIMIT = 0.01;
 const UPDATE_BASELINES = process.env.UPDATE_BASELINES === "1";
-const DEBUG_URL = "http://127.0.0.1:3939/mcp";
+// Resolved once at startup (see bottom entry dispatcher). Default port: 3939.
+let DEBUG_URL = "";
 const POLL_INTERVAL_MS = 1_000;
 const SERVER_TIMEOUT_MS = 600_000;
 
@@ -35,30 +38,10 @@ assertRepoRootStructure(REPO_ROOT);
 const SCREENSHOTS_DIR = path.join(REPO_ROOT, "gui", "test", "screenshots");
 
 // ─── Scenario definitions ─────────────────────────────────────────────────────
+// Catalogue lives in scenarios.ts (unit-tested headlessly via scenarios.test.ts).
+// SCENARIOS[0] is the bootstrap fixture used to start the GUI process below.
 
-interface Camera {
-  position: [number, number, number];
-  target: [number, number, number];
-  up?: [number, number, number];
-  zoom?: number;
-}
-
-interface Scenario {
-  name: string;
-  fixture: string;
-  camera: Camera;
-}
-
-const SCENARIOS: Scenario[] = [
-  {
-    name: "m5_geometry_flange",
-    fixture: "examples/m5_geometry_flange.ri",
-    camera: {
-      position: [0.15, 0.1, 0.15],
-      target: [0, 0, 0],
-    },
-  },
-];
+import { SCENARIOS, type Scenario, type Camera } from "./scenarios.js";
 
 // ─── RPC client ───────────────────────────────────────────────────────────────
 
@@ -127,13 +110,14 @@ function spawnGui(launchFixture: string): void {
     throw new Error(`Fixture not found: ${fixturePath}`);
   }
   console.log(`[harness] spawning reify-gui with ${launchFixture}`);
+  const resolvedPort = resolveDebugPort(process.env);
   guiProcess = child_process.spawn(
     "scripts/run-gui-dev.sh",
     [fixturePath],
     {
       cwd: REPO_ROOT,
       stdio: ["ignore", "inherit", "inherit"],
-      env: process.env,
+      env: { ...process.env, REIFY_DEBUG_PORT: String(resolvedPort) },
     },
   );
   guiProcess.on("error", (err) => {
@@ -231,10 +215,13 @@ async function main(): Promise<HarnessExitCode> {
         continue;
       }
 
-      // Wait for the renderer to settle
+      // Wait for the renderer to settle.
+      // parseRpcResponse now surfaces in-band {error:...} as ok:false (task-4305 rpc.ts
+      // fix), so a stuck renderer/engine (timeout/engine_phase/engine_not_started) is
+      // correctly caught here rather than silently passing as ok:true.
       const idleResult = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
       if (!idleResult.ok) {
-        console.error(`  FAIL wait_for_idle: ${idleResult.error}`);
+        console.error(`  FAIL wait_for_idle (stuck renderer/engine?): ${idleResult.error}`);
         anyFailed = true;
         continue;
       }
@@ -317,6 +304,63 @@ async function main(): Promise<HarnessExitCode> {
   return anyFailed ? 1 : 0;
 }
 
+// ─── Value-assertion mode ─────────────────────────────────────────────────────
+
+/**
+ * Run all VALUE_SCENARIOS against the live reify-gui debug server.
+ *
+ * Boots the GUI with the small_cube fixture (same spawnGui/waitForDebugServer/
+ * reapGui lifecycle as visual mode, no new boot/teardown code). For each
+ * scenario, openFixture resolves the repo-relative path to absolute, calls
+ * open_file + wait_for_idle, then callTool calls the named tool. Results are
+ * logged per-scenario; exit code 0 = all passed, 1 = any failed, 2 = fatal.
+ */
+async function runValueScenarios(): Promise<HarnessExitCode> {
+  let anyFailed = false;
+
+  try {
+    spawnGui(FIXTURES.small_cube);
+    await waitForDebugServer();
+
+    async function openFixture(repoRelPath: string): Promise<RpcResult<unknown>> {
+      const absPath = path.join(REPO_ROOT, repoRelPath);
+      const openResult = await rpc<unknown>("open_file", { path: absPath });
+      if (!openResult.ok) return openResult;
+      // parseRpcResponse now surfaces in-band {error:...} as ok:false (task-4305 rpc.ts
+      // fix), so a stuck renderer/engine (timeout/engine_phase/engine_not_started) is
+      // correctly surfaced here instead of silently passing as ok:true.
+      const idleResult = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
+      if (!idleResult.ok) {
+        return { ok: false, error: `wait_for_idle after open_file (stuck renderer/engine?): ${idleResult.error}` };
+      }
+      return { ok: true, value: idleResult.value };
+    }
+
+    async function callTool(tool: string, args: Record<string, unknown>): Promise<RpcResult<unknown>> {
+      return rpc<unknown>(tool, args);
+    }
+
+    for (const scenario of VALUE_SCENARIOS) {
+      console.log(`\n[harness:value] scenario: ${scenario.name}`);
+      const result = await runValueScenario({ openFixture, callTool }, scenario);
+      if (result.passed) {
+        console.log(`  PASS ${result.name}`);
+      } else {
+        anyFailed = true;
+        console.error(`  FAIL ${result.name}`);
+        for (const msg of result.failures) {
+          console.error(`       ${msg}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[harness:value] FATAL: ${String(err)}`);
+    return 2;
+  }
+
+  return anyFailed ? 1 : 0;
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 function shutdown(exitCode: number): void {
@@ -326,11 +370,25 @@ function shutdown(exitCode: number): void {
 }
 
 // Ensure the spawned reify-gui + vite tree is reaped on Ctrl-C / CI cancellation.
-// Without these handlers the child processes leak and leave ports 1420/3939 bound.
+// Without these handlers the child processes leak and leave the vite dev port and
+// the debug server port bound.
 process.on("SIGINT", () => shutdown(130));
 process.on("SIGTERM", () => shutdown(143));
 
-main()
+// Resolve the debug endpoint once before either harness runs.
+// If REIFY_DEBUG_PORT is set, use it; otherwise allocate a free ephemeral port so
+// concurrent runs (or a long-lived interactive GUI on 3939) do not collide.
+const MODE = process.argv[2] === "value" ? "value" : "visual";
+const _resolvedDebugPort = process.env["REIFY_DEBUG_PORT"]
+  ? resolveDebugPort(process.env)
+  : await allocateFreePort();
+DEBUG_URL = debugUrlForPort(_resolvedDebugPort);
+// Propagate the chosen port so the child GUI binds the same port we target.
+process.env["REIFY_DEBUG_PORT"] = String(_resolvedDebugPort);
+
+const harness = MODE === "value" ? runValueScenarios() : main();
+
+harness
   .then((code) => {
     reapGui().finally(() => {
       process.exit(code);

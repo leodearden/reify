@@ -2,9 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { deferred } from './test-utils';
 import { render, screen } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
-import { EditorView } from '@codemirror/view';
+import { EditorView, keymap } from '@codemirror/view';
 import { undo } from '@codemirror/commands';
-import { diagnosticCount } from '@codemirror/lint';
+import { foldAll, unfoldAll, foldedRanges } from '@codemirror/language';
+import { diagnosticCount, forEachDiagnostic } from '@codemirror/lint';
+import type { DiagnosticInfo } from '../types';
 import { createEditorStore } from '../stores/editorStore';
 import * as bridge from '../bridge';
 import type { FileData, SourceLocation } from '../types';
@@ -42,6 +44,16 @@ function setupStore(files: FileData[] = [file1]) {
   const store = createEditorStore();
   for (const f of files) store.openFile(f);
   return store;
+}
+
+/** Capture the Tauri diagnostics event handler so we can fire events manually. */
+function setupListenCapture() {
+  let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
+  mockListen.mockImplementation(async (_event: any, handler: any) => {
+    diagnosticsHandler = handler;
+    return vi.fn(); // unlisten
+  });
+  return () => diagnosticsHandler;
 }
 
 describe('Editor mounting', () => {
@@ -240,6 +252,76 @@ describe('Editor save (Ctrl+S)', () => {
     await vi.waitFor(() => {
       expect(store.state.dirtyFiles).not.toContain(file1.path);
     });
+  });
+
+  it('Ctrl+S saves the live buffer content, not the stale store snapshot', () => {
+    // Uses the anti-loop invariant: typing changes the view doc but NOT the store snapshot.
+    // Ctrl+S must read the live CodeMirror doc, not the stale store content.
+    const fileA: FileData = { path: '/a.ri', content: 'INITIAL' };
+    const store = setupStore([fileA]);
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Type 'X' at position 0 — view.doc becomes 'XINITIAL'
+    // but the store snapshot stays 'INITIAL' (anti-loop invariant: updateListener
+    // calls markDirty + debounced updateSource, never updateFileContent).
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+
+    // DO NOT advance fake timers — debounced updateSource must not fire.
+    // Confirm the divergence: live doc differs from store snapshot.
+    expect(view.state.doc.toString()).toBe('XINITIAL');
+    const storeFile = store.state.openFiles.find((f) => f.path === fileA.path);
+    expect(storeFile!.content).toBe('INITIAL'); // store unchanged
+
+    // Dispatch Ctrl+S on the CM contentDOM
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      ctrlKey: true,
+      bubbles: true,
+    });
+    view.contentDOM.dispatchEvent(event);
+
+    // Assert live buffer content was saved, NOT the stale store snapshot
+    expect(saveSpy).toHaveBeenCalledWith(fileA.path, 'XINITIAL');
+  });
+});
+
+describe('Editor liveContentRef prop', () => {
+  it('liveContentRef receives a getter that returns the live CM view document', () => {
+    // When App passes liveContentRef, Editor should call it in onMount with a
+    // getter () => view.state.doc.toString() | null so App can read the live
+    // buffer at save/re-evaluate time without per-keystroke store writes.
+    const fileA: FileData = { path: '/a.ri', content: 'INITIAL' };
+    const store = setupStore([fileA]);
+    vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+
+    let captured: (() => string | null) | undefined;
+    render(() => (
+      <Editor
+        store={store}
+        liveContentRef={(getter) => {
+          captured = getter;
+        }}
+      />
+    ));
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // After mount, the getter must be wired and return the initial doc
+    expect(captured).toBeDefined();
+    expect(captured!()).toBe('INITIAL');
+
+    // Type 'X' at position 0 — view.doc becomes 'XINITIAL', store stays 'INITIAL'
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+
+    // Getter must reflect the live doc, not the stale store snapshot
+    expect(captured!()).toBe('XINITIAL');
+    const storeFile = store.state.openFiles.find((f) => f.path === fileA.path);
+    expect(storeFile!.content).toBe('INITIAL'); // confirm store unchanged
   });
 });
 
@@ -479,16 +561,6 @@ describe('Editor LSP init error callback', () => {
 });
 
 describe('Editor diagnostics URI filtering', () => {
-  /** Capture the Tauri diagnostics event handler so we can fire events manually. */
-  function setupListenCapture() {
-    let diagnosticsHandler: ((event: { payload: any }) => void) | undefined;
-    mockListen.mockImplementation(async (_event: any, handler: any) => {
-      diagnosticsHandler = handler;
-      return vi.fn(); // unlisten
-    });
-    return () => diagnosticsHandler;
-  }
-
   const sampleDiagnostic = {
     range: {
       start: { line: 0, character: 0 },
@@ -1317,6 +1389,56 @@ describe('Editor sync dispatch excluded from undo history', () => {
   });
 });
 
+describe('Editor structural folding', () => {
+  const foldFile: FileData = {
+    path: '/fold.ri',
+    content: 'structure S {\n  param a = 1\n  param b = 2\n}',
+  };
+
+  it('foldGutter is wired (.cm-foldGutter present in DOM)', () => {
+    const store = setupStore([foldFile]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const foldGutter = container.querySelector('.cm-foldGutter');
+    expect(foldGutter).not.toBeNull();
+  });
+
+  it('foldAll produces non-empty foldedRanges; unfoldAll clears them', () => {
+    const store = setupStore([foldFile]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Initially no folded ranges
+    let count = 0;
+    foldedRanges(view.state).between(0, view.state.doc.length, () => { count++; });
+    expect(count).toBe(0);
+
+    // After foldAll, at least one range should be folded
+    foldAll(view);
+    count = 0;
+    foldedRanges(view.state).between(0, view.state.doc.length, () => { count++; });
+    expect(count).toBeGreaterThan(0);
+
+    // After unfoldAll, no folded ranges remain
+    unfoldAll(view);
+    count = 0;
+    foldedRanges(view.state).between(0, view.state.doc.length, () => { count++; });
+    expect(count).toBe(0);
+  });
+
+  it('foldKeymap bindings Ctrl-Shift-[ and Ctrl-Alt-[ are registered in keymap facet', () => {
+    const store = setupStore([foldFile]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const bindings = view.state.facet(keymap).flat();
+    expect(bindings.some((b) => b.key === 'Ctrl-Shift-[')).toBe(true);
+    expect(bindings.some((b) => b.key === 'Ctrl-Alt-[')).toBe(true);
+  });
+});
+
 describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
   it('default arm logs to console.error (and does NOT fall through to saveFile) when canSave returns an unhandled reason', () => {
     const store = setupStore();
@@ -1339,5 +1461,523 @@ describe('Editor Mod-s exhaustiveness for SaveBlockedReason', () => {
     } finally {
       consoleSpy.mockRestore();
     }
+  });
+});
+
+describe('Editor navigation history', () => {
+  // file1: 'structure Bracket {\n  param width = 80mm\n}'
+  // Line 2 (1-based) starts at offset 20; char 8 → offset 28.
+  const ORIGIN_OFFSET = 5;
+  const DEF_OFFSET = 28; // line2.from(20) + lspChar(8) = 28
+
+  const sameFileDefForNav = {
+    uri: 'file:///project/src/bracket.ri',
+    range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } },
+  };
+
+  function setupNavStore() {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+      if (method === 'textDocument/definition') return JSON.stringify(sameFileDefForNav);
+      return undefined as any;
+    });
+    return store;
+  }
+
+  it('(a) Alt+ArrowLeft after F12 same-file jump returns cursor to pre-jump origin', async () => {
+    const store = setupNavStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Place cursor at origin
+    view.dispatch({ selection: { anchor: ORIGIN_OFFSET } });
+    expect(view.state.selection.main.head).toBe(ORIGIN_OFFSET);
+
+    // F12: jump to definition (async)
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F12', code: 'F12', bubbles: true }),
+    );
+    await vi.waitFor(() => expect(view.state.selection.main.head).toBe(DEF_OFFSET));
+
+    // Alt+ArrowLeft: navigate back to origin
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true }),
+    );
+    await vi.waitFor(() => expect(view.state.selection.main.head).toBe(ORIGIN_OFFSET));
+  });
+
+  it('(b) Alt+ArrowRight after Alt+ArrowLeft re-advances cursor to definition offset', async () => {
+    const store = setupNavStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    view.dispatch({ selection: { anchor: ORIGIN_OFFSET } });
+
+    // F12: jump to definition
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F12', code: 'F12', bubbles: true }),
+    );
+    await vi.waitFor(() => expect(view.state.selection.main.head).toBe(DEF_OFFSET));
+
+    // Alt+ArrowLeft: back to origin
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true }),
+    );
+    await vi.waitFor(() => expect(view.state.selection.main.head).toBe(ORIGIN_OFFSET));
+
+    // Alt+ArrowRight: re-advance to definition
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }),
+    );
+    await vi.waitFor(() => expect(view.state.selection.main.head).toBe(DEF_OFFSET));
+  });
+
+  it('(c) scrollToLocation reveal pushes to nav history; Alt+ArrowLeft returns to origin', () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Place cursor at origin
+    view.dispatch({ selection: { anchor: ORIGIN_OFFSET } });
+    expect(view.state.selection.main.head).toBe(ORIGIN_OFFSET);
+
+    // Cross-pane reveal: line 2, column 9 (1-based) → anchor = 20 + 8 = 28
+    setScrollTo({ file_path: file1.path, line: 2, column: 9, end_line: 2, end_column: 9 });
+    expect(view.state.selection.main.head).toBe(DEF_OFFSET);
+
+    // Alt+ArrowLeft: nav back to origin
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true }),
+    );
+    expect(view.state.selection.main.head).toBe(ORIGIN_OFFSET);
+  });
+});
+
+describe('Editor F12 go-to-definition', () => {
+  it('F12 on cursor position dispatches cursor to same-file definition offset', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+
+    // file1: 'structure Bracket {\n  param width = 80mm\n}'
+    // Same-file def at LSP line 1 (0-based = CM line 2), char 8 → CM offset 28
+    // Line 2 starts at offset 20 (line 1 = 19 chars + '\n'); 20 + 8 = 28
+    const sameFileDef = {
+      uri: 'file:///project/src/bracket.ri',
+      range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } },
+    };
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+      if (method === 'textDocument/definition') return JSON.stringify(sameFileDef);
+      return undefined as any;
+    });
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Place cursor at origin offset 5 (within "structure")
+    view.dispatch({ selection: { anchor: 5 } });
+    expect(view.state.selection.main.head).toBe(5);
+
+    // Dispatch F12 keydown on contentDOM
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F12', code: 'F12', bubbles: true }),
+    );
+
+    // Wait for async goto-definition to resolve and cursor to land at target offset 28
+    await vi.waitFor(() => {
+      expect(view.state.selection.main.head).toBe(28);
+    });
+  });
+});
+
+describe('Editor compile diagnostics', () => {
+  // A compile Error diagnostic whose file_path matches file1
+  const errorDiagForActiveFile: DiagnosticInfo = {
+    file_path: file1.path,
+    line: 1,
+    column: 11,
+    end_line: 1,
+    end_column: 20,
+    severity: 'Error',
+    message: 'unresolved name: rot_to_z',
+    code: null,
+  };
+
+  it('(a) rendering with an active-file compile diagnostic shows count === 1 with error severity', () => {
+    setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => (
+      <Editor store={store} compileDiagnostics={[errorDiagForActiveFile]} />
+    ));
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    const severities: string[] = [];
+    forEachDiagnostic(view.state, (d) => severities.push(d.severity));
+    expect(severities).toContain('error');
+  });
+
+  it('(b) a compile diagnostic for a DIFFERENT file is NOT applied (count stays 0)', () => {
+    setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => (
+      <Editor
+        store={store}
+        compileDiagnostics={[{ ...errorDiagForActiveFile, file_path: '/project/src/other.ri' }]}
+      />
+    ));
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    expect(diagnosticCount(view.state)).toBe(0);
+  });
+
+  it('(c) compile diagnostic + LSP diagnostic coexist (count === 2, neither clobbers the other)', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1]);
+    render(() => (
+      <Editor store={store} compileDiagnostics={[errorDiagForActiveFile]} />
+    ));
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Compile diagnostic should already be applied (1)
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Fire an LSP diagnostics event for the active file
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+    handler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [
+          {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+            severity: 2,
+            message: 'lsp warning',
+          },
+        ],
+      },
+    });
+
+    // Both should coexist: count === 2
+    expect(diagnosticCount(view.state)).toBe(2);
+  });
+
+  it('(d) clearing compileDiagnostics prop removes the compile squiggle', () => {
+    setupListenCapture();
+    const store = setupStore([file1]);
+    const [diags, setDiags] = createSignal<DiagnosticInfo[]>([errorDiagForActiveFile]);
+    render(() => <Editor store={store} compileDiagnostics={diags()} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Clear the compile diagnostics
+    setDiags([]);
+
+    expect(diagnosticCount(view.state)).toBe(0);
+  });
+
+  it('(e) CRASH (same-file) — stale LSP offset beyond a shrunk doc must not throw when the compile effect re-dispatches', () => {
+    // Regression for esc-4252-74: applyMergedDiagnostics filtered only
+    // compileCmDiagnostics against the live doc length and spread lspCmDiagnostics
+    // unguarded. Same-file race: the LSP listener stores offsets against the long
+    // doc → the user types/deletes so the view doc shrinks (typing mutates the view
+    // directly; neither diagnostic effect re-runs on keystrokes) → a compileDiagnostics
+    // update fires the compile effect → applyMergedDiagnostics re-dispatches the now
+    // out-of-range lspCmDiagnostics into the shrunk doc → CodeMirror RangeSet build
+    // throws. The fix filters the merged union, so neither channel can dispatch stale
+    // ranges.
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1]);
+    const [diags, setDiags] = createSignal<DiagnosticInfo[]>([]);
+    render(() => <Editor store={store} compileDiagnostics={diags()} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // LSP diagnostic for file1 at LSP line 1 (0-based) chars 0-5 → CM offsets [20, 25],
+    // valid in file1's 42-char doc.
+    handler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [{
+          range: { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } },
+          severity: 1,
+          message: 'file1 deep error',
+        }],
+      },
+    });
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Shrink the doc directly (simulates the user deleting text). The diagnostic
+    // effects do NOT re-run, so lspCmDiagnostics still holds the stale [20, 25].
+    view.dispatch({ changes: { from: 5, to: view.state.doc.length } });
+    expect(view.state.doc.length).toBe(5);
+
+    // A compileDiagnostics update (fresh empty array → new reference) re-runs the
+    // compile effect → applyMergedDiagnostics. Under the bug the stale LSP [20, 25] is
+    // dispatched into the 5-char doc and throws. After the fix the merged union is
+    // filtered, so this is a no-op (no crash) and the stale LSP squiggle is dropped.
+    expect(() => setDiags([])).not.toThrow();
+    expect(diagnosticCount(getEditorView(container).state)).toBe(0);
+  });
+});
+
+describe('Editor compile diagnostics: stale LSP cleared on file switch', () => {
+  it('(a) FLASH — file2 LSP squiggle does NOT leak into file1 after switch', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file2, file1]);
+    store.setActiveFile(file2.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // Fire LSP diagnostics for file2 URI at range [0, 5]
+    handler!({
+      payload: {
+        uri: 'file:///project/src/mount.ri',
+        diagnostics: [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+          severity: 1,
+          message: 'stale diagnostic from file2',
+        }],
+      },
+    });
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Switch to file1 — stale lspCmDiagnostics [0,5] must NOT be re-dispatched.
+    // Under the bug the compile effect calls applyMergedDiagnostics() with the un-cleared
+    // lspCmDiagnostics, so count stays 1 instead of going to 0.
+    store.setActiveFile(file1.path);
+
+    expect(diagnosticCount(getEditorView(container).state)).toBe(0);
+  });
+
+  it('(b) CRASH — stale LSP offset beyond new doc length must not throw or leave squiggle', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // LSP diagnostic for file1 at LSP line 1 (0-based), chars 0-5.
+    // lspDiagnosticToCodeMirror maps this to CM offsets from=20, to=25
+    // (file1 line-2 starts at offset 20 in the 42-char doc).
+    // [20, 25] is valid in file1 but exceeds file2's 18-char doc.
+    handler!({
+      payload: {
+        uri: 'file:///project/src/bracket.ri',
+        diagnostics: [{
+          range: { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } },
+          severity: 1,
+          message: 'file1 deep error',
+        }],
+      },
+    });
+    expect(diagnosticCount(view.state)).toBe(1);
+
+    // Under the bug: the compile effect re-dispatches the stale [20, 25] into file2's
+    // 18-char doc → CodeMirror RangeSet build throws a RangeError.
+    // After the fix: lspCmDiagnostics is cleared in the file-switch effect before the
+    // compile effect runs, so applyMergedDiagnostics dispatches [] — no crash.
+    expect(() => store.setActiveFile(file2.path)).not.toThrow();
+
+    // Stale squiggle must be absent in file2 view
+    expect(diagnosticCount(getEditorView(container).state)).toBe(0);
+  });
+
+  it('(c) ROBUSTNESS — after file switch the LSP channel still applies new-file diagnostics', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+
+    // Switch to file2 (lspCmDiagnostics must be cleared, not permanently disabled)
+    store.setActiveFile(file2.path);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    // Fire LSP event for file2 at a valid range [0, 5] (file2 is 18 chars)
+    handler!({
+      payload: {
+        uri: 'file:///project/src/mount.ri',
+        diagnostics: [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+          severity: 2,
+          message: 'file2 warning',
+        }],
+      },
+    });
+
+    // The LSP slot was cleared (not disabled) so the new-file event produces exactly 1 squiggle.
+    expect(diagnosticCount(getEditorView(container).state)).toBe(1);
+  });
+});
+
+describe('Editor F2 inline rename', () => {
+  /** Flush the async prepareRename → UI chain (microtasks only; no fake-timer advance). */
+  async function flushRenameChain() {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  }
+
+  it('renameable position: F2 opens the inline rename field pre-filled with the placeholder', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+      if (method === 'textDocument/prepareRename') {
+        // file1 line 2 `  param width = 80mm` — `width` spans 0-based chars 8..13.
+        return JSON.stringify({
+          range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } },
+          placeholder: 'width',
+        });
+      }
+      return undefined as any;
+    });
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Place the cursor on the `width` token before pressing F2.
+    const line2 = view.state.doc.line(2);
+    view.dispatch({ selection: { anchor: line2.from + 8 } });
+
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F2', code: 'F2', bubbles: true }),
+    );
+    await flushRenameChain();
+
+    // The inline field appears, pre-filled with the current name.
+    const field = container.querySelector('[data-testid="rename-field"]') as HTMLInputElement | null;
+    expect(field).not.toBeNull();
+    expect(field!.value).toBe('width');
+  });
+
+  it('renameable position: accepting a new name mutates the buffer in one undo-able transaction', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+
+    const uri = 'file:///project/src/bracket.ri';
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+      if (method === 'textDocument/prepareRename') {
+        // file1 line 2 `  param width = 80mm` — `width` spans 0-based chars 8..13.
+        return JSON.stringify({
+          range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } },
+          placeholder: 'width',
+        });
+      }
+      if (method === 'textDocument/rename') {
+        // compute_rename's WorkspaceEdit renaming the `width` param → `girth`.
+        return JSON.stringify({
+          changes: {
+            [uri]: [
+              {
+                range: { start: { line: 1, character: 8 }, end: { line: 1, character: 13 } },
+                newText: 'girth',
+              },
+            ],
+          },
+        });
+      }
+      return undefined as any;
+    });
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+    const docBefore = view.state.doc.toString();
+    expect(docBefore).toContain('param width');
+
+    // Place the cursor on `width`, then F2 to open the inline field.
+    const line2 = view.state.doc.line(2);
+    view.dispatch({ selection: { anchor: line2.from + 8 } });
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F2', code: 'F2', bubbles: true }),
+    );
+    await flushRenameChain();
+
+    const field = container.querySelector('[data-testid="rename-field"]') as HTMLInputElement | null;
+    expect(field).not.toBeNull();
+
+    // Type the new name and submit with Enter → rename → applyWorkspaceEdit.
+    field!.value = 'girth';
+    field!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }),
+    );
+    await flushRenameChain();
+
+    // The active buffer reflects the rename.
+    expect(view.state.doc.toString()).toContain('param girth');
+    expect(view.state.doc.toString()).not.toContain('param width');
+
+    // It applied as a SINGLE undo-able transaction: one undo restores the original.
+    undo(view);
+    expect(view.state.doc.toString()).toBe(docBefore);
+  });
+
+  it('non-renameable position: F2 shows the refusal message and makes NO document change', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+    const updateSpy = vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+
+    mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
+      const method = (args as any)?.method as string;
+      if (method === 'initialize') return JSON.stringify({ capabilities: {} });
+      // Invariant-4 refusal: prepareRename returns null for a non-renameable position.
+      if (method === 'textDocument/prepareRename') return JSON.stringify(null);
+      return undefined as any;
+    });
+
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+    const docBefore = view.state.doc.toString();
+
+    // Cursor at offset 0 (on the `structure` keyword) — refused.
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F2', code: 'F2', bubbles: true }),
+    );
+    await flushRenameChain();
+
+    // The transient "can't rename here" message appears…
+    expect(container.querySelector('[data-testid="rename-message"]')).not.toBeNull();
+    // …no inline field opened, and the document is byte-for-byte unchanged.
+    expect(container.querySelector('[data-testid="rename-field"]')).toBeNull();
+    expect(view.state.doc.toString()).toBe(docBefore);
+
+    // The refusal path performs zero edits → no debounced backend source update.
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS + 100);
+    expect(updateSpy).not.toHaveBeenCalled();
   });
 });

@@ -385,11 +385,14 @@ algebra → kernel-apply → integration example). Greek labels; task IDs assign
   - *Crates:* reify-stdlib (tests), reify-compiler (tests).
   - *Signal:* the §8.1 "Composition order" and "Transform widening" rows as exact numeric
     tests (left-applied `a∘b`; applying composed map to a known point gives the
-    hand-computed result); a dimensional test asserting `affine_apply` to a `Point3<Length>`
-    preserves Length. This is the G6 premise-pinning task. *(Intermediate — unlocks the
-    integration example η by guaranteeing the algebra convention; named downstream consumer:
-    η.)*
+    hand-computed result), plus the inverse round-trip ≈ identity within 1e-12. This is the
+    G6 premise-pinning task. *(Intermediate — unlocks the integration example η by
+    guaranteeing the algebra convention; named downstream consumer: η.)*
   - *Prereqs:* γ.
+  - *Scope note (esc-3962-294, 2026-06-02):* the dimensional test "`affine_apply` to a
+    `Point3<Length>` preserves Length" is RE-HOMED to task ζ — `affine_apply` is owned and
+    implemented by ζ, which depends on δ, so δ (upstream) cannot exercise it. δ's remaining
+    assertions all GREEN on the γ surface.
 
 ### Phase 3 — Kernel application
 - **Task ε — OCCT `gtransform_shape` FFI (`gp_GTrsf` / `BRepBuilderAPI_GTransform`).**
@@ -409,6 +412,12 @@ algebra → kernel-apply → integration example). Greek labels; task IDs assign
     affine_scale(1,1,2))` produces a solid whose tessellated AABB has Z=20mm, X=Y=10mm; the
     singular-map guard drops the op with a diagnostic; reflection (negative scale) produces a
     valid mirrored solid. *(Leaf for the kernel path; observable via mesh AABB.)*
+  - *Dimensional contract (re-homed from δ, esc-3962-294):* also assert the §4.1 dimensional
+    contract holds for `affine_apply` — applying it to a `Point3<Length>` yields a
+    `Point3<Length>` (dimensionless linear part · Length + Length translation = Length).
+    `affine_apply` is implemented here, so this is the task that can actually exercise it.
+    (NB §4.1/§3: `affine_apply` acts on geometry/`Point3<Length>`; the geometry-op AABB
+    signal above and this point-level dimensional assertion are distinct facets of the same op.)
   - *Prereqs:* α, ε, δ. **Soft ordering with `sub-placement` 3903** (shared seam, §6).
 
 ### Phase 4 — Integration example + spec update (integration gate)

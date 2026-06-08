@@ -297,6 +297,7 @@ impl TopologyTemplateBuilder {
             guard_state: reify_compiler::GuardState::None,
             pose: None,
             is_aux: false,
+            keyed_members: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -333,6 +334,7 @@ impl TopologyTemplateBuilder {
             guard_state: reify_compiler::GuardState::Compiled(Box::new(guard_expr)),
             pose: None,
             is_aux: false,
+            keyed_members: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self
@@ -359,6 +361,7 @@ impl TopologyTemplateBuilder {
             guard_state: reify_compiler::GuardState::None,
             pose: None,
             is_aux: false,
+            keyed_members: Vec::new(),
             span: SourceSpan::new(0, 0),
         });
         self

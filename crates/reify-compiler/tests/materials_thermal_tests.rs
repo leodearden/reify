@@ -13,8 +13,9 @@ mod common;
 
 use common::assert_trait_constraint_binop;
 use reify_compiler::*;
-use reify_test_support::compile_source_with_stdlib;
+use reify_test_support::{check_source_with_stdlib, compile_source_with_stdlib};
 use reify_core::*;
+use reify_ir::Satisfaction;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -56,22 +57,25 @@ fn thermal_module_loads_with_no_errors() {
     );
 }
 
-// ─── (b) ThermallyCharacterized has MaterialSpec refinement and 6 members ────
+// ─── (b) ThermallyCharacterized: 3 required + 3 optional members ─────────────
 
-/// ThermallyCharacterized must refine MaterialSpec and declare six required
-/// members. Three composite-dimension params are now tightened to dimensioned
-/// scalar types by task #3115; the three temperature params remain Real
-/// (their tightening belongs to sibling task #3112).
+/// ThermallyCharacterized must refine MaterialSpec and declare exactly three
+/// required members (the dimensioned scalar types tightened by task #3115)
+/// plus three optional params with `= undef` defaults (the temperature-point
+/// params that become optional in task #4241 γ; their tightening to Temperature
+/// belongs to sibling task #3112).
 ///
-/// Per-member expected type:
+/// Required:
 ///   thermal_conductivity     → Type::Scalar { dimension: THERMAL_CONDUCTIVITY }
 ///   specific_heat            → Type::Scalar { dimension: SPECIFIC_HEAT }
 ///   thermal_expansion        → Type::Scalar { dimension: THERMAL_EXPANSION }
-///   melting_point            → Type::Real (sibling task #3112)
-///   max_service_temperature  → Type::Real (sibling task #3112)
-///   glass_transition         → Type::Real (sibling task #3112)
+///
+/// Optional (DefaultKind::Param in tc.defaults):
+///   melting_point            → Type::Scalar { dimension: TEMPERATURE } (= undef; tightened by task #3112)
+///   max_service_temperature  → Type::Scalar { dimension: TEMPERATURE } (= undef; tightened by task #3112)
+///   glass_transition         → Type::Scalar { dimension: TEMPERATURE } (= undef; tightened by task #3112)
 #[test]
-fn thermally_characterized_refines_material_spec_with_six_members() {
+fn thermally_characterized_has_three_required_and_three_optional_members() {
     let module = load_stdlib_module();
 
     let tc = module
@@ -87,18 +91,18 @@ fn thermally_characterized_refines_material_spec_with_six_members() {
         tc.refinements
     );
 
-    // Exactly six own required members.
+    // Exactly three own required members (the dimensioned scalar types).
     assert_eq!(
         tc.required_members.len(),
-        6,
-        "ThermallyCharacterized should have exactly 6 required members, got: {:?}",
+        3,
+        "ThermallyCharacterized should have exactly 3 required members, got: {:?}",
         tc.required_members
             .iter()
             .map(|r| &r.name)
             .collect::<Vec<_>>()
     );
 
-    let expected_members: [(&str, Type); 6] = [
+    let expected_required: [(&str, Type); 3] = [
         (
             "thermal_conductivity",
             Type::Scalar {
@@ -117,12 +121,9 @@ fn thermally_characterized_refines_material_spec_with_six_members() {
                 dimension: DimensionVector::THERMAL_EXPANSION,
             },
         ),
-        ("melting_point", Type::Real),
-        ("max_service_temperature", Type::Real),
-        ("glass_transition", Type::Real),
     ];
 
-    for (expected_name, expected_ty) in &expected_members {
+    for (expected_name, expected_ty) in &expected_required {
         let req = tc
             .required_members
             .iter()
@@ -140,12 +141,47 @@ fn thermally_characterized_refines_material_spec_with_six_members() {
         match &req.kind {
             RequirementKind::Param(ty) => assert_eq!(
                 ty, expected_ty,
-                "ThermallyCharacterized member '{}' expected {:?}, got {:?}",
+                "ThermallyCharacterized required member '{}' expected {:?}, got {:?}",
                 expected_name, expected_ty, ty
             ),
             other => panic!(
-                "ThermallyCharacterized member '{}' should be Param, got {:?}",
+                "ThermallyCharacterized required member '{}' should be Param, got {:?}",
                 expected_name, other
+            ),
+        }
+    }
+
+    // Three optional params must appear in tc.defaults as DefaultKind::Param with
+    // cell_type = Type::Scalar { dimension: TEMPERATURE } — tightened from Real by
+    // task #3112.
+    let expected_optional_type = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
+    let optional_params = ["melting_point", "max_service_temperature", "glass_transition"];
+    for param_name in &optional_params {
+        let default = tc
+            .defaults
+            .iter()
+            .find(|d| d.name.as_deref() == Some(param_name))
+            .unwrap_or_else(|| {
+                panic!(
+                    "ThermallyCharacterized missing optional default for '{}', defaults: {:?}",
+                    param_name,
+                    tc.defaults
+                        .iter()
+                        .map(|d| &d.name)
+                        .collect::<Vec<_>>()
+                )
+            });
+        match &default.kind {
+            DefaultKind::Param { cell_type, .. } => assert_eq!(
+                cell_type, &expected_optional_type,
+                "ThermallyCharacterized optional param '{}' expected {:?}, got {:?}",
+                param_name, expected_optional_type, cell_type
+            ),
+            other => panic!(
+                "ThermallyCharacterized optional param '{}' should be DefaultKind::Param, got {:?}",
+                param_name, other
             ),
         }
     }
@@ -196,17 +232,17 @@ fn refractory_refines_thermally_characterized_with_constraint() {
 ///     thermal_expansion, melting_point, max_service_temperature, glass_transition
 #[test]
 fn ceramic_liner_conforms_to_refractory_with_full_member_chain() {
-    // max_service_temperature = 2050.0 clears the >= 1500.0 Refractory constraint.
+    // max_service_temperature = 2050.0K clears the >= 1500.0K Refractory constraint.
     let source = r#"
 structure def CeramicLiner : Refractory {
-    param density : Real = 3900.0
+    param density : Density = 3900kg/m^3
     param name : String = "alumina"
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
     param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
-    param melting_point : Real = 2345.0
-    param max_service_temperature : Real = 2050.0
-    param glass_transition : Real = 0.0
+    param melting_point : Temperature = 2345.0K
+    param max_service_temperature : Temperature = 2050.0K
+    param glass_transition : Temperature = 0.0K
 }
 "#;
 
@@ -261,4 +297,124 @@ structure def CeramicLiner : Refractory {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+// ─── (e) Refractory constraint: Satisfied / Violated with a defined Temperature ──
+
+/// A Refractory conformer with `max_service_temperature = 2050.0K` must evaluate
+/// the inherited `max_service_temperature >= 1500.0K` constraint as
+/// `Satisfaction::Satisfied`.
+///
+/// This pins the key correctness guarantee of the Real → Temperature tightening
+/// (task #3112): the dimensioned Temperature LHS and the `1500.0K` RHS share the
+/// same dimension, so the Engine evaluates the comparison to Satisfied rather
+/// than Indeterminate. Without this test a regression that left the comparison
+/// Indeterminate (e.g. a partial revert of the `K` suffix on the RHS, or a
+/// dimension-comparison bug) would pass the entire suite undetected.
+///
+/// Uses a top-level structure INSTANCE (no `def` keyword) so `Engine::check`
+/// evaluates the inherited constraint. Precedent: the analogous
+/// `refractory_omit_max_service_temperature_is_indeterminate` in
+/// `materials_thermal_optical_optionality_tests.rs`.
+#[test]
+fn refractory_constraint_satisfied_with_defined_temperature() {
+    // 2050.0K > 1500.0K → constraint must be Satisfied.
+    let source = r#"
+structure RefractorySatisfied : Refractory {
+    param density : Density = 3900kg/m^3
+    param name : String = "refractory_above_threshold"
+    param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
+    param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
+    param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
+    param max_service_temperature : Temperature = 2050.0K
+}
+"#;
+
+    let check_result = check_source_with_stdlib(source);
+
+    // No Error-severity check diagnostics.
+    let errors: Vec<_> = check_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "RefractorySatisfied check should produce no error diagnostics, got: {:?}",
+        errors
+    );
+
+    // Locate the constraint result for RefractorySatisfied.
+    // Asserting count == 1 pins the test to the single inherited Refractory constraint;
+    // if additional constraints are added later the count check will flag the mismatch
+    // rather than silently passing for the wrong constraint.
+    let constraints: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|cr| cr.id.entity == "RefractorySatisfied")
+        .collect();
+    assert_eq!(
+        constraints.len(),
+        1,
+        "Expected exactly 1 constraint result for RefractorySatisfied \
+         (the inherited max_service_temperature >= 1500.0K), got: {:?}",
+        constraints
+    );
+    assert_eq!(
+        constraints[0].satisfaction,
+        Satisfaction::Satisfied,
+        "RefractorySatisfied max_service_temperature >= 1500.0K should be Satisfied \
+         (2050.0K >= 1500.0K), got: {:?}",
+        constraints[0].satisfaction
+    );
+}
+
+/// A Refractory conformer with `max_service_temperature = 1000.0K` must evaluate
+/// the inherited `max_service_temperature >= 1500.0K` constraint as
+/// `Satisfaction::Violated`.
+///
+/// Complements `refractory_constraint_satisfied_with_defined_temperature` by
+/// pinning the below-threshold path so both sides of the dimensioned comparison
+/// are exercised.  A regression that made the comparison always return Satisfied
+/// (or Indeterminate) would be caught here.
+#[test]
+fn refractory_constraint_violated_below_threshold() {
+    // 1000.0K < 1500.0K → constraint must be Violated.
+    let source = r#"
+structure RefractoryViolated : Refractory {
+    param density : Density = 3900kg/m^3
+    param name : String = "refractory_below_threshold"
+    param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
+    param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
+    param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
+    param max_service_temperature : Temperature = 1000.0K
+}
+"#;
+
+    let check_result = check_source_with_stdlib(source);
+
+    // Note: the engine emits an Error-severity diagnostic for each Violated
+    // constraint, so we do NOT assert zero errors here — the violation IS the
+    // expected outcome.  Instead we verify the constraint_results directly.
+
+    // Locate the constraint result for RefractoryViolated.
+    let constraints: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|cr| cr.id.entity == "RefractoryViolated")
+        .collect();
+    assert_eq!(
+        constraints.len(),
+        1,
+        "Expected exactly 1 constraint result for RefractoryViolated \
+         (the inherited max_service_temperature >= 1500.0K), got: {:?}",
+        constraints
+    );
+    assert_eq!(
+        constraints[0].satisfaction,
+        Satisfaction::Violated,
+        "RefractoryViolated max_service_temperature >= 1500.0K should be Violated \
+         (1000.0K < 1500.0K), got: {:?}",
+        constraints[0].satisfaction
+    );
 }

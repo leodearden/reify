@@ -15,7 +15,8 @@
     "pretest": "npm run build:grammar",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:visual": "tsx test/visual/run.ts"
+    "test:visual": "tsx test/visual/run.ts",
+    "test:e2e": "tsx test/visual/run.ts value"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.0",

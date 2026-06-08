@@ -16,6 +16,26 @@
   scrollbar-gutter: stable;
 }
 
+/* Force WebKitGTK overlay scrollbar into a classic, space-reserving scrollbar.
+   Overlay scrollbars float over content and ignore `scrollbar-gutter`, so they
+   cover the right-aligned .eyeIcon buttons (#3394 under-fixed).  Giving
+   ::-webkit-scrollbar an explicit width converts the scrollbar to a non-overlay
+   type that renders inside the gutter already reserved above.  Rows then lay
+   out within clientWidth (excluding the scrollbar), so the eye-icon is always
+   reachable.  See: https://webkit.org/blog/363/styling-scrollbars/ */
+.treeScroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.treeScroll::-webkit-scrollbar-thumb {
+  background: var(--reify-border, #45475a);
+  border-radius: 5px;
+}
+
+.treeScroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .nodeWrapper {
   user-select: none;
 }
@@ -34,11 +54,13 @@
 }
 
 .selected {
-  background: var(--reify-accent-subtle, #1a3a5c);
+  background: var(--reify-surface-hover, #2a2a3a);
+  border-left: 3px solid var(--reify-selection, #ff9500);
+  padding-left: 1px; /* compensate for the 3px border so content doesn't jump */
 }
 
 .selected:hover {
-  background: var(--reify-accent-subtle-hover, #1f4570);
+  background: var(--reify-surface0, #313244);
 }
 
 .chevron {
@@ -46,14 +68,21 @@
   border: none;
   color: var(--reify-text-muted, #888);
   cursor: pointer;
-  font-size: 10px;
-  padding: 0 2px;
+  font-size: 12px;
+  padding: 0;
   line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  min-height: 22px;
+  flex-shrink: 0;
 }
 
 .chevronPlaceholder {
   display: inline-block;
-  width: 16px;
+  width: 22px;
+  flex-shrink: 0;
 }
 
 .name {
@@ -73,19 +102,41 @@
   border: none;
   color: var(--reify-text, #ddd);
   cursor: pointer;
-  font-size: 12px;
-  padding: 0 2px;
-  opacity: 0.7;
+  font-size: 14px;
+  padding: 0;
+  opacity: 0.6;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  min-height: 22px;
 }
 
-.eyeIcon:hover {
+.eyeIcon:hover,
+.row:hover .eyeIcon {
   opacity: 1;
+}
+
+.eyeIcon:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--reify-accent, #89b4fa);
+  outline-offset: 1px;
+  border-radius: 2px;
 }
 
 .stale {
   opacity: 0.5;
   font-style: italic;
+}
+
+/* JS-driven highlight for viewport-originated hover (Edge B reverse sync).
+   Distinct from CSS :hover (which only fires when the pointer is over the row).
+   Uses an accent-subtle token so it's visually distinct from .selected. */
+.hovered {
+  background: var(--reify-accent-hover-subtle, #1e3040);
+  outline: 1px solid var(--reify-accent-muted, #2a5a7c);
+  outline-offset: -1px;
 }
 
 /* Freshness badge — only rendered for non-Final variants (Final = no badge per arch §7.1). */

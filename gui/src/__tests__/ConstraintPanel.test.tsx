@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { ConstraintPanel } from '../panels/ConstraintPanel';
 import type { ConstraintData, ValueData } from '../types';
@@ -495,5 +495,139 @@ describe('ConstraintPanel Ask Claude context menu', () => {
     const row = screen.getByTestId('constraint-row-n1');
     fireEvent.contextMenu(row);
     expect(screen.queryByTestId('constraint-context-menu')).toBeNull();
+  });
+});
+
+describe('ConstraintPanel — status badge title', () => {
+  it('each status badge has a non-empty, status-unique title', () => {
+    const statuses = ['satisfied', 'violated', 'indeterminate'] as const;
+    const constraints: Record<string, ConstraintData> = Object.fromEntries(
+      statuses.map((s, i) => [`n${i + 1}`, makeConstraint({ node_id: `n${i + 1}`, status: s, expression: `x${i} > 0` })])
+    );
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    const titles = statuses.map((s) => {
+      const badge = container.querySelector(`[data-status="${s}"]`);
+      expect(badge).toBeTruthy();
+      return badge!.getAttribute('title') ?? '';
+    });
+    // All titles must be non-empty
+    titles.forEach((t) => expect(t.length).toBeGreaterThan(0));
+    // All titles must be distinct — each status gets its own human description
+    expect(new Set(titles).size).toBe(statuses.length);
+  });
+
+  it('existing aria-label={status} is preserved on all badges', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', status: 'satisfied', expression: 'a > 0' }),
+      n2: makeConstraint({ node_id: 'n2', status: 'violated', expression: 'b > 0' }),
+      n3: makeConstraint({ node_id: 'n3', status: 'indeterminate', expression: 'c > 0' }),
+    };
+    render(() => <ConstraintPanel constraints={constraints} values={{}} />);
+    const container = screen.getByTestId('constraint-panel');
+    expect(container.querySelector('[data-status="satisfied"]')!.getAttribute('aria-label')).toBe('satisfied');
+    expect(container.querySelector('[data-status="violated"]')!.getAttribute('aria-label')).toBe('violated');
+    expect(container.querySelector('[data-status="indeterminate"]')!.getAttribute('aria-label')).toBe('indeterminate');
+  });
+});
+
+describe('ConstraintPanel — visible actions affordance', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50' }),
+  };
+
+  it('when onAskClaude is provided, each row renders an actions button with correct testid and aria-label', () => {
+    const constraints: Record<string, ConstraintData> = {
+      n1: makeConstraint({ node_id: 'n1', status: 'violated', expression: 'x > 0' }),
+      n2: makeConstraint({ node_id: 'n2', status: 'satisfied', expression: 'y > 0' }),
+    };
+    const onAskClaude = vi.fn();
+    render(() => (
+      <ConstraintPanel constraints={constraints} values={values} onAskClaude={onAskClaude} />
+    ));
+    const btn1 = screen.getByTestId('constraint-actions-n1');
+    expect(btn1).toBeTruthy();
+    expect(btn1.getAttribute('aria-label')).toBe('Constraint actions');
+    const btn2 = screen.getByTestId('constraint-actions-n2');
+    expect(btn2).toBeTruthy();
+    expect(btn2.getAttribute('aria-label')).toBe('Constraint actions');
+  });
+
+  it('clicking the actions button opens constraint-context-menu with Ask Claude option', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'x > 0',
+      parameter_ids: ['c1'],
+    });
+    const onAskClaude = vi.fn();
+    render(() => (
+      <ConstraintPanel
+        constraints={{ n1: constraint }}
+        values={values}
+        onAskClaude={onAskClaude}
+      />
+    ));
+    const btn = screen.getByTestId('constraint-actions-n1');
+    fireEvent.click(btn);
+    expect(screen.getByTestId('constraint-context-menu')).toBeTruthy();
+    expect(screen.getByText('Ask Claude about this constraint')).toBeTruthy();
+  });
+
+  it('when onAskClaude is omitted, actions button is NOT rendered', () => {
+    const constraint = makeConstraint({
+      node_id: 'n1',
+      status: 'violated',
+      expression: 'x > 0',
+    });
+    render(() => (
+      <ConstraintPanel constraints={{ n1: constraint }} values={values} />
+    ));
+    expect(screen.queryByTestId('constraint-actions-n1')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-4295: ConstraintPanel expandedNodes ctx exposure
+// ---------------------------------------------------------------------------
+
+describe('ConstraintPanel — expandedNodes ctx exposure', () => {
+  beforeEach(() => {
+    (window as any).__REIFY_DEBUG__ = { stores: {} as any };
+  });
+  afterEach(() => {
+    delete (window as any).__REIFY_DEBUG__;
+  });
+
+  it('registers constraintPanel.expandedNodes as a function on __REIFY_DEBUG__ after render', () => {
+    render(() => <ConstraintPanel constraints={{}} values={{}} />);
+    expect(typeof (window as any).__REIFY_DEBUG__.constraintPanel?.expandedNodes).toBe('function');
+  });
+
+  it('expandedNodes() returns an empty Set initially', () => {
+    render(() => <ConstraintPanel constraints={{}} values={{}} />);
+    const nodes = (window as any).__REIFY_DEBUG__.constraintPanel.expandedNodes();
+    expect(nodes instanceof Set).toBe(true);
+    expect(nodes.size).toBe(0);
+  });
+
+  it('expandedNodes() reflects click on a violated constraint row', () => {
+    const constraint = makeConstraint({ node_id: 'n1', status: 'violated' });
+    render(() => <ConstraintPanel constraints={{ n1: constraint }} values={{}} />);
+    fireEvent.click(screen.getByTestId('constraint-row-n1'));
+    expect((window as any).__REIFY_DEBUG__.constraintPanel.expandedNodes().has('n1')).toBe(true);
+  });
+
+  it('deletes constraintPanel on unmount', () => {
+    const { unmount } = render(() => <ConstraintPanel constraints={{}} values={{}} />);
+    unmount();
+    expect((window as any).__REIFY_DEBUG__.constraintPanel).toBeUndefined();
+  });
+});
+
+describe('ConstraintPanel — no-ctx guard', () => {
+  it('renders without throwing when __REIFY_DEBUG__ is absent', () => {
+    delete (window as any).__REIFY_DEBUG__;
+    expect(() => render(() => <ConstraintPanel constraints={{}} values={{}} />)).not.toThrow();
   });
 });

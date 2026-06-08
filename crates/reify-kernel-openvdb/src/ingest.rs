@@ -798,6 +798,7 @@ fn format_type_repr(t: &Type) -> String {
         Type::List(_) => "List",
         Type::Set(_) => "Set",
         Type::Map(_, _) => "Map",
+        Type::Keyed(_) => "Keyed",
         Type::Option(_) => "Option",
         Type::Function { .. } => "Function",
         Type::TypeParam(_) => "TypeParam",
@@ -896,6 +897,10 @@ mod tests {
         assert_eq!(format_type_repr(&Type::Enum("X".into())), "Enum");
         assert_eq!(format_type_repr(&Type::List(Box::new(Type::Bool))), "List");
         assert_eq!(format_type_repr(&Type::Set(Box::new(Type::Bool))), "Set");
+        assert_eq!(
+            format_type_repr(&Type::Keyed(Box::new(Type::Bool))),
+            "Keyed"
+        );
         assert_eq!(
             format_type_repr(&Type::Option(Box::new(Type::Bool))),
             "Option"

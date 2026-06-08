@@ -48,6 +48,7 @@
 //! (and PRD Open Question §10.5).
 
 pub mod kernel;
+pub mod provenance;
 pub mod queries;
 pub mod register;
 

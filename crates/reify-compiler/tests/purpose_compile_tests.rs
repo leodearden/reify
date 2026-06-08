@@ -810,16 +810,30 @@ fn m5_purpose_example_compiles_under_stdlib_with_zero_errors() {
         errors
     );
 
-    // Secondary check: all three purposes must be present.
-    assert_eq!(
-        module.compiled_purposes.len(),
-        3,
-        "expected 3 compiled purposes (manufacturing_ready, lightweight, dimensionally_valid), got: {:?}",
-        module
-            .compiled_purposes
-            .iter()
-            .map(|p| &p.name)
-            .collect::<Vec<_>>()
+    // Secondary check: all three user-defined purposes must be present.
+    // NOTE: compile_with_stdlib merges is_pub prelude purposes (e.g. simulation_ready,
+    // design_review from std.determinacy.purposes) into compiled_purposes (task-4016 ζ),
+    // so the total count is >= 3. Use resilient name-based assertions instead of exact count.
+    let purpose_names: Vec<&str> = module
+        .compiled_purposes
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert!(
+        purpose_names.contains(&"manufacturing_ready"),
+        "expected 'manufacturing_ready' purpose; found: {purpose_names:?}"
+    );
+    assert!(
+        purpose_names.contains(&"lightweight"),
+        "expected 'lightweight' purpose; found: {purpose_names:?}"
+    );
+    assert!(
+        purpose_names.contains(&"dimensionally_valid"),
+        "expected 'dimensionally_valid' purpose; found: {purpose_names:?}"
+    );
+    assert!(
+        module.compiled_purposes.len() >= 3,
+        "expected at least 3 compiled purposes, got: {purpose_names:?}"
     );
 }
 
@@ -1964,5 +1978,440 @@ purpose check(subject : Beam) {
         !member_names.contains(&"span"),
         "span (Length-typed, geometric) must NOT appear in material_params. Got: {:?}",
         member_names
+    );
+}
+
+// ── task-4197 α: determinacy intrinsics compiler sugar ──────────────────────
+
+/// BT2: `AllGeometryDetermined(X)` desugars to the same `CompiledExpr` as the
+/// hand-written `forall __p in X.geometric_params: determined(__p)` (golden-equivalence).
+///
+/// RED before step-4 impl: AllGeometryDetermined is not yet in the recognizer map
+/// (step-2 only added "params"), so (A) does not desugar and its hash differs.
+#[test]
+fn all_geometry_determined_desugars_to_same_compiled_expr_as_hand_written_forall() {
+    // (A) using the compiler-sugar intrinsic
+    let source_a = r#"
+purpose g(subject : Structure) {
+    constraint AllGeometryDetermined(subject)
+}
+"#;
+
+    // (B) hand-written reflective forall — the canonical expansion
+    let source_b = r#"
+purpose g(subject : Structure) {
+    constraint forall __p in subject.geometric_params: determined(__p)
+}
+"#;
+
+    let module_a = compile_module_with_diagnostics(source_a);
+    let module_b = compile_module_with_diagnostics(source_b);
+
+    // Both must compile without Error diagnostics
+    let errors_a: Vec<_> = module_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_a.is_empty(),
+        "AllGeometryDetermined (A): expected no Error diagnostics, got: {:?}",
+        errors_a
+    );
+
+    let errors_b: Vec<_> = module_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_b.is_empty(),
+        "hand-written forall geometric (B): expected no Error diagnostics, got: {:?}",
+        errors_b
+    );
+
+    // Both purposes must have exactly one constraint
+    let purpose_a = module_a
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "g")
+        .expect("expected compiled purpose 'g' from source_a");
+    let purpose_b = module_b
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "g")
+        .expect("expected compiled purpose 'g' from source_b");
+
+    assert_eq!(
+        purpose_a.constraints.len(),
+        1,
+        "AllGeometryDetermined purpose must have 1 constraint"
+    );
+    assert_eq!(
+        purpose_b.constraints.len(),
+        1,
+        "hand-written geometric forall purpose must have 1 constraint"
+    );
+
+    // The desugared expr must be content-hash-equal to the hand-written form.
+    let hash_a = purpose_a.constraints[0].expr.content_hash;
+    let hash_b = purpose_b.constraints[0].expr.content_hash;
+    assert_eq!(
+        hash_a, hash_b,
+        "AllGeometryDetermined must desugar to the same CompiledExpr \
+         (identical content_hash) as `forall __p in subject.geometric_params: determined(__p)`.\n\
+         A hash: {:?}\n\
+         B hash: {:?}",
+        hash_a, hash_b
+    );
+}
+
+/// BT1: `AllParamsDetermined(X)` desugars to the same `CompiledExpr` as the
+/// hand-written `forall __p in X.params: determined(__p)` (golden-equivalence).
+///
+/// RED before step-2 impl: (A) currently compiles AllParamsDetermined as a
+/// UserFunctionCall / overload-error poison, so its content_hash differs from
+/// the reflective Quantifier in (B).
+#[test]
+fn all_params_determined_desugars_to_same_compiled_expr_as_hand_written_forall() {
+    // (A) using the compiler-sugar intrinsic
+    let source_a = r#"
+purpose design_review(subject : Structure) {
+    constraint AllParamsDetermined(subject)
+}
+"#;
+
+    // (B) hand-written reflective forall — the canonical expansion
+    let source_b = r#"
+purpose design_review(subject : Structure) {
+    constraint forall __p in subject.params: determined(__p)
+}
+"#;
+
+    let module_a = compile_module_with_diagnostics(source_a);
+    let module_b = compile_module_with_diagnostics(source_b);
+
+    // Both must compile without Error diagnostics
+    let errors_a: Vec<_> = module_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_a.is_empty(),
+        "AllParamsDetermined (A): expected no Error diagnostics, got: {:?}",
+        errors_a
+    );
+
+    let errors_b: Vec<_> = module_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_b.is_empty(),
+        "hand-written forall (B): expected no Error diagnostics, got: {:?}",
+        errors_b
+    );
+
+    // Both purposes must have exactly one constraint
+    let purpose_a = module_a
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "design_review")
+        .expect("expected compiled purpose 'design_review' from source_a");
+    let purpose_b = module_b
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == "design_review")
+        .expect("expected compiled purpose 'design_review' from source_b");
+
+    assert_eq!(
+        purpose_a.constraints.len(),
+        1,
+        "AllParamsDetermined purpose must have 1 constraint"
+    );
+    assert_eq!(
+        purpose_b.constraints.len(),
+        1,
+        "hand-written forall purpose must have 1 constraint"
+    );
+
+    // The desugared expr must be content-hash-equal to the hand-written form.
+    // (CompiledExpr does not derive PartialEq; ContentHash does.)
+    let hash_a = purpose_a.constraints[0].expr.content_hash;
+    let hash_b = purpose_b.constraints[0].expr.content_hash;
+    assert_eq!(
+        hash_a, hash_b,
+        "AllParamsDetermined must desugar to the same CompiledExpr \
+         (identical content_hash) as `forall __p in subject.params: determined(__p)`.\n\
+         A hash: {:?}\n\
+         B hash: {:?}",
+        hash_a, hash_b
+    );
+}
+
+/// BT3: `AllParamsDetermined` / `AllGeometryDetermined` used OUTSIDE a purpose body
+/// must emit `DiagnosticCode::DeterminacyIntrinsicScope` (E_DETERMINACY_INTRINSIC_SCOPE)
+/// and must NOT emit a "no matching overload" / unknown-user-fn diagnostic for the
+/// intrinsic name (invariant A3: no silent fall-through).
+///
+/// RED before step-6 impl: no scope guard exists yet, so the call falls through to
+/// the function-overload resolver and emits a "no matching overload" error instead.
+#[test]
+fn all_params_determined_outside_purpose_body_emits_scope_diagnostic() {
+    // Use inside a structure constraint — not a purpose body
+    let source = r#"
+structure Foo {
+    param w : Length = 1mm
+    constraint AllParamsDetermined(w)
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    // Must have a DeterminacyIntrinsicScope diagnostic
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        !scope_diags.is_empty(),
+        "expected a DeterminacyIntrinsicScope diagnostic for intrinsic used outside purpose body, \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    // The scope diagnostic message must contain "E_DETERMINACY_INTRINSIC_SCOPE"
+    assert!(
+        scope_diags[0].message.contains("E_DETERMINACY_INTRINSIC_SCOPE"),
+        "DeterminacyIntrinsicScope diagnostic must contain 'E_DETERMINACY_INTRINSIC_SCOPE' in message. \
+         Got: {:?}",
+        scope_diags[0].message
+    );
+
+    // Must NOT have a "no matching overload" or unknown-user-fn diagnostic for
+    // the intrinsic name — the scope guard must intercept before overload resolution.
+    let overload_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("no matching overload")
+                && d.message.contains("AllParamsDetermined")
+        })
+        .collect();
+    assert!(
+        overload_diags.is_empty(),
+        "must NOT emit a 'no matching overload' diagnostic for AllParamsDetermined \
+         (scope guard must intercept first), got: {:?}",
+        overload_diags
+    );
+}
+
+/// BT3 variant: `AllGeometryDetermined` used outside a purpose body also emits
+/// `DiagnosticCode::DeterminacyIntrinsicScope`.
+#[test]
+fn all_geometry_determined_outside_purpose_body_emits_scope_diagnostic() {
+    let source = r#"
+structure Bar {
+    param h : Length = 2mm
+    constraint AllGeometryDetermined(h)
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        !scope_diags.is_empty(),
+        "expected a DeterminacyIntrinsicScope diagnostic for AllGeometryDetermined outside \
+         purpose body, got diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    assert!(
+        scope_diags[0].message.contains("E_DETERMINACY_INTRINSIC_SCOPE"),
+        "DeterminacyIntrinsicScope diagnostic must contain 'E_DETERMINACY_INTRINSIC_SCOPE'. \
+         Got: {:?}",
+        scope_diags[0].message
+    );
+}
+
+// ── step-7: Arg/arity diagnostic RED tests ───────────────────────────────────
+
+/// BT3 arg variant: `AllParamsDetermined()` (zero args) inside a purpose body
+/// must emit exactly one `DiagnosticCode::DeterminacyIntrinsicArg` diagnostic
+/// (E_DETERMINACY_INTRINSIC_ARG) and no scope diagnostic.
+///
+/// RED before step-8 impl: the desugar currently falls through to compile_expr
+/// which hits the scope guard and emits DeterminacyIntrinsicScope instead.
+#[test]
+fn all_params_determined_zero_args_emits_arg_diagnostic() {
+    let source = r#"
+purpose p(subject : Structure) {
+    constraint AllParamsDetermined()
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    let arg_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicArg))
+        .collect();
+    assert!(
+        !arg_diags.is_empty(),
+        "expected DeterminacyIntrinsicArg for zero-arg AllParamsDetermined, \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        arg_diags[0].message.contains("E_DETERMINACY_INTRINSIC_ARG"),
+        "diagnostic message must contain 'E_DETERMINACY_INTRINSIC_ARG'. Got: {:?}",
+        arg_diags[0].message
+    );
+    // Must NOT emit a scope diagnostic for an in-purpose call
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        scope_diags.is_empty(),
+        "must NOT emit DeterminacyIntrinsicScope for in-purpose bad-arg call, \
+         got: {:?}",
+        scope_diags
+    );
+}
+
+/// BT3 arg variant: `AllParamsDetermined(subject, subject)` (two args) inside a
+/// purpose body must emit exactly one `DeterminacyIntrinsicArg` and no scope
+/// diagnostic.
+///
+/// RED before step-8.
+#[test]
+fn all_params_determined_two_args_emits_arg_diagnostic() {
+    let source = r#"
+purpose p(subject : Structure) {
+    constraint AllParamsDetermined(subject, subject)
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    let arg_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicArg))
+        .collect();
+    assert!(
+        !arg_diags.is_empty(),
+        "expected DeterminacyIntrinsicArg for two-arg AllParamsDetermined, \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        arg_diags[0].message.contains("E_DETERMINACY_INTRINSIC_ARG"),
+        "diagnostic message must contain 'E_DETERMINACY_INTRINSIC_ARG'. Got: {:?}",
+        arg_diags[0].message
+    );
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        scope_diags.is_empty(),
+        "must NOT emit DeterminacyIntrinsicScope for in-purpose bad-arg call, \
+         got: {:?}",
+        scope_diags
+    );
+}
+
+/// BT3 arg variant: `AllParamsDetermined(80mm)` — literal arg instead of a
+/// purpose param — inside a purpose body must emit `DeterminacyIntrinsicArg`
+/// and no scope diagnostic.
+///
+/// RED before step-8.
+#[test]
+fn all_params_determined_literal_arg_emits_arg_diagnostic() {
+    let source = r#"
+purpose p(subject : Structure) {
+    constraint AllParamsDetermined(80mm)
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    let arg_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicArg))
+        .collect();
+    assert!(
+        !arg_diags.is_empty(),
+        "expected DeterminacyIntrinsicArg for literal-arg AllParamsDetermined, \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        arg_diags[0].message.contains("E_DETERMINACY_INTRINSIC_ARG"),
+        "diagnostic message must contain 'E_DETERMINACY_INTRINSIC_ARG'. Got: {:?}",
+        arg_diags[0].message
+    );
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        scope_diags.is_empty(),
+        "must NOT emit DeterminacyIntrinsicScope for in-purpose bad-arg call, \
+         got: {:?}",
+        scope_diags
+    );
+}
+
+/// BT3 arg variant: `AllGeometryDetermined` with wrong arity (zero args) must
+/// also emit `DeterminacyIntrinsicArg` (confirms the guard applies to both
+/// intrinsic names).
+///
+/// RED before step-8.
+#[test]
+fn all_geometry_determined_zero_args_emits_arg_diagnostic() {
+    let source = r#"
+purpose g(subject : Structure) {
+    constraint AllGeometryDetermined()
+}
+"#;
+    let module = compile_module_with_diagnostics(source);
+
+    let arg_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicArg))
+        .collect();
+    assert!(
+        !arg_diags.is_empty(),
+        "expected DeterminacyIntrinsicArg for zero-arg AllGeometryDetermined, \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        arg_diags[0].message.contains("E_DETERMINACY_INTRINSIC_ARG"),
+        "diagnostic message must contain 'E_DETERMINACY_INTRINSIC_ARG'. Got: {:?}",
+        arg_diags[0].message
+    );
+    let scope_diags: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DeterminacyIntrinsicScope))
+        .collect();
+    assert!(
+        scope_diags.is_empty(),
+        "must NOT emit DeterminacyIntrinsicScope for in-purpose bad-arg call, \
+         got: {:?}",
+        scope_diags
     );
 }

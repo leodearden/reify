@@ -211,6 +211,13 @@ describe('SHORTCUTS bind fields', () => {
         // literal binding — the actual dispatch is a special-case block in
         // useKeyboardShortcuts (mirroring how Escape is handled).
         if (s.id === 'switchViewByIndex') continue;
+        // fold/unfold/foldAll/unfoldAll are display-only: dispatch is handled by
+        // CodeMirror's foldKeymap inside the editor; useKeyboardShortcuts skips
+        // them because the CM contentDOM is contentEditable (bails before matching).
+        if (s.id === 'fold' || s.id === 'unfold' || s.id === 'foldAll' || s.id === 'unfoldAll') continue;
+        // gotoDefinition/navBack/navForward/rename are display-only: dispatch is handled
+        // by the CM keymap in Editor.tsx; same rationale as fold entries above.
+        if (s.id === 'gotoDefinition' || s.id === 'navBack' || s.id === 'navForward' || s.id === 'rename') continue;
         expect(s.bind, `shortcut "${s.id}" has a display key but no bind field`).toBeDefined();
       }
     }
@@ -368,6 +375,166 @@ describe('shortcuts — new entry', () => {
     const entry = SHORTCUTS.find((s) => s.id === 'new');
     expect(entry?.bind).toBeDefined();
     expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'n', ctrlKey: false }))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fold shortcut entries (task-4205)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — fold entries', () => {
+  const FOLD_ENTRIES = [
+    { id: 'fold',      key: 'Ctrl+Shift+[' },
+    { id: 'unfold',    key: 'Ctrl+Shift+]' },
+    { id: 'foldAll',   key: 'Ctrl+Alt+['   },
+    { id: 'unfoldAll', key: 'Ctrl+Alt+]'   },
+  ] as const;
+
+  it('each fold entry is present in SHORTCUTS with correct key, truthy description, not disabled, and category "Editor"', () => {
+    for (const { id, key } of FOLD_ENTRIES) {
+      const entry = SHORTCUTS.find((s) => s.id === id);
+      expect(entry, `${id} missing from SHORTCUTS`).toBeDefined();
+      expect(entry?.key, `${id} key`).toBe(key);
+      expect(entry?.description, `${id} description`).toBeTruthy();
+      expect(entry?.disabled, `${id} should not be disabled`).not.toBe(true);
+      expect((entry as ShortcutDef & { category?: string })?.category, `${id} category`).toBe('Editor');
+    }
+  });
+
+  it('getShortcut("foldAll") is defined (id flows into ShortcutId union)', () => {
+    // ShortcutId is derived from _SHORTCUTS_DEF literal ids; this line would fail
+    // to compile (ts-expect-error) if the id were not in the union.
+    expect(getShortcut('foldAll')).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Navigation shortcut entries (task-4206)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — navigation entries', () => {
+  const NAV_ENTRIES = [
+    { id: 'gotoDefinition', key: 'F12',    description: /go.to.def/i },
+    { id: 'navBack',        key: 'Alt+←',  description: /back/i },
+    { id: 'navForward',     key: 'Alt+→',  description: /forward/i },
+  ] as const;
+
+  it('each nav entry is present in SHORTCUTS with correct key, truthy description, not disabled, and category "Editor"', () => {
+    for (const { id, key, description: descPattern } of NAV_ENTRIES) {
+      const entry = SHORTCUTS.find((s) => s.id === id);
+      expect(entry, `${id} missing from SHORTCUTS`).toBeDefined();
+      expect(entry?.key, `${id} key`).toBe(key);
+      expect(entry?.description, `${id} description`).toBeTruthy();
+      expect(entry?.description, `${id} description`).toMatch(descPattern);
+      expect(entry?.disabled, `${id} should not be disabled`).not.toBe(true);
+      expect((entry as ShortcutDef & { category?: string })?.category, `${id} category`).toBe('Editor');
+    }
+  });
+
+  it('getShortcut("gotoDefinition") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('gotoDefinition')).toBeDefined();
+  });
+
+  it('getShortcut("navBack") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('navBack')).toBeDefined();
+  });
+
+  it('getShortcut("navForward") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('navForward')).toBeDefined();
+  });
+
+  it('nav entries have no bind field (display-only, dispatched by CM keymap)', () => {
+    for (const { id } of NAV_ENTRIES) {
+      const entry = SHORTCUTS.find((s) => s.id === id);
+      expect(entry?.bind, `${id} must not have a bind field`).toBeUndefined();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rename shortcut entry (task-4203)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — rename entry', () => {
+  it('SHORTCUTS contains a rename entry with key "F2", truthy description, not disabled, category "Editor"', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'rename');
+    expect(entry, 'rename missing from SHORTCUTS').toBeDefined();
+    expect(entry?.key, 'rename key').toBe('F2');
+    expect(entry?.description, 'rename description').toBeTruthy();
+    expect(entry?.disabled, 'rename should not be disabled').not.toBe(true);
+    expect((entry as ShortcutDef & { category?: string })?.category, 'rename category').toBe('Editor');
+  });
+
+  it('rename entry has no bind field (display-only, dispatched by the editor F2 keymap)', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'rename');
+    expect(entry?.bind, 'rename must not have a bind field').toBeUndefined();
+  });
+
+  it('getShortcut("rename") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('rename')).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Command palette + symbol-jump shortcut entries (task-4208)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — commandPalette and symbolJump entries', () => {
+  it('SHORTCUTS contains a commandPalette entry', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'commandPalette');
+    expect(entry).toBeDefined();
+  });
+
+  it('commandPalette entry has key "Ctrl+Shift+P", truthy description, and is not disabled', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'commandPalette');
+    expect(entry?.key).toBe('Ctrl+Shift+P');
+    expect(entry?.description).toBeTruthy();
+    expect(entry?.disabled).not.toBe(true);
+  });
+
+  it('SHORTCUTS contains a symbolJump entry', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'symbolJump');
+    expect(entry).toBeDefined();
+  });
+
+  it('symbolJump entry has key "Ctrl+Shift+O", truthy description, and is not disabled', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'symbolJump');
+    expect(entry?.key).toBe('Ctrl+Shift+O');
+    expect(entry?.description).toBeTruthy();
+    expect(entry?.disabled).not.toBe(true);
+  });
+
+  it('getShortcut("commandPalette") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('commandPalette')).toBeDefined();
+  });
+
+  it('getShortcut("symbolJump") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('symbolJump')).toBeDefined();
+  });
+
+  it('commandPalette bind matches Ctrl+Shift+P keydown', () => {
+    const entry = getShortcut('commandPalette');
+    expect(entry?.bind).toBeDefined();
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, shiftKey: true }))).toBe(true);
+    // shift required — Ctrl+P alone must not match
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, shiftKey: false }))).toBe(false);
+  });
+
+  it('symbolJump bind matches Ctrl+Shift+O keydown', () => {
+    const entry = getShortcut('symbolJump');
+    expect(entry?.bind).toBeDefined();
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, shiftKey: true }))).toBe(true);
+    // must not match the existing 'open' Ctrl+O (no shift)
+    expect(matchesEvent(entry!.bind!, new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, shiftKey: false }))).toBe(false);
+  });
+
+  it('symbolJump bind does NOT match the open shortcut bind (Ctrl+O)', () => {
+    const openEntry = getShortcut('open');
+    const symbolJumpEntry = getShortcut('symbolJump');
+    expect(openEntry?.bind).toBeDefined();
+    expect(symbolJumpEntry?.bind).toBeDefined();
+    // Ctrl+Shift+O event should not match the open bind (shift:false prevents it)
+    expect(matchesEvent(openEntry!.bind!, new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, shiftKey: true }))).toBe(false);
   });
 });
 

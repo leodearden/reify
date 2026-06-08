@@ -10,6 +10,7 @@ import type {
   AutoResolveIteration,
   TensegrityWireData,
   SolverProgress,
+  EntityTreeNode,
 } from '../types';
 import {
   onMeshUpdate,
@@ -266,6 +267,123 @@ export function createEngineStore(options?: EngineStoreOptions) {
     }
   }
 
+  /**
+   * Reconcile engineStore entity set against the authoritative entity tree.
+   *
+   * Collects all live entity paths from the tree (including children at every
+   * depth), then prunes stale meshes, values, and constraints.
+   *
+   * Mesh pruning uses a dual check: prune a mesh key if the key itself is not
+   * in livePaths AND its owner path (entity_path up to the first `#`) is not
+   * in livePaths either. The direct-key check is needed because realization
+   * nodes carry the full mesh key (e.g. `"Bracket#realization0"`) as their
+   * entity_path (types.ts:357-360), so a mesh that is directly present in the
+   * tree is never pruned even if owner-path matching would otherwise remove it.
+   * Pruning is intentionally owner-granular for the cross-structure case: a
+   * mesh is retained as long as its parent structure node is still live,
+   * regardless of whether the specific realization node is present.
+   *
+   * Guards:
+   *
+   * 1. Empty-tree guard: if the tree yields zero live paths, returns immediately
+   *    without pruning. This conflates two cases — tree not yet loaded (do
+   *    nothing) and a genuinely empty design (all parts deleted). In the
+   *    genuinely-empty case stale meshes/values/constraints persist until the
+   *    next non-empty refresh. This is a known limitation: a reliable "tree
+   *    loaded" signal would let us distinguish the two cases and reconcile the
+   *    empty-design path correctly.
+   *
+   * 2. Cross-root / disjoint-snapshot guard: if the store currently tracks
+   *    entities but NONE of them (mesh key/owner, value entity_path, or
+   *    constraint owner) appear in the snapshot's live paths, the snapshot is
+   *    from a different design root (stale/pre-switch) and pruning would wipe
+   *    the freshly-loaded design. Return without pruning in this case.
+   *    Extends the empty-tree known-limitation: a genuine full replacement to
+   *    a wholly-unrelated root will not prune until the next overlapping
+   *    refresh (which should arrive shortly after the new engine load).
+   */
+  function reconcileToTree(tree: EntityTreeNode[]): void {
+    // Collect all live entity paths from the tree recursively.
+    const livePaths = new Set<string>();
+    function collectPaths(nodes: EntityTreeNode[]): void {
+      for (const node of nodes) {
+        livePaths.add(node.entity_path);
+        if (node.children.length > 0) collectPaths(node.children);
+      }
+    }
+    collectPaths(tree);
+
+    // Guard 1: if no live paths collected, the tree is not loaded yet (or the
+    // design is genuinely empty — see known limitation in the JSDoc above).
+    // Either way, return without pruning to avoid a stale-tree wipe.
+    if (livePaths.size === 0) return;
+
+    // Guard 2: cross-root / disjoint-snapshot guard.  Check whether the store
+    // currently has ANY entities and, if so, whether at least one of them
+    // overlaps with the snapshot's live paths.  Checking across all entity
+    // kinds (meshes, values, constraints) avoids a false-positive when the
+    // store has only values or constraints (no meshes) — basing disjointness on
+    // meshes alone would wrongly skip pruning in value/constraint-only stores.
+    const hasMeshEntities = Object.keys(state.meshes).length > 0;
+    const hasValueEntities = Object.keys(state.values).length > 0;
+    const hasConstraintEntities = Object.keys(state.constraints).length > 0;
+    if (hasMeshEntities || hasValueEntities || hasConstraintEntities) {
+      let hasOverlap = false;
+      // Short-circuit scan: first hit wins.
+      meshScan:
+      for (const key of Object.keys(state.meshes)) {
+        const owner = key.includes('#') ? key.slice(0, key.indexOf('#')) : key;
+        if (livePaths.has(key) || livePaths.has(owner)) { hasOverlap = true; break meshScan; }
+      }
+      if (!hasOverlap) {
+        for (const cellId of Object.keys(state.values)) {
+          const ep = state.values[cellId]?.entity_path;
+          if (ep !== undefined && livePaths.has(ep)) { hasOverlap = true; break; }
+        }
+      }
+      if (!hasOverlap) {
+        for (const nodeId of Object.keys(state.constraints)) {
+          const owner = nodeId.includes('#') ? nodeId.slice(0, nodeId.indexOf('#')) : nodeId;
+          if (livePaths.has(owner)) { hasOverlap = true; break; }
+        }
+      }
+      // Snapshot is from a different design root (stale/pre-switch) — skip pruning.
+      // Note: this guard is defense-in-depth. The primary staleness defense is the
+      // App-layer epoch guard in App.tsx (refreshEntityTree), which drops any tree
+      // snapshot fetched before the latest engine (re)init regardless of overlap.
+      // This guard complements it by catching fully-disjoint snapshots that reach
+      // reconcileToTree through any path; it cannot handle partial-overlap staleness
+      // (same-root partial snapshot), which the epoch guard handles exclusively.
+      if (!hasOverlap) return;
+    }
+
+    // Prune orphan meshes.  Check the exact key first (realization nodes carry
+    // it) and fall back to owner-path matching so a mesh whose parent structure
+    // is still live is never incorrectly pruned.
+    for (const key of Object.keys(state.meshes)) {
+      const owner = key.includes('#') ? key.slice(0, key.indexOf('#')) : key;
+      if (!livePaths.has(key) && !livePaths.has(owner)) {
+        removeMesh(key);
+      }
+    }
+
+    // Prune orphan values whose entity_path is not live.
+    for (const cellId of Object.keys(state.values)) {
+      const entityPath = state.values[cellId]?.entity_path;
+      if (entityPath !== undefined && !livePaths.has(entityPath)) {
+        removeValue(cellId);
+      }
+    }
+
+    // Prune orphan constraints whose owner (node_id before the first '#') is not live.
+    for (const nodeId of Object.keys(state.constraints)) {
+      const owner = nodeId.includes('#') ? nodeId.slice(0, nodeId.indexOf('#')) : nodeId;
+      if (!livePaths.has(owner)) {
+        removeConstraint(nodeId);
+      }
+    }
+  }
+
   async function subscribeToEvents(): Promise<() => void> {
     const results = await Promise.allSettled([
       onMeshUpdate(applyMeshUpdate),
@@ -311,6 +429,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     removeMesh,
     removeValue,
     removeConstraint,
+    reconcileToTree,
     setEvalStatus,
     setTessellationDiagnostics,
     setCompileDiagnostics,

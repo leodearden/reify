@@ -109,6 +109,20 @@ std::unique_ptr<OcctShape> make_cylinder(double radius, double height);
 /// Create a sphere centered at origin (in meters).
 std::unique_ptr<OcctShape> make_sphere(double radius);
 
+/// Create a cone/frustum along Z axis (in meters).
+/// bottom_r is the base radius (Z=0), top_r is the apex radius (Z=height).
+/// top_r==0 produces a pointed cone; both non-zero produces a frustum.
+std::unique_ptr<OcctShape> make_cone(double bottom_r, double top_r, double height);
+
+/// Create a wedge (trapezoidal prism) with bbox corner at origin (in meters).
+/// dx=width  — X-extent at the y=0 face.
+/// dy=depth  — Y-extent (distance between the two trapezoidal end-caps).
+/// dz=height — Z-extent.
+/// ltx=top_width — X-extent at the y=dy face (0 = degenerate triangular prism;
+///               ltx > dx produces an inverted/wider-top taper, which is valid).
+/// Volume = dy * dz * (dx + ltx) / 2.
+std::unique_ptr<OcctShape> make_wedge(double dx, double dy, double dz, double ltx);
+
 // --- Compound assembly ---
 
 /// Assemble N solid shapes into a single TopoDS_Compound for multi-body STEP
@@ -706,6 +720,12 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 /// Create a flat circular face (disk) at a given Z height (for extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
 
+/// Create a flat axis-aligned rectangular face centred at origin in the XY plane
+/// at the given Z height (for extrude profiles).
+/// Corners: (±width/2, ±height/2, z_height).  Both width and height must be
+/// finite and positive.
+std::unique_ptr<OcctShape> make_rectangle_face(double width, double height, double z_height);
+
 /// Create a straight line wire between two 3D points (for sweep paths).
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
     double x2, double y2, double z2);
@@ -1030,6 +1050,25 @@ std::unique_ptr<OcctShapeVec> get_faces(const OcctShape& shape);
 /// cache provides idempotency).
 std::unique_ptr<OcctShapeVec> get_vertices(const OcctShape& shape);
 
+/// Split `shape` with an unbounded planar cutting tool defined by `origin` and
+/// `normal` (both in metres, same coordinate system as the shape).
+///
+/// Implementation:
+///   1. Build a `gp_Pln(origin, normal)` cutting plane.
+///   2. Create an unbounded face via `BRepBuilderAPI_MakeFace(pln)`.
+///   3. Run `BRepAlgoAPI_Splitter` with the shape as argument and the face as
+///      tool (`SetArguments` / `SetTools` / `Build`).
+///   4. Walk the result with `TopExp_Explorer(result, TopAbs_SOLID)` and push
+///      each solid into an `OcctShapeVec`.
+///
+/// A plane that does not intersect `shape` returns the original solid in a
+/// length-1 vec (the splitter result contains the untouched argument solid).
+/// Throws `std::runtime_error` if the splitter reports `!IsDone()`.
+std::unique_ptr<OcctShapeVec> split_shape(
+    const OcctShape& shape,
+    double ox, double oy, double oz,
+    double nx, double ny, double nz);
+
 /// Compute the total arc length of an edge (or any 1-dimensional sub-shape)
 /// in the same length units as the shape's coordinates. Backed by
 /// `BRepGProp::LinearProperties` followed by `props.Mass()` — for edges,
@@ -1287,5 +1326,21 @@ std::unique_ptr<OcctShape> deserialize_brep(const std::string& data);
 // --- Tessellation ---
 
 TessResult tessellate_shape(const OcctShape& shape, double tolerance);
+
+/// Sampled max facet-chord deviation (SI metres) of `mesh` from the exact
+/// BRep `shape` (task 4198, Determinacy β).
+///
+/// For each triangle in `mesh.indices` (groups of 3), computes 4 interior
+/// sample points in f64 — centroid + 3 edge midpoints (mesh vertices lie on
+/// the surface by construction and are useless as samples) — then projects
+/// each via `BRepBuilderAPI_MakeVertex` + `BRepExtrema_DistShapeShape` and
+/// tracks the global maximum `dist.Value()`.
+///
+/// Returns 0.0 for an empty `mesh.indices`.
+/// Throws `std::runtime_error` for out-of-range vertex indices.
+///
+/// No tolerance argument — the metric cannot echo the configured deflection
+/// (structural anti-circularity, PRD §8.3 / task CRITICAL).
+double measure_mesh_deviation(const OcctShape& shape, const TessResult& mesh);
 
 } // namespace occt

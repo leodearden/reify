@@ -56,6 +56,10 @@ export const ContextPicker: Component<ContextPickerProps> = (props) => {
       <button
         class={styles.btn}
         data-testid="context-picker-btn"
+        aria-haspopup="menu"
+        aria-expanded={open() ? 'true' : 'false'}
+        aria-label="Attach context"
+        title="Attach context"
         onClick={(e) => {
           e.stopPropagation();
           handleToggle();

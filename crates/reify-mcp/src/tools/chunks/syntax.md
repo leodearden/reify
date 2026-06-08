@@ -24,6 +24,16 @@
 
 **Range literals:** `2mm..5mm` (closed), `0deg..<360deg` (half-open), `>2mm`, `<=100MPa`
 
+**String literals** — double-quoted; support interpolation holes and brace escapes:
+```
+"hello"               // plain string
+"thickness is {t}"    // { expr } hole: evaluates expr, splices rendered text
+"doubled is {2 * t}"  // holes accept full expressions, not just identifiers
+"{{braces}}"          // {{ / }} collapse to literal { / } (no hole)
+```
+- Render rules: plain strings render bare (no quotes); dimensioned scalars render as `value unit` (`5mm` → `5 mm`); `undef` renders as the literal text `undef` and does not poison the string
+- An empty hole `{}` is a parse error
+
 **Special values:** `undef` (not yet decided), `auto` (solver decides), `some(v)`/`none` (Option)
 
 ## Declaration Shape

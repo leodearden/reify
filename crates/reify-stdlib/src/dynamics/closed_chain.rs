@@ -98,7 +98,6 @@ pub struct ClosedChainSolution {
 /// # Errors
 /// - [`ClosedChainError::DimensionMismatch`] if any slice length is inconsistent.
 /// - [`ClosedChainError::Singular`] if the KKT matrix is numerically singular.
-#[allow(dead_code)] // G-allow: consumer (closed-chain inverse-dynamics routing) descoped from RBD-η to task 4146 (Value→closed_chain bridge + closed_4bar_idyn.ri e2e); orphan resolves when 4146 lands
 pub fn solve_closed_chain(
     m_matrix: &[f64],
     tau_open: &[f64],
@@ -195,6 +194,145 @@ pub fn solve_closed_chain(
     Ok(ClosedChainSolution { q_ddot, lambda, tau })
 }
 
+/// Reduce a raw loop-constraint Jacobian to full row rank.
+///
+/// # Policy (resolves GAP 3)
+///
+/// A raw 6-row Jacobian from [`loop_residual_twist`](crate::loop_closure) is
+/// structurally rank-deficient for sub-6-DOF loops:
+///
+/// 1. **Closing-joint projection** — rows corresponding to directions the
+///    closing joint absorbs (its motion-subspace `S_close`) are zeroed by
+///    projecting each raw row onto the orthogonal complement of S_close.
+///    For a revolute pin about +y, `S_close = [[0,1,0, 0,0,0]]` and the
+///    ωy row is zeroed; the kinematic Newton solve zeros the residual in that
+///    direction by adjusting the closing joint's free coordinate, so keeping
+///    the ωy row would over-constrain the mechanism.
+///
+/// 2. **Numerical row reduction** — Gaussian elimination with partial row
+///    pivoting collects rows whose pivot exceeds `eps`.  Zero rows from step 1
+///    (and any other structurally zero or linearly dependent rows) are discarded.
+///
+/// # Parameters
+/// - `a_full`: raw constraint Jacobian, row-major, shape `rows × cols`.
+/// - `rows`, `cols`: dimensions of `a_full`.
+/// - `closing_subspace`: motion-subspace columns of the closing joint,
+///   each as a `[f64; 6]` twist vector.  Pass `&[]` to skip projection.
+/// - `eps`: row-pivot threshold for the row-reduction step.
+///
+/// # Returns
+/// `(a_reduced, m_eff)` — the `m_eff × cols` reduced matrix (row-major) and
+/// the effective row count.  `m_eff = 0` means A is zero (no constraints active).
+pub fn reduce_constraint_rank(
+    a_full: &[f64],
+    rows: usize,
+    cols: usize,
+    closing_subspace: &[[f64; 6]],
+    eps: f64,
+) -> (Vec<f64>, usize) {
+    // ── Step 1: orthonormalize S_close and project each row ──────────────────
+    // Build an orthonormal basis for the closing-subspace columns using
+    // Gram-Schmidt (in-place, storing the orthonormal vectors in `basis`).
+    let mut basis: Vec<[f64; 6]> = Vec::with_capacity(closing_subspace.len());
+    for &col in closing_subspace {
+        let mut v = col;
+        // Subtract projections onto already-orthonormalised basis vectors.
+        for b in &basis {
+            let dot: f64 = v.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+            for k in 0..6 {
+                v[k] -= dot * b[k];
+            }
+        }
+        let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > eps {
+            let scale = 1.0 / norm;
+            for x in &mut v {
+                *x *= scale;
+            }
+            basis.push(v);
+        }
+    }
+
+    // Compute the complement scale for each row.
+    //
+    // Each of the `rows` rows corresponds to one twist component (row index ri).
+    // The closing joint's basis spans certain twist directions.  Row ri is
+    // "absorbed" by the closing joint when the canonical unit vector e_ri lies
+    // in span(basis), i.e. when Σ_b b[ri]² ≈ 1.  We scale each row by the
+    // complement factor (1 − Σ_b b[ri]²), clamped to [0, 1], so absorbed rows
+    // become zero and independent rows are unchanged (or partially attenuated
+    // for oblique subspaces).
+    let mut row_scales: Vec<f64> = Vec::with_capacity(rows);
+    for ri in 0..rows {
+        let mut scale_complement = 1.0_f64;
+        for b in &basis {
+            scale_complement -= b[ri] * b[ri];
+        }
+        row_scales.push(scale_complement.clamp(0.0, 1.0));
+    }
+
+    // Build the projected rows as an actual matrix for Gaussian elimination.
+    // Each entry is (original_row_index, projected_row_vec) so we can recover
+    // the original unscaled row once an independent pivot is found.
+    let mut remaining: Vec<(usize, Vec<f64>)> = (0..rows)
+        .map(|ri| {
+            let scale = row_scales[ri];
+            let row: Vec<f64> = (0..cols).map(|j| a_full[ri * cols + j] * scale).collect();
+            (ri, row)
+        })
+        .collect();
+
+    // ── Step 2: Gaussian elimination with partial row pivoting ───────────────
+    //
+    // We use the PROJECTED rows for the elimination (so zero-scaled rows never
+    // attract a pivot) but record the ORIGINAL row index of each pivot found.
+    // The returned reduced matrix is built from the original unscaled rows,
+    // not the elimination-modified ones, so each output row is a scalar multiple
+    // of a row from `a_full` (required by the virtual-work identity test).
+    let mut pivot_original_indices: Vec<usize> = Vec::new();
+    let mut pivot_col = 0usize;
+
+    while pivot_col < cols && !remaining.is_empty() {
+        // Find the row with the largest absolute value in column `pivot_col`.
+        let (local_idx, pivot_val) = remaining
+            .iter()
+            .enumerate()
+            .map(|(i, (_, row))| (i, row[pivot_col].abs()))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .unwrap_or((0, 0.0));
+
+        if pivot_val <= eps {
+            // No row has a large-enough pivot in this column — advance column.
+            pivot_col += 1;
+            continue;
+        }
+
+        // Extract the pivot row (for elimination) and record its original index.
+        let (orig_idx, pivot_row) = remaining.remove(local_idx);
+        let pv = pivot_row[pivot_col];
+
+        // Eliminate this column from all remaining rows (projected versions).
+        for (_, row) in &mut remaining {
+            let factor = row[pivot_col] / pv;
+            for j in 0..cols {
+                row[j] -= factor * pivot_row[j];
+            }
+        }
+
+        pivot_original_indices.push(orig_idx);
+        pivot_col += 1;
+    }
+
+    // Return the ORIGINAL (unscaled) rows for the identified pivot indices.
+    // Each returned row is exactly a_full[orig_idx * cols .. (orig_idx+1) * cols].
+    let m_eff = pivot_original_indices.len();
+    let mut a_red: Vec<f64> = Vec::with_capacity(m_eff * cols);
+    for orig_idx in pivot_original_indices {
+        a_red.extend_from_slice(&a_full[orig_idx * cols..(orig_idx + 1) * cols]);
+    }
+    (a_red, m_eff)
+}
+
 // ── Private LDLᵀ solver ───────────────────────────────────────────────────────
 
 /// Solve `A · x = b` in-place for a k×k symmetric matrix.
@@ -266,7 +404,103 @@ fn ldlt_solve_symmetric(a: &mut [f64], b: &mut [f64], k: usize, pivot_eps: f64) 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{reduce_constraint_rank, solve_closed_chain, ClosedChainError, DEFAULT_PIVOT_EPS};
+
+    // ── reduce_constraint_rank: planar revolute 4-bar row filter ─────────────
+    //
+    // Builds a synthetic 6×3 raw A that mimics the raw twist Jacobian of a
+    // planar revolute 4-bar (mechanism in the x-z plane, revolute pins about +y):
+    //
+    //   ωx row = [0, 0, 0]   — structurally zero (planar motion)
+    //   ωy row = [a, b, c]   — nonzero BUT absorbed by closing revolute (+y)
+    //   ωz row = [0, 0, 0]   — structurally zero
+    //   vx row = [d, e, f]   — active constraint
+    //   vy row = [0, 0, 0]   — structurally zero (planar motion)
+    //   vz row = [g, h, k]   — active constraint
+    //
+    // Closing-joint motion subspace S_close = [[0,1,0, 0,0,0]] (+y revolute).
+    // After projecting out S_close and row-reducing, expected m_eff = 2
+    // (vx-row, vz-row).
+    //
+    // A second case checks that a duplicate row is dropped (full-row-rank
+    // reduction leaves m_eff = 1 for a 2×3 A with identical rows).
+    //
+    // Achievability: deterministic linear algebra — exact expected result.
+    #[test]
+    fn reduce_constraint_rank_drops_closing_freedom_and_zero_rows() {
+        let eps = 1e-10_f64;
+
+        // ── case 1: planar revolute 4-bar synthetic A (6×3) ─────────────────
+        let d = 1.3_f64;
+        let e = -0.7_f64;
+        let f = 0.4_f64;
+        let g = -0.5_f64;
+        let h = 0.9_f64;
+        let k = -1.1_f64;
+        let a_wy = 2.0_f64;
+        let b_wy = -1.5_f64;
+        let c_wy = 0.8_f64;
+        // Row order: [ωx, ωy, ωz, vx, vy, vz] (6 rows) × 3 cols (row-major).
+        let a_raw: Vec<f64> = vec![
+            0.0, 0.0, 0.0,    // ωx
+            a_wy, b_wy, c_wy, // ωy — absorbed by closing revolute +y
+            0.0, 0.0, 0.0,    // ωz
+            d,   e,   f,      // vx — active
+            0.0, 0.0, 0.0,    // vy
+            g,   h,   k,      // vz — active
+        ];
+        // Closing revolute about +y: S_close = [0,1,0, 0,0,0].
+        let s_close: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+
+        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, 3, &[s_close], eps);
+        assert_eq!(m_eff, 2, "case1: expected m_eff=2 (vx-row + vz-row)");
+        assert_eq!(a_red.len(), 2 * 3, "case1: reduced A is 2×3");
+
+        // The two independent rows must span vx-row and vz-row (up to row order
+        // and possible row scaling — we check that each retained row is a scalar
+        // multiple of either vx-row or vz-row by verifying the cross-product
+        // of the reduced row with the expected is zero).
+        let vx_row = [d, e, f];
+        let vz_row = [g, h, k];
+
+        let is_parallel_to = |row: &[f64], ref_row: &[f64; 3]| -> bool {
+            // row × ref_row == 0 ⟺ parallel (in ℝ³)
+            // Use |row × ref_row|² / (|row|²·|ref_row|²) < eps²
+            let cx = row[1] * ref_row[2] - row[2] * ref_row[1];
+            let cy = row[2] * ref_row[0] - row[0] * ref_row[2];
+            let cz = row[0] * ref_row[1] - row[1] * ref_row[0];
+            let cross_sq = cx * cx + cy * cy + cz * cz;
+            let norm_sq = row.iter().map(|x| x * x).sum::<f64>()
+                * ref_row.iter().map(|x| x * x).sum::<f64>();
+            cross_sq < 1e-20 * norm_sq.max(1e-30)
+        };
+
+        let row0 = &a_red[0..3];
+        let row1 = &a_red[3..6];
+        let row0_ok = is_parallel_to(row0, &vx_row) || is_parallel_to(row0, &vz_row);
+        let row1_ok = is_parallel_to(row1, &vx_row) || is_parallel_to(row1, &vz_row);
+        assert!(row0_ok, "case1: reduced row0 must be parallel to vx-row or vz-row");
+        assert!(row1_ok, "case1: reduced row1 must be parallel to vx-row or vz-row");
+        // The two rows must not be parallel to each other.
+        assert!(
+            !is_parallel_to(row0, &[row1[0], row1[1], row1[2]]),
+            "case1: two reduced rows must be independent"
+        );
+
+        // ── case 2: 2×3 A with duplicate rows → m_eff = 1 ──────────────────
+        let a_dup: Vec<f64> = vec![
+            1.0, -2.0, 3.0,
+            1.0, -2.0, 3.0,
+        ];
+        // No closing subspace to project (pass empty slice).
+        let (a_red2, m_eff2) = reduce_constraint_rank(&a_dup, 2, 3, &[], eps);
+        assert_eq!(m_eff2, 1, "case2: duplicate rows → m_eff=1");
+        assert_eq!(a_red2.len(), 3, "case2: 1×3 reduced A");
+        assert!(
+            is_parallel_to(&a_red2, &[1.0, -2.0, 3.0]),
+            "case2: retained row must be parallel to original"
+        );
+    }
 
     /// Helper: assert two f64 slices are element-wise within `tol`.
     fn assert_near(label: &str, got: &[f64], want: &[f64], tol: f64) {

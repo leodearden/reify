@@ -1,0 +1,48 @@
+// Example: §12 determinacy utility-constraint intrinsics (task-4197 α)
+//
+// Demonstrates the two compiler-sugar intrinsics introduced in §12:
+//
+//   AllParamsDetermined(X)   — every scalar parameter of X has a concrete
+//                              value (equivalent to:
+//                                forall __p in X.params: determined(__p))
+//   AllGeometryDetermined(X) — every geometric parameter of X is determined
+//                              (equivalent to:
+//                                forall __p in X.geometric_params: determined(__p))
+//
+// The intrinsics are recognized and desugared by the compiler at compile time;
+// no new eval primitive is needed.  They ride the existing reflective-forall +
+// PurposeReflectiveAggregation + DeterminacyPredicate path.
+//
+// Usage:
+//   reify check --purpose design_review=DeterminedBracket examples/determinacy_intrinsics.ri
+//     → exit 0, "All constraints satisfied."
+//   reify check --purpose design_review=DraftBracket examples/determinacy_intrinsics.ri
+//     → exit non-zero, "VIOLATED"
+
+// ── Purposes ──────────────────────────────────────────────────────────────────
+//
+// Locally declared — no dependency on the stdlib design_review / purposes-completion
+// task (#4016 is deferred).  The intrinsic is a §12 building block that works
+// independently of any stdlib purpose library.
+
+purpose design_review(subject : Structure) {
+    constraint AllParamsDetermined(subject)
+}
+
+purpose geometry_review(subject : Structure) {
+    constraint AllGeometryDetermined(subject)
+}
+
+// ── Structures ────────────────────────────────────────────────────────────────
+
+// All params have concrete default values → design_review is Satisfied.
+structure DeterminedBracket {
+    param width : Length = 80mm
+    param height : Length = 60mm
+}
+
+// One param has no default value → design_review is Violated.
+structure DraftBracket {
+    param width : Length
+    param height : Length = 60mm
+}

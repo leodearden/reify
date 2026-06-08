@@ -1,0 +1,101 @@
+// Closed-chain inverse-dynamics worked example — vertical 2-prismatic loop
+// (RBD closed-chain bridge, task 4146; descoped from 3836 / RBD-η).
+//
+// PRD: docs/prds/v0_3/rigid-body-dynamics.md §5.3 (closed-chain inverse dynamics).
+//
+// ── What this exercises ───────────────────────────────────────────────────────
+// The Value→closed_chain bridge end-to-end: a CLOSED mechanism (non-empty
+// loop_closures) marshalled through `inverse_dynamics(m, traj)` — multi-body
+// RNEA, joint-space inertia M assembly, loop detection + chain extraction +
+// constraint-Jacobian assembly + rank reduction, the KKT solve, and a
+// physically-correct GRAVITY-LOADED energy rate. Strictly stronger than the
+// pure-Rust step-7 finiteness smoke test (q̇=q̈=0, no gravity work).
+//
+// The companion Rust gate
+// `crates/reify-eval/tests/closed_chain_idyn_e2e.rs::closed_2prismatic_virtual_work_identity`
+// asserts the virtual-work power identity below within 1 µW.
+//
+// ── Why a vertical PRISMATIC loop (not a revolute 4-bar) ──────────────────────
+// The original plan targeted a planar revolute 4-bar, but the Reify kinematic
+// layer has NO representation for fixed inter-joint link-length offsets
+// (transform_at(revolute) is a pure rotation; revolute pivots all coincide at
+// the origin → identically-zero loop residual → no 4-bar motion). Proven in
+// esc-4146-280. The e2e was re-scoped (Leo decision B1) onto the EXPRESSIBLE
+// 2-prismatic loop, oriented along gravity so the energy ledger is non-trivial.
+// The kinematic-offset feature that would unlock a true spatial linkage is the
+// deferred follow-up docs/prds/v0_6/kinematic-inter-joint-offsets.md.
+//
+// ── Analytic energy rate (first principles) ───────────────────────────────────
+// Two prismatic joints along the VERTICAL axis [0,0,1], each parenting one body
+// directly to world (a spanning tree of two independent z-DOFs; the closing edge
+// re-parents j_b → j_a, adding the loop_closure record). Gravity is the fixed
+// RNEA value [0, 0, −9.81] m/s², so a body accelerating at q̈ along +z needs an
+// actuator force
+//     τ_i = m_i · (q̈_i + 9.81)          (Newton along +z: m·q̈ = τ − m·9.81)
+// Because the dynamics uses only the first n_tree = bodies − loop_closures = 2
+// bodies (m_a, m_b), the closing body m_c is purely STRUCTURAL — its mass never
+// enters the energy. COM offsets, inertia, and joint positions do not enter τ
+// for a pure-translation DOF; only masses, rates, gravity, and the axis z-comp.
+//
+// For the prismatic-closing loop the rank reduction projects out the entire
+// residual row (m_eff = 0): there is no live constraint, so the closed path
+// reduces to per-DOF open-chain RNEA and τ = τ_open exactly. By the work-energy
+// theorem (b ≡ 0, constraint forces do no work on the supplied velocities),
+//     Σ τ_i·q̇_i = τ_open·q̇ = dE/dt   exactly (holds for m_eff = 0 too).
+//
+// At the prescribed instant — q_a = 0.3 m, q_b = 0.5 m (closing free
+// x = q_b − q_a = 0.2 m), consistent rates q̇_a = q̇_b = 0.7,
+// accels q̈_a = q̈_b = 1.5:
+//     dE/dt = (m_a + m_b)·v·(a + 9.81)
+//           = (2 + 3)·0.7·(1.5 + 9.81)
+//           = 5.0·0.7·11.31  =  39.585 W
+//
+// Running `reify eval examples/dynamics/closed_2prismatic_idyn.ri` prints the
+// `forces` cell: a finite List<List<JointForce>> of shape 1×2 whose two
+// ScalarForce magnitudes (τ_a, τ_b) satisfy Σ τ_i·q̇_i = 39.585 W.
+structure def Closed2PrismaticIdyn {
+    // Three rigid bodies, distinct masses (distinct solids — append_body rejects
+    // duplicates) and distinct PSD diagonal inertia. COM at the body-frame origin
+    // (irrelevant to a prismatic gravity force, kept zero for clarity). The
+    // closing body m_c (1 kg) is dynamics-ignored (n_tree = 2) but must be
+    // distinct from m_a/m_b.
+    let mp_a = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]], origin: 0.0)
+    let mp_b = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]], origin: 0.0)
+    let mp_c = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]], origin: 0.0)
+
+    // Vertical prismatic axis so gravity [0,0,−9.81] does work on the motion.
+    // Distinct ranges (0..1 m vs 0..2 m) make j_a and j_b structurally-distinct
+    // Maps so the bridge's Value::Eq joint matching can tell them apart.
+    let axis_z = vec3(0, 0, 1)
+    let j_a = prismatic(axis_z, 0mm .. 1000mm)
+    let j_b = prismatic(axis_z, 0mm .. 2000mm)
+
+    // Spanning tree: m_a@j_a, m_b@j_b (each defaults to parent = world).
+    let m0 = mechanism()
+    let m1 = body(m0, mp_a, j_a)
+    let m2 = body(m1, mp_b, j_b)
+    // Closing edge (4-arg body): re-parents j_b from world → j_a, appending a
+    // loop_closure record. joint_parents keeps j_b's spanning parent as world
+    // (first-recorded wins), so n_tree stays 2.
+    let m = body(m2, mp_c, j_b, j_a)
+
+    // One-sample joint-space trajectory.
+    //   values[0..3]  : per-body joint positions, in BODIES order, in metres.
+    //                   m_a@j_a = 0.3, m_b@j_b (spanning) = 0.5, m_c@j_b
+    //                   (closing initial guess) = 0.2. Closure identity holds:
+    //                   spanning(j_b) = j_a + free(j_b) → 0.5 = 0.3 + 0.2. ✓
+    //   vels[0..2]    : per spanning-tree DOF (j_a, j_b) generalized velocities.
+    //   accels[0..2]  : per spanning-tree DOF generalized accelerations.
+    //
+    // Positions/vels/accels are bare Reals (SI: metres, m/s, m/s²) because
+    // `TrajectorySample` fields are typed `List<JointValue>` and JointValue is a
+    // `Real` alias — a dimensioned Length literal (`300mm`) does NOT satisfy a
+    // Real param (type_compat: Length ≁ Real). The prismatic FK's `length_input`
+    // reads a bare Real as metres, so 0.3 ≡ 300 mm here.
+    let sample = TrajectorySample(t: 0s, values: [0.3, 0.5, 0.2], vels: [0.7, 0.7], accels: [1.5, 1.5])
+    let traj = MotionTrajectory(mechanism: 0.0, samples: [sample])
+
+    // Closed-chain inverse dynamics → List<List<JointForce>> (1 sample × 2 tree
+    // joints). Each prismatic joint yields a ScalarForce; Σ τ_i·q̇_i = 39.585 W.
+    let forces = inverse_dynamics(m, traj)
+}

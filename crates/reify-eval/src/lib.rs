@@ -15,7 +15,7 @@ pub mod deps;
 pub mod dirty;
 pub mod dispatcher;
 mod engine_admin;
-pub use engine_admin::sweep_persistent_cache_at_startup;
+pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
 mod engine_compute;
 pub use engine_compute::{
@@ -41,7 +41,7 @@ pub use engine_eval::is_representable_cell_type;
 mod engine_purposes;
 mod engine_tolerance;
 mod geometry_ops;
-mod trajectory_ops;
+pub mod trajectory_ops;
 pub mod graph;
 pub mod journal;
 pub mod primitive_attribute_seed;
@@ -834,6 +834,64 @@ pub struct Engine {
     /// `cancel_solve_impl`'s `.cancel()` propagates into the trampoline's
     /// per-iteration poll via the thread-local context.
     active_solve_cancel: Option<crate::graph::CancellationHandle>,
+    // ── undef-self-describing α (task 4321) ──────────────────────────────────
+    /// When `true`, `eval()` runs the post-eval `classify_undef_origins` pass
+    /// and stores the result in `last_undef_causes`.  Defaults to `false` so
+    /// the hot path pays zero overhead (no allocation, no classification) when
+    /// callers have not opted in.
+    ///
+    /// Set via `Engine::set_capture_undef_causes(bool)`.
+    /// Read via `Engine::undef_causes()`.
+    ///
+    /// Mirrors the `last_*` instrumentation-field convention (default-false,
+    /// always-present, writer site in `engine_eval.rs`, accessor in
+    /// `engine_admin.rs`).
+    capture_undef_causes: bool,
+    /// When `true`, `tessellate_realizations()` / `tessellate_snapshot()` call
+    /// `kernel.measure_mesh_deviation(placed_id, &mesh)` for each successfully
+    /// tessellated occurrence and record the result in [`Self::achieved_repr_tol`].
+    /// Defaults to `false` so the hot path pays zero overhead (no BRepExtrema
+    /// projection, no channel round-trip) when γ assertions are not active.
+    ///
+    /// Set via `Engine::set_capture_repr_tol(bool)`.
+    /// Read via `Engine::achieved_repr_tol()`.
+    ///
+    /// Mirrors the `capture_undef_causes` / `set_capture_undef_causes` pattern:
+    /// default-false, always-present field, setter in `engine_admin.rs`.
+    capture_repr_tol: bool,
+    /// Per-cell `UndefCause` map from the most recent `eval()` call.
+    ///
+    /// Rebuilt from scratch on each `eval()` call when `capture_undef_causes`
+    /// is `true`; cleared (but not de-allocated) when `false`.
+    ///
+    /// Keyed by `ValueCellId` of the originating undef cell (see A3 in the
+    /// PRD: purely-propagated cells are absent — only originating cells record
+    /// a cause).  Exposed as `&HashMap<ValueCellId, UndefCause>` via
+    /// `Engine::undef_causes()`.
+    last_undef_causes: HashMap<ValueCellId, reify_ir::UndefCause>,
+    /// Per-build achieved representation tolerance, keyed by realized-occurrence
+    /// name (`"{entity}#realization[{index}]"`).
+    ///
+    /// Populated by the per-output tessellation closure in `geometry_ops.rs`
+    /// (`surface_subtree` / `walk_placed_realizations`) after a successful
+    /// `kernel.tessellate(placed_id, budget)` call on a non-empty mesh: the
+    /// sampled max facet-chord deviation (SI metres) returned by
+    /// `kernel.measure_mesh_deviation(placed_id, &mesh)` is inserted under the
+    /// occurrence's `entity_path`.
+    ///
+    /// Cleared at the start of each `tessellate_realizations()` /
+    /// `tessellate_snapshot()` call, mirroring the
+    /// `feature_tag_table` / `topology_attribute_table` / `swept_kind_table`
+    /// reset-at-entry pattern.
+    ///
+    /// A missing key means the occurrence was never realized / tessellated, or
+    /// its mesh was empty, or the kernel returned `None` (non-OCCT) — this is
+    /// the B3 honest-absence contract.  The accessor returns `None` for absent
+    /// keys; it never returns `Some(0.0)` for unrealized subjects.
+    ///
+    /// Task 4198 (Determinacy β) — γ reads this to assert `RepresentationWithin`
+    /// bounds.
+    achieved_repr_tol: BTreeMap<String, f64>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.

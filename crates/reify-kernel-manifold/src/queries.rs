@@ -18,20 +18,21 @@
 //! exact wire format so KGQ-ρ's cross-kernel parity gate reads both kernels
 //! identically. See the semantic-gap note below.
 //!
-//! ## Manifold mesh-face vs BRep-face semantic gap
+//! ## Manifold face semantics after task-4262
 //!
-//! A Manifold "face" is a **mesh triangle** (or a coalesced set of coplanar
-//! triangles); a BRep "face" is a **smooth parametric surface patch**. The two
-//! kernels therefore disagree on face cardinality: `faces(mesh_box)` returns
-//! **12** sub-handles (one per triangle) while `faces(brep_box)` returns **6**
-//! (one per planar patch). Consequently [`adjacent_faces`] and [`shared_edges`]
-//! index **mesh triangles** on the Manifold side, not BRep patches, so a
-//! `len(faces(...))` or an adjacency-index result depends on the active
-//! `#kernel(occt)` / `#kernel(manifold)` pragma and is **not** directly
-//! comparable across the kernel boundary. This honest per-triangle model is the
-//! resolution of PRD Open Question §10.5
-//! (`docs/prds/v0_3/kernel-geometry-queries.md`); the `12 ≠ 6` inequality is
-//! pinned at runtime by the `extract_faces` smoke test, not asserted as prose.
+//! [`crate::kernel::ManifoldKernel::extract_faces`] now groups coplanar
+//! triangles into **planar faces** via [`coalesce_coplanar_faces`], yielding
+//! **6** sub-handles for a unit cube — matching OCCT's BRep face count and
+//! resolving PRD Open Question §10.5
+//! (`docs/prds/v0_3/kernel-geometry-queries.md`).
+//!
+//! **Important:** [`adjacent_faces`] and [`shared_edges`] — and the
+//! `GeometryQuery::AdjacentFaces` / `GeometryQuery::SharedEdges` arms — still
+//! operate on the **raw mesh triangle** index space (0..12 for a unit cube).
+//! The `face_index` / `face_a` / `face_b` arguments to those queries are
+//! **raw triangle indices**, NOT handles or indices into the coalesced planar
+//! faces returned by `extract_faces`.  These two index spaces are disjoint;
+//! see the per-arm doc notes in `kernel.rs`.
 //!
 //! ### `EdgeLength` is BRep-only (no `EdgesByLength` parity)
 //!
@@ -701,6 +702,140 @@ pub(crate) fn tri_unit_normal(tri: &[[f64; 3]; 3]) -> [f64; 3] {
         return [0.0, 0.0, 0.0];
     }
     [n[0] / len, n[1] / len, n[2] / len]
+}
+
+// ---------------------------------------------------------------------------
+// Planar-face geometry helpers (task-4262)
+// ---------------------------------------------------------------------------
+
+/// Total area of a planar face = sum of its constituent triangle areas.
+///
+/// A degenerate (zero-area) triangle contributes 0.0, which is correct.
+/// Used by the `SurfaceArea` query arm for a `SubShape::Face`.
+pub(crate) fn face_area(tris: &[[[f64; 3]; 3]]) -> f64 {
+    tris.iter().map(tri_area).sum()
+}
+
+/// Shared planar normal of a face: unit normal of the first non-degenerate
+/// constituent triangle.
+///
+/// All triangles in a coalesced face share the same (sign-consistent) normal
+/// by construction: [`coalesce_coplanar_faces`] uses the quantised unit
+/// normal as part of the plane key, so a triangle wound oppositely produces
+/// a **distinct** key and is grouped into a separate face rather than placed
+/// in this one.  Returns `[0,0,0]` if all triangles are degenerate
+/// (zero-area).  Used by the `FaceNormal` query arm for a `SubShape::Face`.
+pub(crate) fn face_unit_normal(tris: &[[[f64; 3]; 3]]) -> [f64; 3] {
+    for tri in tris {
+        let n = tri_unit_normal(tri);
+        if n != [0.0, 0.0, 0.0] {
+            return n;
+        }
+    }
+    [0.0, 0.0, 0.0]
+}
+
+/// Axis-aligned bounding box spanning all corners of all constituent triangles.
+///
+/// Folds min/max directly over the flattened corner iterator — avoids
+/// allocating an intermediate `Vec` compared to collecting first. Used by
+/// the `BoundingBox` query arm for a `SubShape::Face`.
+pub(crate) fn face_points_bbox(tris: &[[[f64; 3]; 3]]) -> ([f64; 3], [f64; 3]) {
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for p in tris.iter().flat_map(|tri| tri.iter()) {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(p[axis]);
+            max[axis] = max[axis].max(p[axis]);
+        }
+    }
+    (min, max)
+}
+
+/// Quantisation tolerance used by [`coalesce_coplanar_faces`] to group mesh
+/// triangles by their supporting plane.  Normals and offsets are rounded to
+/// the nearest multiple of this value (1e-6).
+///
+/// 1e-6 comfortably separates the six faces of a unit cube (offsets differ by
+/// 1.0) while tolerating the f32→f64 round-off from Reify's ingest pipeline.
+const PLANE_TOL: f64 = 1e-6;
+
+/// Group mesh triangles into coplanar planar faces.
+///
+/// For each triangle the supporting **plane key** is
+/// `(quantised(nx), quantised(ny), quantised(nz), quantised(d))` where
+/// `(nx,ny,nz)` is the unit normal and `d = dot(normal, v0)` is the signed
+/// offset.  Quantisation rounds each component to the nearest multiple of
+/// [`PLANE_TOL`] (1e-6), so coplanar triangles collide on the same key.
+/// Degenerate (zero-area) triangles — those whose cross-product length is
+/// zero — are skipped because they have no well-defined plane.
+///
+/// Groups are accumulated in a [`std::collections::BTreeMap`] keyed on the
+/// quantised `(i64, i64, i64, i64)` tuple; `BTreeMap` iterates in ascending
+/// lexicographic order, giving deterministic face order across runs.
+///
+/// Returns one inner `Vec` per planar face; each inner Vec contains the
+/// triangles (`[v0, v1, v2]` in winding order) that share that face's plane.
+/// For a unit cube aligned on integer vertices this yields **6** groups of 2,
+/// matching BRep face cardinality.
+///
+/// Used by [`crate::kernel::ManifoldKernel::extract_faces`] (step-2 of
+/// task-4262) to replace the previous one-triangle-per-face enumeration.
+///
+/// ## Known limitations (v0.2)
+///
+/// **Disjoint coplanar patches are merged.** Two geometrically separate regions
+/// that happen to lie on the same infinite plane (e.g., two bosses on a common
+/// top face, an L-shaped prism, or a part with a coplanar step) will be grouped
+/// into a **single** `SubShape::Face` handle because they share the same plane
+/// key.  Connectivity is not checked.  For the unit-cube acceptance fixture this
+/// is benign (each plane has exactly one connected region), but non-convex or
+/// boolean-result meshes can produce under-counted, merged faces.  A robust
+/// fix would add a connectivity pass (union-find over shared triangle edges
+/// within each plane bucket) and is deferred to a future task.
+///
+/// **Boundary-straddle splitting.** The snap-to-grid quantisation does not
+/// provide a true tolerance window — it gives hard cell edges.  Two genuinely
+/// coplanar triangles whose normal/offset components straddle a cell boundary
+/// (i.e., round to opposite sides of a [`PLANE_TOL`] grid line) will land in
+/// different buckets and fail to coalesce.  Integer-vertex fixtures (e.g., the
+/// unit cube) are exact and unaffected; rotated or floating-origin faces could
+/// split.  A robust fix would cluster planes by tolerance against existing
+/// buckets (rather than snapping to a fixed grid) and is deferred.
+///
+/// BTreeMap keyed by a quantised plane key `(nx, ny, nz, d)` mapping to the
+/// list of triangles on that plane.  Factored out to keep the type readable.
+type PlaneGroupMap = std::collections::BTreeMap<(i64, i64, i64, i64), Vec<[[f64; 3]; 3]>>;
+
+pub(crate) fn coalesce_coplanar_faces(
+    verts: &[[f64; 3]],
+    tri_indices: &[u64],
+) -> Vec<Vec<[[f64; 3]; 3]>> {
+    let mut groups: PlaneGroupMap = std::collections::BTreeMap::new();
+
+    let quant = |f: f64| -> i64 { (f / PLANE_TOL).round() as i64 };
+
+    for chunk in tri_indices.chunks_exact(3) {
+        let v0 = verts[chunk[0] as usize];
+        let v1 = verts[chunk[1] as usize];
+        let v2 = verts[chunk[2] as usize];
+        let tri = [v0, v1, v2];
+
+        let n = tri_unit_normal(&tri);
+        // Skip degenerate triangles — they have no well-defined plane.
+        if n == [0.0, 0.0, 0.0] {
+            continue;
+        }
+
+        // Signed plane offset d = dot(n, v0).
+        let d = n[0] * v0[0] + n[1] * v0[1] + n[2] * v0[2];
+
+        let key = (quant(n[0]), quant(n[1]), quant(n[2]), quant(d));
+        groups.entry(key).or_default().push(tri);
+    }
+
+    // BTreeMap iterates ascending by key → deterministic face order.
+    groups.into_values().collect()
 }
 
 /// Format an xyz vector as the OCCT-compatible `{"x":_,"y":_,"z":_}` JSON

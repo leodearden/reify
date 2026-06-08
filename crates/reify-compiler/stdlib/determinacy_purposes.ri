@@ -1,0 +1,40 @@
+// std.determinacy.purposes — standard determinacy-check purposes (PRD §5).
+//
+// Defines two pub purposes that ship as part of the standard library and are
+// automatically available in every user module via merge_prelude_purposes
+// (task-4016 ζ):
+//
+//   simulation_ready — checks that all geometric params are determined.
+//                      Geometry-undef → VIOLATED (not-ready) per esc-4016-163.
+//
+//   design_review    — checks that all params are constrained (solver variables).
+//                      A determined param → VIOLATED (not review-ready).
+//
+// Bodies use PRD §5 verbatim. No `let` — the §5 bodies are guard+reflective
+// only; the task's "let" scenario is exercised by inline-purpose CLI locks
+// (B3), not this module.
+
+/// Checks that a structure is simulation-ready: all geometric params must be
+/// determined (have a concrete value, not auto/undetermined).
+///
+/// Guard: if any material param is constrained (solver variable), then all
+/// material params must also be determined — but since constrained() and
+/// determined() are mutually exclusive states, this arm can only fire Violated
+/// (an auto material param is constrained but not determined). The achievable
+/// pass cases are: geometry-determined with no material params, or
+/// geometry-determined with fully determined material params (guard inactive).
+pub purpose simulation_ready(subject : Structure) {
+    constraint forall p in subject.geometric_params: determined(p)
+    where exists p in subject.material_params: constrained(p) {
+        constraint forall p in subject.material_params: determined(p)
+    }
+}
+
+/// Checks that a structure is in design-review state: all params must be
+/// constrained (solver variables / auto). A param with a concrete default
+/// is Determined, not Constrained — this purpose fails for any determined param,
+/// signalling the structure still has hard-coded values rather than being fully
+/// parameterized for solver-driven exploration.
+pub purpose design_review(subject : Structure) {
+    constraint forall p in subject.params: constrained(p)
+}

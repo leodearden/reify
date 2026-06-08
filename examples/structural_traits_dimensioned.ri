@@ -1,0 +1,75 @@
+// Structural traits dimensioned-literal conformance example (task α / #4226)
+//
+// Focused CI conformance fixture: exercises all five tightened stdlib structural
+// traits (Rigid, Flexible/ElasticallyDeformable, Plastic, ThermallyConductive,
+// Sealed) with dimensioned literals.  Auto-discovered by examples_smoke.rs.
+//
+// Each structure conforms to exactly the trait(s) it is intended to exercise so
+// that the dimension-check of each tightened member is visible in isolation.
+// Value literals mirror the forms used in drivebelt_trait_bounds.ri and the
+// structural_physical_tests.rs fixtures (box(...), Material(...), W/(m*K), etc.).
+
+// ── (1) Rigid : Physical ─────────────────────────────────────────────────────
+//
+// Exercises: moment_of_inertia : MomentOfInertia (tightened from Real by task α).
+// Constraint from Rigid:   moment_of_inertia > 0.0 * 1kg * 1m * 1m
+// Constraint from Physical: material.density > 0
+structure def RigidPost : Rigid {
+    param geometry : Solid = box(100mm, 100mm, 300mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    // Rigid.moment_of_inertia — mass moment of inertia (kg·m², MomentOfInertia alias).
+    // 100×100×300 mm steel post, mass ≈ 23.6 kg → I_z = m(a²+b²)/12 ≈ 0.039 kg·m²
+    param moment_of_inertia : MomentOfInertia = 0.04 * 1kg * 1m * 1m
+}
+
+// ── (2) ElasticallyDeformable : Flexible ─────────────────────────────────────
+//
+// Exercises: max_deflection : Length (tightened from Real by task α).
+// Inherited from Flexible: stiffness : Stiffness (tightened by task #3115).
+// Constraints: stiffness > 0, max_deflection > 0 (Flexible); max_elastic_strain > 0 (ED).
+structure def ElasticSpring : ElasticallyDeformable {
+    // Flexible members
+    param stiffness : Stiffness = 50000.0 * 1N / 1m    // 50 kN/m — typical coil spring
+    param max_deflection : Length = 0.05 * 1m           // 50 mm rated deflection
+
+    // ElasticallyDeformable own member (dimensionless — D5, stays Real)
+    param max_elastic_strain : Real = 0.002             // 0.2% elastic strain limit
+}
+
+// ── (3) Plastic : Flexible ────────────────────────────────────────────────────
+//
+// Exercises: hardening_modulus : Pressure (tightened from Real by task α).
+// Inherited from Flexible: stiffness : Stiffness, max_deflection : Length.
+// Constraints: hardening_modulus > 0 (Pa), plastic_strain >= 0, stiffness > 0, max_deflection > 0.
+structure def PlasticBracket : Plastic {
+    // Flexible members
+    param stiffness : Stiffness = 1000000.0 * 1N / 1m  // 1 MN/m — stiff bracket
+    param max_deflection : Length = 0.001 * 1m          // 1 mm limit
+
+    // Plastic own members
+    param plastic_strain : Real = 0.0                   // dimensionless (D5, stays Real)
+    param hardening_modulus : Pressure = 1000000000.0 * 1Pa  // 1 GPa isotropic hardening
+}
+
+// ── (4) ThermallyConductive : Physical ────────────────────────────────────────
+//
+// Exercises: max_service_temp : Temperature (tightened from Real by task α).
+// thermal_conductivity : ThermalConductivity was tightened by task #3115.
+// Constraints: thermal_conductivity > 0 (TC); max_service_temp > 0 (task α); material.density > 0 (Physical).
+structure def AluminiumHeatSink : ThermallyConductive {
+    param geometry : Solid = box(150mm, 50mm, 80mm)
+    param material : Material = Material(name: "aluminum", density: 2700kg/m^3, youngs_modulus: 70GPa)
+
+    // ThermallyConductive members
+    param thermal_conductivity : ThermalConductivity = 205.0W/(m*K)
+    param max_service_temp : Temperature = 423.0 * 1K   // 150°C service limit
+}
+
+// ── (5) Sealed ────────────────────────────────────────────────────────────────
+//
+// Exercises: seal_pressure_rating : Pressure (tightened from Real by task α).
+// Constraint: seal_pressure_rating > 0 (Pa).
+structure def SealedValve : Sealed {
+    param seal_pressure_rating : Pressure = 1600000.0 * 1Pa  // PN 16 (1.6 MPa)
+}

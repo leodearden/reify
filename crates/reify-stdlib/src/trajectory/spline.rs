@@ -679,6 +679,18 @@ fn solve_tridiagonal(lower: &[f64], diag: &[f64], upper: &[f64], rhs: &[f64]) ->
     assert_eq!(upper.len(), n - 1);
     assert_eq!(rhs.len(), n);
 
+    // Single-equation system (diag[0]·x = rhs[0]): the forward sweep below indexes
+    // upper[0] / c_prime[0], both empty when n == 1, so solve it directly. This is
+    // the natural-cubic 3-knot case (inner = n_knots - 2 = 1) — valid, not
+    // degenerate, so it must fit rather than panic.
+    if n == 1 {
+        let pivot = diag[0];
+        if pivot.abs() < SINGULAR_PIVOT {
+            return None;
+        }
+        return Some(vec![rhs[0] / pivot]);
+    }
+
     let mut c_prime = vec![0.0_f64; n - 1];
     let mut d_prime = vec![0.0_f64; n];
 

@@ -324,7 +324,7 @@ fn op_array_assigns_curve_to_curve_op_and_preserves_through_transform() {
 
 // ─── infer_primitive — per-PrimitiveKind lookup ─────────────────────────────
 
-/// Every current `PrimitiveKind` (Box/Cylinder/Sphere/Tube) is fully
+/// Every current `PrimitiveKind` (Box/Cylinder/Sphere/Tube/Cone) is fully
 /// Bounded+Connected+Convex. When an Unbounded primitive lands (e.g.
 /// `half_space`, `extrude_infinite`), this test must be updated to
 /// expect `InferredTraits::none()` (or the appropriate subset) for those
@@ -335,11 +335,13 @@ fn infer_primitive_kind_yields_all_three_traits() {
     // Iterate every variant via a fixed array so the test is exhaustive.
     // If a new `PrimitiveKind` variant is added, the array length annotation
     // forces a compile error here, which forces the test to be re-considered.
-    let cases: [PrimitiveKind; 4] = [
+    // RED until step-6 adds PrimitiveKind::Cone to types.rs.
+    let cases: [PrimitiveKind; 5] = [
         PrimitiveKind::Box,
         PrimitiveKind::Cylinder,
         PrimitiveKind::Sphere,
         PrimitiveKind::Tube,
+        PrimitiveKind::Cone,
     ];
     for kind in cases {
         assert_eq!(
@@ -1489,4 +1491,57 @@ fn every_geometry_function_name_has_explicit_dispatch_arm() {
              arm in crates/reify-compiler/src/geometry_traits_inference.rs"
         );
     }
+}
+
+// ─── 2-D profile face producers: rectangle + circle (task-4160) ─────────────
+//
+// Both producers must infer Surface-dimension traits (planar, closed, bounded,
+// connected, convex) so that violates_profile_requirement() accepts them at
+// extrude/revolve/loft profile slots and rejects them at Curve path slots.
+//
+// RED until step-6 adds InferredTraits::surface(), the "rectangle"|"circle"
+// dispatch arm in geometry_traits_inference.rs, and the infer_op Profile arm.
+
+/// `rectangle(_, _)` → Surface, planar, closed, bounded, connected, convex.
+///
+/// RED until step-6 adds the surface() constructor and the dispatch arm.
+#[test]
+fn rectangle_infers_surface_dimension_with_full_face_traits() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    let t = try_infer_traits_for_function_call("rectangle", &[])
+        .expect("rectangle must have an explicit dispatch arm");
+    assert_eq!(
+        t.dimension,
+        GeomDim::Surface,
+        "rectangle must infer GeomDim::Surface, got {:?}",
+        t.dimension
+    );
+    assert!(t.planar, "rectangle face must be planar");
+    assert!(t.closed, "rectangle face must be closed");
+    assert!(t.bounded, "rectangle face must be bounded");
+    assert!(t.connected, "rectangle face must be connected");
+    assert!(t.convex, "rectangle face must be convex");
+}
+
+/// `circle(_, _)` → Surface, planar, closed, bounded, connected, convex.
+///
+/// RED until step-6 adds the surface() constructor and the dispatch arm.
+#[test]
+fn circle_infers_surface_dimension_with_full_face_traits() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    let t = try_infer_traits_for_function_call("circle", &[])
+        .expect("circle must have an explicit dispatch arm");
+    assert_eq!(
+        t.dimension,
+        GeomDim::Surface,
+        "circle must infer GeomDim::Surface, got {:?}",
+        t.dimension
+    );
+    assert!(t.planar, "circle face must be planar");
+    assert!(t.closed, "circle face must be closed");
+    assert!(t.bounded, "circle face must be bounded");
+    assert!(t.connected, "circle face must be connected");
+    assert!(t.convex, "circle face must be convex");
 }

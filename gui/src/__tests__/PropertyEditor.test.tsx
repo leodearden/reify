@@ -254,8 +254,10 @@ describe('PropertyEditor group selection boundary checks', () => {
     // Bracket's rows should be hidden (collapsed) since it's not the selected group
     expect(screen.queryByText('width')).toBeNull();
 
-    // BracketMount's rows should still be visible (selected group stays expanded)
-    expect(screen.getByText('height')).toBeTruthy();
+    // BracketMount's rows should still be visible (selected group stays expanded).
+    // Note: the breadcrumb header also shows "height" (leaf of the selected entity path),
+    // so use getAllByText to handle both occurrences gracefully.
+    expect(screen.getAllByText('height').length).toBeGreaterThan(0);
   });
 
   it('empty-string group name does not match everything', () => {
@@ -1097,5 +1099,98 @@ describe('PropertyEditor freshness badge', () => {
     const container = screen.getByTestId('property-editor');
     const determinacyBadge = container.querySelector('[data-determinacy="determined"]');
     expect(determinacyBadge).toBeTruthy();
+  });
+});
+
+describe('PropertyEditor freshness badge title', () => {
+  it('intermediate freshness badge has a title containing "intermediate"', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'intermediate' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const badge = screen.getByTestId('freshness-badge-c1');
+    const title = badge.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('intermediate');
+  });
+
+  it('pending freshness badge has a title containing "pending"', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'pending' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const badge = screen.getByTestId('freshness-badge-c1');
+    const title = badge.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('pending');
+  });
+
+  it('failed freshness badge has a title containing "failed"', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'failed' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const badge = screen.getByTestId('freshness-badge-c1');
+    const title = badge.getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('failed');
+  });
+
+  it('freshness badge aria-label is preserved unchanged (freshness intermediate)', () => {
+    const values: Record<string, ValueData> = {
+      c1: makeValue({ cell_id: 'c1', name: 'width', entity_path: 'Bracket.width', freshness: 'intermediate' }),
+    };
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={vi.fn()} />
+    ));
+    const badge = screen.getByTestId('freshness-badge-c1');
+    expect(badge.getAttribute('aria-label')).toBe('freshness intermediate');
+  });
+});
+
+describe('PropertyEditor — selection breadcrumb header', () => {
+  it('(a) with selectedEntity="Bracket.width" renders selection-breadcrumb with leaf "width"', () => {
+    render(() => (
+      <PropertyEditor
+        values={EDITABLE_C1}
+        selectedEntity="Bracket.width"
+        onSetParameter={vi.fn()}
+      />
+    ));
+    // Breadcrumb container must be present
+    expect(screen.getByTestId('selection-breadcrumb')).toBeTruthy();
+    // Leaf crumb must display the last segment
+    const leaf = screen.getByTestId('breadcrumb-leaf');
+    expect(leaf.textContent).toBe('width');
+  });
+
+  it('(b) with selectedEntity={null} shows "No selection" placeholder', () => {
+    render(() => (
+      <PropertyEditor
+        values={{}}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+      />
+    ));
+    expect(screen.getByTestId('selection-breadcrumb')).toBeTruthy();
+    expect(screen.getByText('No selection')).toBeTruthy();
+  });
+
+  it('(b) panel-title "Parameters" still renders alongside the breadcrumb', () => {
+    render(() => (
+      <PropertyEditor
+        values={{}}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+      />
+    ));
+    // The existing "Parameters" title must remain
+    const title = screen.getByText('Parameters');
+    expect(title).toBeTruthy();
+    // Breadcrumb should also be present
+    expect(screen.getByTestId('selection-breadcrumb')).toBeTruthy();
   });
 });

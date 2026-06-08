@@ -381,6 +381,8 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
         Type::Enum(_) => true,
         // Collection types
         Type::List(_) | Type::Set(_) | Type::Map(..) | Type::Option(_) => true,
+        // Keyed sub-collection kind (task 3930 / β)
+        Type::Keyed(_) => true,
         // Callable / generic / nominal references
         Type::Function { .. }
         | Type::TypeParam(_)

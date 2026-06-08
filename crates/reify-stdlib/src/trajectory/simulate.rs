@@ -58,6 +58,7 @@
 /// * `duration ≤ 0` or non-finite → returns a safe positive floor of `1e-6` s
 ///   so callers always receive a finite positive dt.
 /// * Non-positive or non-finite entries in `freqs_hz` are ignored.
+// G-allow: simulate_trajectory forward-pass helper (modal-aware dt), task #3869 (θ — simulate_trajectory, DONE); consumer is task #3869 π Value/ComputeNode trampoline, PENDING, so no in-tree caller yet.
 pub(crate) fn modal_aware_dt(freqs_hz: &[f64], duration: f64) -> f64 {
     // Guard duration.
     let safe_duration = if duration.is_finite() && duration > 0.0 {
@@ -198,6 +199,7 @@ pub(crate) struct Pose3 {
 ///
 /// The chain must be in topological order (parent before child) with the
 /// effector link last.  An empty chain returns the identity pose.
+// G-allow: simulate_trajectory forward-pass helper (nominal FK chain), task #3869 (θ — simulate_trajectory, DONE); consumer is task #3869 π Value/ComputeNode trampoline, PENDING, so no in-tree caller yet.
 pub(crate) fn nominal_fk_chain(link_chain: &[SpatialTransform6]) -> Pose3 {
     // R maps from world frame to current accumulated frame (same direction as E).
     let mut r_acc = [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -318,6 +320,7 @@ fn rotation_matrix_to_quat(e: [[f64; 3]; 3]) -> [f64; 4] {
 ///
 /// # Returns
 /// `[n_locations][n_times]` physical vibration displacement time series.
+// G-allow: simulate_trajectory forward-pass helper (modal superposition), task #3869 (θ — simulate_trajectory, DONE); consumer is task #3869 π Value/ComputeNode trampoline, PENDING, so no in-tree caller yet.
 pub(crate) fn superpose_modes(
     times: &[f64],
     modes: &[(f64, f64, Vec<f64>)],  // (omega, zeta, forcing)
@@ -354,6 +357,7 @@ pub(crate) fn superpose_modes(
 /// The dot product at each time step uses the common DOF length
 /// `min(forces[j].len(), projections[i].len())` — surplus entries are silently
 /// ignored rather than indexing out of bounds.
+// G-allow: simulate_trajectory forward-pass helper (forces → modal forcing history), task #3869 (θ — simulate_trajectory, DONE); consumer is task #3869 π Value/ComputeNode trampoline, PENDING, so no in-tree caller yet.
 pub(crate) fn forces_to_forcing_history(
     forces: &[Vec<f64>],
     projections: &[Vec<f64>],
@@ -457,6 +461,7 @@ pub(crate) fn build_rnea_links_for_sample(
             inertia_about_com: l.inertia_about_com,
             q_dot,
             q_ddot,
+            compliance: None,
         });
     }
     links

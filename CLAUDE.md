@@ -4,17 +4,61 @@
 
 The orchestrator verify pipeline requires `sccache` on PATH (install via `cargo install sccache`). `orchestrator.yaml` sets `RUSTC_WRAPPER=sccache` and `CARGO_INCREMENTAL=0` to share a rustc cache across worktrees; rationale and design in `~/.claude/plans/playful-hopping-nygaard.md`.
 
+### Manifold prebuilt C++ libs
+
+All four native kernels link **prebuilt** libs from `/opt/reify-deps` — OCCT, OpenVDB, and gmsh always have, and manifold now joins them. `manifold-csg-sys`'s `build.rs` would otherwise clone `elalish/manifold` and cmake-build the whole C++ tree (manifold + builtin TBB + builtin Clipper2 + manifoldc) from source in **every** worktree (~4× per worktree, 56 MB clone + ~227 MB OUT_DIR each), which on a cold cache pushed merge verifies past their inner timeouts (exit 124).
+
+Instead, `scripts/build-manifold-deps.sh` builds those libs **once per host** into `/opt/reify-deps/manifold/lib`, and a `links`-name override in `.cargo/config.toml` (`[target.x86_64-unknown-linux-gnu.manifold]`) makes Cargo **skip the from-source build entirely** and link the prebuilt static libs. `setup-dev.sh` runs the build script for you. The override is target-scoped to `x86_64-unknown-linux-gnu`, so wasm/emscripten builds keep their own FetchContent path.
+
+- **A `manifold-csg-sys` pin bump requires re-running `scripts/build-manifold-deps.sh`** (it tracks the version in `Cargo.lock` + the upstream `MANIFOLD_VERSION` tag and stamps `/opt/reify-deps/manifold/VERSION`).
+- `scripts/check-manifold-deps.sh` is a preflight guard wired into `verify.sh` as the first Rust step: it fails verify with a clear "run the deps script" message if the prebuilt is missing or version-drifted, instead of a cryptic linker error mid-compile.
+
 ### Single-command GUI launch
 
 From a clean checkout, two wrapper scripts collapse the full sidecar → npm install → npm build → cargo build → launch pipeline into a single command. Both scripts export `LD_LIBRARY_PATH` for OCCT's bundled snap shared libraries automatically — no need to set it yourself.
 
 - **`scripts/run-gui.sh <file.ri>`** — release-mode launch (default). Builds `gui/dist`, the cargo `--release` binary, and execs `target/release/reify-gui`. No vite, no devtools, no `:3939` debug listener — matches what end users will eventually run from a bundled distribution.
-- **`scripts/run-gui-dev.sh <file.ri>`** — dev-mode launch. Starts vite dev server on `:1420` (with HMR), waits for readiness, builds the cargo binary in debug profile, sets `REIFY_DEBUG=1`, and runs `target/debug/reify-gui` as a child process. `REIFY_DEBUG=1` opens an MCP debug listener on `127.0.0.1:3939` (see `gui/src-tauri/src/main.rs`). The script reaps the vite background process via an EXIT trap when reify-gui exits.
+- **`scripts/run-gui-dev.sh <file.ri>`** — dev-mode launch. Starts vite dev server on `:1420` (with HMR), waits for readiness, builds the cargo binary in debug profile, sets `REIFY_DEBUG=1`, and runs `target/debug/reify-gui` as a child process. `REIFY_DEBUG=1` opens an MCP debug listener on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}` (see `gui/src-tauri/src/main.rs`). Set `REIFY_DEBUG_PORT` to a different value per worktree to avoid port collisions when running concurrent GUI smokes; the static `.mcp.json` stays at the default 3939. The script reaps the vite background process via an EXIT trap when reify-gui exits.
 
 If the `reify` binary is already built, two equivalent CLI entry points work without re-running the wrapper:
 
 - **`reify gui --debug <file.ri>`** — `--mcp` is accepted as an alias for `--debug`.
 - **`reify gui-debug <file.ri>`** — sugar for `gui --debug`; both route through the same code path and propagate `REIFY_DEBUG=1` to the spawned `reify-gui` subprocess.
+
+### Per-worktree debug-port wiring for dispatched agents
+
+A dispatched agent (factory-launched Claude in a worktree) reads the static `<worktree>/.mcp.json` for its MCP server URLs. Without intervention the `reify-debug` entry is hard-pinned to `:3939`, so the agent's MCP client connects to whichever foreign GUI holds that port (the bug described in esc-4202-61). `scripts/setup-worktree-debug-port.sh` fixes this at provisioning time:
+
+```bash
+# Factory tooling runs this once per worktree before dispatching the agent:
+port=$(scripts/setup-worktree-debug-port.sh [worktree_dir])
+export REIFY_DEBUG_PORT=$port
+# Then: scripts/run-gui-dev.sh binds $REIFY_DEBUG_PORT → agent's .mcp.json targets the same port.
+```
+
+**Stdout contract:** the script prints only the resolved port integer (a bare decimal, `^[0-9]+$`, 1–65535) to stdout; all diagnostics go to stderr. This makes `port=$(...)` safe.
+
+**Port resolution** (mirrors `parse_debug_port` / `resolveDebugPort` / `resolveReifyDebugUrl`):
+- If `REIFY_DEBUG_PORT` is already a valid port (strict `^[0-9]+$`, value 1–65535, no whitespace), it is used verbatim.
+- Otherwise (unset, empty, non-digit, whitespace-padded, 0, or > 65535) a free ephemeral port is allocated via `allocate_free_port()` in `scripts/lib_portable.sh`.
+
+**Single-allocation invariant:** the port is written to BOTH `.mcp.json` (so the agent's MCP client targets the right GUI) AND stdout (so the caller can `export REIFY_DEBUG_PORT=$port` and `run-gui-dev.sh` binds the same port). These two consumers MUST agree — splitting the allocation would recreate esc-4202-61.
+
+**git skip-worktree hygiene:** after patching `.mcp.json`, the script runs `git update-index --skip-worktree .mcp.json` (guarded by `git rev-parse --is-inside-work-tree`) so the per-worktree ephemeral port is invisible to `git status`/diffs and never lands in a task commit or trips `land.sh`'s clean-tree gate. The committed `.mcp.json` default (`:3939`) is unchanged.
+- Undo with: `git update-index --no-skip-worktree .mcp.json`
+- Outside a git work tree the git step is a guarded no-op — the script succeeds normally.
+
+**G4 provisioning seam:** the *trigger* for this script lives upstream in factory tooling (a separate task for Leo). The reify-side deliverable is the script itself; factory tooling invokes it and injects the printed port into the dispatched agent's environment.
+
+## Landing on main
+
+Prefer the orchestrator's merge queue (`/merge-queue`) to land a task branch. When the orchestrator is congested or down and you must land directly, use **`scripts/land.sh <task-branch>`** — the *only* sanctioned manual-landing path:
+
+- It refuses to run unless you are on `main` with a **clean working tree** (the `pre-merge-commit` gate verifies the *whole* working tree, so unrelated dirt would otherwise force a false-negative — the original reason direct landings reached for `--no-verify`).
+- It runs a real `git merge --no-ff` (**not** `--no-verify`), so `hooks/pre-merge-commit` runs the full `--scope all --profile both` gate.
+- It marks the main-gate sentinel so `hooks/reference-transaction` records the resulting `refs/heads/main` move as **sanctioned**.
+
+**Never** land on `main` with raw `git merge --no-verify`, `git update-ref refs/heads/main`, `git reset`, or `commit-tree`+`update-ref` plumbing. Those skip the verify gate *and* trip the `reference-transaction` tripwire (which logs every unsanctioned `main` move, and hard-aborts it once `REIFY_MAIN_GATE_ENFORCE=1` is set). The tripwire ships **warn-only** by default; `REIFY_MAIN_GATE_BYPASS=1` is the break-glass allow. The gate fires only when git hooks are wired (`core.hooksPath=hooks`).
 
 ## Memory Usage
 

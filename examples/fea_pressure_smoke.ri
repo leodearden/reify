@@ -1,0 +1,52 @@
+// Pressure-load smoke test for `fn solve_elastic_static` → `solve_load_cases`.
+//
+// PRD reference: docs/prds/v0_3/compute-node-contract.md §8 task η
+//
+// This fixture exercises the PressureLoad path through the elastic_static
+// trampoline. A 1 MPa inward pressure is applied to the x_max (free end) face
+// of a steel cantilever; the root (x_min) face is clamped.
+//
+// Analytical note (Euler–Bernoulli):
+//   For a uniform pressure on the free end with no lateral distributed load,
+//   the dominant effect is axial compression. The resultant axial force is:
+//     P_axial = p × (width × height) = 1e6 × (0.1 × 0.1) = 10 000 N
+//   Axial stress: σ_xx = P_axial / A = 10 000 / 0.01 = 1 MPa (uniform)
+//
+// The integration test at `crates/reify-eval/tests/solve_elastic_static_pressure_e2e.rs`
+// checks that solve completes without errors and max_von_mises is positive and finite.
+//
+// Type-coercion notes: see `fea_cantilever_smoke.ri` header for the rationale
+// behind ConstitutiveLawInput and LoadCase wrappers.
+
+structure FeaPressureSmoke {
+    // Geometry: 1 m long beam with 100 mm × 100 mm square cross-section.
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    // Material: AISI 1045 hot-rolled medium-carbon steel (E = 205 GPa, ν = 0.29).
+    let material = Steel_AISI_1045()
+
+    // Pressure load: 1 MPa on the x_max (free end) face, inward-normal direction.
+    // "normal" direction means the traction vector points inward (-x direction here).
+    let pressure = PressureLoad(magnitude: 1.0e6, face: "x_max", direction: "normal")
+
+    // Supports: fully clamped (fixed) at the beam root (x_min face).
+    let mount = FixedSupport(target: "root")
+
+    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
+    // has compile-time type `List<Real>` (matching the fn param type).
+    let lc = LoadCase(name: "pressure_case", loads: [pressure], supports: [mount])
+
+    // Wrap material in ConstitutiveLawInput so that member-access .law has
+    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
+    let ci = ConstitutiveLawInput(law: material)
+
+    // FEA solve via the @optimized trampoline.
+    let result = solve_elastic_static(
+        ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
+    )
+
+    // Geometry realization (deferred — no kernel call at eval time).
+    let body = box(length, width, height)
+}

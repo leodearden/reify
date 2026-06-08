@@ -1,0 +1,15 @@
+// Fixture for design_review stdlib test.
+// design_review = forall p in params: constrained(p)
+//   constrained(p) is true iff p is auto (solver variable / DeterminacyState::Auto).
+//
+// AllAuto — all params are auto → all constrained → design_review PASSES.
+// HasDet  — one param has a concrete default (Determined) → constrained()=false
+//           → forall fails → design_review VIOLATES.
+structure AllAuto {
+    param x : Length = auto
+    param y : Length = auto
+}
+
+structure HasDet {
+    param x : Length = 5mm
+}

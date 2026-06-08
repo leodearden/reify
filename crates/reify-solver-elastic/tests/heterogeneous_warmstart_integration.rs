@@ -283,9 +283,9 @@ fn two_zone_heterogeneous_solve_deflection_between_bounds_and_stress_concentrate
     let compliance = |u: &[f64]| -> f64 {
         f_load.iter().zip(u.iter()).map(|(fi, ui)| fi * ui).sum()
     };
-    let c_stiff = compliance(&r_stiff.u);
-    let c_two   = compliance(&r_two.u);
-    let c_soft  = compliance(&r_soft.u);
+    let c_stiff = compliance(r_stiff.u());
+    let c_two   = compliance(r_two.u());
+    let c_soft  = compliance(r_soft.u());
 
     assert!(
         c_stiff < c_two,
@@ -321,10 +321,10 @@ fn two_zone_heterogeneous_solve_deflection_between_bounds_and_stress_concentrate
             coords[conn[0]], coords[conn[1]], coords[conn[2]], coords[conn[3]],
         ];
         let u_e: [f64; 12] = [
-            r_two.u[3 * conn[0]],     r_two.u[3 * conn[0] + 1], r_two.u[3 * conn[0] + 2],
-            r_two.u[3 * conn[1]],     r_two.u[3 * conn[1] + 1], r_two.u[3 * conn[1] + 2],
-            r_two.u[3 * conn[2]],     r_two.u[3 * conn[2] + 1], r_two.u[3 * conn[2] + 2],
-            r_two.u[3 * conn[3]],     r_two.u[3 * conn[3] + 1], r_two.u[3 * conn[3] + 2],
+            r_two.u()[3 * conn[0]],     r_two.u()[3 * conn[0] + 1], r_two.u()[3 * conn[0] + 2],
+            r_two.u()[3 * conn[1]],     r_two.u()[3 * conn[1] + 1], r_two.u()[3 * conn[1] + 2],
+            r_two.u()[3 * conn[2]],     r_two.u()[3 * conn[2] + 1], r_two.u()[3 * conn[2] + 2],
+            r_two.u()[3 * conn[3]],     r_two.u()[3 * conn[3] + 1], r_two.u()[3 * conn[3] + 2],
         ];
 
         // Identify zone by centroid z.
@@ -423,7 +423,7 @@ fn warm_start_across_field_refinement_drops_cg_iterations_and_matches_cold_solut
     // Warm-solve K2 from u1 → iters_warm.
     let r2_warm = assemble_and_solve(
         n_nodes, &coords, &tet_conn, &field_v2, &f_load, &bcs,
-        Some(&r1.u),  // u1 as CG initial guess
+        Some(r1.u()),  // u1 as CG initial guess
     );
     assert!(r2_warm.converged, "v2 warm solve did not converge ({} iters)", r2_warm.iterations);
     let iters_warm = r2_warm.iterations;
@@ -448,13 +448,13 @@ fn warm_start_across_field_refinement_drops_cg_iterations_and_matches_cold_solut
     // Both solves converged to the same SPD system K2·u=f within tolerance 1e-10,
     // so they must agree component-wise to within 1e-9·max(1,|u_cold[i]|).
     assert_eq!(
-        r2_cold.u.len(),
-        r2_warm.u.len(),
+        r2_cold.u().len(),
+        r2_warm.u().len(),
         "cold and warm displacement vectors must have the same length",
     );
-    for i in 0..r2_cold.u.len() {
-        let u_cold = r2_cold.u[i];
-        let u_warm = r2_warm.u[i];
+    for i in 0..r2_cold.u().len() {
+        let u_cold = r2_cold.u()[i];
+        let u_warm = r2_warm.u()[i];
         let tol  = 1e-9 * u_cold.abs().max(1.0);
         let diff = (u_warm - u_cold).abs();
         assert!(

@@ -19,6 +19,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
+import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
 
@@ -30,8 +31,12 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
         values: {} as any,
         constraints: {} as any,
         evalStatus: { phase },
+        compileDiagnostics: [],
+        tessellationDiagnostics: [],
       },
       initFromState: vi.fn(),
+      setCompileDiagnostics: vi.fn(),
+      setTessellationDiagnostics: vi.fn(),
     },
     editor: {
       state: {
@@ -42,6 +47,7 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
         cursorPosition: null,
       },
       openFile: vi.fn(),
+      closeFile: vi.fn(),
     },
     selection: {
       state: {
@@ -53,6 +59,8 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
       } as any,
       selectEntity: vi.fn(),
       hoverEntity: vi.fn(),
+      clearSelection: vi.fn(),
+      toggleSelect: vi.fn(),
     },
     claude: {
       state: {
@@ -60,6 +68,21 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
         sessionStatus: 'idle',
         currentMessageId: null,
       },
+    },
+    viewState: makeViewStateStoreMock(),
+    layout: {
+      state: {
+        editorWidth: 300,
+        sideWidth: 300,
+        designTreeHeight: 160,
+        propertyHeight: 200,
+        constraintHeight: 140,
+      },
+      setEditorWidth: vi.fn(),
+      setSideWidth: vi.fn(),
+      setDesignTreeHeight: vi.fn(),
+      setPropertyHeight: vi.fn(),
+      setConstraintHeight: vi.fn(),
     },
   };
 }

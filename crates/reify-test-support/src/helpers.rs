@@ -2,10 +2,36 @@
 
 use reify_compiler::TopologyTemplate;
 use reify_core::{Diagnostic, ModulePath, Severity};
-use reify_ir::CompiledExpr;
+use reify_ir::{CompiledExpr, CompiledExprKind};
 
 #[cfg(feature = "eval-helpers")]
 use crate::mocks::{MockConstraintChecker, MockGeometryKernel};
+
+/// Collect all `ValueRef` member names reachable from `expr`.
+///
+/// This is the canonical, walk-backed replacement for the per-file
+/// `collect_value_ref_members` copies that existed in the compiler test suite.
+/// Unlike those hand-rolled copies (which matched only `ValueRef`, `BinOp`, and
+/// `UnOp`, dropping refs under any other variant via `_ => vec![]`), this
+/// implementation is backed by [`CompiledExpr::walk`], which performs an
+/// exhaustive pre-order traversal of **every** [`CompiledExprKind`] variant.
+/// This means `ValueRef` nodes nested under `FunctionCall`, `Conditional`,
+/// `OptionSome`, `ListLiteral`, etc. are now correctly collected (item-#3 fix).
+/// When a new `CompiledExprKind` variant is added, `walk`'s exhaustive match
+/// forces an update there, and this helper benefits automatically.
+///
+/// Returns owned `String`s (not `&str`s) because `walk`'s closure parameter
+/// has a higher-ranked lifetime — a borrow of `cell_id.member` cannot escape
+/// into a `Vec<&str>` tied to `expr`'s lifetime.
+pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
+    let mut members = Vec::new();
+    expr.walk(&mut |e| {
+        if let CompiledExprKind::ValueRef(cell_id) = &e.kind {
+            members.push(cell_id.member.clone());
+        }
+    });
+    members
+}
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
 /// geometry kernel. Suitable for tests that only need to evaluate logic
@@ -868,7 +894,7 @@ mod tests {
         // Source referencing stdlib trait MaterialSpec — should compile without errors
         // only when stdlib is loaded.
         let source = r#"structure Steel : MaterialSpec {
-            param density: Real = 7850
+            param density : Density = 7850kg/m^3
             param name: String = "Steel"
         }"#;
         let compiled = super::compile_source_with_stdlib(source);
@@ -895,7 +921,7 @@ mod tests {
     #[test]
     fn compile_source_with_stdlib_resolves_prelude_enum_access() {
         let source = r#"structure def CorrTest : CorrosionResistant {
-            param density : Real = 7850.0
+            param density : Density = 7850kg/m^3
             param name : String = "test_steel"
             param corrosion_class : CorrosionClass = CorrosionClass.C5
         }"#;
@@ -1062,7 +1088,7 @@ mod tests {
     fn test_check_source_with_stdlib() {
         // Source referencing stdlib trait MaterialSpec with a constraint.
         let source = r#"structure Steel : MaterialSpec {
-            param density: Real = 7850
+            param density : Density = 7850kg/m^3
             param name: String = "Steel"
             constraint density > 0
         }"#;
@@ -1165,7 +1191,7 @@ mod tests {
         // Use a simple source that requires stdlib (MaterialSpec trait) without
         // coupling to specific stdlib field values or shape details.
         let source = r#"structure S : MaterialSpec {
-            param density: Real = 1
+            param density : Density = 1kg/m^3
             param name: String = "S"
         }"#;
         // parse_and_compile_with_stdlib panics on errors, so reaching here means success.
@@ -1755,6 +1781,123 @@ mod tests {
             matches!(ops[1].op, GeometryOp::Shell { .. }),
             "expected ops[1].op to be GeometryOp::Shell, got {:?}",
             ops[1].op
+        );
+    }
+
+    // ─── collect_value_ref_members unit tests ────────────────────────────────
+
+    /// collect_value_ref_members: bare ValueRef returns the member name.
+    #[test]
+    fn test_collect_value_ref_members_bare_value_ref() {
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
+
+        let expr = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let result = super::collect_value_ref_members(&expr);
+        assert!(
+            result.iter().any(|m| m == "a"),
+            "expected \"a\" in result; got {:?}",
+            result
+        );
+    }
+
+    /// collect_value_ref_members: BinOp recursion collects refs from both branches.
+    #[test]
+    fn test_collect_value_ref_members_binop() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+
+        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let b = CompiledExpr::value_ref(crate::vcid("E", "b"), Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::Real);
+        let result = super::collect_value_ref_members(&expr);
+        assert!(
+            result.iter().any(|m| m == "a"),
+            "expected \"a\" in result; got {:?}",
+            result
+        );
+        assert!(
+            result.iter().any(|m| m == "b"),
+            "expected \"b\" in result; got {:?}",
+            result
+        );
+    }
+
+    /// collect_value_ref_members: UnOp recursion collects the operand's ref.
+    #[test]
+    fn test_collect_value_ref_members_unop() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, UnOp};
+
+        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let expr = CompiledExpr::unop(UnOp::Neg, a, Type::Real);
+        let result = super::collect_value_ref_members(&expr);
+        assert!(
+            result.iter().any(|m| m == "a"),
+            "expected \"a\" in result; got {:?}",
+            result
+        );
+    }
+
+    /// collect_value_ref_members: ITEM-#3 regression guard — a ValueRef nested
+    /// under OptionSome (a variant the old `_ => vec![]` arm silently dropped) is
+    /// now collected because `CompiledExpr::walk` recurses into OptionSome.
+    #[test]
+    fn test_collect_value_ref_members_option_some_regression() {
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
+
+        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let expr = CompiledExpr::option_some(a, Type::Real);
+        let result = super::collect_value_ref_members(&expr);
+        assert!(
+            result.iter().any(|m| m == "a"),
+            "expected \"a\" nested under OptionSome to be collected; got {:?}",
+            result
+        );
+    }
+
+    /// collect_value_ref_members: wrong-member guard — collecting member "a" must
+    /// NOT report member "b" as present.  Locks in that the walk-backed superset
+    /// collection (item-#3 fix) does not make `.iter().any(|m| m == required)` call
+    /// sites falsely match a different member.
+    #[test]
+    fn test_collect_value_ref_members_no_false_positive() {
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
+
+        let expr = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let result = super::collect_value_ref_members(&expr);
+        assert!(
+            !result.iter().any(|m| m == "b"),
+            "did not expect \"b\" in result for a ValueRef with member \"a\"; got {:?}",
+            result
+        );
+    }
+
+    /// collect_value_ref_members: non-ValueRef leaves (Literal, OptionNone) yield
+    /// an empty result — documents that only ValueRef nodes contribute members.
+    #[test]
+    fn test_collect_value_ref_members_empty_for_non_value_ref_leaves() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        // A bare numeric literal has no ValueRef anywhere in its tree.
+        let literal = CompiledExpr::literal(Value::Int(42), Type::Int);
+        let result = super::collect_value_ref_members(&literal);
+        assert!(
+            result.is_empty(),
+            "expected empty result for a Literal; got {:?}",
+            result
+        );
+
+        // OptionNone likewise carries no ValueRef.
+        let none = CompiledExpr::option_none(Type::Real);
+        let result_none = super::collect_value_ref_members(&none);
+        assert!(
+            result_none.is_empty(),
+            "expected empty result for OptionNone; got {:?}",
+            result_none
         );
     }
 }

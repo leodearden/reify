@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { EditorView } from '@codemirror/view';
 import { flushMacrotasks, withSuppressedRejectionsAndWarnSpy, expectNoUnhandledRejections } from './test-utils';
 
 // Mock Tauri API modules
@@ -22,7 +23,7 @@ vi.mock('@codemirror/state', () => ({
 }));
 
 import { invoke } from '@tauri-apps/api/core';
-import { reifyGotoDefinition } from '../editor/gotoDefinition';
+import { reifyGotoDefinition, gotoDefinitionCommand } from '../editor/gotoDefinition';
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -44,6 +45,10 @@ function makeMockView(overrides?: {
       // code path in isValidLspPosition where `character > (targetLine.to - targetLine.from)`
       // becomes `character > NaN` (always false), effectively bypassing the character-bounds guard.
       line?: (n: number) => { from: number; to?: number };
+      lineAt?: (pos: number) => { number: number; from: number; to: number };
+    };
+    selection?: {
+      main?: { head?: number };
     };
   };
   dispatch?: ReturnType<typeof vi.fn>;
@@ -54,15 +59,20 @@ function makeMockView(overrides?: {
     state: {
       doc: {
         lines: overrides?.state?.doc?.lines ?? 100,
-        lineAt: () => ({ number: 1, from: 0, to: 10 }),
+        lineAt: overrides?.state?.doc?.lineAt ?? (() => ({ number: 1, from: 0, to: 10 })),
         line: overrides?.state?.doc?.line ?? (() => ({ from: 0, to: 10 })),
+      },
+      selection: {
+        main: {
+          head: overrides?.state?.selection?.main?.head ?? 5,
+        },
       },
     },
     dispatch: overrides?.dispatch ?? vi.fn(),
     dom: {
       isConnected: overrides?.dom?.isConnected ?? true,
     },
-  };
+  } as unknown as EditorView;
 }
 
 function makeMouseEvent(overrides?: Partial<MouseEvent>): MouseEvent {
@@ -748,5 +758,106 @@ describe('error recovery', () => {
         warnSpy.mockRestore();
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gotoDefinitionCommand — CodeMirror Command factory (step-3)
+// ---------------------------------------------------------------------------
+
+describe('gotoDefinitionCommand', () => {
+  it('(a) returns a function (CodeMirror Command)', () => {
+    const command = gotoDefinitionCommand(() => 'file:///test.ri', vi.fn());
+    expect(typeof command).toBe('function');
+  });
+
+  it('(b) SAME-file: reads cursor from view.state.selection.main.head, dispatches cursor move, does NOT call onNavigate, returns true', async () => {
+    const uri = 'file:///test.ri';
+    // head=5 → lineAt(5) returns { number: 1, from: 0, to: 10 }
+    // lspLine = 1 - 1 = 0, lspChar = 5 - 0 = 5
+    // Same-file response: line=2 (0-based), char=3 → doc.line(3).from + 3
+    // doc.line(3) = { from: (3-1)*20, to: (3-1)*20+15 } = { from: 40, to: 55 }
+    // targetPos = 40 + 3 = 43
+    const sameFileLocation = {
+      uri,
+      range: { start: { line: 2, character: 3 }, end: { line: 2, character: 3 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
+
+    const onNavigate = vi.fn();
+    const command = gotoDefinitionCommand(() => uri, onNavigate);
+
+    const mockView = makeMockView({
+      state: {
+        selection: { main: { head: 5 } },
+        // lineAt(pos) for the cursor read: returns line 1 (number=1, from=0)
+        doc: {
+          lineAt: (_pos: number) => ({ number: 1, from: 0, to: 10 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+          lines: 100,
+        },
+      },
+    });
+
+    const result = command(mockView as unknown as EditorView);
+    expect(result).toBe(true); // (d) returns true
+
+    await flushMacrotasks();
+
+    // Verify LSP request was sent with position derived from cursor
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', expect.objectContaining({
+      method: 'textDocument/definition',
+    }));
+    const params = JSON.parse((mockInvoke.mock.calls[0][1] as { params: string }).params);
+    expect(params.textDocument.uri).toBe(uri);
+    expect(params.position.line).toBe(0);    // lspLine = lineNumber(1) - 1 = 0
+    expect(params.position.character).toBe(5); // head(5) - line.from(0) = 5
+
+    // Same-file: dispatch called, onNavigate not called
+    // anchor = doc.line(3).from + 3 = 40 + 3 = 43
+    expect(mockView.dispatch).toHaveBeenCalledWith({
+      selection: { anchor: 43 },
+      scrollIntoView: true,
+    });
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it('(c) CROSS-file: calls onNavigate(uri, line, char), does NOT dispatch', async () => {
+    const currentUri = 'file:///current.ri';
+    const crossFileLocation = {
+      uri: 'file:///other.ri',
+      range: { start: { line: 5, character: 2 }, end: { line: 5, character: 10 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(crossFileLocation));
+
+    const onNavigate = vi.fn();
+    const command = gotoDefinitionCommand(() => currentUri, onNavigate);
+
+    const mockView = makeMockView({
+      state: { selection: { main: { head: 10 } } },
+    });
+
+    command(mockView as unknown as EditorView);
+    await flushMacrotasks();
+
+    expect(onNavigate).toHaveBeenCalledWith('file:///other.ri', 5, 2);
+    expect(mockView.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('(d) returns true to consume the key even when LSP returns null', async () => {
+    mockInvoke.mockResolvedValue(JSON.stringify(null));
+
+    const command = gotoDefinitionCommand(() => 'file:///test.ri', vi.fn());
+    const mockView = makeMockView();
+    const result = command(mockView as unknown as EditorView);
+    expect(result).toBe(true);
+
+    await flushMacrotasks();
+    expect(mockView.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('existing reifyGotoDefinition tests remain unaffected (sanity check)', () => {
+    const ext = reifyGotoDefinition('file:///test.ri');
+    expect(ext).toBeDefined();
   });
 });

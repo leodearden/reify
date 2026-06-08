@@ -85,6 +85,34 @@ const _SHORTCUTS_DEF = [
   // matchesEvent.  Actual dispatch is a special-case block in useKeyboardShortcuts
   // (mirroring the Escape handler pattern).
   { id: 'switchViewByIndex', key: '1-9', description: 'Switch to view N in the view selector', category: 'View' },
+  // Display-only entries for CodeMirror structural folding.  No `bind` field: dispatch
+  // is owned by the editor's foldKeymap (keymap.of(foldKeymap) in Editor.tsx).
+  // useKeyboardShortcuts skips entries without a bind, and also bails when the event
+  // target is contentEditable (the CM editor contentDOM), so fold keys in the editor
+  // never reach the global handler.  These entries exist solely to surface the
+  // keybindings in the ? overlay.
+  // Platform note: key labels below reflect CM6 foldKeymap defaults for Linux/Windows.
+  // On macOS CM6 overrides fold/unfold to Cmd-Alt-[ / Cmd-Alt-] (foldAll/unfoldAll
+  // remain Ctrl-Alt-[ / Ctrl-Alt-] on all platforms).  If macOS support is added,
+  // these display strings should be made platform-aware (Cmd vs Ctrl for fold/unfold).
+  { id: 'fold',      key: 'Ctrl+Shift+[', description: 'Fold block at cursor', category: 'Editor' },
+  { id: 'unfold',    key: 'Ctrl+Shift+]', description: 'Unfold block at cursor', category: 'Editor' },
+  { id: 'foldAll',   key: 'Ctrl+Alt+[',   description: 'Fold all', category: 'Editor' },
+  { id: 'unfoldAll', key: 'Ctrl+Alt+]',   description: 'Unfold all', category: 'Editor' },
+  // Display-only entries for CodeMirror go-to-definition and navigation history.
+  // No `bind` field: dispatch is owned by the CM keymap in Editor.tsx (same
+  // pattern as fold entries above).  These exist solely to surface the
+  // keybindings in the ? overlay.
+  { id: 'gotoDefinition', key: 'F12',   description: 'Go to definition', category: 'Editor' },
+  { id: 'navBack',        key: 'Alt+←', description: 'Navigate back',    category: 'Editor' },
+  { id: 'navForward',     key: 'Alt+→', description: 'Navigate forward', category: 'Editor' },
+  // Display-only: dispatch is owned by the F2 keymap in Editor.tsx (same pattern as
+  // the nav entries above). prepareRename gates the rename, so this never edits unsafely.
+  { id: 'rename',         key: 'F2',    description: 'Rename symbol',    category: 'Editor' },
+  // Command palette and symbol-jump — global actions exempt from the typing-context
+  // guard in useKeyboardShortcuts so they open from any focus state (including the CM editor).
+  { id: 'commandPalette', key: 'Ctrl+Shift+P', description: 'Command palette', category: 'View', bind: { key: 'p', ctrl: true, shift: true } },
+  { id: 'symbolJump',     key: 'Ctrl+Shift+O', description: 'Go to symbol',    category: 'View', bind: { key: 'o', ctrl: true, shift: true } },
 ] as const satisfies readonly ShortcutDef[];
 
 /**

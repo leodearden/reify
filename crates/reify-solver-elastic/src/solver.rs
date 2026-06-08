@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 use faer::sparse::SparseRowMat;
 
+use crate::assembly::AssemblyMode;
+
 /// How [`solve_cg`] parallelises the SpMV and dot-product reductions.
 ///
 /// Mirrors [`crate::assembly::AssemblyMode`] byte-for-byte so the caller-side
@@ -83,6 +85,55 @@ pub enum SolverMode {
     },
 }
 
+/// DOF count at or above which a non-deterministic solve is eligible to run
+/// multi-threaded. Below this threshold the thread-spawn + cross-thread-combine
+/// overhead dominates the arithmetic, so [`resolve_execution_modes`] forces the
+/// single-threaded [`Deterministic`][SolverMode::Deterministic] path regardless
+/// of the requested thread count. This is the "tiny problems run
+/// single-threaded under 10K DOFs" policy that the [`SolverMode`] /
+/// [`AssemblyMode`] primitive docs explicitly defer to the `ElasticOptions`
+/// resolution layer (PRD task #16).
+pub const PARALLEL_DOF_THRESHOLD: usize = 10_000;
+
+/// Resolve the matched `(AssemblyMode, SolverMode)` pair for an elastostatic
+/// solve from the caller's determinism preference, requested thread count, and
+/// problem size. This is the single policy seam for PRD task #16 / #18: the
+/// assembly and CG primitives stay mode-agnostic, and this pure function decides
+/// how they run.
+///
+/// Policy:
+/// - `deterministic == true` ⇒ both modes
+///   [`Deterministic`][SolverMode::Deterministic]. Forces single-threaded
+///   execution + fixed-order pairwise-tree reductions for bit-stable,
+///   cross-machine reproducible results, at a 4–8× wallclock cost (PRD task #18).
+/// - otherwise `n_dofs < PARALLEL_DOF_THRESHOLD` (tiny-problem short-circuit)
+///   **or** `threads <= 1` ⇒ both modes Deterministic. (`Parallel { threads: 1 }`
+///   is bit-equivalent to Deterministic, so the single-threaded path is chosen
+///   directly; tiny problems avoid thread-spawn overhead.)
+/// - otherwise ⇒ both modes `Parallel { threads }`.
+///
+/// [`AssemblyMode`] and [`SolverMode`] mirror each other byte-for-byte (see
+/// their module docs), so returning a matched pair from one resolver keeps the
+/// two stages in lockstep.
+///
+/// Pure: takes a concrete `threads: usize`, so the caller owns the
+/// `None`→cpu-count fallback and this function never calls
+/// `std::thread::available_parallelism`.
+pub fn resolve_execution_modes(
+    deterministic: bool,
+    threads: usize,
+    n_dofs: usize,
+) -> (AssemblyMode, SolverMode) {
+    if deterministic || n_dofs < PARALLEL_DOF_THRESHOLD || threads <= 1 {
+        (AssemblyMode::Deterministic, SolverMode::Deterministic)
+    } else {
+        (
+            AssemblyMode::Parallel { threads },
+            SolverMode::Parallel { threads },
+        )
+    }
+}
+
 /// Tuning parameters for [`solve_cg`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct CgSolverOptions {
@@ -117,21 +168,62 @@ impl Default for CgSolverOptions {
 /// The `max_iter_exhaustion_returns_unconverged` test pins the cap-out path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CgResult {
-    /// Solution vector `u` of length `k.nrows()`.
+    /// Solution displacement vector (private backing store).
     ///
-    /// Wrapped in `Arc<Vec<f64>>` so [`solve_cg_with_warm_state`] (PRD task
-    /// #14) can share this allocation with the [`crate::CgWarmState`] it
-    /// emits — avoiding a 10⁴–10⁶-DOF `Vec<f64>` copy on every solve. All
-    /// read paths work transparently through `Deref`: `result.u[i]`,
-    /// `result.u.len()`, `result.u.iter()`, `&result.u[..]`. Cloning a
-    /// `CgResult` now bumps the refcount instead of deep-copying `u`,
-    /// which is the desired behaviour given `u` is logically immutable
-    /// after the solve completes.
-    pub u: Arc<Vec<f64>>,
+    /// Access via the stable public accessors:
+    /// - `u(&self) -> &[f64]` — representation-agnostic read path; prefer
+    ///   this over any direct field access.
+    /// - `into_shared_u(self) -> Arc<Vec<f64>>` — consuming zero-copy
+    ///   donation; use when you need an `Arc<Vec<f64>>` handle (e.g. to
+    ///   populate a struct field) without copying the 10⁴–10⁶-DOF buffer.
+    ///
+    /// The field is private so the internal representation (`Arc<Vec<f64>>`,
+    /// `Arc<[f64]>`, or a plain `Vec<f64>`) can be changed in a future
+    /// refactor without breaking any external consumer that goes through
+    /// the accessors.
+    u: Arc<Vec<f64>>,
     /// Number of CG iterations executed.
     pub iterations: usize,
     /// `true` if the residual met the tolerance criterion before `max_iter`.
     pub converged: bool,
+}
+
+impl CgResult {
+    /// Read the solution vector as a slice.
+    ///
+    /// Returns a `&[f64]` view over the solution, coercing via `Arc<Vec<f64>>`'s
+    /// `Deref` chain. This is the representation-agnostic read path: callers
+    /// should prefer `u()` over direct field access so the internal storage type
+    /// can later change without breaking external consumers.
+    pub fn u(&self) -> &[f64] {
+        &self.u
+    }
+
+    /// Donate the solution allocation to the caller without copying.
+    ///
+    /// Consumes `self` and returns the `Arc<Vec<f64>>` directly. The caller
+    /// receives sole ownership of this handle; if no other `Arc` clones exist,
+    /// the allocation is uniquely owned by the returned `Arc`.
+    ///
+    /// Use this when you need to pass the solution into a struct field typed
+    /// `Arc<Vec<f64>>` (e.g. `CantileverFeaSolve.u`) without a 10⁴–10⁶-DOF copy.
+    /// For the representation-agnostic read path, use [`u()`](Self::u) instead.
+    pub fn into_shared_u(self) -> Arc<Vec<f64>> {
+        self.u
+    }
+
+    /// Clone the internal `Arc` without consuming `self`.
+    ///
+    /// Bumps the reference count and returns a new handle to the same allocation.
+    /// Required by [`solve_cg_with_warm_state`] which must return both the
+    /// `CgResult` and a [`crate::CgWarmState`] sharing one allocation — the
+    /// consuming [`into_shared_u`](Self::into_shared_u) cannot serve a dual-return.
+    ///
+    /// Kept `pub(crate)` so the public surface is exactly the two accessors the
+    /// task specifies ([`u()`](Self::u) and [`into_shared_u`](Self::into_shared_u)).
+    pub(crate) fn shared_u(&self) -> Arc<Vec<f64>> {
+        Arc::clone(&self.u)
+    }
 }
 
 /// Return value of the per-iteration progress callback passed to
@@ -1021,6 +1113,136 @@ mod tests {
         );
     }
 
+    // --- ElasticOptions execution-mode resolution (PRD task #16) ---
+
+    /// `resolve_execution_modes` maps `(deterministic, threads, n_dofs)` to a
+    /// matched `(AssemblyMode, SolverMode)` pair per the ElasticOptions
+    /// resolution policy: `deterministic` forces single-threaded execution;
+    /// otherwise tiny problems (`n_dofs < PARALLEL_DOF_THRESHOLD`) and
+    /// `threads <= 1` fall back to Deterministic; everything else runs
+    /// `Parallel { threads }`. Assembly and solve modes always agree, mirroring
+    /// each other byte-for-byte.
+    #[test]
+    fn resolve_execution_modes_policy() {
+        use super::resolve_execution_modes;
+        use crate::assembly::AssemblyMode;
+
+        // (a) deterministic=true forces single-threaded execution even with a
+        // high thread count and a large problem.
+        assert_eq!(
+            resolve_execution_modes(true, 8, 50_000),
+            (AssemblyMode::Deterministic, SolverMode::Deterministic),
+            "deterministic=true must force both modes to Deterministic regardless of threads/n_dofs"
+        );
+
+        // (b) non-deterministic, multi-threaded, large problem → Parallel on both.
+        assert_eq!(
+            resolve_execution_modes(false, 4, 50_000),
+            (
+                AssemblyMode::Parallel { threads: 4 },
+                SolverMode::Parallel { threads: 4 }
+            ),
+            "large non-deterministic problem must run Parallel with the requested thread count"
+        );
+
+        // (c) tiny-problem short-circuit: n_dofs < PARALLEL_DOF_THRESHOLD (10_000)
+        // resolves to Deterministic regardless of thread count.
+        assert_eq!(
+            resolve_execution_modes(false, 8, 84),
+            (AssemblyMode::Deterministic, SolverMode::Deterministic),
+            "tiny problems (n_dofs < threshold) must fall back to Deterministic"
+        );
+
+        // (d) threads <= 1 is equivalent to Deterministic even for a large problem.
+        assert_eq!(
+            resolve_execution_modes(false, 1, 50_000),
+            (AssemblyMode::Deterministic, SolverMode::Deterministic),
+            "threads <= 1 must resolve to Deterministic"
+        );
+    }
+
+    /// Integration of `resolve_execution_modes` with the actual CG solve: proves
+    /// the *behavioral* determinism guarantee, not just the policy mapping
+    /// (`resolve_execution_modes_policy`) or the field plumbing (the e2e test).
+    ///
+    /// The resolver is fed a large `n_dofs` (50_000, a stand-in for a real
+    /// `>PARALLEL_DOF_THRESHOLD` problem) so it returns genuinely distinct mode
+    /// pairs for `deterministic ∈ {true, false}`; the resolved modes then drive a
+    /// solve of the cheap fan-mesh SPD system — no slow large mesh needed for CI.
+    ///
+    /// (1) `deterministic = true` → resolver returns `SolverMode::Deterministic`;
+    ///     two solves through the resolved mode are **bit-identical** — the
+    ///     cross-run reproducibility guarantee, exercised end-to-end through the
+    ///     resolver rather than by hand-passing the mode.
+    /// (2) `deterministic = false`, `threads = 4` → resolver returns
+    ///     `SolverMode::Parallel { threads: 4 }`; that solve converges and is
+    ///     tolerance-equivalent to the deterministic solve (same engineering
+    ///     result, so the default fast path stays correct).
+    #[test]
+    fn resolve_execution_modes_drives_bit_stable_and_equivalent_solves() {
+        use super::resolve_execution_modes;
+
+        let (k, f) = fan_mesh_k_spd_and_f();
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 1000,
+        };
+
+        // Large n_dofs stand-in so the resolver does not short-circuit to
+        // Deterministic via the tiny-problem rule; the solved system is the cheap
+        // fan-mesh K regardless.
+        let n_dofs_large = 50_000;
+
+        // (1) deterministic = true → Deterministic mode → bit-stable across runs.
+        let (_, det_mode) = resolve_execution_modes(true, 4, n_dofs_large);
+        assert_eq!(
+            det_mode,
+            SolverMode::Deterministic,
+            "deterministic=true must resolve to Deterministic"
+        );
+        let det_a = solve_cg(&k, &f, opts.clone(), det_mode);
+        let det_b = solve_cg(&k, &f, opts.clone(), det_mode);
+        assert!(
+            det_a.converged && det_b.converged,
+            "resolver-driven deterministic solves must converge"
+        );
+        assert_eq!(
+            det_a.iterations, det_b.iterations,
+            "deterministic iterations must be bit-stable through the resolver"
+        );
+        for i in 0..f.len() {
+            assert_eq!(
+                det_a.u()[i].to_bits(),
+                det_b.u()[i].to_bits(),
+                "deterministic u[{i}] not bit-stable through the resolver: a={} b={}",
+                det_a.u()[i],
+                det_b.u()[i],
+            );
+        }
+
+        // (2) deterministic = false, threads = 4, large problem → Parallel mode →
+        //     converges and is tolerance-equivalent to the deterministic result.
+        let (_, par_mode) = resolve_execution_modes(false, 4, n_dofs_large);
+        assert_eq!(
+            par_mode,
+            SolverMode::Parallel { threads: 4 },
+            "non-deterministic large problem must resolve to Parallel"
+        );
+        let par = solve_cg(&k, &f, opts, par_mode);
+        assert!(par.converged, "resolver-driven parallel solve must converge");
+        for i in 0..f.len() {
+            let tol = 1e-9 * det_a.u()[i].abs().max(1.0);
+            let diff = (par.u()[i] - det_a.u()[i]).abs();
+            assert!(
+                diff < tol,
+                "resolver-driven parallel result not equivalent at i={i}: \
+                 u_par={}, u_det={}, |diff|={diff} ≥ tol={tol}",
+                par.u()[i],
+                det_a.u()[i],
+            );
+        }
+    }
+
     // --- Contract panics ---
 
     /// `SolverMode::Parallel { threads: 0 }` must panic with a message
@@ -1167,10 +1389,10 @@ mod tests {
         );
         for i in 0..3 {
             assert_eq!(
-                result.u[i].to_bits(),
+                result.u()[i].to_bits(),
                 f[i].to_bits(),
                 "u[{i}] = {} should be bit-equal to f[{i}] = {}",
-                result.u[i],
+                result.u()[i],
                 f[i]
             );
         }
@@ -1212,11 +1434,11 @@ mod tests {
 
         let u_expected = [1.0_f64 / 11.0, 7.0_f64 / 11.0];
         for i in 0..2 {
-            let diff = (result.u[i] - u_expected[i]).abs();
+            let diff = (result.u()[i] - u_expected[i]).abs();
             assert!(
                 diff < 1e-9,
                 "u[{i}] = {} but expected {} (diff = {})",
-                result.u[i],
+                result.u()[i],
                 u_expected[i],
                 diff
             );
@@ -1316,12 +1538,12 @@ mod tests {
             "must not converge with max_iter=1 and tol=1e-15"
         );
         assert_eq!(result.iterations, 1, "exactly the cap was consumed");
-        assert_eq!(result.u.len(), 2, "u has the correct length");
+        assert_eq!(result.u().len(), 2, "u has the correct length");
         // At least one entry of u is non-zero (one CG step took effect).
         assert!(
-            result.u.iter().any(|&v| v != 0.0),
+            result.u().iter().any(|&v| v != 0.0),
             "u must be non-zero after one CG step: {:?}",
-            result.u
+            result.u()
         );
     }
 
@@ -1349,7 +1571,7 @@ mod tests {
 
         // Verify residual r = f − Ku using spmv_seq.
         let mut ku = vec![0.0_f64; n];
-        spmv_seq(&k, &result.u, &mut ku);
+        spmv_seq(&k, result.u(), &mut ku);
         let mut residual = vec![0.0_f64; n];
         for i in 0..n {
             residual[i] = f[i] - ku[i];
@@ -1495,14 +1717,14 @@ mod tests {
         );
 
         for i in 0..f.len() {
-            let tol = 1e-9 * det.u[i].abs().max(1.0);
-            let diff = (par4.u[i] - det.u[i]).abs();
+            let tol = 1e-9 * det.u()[i].abs().max(1.0);
+            let diff = (par4.u()[i] - det.u()[i]).abs();
             assert!(
                 diff < tol,
                 "Tolerance-equivalence failure at i={i}: \
                  u_par={}, u_det={}, |diff|={diff} ≥ tol={tol}",
-                par4.u[i],
-                det.u[i],
+                par4.u()[i],
+                det.u()[i],
             );
         }
 
@@ -1518,11 +1740,11 @@ mod tests {
         );
         for i in 0..f.len() {
             assert_eq!(
-                par4.u[i].to_bits(),
-                par4b.u[i].to_bits(),
+                par4.u()[i].to_bits(),
+                par4b.u()[i].to_bits(),
                 "parallel back-to-back u[{i}] not bit-stable: a={} b={}",
-                par4.u[i],
-                par4b.u[i],
+                par4.u()[i],
+                par4b.u()[i],
             );
         }
     }
@@ -1599,11 +1821,11 @@ mod tests {
             );
             for i in 0..16 {
                 assert_eq!(
-                    par.u[i].to_bits(),
-                    det.u[i].to_bits(),
+                    par.u()[i].to_bits(),
+                    det.u()[i].to_bits(),
                     "Parallel {{ threads: {t} }} u[{i}] = {} ≠ Deterministic u[{i}] = {}",
-                    par.u[i],
-                    det.u[i]
+                    par.u()[i],
+                    det.u()[i]
                 );
             }
         }
@@ -1837,7 +2059,7 @@ mod tests {
             result.converged,
             "zero-RHS short-circuit must report converged",
         );
-        assert_eq!(*result.u, vec![0.0_f64; 2], "u must be the zero vector");
+        assert_eq!(result.u(), &[0.0_f64, 0.0_f64], "u must be the zero vector");
     }
 
     // -----------------------------------------------------------------------
@@ -2288,5 +2510,104 @@ mod tests {
                 "residual at iter={iter} must be finite and non-negative, got {residual}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Accessor API tests (task-3366: encapsulate CgResult.u)
+    // -----------------------------------------------------------------------
+
+    /// `CgResult::u()` returns a slice identical to the solution.
+    ///
+    /// Uses the 3×3 identity-K fixture where u == f bit-exactly (same fixture
+    /// as `identity_k_converges_in_one_iter_deterministic`).
+    #[test]
+    fn cg_result_u_accessor_returns_solution_slice() {
+        let k = SparseRowMat::try_new_from_triplets(
+            3,
+            3,
+            &[
+                Triplet::new(0_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 1.0_f64),
+                Triplet::new(2_usize, 2_usize, 1.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0, 3.0];
+        let opts = CgSolverOptions {
+            tolerance: 1e-12,
+            max_iter: 100,
+        };
+        let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+
+        assert!(result.converged, "identity K must converge");
+        // u() must return a slice with the same length and bit-identical values.
+        assert_eq!(
+            result.u().len(),
+            f.len(),
+            "u() slice length must equal f.len()"
+        );
+        assert_eq!(
+            result.u(),
+            f.as_slice(),
+            "identity-K solution u() must equal f bit-exactly"
+        );
+    }
+
+    /// `CgResult::shared_u()` and `into_shared_u()` both hand back the SAME
+    /// underlying allocation without copying.
+    ///
+    /// Uses the 2×2 SPD fixture (K=[[4,1],[1,3]], f=[1,2]) — same matrix as
+    /// `hand_computed_2x2_spd_within_tolerance`.
+    ///
+    /// Assertions:
+    /// (a) Two `shared_u()` calls produce `Arc` handles that `ptr_eq` each other
+    ///     — they both point at the same allocation.
+    /// (b) `h1.as_slice() == result.u()` — the shared handle's data matches the
+    ///     read accessor.
+    /// (c) `into_shared_u()` (consuming) also returns the SAME underlying
+    ///     allocation as the earlier `shared_u()` handles (zero-copy donation).
+    #[test]
+    fn cg_result_donation_accessors_share_allocation_without_copy() {
+        use std::sync::Arc;
+        let k = SparseRowMat::try_new_from_triplets(
+            2,
+            2,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, 1.0_f64),
+                Triplet::new(1_usize, 0_usize, 1.0_f64),
+                Triplet::new(1_usize, 1_usize, 3.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = [1.0_f64, 2.0];
+        let opts = CgSolverOptions {
+            tolerance: 1e-10,
+            max_iter: 100,
+        };
+        let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+        assert!(result.converged, "2×2 SPD must converge");
+
+        // (a) Two shared_u() calls must return Arc handles to the SAME allocation.
+        let h1 = result.shared_u();
+        let h2 = result.shared_u();
+        assert!(
+            Arc::ptr_eq(&h1, &h2),
+            "shared_u() must return handles to the same Arc allocation"
+        );
+
+        // (b) Shared handle content matches the read accessor.
+        assert_eq!(
+            h1.as_slice(),
+            result.u(),
+            "shared_u() content must equal u() slice"
+        );
+
+        // (c) into_shared_u() (consuming) also hands back the SAME allocation.
+        let owned = result.into_shared_u();
+        assert!(
+            Arc::ptr_eq(&h1, &owned),
+            "into_shared_u() must return the same underlying Arc (zero-copy donation)"
+        );
     }
 }

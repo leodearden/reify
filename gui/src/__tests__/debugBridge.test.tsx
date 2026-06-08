@@ -1,0 +1,3421 @@
+/**
+ * Unit tests for the debug bridge handlers.
+ * Covers: store_state / viewport_state selectedEntities; set_test_mode.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, cleanup } from '@solidjs/testing-library';
+import { MenuBar } from '../panels/MenuBar';
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: vi.fn(),
+  // LogicalSize class whose instances carry { width, height } — used by set_window_size handler.
+  LogicalSize: class LogicalSize {
+    constructor(w: number, h: number) { (this as any).width = w; (this as any).height = h; }
+  },
+}));
+vi.mock('three', () => ({
+  Box3: class { expandByObject() {} isEmpty() { return true; } },
+  Vector3: class {},
+}));
+vi.mock('html-to-image', () => ({
+  toPng: vi.fn().mockResolvedValue('data:image/png;base64,STUB'),
+}));
+
+import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { toPng } from 'html-to-image';
+import { initDebugBridge } from '../debug/bridge';
+import { setTestMode } from '../debug/testMode';
+import type { DebugStores } from '../debug/types';
+import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
+
+type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
+
+// jsdom 25 does not implement document.elementFromPoint — the method is simply
+// absent from the document prototype. vi.spyOn requires the property to exist
+// before it can be overridden per test. Define a stub that returns null (matching
+// jsdom's layout-less behaviour) so that vi.spyOn/.mockReturnValue works and
+// vi.restoreAllMocks() reverts to this stub after each test.
+if (typeof document.elementFromPoint !== 'function') {
+  Object.defineProperty(document, 'elementFromPoint', {
+    configurable: true,
+    writable: true,
+    value: (): Element | null => null,
+  });
+}
+
+function makeStores(selectedEntities: string[] = [], anchorEntity: string | null = null): DebugStores {
+  return {
+    engine: {
+      state: {
+        meshes: {} as any,
+        values: {} as any,
+        constraints: {} as any,
+        evalStatus: { phase: 'idle' },
+        compileDiagnostics: [],
+        tessellationDiagnostics: [],
+      },
+      initFromState: vi.fn(),
+      setCompileDiagnostics: vi.fn(),
+      setTessellationDiagnostics: vi.fn(),
+    },
+    editor: {
+      state: {
+        openFiles: [],
+        activeFile: null,
+        dirtyFiles: [],
+        externallyChanged: [],
+        cursorPosition: null,
+      },
+      openFile: vi.fn(),
+      closeFile: vi.fn(),
+    },
+    selection: {
+      state: {
+        selectedEntity: selectedEntities[selectedEntities.length - 1] ?? null,
+        // Cast to any until step-36 adds the fields to the DebugStores type
+        ...(selectedEntities.length > 0 ? { selectedEntities } : { selectedEntities: [] }),
+        ...(anchorEntity !== null ? { anchorEntity } : { anchorEntity: null }),
+        hoveredEntity: null,
+        highlightedParams: [],
+      } as any,
+      selectEntity: vi.fn(),
+      hoverEntity: vi.fn(),
+      clearSelection: vi.fn(),
+      toggleSelect: vi.fn(),
+    },
+    claude: {
+      state: {
+        messages: [],
+        sessionStatus: 'idle',
+        currentMessageId: null,
+      },
+    },
+    viewState: makeViewStateStoreMock(),
+    layout: {
+      state: {
+        editorWidth: 300,
+        sideWidth: 300,
+        designTreeHeight: 160,
+        propertyHeight: 200,
+        constraintHeight: 140,
+      },
+      setEditorWidth: vi.fn(),
+      setSideWidth: vi.fn(),
+      setDesignTreeHeight: vi.fn(),
+      setPropertyHeight: vi.fn(),
+      setConstraintHeight: vi.fn(),
+    },
+  };
+}
+
+describe('debug bridge store_state includes selectedEntities', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('store_state includes selection.selectedEntities array', async () => {
+    const stores = makeStores(['A', 'B']);
+    await initDebugBridge(stores);
+
+    expect(capturedHandler).toBeDefined();
+
+    await capturedHandler!({ payload: { id: 1, command: 'store_state', params: {} } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+
+    // invoke('debug_response', { id, result: JSON.stringify(result) })
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result.selection.selectedEntities).toEqual(['A', 'B']);
+  });
+
+  it('store_state includes selection.selectedEntities as empty array when nothing selected', async () => {
+    const stores = makeStores([]);
+    await initDebugBridge(stores);
+
+    await capturedHandler!({ payload: { id: 2, command: 'store_state', params: {} } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result.selection.selectedEntities).toEqual([]);
+  });
+
+  it('store_state includes selection.anchorEntity', async () => {
+    const stores = makeStores(['A'], 'A');
+    await initDebugBridge(stores);
+
+    await capturedHandler!({ payload: { id: 3, command: 'store_state', params: {} } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result.selection.anchorEntity).toBe('A');
+  });
+
+  it('viewport_state includes selectedEntities via the stores reference', async () => {
+    const stores = makeStores(['X', 'Y']);
+    await initDebugBridge(stores);
+
+    // store_state reads selection.selectedEntities from stores (same reference used by viewport_state)
+    await capturedHandler!({ payload: { id: 4, command: 'store_state', params: {} } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result.selection.selectedEntities).toEqual(['X', 'Y']);
+  });
+});
+
+describe('debug bridge set_camera', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('returns {error: "viewport not ready"} when viewport is undefined', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    // No viewport installed — window.__REIFY_DEBUG__.viewport is undefined
+    await capturedHandler!({ payload: { id: 100, command: 'set_camera', params: { position: [1, 2, 3], target: [0, 0, 0] } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result).toEqual({ error: 'viewport not ready' });
+  });
+
+  // Helper to build a viewport stub with spy functions
+  function makeViewportStub() {
+    const cameraPositionSet = vi.fn();
+    const cameraUpSet = vi.fn();
+    const cameraLookAt = vi.fn();
+    const controlsTargetSet = vi.fn();
+    const rendererRender = vi.fn();
+    const camera = {
+      position: { set: cameraPositionSet, x: 0, y: 0, z: 0 },
+      up: { set: cameraUpSet, x: 0, y: 1, z: 0 },
+      zoom: 1,
+      lookAt: cameraLookAt,
+      updateProjectionMatrix: vi.fn(),
+      updateMatrixWorld: vi.fn(),
+    };
+    const controls = {
+      target: { set: controlsTargetSet, x: 0, y: 0, z: 0 },
+      update: vi.fn(),
+    };
+    const renderer = { render: rendererRender, domElement: { toDataURL: vi.fn() } };
+    const scene = {} as any;
+    return { camera, controls, renderer, scene, cameraPositionSet, cameraUpSet, cameraLookAt, controlsTargetSet, rendererRender };
+  }
+
+  async function dispatch(handler: DebugRequestHandler, id: number, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await handler({ payload: { id, command: 'set_camera', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('defaults applied.up from camera.up and applied.zoom from camera.zoom when caller omits them', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    // camera.up = {x:0, y:1, z:0}, camera.zoom = 1 (defaults from makeViewportStub)
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera as any,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: stub.controls as any,
+    };
+
+    const result = await dispatch(capturedHandler!, 350, {
+      position: [5, 5, 5],
+      target: [0, 0, 0],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.applied.position).toEqual([5, 5, 5]);
+    expect(result.applied.target).toEqual([0, 0, 0]);
+    // up must be the camera.up snapshot, not undefined
+    expect(result.applied.up).toEqual([0, 1, 0]);
+    // zoom must be camera.zoom, not undefined
+    expect(result.applied.zoom).toBe(1);
+    // camera.up.set must NOT be called (caller didn't provide up)
+    expect(stub.cameraUpSet).not.toHaveBeenCalled();
+    // camera.zoom must remain unchanged
+    expect(stub.camera.zoom).toBe(1);
+  });
+
+  it('happy path: applies full pose and returns {ok: true, applied: {...}}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera as any,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: stub.controls as any,
+    };
+
+    const result = await dispatch(capturedHandler!, 300, {
+      position: [10, 20, 30],
+      target: [1, 2, 3],
+      up: [0, 0, 1],
+      zoom: 2.5,
+    });
+
+    // Camera mutations
+    expect(stub.cameraPositionSet).toHaveBeenCalledWith(10, 20, 30);
+    expect(stub.controlsTargetSet).toHaveBeenCalledWith(1, 2, 3);
+    expect(stub.cameraUpSet).toHaveBeenCalledWith(0, 0, 1);
+    expect(stub.camera.zoom).toBe(2.5);
+    expect(stub.camera.updateMatrixWorld).toHaveBeenCalled();
+    expect(stub.camera.updateProjectionMatrix).toHaveBeenCalled();
+    expect(stub.controls.update).toHaveBeenCalled();
+    expect(stub.rendererRender).toHaveBeenCalledWith(stub.scene, stub.camera);
+    // Response
+    expect(result).toEqual({ ok: true, applied: { position: [10, 20, 30], target: [1, 2, 3], up: [0, 0, 1], zoom: 2.5 } });
+  });
+
+  it('succeeds gracefully when viewport.controls is undefined', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    // Install viewport WITHOUT controls
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera as any,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: undefined,
+    };
+
+    const result = await dispatch(capturedHandler!, 400, {
+      position: [1, 2, 3],
+      target: [0, 0, 0],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(stub.cameraPositionSet).toHaveBeenCalledWith(1, 2, 3);
+    // target honored via lookAt fallback — contract holds without OrbitControls
+    expect(stub.cameraLookAt).toHaveBeenCalledWith(0, 0, 0);
+    expect(stub.camera.updateMatrixWorld).toHaveBeenCalled();
+    expect(stub.rendererRender).toHaveBeenCalledWith(stub.scene, stub.camera);
+  });
+
+  describe('input validation', () => {
+    let stub: ReturnType<typeof makeViewportStub>;
+
+    beforeEach(async () => {
+      const stores = makeStores();
+      await initDebugBridge(stores);
+      stub = makeViewportStub();
+      window.__REIFY_DEBUG__!.viewport = {
+        scene: stub.scene,
+        camera: stub.camera as any,
+        renderer: stub.renderer as any,
+        getMeshes: vi.fn().mockReturnValue(new Map()),
+        getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+        fitToView: vi.fn(),
+        flyToEntity: vi.fn(),
+        controls: stub.controls as any,
+      };
+    });
+
+    it('rejects missing position', async () => {
+      const result = await dispatch(capturedHandler!, 200, { target: [0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects position that is not an array', async () => {
+      const result = await dispatch(capturedHandler!, 201, { position: 'bad', target: [0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects position with length != 3', async () => {
+      const result = await dispatch(capturedHandler!, 202, { position: [1, 2], target: [0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects position containing NaN', async () => {
+      const result = await dispatch(capturedHandler!, 203, { position: [1, NaN, 3], target: [0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects position containing Infinity', async () => {
+      const result = await dispatch(capturedHandler!, 204, { position: [1, 2, Infinity], target: [0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects missing target', async () => {
+      const result = await dispatch(capturedHandler!, 205, { position: [1, 2, 3] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects target not an array', async () => {
+      const result = await dispatch(capturedHandler!, 206, { position: [1, 2, 3], target: 42 });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects target with length != 3', async () => {
+      const result = await dispatch(capturedHandler!, 207, { position: [1, 2, 3], target: [0, 0, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects target containing NaN', async () => {
+      const result = await dispatch(capturedHandler!, 208, { position: [1, 2, 3], target: [NaN, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects target containing Infinity', async () => {
+      const result = await dispatch(capturedHandler!, 209, { position: [1, 2, 3], target: [0, -Infinity, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects up that is not an array when provided', async () => {
+      const result = await dispatch(capturedHandler!, 210, { position: [1, 2, 3], target: [0, 0, 0], up: 'bad' });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraUpSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects up with length != 3 when provided', async () => {
+      const result = await dispatch(capturedHandler!, 211, { position: [1, 2, 3], target: [0, 0, 0], up: [0, 1] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraUpSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects up containing NaN when provided', async () => {
+      const result = await dispatch(capturedHandler!, 212, { position: [1, 2, 3], target: [0, 0, 0], up: [0, NaN, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraUpSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects up containing Infinity when provided', async () => {
+      const result = await dispatch(capturedHandler!, 217, { position: [1, 2, 3], target: [0, 0, 0], up: [Infinity, 0, 0] });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraUpSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects zoom that is NaN when provided', async () => {
+      const result = await dispatch(capturedHandler!, 213, { position: [1, 2, 3], target: [0, 0, 0], zoom: NaN });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects zoom that is Infinity when provided', async () => {
+      const result = await dispatch(capturedHandler!, 214, { position: [1, 2, 3], target: [0, 0, 0], zoom: Infinity });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects zoom <= 0 when provided', async () => {
+      const result = await dispatch(capturedHandler!, 215, { position: [1, 2, 3], target: [0, 0, 0], zoom: -1 });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+
+    it('rejects zoom = 0 when provided', async () => {
+      const result = await dispatch(capturedHandler!, 216, { position: [1, 2, 3], target: [0, 0, 0], zoom: 0 });
+      expect(result).toHaveProperty('error');
+      expect(stub.cameraPositionSet).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('debug bridge open_file', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(handler: DebugRequestHandler, id: number, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await handler({ payload: { id, command: 'open_file', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('opens file in editor and returns { ok: true, path } when guiState is omitted', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    const result = await dispatch(capturedHandler!, 500, {
+      path: '/tmp/foo.ri',
+      content: 'def Foo() {}',
+    });
+
+    expect(result).toEqual({ ok: true, path: '/tmp/foo.ri' });
+    expect(stores.editor.openFile).toHaveBeenCalledWith({ path: '/tmp/foo.ri', content: 'def Foo() {}' });
+    expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+
+  it('initFromState is called when guiState is provided', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const rawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+    };
+
+    const result = await dispatch(capturedHandler!, 501, {
+      path: '/tmp/bar.ri',
+      content: 'def Bar() {}',
+      guiState: rawGuiState,
+    });
+
+    expect(result).toEqual({ ok: true, path: '/tmp/bar.ri' });
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+    // Verify the converted GuiState shape was passed (meshes converted to typed arrays)
+    const passed = vi.mocked(stores.engine.initFromState).mock.calls[0][0];
+    expect(passed.meshes).toEqual([]);
+    expect(passed.values).toEqual([]);
+    expect(passed.constraints).toEqual([]);
+  });
+
+  it('initFromState invocation triggers the onEngineReinitialized callback wired in App.tsx', async () => {
+    // This test verifies the bridge → engineStore wiring contract: when the
+    // bridge calls engine.initFromState, any onEngineReinitialized callback
+    // registered by App.tsx fires. Uses a real engineStore (no mock) to
+    // exercise the integration boundary the bug report identified.
+    const reinitSpy = vi.fn();
+    const { createEngineStore } = await import('../stores/engineStore');
+    const realEngine = createEngineStore({ onEngineReinitialized: reinitSpy });
+    const stores: DebugStores = {
+      ...makeStores(),
+      engine: realEngine,
+    };
+    await initDebugBridge(stores);
+
+    const rawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+    };
+
+    await dispatch(capturedHandler!, 502, {
+      path: '/tmp/baz.ri',
+      content: 'def Baz() {}',
+      guiState: rawGuiState,
+    });
+
+    expect(reinitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns { error } when path is missing', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = await dispatch(capturedHandler!, 503, { content: 'x' });
+    expect(result).toHaveProperty('error');
+    expect(stores.editor.openFile).not.toHaveBeenCalled();
+    expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+
+  it('returns { error } when content is missing', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = await dispatch(capturedHandler!, 504, { path: '/tmp/foo.ri' });
+    expect(result).toHaveProperty('error');
+    expect(stores.editor.openFile).not.toHaveBeenCalled();
+    expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // step-3 tests: resetToDefaultView reset contract (RED until step-4 wires it)
+  // -------------------------------------------------------------------------
+
+  it('resetToDefaultView is called exactly once when guiState is provided', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const rawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+    };
+
+    await dispatch(capturedHandler!, 510, {
+      path: '/tmp/reload.ri',
+      content: 'def Reload() {}',
+      guiState: rawGuiState,
+    });
+
+    expect(stores.viewState.resetToDefaultView).toHaveBeenCalledTimes(1);
+  });
+
+  it('resetToDefaultView is called AFTER initFromState (engine rebuilt first, then visibility baseline reset)', async () => {
+    const stores = makeStores();
+    const callOrder: string[] = [];
+    vi.mocked(stores.engine.initFromState).mockImplementation(() => { callOrder.push('initFromState'); });
+    vi.mocked(stores.viewState.resetToDefaultView).mockImplementation(() => { callOrder.push('resetToDefaultView'); });
+
+    await initDebugBridge(stores);
+
+    const rawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+    };
+
+    await dispatch(capturedHandler!, 511, {
+      path: '/tmp/reload.ri',
+      content: 'def Reload() {}',
+      guiState: rawGuiState,
+    });
+
+    expect(callOrder).toEqual(['initFromState', 'resetToDefaultView']);
+  });
+
+  it('resetToDefaultView is NOT called when guiState is omitted', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await dispatch(capturedHandler!, 512, {
+      path: '/tmp/open.ri',
+      content: 'def Open() {}',
+    });
+
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('resetToDefaultView is NOT called when path is missing (error path)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await dispatch(capturedHandler!, 513, { content: 'def X() {}' });
+
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('resetToDefaultView is NOT called when content is missing (error path)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await dispatch(capturedHandler!, 514, { path: '/tmp/x.ri' });
+
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+});
+
+describe('debug bridge set_test_mode', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    // Clean up DOM attribute and reset signal so tests don't leak
+    delete document.documentElement.dataset.testMode;
+    setTestMode(false);
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('set_test_mode { enabled: true } returns { ok: true, test_mode: true } and sets data-test-mode', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    await capturedHandler!({ payload: { id: 10, command: 'set_test_mode', params: { enabled: true } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result).toEqual({ ok: true, test_mode: true });
+    expect(document.documentElement.dataset.testMode).toBe('true');
+  });
+
+  it('set_test_mode { enabled: false } returns { ok: true, test_mode: false } and clears data-test-mode', async () => {
+    // First enable, then disable
+    document.documentElement.dataset.testMode = 'true';
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await capturedHandler!({ payload: { id: 11, command: 'set_test_mode', params: { enabled: false } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+
+    const payload = responseCall![1] as { id: number; result: string };
+    const result = JSON.parse(payload.result);
+    expect(result).toEqual({ ok: true, test_mode: false });
+    expect(document.documentElement.dataset.testMode).toBeUndefined();
+  });
+
+  it('testMode signal is exposed on window.__REIFY_DEBUG__ after initDebugBridge', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // testMode accessor must be a function on the context
+    expect(typeof window.__REIFY_DEBUG__?.testMode).toBe('function');
+
+    // Initially false
+    expect(window.__REIFY_DEBUG__!.testMode!()).toBe(false);
+
+    // After set_test_mode { enabled: true } request, accessor returns true
+    await capturedHandler!({ payload: { id: 20, command: 'set_test_mode', params: { enabled: true } } });
+    expect(window.__REIFY_DEBUG__!.testMode!()).toBe(true);
+  });
+
+  it('set_test_mode does not call renderer.render (no WebGL re-render contract)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Capture the render spy so we can assert it is never called
+    const rendererRender = vi.fn();
+
+    // Wire a stub viewport onto the context after init
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: {} as any,
+      camera: {} as any,
+      renderer: {
+        render: rendererRender,
+        domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,abc') },
+      } as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+    };
+
+    await capturedHandler!({ payload: { id: 12, command: 'set_test_mode', params: { enabled: true } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const result = JSON.parse((responseCall![1] as { id: number; result: string }).result);
+    // Minimal dispatch-succeeded guard (not re-asserting full payload shape owned by earlier test)
+    expect(result.ok).toBe(true);
+    // Regression lock-in: set_test_mode is CSS-only; it must never trigger a WebGL re-render
+    expect(rendererRender).not.toHaveBeenCalled();
+  });
+});
+
+describe('debug bridge screenshot_window', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  function makeViewportStub() {
+    const rendererRender = vi.fn();
+    const renderer = {
+      render: rendererRender,
+    };
+    const scene = {} as any;
+    const camera = {} as any;
+    return { renderer, scene, camera, rendererRender };
+  }
+
+  async function dispatchScreenshotWindow(handler: DebugRequestHandler, id: number) {
+    vi.mocked(invoke).mockClear();
+    await handler({ payload: { id, command: 'screenshot_window', params: {} } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  /** Init the bridge and install a viewport stub; returns the stub for call-order assertions. */
+  async function setupWithViewport() {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const stub = makeViewportStub();
+    window.__REIFY_DEBUG__!.viewport = {
+      scene: stub.scene,
+      camera: stub.camera,
+      renderer: stub.renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+    };
+    return stub;
+  }
+
+  it('returns { error: "viewport not ready" } when viewport is undefined', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    const result = await dispatchScreenshotWindow(capturedHandler!, 700);
+    expect(result).toEqual({ error: 'viewport not ready' });
+  });
+
+  it('happy path returns { data: <toPng dataUrl> }', async () => {
+    await setupWithViewport();
+
+    const result = await dispatchScreenshotWindow(capturedHandler!, 701);
+    expect(result).toEqual({ data: 'data:image/png;base64,STUB' });
+  });
+
+  it('calls renderer.render before html-to-image toPng', async () => {
+    const stub = await setupWithViewport();
+
+    await dispatchScreenshotWindow(capturedHandler!, 702);
+
+    expect(stub.rendererRender.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(toPng).mock.invocationCallOrder[0],
+    );
+  });
+
+  it('invokes toPng with (document.documentElement, { cacheBust: true })', async () => {
+    await setupWithViewport();
+
+    await dispatchScreenshotWindow(capturedHandler!, 703);
+
+    expect(vi.mocked(toPng).mock.calls[0][0]).toBe(document.documentElement);
+    expect(vi.mocked(toPng).mock.calls[0][1]).toEqual(expect.objectContaining({ cacheBust: true }));
+  });
+
+  it('returns { error, size, limit } when toPng output exceeds the 16 MB threshold', async () => {
+    await setupWithViewport();
+
+    // Produce a payload 23 bytes over the 16 MB threshold (16,777,239 chars total):
+    // 'data:image/png;base64,' prefix = 22 chars + 'A' * (16*1024*1024+1) = 16,777,217 chars
+    vi.mocked(toPng).mockResolvedValueOnce('data:image/png;base64,' + 'A'.repeat(16 * 1024 * 1024 + 1));
+
+    const result = await dispatchScreenshotWindow(capturedHandler!, 704);
+    expect(result).toEqual({
+      error: 'screenshot too large',
+      size: 16777239,
+      limit: 16 * 1024 * 1024,
+    });
+  });
+
+  it('returns { data } when toPng output is exactly at the 16 MB boundary (length === 16777216)', async () => {
+    await setupWithViewport();
+
+    // Exactly 16 MB — strict > means this must succeed
+    const exactBoundaryPayload = 'X'.repeat(16 * 1024 * 1024);
+    vi.mocked(toPng).mockResolvedValueOnce(exactBoundaryPayload);
+
+    const result = await dispatchScreenshotWindow(capturedHandler!, 705);
+    expect(result.data).toBe(exactBoundaryPayload);
+    expect(result.error).toBeUndefined();
+  });
+});
+
+describe('debug bridge editor_content', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchEditorContent(stores: DebugStores) {
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 600, command: 'editor_content', params: {} } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) when no file is active, activeFileOutOfSyncWithDisk is false', async () => {
+    const stores = makeStores();
+    // No active file, no open files
+    const result = await dispatchEditorContent(stores);
+    expect(result.activeFileOutOfSyncWithDisk).toBe(false);
+  });
+
+  it('(b) when active file is in externallyChanged, activeFileOutOfSyncWithDisk is true', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    stores.editor.state.externallyChanged = ['bracket.ri'];
+    const result = await dispatchEditorContent(stores);
+    expect(result.activeFileOutOfSyncWithDisk).toBe(true);
+  });
+
+  it('(b) when active file is NOT in externallyChanged, activeFileOutOfSyncWithDisk is false', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    stores.editor.state.externallyChanged = [];
+    const result = await dispatchEditorContent(stores);
+    expect(result.activeFileOutOfSyncWithDisk).toBe(false);
+  });
+
+  it('(c) each openFiles[] entry gains externallyChanged boolean', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [
+      { path: 'a.ri', content: 'a' },
+      { path: 'b.ri', content: 'b' },
+    ];
+    stores.editor.state.activeFile = 'a.ri';
+    stores.editor.state.externallyChanged = ['b.ri'];
+    const result = await dispatchEditorContent(stores);
+    const fileA = result.openFiles.find((f: any) => f.path === 'a.ri');
+    const fileB = result.openFiles.find((f: any) => f.path === 'b.ri');
+    expect(fileA.externallyChanged).toBe(false);
+    expect(fileB.externallyChanged).toBe(true);
+  });
+
+  it('(d) dirty and activeFileOutOfSyncWithDisk are independent — both true simultaneously', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    stores.editor.state.dirtyFiles = ['bracket.ri'];
+    stores.editor.state.externallyChanged = ['bracket.ri'];
+    const result = await dispatchEditorContent(stores);
+    // existing dirty field in openFiles[] should still be true
+    const file = result.openFiles.find((f: any) => f.path === 'bracket.ri');
+    expect(file.dirty).toBe(true);
+    expect(file.externallyChanged).toBe(true);
+    // top-level activeFileOutOfSyncWithDisk true as well
+    expect(result.activeFileOutOfSyncWithDisk).toBe(true);
+  });
+
+  it('(d) dirty true does not imply activeFileOutOfSyncWithDisk true', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'x' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    stores.editor.state.dirtyFiles = ['bracket.ri'];
+    stores.editor.state.externallyChanged = [];
+    const result = await dispatchEditorContent(stores);
+    const file = result.openFiles.find((f: any) => f.path === 'bracket.ri');
+    expect(file.dirty).toBe(true);
+    expect(file.externallyChanged).toBe(false);
+    expect(result.activeFileOutOfSyncWithDisk).toBe(false);
+  });
+});
+
+describe('debug bridge editor_content live buffer', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchEditorContentWithView(
+    stores: DebugStores,
+    editorView?: unknown,
+  ) {
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+    if (editorView !== undefined) {
+      window.__REIFY_DEBUG__!.editorView = editorView as any;
+    }
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 601, command: 'editor_content', params: {} } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('primary: editorView present → content is live doc, not stale store snapshot', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'PRE-EDIT' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    const liveView = { state: { doc: { toString: () => 'POST-EDIT live', length: 14 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, liveView);
+    expect(result.content).toBe('POST-EDIT live');
+  });
+
+  it('guard (i): no editorView → content falls back to store snapshot', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'PRE-EDIT' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    const result = await dispatchEditorContentWithView(stores);
+    expect(result.content).toBe('PRE-EDIT');
+  });
+
+  it('guard (ii): activeFile null with editorView present → content is null', async () => {
+    const stores = makeStores();
+    // activeFile stays null (default makeStores)
+    const liveView = { state: { doc: { toString: () => 'x', length: 1 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, liveView);
+    expect(result.content).toBeNull();
+  });
+
+  it('active openFiles[] length reflects live buffer, non-active entries stay store-derived', async () => {
+    const stores = makeStores();
+    stores.editor.state.openFiles = [
+      { path: 'bracket.ri', content: 'PRE-EDIT' },  // stale length 8
+      { path: 'other.ri',   content: 'OTHER' },      // store-derived length 5
+    ];
+    stores.editor.state.activeFile = 'bracket.ri';
+    // editorView has 'POST-EDIT live' (length 14, not 8)
+    const liveView = { state: { doc: { toString: () => 'POST-EDIT live', length: 14 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, liveView);
+    const activeEntry = result.openFiles.find((f: any) => f.path === 'bracket.ri');
+    const otherEntry  = result.openFiles.find((f: any) => f.path === 'other.ri');
+    // active entry must use live length
+    expect(activeEntry.length).toBe('POST-EDIT live'.length);  // 14, not 8
+    // non-active entry must stay store-derived
+    expect(otherEntry.length).toBe('OTHER'.length);            // 5
+  });
+
+  it('empty live buffer (\'\') is returned verbatim, not replaced by store snapshot', async () => {
+    // Guards against a regression where `??` is simplified to `||` or the
+    // liveContent !== undefined guard is changed to a truthiness check:
+    // an empty live doc ('') is a valid post-edit state and must NOT fall
+    // back to the stale store content.
+    const stores = makeStores();
+    stores.editor.state.openFiles = [{ path: 'bracket.ri', content: 'PRE-EDIT' }];
+    stores.editor.state.activeFile = 'bracket.ri';
+    const emptyView = { state: { doc: { toString: () => '', length: 0 } } } as any;
+    const result = await dispatchEditorContentWithView(stores, emptyView);
+    // content must be '' (live), not 'PRE-EDIT' (stale store)
+    expect(result.content).toBe('');
+    // active openFiles entry length must be 0 (live), not 8 (stale store)
+    const activeEntry = result.openFiles.find((f: any) => f.path === 'bracket.ri');
+    expect(activeEntry.length).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// debug bridge pickViewport selection (step-3 — RED)
+// Verifies that the five viewport-mediated handlers (viewport_state, screenshot,
+// screenshot_window, fit_to_view, set_camera) use the new pickViewport logic.
+// All tests fail because the current handlers read ctx.viewport directly with
+// no map-aware lookup.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('debug bridge pickViewport selection', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  /** Build a viewport stub whose getMeshes returns an empty Map. */
+  function makeEmptyStub() {
+    const fitToView = vi.fn();
+    const rendererRender = vi.fn();
+    const cameraPositionSet = vi.fn();
+    const camera = {
+      position: { set: cameraPositionSet, x: 1, y: 2, z: 3 },
+      up: { set: vi.fn(), x: 0, y: 1, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      fov: 75, near: 0.1, far: 1000,
+      zoom: 1,
+      lookAt: vi.fn(),
+      updateProjectionMatrix: vi.fn(),
+      updateMatrixWorld: vi.fn(),
+    };
+    const controls = {
+      target: { set: vi.fn(), x: 0, y: 0, z: 0 },
+      update: vi.fn(),
+    };
+    const renderer = {
+      render: rendererRender,
+      domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,EMPTY') },
+    };
+    return {
+      scene: {} as any,
+      camera: camera as any,
+      renderer: renderer as any,
+      getMeshes: vi.fn().mockReturnValue(new Map<string, unknown>()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView,
+      flyToEntity: vi.fn(),
+      controls: controls as any,
+      // expose spies for assertions
+      _rendererRender: rendererRender,
+      _fitToView: fitToView,
+      _cameraPositionSet: cameraPositionSet,
+    };
+  }
+
+  /** Build a viewport stub whose getMeshes returns a Map with one entry. */
+  function makePopulatedStub() {
+    const stub = makeEmptyStub();
+    // viewport_state iterates mesh geometry — provide a minimal mock that
+    // satisfies getAttribute/getIndex null checks in the handler.
+    const mockGeometry = {
+      getAttribute: vi.fn().mockReturnValue(null),
+      getIndex: vi.fn().mockReturnValue(null),
+    };
+    const mockMesh = { geometry: mockGeometry };
+    const meshMap = new Map<string, unknown>([['entity/box', mockMesh]]);
+    stub.getMeshes = vi.fn().mockReturnValue(meshMap);
+    return stub;
+  }
+
+  /** Dispatch any named command via the debug bridge and return parsed result. */
+  async function dispatchCmd(
+    id: number,
+    command: string,
+    params: Record<string, unknown>,
+  ) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  /**
+   * Generate the standard four pickViewport scenarios for a viewport-mediated tool.
+   * Scenarios (c) and (d) are identical across tools and handled generically here.
+   * Scenarios (a) and (b) accept assertion callbacks so per-tool spies can be checked.
+   * Adding coverage for a new tool is a single call site below (amend: suggestion-5).
+   */
+  type StubPopulated = ReturnType<typeof makePopulatedStub>;
+  type StubEmpty = ReturnType<typeof makeEmptyStub>;
+  function describePickViewportScenarios(
+    toolName: string,
+    baseParams: Record<string, unknown>,
+    idBase: number,
+    assertExplicit: (populated: StubPopulated, empty: StubEmpty, result: any) => void,
+    assertPopulatedFirst: (populated: StubPopulated, empty: StubEmpty, result: any) => void,
+  ) {
+    describe(toolName, () => {
+      it('(a) explicit viewportId targets that viewport', async () => {
+        const stores = makeStores();
+        await initDebugBridge(stores);
+        const populated = makePopulatedStub();
+        const empty = makeEmptyStub();
+        window.__REIFY_DEBUG__!.viewports = {
+          'def-preview': empty as any,
+          'design-main': populated as any,
+        };
+        const result = await dispatchCmd(idBase, toolName, { ...baseParams, viewportId: 'design-main' });
+        assertExplicit(populated, empty, result);
+      });
+
+      it('(b) no viewportId → picks first populated viewport', async () => {
+        const stores = makeStores();
+        await initDebugBridge(stores);
+        const empty = makeEmptyStub();
+        const populated = makePopulatedStub();
+        // def-preview (empty) registered first — populated should win
+        window.__REIFY_DEBUG__!.viewports = {
+          'def-preview': empty as any,
+          'design-main': populated as any,
+        };
+        const result = await dispatchCmd(idBase + 1, toolName, baseParams);
+        assertPopulatedFirst(populated, empty, result);
+      });
+
+      it('(c) unknown viewportId → returns error', async () => {
+        const stores = makeStores();
+        await initDebugBridge(stores);
+        window.__REIFY_DEBUG__!.viewports = { 'design-main': makePopulatedStub() as any };
+        const result = await dispatchCmd(idBase + 2, toolName, { ...baseParams, viewportId: 'nope' });
+        expect(result).toHaveProperty('error');
+      });
+
+      it('(d) no viewports and no legacy viewport → viewport not ready', async () => {
+        const stores = makeStores();
+        await initDebugBridge(stores);
+        const result = await dispatchCmd(idBase + 3, toolName, baseParams);
+        expect(result).toEqual({ error: 'viewport not ready' });
+      });
+    });
+  }
+
+  // Camera params reused by set_camera cases.
+  const camParams = { position: [1, 2, 3], target: [0, 0, 0], up: [0, 0, 1], zoom: 1.5 };
+
+  // ── viewport_state (ids 500–503) ────────────────────────────────────────────
+  describePickViewportScenarios('viewport_state', {}, 500,
+    (_p, _e, result) => { expect(result.meshCount).toBe(1); },
+    (_p, _e, result) => { expect(result.meshCount).toBe(1); },
+  );
+
+  // ── screenshot (ids 510–513) ────────────────────────────────────────────────
+  describePickViewportScenarios('screenshot', {}, 510,
+    (populated, empty) => {
+      expect(populated._rendererRender).toHaveBeenCalledWith(populated.scene, populated.camera);
+      expect(empty._rendererRender).not.toHaveBeenCalled();
+    },
+    (populated, empty) => {
+      expect(populated._rendererRender).toHaveBeenCalled();
+      expect(empty._rendererRender).not.toHaveBeenCalled();
+    },
+  );
+
+  // ── screenshot_window (ids 520–523) ─────────────────────────────────────────
+  describePickViewportScenarios('screenshot_window', {}, 520,
+    (populated, empty) => {
+      expect(populated._rendererRender).toHaveBeenCalledWith(populated.scene, populated.camera);
+      expect(empty._rendererRender).not.toHaveBeenCalled();
+    },
+    (populated, empty) => {
+      expect(populated._rendererRender).toHaveBeenCalled();
+      expect(empty._rendererRender).not.toHaveBeenCalled();
+    },
+  );
+
+  // ── fit_to_view (ids 530–533) ────────────────────────────────────────────────
+  describePickViewportScenarios('fit_to_view', {}, 530,
+    (populated, empty, result) => {
+      expect(result).toEqual({ ok: true });
+      expect(populated._fitToView).toHaveBeenCalledTimes(1);
+      expect(empty._fitToView).not.toHaveBeenCalled();
+    },
+    (populated, empty) => {
+      expect(populated._fitToView).toHaveBeenCalledTimes(1);
+      expect(empty._fitToView).not.toHaveBeenCalled();
+    },
+  );
+
+  // ── set_camera (ids 540–543) ─────────────────────────────────────────────────
+  describePickViewportScenarios('set_camera', camParams, 540,
+    (populated, empty, result) => {
+      expect(result.ok).toBe(true);
+      expect(populated._cameraPositionSet).toHaveBeenCalledWith(1, 2, 3);
+      expect(empty._cameraPositionSet).not.toHaveBeenCalled();
+    },
+    (populated, empty, result) => {
+      expect(result.ok).toBe(true);
+      expect(populated._cameraPositionSet).toHaveBeenCalledWith(1, 2, 3);
+      expect(empty._cameraPositionSet).not.toHaveBeenCalled();
+    },
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// debug bridge dual-viewport binding regression (step-7)
+//
+// Pins the exact bug scenario from the task description:
+//   - dual-viewport layout registers def-preview (empty) THEN design-main (populated)
+//   - viewport_state / screenshot / fit_to_view called with no viewportId param
+//   - should target design-main (populated), NOT def-preview (empty/zero)
+//
+// Registration order mirrors DualViewport.tsx: def-preview mounts first (JSX
+// order), design-main mounts second. Both inserted via window.__REIFY_DEBUG__.viewports.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('debug bridge dual-viewport binding regression', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  /** Empty stub: getMeshes returns a zero-size Map (def-preview has no geometry). */
+  function makeEmptyStub() {
+    return {
+      scene: {} as any,
+      camera: {
+        position: { set: vi.fn(), x: 0, y: 0, z: 5 },
+        up: { set: vi.fn(), x: 0, y: 1, z: 0 },
+        rotation: { x: 0, y: 0, z: 0 },
+        fov: 75, near: 0.1, far: 1000,
+        zoom: 1,
+        lookAt: vi.fn(),
+        updateProjectionMatrix: vi.fn(),
+        updateMatrixWorld: vi.fn(),
+      } as any,
+      renderer: {
+        render: vi.fn(),
+        domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,EMPTY_VP') },
+      } as any,
+      getMeshes: vi.fn().mockReturnValue(new Map<string, unknown>()),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: { target: { set: vi.fn(), x: 0, y: 0, z: 0 }, update: vi.fn() } as any,
+    };
+  }
+
+  /** Populated stub: getMeshes returns a Map with 7 entries (design-main has geometry). */
+  function makePopulatedStub() {
+    const fitToView = vi.fn();
+    const rendererRender = vi.fn();
+    const mockGeometry = {
+      getAttribute: vi.fn().mockReturnValue(null),
+      getIndex: vi.fn().mockReturnValue(null),
+    };
+    // 7 mesh entries mirroring the reported printer.ri state (1444 triangles / 7 meshes)
+    const meshMap = new Map<string, unknown>(
+      Array.from({ length: 7 }, (_, i) => [`entity/part-${i}`, { geometry: mockGeometry }]),
+    );
+    return {
+      scene: {} as any,
+      camera: {
+        position: { set: vi.fn(), x: 10, y: 10, z: 10 },
+        up: { set: vi.fn(), x: 0, y: 1, z: 0 },
+        rotation: { x: 0, y: 0, z: 0 },
+        fov: 75, near: 0.1, far: 1000,
+        zoom: 1,
+        lookAt: vi.fn(),
+        updateProjectionMatrix: vi.fn(),
+        updateMatrixWorld: vi.fn(),
+      } as any,
+      renderer: {
+        render: rendererRender,
+        domElement: { toDataURL: vi.fn().mockReturnValue('data:image/png;base64,POPULATED_VP') },
+      } as any,
+      getMeshes: vi.fn().mockReturnValue(meshMap),
+      getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+      fitToView,
+      flyToEntity: vi.fn(),
+      controls: { target: { set: vi.fn(), x: 0, y: 0, z: 0 }, update: vi.fn() } as any,
+      // expose spies for assertions
+      _fitToView: fitToView,
+      _rendererRender: rendererRender,
+    };
+  }
+
+  async function dispatchCmd(
+    id: number,
+    command: string,
+    params: Record<string, unknown>,
+  ) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('viewport_state with no viewportId returns meshCount from the populated design-main viewport, not 0 from def-preview', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const defPreview = makeEmptyStub();    // def-preview: 0 meshes
+    const designMain = makePopulatedStub(); // design-main: 7 meshes
+
+    // Registration order mirrors DualViewport.tsx: def-preview first, design-main second
+    window.__REIFY_DEBUG__!.viewports = {
+      'def-preview': defPreview as any,
+      'design-main': designMain as any,
+    };
+
+    const result = await dispatchCmd(600, 'viewport_state', {});
+    expect(result).not.toHaveProperty('error');
+    // Must report 7, NOT 0 — the bug returned 0 by reading def-preview
+    expect(result.meshCount).toBe(7);
+  });
+
+  it('screenshot with no viewportId calls renderer.render on the populated design-main viewport', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const defPreview = makeEmptyStub();
+    const designMain = makePopulatedStub();
+
+    window.__REIFY_DEBUG__!.viewports = {
+      'def-preview': defPreview as any,
+      'design-main': designMain as any,
+    };
+
+    await dispatchCmd(601, 'screenshot', {});
+    // design-main's render must have been called
+    expect(designMain._rendererRender).toHaveBeenCalled();
+    // def-preview's render must NOT have been called
+    expect(defPreview.renderer.render).not.toHaveBeenCalled();
+  });
+
+  it('fit_to_view with no viewportId invokes fitToView on the populated design-main viewport', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const defPreview = makeEmptyStub();
+    const designMain = makePopulatedStub();
+
+    window.__REIFY_DEBUG__!.viewports = {
+      'def-preview': defPreview as any,
+      'design-main': designMain as any,
+    };
+
+    await dispatchCmd(602, 'fit_to_view', {});
+    // design-main's fitToView must have been called
+    expect(designMain._fitToView).toHaveBeenCalledTimes(1);
+    // def-preview's fitToView must NOT have been called
+    expect(defPreview.fitToView).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge get_diagnostics (task-4297 step-1 RED → step-2 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge get_diagnostics', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(stores: ReturnType<typeof makeStores>, id: number, command: string, params: Record<string, unknown> = {}) {
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('returns shaped compile and tessellation diagnostics from stores', async () => {
+    const stores = makeStores();
+    stores.engine.state.compileDiagnostics = [
+      { file_path: 'broken.ri', line: 8, column: 5, end_line: 8, end_column: 6,
+        severity: 'Error', message: 'unexpected EOF', code: 'parse-error' },
+    ];
+    stores.engine.state.tessellationDiagnostics = [
+      { file_path: 'broken.ri', line: 12, column: 1, end_line: 12, end_column: 10,
+        severity: 'Warning', message: 'mesh degenerate', code: 'tess-warn' },
+    ];
+
+    const result = await dispatch(stores, 2000, 'get_diagnostics');
+
+    // compile array
+    expect(Array.isArray(result.compile)).toBe(true);
+    expect(result.compile).toHaveLength(1);
+    const c = result.compile[0];
+    expect(c.severity).toBe('Error');
+    expect(c.message).toBe('unexpected EOF');
+    expect(c.code).toBe('parse-error');
+    expect(c.file_path).toBe('broken.ri');
+    expect(c.range).toEqual({ line: 8, column: 5, end_line: 8, end_column: 6 });
+
+    // tessellation array
+    expect(Array.isArray(result.tessellation)).toBe(true);
+    expect(result.tessellation).toHaveLength(1);
+    const t = result.tessellation[0];
+    expect(t.severity).toBe('Warning');
+    expect(t.message).toBe('mesh degenerate');
+    expect(t.code).toBe('tess-warn');
+    expect(t.range).toEqual({ line: 12, column: 1, end_line: 12, end_column: 10 });
+
+    // counts
+    expect(result.compileCount).toBe(1);
+    expect(result.tessellationCount).toBe(1);
+  });
+
+  it('returns empty arrays and zero counts when diagnostics are absent', async () => {
+    const stores = makeStores();
+    // compileDiagnostics/tessellationDiagnostics seeded as [] by makeStores
+
+    const result = await dispatch(stores, 2001, 'get_diagnostics');
+
+    expect(result.compile).toEqual([]);
+    expect(result.tessellation).toEqual([]);
+    expect(result.compileCount).toBe(0);
+    expect(result.tessellationCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge ui_outline (task-4297 step-3 RED → step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge ui_outline', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Build a small semantic DOM for the test
+    const runBtn = document.createElement('button');
+    runBtn.setAttribute('data-testid', 'run-btn');
+    runBtn.textContent = 'Run';
+    document.body.appendChild(runBtn);
+
+    const stopBtn = document.createElement('button');
+    stopBtn.setAttribute('data-testid', 'stop-btn');
+    stopBtn.setAttribute('disabled', '');
+    stopBtn.textContent = 'Stop';
+    document.body.appendChild(stopBtn);
+
+    const designTree = document.createElement('div');
+    designTree.setAttribute('role', 'tree');
+    designTree.setAttribute('data-testid', 'design-tree');
+    designTree.textContent = 'Tree';
+    document.body.appendChild(designTree);
+
+    const hiddenBtn = document.createElement('button');
+    hiddenBtn.setAttribute('data-testid', 'hidden-btn');
+    hiddenBtn.style.display = 'none';
+    hiddenBtn.textContent = 'Hidden';
+    document.body.appendChild(hiddenBtn);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+  });
+
+  async function dispatchUiOutline(id: number) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command: 'ui_outline', params: {} } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('returns outline array with count === outline.length', async () => {
+    const result = await dispatchUiOutline(3000);
+    expect(Array.isArray(result.outline)).toBe(true);
+    expect(result.count).toBe(result.outline.length);
+    expect(typeof result.truncated).toBe('boolean');
+  });
+
+  it('every entry has required fields with correct types', async () => {
+    const result = await dispatchUiOutline(3001);
+    for (const entry of result.outline) {
+      expect(typeof entry.tagName).toBe('string');
+      expect(typeof entry.text).toBe('string');
+      expect(typeof entry.enabled).toBe('boolean');
+      // role may be string or null
+      expect(entry.role === null || typeof entry.role === 'string').toBe(true);
+      // testId may be string or null
+      expect(entry.testId === null || typeof entry.testId === 'string').toBe(true);
+    }
+  });
+
+  it('run-btn entry has enabled:true and testId:run-btn and text containing Run', async () => {
+    const result = await dispatchUiOutline(3002);
+    const runEntry = result.outline.find((e: any) => e.testId === 'run-btn');
+    expect(runEntry).toBeDefined();
+    expect(runEntry.enabled).toBe(true);
+    expect(runEntry.text).toMatch(/Run/);
+  });
+
+  it('stop-btn entry has enabled:false', async () => {
+    const result = await dispatchUiOutline(3003);
+    const stopEntry = result.outline.find((e: any) => e.testId === 'stop-btn');
+    expect(stopEntry).toBeDefined();
+    expect(stopEntry.enabled).toBe(false);
+  });
+
+  it('design-tree entry has role:tree', async () => {
+    const result = await dispatchUiOutline(3004);
+    const treeEntry = result.outline.find((e: any) => e.testId === 'design-tree');
+    expect(treeEntry).toBeDefined();
+    expect(treeEntry.role).toBe('tree');
+  });
+
+  it('hidden-btn (display:none) is excluded from outline', async () => {
+    const result = await dispatchUiOutline(3005);
+    const hiddenEntry = result.outline.find((e: any) => e.testId === 'hidden-btn');
+    expect(hiddenEntry).toBeUndefined();
+  });
+
+  it('button nested inside a display:none div is excluded from outline', async () => {
+    // Ancestor-hidden case: the button itself has no inline style, but its parent
+    // container has display:none — ui_outline must walk ancestors to detect this.
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'none';
+    const innerBtn = document.createElement('button');
+    innerBtn.setAttribute('data-testid', 'inner-hidden-btn');
+    innerBtn.textContent = 'Inner';
+    wrapper.appendChild(innerBtn);
+    document.body.appendChild(wrapper);
+
+    const result = await dispatchUiOutline(3006);
+    const innerEntry = result.outline.find((e: any) => e.testId === 'inner-hidden-btn');
+    expect(innerEntry).toBeUndefined();
+    // afterEach cleans up document.body.innerHTML
+  });
+
+  it('truncates at MAX=500: truncated===true, outline.length===500, count===total-visible', async () => {
+    // beforeEach adds 3 visible (run-btn, stop-btn, design-tree) + 1 hidden (hidden-btn).
+    // Adding 500 more visible buttons brings total visible to 503, which exceeds MAX=500.
+    for (let i = 0; i < 500; i++) {
+      const btn = document.createElement('button');
+      btn.setAttribute('data-testid', `extra-${i}`);
+      btn.textContent = `Extra ${i}`;
+      document.body.appendChild(btn);
+    }
+    const result = await dispatchUiOutline(3007);
+    expect(result.truncated).toBe(true);
+    expect(result.outline.length).toBe(500);
+    expect(result.count).toBe(503); // 3 from beforeEach + 500 extra
+    expect(result.count).toBeGreaterThan(result.outline.length);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Layout ctx exposure (task-4294)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge exposes layout on ctx', () => {
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('window.__REIFY_DEBUG__.stores.layout.state is defined and readable after initDebugBridge', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const ctx = window.__REIFY_DEBUG__;
+    expect(ctx).toBeDefined();
+    expect(ctx!.stores.layout.state).toBeDefined();
+    expect(typeof ctx!.stores.layout.state.editorWidth).toBe('number');
+    expect(typeof ctx!.stores.layout.state.sideWidth).toBe('number');
+    expect(typeof ctx!.stores.layout.state.designTreeHeight).toBe('number');
+    expect(typeof ctx!.stores.layout.state.propertyHeight).toBe('number');
+    expect(typeof ctx!.stores.layout.state.constraintHeight).toBe('number');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// step-3 through step-10: R1 DOM/style/layout/window inspection tools
+// ---------------------------------------------------------------------------
+
+describe('debug bridge R1 inspection tools', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+  });
+
+  // step-3 RED → step-4 GREEN: query_selector / query_selector_all
+  describe('query_selector / query_selector_all', () => {
+    it('query_selector: existing element by data-testid returns exists:true with tagName/testId/bounds/visible', async () => {
+      const el = document.createElement('div');
+      el.setAttribute('data-testid', 'probe-a');
+      document.body.appendChild(el);
+
+      const result = await dispatchCmd(700, 'query_selector', { selector: '[data-testid="probe-a"]' });
+      expect(result.exists).toBe(true);
+      expect(result.tagName).toBe('div');
+      expect(result.testId).toBe('probe-a');
+      expect(result.bounds).toBeDefined();
+      expect(typeof result.visible).toBe('boolean');
+    });
+
+    it('query_selector: no match returns {exists:false}', async () => {
+      const result = await dispatchCmd(701, 'query_selector', { selector: '.no-such-element' });
+      expect(result.exists).toBe(false);
+    });
+
+    it('query_selector: invalid selector returns {error}', async () => {
+      const result = await dispatchCmd(702, 'query_selector', { selector: ':::' });
+      expect(typeof result.error).toBe('string');
+      expect(result.exists).toBeUndefined();
+    });
+
+    it('query_selector: missing selector returns {error: "selector is required"}', async () => {
+      const result = await dispatchCmd(703, 'query_selector', {});
+      expect(result.error).toBe('selector is required');
+    });
+
+    it('query_selector_all: returns count/elements/truncated for matches', async () => {
+      const el1 = document.createElement('span');
+      el1.className = 'probe-class';
+      const el2 = document.createElement('span');
+      el2.className = 'probe-class';
+      document.body.appendChild(el1);
+      document.body.appendChild(el2);
+
+      const result = await dispatchCmd(704, 'query_selector_all', { selector: '.probe-class' });
+      expect(result.count).toBe(2);
+      expect(Array.isArray(result.elements)).toBe(true);
+      expect(result.elements).toHaveLength(2);
+      expect(typeof result.truncated).toBe('boolean');
+      expect(result.truncated).toBe(false);
+    });
+
+    it('query_selector_all: no matches returns count:0 elements:[] truncated:false', async () => {
+      const result = await dispatchCmd(705, 'query_selector_all', { selector: '.no-such-class' });
+      expect(result.count).toBe(0);
+      expect(result.elements).toEqual([]);
+      expect(result.truncated).toBe(false);
+    });
+
+    it('query_selector_all: invalid selector returns {error}', async () => {
+      const result = await dispatchCmd(706, 'query_selector_all', { selector: ':::' });
+      expect(typeof result.error).toBe('string');
+    });
+
+    it('query_selector_all: missing selector returns {error: "selector is required"}', async () => {
+      const result = await dispatchCmd(707, 'query_selector_all', {});
+      expect(result.error).toBe('selector is required');
+    });
+
+    it('query_selector_all: truncates at 200 and sets truncated:true for >200 matches', async () => {
+      for (let i = 0; i < 201; i++) {
+        const el = document.createElement('span');
+        el.className = 'truncation-test';
+        document.body.appendChild(el);
+      }
+      const result = await dispatchCmd(708, 'query_selector_all', { selector: '.truncation-test' });
+      expect(result.count).toBe(201);
+      expect(result.elements).toHaveLength(200);
+      expect(result.truncated).toBe(true);
+    });
+  });
+
+  // step-5 RED → step-6 GREEN: get_layout_metrics
+  describe('get_layout_metrics', () => {
+    it('returns exists:true with bounds/scroll/client/overflow for a matching element', async () => {
+      const el = document.createElement('div');
+      el.setAttribute('data-testid', 'scroller');
+      document.body.appendChild(el);
+
+      // jsdom does not lay out elements; stub scroll/client metrics
+      Object.defineProperty(el, 'scrollWidth', { configurable: true, value: 200 });
+      Object.defineProperty(el, 'clientWidth', { configurable: true, value: 100 });
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 50 });
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: 50 });
+      Object.defineProperty(el, 'scrollTop', { configurable: true, value: 0 });
+      Object.defineProperty(el, 'scrollLeft', { configurable: true, value: 0 });
+
+      const result = await dispatchCmd(800, 'get_layout_metrics', { selector: '[data-testid="scroller"]' });
+      expect(result.exists).toBe(true);
+      expect(result.bounds).toBeDefined();
+      expect(result.scroll).toBeDefined();
+      expect(typeof result.scroll.top).toBe('number');
+      expect(typeof result.scroll.left).toBe('number');
+      expect(typeof result.scroll.width).toBe('number');
+      expect(typeof result.scroll.height).toBe('number');
+      expect(result.client).toBeDefined();
+      expect(typeof result.client.width).toBe('number');
+      expect(typeof result.client.height).toBe('number');
+      expect(result.overflow).toBeDefined();
+      expect(typeof result.overflow.horizontal).toBe('boolean');
+      expect(typeof result.overflow.vertical).toBe('boolean');
+    });
+
+    it('overflow.horizontal is true when scrollWidth > clientWidth', async () => {
+      const el = document.createElement('div');
+      el.className = 'overflow-test';
+      document.body.appendChild(el);
+
+      Object.defineProperty(el, 'scrollWidth', { configurable: true, value: 300 });
+      Object.defineProperty(el, 'clientWidth', { configurable: true, value: 150 });
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 50 });
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: 50 });
+      Object.defineProperty(el, 'scrollTop', { configurable: true, value: 0 });
+      Object.defineProperty(el, 'scrollLeft', { configurable: true, value: 0 });
+
+      const result = await dispatchCmd(801, 'get_layout_metrics', { selector: '.overflow-test' });
+      expect(result.overflow.horizontal).toBe(true);
+      expect(result.overflow.vertical).toBe(false);
+    });
+
+    it('returns {exists:false} for no match', async () => {
+      const result = await dispatchCmd(802, 'get_layout_metrics', { selector: '.no-such-element' });
+      expect(result.exists).toBe(false);
+    });
+
+    it('returns {error} for missing selector', async () => {
+      const result = await dispatchCmd(803, 'get_layout_metrics', {});
+      expect(result.error).toBe('selector is required');
+    });
+  });
+
+  // step-7 RED → step-8 GREEN: get_computed_style
+  describe('get_computed_style', () => {
+    it('returns exists:true with style object containing curated keys', async () => {
+      const el = document.createElement('div');
+      el.setAttribute('data-testid', 'styled');
+      el.style.display = 'none';
+      document.body.appendChild(el);
+
+      const result = await dispatchCmd(900, 'get_computed_style', { selector: '[data-testid="styled"]' });
+      expect(result.exists).toBe(true);
+      expect(result.style).toBeDefined();
+      const curatedKeys = ['display', 'visibility', 'opacity', 'color', 'backgroundColor',
+        'fontSize', 'fontFamily', 'fontWeight', 'overflow', 'position', 'width', 'height'];
+      for (const key of curatedKeys) {
+        expect(Object.keys(result.style)).toContain(key);
+      }
+      expect(result.style.display).toBe('none');
+    });
+
+    it('with properties:["display"] returns style with only display key', async () => {
+      const el = document.createElement('div');
+      el.className = 'style-target';
+      document.body.appendChild(el);
+
+      const result = await dispatchCmd(901, 'get_computed_style', {
+        selector: '.style-target',
+        properties: ['display'],
+      });
+      expect(result.exists).toBe(true);
+      expect(result.style).toBeDefined();
+      expect(Object.keys(result.style)).toContain('display');
+      expect(Object.keys(result.style)).toHaveLength(1);
+    });
+
+    it('returns {exists:false} for no match', async () => {
+      const result = await dispatchCmd(902, 'get_computed_style', { selector: '.no-such-element' });
+      expect(result.exists).toBe(false);
+    });
+
+    it('returns {error} for missing selector', async () => {
+      const result = await dispatchCmd(903, 'get_computed_style', {});
+      expect(result.error).toBe('selector is required');
+    });
+  });
+
+  // step-9 RED → step-10 GREEN: active_element / get_window_state
+  describe('active_element / get_window_state', () => {
+    it('active_element: returns tagName/testId/role of document.activeElement after focus()', async () => {
+      const input = document.createElement('input');
+      input.setAttribute('data-testid', 'my-input');
+      input.setAttribute('role', 'textbox');
+      document.body.appendChild(input);
+      input.focus();
+
+      const result = await dispatchCmd(1000, 'active_element', {});
+      expect(result.tagName).toBe('input');
+      expect(result.testId).toBe('my-input');
+      expect(result.role).toBe('textbox');
+    });
+
+    it('active_element: returns tagName:body testId:null role:null when nothing focused', async () => {
+      (document.body as HTMLElement).focus();
+
+      const result = await dispatchCmd(1001, 'active_element', {});
+      expect(result.tagName).toBe('body');
+      expect(result.testId).toBeNull();
+      expect(result.role).toBeNull();
+    });
+
+    it('get_window_state: returns numeric size/pos fields and boolean focused', async () => {
+      // Stub window.devicePixelRatio since jsdom does not set it
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
+
+      const result = await dispatchCmd(1002, 'get_window_state', {});
+      expect(typeof result.innerWidth).toBe('number');
+      expect(typeof result.innerHeight).toBe('number');
+      expect(typeof result.screenX).toBe('number');
+      expect(typeof result.screenY).toBe('number');
+      expect(result.devicePixelRatio).toBe(2);
+      expect(typeof result.focused).toBe('boolean');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge open_menu (step-1 RED → step-2 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge open_menu', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(async () => {
+    cleanup();
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) open_menu({name:"file"}) returns {ok:true, open:"file"} and openMenu()==="file"', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    const result = await dispatchCmd(3000, 'open_menu', { name: 'file' });
+    expect(result.ok).toBe(true);
+    expect(result.open).toBe('file');
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
+  });
+
+  it('(b) calling open_menu({name:"file"}) again is idempotent — menu stays open, not toggled', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(3001, 'open_menu', { name: 'file' });
+    const result2 = await dispatchCmd(3002, 'open_menu', { name: 'file' });
+    expect(result2.ok).toBe(true);
+    expect(result2.open).toBe('file');
+    // Must still be open — not toggled closed
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
+  });
+
+  it('(c) with file open, open_menu({name:"view"}) switches to view', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(3003, 'open_menu', { name: 'file' });
+    const result = await dispatchCmd(3004, 'open_menu', { name: 'view' });
+    expect(result.ok).toBe(true);
+    expect(result.open).toBe('view');
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('view');
+  });
+
+  it('(d) open_menu({name:"nope"}) returns {error} and does not change open state', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(3005, 'open_menu', { name: 'file' });
+    const result = await dispatchCmd(3006, 'open_menu', { name: 'nope' });
+    expect(result).toHaveProperty('error');
+    // State unchanged — still 'file'
+    expect(window.__REIFY_DEBUG__!.menuBar!.openMenu()).toBe('file');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge menu_state (step-3 RED → step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge menu_state', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(async () => {
+    cleanup();
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) with no menu open, menu_state returns {open:null, items:[]}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    const result = await dispatchCmd(4000, 'menu_state', {});
+    expect(result.open).toBeNull();
+    expect(result.items).toEqual([]);
+  });
+
+  it('(b) after opening file menu, menu_state returns open:"file" and items for new/open/save/export', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(4001, 'open_menu', { name: 'file' });
+    const result = await dispatchCmd(4002, 'menu_state', {});
+
+    expect(result.open).toBe('file');
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items.length).toBeGreaterThan(0);
+
+    // File menu has new/open/save/export
+    const testIds = result.items.map((i: any) => i.testId);
+    expect(testIds).toContain('menu-item-new');
+    expect(testIds).toContain('menu-item-open');
+    expect(testIds).toContain('menu-item-save');
+    expect(testIds).toContain('menu-item-export');
+
+    // Each item has label and enabled fields
+    const openItem = result.items.find((i: any) => i.testId === 'menu-item-open');
+    expect(openItem).toBeDefined();
+    expect(typeof openItem.label).toBe('string');
+    expect(openItem.label.length).toBeGreaterThan(0);
+    expect(typeof openItem.enabled).toBe('boolean');
+    expect(openItem.enabled).toBe(true);
+  });
+
+  it('(c) edit menu items undo/redo report enabled:false (registry-disabled)', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    await dispatchCmd(4003, 'open_menu', { name: 'edit' });
+    const result = await dispatchCmd(4004, 'menu_state', {});
+
+    expect(result.open).toBe('edit');
+    const undoItem = result.items.find((i: any) => i.testId === 'menu-item-undo');
+    const redoItem = result.items.find((i: any) => i.testId === 'menu-item-redo');
+    expect(undoItem).toBeDefined();
+    expect(redoItem).toBeDefined();
+    expect(undoItem.enabled).toBe(false);
+    expect(redoItem.enabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge press_tab (step-5 RED → step-6 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge press_tab', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = '';
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) from body (no focus), press_tab focuses first tabbable and returns its descriptor', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+    document.body.focus();
+
+    const result = await dispatchCmd(5000, 'press_tab', {});
+    expect(result.active_element).toBeDefined();
+    expect(result.active_element.testId).toBe('a');
+    expect(result.active_element.tagName).toBe('button');
+    expect(document.activeElement?.getAttribute('data-testid')).toBe('a');
+  });
+
+  it('(b) pressing tab again advances to next tabbable', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+    document.body.focus();
+
+    await dispatchCmd(5001, 'press_tab', {});
+    const result = await dispatchCmd(5002, 'press_tab', {});
+    expect(result.active_element.testId).toBe('b');
+  });
+
+  it('(c) from last tabbable, press_tab wraps to first', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+
+    // Focus the last element manually
+    (document.querySelector('[data-testid="c"]') as HTMLElement).focus();
+
+    const result = await dispatchCmd(5003, 'press_tab', {});
+    expect(result.active_element.testId).toBe('a');
+  });
+
+  it('(d) with no tabbable elements, press_tab returns {active_element:null}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Empty body has no focusable elements
+    document.body.innerHTML = '<div>no buttons</div>';
+
+    const result = await dispatchCmd(5004, 'press_tab', {});
+    expect(result.active_element).toBeNull();
+  });
+
+  it('(e) disabled buttons and tabindex="-1" elements are skipped', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="skip-disabled" disabled>Disabled</button>
+      <button data-testid="skip-neg-tabindex" tabindex="-1">Neg</button>
+      <button data-testid="valid">Valid</button>
+    `;
+    document.body.focus();
+
+    const result = await dispatchCmd(5005, 'press_tab', {});
+    expect(result.active_element.testId).toBe('valid');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge tab_order (step-7 RED → step-8 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge tab_order', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = '';
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) returns order array matching document order for a/b/c buttons', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="b">B</button>
+      <button data-testid="c">C</button>
+    `;
+
+    const result = await dispatchCmd(6000, 'tab_order', {});
+    expect(result.order).toEqual([
+      { testId: 'a', tagName: 'button' },
+      { testId: 'b', tagName: 'button' },
+      { testId: 'c', tagName: 'button' },
+    ]);
+  });
+
+  it('(b) disabled and tabindex="-1" elements excluded from order', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = `
+      <button data-testid="a">A</button>
+      <button data-testid="skip-disabled" disabled>Skip</button>
+      <button data-testid="skip-neg" tabindex="-1">NegIdx</button>
+      <button data-testid="b">B</button>
+    `;
+
+    const result = await dispatchCmd(6001, 'tab_order', {});
+    const testIds = result.order.map((e: any) => e.testId);
+    expect(testIds).toContain('a');
+    expect(testIds).toContain('b');
+    expect(testIds).not.toContain('skip-disabled');
+    expect(testIds).not.toContain('skip-neg');
+  });
+
+  it('(c) empty body returns {order:[]}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    document.body.innerHTML = '<div>no buttons</div>';
+    const result = await dispatchCmd(6002, 'tab_order', {});
+    expect(result.order).toEqual([]);
+  });
+
+  it('(d) rendered MenuBar yields chrome order starting with menu-trigger-file/edit/view/help', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    render(() => <MenuBar />);
+
+    const result = await dispatchCmd(6003, 'tab_order', {});
+    const testIds = result.order.map((e: any) => e.testId);
+    const chromeOrder = ['menu-trigger-file', 'menu-trigger-edit', 'menu-trigger-view', 'menu-trigger-help'];
+    // The four menu triggers must appear in MENU_DEFS order
+    const indices = chromeOrder.map((id) => testIds.indexOf(id));
+    expect(indices.every((i) => i !== -1)).toBe(true);
+    for (let i = 1; i < indices.length; i++) {
+      expect(indices[i]).toBeGreaterThan(indices[i - 1]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge resize_panes (step-1 RED → step-2 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge resize_panes', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(stores: ReturnType<typeof makeStores>, id: number, params: Record<string, unknown>) {
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command: 'resize_panes', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) single dimension: editorWidth calls setEditorWidth with value and returns { ok:true }', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7000, { editorWidth: 450 });
+    expect(result.ok).toBe(true);
+    expect(stores.layout.setEditorWidth).toHaveBeenCalledWith(450);
+    expect(stores.layout.setSideWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setDesignTreeHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+  });
+
+  it('(b) multi-dimension call invokes exactly those setters', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7001, { sideWidth: 380, designTreeHeight: 220 });
+    expect(result.ok).toBe(true);
+    expect(stores.layout.setSideWidth).toHaveBeenCalledWith(380);
+    expect(stores.layout.setDesignTreeHeight).toHaveBeenCalledWith(220);
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+  });
+
+  it('(c) non-number value for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7002, { editorWidth: 'bad' });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(c) negative value for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7003, { editorWidth: -1 });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(c) NaN for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7004, { editorWidth: NaN });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(c) Infinity for a dimension returns error and calls no setter', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7005, { editorWidth: Infinity });
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+  });
+
+  it('(d) empty params {} returns an error', async () => {
+    const stores = makeStores();
+    const result = await dispatch(stores, 7006, {});
+    expect(result).toHaveProperty('error');
+    expect(stores.layout.setEditorWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setSideWidth).not.toHaveBeenCalled();
+    expect(stores.layout.setDesignTreeHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setPropertyHeight).not.toHaveBeenCalled();
+    expect(stores.layout.setConstraintHeight).not.toHaveBeenCalled();
+  });
+
+  it('(e) returned layout snapshot has all 5 pane dimension keys with current store values', async () => {
+    // Regression: resize_panes returns { ok, layout: {...ctx.stores.layout.state} }.
+    // This test locks in the returned layout snapshot contract so a regression that
+    // removes or reshapes the field is caught. The setter is mocked (vi.fn()) so the
+    // state does not change; the snapshot reflects the initial makeStores() values.
+    const stores = makeStores();
+    const result = await dispatch(stores, 7007, { editorWidth: 450 });
+    expect(result.ok).toBe(true);
+    // layout snapshot must exist and carry all 5 dimension keys.
+    expect(result.layout).toBeDefined();
+    expect(result.layout).toHaveProperty('editorWidth');
+    expect(result.layout).toHaveProperty('sideWidth');
+    expect(result.layout).toHaveProperty('designTreeHeight');
+    expect(result.layout).toHaveProperty('propertyHeight');
+    expect(result.layout).toHaveProperty('constraintHeight');
+    // Values reflect the initial makeStores() state (setter is mocked, state unchanged).
+    expect(result.layout).toEqual({
+      editorWidth: 300,
+      sideWidth: 300,
+      designTreeHeight: 160,
+      propertyHeight: 200,
+      constraintHeight: 140,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge set_window_size (step-3 RED → step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge set_window_size', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let setSizeSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    setSizeSpy = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(getCurrentWindow).mockReturnValue({ setSize: setSizeSpy } as any);
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(id: number, params: Record<string, unknown>) {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command: 'set_window_size', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  it('(a) valid dimensions call setSize once and return { ok:true, width, height }', async () => {
+    const result = await dispatch(8000, { width: 1024, height: 768 });
+    expect(result).toEqual({ ok: true, width: 1024, height: 768 });
+    expect(setSizeSpy).toHaveBeenCalledTimes(1);
+    expect(setSizeSpy.mock.calls[0][0]).toMatchObject({ width: 1024, height: 768 });
+  });
+
+  it('(b) non-number width returns error, setSize not called', async () => {
+    const result = await dispatch(8001, { width: 'bad', height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) width === 0 returns error', async () => {
+    const result = await dispatch(8002, { width: 0, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) negative width returns error', async () => {
+    const result = await dispatch(8003, { width: -100, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) NaN width returns error', async () => {
+    const result = await dispatch(8004, { width: NaN, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) Infinity width returns error', async () => {
+    const result = await dispatch(8005, { width: Infinity, height: 768 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) non-number height returns error', async () => {
+    const result = await dispatch(8006, { width: 1024, height: 'bad' });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) height === 0 returns error', async () => {
+    const result = await dispatch(8007, { width: 1024, height: 0 });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) NaN height returns error', async () => {
+    const result = await dispatch(8008, { width: 1024, height: NaN });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('(b) Infinity height returns error', async () => {
+    const result = await dispatch(8009, { width: 1024, height: Infinity });
+    expect(result).toHaveProperty('error');
+    expect(setSizeSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge tree-node expand/collapse (step-5 RED → step-6 GREEN)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge tree-node expand/collapse', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+  });
+
+  async function dispatch(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  /** Inject a chevron button that toggles the design-panel expandedSet on click. */
+  function setupDesignPanel(path: string, initialExpanded = false) {
+    const expandedSet = new Set<string>();
+    if (initialExpanded) expandedSet.add(path);
+    const btn = document.createElement('button');
+    btn.setAttribute('data-testid', `chevron-${path}`);
+    btn.addEventListener('click', () => {
+      if (expandedSet.has(path)) expandedSet.delete(path);
+      else expandedSet.add(path);
+    });
+    document.body.appendChild(btn);
+    window.__REIFY_DEBUG__!.designTree = { expanded: () => expandedSet };
+    return { expandedSet, btn };
+  }
+
+  /** Inject a constraint-row button that toggles the constraint-panel expandedSet on click. */
+  function setupConstraintPanel(path: string, initialExpanded = false) {
+    const expandedSet = new Set<string>();
+    if (initialExpanded) expandedSet.add(path);
+    const btn = document.createElement('button');
+    btn.setAttribute('data-testid', `constraint-row-${path}`);
+    btn.addEventListener('click', () => {
+      if (expandedSet.has(path)) expandedSet.delete(path);
+      else expandedSet.add(path);
+    });
+    document.body.appendChild(btn);
+    window.__REIFY_DEBUG__!.constraintPanel = { expandedNodes: () => expandedSet };
+    return { expandedSet, btn };
+  }
+
+  it('(a) expand_tree_node: node NOT expanded → clicks chevron once, returns { ok:true, path, expanded:true }', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', false);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9000, 'expand_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.path).toBe('Bracket.body');
+    expect(result.expanded).toBe(true);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) expand_tree_node idempotent: node already expanded → NO click, returns expanded:true', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', true);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9001, 'expand_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(true);
+    expect(clickSpy).not.toHaveBeenCalled();
+  });
+
+  it('(c) collapse_tree_node: node expanded → clicks once, returns expanded:false', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', true);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9002, 'collapse_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(false);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('(d) collapse_tree_node idempotent: not expanded → NO click, returns expanded:false', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupDesignPanel('Bracket.body', false);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9003, 'collapse_tree_node', { path: 'Bracket.body' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(false);
+    expect(clickSpy).not.toHaveBeenCalled();
+  });
+
+  it('(e) expand_tree_node: missing path returns { error }', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    setupDesignPanel('Bracket.body', false);
+
+    const result = await dispatch(9004, 'expand_tree_node', {});
+    expect(result).toHaveProperty('error');
+  });
+
+  it('(f) expand_tree_node: control element absent returns { error } with path in message', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    // Register accessor but do NOT inject a button
+    const expandedSet = new Set<string>();
+    window.__REIFY_DEBUG__!.designTree = { expanded: () => expandedSet };
+
+    const result = await dispatch(9005, 'expand_tree_node', { path: 'Missing.node' });
+    expect(result).toHaveProperty('error');
+    expect(result.error).toContain('Missing.node');
+  });
+
+  it('(g) panel:constraint drives constraint-row testid and reads constraintPanel.expandedNodes', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const { btn } = setupConstraintPanel('constraint-1', false);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    const result = await dispatch(9006, 'expand_tree_node', { path: 'constraint-1', panel: 'constraint' });
+    expect(result.ok).toBe(true);
+    expect(result.expanded).toBe(true);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('(h) designTree panel not registered returns { error }', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    // designTree not registered on ctx (default state after initDebugBridge)
+
+    const result = await dispatch(9007, 'expand_tree_node', { path: 'Bracket.body' });
+    expect(result).toHaveProperty('error');
+  });
+
+  it('(i) invalid panel value returns { error } mentioning the unknown panel name', async () => {
+    // Locks in the panel validation branch: unknown panel values (anything other than
+    // 'design' or 'constraint') return an error that names the bad value.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    setupDesignPanel('Bracket.body', false);
+
+    const result = await dispatch(9008, 'expand_tree_node', { path: 'Bracket.body', panel: 'foo' });
+    expect(result).toHaveProperty('error');
+    expect(result.error).toContain('foo');
+    expect(result.error).toContain('design');
+    expect(result.error).toContain('constraint');
+  });
+});
+
+// ─── F2 LSP probe handlers (steps 7-14) ─────────────────────────────────────
+
+describe('debug bridge hover_at', () => {
+  // F2 step-7 RED → step-8 GREEN: hover_at handler returns structured hover result.
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('returns { markdown, markdownLength, range } and calls lsp_request with correct method/uri/position', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    // Configure invoke: lsp_request → hover JSON; debug_response → undefined
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify({
+          contents: { kind: 'markdown', value: '**size**: Scalar' },
+          range: { start: { line: 9, character: 15 }, end: { line: 9, character: 19 } },
+        });
+      }
+      return undefined;
+    });
+    vi.mocked(invoke).mockClear();
+
+    await capturedHandler!({ payload: { id: 1001, command: 'hover_at', params: { line: 9, col: 19 } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const result = JSON.parse((responseCall![1] as { result: string }).result);
+
+    // Structured hover result
+    expect(result.markdown).toBe('**size**: Scalar');
+    expect(result.markdownLength).toBeGreaterThanOrEqual(1);
+    expect(result.range).toBeDefined();
+
+    // lsp_request called with correct method / uri / position
+    const lspCall = calls.find((c) => c[0] === 'lsp_request');
+    expect(lspCall).toBeDefined();
+    expect((lspCall![1] as { method: string }).method).toBe('textDocument/hover');
+    const lspParams = JSON.parse((lspCall![1] as { params: string }).params);
+    expect(lspParams.textDocument.uri).toBe('file:///tmp/cube.ri');
+    expect(lspParams.position).toEqual({ line: 9, character: 19 });
+  });
+
+  it('returns null-hover shape when lsp_request returns null (no hover at position)', async () => {
+    // Covers the hover_at null branch: { markdown:'', markdownLength:0, contents:null, range:null }
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') return JSON.stringify(null);
+      return undefined;
+    });
+    vi.mocked(invoke).mockClear();
+
+    await capturedHandler!({ payload: { id: 1002, command: 'hover_at', params: { line: 0, col: 0 } } });
+
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const result = JSON.parse((responseCall![1] as { result: string }).result);
+
+    expect(result.markdown).toBe('');
+    expect(result.markdownLength).toBe(0);
+    expect(result.contents).toBeNull();
+    expect(result.range).toBeNull();
+  });
+});
+
+// ─── F2 definition_at handler (step-11 RED → step-12 GREEN) ─────────────────
+
+describe('debug bridge definition_at', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchDefinition(stores: ReturnType<typeof makeStores>, params: Record<string, unknown>) {
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 3001, command: 'definition_at', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    return {
+      result: JSON.parse((responseCall![1] as { result: string }).result),
+      calls,
+    };
+  }
+
+  it('returns { found:true, uri, range } and calls lsp_request with correct method/uri/position', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify({
+          uri: 'file:///tmp/cube.ri',
+          range: { start: { line: 7, character: 10 }, end: { line: 7, character: 14 } },
+        });
+      }
+      return undefined;
+    });
+
+    const { result, calls } = await dispatchDefinition(stores, { line: 9, col: 19 });
+
+    expect(result.found).toBe(true);
+    expect(result.uri).toBe('file:///tmp/cube.ri');
+    expect(result.range.start.line).toBe(7);
+
+    const lspCall = calls.find((c) => c[0] === 'lsp_request');
+    expect(lspCall).toBeDefined();
+    expect((lspCall![1] as { method: string }).method).toBe('textDocument/definition');
+    const lspParams = JSON.parse((lspCall![1] as { params: string }).params);
+    expect(lspParams.textDocument.uri).toBe('file:///tmp/cube.ri');
+    expect(lspParams.position).toEqual({ line: 9, character: 19 });
+  });
+
+  it('returns { found:false, uri:null, range:null } when LSP returns null', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') return JSON.stringify(null);
+      return undefined;
+    });
+
+    const { result } = await dispatchDefinition(stores, { line: 0, col: 0 });
+
+    expect(result.found).toBe(false);
+    expect(result.uri).toBeNull();
+    expect(result.range).toBeNull();
+  });
+});
+
+// ─── F2 completion_at handler (step-9 RED → step-10 GREEN) ──────────────────
+
+describe('debug bridge completion_at', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCompletion(stores: ReturnType<typeof makeStores>, params: Record<string, unknown>) {
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 2001, command: 'completion_at', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    return {
+      result: JSON.parse((responseCall![1] as { result: string }).result),
+      calls,
+    };
+  }
+
+  it('bare array response: returns { items, itemCount } and calls lsp_request with correct method/uri/position', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify([{ label: 'box' }, { label: 'size' }]);
+      }
+      return undefined;
+    });
+
+    const { result, calls } = await dispatchCompletion(stores, { line: 9, col: 21 });
+
+    expect(result.itemCount).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('box');
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('size');
+
+    const lspCall = calls.find((c) => c[0] === 'lsp_request');
+    expect(lspCall).toBeDefined();
+    expect((lspCall![1] as { method: string }).method).toBe('textDocument/completion');
+    const lspParams = JSON.parse((lspCall![1] as { params: string }).params);
+    expect(lspParams.textDocument.uri).toBe('file:///tmp/cube.ri');
+    expect(lspParams.position).toEqual({ line: 9, character: 21 });
+  });
+
+  it('CompletionList response: normalizes items via lspClient.completion', async () => {
+    const stores = makeStores();
+    stores.editor.state.activeFile = '/tmp/cube.ri';
+
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'lsp_request') {
+        return JSON.stringify({ items: [{ label: 'box' }, { label: 'sphere' }] });
+      }
+      return undefined;
+    });
+
+    const { result } = await dispatchCompletion(stores, { line: 9, col: 21 });
+
+    expect(result.itemCount).toBe(2);
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('box');
+    expect(result.items.map((i: { label: string }) => i.label)).toContain('sphere');
+  });
+});
+
+// ─── F2 input-guard suite (step-13 RED → step-14 GREEN) ─────────────────────
+// resolveActiveProbeTarget was included in step-8 so these are immediately GREEN.
+
+describe('debug bridge LSP probe input guards', () => {
+  const PROBES = ['hover_at', 'completion_at', 'definition_at'] as const;
+
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchProbe(
+    stores: ReturnType<typeof makeStores>,
+    command: string,
+    params: Record<string, unknown>,
+  ) {
+    await initDebugBridge(stores);
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id: 4001, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    return {
+      result: JSON.parse((responseCall![1] as { result: string }).result),
+      calls,
+    };
+  }
+
+  for (const probe of PROBES) {
+    it(`${probe}: activeFile=null returns {error} and does NOT call lsp_request`, async () => {
+      const stores = makeStores();
+      // activeFile stays null (default)
+      const { result, calls } = await dispatchProbe(stores, probe, { line: 0, col: 0 });
+      expect(result).toHaveProperty('error');
+      expect(calls.find((c) => c[0] === 'lsp_request')).toBeUndefined();
+    });
+
+    it(`${probe}: line=-1 returns {error} and does NOT call lsp_request`, async () => {
+      const stores = makeStores();
+      stores.editor.state.activeFile = '/tmp/cube.ri';
+      const { result, calls } = await dispatchProbe(stores, probe, { line: -1, col: 0 });
+      expect(result).toHaveProperty('error');
+      expect(calls.find((c) => c[0] === 'lsp_request')).toBeUndefined();
+    });
+
+    it(`${probe}: missing col returns {error} and does NOT call lsp_request`, async () => {
+      const stores = makeStores();
+      stores.editor.state.activeFile = '/tmp/cube.ri';
+      const { result, calls } = await dispatchProbe(stores, probe, { line: 0 });
+      expect(result).toHaveProperty('error');
+      expect(calls.find((c) => c[0] === 'lsp_request')).toBeUndefined();
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// task-4299 steps 3–12: I1 synthetic pointer/scroll/focus tools
+// Scaffold mirrors 'debug bridge R1 inspection tools' at :1714-1742.
+// ---------------------------------------------------------------------------
+
+describe('debug bridge click_at', () => {
+  // step-3 RED → step-4 GREEN
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('happy: dispatches click with correct clientX/clientY', async () => {
+    const button = document.createElement('button');
+    button.setAttribute('data-testid', 'test-btn');
+    document.body.appendChild(button);
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(button);
+
+    let firedEvent: MouseEvent | undefined;
+    button.addEventListener('click', (e) => { firedEvent = e as MouseEvent; });
+
+    const result = await dispatchCmd(5001, 'click_at', { x: 140, y: 70 });
+    expect(result.ok).toBe(true);
+    expect(firedEvent).toBeDefined();
+    expect(firedEvent!.clientX).toBe(140);
+    expect(firedEvent!.clientY).toBe(70);
+    // Assert target payload shape (suggestion 4: regression-guard on element resolution)
+    expect(result.target.tagName).toBe('button');
+    expect(result.target.testId).toBe('test-btn');
+  });
+
+  it('no element at point returns {error}', async () => {
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(null);
+    const result = await dispatchCmd(5002, 'click_at', { x: 5, y: 5 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('invalid coords (string) returns {error}', async () => {
+    const result = await dispatchCmd(5003, 'click_at', { x: 'a', y: 1 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('invalid coords (NaN) returns {error}', async () => {
+    const result = await dispatchCmd(5004, 'click_at', { x: NaN, y: 1 });
+    expect(typeof result.error).toBe('string');
+  });
+});
+
+describe('debug bridge hover', () => {
+  // step-5 RED → step-6 GREEN
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('happy: dispatches move event with correct clientX/clientY', async () => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'test-div');
+    document.body.appendChild(el);
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(el);
+
+    let firedEvent: MouseEvent | undefined;
+    // pointermove or mousemove — check whichever fires
+    el.addEventListener('pointermove', (e) => { firedEvent = e as MouseEvent; });
+    el.addEventListener('mousemove', (e) => { if (!firedEvent) firedEvent = e as MouseEvent; });
+
+    const result = await dispatchCmd(5101, 'hover', { x: 50, y: 60 });
+    expect(result.ok).toBe(true);
+    expect(firedEvent).toBeDefined();
+    expect(firedEvent!.clientX).toBe(50);
+    expect(firedEvent!.clientY).toBe(60);
+    // Assert target payload shape (suggestion 4: regression-guard on element resolution)
+    expect(result.target.tagName).toBe('div');
+    expect(result.target.testId).toBe('test-div');
+  });
+
+  it('no element at point returns {error}', async () => {
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(null);
+    const result = await dispatchCmd(5102, 'hover', { x: 5, y: 5 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('invalid coords returns {error}', async () => {
+    const result = await dispatchCmd(5103, 'hover', { x: 'bad', y: 1 });
+    expect(typeof result.error).toBe('string');
+  });
+});
+
+describe('debug bridge drag', () => {
+  // step-7 RED → step-8 GREEN
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('happy: dispatches pointerdown at from and pointerup at to', async () => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(el);
+
+    let downEvent: MouseEvent | undefined;
+    let upEvent: MouseEvent | undefined;
+    el.addEventListener('pointerdown', (e) => { downEvent = e as MouseEvent; });
+    el.addEventListener('mousedown', (e) => { if (!downEvent) downEvent = e as MouseEvent; });
+    el.addEventListener('pointerup', (e) => { upEvent = e as MouseEvent; });
+    el.addEventListener('mouseup', (e) => { if (!upEvent) upEvent = e as MouseEvent; });
+
+    const result = await dispatchCmd(5201, 'drag', { from: { x: 10, y: 20 }, to: { x: 80, y: 90 } });
+    expect(result.ok).toBe(true);
+    expect(downEvent).toBeDefined();
+    expect(downEvent!.clientX).toBe(10);
+    expect(downEvent!.clientY).toBe(20);
+    expect(upEvent).toBeDefined();
+    expect(upEvent!.clientX).toBe(80);
+    expect(upEvent!.clientY).toBe(90);
+  });
+
+  it('no element at from returns {error}', async () => {
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(null);
+    const result = await dispatchCmd(5202, 'drag', { from: { x: 0, y: 0 }, to: { x: 10, y: 10 } });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('invalid from (missing x) returns {error}', async () => {
+    const result = await dispatchCmd(5203, 'drag', { from: { y: 5 }, to: { x: 10, y: 10 } });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('invalid from (NaN) returns {error}', async () => {
+    const result = await dispatchCmd(5204, 'drag', { from: { x: NaN, y: 5 }, to: { x: 10, y: 10 } });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('null to destination falls back to from element; move/up events fire at to coords', async () => {
+    // Covers the `elTo = document.elementFromPoint(to.x, to.y) ?? elFrom` fallback
+    // when the destination point resolves to null (e.g. off-canvas).
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    const spy = vi.spyOn(document, 'elementFromPoint');
+    spy.mockReturnValueOnce(el);   // first call: from resolves
+    spy.mockReturnValueOnce(null); // second call: to resolves to null → falls back to el
+
+    let moveEvent: MouseEvent | undefined;
+    let upEvent: MouseEvent | undefined;
+    el.addEventListener('pointermove', (e) => { moveEvent = e as MouseEvent; });
+    el.addEventListener('mousemove', (e) => { if (!moveEvent) moveEvent = e as MouseEvent; });
+    el.addEventListener('pointerup', (e) => { upEvent = e as MouseEvent; });
+    el.addEventListener('mouseup', (e) => { if (!upEvent) upEvent = e as MouseEvent; });
+
+    const result = await dispatchCmd(5205, 'drag', { from: { x: 10, y: 20 }, to: { x: 80, y: 90 } });
+    expect(result.ok).toBe(true);
+    // Events fired on the fallback element (elFrom) but carry the to coordinates.
+    expect(moveEvent).toBeDefined();
+    expect(moveEvent!.clientX).toBe(80);
+    expect(moveEvent!.clientY).toBe(90);
+    expect(upEvent).toBeDefined();
+    expect(upEvent!.clientX).toBe(80);
+    expect(upEvent!.clientY).toBe(90);
+  });
+});
+
+describe('debug bridge focus_element', () => {
+  // step-9 RED → step-10 GREEN
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('happy: focuses element by testId', async () => {
+    const input = document.createElement('input');
+    input.setAttribute('data-testid', 'fld');
+    document.body.appendChild(input);
+
+    const result = await dispatchCmd(5301, 'focus_element', { testId: 'fld' });
+    expect(result.ok).toBe(true);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('missing testId returns {error}', async () => {
+    const result = await dispatchCmd(5302, 'focus_element', {});
+    expect(result.error).toBe('testId is required');
+  });
+
+  it('element not found returns {error}', async () => {
+    const result = await dispatchCmd(5303, 'focus_element', { testId: 'no-such-element' });
+    expect(typeof result.error).toBe('string');
+  });
+});
+
+describe('debug bridge scroll', () => {
+  // step-11 RED → step-12 GREEN
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('DOM mode: sets scrollTop/scrollLeft on element by testId', async () => {
+    const panel = document.createElement('div');
+    panel.setAttribute('data-testid', 'panel');
+    document.body.appendChild(panel);
+    // jsdom's native scrollTop is a no-op — make it writable
+    Object.defineProperty(panel, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(panel, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+
+    const result = await dispatchCmd(5401, 'scroll', { testId: 'panel', top: 120, left: 30 });
+    expect(result.ok).toBe(true);
+    expect(result.scrollTop).toBe(120);
+    expect(result.scrollLeft).toBe(30);
+    expect((panel as any).scrollTop).toBe(120);
+  });
+
+  it('editor mode: scrolls CodeMirror scrollDOM', async () => {
+    const scrollDOM = document.createElement('div');
+    Object.defineProperty(scrollDOM, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(scrollDOM, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+    // Wire editorView into the debug context
+    (window as any).__REIFY_DEBUG__.editorView = { scrollDOM } as any;
+
+    const result = await dispatchCmd(5402, 'scroll', { target: 'editor', top: 80 });
+    expect(result.ok).toBe(true);
+    expect(result.scrollTop).toBe(80);
+    expect((scrollDOM as any).scrollTop).toBe(80);
+  });
+
+  it('editor mode with no editorView returns {error}', async () => {
+    // editorView is not set (default makeStores() has none)
+    const result = await dispatchCmd(5403, 'scroll', { target: 'editor', top: 50 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('neither testId nor target returns {error}', async () => {
+    const result = await dispatchCmd(5404, 'scroll', { top: 100 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('DOM mode: testId not found returns {error}', async () => {
+    const result = await dispatchCmd(5405, 'scroll', { testId: 'no-such-panel', top: 50 });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('DOM mode: NaN top returns {error}', async () => {
+    // isFiniteNumber guard: NaN silently coerces to 0 without this check.
+    const panel = document.createElement('div');
+    panel.setAttribute('data-testid', 'panel-nan');
+    document.body.appendChild(panel);
+    Object.defineProperty(panel, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    const result = await dispatchCmd(5406, 'scroll', { testId: 'panel-nan', top: NaN });
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('editor mode: Infinity left returns {error}', async () => {
+    // isFiniteNumber guard: ±Infinity silently coerces to 0 without this check.
+    const scrollDOM = document.createElement('div');
+    Object.defineProperty(scrollDOM, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(scrollDOM, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+    (window as any).__REIFY_DEBUG__.editorView = { scrollDOM } as any;
+    const result = await dispatchCmd(5407, 'scroll', { target: 'editor', left: Infinity });
+    expect(typeof result.error).toBe('string');
+  });
+});

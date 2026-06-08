@@ -132,6 +132,19 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.trajectory",
                 include_str!("../stdlib/trajectory.ri"),
             ),
+            // `std.trajectory.fns` MUST follow `std.trajectory` — the
+            // `@optimized simulate_trajectory` body constructs `EndEffectorTrack()`
+            // (a no-arg ctor — like `ModalResult()`, which also has no per-field
+            // defaults), which requires `EndEffectorTrack` to already be in the
+            // prelude template registry when
+            // `phase_functions` runs. Same split + rationale as `std.modal.analysis`
+            // / `std.modal.analysis.fns` (modal_analysis_fns.ri:6-20). Placed before
+            // the later `std.dynamics` / `std.kinematic`, which themselves depend on
+            // `std.trajectory`, so order is safe (task π, prereq-2).
+            (
+                "std.trajectory.fns",
+                include_str!("../stdlib/trajectory_fns.ri"),
+            ),
             ("std.fdm", include_str!("../stdlib/fdm.ri")),
             // `std.fdm.correlations` (task β) MUST follow `std.fdm` — its
             // structures reference `InfillPattern` (from std.fdm) and
@@ -165,10 +178,28 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.process",
                 include_str!("../stdlib/process.ri"),
             ),
-            // `std.dynamics` depends on `std.units` (Mass / Length / Time) and
-            // `std.trajectory` (for the `JointValue` alias used in TrajectorySample).
-            // Tail placement after `std.trajectory` satisfies both dependencies and
-            // keeps the v0.3 RBD cluster grouped. RBD-α task 3822.
+            // `std.kinematic` declares the DrivingJoint marker trait, per-kind
+            // joint structures (Prismatic/Revolute/Cylindrical/Planar/Spherical),
+            // non-conforming joints (Coupling/Fixed), and top-level container types
+            // (BodyId/Mechanism/Snapshot/SweepDim). Depends on std.trajectory
+            // (Vec3 and JointValue aliases) and std.units (Bool/Int/Real).
+            // Moved before std.dynamics (mechanism-β, task 4311) so that Mechanism
+            // and Snapshot are in scope when dynamics.ri's inverse_dynamics /
+            // inverse_dynamics_at_snapshot parameter types are compiled. No
+            // circular dependency: std.kinematic only requires std.trajectory +
+            // std.units, both of which are earlier in this sequence.
+            // KCC-ζ task 3845.
+            (
+                "std.kinematic",
+                include_str!("../stdlib/kinematic.ri"),
+            ),
+            // `std.dynamics` depends on `std.units` (Mass / Length / Time),
+            // `std.trajectory` (for the `JointValue` alias used in TrajectorySample),
+            // and `std.kinematic` (Mechanism / Snapshot nominal types used in
+            // inverse_dynamics / inverse_dynamics_at_snapshot parameter types —
+            // updated from Real placeholders by mechanism-β, task 4311).
+            // Placement after std.kinematic satisfies all three dependencies.
+            // RBD-α task 3822.
             (
                 "std.dynamics",
                 include_str!("../stdlib/dynamics.ri"),
@@ -182,18 +213,6 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             (
                 "std.stackup",
                 include_str!("../stdlib/stackup.ri"),
-            ),
-            // `std.kinematic` declares the DrivingJoint marker trait, per-kind
-            // joint structures (Prismatic/Revolute/Cylindrical/Planar/Spherical),
-            // non-conforming joints (Coupling/Fixed), and top-level container types
-            // (BodyId/Mechanism/Snapshot/SweepDim). Depends on std.trajectory
-            // (Vec3 and JointValue aliases) and std.units (Bool/Int/Real).
-            // Tail placement after std.trajectory satisfies both alias dependencies.
-            // Joints stay Value::Map per PRD §7.1 (esc-3845-91); units.rs/sweep.rs
-            // per-name hooks KEPT per esc-3845-91. KCC-ζ task 3845.
-            (
-                "std.kinematic",
-                include_str!("../stdlib/kinematic.ri"),
             ),
             // `std.ports` declares the Directionality enum and Port base trait.
             // No inter-module dependencies beyond built-in types.
@@ -249,6 +268,22 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             // references no other stdlib module → zero ordering constraints;
             // tail-append is safe. Reconstruction per PRD §Slice C.
             ("std.fields", include_str!("../stdlib/fields.ri")),
+            // `std.determinacy.purposes` ships the two standard determinacy-check
+            // purposes (simulation_ready + design_review, PRD §5) that are merged
+            // into every user module via merge_prelude_purposes (task-4016 ζ).
+            //
+            // MUST be LAST in the source list: merge_prelude_purposes runs for
+            // every compile including each intra-stdlib module compile, but
+            // no-ops here because std.determinacy.purposes is the only stdlib
+            // module with pub purposes and it is registered last — no later
+            // stdlib module sees it as a prelude during load_stdlib(), so none
+            // inadvertently inherit simulation_ready/design_review during
+            // prelude construction. Stdlib-internal count/hash goldens stay
+            // byte-stable.
+            (
+                "std.determinacy.purposes",
+                include_str!("../stdlib/determinacy_purposes.ri"),
+            ),
         ];
 
         // SEQUENTIAL COMPILATION WITH GROWING PRELUDE: each module is compiled

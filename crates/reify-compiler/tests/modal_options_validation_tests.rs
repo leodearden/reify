@@ -30,6 +30,7 @@
 use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_test_support::collect_value_ref_members;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -103,22 +104,6 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
     cell.default_expr
         .as_ref()
         .unwrap_or_else(|| panic!("{}.{} missing default_expr", template.name, member))
-}
-
-/// Recursively collect ValueRef member names from a compiled expression tree.
-/// Mirrors `collect_value_ref_members` in `buckling_stdlib_compile.rs:98-108`.
-#[allow(dead_code)]
-fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<&str> {
-    match &expr.kind {
-        CompiledExprKind::ValueRef(cell_id) => vec![cell_id.member.as_str()],
-        CompiledExprKind::BinOp { left, right, .. } => {
-            let mut refs = collect_value_ref_members(left);
-            refs.extend(collect_value_ref_members(right));
-            refs
-        }
-        CompiledExprKind::UnOp { operand, .. } => collect_value_ref_members(operand),
-        _ => vec![],
-    }
 }
 
 // ─── step-1: module loads with zero error diagnostics ────────────────────────
@@ -819,7 +804,7 @@ fn modal_options_constrains_positivity_invariants() {
             // (mirrors buckling_stdlib_compile.rs:356-360 future-proofing).
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt || !collect_value_ref_members(left).contains(required) {
+                    if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
                         return false;
                     }
                     match &right.kind {
@@ -1328,7 +1313,7 @@ fn harmonic_force_constrains_amplitude_and_frequency_positive() {
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
                     if *op != BinOp::Gt
-                        || !collect_value_ref_members(left).contains(required_member)
+                        || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required_member)
                     {
                         return false;
                     }
@@ -1386,7 +1371,7 @@ fn impulse_force_constrains_impulse_positive() {
     let matched = template.constraints.iter().any(|c| {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Gt || !collect_value_ref_members(left).contains(&"impulse") {
+                if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "impulse") {
                     return false;
                 }
                 match &right.kind {
@@ -1446,7 +1431,7 @@ fn step_force_constrains_magnitude_positive() {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
                 if *op != BinOp::Gt
-                    || !collect_value_ref_members(left).contains(&"magnitude")
+                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "magnitude")
                 {
                     return false;
                 }

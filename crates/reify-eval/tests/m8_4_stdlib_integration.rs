@@ -667,6 +667,197 @@ fn expect_real_or_int_panics_on_non_numeric() {
     expect_real_or_int(&val, "test_label");
 }
 
+/// Extract element [row][col] from a nested `Value::Tensor` (matrix).
+/// Panics with a descriptive message on any non-Real/Int element (incl. Undef).
+fn matrix_elem(v: &Value, row: usize, col: usize) -> f64 {
+    match v {
+        Value::Tensor(rows) => match &rows[row] {
+            Value::Tensor(cols) => match &cols[col] {
+                Value::Real(x) => *x,
+                Value::Int(i) => *i as f64,
+                other => panic!(
+                    "matrix_elem[{row}][{col}] should be Real or Int, got {other:?}"
+                ),
+            },
+            other => panic!("matrix row[{row}] should be Tensor, got {other:?}"),
+        },
+        other => panic!("expected Tensor for matrix, got {other:?}"),
+    }
+}
+
+// ── step-1: linalg_4x4_determinant ───────────────────────────────────────────
+
+/// Asserts LinalgDemo.det4 ≈ 209.0 (Value::Real).
+/// m4 = tridiagonal SPD [[4,1,0,0],[1,4,1,0],[0,1,4,1],[0,0,1,4]];
+/// det(m4) = 209 by recurrence D_n = 4·D_{n-1} − D_{n-2}, D_0=1,D_1=4.
+#[test]
+fn linalg_4x4_determinant() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let det_id = ValueCellId::new("LinalgDemo", "det4");
+    let det_val = result
+        .values
+        .get(&det_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.det4 not found in eval result"));
+
+    match det_val {
+        Value::Real(v) => {
+            assert!(
+                (v - 209.0).abs() < 1e-9,
+                "LinalgDemo.det4 should be ≈209.0 (tridiagonal 4×4 det), got {}",
+                v
+            );
+        }
+        other => panic!("LinalgDemo.det4 should be Value::Real, got {:?}", other),
+    }
+}
+
+// ── step-7: linalg_complex_eigenvalues_rotation ──────────────────────────────
+
+/// Asserts LinalgDemo.ceig = complex_eigenvalues(rot2) is a Value::List of 2
+/// Value::Complex items, containing {0+1i, 0−1i} by set-membership (tol 1e-9).
+/// rot2 = [[0,-1],[1,0]] (90° rotation); char poly λ²+1=0 → eigenvalues ±i.
+/// Set-membership is used rather than positional check to be robust to
+/// builtin's (re,im) sort order.
+#[test]
+fn linalg_complex_eigenvalues_rotation() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let ceig_id = ValueCellId::new("LinalgDemo", "ceig");
+    let ceig_val = result
+        .values
+        .get(&ceig_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.ceig not found in eval result"));
+
+    match ceig_val {
+        Value::List(items) => {
+            assert_eq!(
+                items.len(),
+                2,
+                "ceig should have 2 entries, got {}",
+                items.len()
+            );
+
+            // Extract (re, im) pairs from each Complex item.
+            let pairs: Vec<(f64, f64)> = items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| match item {
+                    Value::Complex { re, im, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::DIMENSIONLESS,
+                            "ceig[{i}].dimension should be DIMENSIONLESS, got {dimension:?}"
+                        );
+                        (*re, *im)
+                    }
+                    other => panic!("ceig[{i}] should be Value::Complex, got {other:?}"),
+                })
+                .collect();
+
+            // Check by set-membership: {0+1i} and {0-1i} must both appear.
+            let has_plus_i = pairs
+                .iter()
+                .any(|(re, im)| re.abs() < 1e-9 && (im - 1.0).abs() < 1e-9);
+            let has_minus_i = pairs
+                .iter()
+                .any(|(re, im)| re.abs() < 1e-9 && (im + 1.0).abs() < 1e-9);
+
+            assert!(has_plus_i, "ceig should contain 0+1i, got {pairs:?}");
+            assert!(has_minus_i, "ceig should contain 0-1i, got {pairs:?}");
+        }
+        other => panic!("LinalgDemo.ceig should be Value::List, got {other:?}"),
+    }
+}
+
+// ── step-5: linalg_4x4_symmetric_eigenvalues ─────────────────────────────────
+
+/// Asserts LinalgDemo.eig4 = eigenvalues(sym4) has exactly 4 entries,
+/// sorted ≈ [1.0, 2.0, 3.0, 8.0] within 1e-9.
+/// sym4 = block-diagonal [[2,1,0,0],[1,2,0,0],[0,0,5,3],[0,0,3,5]];
+/// block spectra: top {2-1,2+1}={1,3}, bottom {5-3,5+3}={2,8}.
+#[test]
+fn linalg_4x4_symmetric_eigenvalues() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let eig4_id = ValueCellId::new("LinalgDemo", "eig4");
+    let eig4_val = result
+        .values
+        .get(&eig4_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.eig4 not found in eval result"));
+
+    match eig4_val {
+        Value::List(items) => {
+            assert_eq!(
+                items.len(),
+                4,
+                "eig4 should have 4 entries, got {}",
+                items.len()
+            );
+            let mut actuals: Vec<f64> = items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| expect_real_or_int(item, &format!("eig4[{i}]")))
+                .collect();
+            // Intentional defensive sort: eigenvalues() already returns sorted-ascending
+            // for the symmetric path, but we don't rely on that contract here so the
+            // test stays valid if the ordering guarantee is ever relaxed.
+            actuals.sort_by(|a, b| a.total_cmp(b));
+            let expected = [1.0_f64, 2.0, 3.0, 8.0];
+            for (i, (&actual, &exp)) in actuals.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    (actual - exp).abs() < 1e-9,
+                    "eig4[{i}] (sorted): expected {exp}, got {actual}"
+                );
+            }
+        }
+        other => panic!("LinalgDemo.eig4 should be Value::List, got {other:?}"),
+    }
+}
+
+// ── step-3: linalg_4x4_inverse_roundtrip ─────────────────────────────────────
+
+/// Asserts m4 · inv4 ≈ I₄ (all 16 entries, tolerance 1e-9).
+/// m4 = tridiagonal SPD; SPD with κ≈2.36 gives try_inverse residual ~1e-15.
+/// Both m4 and inv4 are extracted as 4×4 f64 arrays via matrix_elem;
+/// the product is computed in Rust (no matmul builtin exists in .ri).
+#[test]
+fn linalg_4x4_inverse_roundtrip() {
+    let result = eval_ri_file(PATH_LINALG, "linalg");
+
+    let m4_id = ValueCellId::new("LinalgDemo", "m4");
+    let m4_val = result
+        .values
+        .get(&m4_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.m4 not found in eval result"));
+
+    let inv4_id = ValueCellId::new("LinalgDemo", "inv4");
+    let inv4_val = result
+        .values
+        .get(&inv4_id)
+        .unwrap_or_else(|| panic!("LinalgDemo.inv4 not found in eval result"));
+
+    // Extract both matrices as 4×4 f64 arrays.
+    let m4: [[f64; 4]; 4] =
+        std::array::from_fn(|r| std::array::from_fn(|c| matrix_elem(m4_val, r, c)));
+    let inv4: [[f64; 4]; 4] =
+        std::array::from_fn(|r| std::array::from_fn(|c| matrix_elem(inv4_val, r, c)));
+
+    // Compute product P = m4 · inv4 and assert P ≈ I₄.
+    // Cross-dimensional indexing (m4[i][k] * inv4[k][j]) requires both i and j.
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..4 {
+        for j in 0..4 {
+            let p_ij: f64 = (0..4).map(|k| m4[i][k] * inv4[k][j]).sum();
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(
+                (p_ij - expected).abs() < 1e-9,
+                "m4·inv4[{i}][{j}] should be ≈{expected}, got {p_ij}"
+            );
+        }
+    }
+}
+
 // NOTE: each test independently calls eval_ri_file, re-parsing and re-compiling
 // the same .ri fixture. This matches the established m8_3 pattern; future
 // iterations may share results across same-fixture tests via
