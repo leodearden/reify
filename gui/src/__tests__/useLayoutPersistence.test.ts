@@ -25,6 +25,8 @@ describe('useLayoutPersistence', () => {
       designTreeHeight: 180,
       propertyHeight: 250,
       constraintHeight: 150,
+      problemsHeight: 160,
+      problemsCollapsed: true,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(layout));
 
@@ -39,6 +41,8 @@ describe('useLayoutPersistence', () => {
       designTreeHeight: 180,
       propertyHeight: 250,
       constraintHeight: 150,
+      problemsHeight: 160,
+      problemsCollapsed: true,
     };
     savePanelLayout(layout);
 
@@ -68,6 +72,40 @@ describe('useLayoutPersistence', () => {
 
     const result = loadPanelLayout();
     expect(result).toEqual({ editorWidth: 400, sideWidth: 350 });
+  });
+
+  it('(a) loadPanelLayout omits problemsHeight/problemsCollapsed when absent in stored JSON (forward-compat)', () => {
+    // A layout saved before the docked panel existed should load without the new fields.
+    const oldLayout = {
+      editorWidth: 400,
+      sideWidth: 350,
+      designTreeHeight: 180,
+      propertyHeight: 250,
+      constraintHeight: 150,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(oldLayout));
+
+    const result = loadPanelLayout();
+    expect(result).toEqual(oldLayout);
+    expect((result as Record<string, unknown>).problemsHeight).toBeUndefined();
+    expect((result as Record<string, unknown>).problemsCollapsed).toBeUndefined();
+  });
+
+  it('(b) loadPanelLayout includes problemsHeight when it is a number and problemsCollapsed when it is a boolean', () => {
+    const layout = {
+      editorWidth: 400,
+      sideWidth: 350,
+      designTreeHeight: 180,
+      propertyHeight: 250,
+      constraintHeight: 150,
+      problemsHeight: 200,
+      problemsCollapsed: false,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(layout));
+
+    const result = loadPanelLayout();
+    expect((result as Record<string, unknown>).problemsHeight).toBe(200);
+    expect((result as Record<string, unknown>).problemsCollapsed).toBe(false);
   });
 });
 
