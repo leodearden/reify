@@ -6,6 +6,7 @@
 
 mod annotations;
 mod arg_check;
+pub mod cfg;
 pub mod auto_type_param;
 mod compile_builder;
 mod conformance;
