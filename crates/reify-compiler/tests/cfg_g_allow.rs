@@ -73,7 +73,12 @@ fn cfg_satisfied_is_g_allow_marked() {
         matching_allowed.len(),
         1,
         "`{fn_name}` in {cfg_suffix} must appear exactly once in allowed[]; \
-         found {} entries.\nFull allowed list:\n{:#}",
+         found {} entries.\n\
+         NOTE: if the count is 0, a real production caller for `{fn_name}` has \
+         likely landed (task gamma/3990 #cfg DAG import-gating) — the function no \
+         longer classifies as an orphan, the G-allow marker is no longer relevant, \
+         and this test file should be DELETED rather than fixed.\n\
+         Full allowed list:\n{:#}",
         matching_allowed.len(),
         result["allowed"]
     );
