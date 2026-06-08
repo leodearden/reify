@@ -222,4 +222,118 @@ mod tests {
         };
         assert!(!cfg_satisfied(&p, &active));
     }
+
+    // -------------------------------------------------------------------------
+    // Step 7: degenerate/unsatisfiable shapes → false; mixed AND sanity
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn kv_number_value_is_false() {
+        // target = 42 (KeyValue with Number value) → unsatisfiable
+        let p = cfg_pragma(vec![PragmaArg::KeyValue {
+            key: "target".into(),
+            value: PragmaValue::Number(42.0),
+        }]);
+        let active = CfgSet {
+            target: Some("42".into()),
+            ..Default::default()
+        };
+        assert!(!cfg_satisfied(&p, &active));
+    }
+
+    #[test]
+    fn kv_bool_value_is_false() {
+        // feature = true (KeyValue with Bool value) → unsatisfiable
+        let p = cfg_pragma(vec![PragmaArg::KeyValue {
+            key: "feature".into(),
+            value: PragmaValue::Bool(true),
+        }]);
+        let active = kv_set(&[("feature", "true")]);
+        assert!(!cfg_satisfied(&p, &active));
+    }
+
+    #[test]
+    fn kv_quantity_value_is_false() {
+        // k = 1m (KeyValue with Quantity value) → unsatisfiable
+        let p = cfg_pragma(vec![PragmaArg::KeyValue {
+            key: "k".into(),
+            value: PragmaValue::Quantity {
+                value: 1.0,
+                unit: "m".into(),
+            },
+        }]);
+        assert!(!cfg_satisfied(&p, &CfgSet::default()));
+    }
+
+    #[test]
+    fn kv_ident_value_is_false() {
+        // k = ident (KeyValue with Ident value) → unsatisfiable
+        let p = cfg_pragma(vec![PragmaArg::KeyValue {
+            key: "k".into(),
+            value: PragmaValue::Ident("ident".into()),
+        }]);
+        assert!(!cfg_satisfied(&p, &CfgSet::default()));
+    }
+
+    #[test]
+    fn bare_number_is_false() {
+        let p = cfg_pragma(vec![PragmaArg::Bare(PragmaValue::Number(1.0))]);
+        assert!(!cfg_satisfied(&p, &CfgSet::default()));
+    }
+
+    #[test]
+    fn bare_string_is_false() {
+        let p = cfg_pragma(vec![PragmaArg::Bare(PragmaValue::String("linux".into()))]);
+        assert!(!cfg_satisfied(&p, &flags(&["linux"])));
+    }
+
+    #[test]
+    fn bare_bool_is_false() {
+        let p = cfg_pragma(vec![PragmaArg::Bare(PragmaValue::Bool(true))]);
+        assert!(!cfg_satisfied(&p, &CfgSet::default()));
+    }
+
+    #[test]
+    fn bare_quantity_is_false() {
+        let p = cfg_pragma(vec![PragmaArg::Bare(PragmaValue::Quantity {
+            value: 1.0,
+            unit: "m".into(),
+        })]);
+        assert!(!cfg_satisfied(&p, &CfgSet::default()));
+    }
+
+    #[test]
+    fn mixed_and_both_satisfied() {
+        // #cfg(linux, target = "wasm") with flags:{linux}, target:Some("wasm") → true
+        let p = cfg_pragma(vec![bare_ident("linux"), kv_string("target", "wasm")]);
+        let active = CfgSet {
+            flags: ["linux".into()].into_iter().collect(),
+            target: Some("wasm".into()),
+            ..Default::default()
+        };
+        assert!(cfg_satisfied(&p, &active));
+    }
+
+    #[test]
+    fn mixed_and_flag_missing() {
+        // #cfg(linux, target = "wasm") with flags:{}, target:Some("wasm") → false
+        let p = cfg_pragma(vec![bare_ident("linux"), kv_string("target", "wasm")]);
+        let active = CfgSet {
+            target: Some("wasm".into()),
+            ..Default::default()
+        };
+        assert!(!cfg_satisfied(&p, &active));
+    }
+
+    #[test]
+    fn mixed_and_target_wrong() {
+        // #cfg(linux, target = "wasm") with flags:{linux}, target:Some("linux") → false
+        let p = cfg_pragma(vec![bare_ident("linux"), kv_string("target", "wasm")]);
+        let active = CfgSet {
+            flags: ["linux".into()].into_iter().collect(),
+            target: Some("linux".into()),
+            ..Default::default()
+        };
+        assert!(!cfg_satisfied(&p, &active));
+    }
 }
