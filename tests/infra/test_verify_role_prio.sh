@@ -170,8 +170,8 @@ assert "C1: merge+no-profile: header shows profile=both" \
     bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=both"' \
     _ "$C1_FULL"
 
-assert "C1: merge+no-profile: a release workspace pass is present" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--release"' \
+assert "C1: merge+no-profile: a release test pass is present (sensitivity-scoped, no --workspace)" \
+    bash -c 'printf "%s\n" "$1" | grep -v "cargo-test-occt-gated.sh" | grep -qE "cargo (test|nextest run).*--release"' \
     _ "$C1_CMDS"
 
 assert "C1: merge+no-profile: a non-release (debug) pass is also present" \
