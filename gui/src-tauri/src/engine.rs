@@ -1623,8 +1623,18 @@ impl EngineSession {
     /// Unit tests that require a mock or failing kernel should continue to
     /// use `EngineSession::new(checker, Some(Box::new(MockGeometryKernel::new())))` —
     /// the kernel-injection seam is preserved for that use-case.
+    ///
+    /// ## Production solver
+    ///
+    /// The production solver set (`SolverRegistry::production()`: DimensionalSolver +
+    /// geometric SolveSpaceSolver) is installed here — the only place where the
+    /// documented production-binary boot path runs.  Deliberately NOT installed in
+    /// the shared `from_engine`/`EngineSession::new` path so that `new`-based unit
+    /// tests keep `solver = None` and are unperturbed.
     pub fn with_registered_kernel(checker: Box<dyn ConstraintChecker>) -> Self {
-        Self::from_engine(Engine::with_registered_kernel(checker))
+        let engine = Engine::with_registered_kernel(checker)
+            .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
+        Self::from_engine(engine)
     }
 
     /// Load source code, parse, compile, evaluate, and return full GUI state.
