@@ -2627,10 +2627,12 @@ fn piped_fluid_port_trait_surface() {
 fn piped_fluid_port_concrete_conformer_diamond_merge_compiles() {
     // flow_rate uses `1gal / 1s` (gal is the Volume unit declared in units.ri;
     // no m³ SI unit is currently generated — see units.ri §Volume comment).
-    // Enum-typed params (fluid_type, connection_type) omit the type annotation:
-    // the compiler resolves enum types from the prelude in struct-param position
-    // but the port-param type-annotation path doesn't look up prelude enums
-    // (port param values are inferred from the provided literal instead).
+    // Enum-typed params (fluid_type, connection_type) omit the type annotation.
+    // Untyped port-param enum defaults are accepted because the
+    // declared-vs-initializer check is gated to explicitly-typed params
+    // (param.type_expr.is_some()); see task 4318 step-7. Enum types defined in
+    // stdlib/ports_fluid.ri: FluidType{Liquid,Gas,TwoPhase},
+    // PipeConnectionType{Threaded,Flanged,Compression,PushFit,Welded}.
     let source = r#"
 import std.ports.fluid
 
@@ -2639,7 +2641,7 @@ structure def PipeConformer {
         param pressure : Pressure = 101325Pa
         param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "water"
-        param fluid_type = undef  // FluidType.Liquid intent; port-param type path can't resolve prelude enums, so untyped default falls back to Real and trips ParamDefaultTypeMismatch on the enum literal
+        param fluid_type = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
             x_axis: vec3(1mm, 0mm, 0mm),
@@ -2647,7 +2649,7 @@ structure def PipeConformer {
             z_axis: vec3(0mm, 0mm, 1mm),
         )
         param inner_diameter : Length = 25mm
-        param connection_type = undef  // PipeConnectionType.Threaded intent; untyped port-param enum default falls back to Real (see fluid_type note)
+        param connection_type = PipeConnectionType.Threaded
     }
 }
 "#;
@@ -2801,9 +2803,12 @@ fn hydraulic_port_trait_surface() {
 /// RED: HydraulicPort absent → compile error on unknown trait.
 #[test]
 fn hydraulic_port_concrete_conformer_multidomain_compiles() {
-    // Enum-typed param (fitting_type) omits the type annotation per the same
-    // port-param enum-type annotation limitation documented in the PipedFluidPort
-    // conformer test above.
+    // Enum-typed params (fluid_type, fitting_type) omit the type annotation.
+    // Untyped port-param enum defaults are accepted because the
+    // declared-vs-initializer check is gated to explicitly-typed params
+    // (param.type_expr.is_some()); see task 4318 step-7. Enum types defined in
+    // stdlib/ports_fluid.ri: FluidType{Liquid,Gas,TwoPhase},
+    // FittingStandard{NPT,BSP,JIC,ORFS}.
     let source = r#"
 import std.ports.fluid
 
@@ -2812,14 +2817,14 @@ structure def HydroConformer {
         param pressure : Pressure = 101325Pa
         param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "hydraulic_oil"
-        param fluid_type = undef  // FluidType.Liquid intent; port-param type path can't resolve prelude enums, so untyped default falls back to Real and trips ParamDefaultTypeMismatch on the enum literal
+        param fluid_type = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
             x_axis: vec3(1mm, 0mm, 0mm),
             y_axis: vec3(0mm, 1mm, 0mm),
             z_axis: vec3(0mm, 0mm, 1mm),
         )
-        param fitting_type = undef  // FittingStandard.NPT intent; untyped port-param enum default falls back to Real (see fluid_type note)
+        param fitting_type = FittingStandard.NPT
     }
 }
 "#;
