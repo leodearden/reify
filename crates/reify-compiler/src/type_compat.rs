@@ -243,6 +243,13 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     // adding it there would wrongly accept `List<Geometry>` at a Selector param
     // (mirrors the same design decision made for Tensor→Matrix, Rule 3 — also
     // one-directional and placed here rather than in `implicitly_converts_to`).
+    //
+    // NOTE: `Type::AnySelector` is intentionally excluded from this match.
+    // Kind-agnostic selector params resolve to node-sets via task 4092 (a
+    // kind-uniform path), NOT via List<Geometry> widening — so there is no
+    // valid `(Type::List<Geometry>, Type::AnySelector)` coercion at present.
+    // If a List<Geometry> path for agnostic selectors is ever needed, extend
+    // the match deliberately to `Type::Selector(_) | Type::AnySelector`.
     if let (Type::List(inner), Type::Selector(_)) = (param_ty, arg_ty)
         && matches!(inner.as_ref(), Type::Geometry)
     {
