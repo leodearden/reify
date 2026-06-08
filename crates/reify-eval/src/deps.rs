@@ -602,7 +602,27 @@ fn extract_realization_edges(
                     // GeomRef::Step → skip (intra-node, no cross-realization edge)
                 }
             }
-            // Modify/Transform/Pattern/Sweep target/profiles extended in step-8.
+            reify_compiler::CompiledGeometryOp::Modify { target, .. }
+            | reify_compiler::CompiledGeometryOp::Transform { target, .. }
+            | reify_compiler::CompiledGeometryOp::Pattern { target, .. } => {
+                if let reify_compiler::GeomRef::Sub(ref name) = *target {
+                    if let Some(rid) = resolve_sub_ref(name, consuming_entity, graph) {
+                        result.push(rid);
+                    }
+                }
+                // GeomRef::Step → skip (intra-node, no cross-realization edge)
+            }
+            reify_compiler::CompiledGeometryOp::Sweep { profiles, .. } => {
+                for geom_ref in profiles {
+                    if let reify_compiler::GeomRef::Sub(ref name) = *geom_ref {
+                        if let Some(rid) = resolve_sub_ref(name, consuming_entity, graph) {
+                            result.push(rid);
+                        }
+                    }
+                    // GeomRef::Step → skip (intra-node, no cross-realization edge)
+                }
+            }
+            // Primitive/Curve/Profile carry no GeomRef targets → no edges.
             _ => {}
         }
     }
