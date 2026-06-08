@@ -1082,7 +1082,13 @@ impl EngineSession {
             .set_active_solve_cancel(Some(handle));
         // Guard fires solve_finished() on drop — covers ? early-returns and panics.
         let _guard = SolveFinishedGuard(sink_arc);
-        f(self)
+        let result = f(self);
+        // Clear the cancel slot now that the solve window has closed.
+        // Prevents a stale cancelled handle from spuriously triggering
+        // ComputeOutcome::Cancelled on any future dispatch that bypasses
+        // with_solve_slot (e.g., a direct engine.eval() call in tests).
+        self.core.engine_mut().set_active_solve_cancel(None);
+        result
         // _guard drops here → solve_finished() called
     }
 

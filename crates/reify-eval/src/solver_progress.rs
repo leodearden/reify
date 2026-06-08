@@ -53,34 +53,43 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// RAII guard that clears the thread-local slot on drop.
+/// RAII guard that restores the prior thread-local context on drop.
+///
+/// On install, captures whatever context was previously installed (if any).
+/// On drop, restores that prior context instead of unconditionally writing
+/// `None`, so nested installs on the same thread compose correctly.
 pub struct SolveDispatchContextGuard {
-    _private: (),
+    prior: Option<SolveDispatchContext>,
 }
 
 impl Drop for SolveDispatchContextGuard {
     fn drop(&mut self) {
         SOLVE_DISPATCH_CONTEXT.with(|cell| {
-            *cell.borrow_mut() = None;
+            *cell.borrow_mut() = self.prior.take();
         });
     }
 }
 
 /// Install a solver-dispatch context for the current thread.  Returns a guard
-/// that clears the slot when dropped (even on panic/early-return).
+/// that restores the prior context when dropped (even on panic/early-return).
 ///
 /// Callers must hold the guard alive for the duration of the trampoline call.
+/// Supports nesting: if another context was already installed, it is saved and
+/// restored when this guard is dropped.
 pub fn install_solve_dispatch_context(
     sink: Option<Arc<dyn SolverProgressSink>>,
     cancel: Option<CancellationHandle>,
 ) -> SolveDispatchContextGuard {
-    SOLVE_DISPATCH_CONTEXT.with(|cell| {
-        *cell.borrow_mut() = Some(SolveDispatchContext {
+    let prior = SOLVE_DISPATCH_CONTEXT.with(|cell| {
+        let mut borrowed = cell.borrow_mut();
+        let prior = borrowed.take();
+        *borrowed = Some(SolveDispatchContext {
             progress_sink: sink,
             cancel,
         });
+        prior
     });
-    SolveDispatchContextGuard { _private: () }
+    SolveDispatchContextGuard { prior }
 }
 
 /// Snapshot of the currently installed dispatch context.

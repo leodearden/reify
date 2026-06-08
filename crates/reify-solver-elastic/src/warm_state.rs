@@ -117,11 +117,13 @@ pub fn solve_cg_with_warm_state_progress(
 ///
 /// `CgResult.u` and `CgWarmState.u` are both `Arc<Vec<f64>>`. This
 /// function shares the single allocation produced by the underlying
-/// `solve_cg_warm` call between the two — `Arc::clone` bumps the
-/// refcount only (no `Vec` copy), so a single 10⁴–10⁶-DOF solve
-/// produces exactly one displacement-vector allocation regardless of
-/// whether the caller keeps the `CgResult`, the `CgWarmState`, or
-/// both.
+/// solver call between the two — `Arc::clone` bumps the refcount only
+/// (no `Vec` copy), so a single 10⁴–10⁶-DOF solve produces exactly one
+/// displacement-vector allocation regardless of whether the caller keeps
+/// the `CgResult`, the `CgWarmState`, or both.
+///
+/// Delegates to [`solve_cg_with_warm_state_progress`] with a no-op
+/// closure so the Arc-share/donate contract is maintained in one place.
 pub fn solve_cg_with_warm_state(
     k: &faer::sparse::SparseRowMat<usize, f64>,
     f: &[f64],
@@ -129,13 +131,9 @@ pub fn solve_cg_with_warm_state(
     opts: crate::solver::CgSolverOptions,
     mode: crate::solver::SolverMode,
 ) -> (crate::solver::CgResult, CgWarmState) {
-    let prior_slice = prior.map(|p| p.u.as_slice());
-    let result = crate::solver::solve_cg_warm(k, f, prior_slice, opts, mode);
-    // Share `u` between the result and the warm state via Arc::clone —
-    // refcount bump only, no Vec copy. Both pointers refer to the same
-    // 10⁴–10⁶-DOF `Vec<f64>` allocation.
-    let fresh = CgWarmState::from_arc(Arc::clone(&result.u));
-    (result, fresh)
+    solve_cg_with_warm_state_progress(k, f, prior, opts, mode, &mut |_, _| {
+        crate::solver::CgIterationControl::Continue
+    })
 }
 
 #[cfg(test)]

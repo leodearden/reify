@@ -429,22 +429,30 @@ pub fn solve_elastic_static_trampoline(
     //
     // Read the thread-local dispatch context installed by `run_compute_dispatch`
     // (task 4079). When a `SolverProgressSink` or cancel handle is present, build
-    // a per-iteration closure that: (a) emits a `SolverProgressUpdate` to the sink,
-    // THEN (b) returns `CgIterationControl::Cancel` if the handle is cancelled.
-    // Emit-before-cancel ordering matches the design decision: the cancel raised
-    // during emit terminates the SAME iteration.
+    // a per-iteration closure that: (a) emits a `SolverProgressUpdate` to the sink
+    // (throttled — see PROGRESS_STRIDE), THEN (b) polls the externally-set cancel
+    // handle and returns `Cancel` if set.  The sink has no access to the cancel
+    // handle and cannot raise a cancel through `on_iteration`; the emit-then-poll
+    // ordering simply ensures each iteration is reported before cancellation is
+    // checked.  The cancel check is NOT throttled so interruption is responsive.
     let ctx = crate::solver_progress::current_solve_dispatch_context();
     let (ctx_sink, ctx_cancel) = match ctx {
         Some((s, c)) => (s, c),
         None => (None, None),
     };
+    // Emit every PROGRESS_STRIDE iterations (and always on iter 1) to bound IPC
+    // overhead — a non-converging solve with max_iter=2000 fires at most
+    // ~200 emit calls rather than 2000.  The cancel poll is unaffected.
+    const PROGRESS_STRIDE: usize = 10;
     let mut progress_closure = |iter: usize, residual: f64| -> CgIterationControl {
         if let Some(ref sink) = ctx_sink {
-            sink.on_iteration(&crate::solver_progress::SolverProgressUpdate {
-                solver_kind: "cg",
-                iter: iter as u32,
-                residual,
-            });
+            if iter == 1 || iter % PROGRESS_STRIDE == 0 {
+                sink.on_iteration(&crate::solver_progress::SolverProgressUpdate {
+                    solver_kind: "cg",
+                    iter: iter as u32,
+                    residual,
+                });
+            }
         }
         if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
             CgIterationControl::Cancel
