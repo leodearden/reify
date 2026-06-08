@@ -690,6 +690,32 @@ pub(crate) fn compile_geometry_op(
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
             let target_id = resolve_geom_ref(target, step_handles)?;
+            // ApplyTransform fetches a Value (not f64) arg, so handle it before the
+            // f64_arg closure which borrows diagnostics mutably for the full match span.
+            if let reify_compiler::TransformKind::ApplyTransform = kind {
+                match eval_named_arg("transform", kind, args, values, functions, meta_map, diagnostics) {
+                    Some(v) => match decompose_transform_to_arrays(&v) {
+                        Some((rotation, translation)) => {
+                            return Ok(reify_ir::GeometryOp::ApplyTransform {
+                                target: target_id,
+                                rotation,
+                                translation,
+                            });
+                        }
+                        None => {
+                            diagnostics.push(Diagnostic::warning(
+                                "apply_transform dropped: 'transform' arg is not a valid Transform<3>"
+                                    .to_string(),
+                            ));
+                            return Err("apply_transform: 'transform' arg is not a valid Transform<3>".into());
+                        }
+                    },
+                    None => {
+                        // eval_named_arg already pushed a Warning for the missing arg.
+                        return Err("apply_transform: 'transform' arg is missing".into());
+                    }
+                }
+            }
             let mut f64_arg = |name: &str| -> Result<f64, String> {
                 eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     .ok_or_else(|| {
@@ -748,6 +774,7 @@ pub(crate) fn compile_geometry_op(
                         angle_rad: f64_arg("angle")?,
                     })
                 }
+                reify_compiler::TransformKind::ApplyTransform => unreachable!("handled above"),
             }
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {

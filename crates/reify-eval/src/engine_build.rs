@@ -1517,6 +1517,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             TransformKind::Rotate => Operation::TransformRotate,
             TransformKind::Scale => Operation::TransformScale,
             TransformKind::RotateAround => Operation::TransformRotateAround,
+            TransformKind::ApplyTransform => Operation::TransformApplyTransform,
         },
         CompiledGeometryOp::Pattern { kind, .. } => match kind {
             PatternKind::Linear => Operation::PatternLinear,
