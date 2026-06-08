@@ -1312,11 +1312,11 @@ mod tests {
         // boundary).
         let source = "\
 structure A {
-    param width: Scalar = 1mm
+    param width: Length = 1mm
     let a = width
 }
 structure B {
-    param width: Scalar = 2mm
+    param width: Length = 2mm
     let b = width
 }";
         let parsed = reify_syntax::parse(source, ModulePath::single("iso"));
@@ -1388,7 +1388,7 @@ structure B {
         // Every use of `x` therefore binds to the `let`, not the `param`.
         let source = "\
 structure S {
-    param x: Scalar = 1mm
+    param x: Length = 1mm
     let x = 2mm
     let uses = x + x
 }";
@@ -1451,7 +1451,7 @@ structure S {
         // uses); this test pins it so the behavior is intentional and locked.
         let source = "\
 structure S {
-    param x: Scalar = 1mm
+    param x: Length = 1mm
     let x = 2mm
     let uses = x + x
 }";
@@ -1539,9 +1539,9 @@ structure S {
         let source = "\
 structure S {
     param cond: Bool = true
-    param x: Scalar = 1mm
+    param x: Length = 1mm
     where cond {
-        param x: Scalar = 2mm
+        param x: Length = 2mm
         let inner = x
     }
     let outer = x
@@ -1628,7 +1628,7 @@ structure S {
         // substrings of one another so `occurrences`/`find` stay exact.
         let source = "\
 structure S {
-    param plain: Scalar = 1mm
+    param plain: Length = 1mm
     let derived = 2mm
     param bore: Length = auto
     sub widget = Hole(diameter: 6mm)
@@ -2022,9 +2022,9 @@ structure S {
         // — including the guarded-branch and port-body uses — resolves to it.
         let source = "\
 structure Probe {
-    param tracked: Scalar = 1mm
+    param tracked: Length = 1mm
     param enabled: Bool = true
-    param derived: Scalar = tracked * 2
+    param derived: Length = tracked * 2
     let scaled = tracked + 3mm
     constraint tracked > 0mm
     constraint tracked < 50mm
@@ -2035,7 +2035,7 @@ structure Probe {
         let inner = tracked
     }
     port mount : Flange {
-        param d: Scalar = tracked
+        param d: Length = tracked
     }
 }";
         let parsed = reify_syntax::parse(source, ModulePath::single("probe"));
@@ -2115,11 +2115,11 @@ structure Probe {
         // across the port boundary (Invariant 1 for nested scopes).
         let source = "\
 structure S {
-    param width: Scalar = 1mm
-    param outer: Scalar = width
+    param width: Length = 1mm
+    param outer: Length = width
     port mount : Flange {
-        param width: Scalar = 2mm
-        param inner: Scalar = width
+        param width: Length = 2mm
+        param inner: Length = width
     }
 }";
         let parsed = reify_syntax::parse(source, ModulePath::single("portredec"));
@@ -2221,10 +2221,10 @@ structure S {
         // falls inside the depth-0 entity region and resolves to the outer binding.
         let source = "\
 structure S {
-    param tracked: Scalar = 1mm
+    param tracked: Length = 1mm
     param enabled: Bool = true
     where enabled {
-        param tracked: Scalar = 2mm
+        param tracked: Length = 2mm
     }
     forall v in tracked: constraint v > 0mm
 }";
@@ -2360,7 +2360,7 @@ structure S {
         // nested-scope descent (step-4). This part is RED after step-2.
         let source_nested = "\
 structure S {
-    param diameter: Scalar = 5mm
+    param diameter: Length = 5mm
     param enabled: Bool = true
     sub h = Hole(bore: 3mm)
     where enabled {
@@ -2453,10 +2453,10 @@ structure S {
         // is the closest parser-reachable sibling to cover the child-scope descent.
         let source = "\
 structure S {
-    param diameter: Scalar = 5mm
+    param diameter: Length = 5mm
     sub h = Hole(bore: 3mm)
     port out : Flange {
-        param width: Scalar = h.diameter
+        param width: Length = h.diameter
     }
 }";
         let parsed = reify_syntax::parse(source, ModulePath::single("portbody"));
@@ -2511,7 +2511,7 @@ structure S {
         // mis-resolve to the unrelated `param diameter` binding.
         let source = "\
 structure S {
-    param diameter: Scalar = 5mm
+    param diameter: Length = 5mm
     sub h = Hole(bore: 3mm)
     let x = h.diameter
 }";

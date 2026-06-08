@@ -33,7 +33,7 @@ fn compile_ok(src: &str, module_name: &str) -> reify_compiler::CompiledModule {
 fn single_minimize_lowers_to_one_term_weighted_sum() {
     let module = compile_ok(
         r#"structure S {
-    param x: Scalar = auto
+    param x: Length = auto
     minimize x
 }"#,
         "test_single_min",
@@ -79,8 +79,8 @@ fn single_minimize_lowers_to_one_term_weighted_sum() {
 fn single_maximize_lowers_to_one_term_weighted_sum() {
     let module = compile_ok(
         r#"structure S {
-    param w: Scalar = 10mm
-    param h: Scalar = 20mm
+    param w: Length = 10mm
+    param h: Length = 20mm
     let area = w * h
     maximize area
 }"#,
@@ -119,8 +119,8 @@ fn single_maximize_lowers_to_one_term_weighted_sum() {
 fn two_minimize_decls_lower_to_two_term_weighted_sum_no_conflict() {
     let module = compile_ok(
         r#"structure S {
-    param mass: Scalar = auto
-    param cost: Scalar = auto
+    param mass: Length = auto
+    param cost: Length = auto
     minimize mass
     minimize cost
 }"#,
@@ -167,7 +167,7 @@ fn two_minimize_decls_lower_to_two_term_weighted_sum_no_conflict() {
 fn no_objective_when_absent() {
     let module = compile_ok(
         r#"structure S {
-    param x: Scalar = 5mm
+    param x: Length = 5mm
 }"#,
         "test_no_obj",
     );

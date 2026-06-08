@@ -254,7 +254,7 @@ fn handle_parse_errors_gracefully() {
                 where_clause: None,
                 annotations: Vec::new(),
                 span: SourceSpan::new(0, 13),
-                content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
+                content_hash: ContentHash::of_str("param width: Length = 80mm"),
             })],
             span: SourceSpan::new(0, 50),
             content_hash: ContentHash::of_str("structure Partial"),

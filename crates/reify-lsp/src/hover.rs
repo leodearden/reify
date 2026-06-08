@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn hover_on_width_param_shows_type_info() {
         let source = reify_test_support::bracket_source();
-        // 'width' starts at byte 30 in "param width: Scalar = 80mm"
+        // 'width' starts at byte 30 in "param width: Length = 80mm"
         // Line 1, char ~6 (after 4-space indent + 'param ')
         let position = Position::new(1, 10); // on 'width'
         let md = hover_markdown(source, position).expect("hover should return info for width");
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn hover_on_unknown_word_returns_none() {
         // A source where a word is not a member, structure, or keyword
-        let source = "structure Foo {\n  param x: Scalar = unknownword\n}";
+        let source = "structure Foo {\n  param x: Length = unknownword\n}";
         // 'unknownword' is on line 1 around char 22
         let position = Position::new(1, 22);
         // unknownword is not a recognized keyword, member, or structure
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn hover_on_documented_param_shows_doc() {
         let source =
-            "structure Bracket {\n    /// The width dimension.\n    param width: Scalar = 80mm\n}";
+            "structure Bracket {\n    /// The width dimension.\n    param width: Length = 80mm\n}";
         let position = Position::new(2, 10); // on 'width'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn hover_on_documented_let_shows_doc() {
-        let source = "structure Bracket {\n    param width: Scalar = 80mm\n    param height: Scalar = 40mm\n    /// Computed volume.\n    let area = width * height\n}";
+        let source = "structure Bracket {\n    param width: Length = 80mm\n    param height: Length = 40mm\n    /// Computed volume.\n    let area = width * height\n}";
         let position = Position::new(4, 8); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -463,7 +463,7 @@ mod tests {
     #[test]
     fn hover_on_documented_structure_shows_doc() {
         let source =
-            "/// A mounting bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+            "/// A mounting bracket.\nstructure Bracket {\n    param width: Length = 80mm\n}";
         let position = Position::new(1, 12); // on 'Bracket'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn hover_on_fn_name_shows_signature_and_doc() {
-        let source = "/// Compute area.\nfn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let source = "/// Compute area.\nfn area(w: Length, h: Length) -> Scalar { w * h }";
         let position = Position::new(1, 4); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn hover_on_fn_name_without_doc_shows_signature() {
-        let source = "fn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let source = "fn area(w: Length, h: Length) -> Scalar { w * h }";
         let position = Position::new(0, 4); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn hover_on_trait_name_shows_doc() {
-        let source = "/// Rigid body trait.\ntrait Rigid {\n    param mass: Scalar\n}";
+        let source = "/// Rigid body trait.\ntrait Rigid {\n    param mass: Length\n}";
         let position = Position::new(1, 7); // on 'Rigid'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -559,7 +559,7 @@ mod tests {
 
     #[test]
     fn hover_on_occurrence_name_shows_occurrence_keyword() {
-        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n}";
         // 'Joint' starts after 'occurrence def ' = col 15
         let position = Position::new(0, 16);
         let md =
@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn hover_on_occurrence_member_shows_param_info() {
-        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n}";
         // 'diameter' on line 1, col 10
         let position = Position::new(1, 10);
         let md = hover_markdown(source, position)
@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn hover_on_documented_occurrence_shows_doc() {
         let source =
-            "/// A joint process.\noccurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+            "/// A joint process.\noccurrence def Joint {\n    param diameter: Length = 10mm\n}";
         // 'Joint' starts after 'occurrence def ' = col 15 on line 1
         let position = Position::new(1, 16);
         let md = hover_markdown(source, position)
@@ -609,9 +609,9 @@ mod tests {
     fn hover_on_structure_with_where_block_shows_correct_counts() {
         let source = r#"structure S {
     param a : Bool = true
-    param b : Scalar = 1mm
+    param b : Length = 1mm
     where a {
-        param guarded_x : Scalar = 5mm
+        param guarded_x : Length = 5mm
         let guarded_y = 2
     }
     constraint b > 0mm
@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn hover_multiline_doc_renders_all_lines() {
-        let source = "/// First line.\n/// Second line.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let source = "/// First line.\n/// Second line.\nstructure Bracket {\n    param width: Length = 80mm\n}";
         let position = Position::new(2, 12); // on 'Bracket'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn hover_doc_with_blank_line_paragraph() {
-        let source = "/// First paragraph.\n///\n/// Second paragraph.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let source = "/// First paragraph.\n///\n/// Second paragraph.\nstructure Bracket {\n    param width: Length = 80mm\n}";
         let position = Position::new(3, 12); // on 'Bracket'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -674,7 +674,7 @@ mod tests {
     #[test]
     fn hover_on_documented_param_reference_in_expr_shows_doc() {
         // Hover on 'width' used in a let expression, not at the declaration site
-        let source = "structure Bracket {\n    /// The width.\n    param width: Scalar = 80mm\n    let doubled = width * 2\n}";
+        let source = "structure Bracket {\n    /// The width.\n    param width: Length = 80mm\n    let doubled = width * 2\n}";
         let position = Position::new(3, 18); // on 'width' in 'width * 2'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -705,10 +705,10 @@ mod tests {
     fn hover_no_fallback_to_other_structure_member() {
         let source = "\
 structure A {
-    param unique_a: Scalar = 5mm
+    param unique_a: Length = 5mm
 }
 structure B {
-    param unique_b: Scalar = 10mm
+    param unique_b: Length = 10mm
     let ref_a = unique_a
 }";
         // 'unique_a' in 'let ref_a = unique_a' is on line 5, col 16
@@ -728,7 +728,7 @@ structure B {
         // Hover on 'width' inside B should show B's evaluated value (0.02 m),
         // NOT A's value (0.005 m). This tests the bug scenario where
         // compute_hover used templates.first() for value lookup.
-        let source = "structure A {\n    param width: Scalar = 5mm\n}\nstructure B {\n    param width: Scalar = 20mm\n}";
+        let source = "structure A {\n    param width: Length = 5mm\n}\nstructure B {\n    param width: Length = 20mm\n}";
         // 'width' inside B is on line 4, col 10
         let position = Position::new(4, 10);
         let md = hover_markdown(source, position).expect("hover should return info for width in B");
@@ -748,7 +748,7 @@ structure B {
         // that references 'x'. Hover on 'x' in the let expression within B
         // should show B's value (0.02 m), not A's value (0.005 m).
         // This tests that value scoping works for member references in expressions.
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Scalar = 20mm\n    let doubled = x * 2\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param x: Length = 20mm\n    let doubled = x * 2\n}";
         // 'x' in 'let doubled = x * 2' is on line 5, col 18
         let position = Position::new(5, 18);
         let md = hover_markdown(source, position)
@@ -767,7 +767,7 @@ structure B {
     fn hover_on_shared_member_in_second_structure() {
         // Two structures with identically-named member 'width' but different types.
         // Hover on 'width' inside B should show Bool, not Scalar.
-        let source = "structure A {\n    param width: Scalar = 5mm\n}\nstructure B {\n    param width: Bool = true\n}";
+        let source = "structure A {\n    param width: Length = 5mm\n}\nstructure B {\n    param width: Bool = true\n}";
         // 'width' inside B is on line 4, col 10
         let position = Position::new(4, 10);
         let md = hover_markdown(source, position).expect("hover should return info for width in B");
@@ -793,7 +793,7 @@ structure B {
 
     #[test]
     fn hover_on_bare_auto_param_shows_auto() {
-        let source = "structure S {\n    param x: Scalar = auto\n}";
+        let source = "structure S {\n    param x: Length = auto\n}";
         let position = Position::new(1, 10); // on 'x'
         let md =
             hover_markdown(source, position).expect("hover should return info for auto param x");
@@ -809,7 +809,7 @@ structure B {
 
     #[test]
     fn hover_on_auto_free_param_shows_auto_free() {
-        let source = "structure S {\n    param x: Scalar = auto(free)\n}";
+        let source = "structure S {\n    param x: Length = auto(free)\n}";
         let position = Position::new(1, 10); // on 'x'
         let md = hover_markdown(source, position)
             .expect("hover should return info for auto(free) param x");

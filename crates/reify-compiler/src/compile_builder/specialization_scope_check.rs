@@ -183,7 +183,7 @@ mod tests {
         // therefore no diagnostics fire.
         let parsed = parse_module(
             "structure S {
-                param x : Scalar = 5mm
+                param x : Length = 5mm
                 sub a = Foo()
                 sub b : List<Bar>
             }",

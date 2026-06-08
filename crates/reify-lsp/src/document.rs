@@ -300,7 +300,7 @@ mod tests {
     fn parsed_module_caches_parse() {
         let mut store = DocumentStore::new();
         let uri = test_uri("cache");
-        let source = "structure A {\n    param x: Scalar = 1mm\n}";
+        let source = "structure A {\n    param x: Length = 1mm\n}";
         store.open(uri.clone(), source.to_string(), 1);
         let doc = store.get(&uri).expect("document should exist");
         let a = doc.parsed_module();
@@ -321,7 +321,7 @@ mod tests {
     fn parsed_module_reflects_text() {
         let mut store = DocumentStore::new();
         let uri = test_uri("reflect");
-        let source = "structure A {\n    param x: Scalar = 1mm\n}\nstructure B {\n    param y: Scalar = 2mm\n}";
+        let source = "structure A {\n    param x: Length = 1mm\n}\nstructure B {\n    param y: Length = 2mm\n}";
         store.open(uri.clone(), source.to_string(), 1);
         let doc = store.get(&uri).expect("document should exist");
         let parsed = doc.parsed_module();
@@ -343,7 +343,7 @@ mod tests {
         // v1: a single declaration.
         store.open(
             uri.clone(),
-            "structure A {\n    param x: Scalar = 1mm\n}".to_string(),
+            "structure A {\n    param x: Length = 1mm\n}".to_string(),
             1,
         );
         let a = {
@@ -355,7 +355,7 @@ mod tests {
         // v2: two declarations — fresh DocumentState with an empty cache.
         store.update(
             &uri,
-            "structure A {\n    param x: Scalar = 1mm\n}\nstructure B {\n    param y: Scalar = 2mm\n}"
+            "structure A {\n    param x: Length = 1mm\n}\nstructure B {\n    param y: Length = 2mm\n}"
                 .to_string(),
             2,
         );

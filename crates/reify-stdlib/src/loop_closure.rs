@@ -738,7 +738,7 @@ fn jointvalue_from_bound_value(joint: &Value, bound: &Value) -> Option<JointValu
 /// 3. Fixed joint sentinel: `JointValue::Scalar(0.0)` (snapshot.rs's
 ///    `transform_at` arm ignores the second argument for fixed joints).
 /// 4. Range-midpoint fallback via [`joint_range_midpoint`] (per-kind
-///    surface: Scalar / Planar / Sphere / Cyl).
+///    surface: Length / Planar / Sphere / Cyl).
 ///
 /// Returns None for malformed joint Maps, unknown kinds, or joints with no
 /// resolvable value (no binding AND no midpoint — e.g. a planar joint with

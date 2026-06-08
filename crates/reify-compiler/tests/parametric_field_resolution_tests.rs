@@ -117,7 +117,7 @@ structure def Body {
 "#;
 
 /// `Field<Point3<Length>, Tensor<2, 3, Pressure>>` must resolve to
-/// `Type::Field { domain: Point3(Length), codomain: Tensor { rank:2, n:3, quantity:Scalar(PRESSURE) } }`.
+/// `Type::Field { domain: Point3(Length), codomain: Tensor { rank:2, n:3, quantity: Scalar<Pressure> } }`.
 #[test]
 fn field_point3_to_tensor_resolves_to_typed_field() {
     assert_param_type(

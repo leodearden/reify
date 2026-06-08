@@ -209,7 +209,7 @@ fn assert_compiled_module_parity(
 fn compile_with_prelude_context_parity_empty_prelude() {
     let source = r#"
 structure def S {
-    param x : Scalar = 42
+    param x : Length = 42
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("parity_empty"));

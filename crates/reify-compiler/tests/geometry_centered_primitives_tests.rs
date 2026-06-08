@@ -325,8 +325,8 @@ fn cylinder_centered_inferred_traits_all() {
 #[test]
 fn cylinder_centered_realization_root_is_translate() {
     let source = r#"structure def S {
-    param r: Scalar = 5mm
-    param h: Scalar = 20mm
+    param r: Length = 5mm
+    param h: Length = 20mm
     let body = cylinder_centered(r, h)
 }"#;
     let compiled = compile_no_errors(source);

@@ -4350,7 +4350,7 @@ mod tests {
 
             let ty_span = p.type_expr.as_ref().unwrap().span;
             let ty_text = &source[ty_span.start as usize..ty_span.end as usize];
-            assert_eq!(ty_text, "Scalar", "width type text");
+            assert_eq!(ty_text, "Length", "width type text");
         }
     }
 
@@ -4431,9 +4431,9 @@ mod tests {
     #[test]
     fn error_recovery_partial_parse() {
         let source = r#"structure Broken {
-    param width: Scalar = 80mm
+    param width: Length = 80mm
     param !!!invalid!!!
-    param height: Scalar = 100mm
+    param height: Length = 100mm
 }"#;
         let module = parse(source, ModulePath::single("broken"));
 
@@ -4545,7 +4545,7 @@ mod tests {
     #[test]
     fn parse_minimize_declaration() {
         let source = r#"structure S {
-    param volume: Scalar = 100mm
+    param volume: Length = 100mm
     minimize volume
 }"#;
         let module = parse(source, ModulePath::single("test_min"));
@@ -4574,7 +4574,7 @@ mod tests {
     #[test]
     fn parse_maximize_declaration() {
         let source = r#"structure S {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     maximize thickness
 }"#;
         let module = parse(source, ModulePath::single("test_max"));
@@ -4602,8 +4602,8 @@ mod tests {
     #[test]
     fn parse_minimize_complex_expression() {
         let source = r#"structure S {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
+    param width: Length = 80mm
+    param height: Length = 100mm
     minimize width * height
 }"#;
         let module = parse(source, ModulePath::single("test_min_complex"));
@@ -4630,8 +4630,8 @@ mod tests {
     #[test]
     fn parse_minimize_with_other_members() {
         let source = r#"structure S {
-    param w: Scalar = 80mm
-    param h: Scalar = 100mm
+    param w: Length = 80mm
+    param h: Length = 100mm
     let vol = w * h
     constraint w > 0mm
     minimize w
@@ -4671,7 +4671,7 @@ mod tests {
     #[test]
     fn minimize_span_and_hash() {
         let source = r#"structure S {
-    param x: Scalar = 5mm
+    param x: Length = 5mm
     minimize x
 }"#;
         let module = parse(source, ModulePath::single("test_min_span"));
@@ -4710,7 +4710,7 @@ mod tests {
 
     #[test]
     fn parse_enum_declaration() {
-        let source = "enum Direction { In, Out, Bidi }\nstructure S { param x: Scalar = 5mm }";
+        let source = "enum Direction { In, Out, Bidi }\nstructure S { param x: Length = 5mm }";
         let module = parse(source, ModulePath::single("test_enum"));
         assert!(
             module.errors.is_empty(),
@@ -5264,7 +5264,7 @@ mod tests {
 
     #[test]
     fn parse_simple_function_definition() {
-        let source = "fn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let source = "fn area(w: Length, h: Length) -> Length { w * h }";
         let module = parse(source, ModulePath::single("test_fn"));
         assert!(
             module.errors.is_empty(),
@@ -5282,15 +5282,15 @@ mod tests {
         assert_eq!(f.params.len(), 2);
         assert_eq!(f.params[0].name, "w");
         assert!(
-            matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Scalar")
+            matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Length")
         );
         assert_eq!(f.params[1].name, "h");
         assert!(
-            matches!(&f.params[1].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Scalar")
+            matches!(&f.params[1].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Length")
         );
         assert!(f.return_type.is_some());
         assert!(
-            matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Scalar")
+            matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Length")
         );
         assert!(f.body.as_ref().unwrap().let_bindings.is_empty());
         assert!(matches!(&f.body.as_ref().unwrap().result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
@@ -5653,7 +5653,7 @@ mod tests {
     /// which match any connect_body arm — so the catch-all should fire for each.
     #[test]
     fn lower_connect_body_catch_all_emits_for_unexpected_named_children() {
-        let source = "constraint def Eq { param x: Scalar  x > 0 }";
+        let source = "constraint def Eq { param x: Length  x > 0 }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -5727,7 +5727,7 @@ mod tests {
         // Pass a constraint_definition node to lower_port_body. Its named
         // children (identifier, param_declaration, constraint_def_predicate)
         // don't match any port_body arm and should hit the catch-all.
-        let source = "constraint def Eq { param x: Scalar  x > 0 }";
+        let source = "constraint def Eq { param x: Length  x > 0 }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -5767,7 +5767,7 @@ mod tests {
         // diagnostic. The source is syntactically valid, so zero errors is the
         // correct assertion (not just "no 'unexpected' errors").
         let errors = lower_port_body_directly(
-            "structure S { port a : in T { /* comment */ param x: Scalar = 1 } }",
+            "structure S { port a : in T { /* comment */ param x: Length = 1 } }",
         );
         assert!(
             errors.is_empty(),
@@ -5793,7 +5793,7 @@ mod tests {
         // don't match constraint_def arms and should hit the catch-all.
         // We use structure_definition because it has a "name" field (required
         // by lower_constraint_def) and body children outside constraint scope.
-        let source = "structure S { port a : in T { param x: Scalar = 1 }  sub b = T() }";
+        let source = "structure S { port a : in T { param x: Length = 1 }  sub b = T() }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -5833,7 +5833,7 @@ mod tests {
         // diagnostic. The source is syntactically valid, so zero errors is the
         // correct assertion (not just "no 'unexpected' errors").
         let errors = lower_constraint_def_directly(
-            "constraint def Eq { /* comment */ param x: Scalar  x > 0 }",
+            "constraint def Eq { /* comment */ param x: Length  x > 0 }",
         );
         assert!(
             errors.is_empty(),
@@ -5849,7 +5849,7 @@ mod tests {
         // Pass a structure_definition node to lower_source_file. Its named
         // children (identifier, param_declaration, port_declaration, etc.)
         // don't match any top-level declaration kind and should hit the catch-all.
-        let source = "structure S { param x: Scalar = 1  port a : in T { param y: Scalar = 2 } }";
+        let source = "structure S { param x: Length = 1  port a : in T { param y: Length = 2 } }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -5879,7 +5879,7 @@ mod tests {
         // Comments are tree-sitter extras — they must NOT trigger the catch-all
         // diagnostic. Verify that a source file with a block comment before a
         // valid structure produces no errors mentioning "unexpected".
-        let source = "/* comment */\nstructure S { param x: Scalar = 1 }";
+        let source = "/* comment */\nstructure S { param x: Length = 1 }";
         let module = parse(source, ModulePath::single("test"));
         assert!(
             !module
@@ -5895,7 +5895,7 @@ mod tests {
 
     #[test]
     fn doc_comment_on_structure_is_extracted() {
-        let src = "/// A bracket for mounting.\nstructure Bracket {\n  param w: Scalar = 1\n}";
+        let src = "/// A bracket for mounting.\nstructure Bracket {\n  param w: Length = 1\n}";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -5906,7 +5906,7 @@ mod tests {
 
     #[test]
     fn multi_line_doc_comment_joined() {
-        let src = "/// Line one.\n/// Line two.\nstructure S {\n  param x: Scalar = 1\n}";
+        let src = "/// Line one.\n/// Line two.\nstructure S {\n  param x: Length = 1\n}";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -5917,7 +5917,7 @@ mod tests {
 
     #[test]
     fn no_doc_comment_yields_none() {
-        let src = "structure S {\n  param x: Scalar = 1\n}";
+        let src = "structure S {\n  param x: Length = 1\n}";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -5928,7 +5928,7 @@ mod tests {
 
     #[test]
     fn regular_comment_not_treated_as_doc() {
-        let src = "// Just a comment\nstructure S {\n  param x: Scalar = 1\n}";
+        let src = "// Just a comment\nstructure S {\n  param x: Length = 1\n}";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -5942,7 +5942,7 @@ mod tests {
 
     #[test]
     fn doc_comment_on_fn_is_extracted() {
-        let src = "/// Compute area.\nfn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let src = "/// Compute area.\nfn area(w: Length, h: Length) -> Length { w * h }";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Function(f) => f,
@@ -5964,7 +5964,7 @@ mod tests {
 
     #[test]
     fn doc_comment_on_trait_is_extracted() {
-        let src = "/// A rigid body.\ntrait Rigid {\n  param mass: Scalar\n}";
+        let src = "/// A rigid body.\ntrait Rigid {\n  param mass: Length\n}";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Trait(t) => t,

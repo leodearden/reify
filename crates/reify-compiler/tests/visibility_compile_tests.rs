@@ -8,7 +8,7 @@
 #[test]
 fn compile_param_visibility_public() {
     let source = r#"structure S {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
     let compiled = reify_compiler::compile(&parsed);
@@ -25,7 +25,7 @@ fn compile_param_visibility_public() {
 #[test]
 fn compile_let_visibility_private_by_default() {
     let source = r#"structure S {
-    param a: Scalar = 1mm
+    param a: Length = 1mm
     let vol = a * 2
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
@@ -45,8 +45,8 @@ fn compile_let_visibility_private_by_default() {
 #[test]
 fn compile_pub_let_visibility_public() {
     let source = r#"structure S {
-    param w: Scalar = 80mm
-    param h: Scalar = 100mm
+    param w: Length = 80mm
+    param h: Length = 100mm
     pub let volume = w * h
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
@@ -71,10 +71,10 @@ fn compile_pub_let_visibility_public() {
 #[test]
 fn compile_template_visibility() {
     let source = r#"pub structure Bracket {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
 }
 structure Internal {
-    param x: Scalar = 1mm
+    param x: Length = 1mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
     assert!(
@@ -100,10 +100,10 @@ structure Internal {
 #[test]
 fn compile_sub_visibility_public() {
     let source = r#"structure Child {
-    param h: Scalar = 10mm
+    param h: Length = 10mm
 }
 structure Parent {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
     sub rib = Child(h: w)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("vis_test"));
