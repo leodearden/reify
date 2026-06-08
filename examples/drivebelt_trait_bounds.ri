@@ -84,7 +84,7 @@ structure def CeramicLiner : Refractory {
     // ThermallyCharacterized
     param thermal_conductivity : ThermalConductivity = 30.0W/(m*K)
     param specific_heat : SpecificHeat = 880.0J/(kg*K)
-    param thermal_expansion : ThermalExpansion = undef  // 8.0e-6 /K coefficient of linear expansion (undef: 1/K has no natural unit literal)
+    param thermal_expansion : ThermalExpansion = 0.000008 / 1K  // 8.0e-6 K⁻¹ coefficient of linear expansion
     param melting_point : Temperature = 2072.0K
     param max_service_temperature : Temperature = 2050.0K // clears Refractory >= 1500K guard
     // glass_transition omitted — genuinely undefined for crystalline/refractory materials;
@@ -131,7 +131,7 @@ structure def BorosilicateGlass : OpticallyCharacterized {
     // alias introduced by #3115; reference_thickness tightened to Length by #3113;
     // refractive_index and transmittance remain Real (genuine-dimensionless).
     param refractive_index : Real = 1.52        // dimensionless (BK7 / N-BK7)
-    param absorption_coefficient : AbsorptionCoeff = undef  // ~0.001 /m, very low for optical glass (undef: 1/m has no natural unit literal)
+    param absorption_coefficient : AbsorptionCoeff = 0.001 / 1m  // ~0.001 m⁻¹, very low for optical glass
     param transmittance : Real = 0.92           // 92% at reference thickness
     param reference_thickness : Length = 1cm   // 1cm reference sample thickness
 }

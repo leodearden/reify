@@ -239,7 +239,7 @@ structure def CeramicLiner : Refractory {
     param name : String = "alumina"
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
-    param thermal_expansion : ThermalExpansion = undef
+    param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
     param melting_point : Temperature = 2345.0K
     param max_service_temperature : Temperature = 2050.0K
     param glass_transition : Temperature = 0.0K
@@ -325,7 +325,7 @@ structure RefractorySatisfied : Refractory {
     param name : String = "refractory_above_threshold"
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
-    param thermal_expansion : ThermalExpansion = undef
+    param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
     param max_service_temperature : Temperature = 2050.0K
 }
 "#;
@@ -386,7 +386,7 @@ structure RefractoryViolated : Refractory {
     param name : String = "refractory_below_threshold"
     param thermal_conductivity : ThermalConductivity = 30.0 * 1W / (1m * 1K)
     param specific_heat : SpecificHeat = 880.0 * 1J / (1kg * 1K)
-    param thermal_expansion : ThermalExpansion = undef
+    param thermal_expansion : ThermalExpansion = 0.0000081 / 1K
     param max_service_temperature : Temperature = 1000.0K
 }
 "#;
