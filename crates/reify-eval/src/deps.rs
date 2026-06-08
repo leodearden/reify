@@ -175,10 +175,10 @@ impl ReverseDependencyIndex {
                 // Use a temporary set to dedup (collect_value_refs preserves duplicates).
                 let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
                 for cell in &trace.reads {
-                    if let Some(rid) = realization_by_cell.get(cell) {
-                        if seen_rids.insert(rid.clone()) {
-                            index.add_realization(rid.clone(), node_id.clone());
-                        }
+                    if let Some(rid) = realization_by_cell.get(cell)
+                        && seen_rids.insert(rid.clone())
+                    {
+                        index.add_realization(rid.clone(), node_id.clone());
                     }
                 }
             }
@@ -198,18 +198,14 @@ impl ReverseDependencyIndex {
             // Constraint→realization edge: walk expr for geometry-query calls.
             let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
             cnode.expr.walk(&mut |node| {
-                if crate::geometry_ops::is_geometry_query_call(node) {
-                    if let reify_ir::CompiledExprKind::FunctionCall { args, .. } = &node.kind {
-                        if let Some(arg) = args.first() {
-                            if let reify_ir::CompiledExprKind::ValueRef(cell_id) = &arg.kind {
-                                if let Some(rid) = realization_by_cell.get(cell_id) {
-                                    if seen_rids.insert(rid.clone()) {
-                                        index.add_realization(rid.clone(), node_id.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
+                if crate::geometry_ops::is_geometry_query_call(node)
+                    && let reify_ir::CompiledExprKind::FunctionCall { args, .. } = &node.kind
+                    && let Some(arg) = args.first()
+                    && let reify_ir::CompiledExprKind::ValueRef(cell_id) = &arg.kind
+                    && let Some(rid) = realization_by_cell.get(cell_id)
+                    && seen_rids.insert(rid.clone())
+                {
+                    index.add_realization(rid.clone(), node_id.clone());
                 }
             });
         }
@@ -414,10 +410,10 @@ pub fn build_trace_map_and_fields(
         if !trace.reads.is_empty() {
             let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
             for cell in &trace.reads {
-                if let Some(rid) = realization_by_cell.get(cell) {
-                    if seen_rids.insert(rid.clone()) {
-                        trace.realization_reads.push(rid.clone());
-                    }
+                if let Some(rid) = realization_by_cell.get(cell)
+                    && seen_rids.insert(rid.clone())
+                {
+                    trace.realization_reads.push(rid.clone());
                 }
             }
         }
@@ -433,18 +429,14 @@ pub fn build_trace_map_and_fields(
         // realization, add that realization to the forward realization_reads.
         let mut seen_rids: HashSet<RealizationNodeId> = HashSet::new();
         cnode.expr.walk(&mut |node| {
-            if crate::geometry_ops::is_geometry_query_call(node) {
-                if let reify_ir::CompiledExprKind::FunctionCall { args, .. } = &node.kind {
-                    if let Some(arg) = args.first() {
-                        if let reify_ir::CompiledExprKind::ValueRef(cell_id) = &arg.kind {
-                            if let Some(rid) = realization_by_cell.get(cell_id) {
-                                if seen_rids.insert(rid.clone()) {
-                                    trace.realization_reads.push(rid.clone());
-                                }
-                            }
-                        }
-                    }
-                }
+            if crate::geometry_ops::is_geometry_query_call(node)
+                && let reify_ir::CompiledExprKind::FunctionCall { args, .. } = &node.kind
+                && let Some(arg) = args.first()
+                && let reify_ir::CompiledExprKind::ValueRef(cell_id) = &arg.kind
+                && let Some(rid) = realization_by_cell.get(cell_id)
+                && seen_rids.insert(rid.clone())
+            {
+                trace.realization_reads.push(rid.clone());
             }
         });
         traces.insert(NodeId::Constraint(cnode.id.clone()), trace);
@@ -554,19 +546,19 @@ fn resolve_sub_ref(
     consuming_entity: &str,
     graph: &crate::graph::EvaluationGraph,
 ) -> Option<RealizationNodeId> {
-    let member = name.splitn(2, '.').nth(1)?;
+    let member = name.split_once('.')?.1;
     let mut found: Option<RealizationNodeId> = None;
     for (_, rnode) in graph.realizations.iter() {
         if rnode.id.entity == consuming_entity {
             continue; // own-entity — not a cross-component source
         }
-        if let Some(ref cell) = rnode.geometry_cell {
-            if cell.member == member {
-                if found.is_some() {
-                    return None; // ambiguous — more than one entity exports this member name
-                }
-                found = Some(rnode.id.clone());
+        if let Some(ref cell) = rnode.geometry_cell
+            && cell.member == member
+        {
+            if found.is_some() {
+                return None; // ambiguous — more than one entity exports this member name
             }
+            found = Some(rnode.id.clone());
         }
     }
     found
@@ -594,10 +586,10 @@ fn extract_realization_edges(
         match op {
             reify_compiler::CompiledGeometryOp::Boolean { left, right, .. } => {
                 for geom_ref in [left, right] {
-                    if let reify_compiler::GeomRef::Sub(ref name) = *geom_ref {
-                        if let Some(rid) = resolve_sub_ref(name, consuming_entity, graph) {
-                            result.push(rid);
-                        }
+                    if let reify_compiler::GeomRef::Sub(ref name) = *geom_ref
+                        && let Some(rid) = resolve_sub_ref(name, consuming_entity, graph)
+                    {
+                        result.push(rid);
                     }
                     // GeomRef::Step → skip (intra-node, no cross-realization edge)
                 }
@@ -605,19 +597,19 @@ fn extract_realization_edges(
             reify_compiler::CompiledGeometryOp::Modify { target, .. }
             | reify_compiler::CompiledGeometryOp::Transform { target, .. }
             | reify_compiler::CompiledGeometryOp::Pattern { target, .. } => {
-                if let reify_compiler::GeomRef::Sub(ref name) = *target {
-                    if let Some(rid) = resolve_sub_ref(name, consuming_entity, graph) {
-                        result.push(rid);
-                    }
+                if let reify_compiler::GeomRef::Sub(ref name) = *target
+                    && let Some(rid) = resolve_sub_ref(name, consuming_entity, graph)
+                {
+                    result.push(rid);
                 }
                 // GeomRef::Step → skip (intra-node, no cross-realization edge)
             }
             reify_compiler::CompiledGeometryOp::Sweep { profiles, .. } => {
                 for geom_ref in profiles {
-                    if let reify_compiler::GeomRef::Sub(ref name) = *geom_ref {
-                        if let Some(rid) = resolve_sub_ref(name, consuming_entity, graph) {
-                            result.push(rid);
-                        }
+                    if let reify_compiler::GeomRef::Sub(ref name) = *geom_ref
+                        && let Some(rid) = resolve_sub_ref(name, consuming_entity, graph)
+                    {
+                        result.push(rid);
                     }
                     // GeomRef::Step → skip (intra-node, no cross-realization edge)
                 }
