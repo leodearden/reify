@@ -1,0 +1,46 @@
+# release-sensitive-crates.txt — declared set of workspace crates with release-sensitive tests
+#
+# Purpose:
+#   This file is the single source of truth for which crates have tests whose
+#   behavior differs between debug and release builds.  The merge-gate RELEASE
+#   pass (verify.sh --profile both --scope all) runs only these crates in release,
+#   while the DEBUG pass remains full-workspace.  This is sound because the only
+#   debug-vs-release behavioral delta is debug_assertions + overflow-checks
+#   (3rd-party numeric deps are already opt-level=3 in both profiles per
+#   Cargo.toml:155-158), so non-sensitive crates are fully covered by the debug pass.
+#
+# How to verify:
+#   Run the two anchored greps below over the workspace and collect their crate hits:
+#
+#   Mechanism A — tests ignored in debug, exercised only in release:
+#     grep -rlE '^\s*#\[cfg_attr\(debug_assertions,\s*ignore' \
+#         --include='*.rs' crates/ gui/src-tauri/
+#
+#   Mechanism B — code compiled only in release (debug_assert! elided):
+#     grep -rlE '^\s*#\[cfg\(not\(debug_assertions\)\)\]' \
+#         --include='*.rs' crates/ gui/src-tauri/
+#
+#   Map each hit file to its crate (crates/<dir> → <dir>; gui/src-tauri/* → reify-gui).
+#   The anchoring on '^\s*#\[' excludes doc-comment false positives.
+#   The union of the two hit sets (sorted, unique) must equal this list.
+#
+# Cross-references:
+#   scripts/release-scope-lib.sh — provides release_declared_set (reads this file)
+#     and release_sensitive_set (derives from the anchored grep)
+#   tests/infra/test_release_scoped_scope.sh — drift catcher: asserts this list
+#     equals the grep-derived sensitive set
+#   scripts/cargo-test-occt-gated.sh — used for the OCCT-touching release crate
+#     (reify-eval) which stays flock-gated in release
+#
+# When to update:
+#   Add a crate when it gains a test gated on debug_assertions or not(debug_assertions).
+#   Remove a crate when all such tests are removed.
+#   The infra test will fail (blocking CI) if this list drifts from the grep-derived set.
+
+reify-core
+reify-eval
+reify-expr
+reify-gui
+reify-runtime
+reify-solver-elastic
+reify-stdlib
