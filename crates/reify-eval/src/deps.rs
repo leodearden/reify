@@ -214,12 +214,23 @@ impl ReverseDependencyIndex {
             });
         }
 
-        // Realizations: extract deps from operation args
+        // Realizations: extract VC deps from operation args (value-reads), plus
+        // realization→realization edges from GeomRef::Sub operands (step-6: Boolean;
+        // step-8: Modify/Transform/Pattern/Sweep). Dedup producing rids per consumer.
         for (_, rnode) in graph.realizations.iter() {
             let trace = extract_realization_dependencies(&rnode.operations);
             let node_id = NodeId::Realization(rnode.id.clone());
             for cell in &trace.reads {
                 index.add(cell.clone(), node_id.clone());
+            }
+            // Realization→realization reverse edges.
+            let mut seen: HashSet<RealizationNodeId> = HashSet::new();
+            for producing_rid in
+                extract_realization_edges(&rnode.operations, &rnode.id.entity, graph)
+            {
+                if seen.insert(producing_rid.clone()) {
+                    index.add_realization(producing_rid, node_id.clone());
+                }
             }
         }
 
@@ -439,8 +450,20 @@ pub fn build_trace_map_and_fields(
         traces.insert(NodeId::Constraint(cnode.id.clone()), trace);
     }
 
+    // Realizations: extract VC deps from operation args (value-reads), plus
+    // realization→realization edges from GeomRef::Sub operands (step-6: Boolean;
+    // step-8: Modify/Transform/Pattern/Sweep). Dedup producing rids per consumer.
     for (_, rnode) in graph.realizations.iter() {
-        let trace = extract_realization_dependencies(&rnode.operations);
+        let mut trace = extract_realization_dependencies(&rnode.operations);
+        // Realization→realization forward edges.
+        let mut seen: HashSet<RealizationNodeId> = HashSet::new();
+        for producing_rid in
+            extract_realization_edges(&rnode.operations, &rnode.id.entity, graph)
+        {
+            if seen.insert(producing_rid.clone()) {
+                trace.realization_reads.push(producing_rid);
+            }
+        }
         traces.insert(NodeId::Realization(rnode.id.clone()), trace);
     }
 
@@ -506,6 +529,84 @@ pub fn extract_realization_dependencies(
         realization_reads: Vec::new(),
         reads,
     }
+}
+
+/// Resolve a `GeomRef::Sub(name)` cross-component reference to the producing
+/// `RealizationNodeId`.
+///
+/// `name` is `"<sub>.<member>"` (the cross-component reference format used by
+/// `GeomRef::Sub`; the sub-instance name is the left part and the geometry member
+/// name is the right part after the first '.'). The member part uniquely identifies
+/// the geometry output within any single entity. Resolution:
+///
+/// 1. Splits `name` on the first '.' and takes the **member** part (right side).
+/// 2. Scans `graph.realizations` for a realization R such that
+///    `R.geometry_cell.member == member` AND `R.id.entity != consuming_entity`
+///    (cross-component only: a consuming realization cannot nominate its own entity's
+///    geometry cell as a cross-sub source).
+/// 3. Returns `Some(R.id)` on an unambiguous match, `None` on zero or >1 matches.
+///
+/// Returning `None` on ambiguity is safe (a missing edge is a conservative miss,
+/// caught by β's `assert_dag_complete` test). Robust cross-structure disambiguation
+/// under member-name collision is deferred to Part-2.
+fn resolve_sub_ref(
+    name: &str,
+    consuming_entity: &str,
+    graph: &crate::graph::EvaluationGraph,
+) -> Option<RealizationNodeId> {
+    let member = name.splitn(2, '.').nth(1)?;
+    let mut found: Option<RealizationNodeId> = None;
+    for (_, rnode) in graph.realizations.iter() {
+        if rnode.id.entity == consuming_entity {
+            continue; // own-entity — not a cross-component source
+        }
+        if let Some(ref cell) = rnode.geometry_cell {
+            if cell.member == member {
+                if found.is_some() {
+                    return None; // ambiguous — more than one entity exports this member name
+                }
+                found = Some(rnode.id.clone());
+            }
+        }
+    }
+    found
+}
+
+/// Extract `GeomRef::Sub`-based realization→realization edges from a realization's
+/// operation list.
+///
+/// `consuming_entity` is the entity that owns the consuming realization; it is
+/// passed to [`resolve_sub_ref`] to exclude own-entity matches (cross-component only).
+///
+/// **Step-6** handles `Boolean { left, right, .. }` operands. Step-8 extends this
+/// function with Modify/Transform/Pattern `.target` and Sweep `.profiles`.
+///
+/// `GeomRef::Step(_)` is always skipped (intra-node; no cross-realization edge).
+/// The returned Vec may contain duplicates; deduplication is the caller's
+/// responsibility (use a `seen` HashSet as done for `seen_rids` in the builders).
+fn extract_realization_edges(
+    ops: &[reify_compiler::CompiledGeometryOp],
+    consuming_entity: &str,
+    graph: &crate::graph::EvaluationGraph,
+) -> Vec<RealizationNodeId> {
+    let mut result = Vec::new();
+    for op in ops {
+        match op {
+            reify_compiler::CompiledGeometryOp::Boolean { left, right, .. } => {
+                for geom_ref in [left, right] {
+                    if let reify_compiler::GeomRef::Sub(ref name) = *geom_ref {
+                        if let Some(rid) = resolve_sub_ref(name, consuming_entity, graph) {
+                            result.push(rid);
+                        }
+                    }
+                    // GeomRef::Step → skip (intra-node, no cross-realization edge)
+                }
+            }
+            // Modify/Transform/Pattern/Sweep target/profiles extended in step-8.
+            _ => {}
+        }
+    }
+    result
 }
 
 #[cfg(test)]
