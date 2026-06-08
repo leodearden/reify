@@ -12,6 +12,8 @@ import {
   DEFAULT_DESIGN_TREE_HEIGHT,
   DEFAULT_PROPERTY_HEIGHT,
   DEFAULT_CONSTRAINT_HEIGHT,
+  DEFAULT_PROBLEMS_HEIGHT,
+  DEFAULT_PROBLEMS_COLLAPSED,
 } from '../stores/layoutStore';
 import { STORAGE_KEY, loadPanelLayout } from '../hooks/useLayoutPersistence';
 
@@ -50,10 +52,12 @@ describe('createLayoutStore — initial state', () => {
       expect(store.state.designTreeHeight).toBe(DEFAULT_DESIGN_TREE_HEIGHT);
       expect(store.state.propertyHeight).toBe(DEFAULT_PROPERTY_HEIGHT);
       expect(store.state.constraintHeight).toBe(DEFAULT_CONSTRAINT_HEIGHT);
+      expect(store.state.problemsHeight).toBe(DEFAULT_PROBLEMS_HEIGHT);
+      expect(store.state.problemsCollapsed).toBe(DEFAULT_PROBLEMS_COLLAPSED);
     });
   });
 
-  it('(b) restores all 5 values from a full saved layout', () => {
+  it('(b) restores all 7 values from a full saved layout', () => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
@@ -62,6 +66,8 @@ describe('createLayoutStore — initial state', () => {
         designTreeHeight: 180,
         propertyHeight: 250,
         constraintHeight: 150,
+        problemsHeight: 200,
+        problemsCollapsed: false,
       }),
     );
     withRoot(() => {
@@ -71,6 +77,8 @@ describe('createLayoutStore — initial state', () => {
       expect(store.state.designTreeHeight).toBe(180);
       expect(store.state.propertyHeight).toBe(250);
       expect(store.state.constraintHeight).toBe(150);
+      expect(store.state.problemsHeight).toBe(200);
+      expect(store.state.problemsCollapsed).toBe(false);
     });
   });
 
@@ -87,6 +95,8 @@ describe('createLayoutStore — initial state', () => {
       expect(store.state.designTreeHeight).toBe(DEFAULT_DESIGN_TREE_HEIGHT);
       expect(store.state.propertyHeight).toBe(DEFAULT_PROPERTY_HEIGHT);
       expect(store.state.constraintHeight).toBe(DEFAULT_CONSTRAINT_HEIGHT);
+      expect(store.state.problemsHeight).toBe(DEFAULT_PROBLEMS_HEIGHT);
+      expect(store.state.problemsCollapsed).toBe(DEFAULT_PROBLEMS_COLLAPSED);
     });
   });
 
@@ -177,6 +187,64 @@ describe('createLayoutStore — setters + debounced persistence', () => {
       expect(store.state.designTreeHeight).toBe(161);
       expect(store.state.propertyHeight).toBe(201);
       expect(store.state.constraintHeight).toBe(141);
+      dispose();
+    });
+  });
+
+  it('(f) setProblemsHeight updates state — plain value', () => {
+    createRoot((dispose) => {
+      const store = createLayoutStore();
+      store.setProblemsHeight(240);
+      expect(store.state.problemsHeight).toBe(240);
+      dispose();
+    });
+  });
+
+  it('(g) setProblemsHeight updates state — functional updater', () => {
+    createRoot((dispose) => {
+      const store = createLayoutStore();
+      const initial = store.state.problemsHeight;
+      store.setProblemsHeight((h) => h + 40);
+      expect(store.state.problemsHeight).toBe(initial + 40);
+      dispose();
+    });
+  });
+
+  it('(h) setProblemsCollapsed updates state — boolean value', () => {
+    createRoot((dispose) => {
+      const store = createLayoutStore();
+      store.setProblemsCollapsed(false);
+      expect(store.state.problemsCollapsed).toBe(false);
+      store.setProblemsCollapsed(true);
+      expect(store.state.problemsCollapsed).toBe(true);
+      dispose();
+    });
+  });
+
+  it('(i) setProblemsCollapsed updates state — functional toggle c=>!c', () => {
+    createRoot((dispose) => {
+      const store = createLayoutStore();
+      const initial = store.state.problemsCollapsed;
+      store.setProblemsCollapsed((c) => !c);
+      expect(store.state.problemsCollapsed).toBe(!initial);
+      store.setProblemsCollapsed((c) => !c);
+      expect(store.state.problemsCollapsed).toBe(initial);
+      dispose();
+    });
+  });
+
+  it('(j) persistence round-trip writes problemsHeight + problemsCollapsed', async () => {
+    await createRoot(async (dispose) => {
+      const store = createLayoutStore();
+      store.setProblemsHeight(220);
+      store.setProblemsCollapsed(false);
+
+      await Promise.resolve();
+      vi.advanceTimersByTime(300);
+
+      const saved = loadPanelLayout();
+      expect(saved?.problemsHeight).toBe(220);
+      expect(saved?.problemsCollapsed).toBe(false);
       dispose();
     });
   });
