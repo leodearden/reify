@@ -112,18 +112,17 @@ fn eval_emits_nondriving_joint_error_for_bind_coupling() {
         compiled.diagnostics,
     );
 
-    // Eval-time: exercise the full pipeline and document eval-side emission
-    // count.  The eval pass currently re-emits E_MECHANISM_NONDRIVING_JOINT
-    // (one additional diagnostic), because the eval-side `detect_nondriving_joint_errors`
-    // check has not yet been made conditional on the compile-time check already
-    // having fired.  The assertion below pins the *current* behaviour (== 1) so
-    // any future change in either direction (eval stops re-emitting → 0, or eval
-    // starts emitting more → 2) causes an explicit test failure and requires a
-    // conscious decision.
+    // Eval-time: the full compile+eval pipeline must yield ZERO additional
+    // E_MECHANISM_NONDRIVING_JOINT diagnostics from the eval pass.  The
+    // compile-time check (task 4310/γ) already fired and labelled the offending
+    // value cell's span; `detect_nondriving_joint_errors` is suppressed at that
+    // exact span via the compile-span predicate (task 4364/step-6), so the user
+    // sees exactly one diagnostic overall — emitted at compile time, not doubled
+    // at eval time.
     //
-    // TODO: once the eval-side detection is suppressed when compile already caught
-    // it, update this assertion to `eval_matching.len() == 0` to pin the
-    // no-double-emission contract.
+    // If this assertion fires with == 1 the suppression wiring is missing or
+    // broken; if it fires with == 2 both the compiler AND the eval pass fired
+    // without suppression (double-emission).
     let mut engine = make_simple_engine();
     let eval_result = engine.eval(&compiled);
     let eval_matching: Vec<_> = eval_result
@@ -134,10 +133,10 @@ fn eval_emits_nondriving_joint_error_for_bind_coupling() {
 
     assert_eq!(
         eval_matching.len(),
-        1,
-        "eval currently re-emits exactly one E_MECHANISM_NONDRIVING_JOINT diagnostic \
-         (known double-emission: compile + eval both fire); got {} eval-side diagnostic(s) \
-         out of {} total.\n\
+        0,
+        "eval must emit ZERO E_MECHANISM_NONDRIVING_JOINT diagnostics when the \
+         compile-time check already fired at the same span (no-double-emission contract); \
+         got {} eval-side diagnostic(s) out of {} total.\n\
          All eval diagnostics: {:#?}",
         eval_matching.len(),
         eval_result.diagnostics.len(),
