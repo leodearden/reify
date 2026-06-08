@@ -68,13 +68,13 @@ fn stacked_cfg_before_import_attaches_two_predicates() {
         PragmaArg::Bare(PragmaValue::Ident(s)) => assert_eq!(s, "linux"),
         other => panic!("expected Bare(Ident(\"linux\")), got {:?}", other),
     }
-    // Second: key-value target="wasm"
+    // Second: key-value target="wasm" (string literal → PragmaValue::String)
     match &import.cfg_predicates[1].args[0] {
-        PragmaArg::KeyValue { key, value: PragmaValue::Ident(v) } => {
+        PragmaArg::KeyValue { key, value: PragmaValue::String(v) } => {
             assert_eq!(key, "target");
             assert_eq!(v, "wasm");
         }
-        other => panic!("expected KeyValue{{target, \"wasm\"}}, got {:?}", other),
+        other => panic!("expected KeyValue{{target, String(\"wasm\")}}, got {:?}", other),
     }
 }
 

@@ -297,7 +297,10 @@ impl<'a> Lowering<'a> {
         // Second pass: lower all declarations.
         // Annotations immediately before a declaration are accumulated in
         // `pending_annotations` and drained into the declaration's `annotations` field.
+        // `#cfg(...)` pragmas immediately before an import are accumulated in
+        // `pending_cfg` and drained into the import's `cfg_predicates` field.
         let mut pending_annotations: Vec<Annotation> = Vec::new();
+        let mut pending_cfg: Vec<Pragma> = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
@@ -317,8 +320,10 @@ impl<'a> Lowering<'a> {
                 }
                 "import_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let cfg_predicates = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_import(child) {
                         decl.annotations = annotations;
+                        decl.cfg_predicates = cfg_predicates;
                         self.declarations.push(Declaration::Import(decl));
                     }
                 }
@@ -385,6 +390,9 @@ impl<'a> Lowering<'a> {
                 }
                 "pragma" => {
                     if let Some(pragma) = self.lower_pragma(child) {
+                        if pragma.name == "cfg" {
+                            pending_cfg.push(pragma.clone());
+                        }
                         self.module_pragmas.push(pragma);
                     }
                 }
