@@ -385,6 +385,10 @@ plan_for_branch_narrowed() {
 echo ""
 echo "--- Scenario B2-narrow: branch + override -> narrowed -p flags ---"
 plan_for_branch_narrowed "reify-doc reify-ir" crates/reify-doc/src/lib.rs
+assert "B2-narrow: PLAN_OUT non-empty (verify.sh exited OK)" \
+    bash -c '[ -n "$1" ]' _ "$PLAN_OUT"
+assert "B2-narrow: PLAN_OUT_NARROW_TC non-empty (typecheck plan exited OK)" \
+    bash -c '[ -n "$1" ]' _ "$PLAN_OUT_NARROW_TC"
 # action=all: clippy must use -p flags, NOT --workspace
 assert "B2-narrow/all: clippy has -p reify-doc" \
     bash -c 'printf "%s\n" "$1" | grep -q "cargo clippy.*-p reify-doc"' _ "$PLAN_OUT"
@@ -411,6 +415,8 @@ echo "--- Scenario Intersect/C3: non-OCCT change, OCCT in override -> gated pass
 # changed=crates/reify-doc/src/lib.rs -> RUN_OCCT_GATE=0 from scope decision.
 # But override includes reify-eval (OCCT) -> affected ∩ OCCT non-empty -> gate runs.
 plan_for_branch_narrowed "reify-doc reify-eval" crates/reify-doc/src/lib.rs
+assert "Intersect/C3: PLAN_OUT non-empty (verify.sh exited OK)" \
+    bash -c '[ -n "$1" ]' _ "$PLAN_OUT"
 assert "Intersect/C3: RUN_OCCT_GATE=0 from changed file (reify-doc is non-OCCT)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
 assert "Intersect/C3: gated pass present with -p reify-eval" \
@@ -437,6 +443,8 @@ git -C "$FIX_C1" commit -q -m "task changes"
 PLAN_C1="$(cd "$FIX_C1" && REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile debug --scope all --include-infra --print-plan 2>/dev/null)" || true
 git -C "$FIX_C1" checkout -q main
 git -C "$FIX_C1" branch -q -D task-branch
+assert "C1-guard: PLAN_C1 non-empty (verify.sh exited OK)" \
+    bash -c '[ -n "$1" ]' _ "$PLAN_C1"
 assert "C1-guard: clippy keeps --workspace (override ignored for scope=all)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_C1"
 assert "C1-guard: ungated tail keeps --workspace (override ignored for scope=all)" \
@@ -477,6 +485,8 @@ plan_for_staged_narrowed() {
 echo ""
 echo "--- Scenario B7: branch Cargo.lock -> affected=ALL, --workspace preserved ---"
 plan_for_branch Cargo.lock
+assert "B7/Cargo.lock: PLAN_OUT non-empty (verify.sh exited OK)" \
+    bash -c '[ -n "$1" ]' _ "$PLAN_OUT"
 assert "B7/Cargo.lock: clippy keeps --workspace (affected=ALL, no narrowing)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_OUT"
 assert "B7/Cargo.lock: ungated tail keeps --workspace (affected=ALL, no narrowing)" \
@@ -501,6 +511,10 @@ assert "B9-default: clippy keeps --workspace (staged, no --narrow flag)" \
 echo ""
 echo "--- Scenario B9-narrowed: staged --narrow + override -> narrowed -p flags (RED: --narrow not yet parsed) ---"
 plan_for_staged_narrowed "reify-doc reify-ir" crates/reify-doc/src/lib.rs
+assert "B9-narrowed: PLAN_OUT non-empty (verify.sh exited OK)" \
+    bash -c '[ -n "$1" ]' _ "$PLAN_OUT"
+assert "B9-narrowed: PLAN_OUT_NARROW_TC non-empty (typecheck plan exited OK)" \
+    bash -c '[ -n "$1" ]' _ "$PLAN_OUT_NARROW_TC"
 assert "B9-narrowed/all: clippy has -p reify-doc" \
     bash -c 'printf "%s\n" "$1" | grep -q "cargo clippy.*-p reify-doc"' _ "$PLAN_OUT"
 assert "B9-narrowed/all: clippy LACKS --workspace" \
