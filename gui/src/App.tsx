@@ -86,7 +86,7 @@ import {
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from './editor/messages';
-import { clampPanelHeightsToFit } from './hooks/useLayoutPersistence';
+import { clampPanelHeightsToFit, clampProblemsHeight } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
 import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from './stores/viewPersistence';
@@ -543,6 +543,8 @@ const App: Component = () => {
   let mainRef: HTMLDivElement | undefined;
   let sidePanelRef: HTMLDivElement | undefined;
   let sidePanelObserver: ResizeObserver | undefined;
+  let editorPanelRef: HTMLDivElement | undefined;
+  let editorPanelObserver: ResizeObserver | undefined;
 
   // Reactively update window title based on active file and eval status
   createEffect(() => {
@@ -1142,6 +1144,32 @@ const App: Component = () => {
     initApp();
   });
 
+  // Editor-panel container clamp: clamp the problems panel height when the
+  // editor column is resized or on first paint with an oversized persisted value.
+  function clampEditorPanel(): void {
+    if (!editorPanelRef) return;
+    const ch = editorPanelRef.clientHeight;
+    if (ch <= 0) return;
+    const clamped = clampProblemsHeight(layoutStore.state.problemsHeight, ch, {
+      minPanelHeight: MIN_PANEL_HEIGHT,
+      editorMinHeight: MIN_PANEL_HEIGHT,
+      splitterThickness: SPLITTER_THICKNESS,
+    });
+    if (clamped !== layoutStore.state.problemsHeight) {
+      layoutStore.setProblemsHeight(clamped);
+    }
+  }
+
+  createEffect(() => {
+    if (initPhase() !== 'ready') return;
+    if (!editorPanelRef || editorPanelObserver) return;
+    clampEditorPanel();
+    if (typeof ResizeObserver !== 'undefined') {
+      editorPanelObserver = new ResizeObserver(() => clampEditorPanel());
+      editorPanelObserver.observe(editorPanelRef);
+    }
+  });
+
   // Side-panel container clamp: once initPhase reaches 'ready' the side panel
   // is rendered and `sidePanelRef` is bound, so we run an initial clamp and
   // attach a ResizeObserver to re-clamp on window/container resize. The ref
@@ -1171,6 +1199,7 @@ const App: Component = () => {
     kernelStatusUnsub?.();
     bucklingFrameUnsub?.();
     sidePanelObserver?.disconnect();
+    editorPanelObserver?.disconnect();
     delete window.__REIFY_DEBUG__;
   });
 
@@ -1379,6 +1408,18 @@ const App: Component = () => {
     layoutStore.setConstraintHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
+  // Problems panel is BELOW its splitter, so dragging down shrinks it: h - delta.
+  function handleProblemsResize(delta: number) {
+    const ch = editorPanelRef?.clientHeight ?? 0;
+    layoutStore.setProblemsHeight((h) =>
+      clampProblemsHeight(h - delta, ch, {
+        minPanelHeight: MIN_PANEL_HEIGHT,
+        editorMinHeight: MIN_PANEL_HEIGHT,
+        splitterThickness: SPLITTER_THICKNESS,
+      }),
+    );
+  }
+
   function handleViewportSelect(entityPath: string | null, modifiers?: { ctrl: boolean; shift: boolean }) {
     if (!entityPath) {
       selectionStore.selectEntity(null);
@@ -1500,7 +1541,7 @@ const App: Component = () => {
             class={styles.main}
             style={{ 'grid-template-columns': `${layoutStore.state.editorWidth}px 4px 1fr 4px ${layoutStore.state.sideWidth}px` }}
           >
-            <div data-testid="editor-panel" class={styles.editorPanel}>
+            <div ref={editorPanelRef} data-testid="editor-panel" class={styles.editorPanel}>
               <FileBrowser
                 files={editorStore.state.openFiles}
                 activeFile={editorStore.state.activeFile}
@@ -1508,6 +1549,10 @@ const App: Component = () => {
               />
               <FileTabs store={editorStore} />
               <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} compileDiagnostics={engineStore.state.compileDiagnostics} liveContentRef={(fn) => { getLiveEditorContent = fn; }} />
+              {/* Horizontal splitter — shown only when diagnostics panel is expanded */}
+              <Show when={!layoutStore.state.problemsCollapsed}>
+                <Splitter orientation="horizontal" data-testid="splitter-problems" onResize={handleProblemsResize} />
+              </Show>
               {/* Docked diagnostics panel — always mounted, collapsed by default */}
               <DiagnosticsPanel
                 collapsed={layoutStore.state.problemsCollapsed}
