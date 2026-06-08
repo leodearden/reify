@@ -9,7 +9,7 @@ use std::time::Instant;
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_core::{
     ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId,
-    ValueCellId, VersionId,
+    SourceSpan, ValueCellId, VersionId,
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
@@ -602,6 +602,26 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
 ///    structurally identical also collapse (under-reports by one).  Fixing this
 ///    would require per-call provenance tracking in the error Map; accepted as a
 ///    v0.1 limitation shared by all error-Map detectors.
+/// Collect the [`SourceSpan`]s that the compiler already flagged with
+/// [`DiagnosticCode::MechanismNonDrivingJoint`].
+///
+/// Used by [`detect_nondriving_joint_errors`] to build the suppression set:
+/// if the compiler emitted a labelled `E_MECHANISM_NONDRIVING_JOINT` at a
+/// given source span, the eval pass can skip re-emitting the same diagnostic
+/// for any value cell whose `ValueCellDecl.span` matches that span.
+///
+/// Only diagnostics whose `code == Some(MechanismNonDrivingJoint)` *and* that
+/// carry at least one [`DiagnosticLabel`] contribute to the set — unlabelled
+/// diagnostics and diagnostics with a different code are ignored.  This is the
+/// exact-span join key described in the task analysis.
+fn nondriving_joint_compile_spans(diagnostics: &[Diagnostic]) -> HashSet<SourceSpan> {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .flat_map(|d| d.labels.iter().map(|l| l.span))
+        .collect()
+}
+
 /// 4. Emit `Diagnostic::error(msg).with_code(code)` per surviving entry,
 ///    using `error_message` from the Map or `fallback_msg` as a constant.
 ///
