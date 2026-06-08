@@ -6951,4 +6951,184 @@ mod tests {
             "prismatic-x without origin: (0.5,0,0) m + identity rotation",
         );
     }
+
+    // ── step-3: translation-pivot authoring on revolute/prismatic (B9 + back-compat) ─
+
+    /// Helper: assert a Value::Transform has identity rotation and (tx,ty,tz) translation (m).
+    fn assert_origin_transform(origin: &Value, tx: f64, ty: f64, tz: f64, label: &str) {
+        let (rotation, translation) = match origin {
+            Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+            other => panic!("{label}: expected Transform, got {other:?}"),
+        };
+        match rotation {
+            Value::Orientation { w, x, y, z } => {
+                assert!((w - 1.0).abs() < 1e-12, "{label}: origin.w should be 1, got {w}");
+                assert!(x.abs() < 1e-12, "{label}: origin.x should be 0, got {x}");
+                assert!(y.abs() < 1e-12, "{label}: origin.y should be 0, got {y}");
+                assert!(z.abs() < 1e-12, "{label}: origin.z should be 0, got {z}");
+            }
+            other => panic!("{label}: origin rotation: expected Orientation, got {other:?}"),
+        }
+        match translation {
+            Value::Vector(comps) if comps.len() == 3 => {
+                let gx = comps[0].as_f64().expect("origin tx numeric");
+                let gy = comps[1].as_f64().expect("origin ty numeric");
+                let gz = comps[2].as_f64().expect("origin tz numeric");
+                assert!((gx - tx).abs() < 1e-12, "{label}: origin tx should be {tx}, got {gx}");
+                assert!((gy - ty).abs() < 1e-12, "{label}: origin ty should be {ty}, got {gy}");
+                assert!((gz - tz).abs() < 1e-12, "{label}: origin tz should be {tz}, got {gz}");
+            }
+            other => panic!("{label}: origin translation: expected Vector(3), got {other:?}"),
+        }
+    }
+
+    /// (a) revolute(axis_z, 0..π, point3(40mm,0mm,0mm)) → Map with "origin" key =
+    /// Transform{identity rotation, translation (0.04, 0, 0) m}.
+    /// kind/axis/range fields must still be present and unchanged.
+    ///
+    /// RED: fails today (3-arg revolute returns Undef — wrong arity).
+    #[test]
+    fn revolute_3arg_point3_pivot_has_origin_key() {
+        // 40 mm = 0.04 m.
+        let pivot = eval_builtin("point3", &[Value::length(0.04), Value::length(0.0), Value::length(0.0)]);
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi(), pivot]);
+
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("3-arg revolute: expected Map, got {other:?}"),
+        };
+
+        // kind/axis/range must still be present.
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("revolute".to_string())),
+            "kind should be 'revolute'"
+        );
+        assert!(map.contains_key(&Value::String("axis".to_string())), "axis key must be present");
+        assert!(map.contains_key(&Value::String("range".to_string())), "range key must be present");
+
+        // "origin" must be Transform{identity, (0.04, 0, 0)}.
+        let origin = map
+            .get(&Value::String("origin".to_string()))
+            .unwrap_or_else(|| panic!("3-arg revolute: 'origin' key must be present"));
+        assert_origin_transform(origin, 0.04, 0.0, 0.0, "revolute_3arg_point3");
+    }
+
+    /// (b) prismatic(axis_x, 0..1m, vec3(0mm,25mm,0mm)) → Map with "origin" key =
+    /// Transform{identity rotation, translation (0, 0.025, 0) m}.
+    ///
+    /// RED: fails today (3-arg prismatic returns Undef — wrong arity).
+    #[test]
+    fn prismatic_3arg_vec3_pivot_has_origin_key() {
+        // 25 mm = 0.025 m.
+        let pivot = eval_builtin("vec3", &[Value::length(0.0), Value::length(0.025), Value::length(0.0)]);
+        let result = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m(), pivot]);
+
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("3-arg prismatic: expected Map, got {other:?}"),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("prismatic".to_string())),
+            "kind should be 'prismatic'"
+        );
+        assert!(map.contains_key(&Value::String("axis".to_string())), "axis key must be present");
+        assert!(map.contains_key(&Value::String("range".to_string())), "range key must be present");
+
+        let origin = map
+            .get(&Value::String("origin".to_string()))
+            .unwrap_or_else(|| panic!("3-arg prismatic: 'origin' key must be present"));
+        assert_origin_transform(origin, 0.0, 0.025, 0.0, "prismatic_3arg_vec3");
+    }
+
+    /// (c) Back-compat: 2-arg revolute Map has NO "origin" key (byte-identical to pre-change).
+    #[test]
+    fn revolute_2arg_has_no_origin_key() {
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("revolute 2-arg: expected Map, got {other:?}"),
+        };
+        assert!(
+            !map.contains_key(&Value::String("origin".to_string())),
+            "2-arg revolute must NOT have 'origin' key"
+        );
+    }
+
+    /// (c) Back-compat: 2-arg prismatic Map has NO "origin" key (byte-identical to pre-change).
+    #[test]
+    fn prismatic_2arg_has_no_origin_key() {
+        let result = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("prismatic 2-arg: expected Map, got {other:?}"),
+        };
+        assert!(
+            !map.contains_key(&Value::String("origin".to_string())),
+            "2-arg prismatic must NOT have 'origin' key"
+        );
+    }
+
+    /// (d) B9: non-finite (NaN) pivot component → Undef.
+    #[test]
+    fn revolute_3arg_nan_pivot_returns_undef() {
+        let pivot = Value::Point(vec![
+            Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi(), pivot]);
+        assert!(result.is_undef(), "NaN pivot component should give Undef, got {result:?}");
+    }
+
+    /// (d) B9: dimensionless pivot (point3(40,0,0) without units) → Undef.
+    #[test]
+    fn revolute_3arg_dimensionless_pivot_returns_undef() {
+        let pivot = Value::Point(vec![Value::Real(40.0), Value::Real(0.0), Value::Real(0.0)]);
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi(), pivot]);
+        assert!(result.is_undef(), "dimensionless pivot should give Undef, got {result:?}");
+    }
+
+    /// (d) B9: angle-dimensioned pivot component → Undef.
+    #[test]
+    fn revolute_3arg_angle_pivot_returns_undef() {
+        let pivot = Value::Point(vec![
+            Value::angle(1.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi(), pivot]);
+        assert!(result.is_undef(), "angle-dimensioned pivot component should give Undef, got {result:?}");
+    }
+
+    /// (d) B9: non-Point/Vector 3rd arg (a bare LENGTH Scalar) → Undef.
+    #[test]
+    fn revolute_3arg_scalar_pivot_returns_undef() {
+        let result = eval_builtin(
+            "revolute",
+            &[axis_z_unit(), angle_range_0_to_pi(), Value::length(0.04)],
+        );
+        assert!(result.is_undef(), "Scalar 3rd arg should give Undef, got {result:?}");
+    }
+
+    /// (d) B9: 2-component Vector pivot → Undef (needs exactly 3 components).
+    #[test]
+    fn revolute_3arg_2component_pivot_returns_undef() {
+        let pivot = Value::Vector(vec![Value::length(0.04), Value::length(0.0)]);
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi(), pivot]);
+        assert!(result.is_undef(), "2-component pivot should give Undef, got {result:?}");
+    }
+
+    /// (d) B9: 4-arg call (arity error) → Undef.
+    #[test]
+    fn revolute_4arg_returns_undef() {
+        let pivot = eval_builtin("point3", &[Value::length(0.04), Value::length(0.0), Value::length(0.0)]);
+        let result = eval_builtin(
+            "revolute",
+            &[axis_z_unit(), angle_range_0_to_pi(), pivot, Value::Real(0.0)],
+        );
+        assert!(result.is_undef(), "4-arg revolute should give Undef, got {result:?}");
+    }
 }
