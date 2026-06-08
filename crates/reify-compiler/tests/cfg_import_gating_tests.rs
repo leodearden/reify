@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::{compile_project_with_entry_source_cfg, ModuleDag, ModuleResolver};
+use reify_test_support::{compile_source, warnings_only};
 
 // ── S5: DAG gating ───────────────────────────────────────────────────────────
 
@@ -138,4 +139,69 @@ fn cfg_gating_transitive_via_with_cfg() {
 }
 
 // ── S7: W_CFG_NO_IMPORT ──────────────────────────────────────────────────────
-// (Added in step S7 — this section is a placeholder for future tests)
+
+/// Helper: warnings whose message contains the given substring.
+fn warnings_containing<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    substr: &str,
+) -> Vec<&'a reify_core::Diagnostic> {
+    warnings_only(module)
+        .into_iter()
+        .filter(|d| d.message.contains(substr))
+        .collect()
+}
+
+/// `#cfg(linux)` before a structure (not an import) emits exactly one
+/// W_CFG_NO_IMPORT warning.
+#[test]
+fn cfg_before_structure_emits_w_cfg_no_import() {
+    let src = "#cfg(linux)\nstructure S { param x: Real }";
+    let module = compile_source(src);
+    let warns = warnings_containing(&module, "W_CFG_NO_IMPORT");
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 W_CFG_NO_IMPORT warning, got {:?}",
+        warns.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// `#cfg(linux)` at EOF (no following decl) emits exactly one W_CFG_NO_IMPORT.
+#[test]
+fn cfg_at_eof_emits_w_cfg_no_import() {
+    let src = "#cfg(linux)";
+    let module = compile_source(src);
+    let warns = warnings_containing(&module, "W_CFG_NO_IMPORT");
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly 1 W_CFG_NO_IMPORT warning at EOF, got {:?}",
+        warns.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// `#cfg(linux)` immediately before an import does NOT emit W_CFG_NO_IMPORT.
+#[test]
+fn cfg_before_import_does_not_emit_w_cfg_no_import() {
+    let src = "#cfg(linux)\nimport a.b";
+    let module = compile_source(src);
+    let warns = warnings_containing(&module, "W_CFG_NO_IMPORT");
+    assert!(
+        warns.is_empty(),
+        "expected zero W_CFG_NO_IMPORT warnings for attached #cfg, got {:?}",
+        warns.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// A plain structure with no `#cfg` produces zero W_CFG_NO_IMPORT warnings.
+#[test]
+fn no_cfg_no_w_cfg_no_import() {
+    let src = "structure S { param x: Real }";
+    let module = compile_source(src);
+    let warns = warnings_containing(&module, "W_CFG_NO_IMPORT");
+    assert!(
+        warns.is_empty(),
+        "expected zero W_CFG_NO_IMPORT warnings with no #cfg, got {:?}",
+        warns.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
