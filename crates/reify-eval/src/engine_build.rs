@@ -4090,8 +4090,8 @@ impl Engine {
         // fallback could serve the Step entry to the Stl demand — cannot arise in
         // reify-eval (no Mesh boolean kernel is linked, so a Mesh demand can never
         // resolve Mesh here) and is task ζ's (#3437) surface, not this task's.
-        if is_terminal_realization {
-        if let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
+        if is_terminal_realization
+        && let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
             let cache_probe = realization_cache
                 .lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
                 .map(|&handle| (handle, cache_repr))
@@ -4160,7 +4160,6 @@ impl Engine {
                 );
                 return;
             }
-        }
         } // end is_terminal_realization cache-probe guard
 
         let mut had_failure = false;
@@ -5105,7 +5104,9 @@ impl Engine {
                 if let Some(name) = realization_name {
                     named_steps.insert(name.to_string(), last);
                 }
-                if let (Some(tol), Some(_name)) = (demanded_tol, realization_name) {
+                if is_terminal_realization
+                    && let (Some(tol), Some(_name)) = (demanded_tol, realization_name)
+                {
                     // **Task 4050 step-10 (gap 4)**: key the INSERT on the
                     // RESOLVED terminal repr (`last_produced_repr`), falling
                     // back to `cache_repr` only when no op captured a repr. On
@@ -5115,6 +5116,20 @@ impl Engine {
                     // resolved BRep because no Mesh kernel was linked) this
                     // stores at BRep, so a later Mesh lookup correctly MISSES
                     // rather than handing back a BRep handle as if it were Mesh.
+                    //
+                    // **Task 3437 (ζ): guard INSERT on is_terminal_realization.**
+                    // Non-terminal realizations (intermediate let-bindings in
+                    // a structure) share the same `entity` cache key as the
+                    // terminal.  Without this guard, box_a's BRep handle would
+                    // be stored at `(entity, BRep, tol)` before the terminal's
+                    // ops run.  On a Mesh-capable engine the terminal's BRep
+                    // fallback probe would then find the intermediate handle,
+                    // and since that same handle is recorded in
+                    // `feature_tag_table` (from its own op run earlier in this
+                    // build), the per-build reset debug_assert fires.  Only the
+                    // TERMINAL realization's result is a valid cache entry for
+                    // the entity+tol key — intermediate lets are intra-build
+                    // scratch and must not pollute the cross-build cache.
                     let resolved_repr = last_produced_repr.unwrap_or(cache_repr);
                     realization_cache.insert(
                         &realization_id.entity,
