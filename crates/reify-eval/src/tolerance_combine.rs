@@ -237,9 +237,20 @@ pub fn eval_representation_within(
                 // metric is a sampled lower bound on the achievable deviation,
                 // so this diagnostic means the measured deviation exceeded the
                 // bound, not that a tighter mesh cannot satisfy it.
+                //
+                // When the declared bound is zero (exact-representation
+                // request), the comparator uses `eff` (PLANAR_FLOOR = 1e-5 m)
+                // rather than the literal 0.0 (C4).  Report `eff` so the
+                // printed threshold matches the comparison performed; include
+                // a note so the user is not surprised by the non-zero value.
+                let floor_note = if bound <= 0.0 {
+                    " (planar floor 1e-5 m applied; zero bound interpreted as exact)"
+                } else {
+                    ""
+                };
                 let diag = Diagnostic::error(format!(
                     "RepresentationWithin: sampled facet deviation {achieved:.3e} m \
-                     exceeds bound {bound:.3e} m for {}",
+                     exceeds bound {eff:.3e} m{floor_note} for {}",
                     id.entity
                 ));
                 Some((Satisfaction::Violated, Some(diag)))

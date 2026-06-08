@@ -1828,3 +1828,65 @@ structure def Plain {
         );
     }
 }
+
+#[cfg(test)]
+mod representation_within_gate_tests {
+    use super::module_has_representation_within;
+
+    /// Non-OCCT routing gate test: `module_has_representation_within` must
+    /// correctly detect a `RepresentationWithin` constraint in real compiled
+    /// IR, and must return `false` for a plain module without one.
+    ///
+    /// This test is always-running (no OCCT guard) so that a regression in
+    /// template-level recognition (e.g. if the compiler changes the IR shape
+    /// for resolved stdlib calls) fails CI independently of OCCT availability.
+    /// Without this test, the OCCT-gated CLI test would silently pass even if
+    /// routing is broken: in stub mode `cmd_check` exits 0 regardless of
+    /// whether it took the kernel-backed path or the lightweight path.
+    ///
+    /// Uses `parse_and_compile` (no stdlib) because `mm` is a built-in length
+    /// unit, mirroring the INTERCEPTION_SOURCE fixture used by the engine-level
+    /// interception tests in `representation_within_assertion.rs`.
+    #[test]
+    fn module_has_representation_within_detects_assertion_vs_plain() {
+        // Assertion module: Checker carries a `RepresentationWithin(subject, 1mm)`
+        // template constraint — must be detected (returns `true`) so that
+        // `cmd_check` routes through the kernel-backed
+        // `set_capture_repr_tol(true)` → `tessellate_realizations` → `check`
+        // path.
+        let assertion_source = r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure Checker {
+    param subject : MyGeom
+    param w : Real = 5.0
+    constraint RepresentationWithin(subject, 1mm)
+    constraint w > 0.0
+}
+"#;
+        let compiled_assertion = reify_test_support::parse_and_compile(assertion_source);
+        assert!(
+            module_has_representation_within(&compiled_assertion),
+            "module with a RepresentationWithin template constraint should be \
+             detected (routing gate must return true)"
+        );
+
+        // Plain module: no RepresentationWithin constraints anywhere — must NOT
+        // be detected (returns `false`) so that `cmd_check` keeps the existing
+        // lightweight `Engine::new(None)+check()` path (C2).
+        let plain_source = r#"
+structure Plain {
+    param x : Real = 1.0
+    constraint x > 0.0
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile(plain_source);
+        assert!(
+            !module_has_representation_within(&compiled_plain),
+            "module without RepresentationWithin constraints must NOT be detected \
+             (routing gate must return false — C2 path preserved)"
+        );
+    }
+}

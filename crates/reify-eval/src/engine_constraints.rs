@@ -50,11 +50,36 @@ impl Engine {
             return (Vec::new(), Vec::new());
         }
 
+        // ── Fast path for non-assertion modules (C2) ──────────────────────────
+        // When `achieved_repr_tol` is empty (no tessellation has run) AND no
+        // optimised impls are registered, we know no entry can be a live
+        // `RepresentationWithin` assertion — skip the pre-pass entirely and use
+        // the original zero-allocation path.  This covers the universal
+        // non-assertion case: every `reify check` call on a module without
+        // `RepresentationWithin` constraints, where `cmd_check` never calls
+        // `set_capture_repr_tol` / `tessellate_realizations` and the map stays
+        // empty.
+        if self.achieved_repr_tol.is_empty() && self.optimization_registry.is_empty() {
+            let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = entries
+                .into_iter()
+                .map(|(id, expr, _target)| (id, expr))
+                .collect();
+            let input = ConstraintInput {
+                constraints: Cow::Owned(constraints),
+                values,
+                functions,
+                determinacy,
+            };
+            return (self.constraint_checker.check(&input), Vec::new());
+        }
+
         // ── RepresentationWithin interception ─────────────────────────────────
-        // Peel RepresentationWithin entries off the batch before bucketing so
-        // that they never reach the language-level ConstraintChecker (which has
-        // no access to self.achieved_repr_tol).  Each matched entry is
-        // evaluated engine-side; unmatched entries go to the existing paths.
+        // Reached only when `achieved_repr_tol` is non-empty (a tessellation
+        // ran) or an optimised impl is registered.  Peel RepresentationWithin
+        // entries off the batch before bucketing so that they never reach the
+        // language-level ConstraintChecker (which has no access to
+        // self.achieved_repr_tol).  Each matched entry is evaluated engine-side;
+        // unmatched entries go to the existing paths.
         //
         // Two-vector approach avoids a second allocation pass: we collect
         // `rest` in-order so the original (id, expr, target) tuples remain
@@ -99,8 +124,12 @@ impl Engine {
             return (constraint_results, Vec::new());
         }
 
-        // No RepresentationWithin entries AND no registered impls → original
-        // fast path: zero extra allocations for non-assertion modules (C2).
+        // No RepresentationWithin entries found in this batch (achieved_repr_tol
+        // is non-empty — tessellation ran — but no entry in this specific batch
+        // matched the shape) AND no registered impls.  Take the pass-through
+        // path.  Note: rw_slots and rest were allocated by the pre-pass above;
+        // the early fast path handles the universal non-assertion case without
+        // this overhead.
         if !any_rw && self.optimization_registry.is_empty() {
             let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = rest
                 .into_iter()
