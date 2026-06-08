@@ -97,3 +97,31 @@ fn non_cfg_pragma_before_import_leaves_cfg_predicates_empty() {
     );
 }
 
+// ── S3: no-leak guard ────────────────────────────────────────────────────────
+
+/// A `#cfg` before a structure must NOT leak forward to a later import.
+///
+/// With S2's minimal impl (pending_cfg not cleared on non-import arms), the
+/// cfg would incorrectly carry over to the `import a.b` — this test catches that.
+#[test]
+fn cfg_before_structure_does_not_leak_to_later_import() {
+    let source = "#cfg(linux)\nstructure S { param x: Real }\nimport a.b";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let import = module
+        .declarations
+        .iter()
+        .find_map(|d| match d {
+            Declaration::Import(i) => Some(i),
+            _ => None,
+        })
+        .expect("expected an Import declaration");
+
+    assert!(
+        import.cfg_predicates.is_empty(),
+        "cfg before a structure must not leak to a later import, got {:?}",
+        import.cfg_predicates
+    );
+}
+
