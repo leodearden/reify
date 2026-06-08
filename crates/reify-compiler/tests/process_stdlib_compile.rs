@@ -226,6 +226,7 @@ fn process_category_traits_each_refine_process() {
                 ("layer_thickness", length.clone()),
                 ("min_feature_size", length.clone()),
                 ("build_volume", Type::Geometry),
+                ("max_overhang_angle", angle.clone()),
             ],
         ),
         (
@@ -687,6 +688,121 @@ structure def SmallPart {
         errors
     );
 }
+
+// ─── task-4407 step-1: Adding.max_overhang_angle RED tests ───────────────────
+
+/// β conformance lock — Adding.max_overhang_angle (negative):
+/// An FdmPrinter : Adding conformer omitting `max_overhang_angle` must
+/// emit a missing-required-member Error diagnostic.
+///
+/// RED until impl (step-2): max_overhang_angle is not yet declared on Adding,
+/// so no missing-member diagnostic is emitted and this assertion fails.
+#[test]
+fn adding_conformer_missing_max_overhang_angle_emits_missing_member_error() {
+    let source = r#"
+import std.process
+
+structure def FdmPrinter : Adding {
+    param duration         : Time   = 60min
+    param cost             : Money  = 10USD
+    param layer_thickness  : Length = 0.2mm
+    param min_feature_size : Length = 0.4mm
+    param build_volume     : Solid  = box(200mm, 200mm, 200mm)
+}
+"#;
+    // Note: `max_overhang_angle` is intentionally omitted.
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "FdmPrinter omitting 'max_overhang_angle' should emit an error diagnostic"
+    );
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("missing required member") && error_msg.contains("max_overhang_angle"),
+        "error should mention 'missing required member' and 'max_overhang_angle', got: {}",
+        error_msg
+    );
+}
+
+/// β conformance lock — Adding.max_overhang_angle (positive):
+/// A complete FdmPrinter : Adding conformer supplying all params including
+/// `param max_overhang_angle : Angle = 45deg` compiles with zero Error
+/// diagnostics and exposes a `max_overhang_angle` value cell of type
+/// Type::Scalar{ANGLE} (the cell γ reads).
+///
+/// RED until impl (step-2): max_overhang_angle is not yet a trait member,
+/// so the value cell is absent and the assertion panics.
+#[test]
+fn adding_conformer_with_all_params_compiles_clean_and_exposes_max_overhang_angle() {
+    let source = r#"
+import std.process
+
+structure def FdmPrinter : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 10USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 45deg
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (a-1) Zero error-severity diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "FdmPrinter with all Adding params should compile clean; errors: {:?}",
+        errors
+    );
+
+    // (a-2) The compiled FdmPrinter template exposes a `max_overhang_angle` value cell
+    //       with the correct type (Type::Scalar{ANGLE}).
+    let printer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "FdmPrinter")
+        .expect("FdmPrinter template should be present after clean compile");
+
+    let moa_cell = printer
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "max_overhang_angle")
+        .unwrap_or_else(|| {
+            panic!(
+                "FdmPrinter should have a 'max_overhang_angle' value cell; found: {:?}",
+                printer
+                    .value_cells
+                    .iter()
+                    .map(|vc| &vc.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        moa_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::ANGLE
+        },
+        "FdmPrinter.max_overhang_angle cell_type should be Type::Scalar{{ANGLE}}"
+    );
+}
+
+// ─── cardinality lock + example compile ────────────────────────────────────────
 
 /// γ name-presence lock — the std/process module must contain each of the six
 /// named DFM constraint defs:
