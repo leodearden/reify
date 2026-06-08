@@ -117,10 +117,14 @@ trait HeatTreating : Process {
 // process category) to which this rule applies. Conformers supply a concrete
 // Process value (e.g. MilledPart()), mirroring fdm.ri's
 // `material : ElasticMaterial = ABS_Plastic()` pattern.
+// subject: the geometry handle the rule measures — Solid resolves to
+//   Type::Geometry; the auto-measurement pass realizes it.
+//   Activates the member process-dfm-completion §4 decision 6 left decorative.
 trait DFMRule {
     param rule_name : String
     param severity : DFMSeverity
     param applies_to : Process
+    param subject : Solid
 }
 
 // ── DFM constraint defs ───────────────────────────────────────────────────────
