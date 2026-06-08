@@ -547,8 +547,9 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
 ///
 /// **Invariant:** every entry here MUST also appear in
 /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`; the converse need not hold (the curve
-/// selectors are legitimately absent). Pinned by the
-/// `geometry_query_arg_aware_result_type` unit tests.
+/// selectors are legitimately absent). Structurally enforced by the
+/// `face_producing_selector_names_is_subset_of_geometry_topology_selector_names`
+/// test.
 const FACE_PRODUCING_SELECTOR_NAMES: &[&str] =
     &["faces", "faces_by_area", "faces_by_normal", "adjacent_faces"];
 
@@ -2487,5 +2488,23 @@ mod tests {
             }),
             "geometry_query_result_type(\"curvature\") must remain Scalar<Curvature> (default table)"
         );
+    }
+
+    /// Structural invariant: every name in FACE_PRODUCING_SELECTOR_NAMES must
+    /// also appear in GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+    ///
+    /// Enforces the documented subset relationship: if a future edit adds a
+    /// name to FACE_PRODUCING_SELECTOR_NAMES that is absent from
+    /// GEOMETRY_TOPOLOGY_SELECTOR_NAMES, this test fails immediately rather
+    /// than silently wiring the structural detector to an unregistered name.
+    #[test]
+    fn face_producing_selector_names_is_subset_of_geometry_topology_selector_names() {
+        for name in FACE_PRODUCING_SELECTOR_NAMES {
+            assert!(
+                GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "FACE_PRODUCING_SELECTOR_NAMES entry {name:?} must also appear in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (documented subset invariant)"
+            );
+        }
     }
 }

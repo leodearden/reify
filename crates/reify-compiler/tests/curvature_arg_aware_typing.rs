@@ -71,6 +71,57 @@ fn curvature_inline_surface_arg_types_as_matrix_2x2_curvature() {
     );
 }
 
+/// Source snippet using `faces_by_area` — a selector other than plain `faces`.
+///
+/// Closes the gap between the hand-built CompiledExpr fixtures in units.rs
+/// (which assume `faces_by_area(s)[i]` lowers to `IndexAccess{FunctionCall{
+/// name:"faces_by_area"}}`) and real compiler output: if the compiler ever
+/// lowered `faces_by_area` through a different AST path, the unit fixtures
+/// would still pass while this end-to-end test would catch the regression.
+const SOURCE_FACES_BY_AREA: &str = r#"
+structure def CurvatureTypingByArea {
+    let pt = point3(5mm, 0mm, 0mm)
+    let k_surf_by_area = curvature(faces_by_area(sphere(5mm), 0mm^2 .. 1000mm^2)[0], pt)
+}
+"#;
+
+/// `curvature(faces_by_area(...)[0], pt)` must type as `Matrix<2,2,Curvature>`.
+///
+/// Validates a face-producing selector beyond plain `faces()` through the real
+/// compiler pipeline, confirming that `is_surface_producing_arg` fires correctly
+/// on the compiled form of `faces_by_area(...)`.
+#[test]
+fn curvature_faces_by_area_arg_types_as_matrix_2x2_curvature() {
+    let compiled = compile_source_with_stdlib(SOURCE_FACES_BY_AREA);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "expected no error-severity diagnostics, got: {errors:#?}"
+    );
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least one template");
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "k_surf_by_area")
+        .expect("expected 'k_surf_by_area' value cell");
+    let expected = Type::Matrix {
+        m: 2,
+        n: 2,
+        quantity: Box::new(Type::Scalar {
+            dimension: DimensionVector::CURVATURE,
+        }),
+    };
+    assert_eq!(
+        cell.cell_type, expected,
+        "`curvature(faces_by_area(...)[i], pt)` must compile-type as Matrix{{2,2,Curvature}}, \
+         got {:?}",
+        cell.cell_type
+    );
+}
+
 /// `curvature(edges(cyl)[0], pt)` must type as `Scalar<Curvature>`.
 ///
 /// Confirms the curve path falls through to the existing default.
