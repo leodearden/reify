@@ -627,12 +627,21 @@ fn nondriving_joint_compile_spans(diagnostics: &[Diagnostic]) -> HashSet<SourceS
 ///
 /// **No source span / [`DiagnosticLabel`]:** [`ValueCellId`] carries only
 /// `{entity, member}` strings with no source-span, so no label is attached.
+///
+/// **Span-scoped suppression:** the optional `suppress` predicate is applied
+/// BEFORE structural dedup (step 3).  When `Some(pred)` and `pred(cell_id)`
+/// is `true`, that hit is skipped entirely.  This lets [`detect_nondriving_joint_errors`]
+/// suppress cells whose `ValueCellDecl.span` already appears in the
+/// compile-time `MechanismNonDrivingJoint` diagnostic set — implementing the
+/// exact-span join described in task 4364 — while leaving
+/// [`detect_mechanism_errors`] (which passes `None`) byte-for-byte unchanged.
 fn detect_error_map_diagnostics(
     values: &ValueMap,
     kind: Option<&str>,
     discriminator: &str,
     code: DiagnosticCode,
     fallback_msg: &str,
+    suppress: Option<&dyn Fn(&ValueCellId) -> bool>,
 ) -> Vec<Diagnostic> {
     let mut hits: Vec<(&ValueCellId, &Value)> = values
         .iter()
@@ -659,7 +668,14 @@ fn detect_error_map_diagnostics(
     let msg_key = Value::String("error_message".to_string());
     let mut seen = std::collections::BTreeSet::new();
     let mut diagnostics = Vec::new();
-    for (_, value) in hits {
+    for (cid, value) in hits {
+        // Span-scoped suppression: skip this hit BEFORE the structural dedup when
+        // the cell was already flagged at compile time at the exact same source span.
+        if let Some(pred) = suppress {
+            if pred(cid) {
+                continue;
+            }
+        }
         if seen.insert(value.clone()) {
             let msg = match value {
                 Value::Map(m) => match m.get(&msg_key) {
@@ -698,6 +714,7 @@ fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
         "duplicate_solid",
         DiagnosticCode::MechanismDuplicateSolid,
         "duplicate solid in mechanism",
+        None,
     )
 }
 
@@ -718,6 +735,7 @@ fn detect_nondriving_joint_errors(values: &ValueMap) -> Vec<Diagnostic> {
         "nondriving_joint",
         DiagnosticCode::MechanismNonDrivingJoint,
         "joint has no free motion variable (coupling or fixed)",
+        None,
     )
 }
 
