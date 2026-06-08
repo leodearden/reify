@@ -602,6 +602,7 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
 ///    structurally identical also collapse (under-reports by one).  Fixing this
 ///    would require per-call provenance tracking in the error Map; accepted as a
 ///    v0.1 limitation shared by all error-Map detectors.
+///
 /// Collect the [`SourceSpan`]s that the compiler already flagged with
 /// [`DiagnosticCode::MechanismNonDrivingJoint`].
 ///
@@ -671,10 +672,10 @@ fn detect_error_map_diagnostics(
     for (cid, value) in hits {
         // Span-scoped suppression: skip this hit BEFORE the structural dedup when
         // the cell was already flagged at compile time at the exact same source span.
-        if let Some(pred) = suppress {
-            if pred(cid) {
-                continue;
-            }
+        if let Some(pred) = suppress
+            && pred(cid)
+        {
+            continue;
         }
         if seen.insert(value.clone()) {
             let msg = match value {
