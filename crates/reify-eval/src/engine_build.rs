@@ -2058,6 +2058,7 @@ impl Engine {
                             .copied()
                             .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
+                        r_idx + 1 == template.realizations.len(),
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. The
@@ -2457,6 +2458,7 @@ impl Engine {
                             .copied()
                             .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
+                        r_idx + 1 == template.realizations.len(),
                     );
                     // T7 (task 3905): record this realization's terminal handle
                     // by (t_idx, r_idx) for the Phase-B export walk.  Mirrors
@@ -2941,6 +2943,7 @@ impl Engine {
                         .copied()
                         .unwrap_or(ReprKind::BRep),
                     &mut self.last_dispatch_count,
+                    r_idx + 1 == template.realizations.len(),
                 );
                 if step_handles.len() > handle_start {
                     terminal_handles[t_idx][r_idx] = step_handles.last().copied();
@@ -3700,6 +3703,7 @@ impl Engine {
                     // default-kernel tessellate call).
                     ReprKind::BRep,
                     &mut *dispatch_count,
+                    r_idx + 1 == template.realizations.len(),
                 );
 
                 // T5 step-4 (Phase A): record this realization's terminal
@@ -7015,6 +7019,8 @@ mod tests {
                 // the v0.2 BRep demand; the cross-kernel tests use `run_demand`.
                 ReprKind::BRep,
                 &mut self.dispatch_count,
+                // Test helpers operate on a single realization; it is always terminal.
+                true,
             );
         }
 
@@ -7074,6 +7080,8 @@ mod tests {
                 // parameter.
                 demanded_repr,
                 &mut self.dispatch_count,
+                // Test helpers operate on a single realization; it is always terminal.
+                true,
             );
         }
     }
