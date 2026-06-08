@@ -13,7 +13,7 @@
 # Plan-shape assertions (--print-plan oracle, added in step-3):
 #   4. Gated release pass: cargo-test-occt-gated.sh with -p reify-eval --release
 #      -- --test-threads=1; NO other OCCT crate; NO --workspace.
-#   5. Ungated release pass: -p <crate> for each of the 6 non-OCCT release-sensitive
+#   5. Ungated release pass: -p <crate> for each of the non-OCCT release-sensitive
 #      crates; has --release; NO --workspace; NO --exclude; NO -p reify-eval.
 #   6. Debug pass unchanged: gated debug still has all 4 OCCT crates; ungated debug
 #      still uses --workspace --exclude.
@@ -81,10 +81,11 @@ echo ""
 echo "--- Test 3: declared set equals grep-derived release-sensitive set ---"
 
 # Actual release-sensitive set comes from the shared library (single source of
-# truth): an anchored grep over crates/ and gui/src-tauri/ for the two
-# release-sensitivity mechanisms (cfg_attr(debug_assertions, ignore ...) and
-# cfg(not(debug_assertions))). The full rationale lives in the release_sensitive_set
-# doc comment in scripts/release-scope-lib.sh.
+# truth): an anchored grep over crates/ and gui/src-tauri/ for the three
+# release-sensitivity mechanisms (cfg_attr(debug_assertions, ignore ...) /
+# cfg(not(debug_assertions)) / runtime cfg!(debug_assertions)).  The full
+# rationale lives in the release_sensitive_set doc comment in
+# scripts/release-scope-lib.sh.
 ACTUAL_SENSITIVE="$(release_sensitive_set)"
 
 # Write both sets to temp files and diff for actionable failure output.
@@ -104,6 +105,21 @@ assert "declared release-sensitive set equals grep-derived set (no missing or ex
     test -z "$_DIFF_OUT"
 
 # ---------------------------------------------------------------------------
+# Test 3a: Mechanism C regression guard — runtime cfg!(debug_assertions) branching
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 3a: grep-derived set includes reify-mesh-morph (Mechanism C regression guard) ---"
+# crates/reify-mesh-morph/src/diagnostics.rs:511 uses cfg!(debug_assertions) at
+# RUNTIME (not as a compile-time attribute), so Mechanisms A and B miss it.  The test
+# record_quality_remesh_pass_never_touches_a_counter asserts different outcomes in debug
+# vs release, meaning the release pass is required to cover the release-only no-op path.
+# This assertion is RED against the current two-mechanism detector; step-7's Mechanism C
+# (anchored '^[^/]*cfg!(debug_assertions)' grep) turns it GREEN.
+_MESH_MORPH_IN_DERIVED="$(printf '%s\n' "$ACTUAL_SENSITIVE" | grep -cxF 'reify-mesh-morph' || echo 0)"
+assert "grep-derived release_sensitive_set includes reify-mesh-morph (Mechanism C runtime cfg! branch)" \
+    test "${_MESH_MORPH_IN_DERIVED:-0}" -gt 0
+
+# ---------------------------------------------------------------------------
 # Plan-shape assertions (Tests 4-7)
 # Source of truth: scripts/verify.sh --print-plan (the oracle the orchestrator
 # calls). --profile both --scope all forces the full plan; env lines are stripped
@@ -116,7 +132,7 @@ _OCCT_DECLARED_STR="$(occt_declared_set)"
 _is_occt() { grep -qxF "$1" <<< "$_OCCT_DECLARED_STR"; }
 
 _RELEASE_GATED_CRATES=()    # OCCT ∩ release-sensitive (expect: just reify-eval)
-_RELEASE_UNGATED_CRATES=()  # release-sensitive ∖ OCCT (expect: the other 6)
+_RELEASE_UNGATED_CRATES=()  # release-sensitive ∖ OCCT (non-OCCT crates)
 while IFS= read -r _c; do
     [ -z "$_c" ] && continue
     if _is_occt "$_c"; then
@@ -174,6 +190,17 @@ assert "ungated release does NOT contain --exclude" \
     bash -c "! printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' --exclude'"
 assert "ungated release does NOT have '-p reify-eval'" \
     bash -c "! printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' -p reify-eval'"
+
+echo ""
+echo "--- Test 5a: reify-mesh-morph in ungated release pass (Mechanism C regression guard) ---"
+# Step-7 adds Mechanism C to the detector and reify-mesh-morph to the declared txt;
+# the data-driven release pass then auto-emits '-p reify-mesh-morph' in the ungated
+# bucket (reify-mesh-morph is not OCCT-touching).  Both assertions below are RED
+# until those two changes land together in step-7.
+assert "ungated release has '-p reify-mesh-morph' (Mechanism C regression guard)" \
+    bash -c "printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' -p reify-mesh-morph'"
+assert "gated release does NOT have '-p reify-mesh-morph' (not OCCT-touching)" \
+    bash -c "! printf '%s' \"\$GATED_RELEASE\" | grep -qF ' -p reify-mesh-morph'"
 
 echo ""
 echo "--- Test 6: DEBUG pass unchanged (gated debug has all 4 OCCT crates; ungated debug uses --workspace --exclude) ---"
