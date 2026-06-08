@@ -3224,7 +3224,7 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
     });
   });
 
-  it('clicking tessellation-errors badge opens the diagnostics-panel containing the tessellation diagnostic', async () => {
+  it('docked panel always present: data-collapsed="true" by default (no rows before clicking badge)', async () => {
     render(() => <App />);
     await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
 
@@ -3238,24 +3238,47 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
       },
     ]);
 
-    // Wait for the badge to appear
+    // Wait for badge to appear (panel should already be in the DOM, collapsed)
     await waitFor(() => {
-      const statusBar = screen.getByTestId('status-bar');
-      expect(statusBar.querySelector('[data-testid="tessellation-errors"]')).toBeTruthy();
+      expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
     });
 
-    // Click the tessellation-errors badge
+    // Panel is docked and always present — collapsed by default, no rows yet
+    const panel = screen.getByTestId('diagnostics-panel');
+    expect(panel.getAttribute('data-collapsed')).toBe('true');
+    expect(document.querySelector('[data-testid="diagnostic-row"]')).toBeNull();
+  });
+
+  it('clicking tessellation-errors badge expands the panel (data-collapsed="false") and shows diagnostic', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
+
+    tessellationDiagnosticsCallback!([
+      {
+        file_path: 'helper.ri',
+        line: 5, column: 3, end_line: 5, end_column: 10,
+        severity: 'Error',
+        message: 'tess kernel boom',
+        code: null,
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
+    });
+
+    // Click the tessellation-errors badge — should expand (toggle collapsed)
     fireEvent.click(screen.getByTestId('tessellation-errors'));
 
-    // Panel should open and display the tessellation diagnostic message
+    // Panel expands: data-collapsed="false" and the diagnostic message is visible
     await waitFor(() => {
       const panel = screen.getByTestId('diagnostics-panel');
-      expect(panel).toBeTruthy();
+      expect(panel.getAttribute('data-collapsed')).toBe('false');
       expect(panel.textContent).toContain('tess kernel boom');
     });
   });
 
-  it('clicking the tessellation-errors badge twice closes the panel', async () => {
+  it('clicking the tessellation-errors badge twice collapses the panel (data-collapsed="true")', async () => {
     render(() => <App />);
     await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
 
@@ -3264,30 +3287,26 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
         file_path: '<unknown>',
         line: 1, column: 1, end_line: 1, end_column: 1,
         severity: 'Error',
-        message: 'tess toggle close test',
+        message: 'tess toggle test',
         code: null,
       },
     ]);
 
-    // Wait for the badge to appear
     await waitFor(() => {
       expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
     });
 
-    // First click: open the panel
+    // First click: expand the panel
     fireEvent.click(screen.getByTestId('tessellation-errors'));
-    await waitFor(() => expect(screen.getByTestId('diagnostics-panel')).toBeTruthy());
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-panel').getAttribute('data-collapsed')).toBe('false');
+    });
 
-    // Second click: close the panel.
-    // DiagnosticsPanel wraps its overlay in <Show when={props.open}>, so the
-    // element is fully removed from the DOM (not just hidden) when closed.
-    // This is the intentional contract: toBeNull() is the right assertion here;
-    // a querySelector returning null proves the panel is unmounted, not merely
-    // invisible — and would FAIL if the handler were flipped to setDiagnosticsOpen(true).
+    // Second click: collapse the panel again
     fireEvent.click(screen.getByTestId('tessellation-errors'));
-    await waitFor(() =>
-      expect(document.querySelector('[data-testid="diagnostics-panel"]')).toBeNull()
-    );
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-panel').getAttribute('data-collapsed')).toBe('true');
+    });
   });
 
   it('clicking a tessellation diagnostic row in the panel triggers setScrollToLocation', async () => {
@@ -3304,15 +3323,16 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
       },
     ]);
 
-    // Wait for badge to appear then open the panel
+    // Wait for badge to appear then expand the panel
     await waitFor(() => {
       expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
     });
 
+    // Expand the panel via badge click
     fireEvent.click(screen.getByTestId('tessellation-errors'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('diagnostics-panel')).toBeTruthy();
+      expect(screen.getByTestId('diagnostics-panel').getAttribute('data-collapsed')).toBe('false');
     });
 
     // Click the diagnostic row
@@ -3370,7 +3390,7 @@ describe('App compile diagnostics end-to-end wiring', () => {
     });
   });
 
-  it('diagnostics-panel is NOT visible before clicking the badge', async () => {
+  it('docked panel always present with data-collapsed="true" before clicking the badge (no rows)', async () => {
     render(() => <App />);
     await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
 
@@ -3380,10 +3400,13 @@ describe('App compile diagnostics end-to-end wiring', () => {
       expect(screen.getByTestId('diagnostics-count')).toBeTruthy();
     });
 
-    expect(document.querySelector('[data-testid="diagnostics-panel"]')).toBeNull();
+    // Panel is docked and always mounted — collapsed by default
+    const panel = screen.getByTestId('diagnostics-panel');
+    expect(panel.getAttribute('data-collapsed')).toBe('true');
+    expect(document.querySelector('[data-testid="diagnostic-row"]')).toBeNull();
   });
 
-  it('clicking diagnostics-count badge opens the diagnostics-panel', async () => {
+  it('clicking diagnostics-count badge expands the panel (data-collapsed="false")', async () => {
     render(() => <App />);
     await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
 
@@ -3396,7 +3419,7 @@ describe('App compile diagnostics end-to-end wiring', () => {
     fireEvent.click(screen.getByTestId('diagnostics-count'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('diagnostics-panel')).toBeTruthy();
+      expect(screen.getByTestId('diagnostics-panel').getAttribute('data-collapsed')).toBe('false');
     });
   });
 
@@ -3410,11 +3433,11 @@ describe('App compile diagnostics end-to-end wiring', () => {
       expect(screen.getByTestId('diagnostics-count')).toBeTruthy();
     });
 
-    // Open the panel
+    // Expand the panel via badge click
     fireEvent.click(screen.getByTestId('diagnostics-count'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('diagnostics-panel')).toBeTruthy();
+      expect(screen.getByTestId('diagnostics-panel').getAttribute('data-collapsed')).toBe('false');
     });
 
     // Click the diagnostic row
@@ -3430,32 +3453,6 @@ describe('App compile diagnostics end-to-end wiring', () => {
         line: 3,
         column: 1,
       });
-    });
-  });
-
-  it('pressing Escape inside the panel closes it', async () => {
-    render(() => <App />);
-    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
-
-    compileDiagnosticsCallback!([warningDiag]);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('diagnostics-count')).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByTestId('diagnostics-count'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('diagnostics-panel')).toBeTruthy();
-    });
-
-    // Fire Escape on document.body — matches user-observable behavior where
-    // the overlay div is unfocused on open (document-level listener in
-    // DiagnosticsPanel picks this up).
-    fireEvent.keyDown(document.body, { key: 'Escape' });
-
-    await waitFor(() => {
-      expect(document.querySelector('[data-testid="diagnostics-panel"]')).toBeNull();
     });
   });
 
@@ -3501,7 +3498,7 @@ describe('App merged diagnostics rendering', () => {
     });
   });
 
-  it('panel shows both compile and tessellation diagnostic messages when seeded simultaneously', async () => {
+  it('panel shows both compile and tessellation diagnostic messages once expanded', async () => {
     render(() => <App />);
     await waitFor(() => {
       expect(tessellationDiagnosticsCallback).toBeDefined();
@@ -3532,11 +3529,12 @@ describe('App merged diagnostics rendering', () => {
       expect(screen.getByTestId('tessellation-errors')).toBeTruthy();
     });
 
-    // Open the panel via tessellation badge
+    // Expand the panel via tessellation badge
     fireEvent.click(screen.getByTestId('tessellation-errors'));
 
     await waitFor(() => {
       const panel = screen.getByTestId('diagnostics-panel');
+      expect(panel.getAttribute('data-collapsed')).toBe('false');
       expect(panel.textContent).toContain('compile warn xyz');
       expect(panel.textContent).toContain('tess boom abc');
     });
