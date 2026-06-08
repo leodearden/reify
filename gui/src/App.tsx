@@ -479,8 +479,7 @@ const App: Component = () => {
   // View manage modal state
   const [viewManageOpen, setViewManageOpen] = createSignal(false);
 
-  // Diagnostics panel state
-  const [diagnosticsOpen, setDiagnosticsOpen] = createSignal(false);
+  // Diagnostics panel state lives in layoutStore (problemsCollapsed / problemsHeight).
   // Both compile and tessellation diagnostics share the DiagnosticInfo schema, so the
   // panel renders them as a single merged list — no schema change or extra state needed.
   // The two pipelines are disjoint by construction: compile errors come from the static
@@ -529,18 +528,15 @@ const App: Component = () => {
   // snapshot.  Mirrors the flyToEntityRef/fitToViewRef child→parent handle pattern.
   let getLiveEditorContent: (() => string | null) | undefined;
 
-  // Both the compile badge and the tessellation badge call this handler — both are
-  // toggles. Clicking either badge while the panel is already open will close it rather
-  // than forcing it open. This matches the "one shared overlay" design; if a force-open
-  // affordance is wanted in the future, split into onShowDiagnostics (setDiagnosticsOpen(true))
-  // vs a dedicated keyboard-shortcut toggle.
+  // Both the compile badge and the tessellation badge call this handler — toggle
+  // problemsCollapsed. Clicking while expanded collapses; clicking while collapsed expands.
   function handleToggleDiagnostics() {
-    setDiagnosticsOpen((v) => !v);
+    layoutStore.setProblemsCollapsed((c) => !c);
   }
 
   function handleNavigateToDiagnostic(d: DiagnosticEntry) {
     setScrollToLocation({ file_path: d.file_path, line: d.line, column: d.column, end_line: d.end_line, end_column: d.end_column });
-    setDiagnosticsOpen(false);
+    // Panel stays open after navigation (docked design — no modal to dismiss).
   }
 
   // Refs for splitter max-width clamping
@@ -1512,6 +1508,14 @@ const App: Component = () => {
               />
               <FileTabs store={editorStore} />
               <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} compileDiagnostics={engineStore.state.compileDiagnostics} liveContentRef={(fn) => { getLiveEditorContent = fn; }} />
+              {/* Docked diagnostics panel — always mounted, collapsed by default */}
+              <DiagnosticsPanel
+                collapsed={layoutStore.state.problemsCollapsed}
+                height={layoutStore.state.problemsHeight}
+                diagnostics={allDiagnostics()}
+                onToggleCollapsed={handleToggleDiagnostics}
+                onNavigate={handleNavigateToDiagnostic}
+              />
             </div>
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
@@ -1640,6 +1644,7 @@ const App: Component = () => {
             tessellationDiagnostics={engineStore.state.tessellationDiagnostics}
             compileDiagnostics={engineStore.state.compileDiagnostics}
             onToggleDiagnostics={handleToggleDiagnostics}
+            diagnosticsCollapsed={layoutStore.state.problemsCollapsed}
           />
           <ExportDialog
             open={showExportDialog()}
@@ -1647,12 +1652,7 @@ const App: Component = () => {
             onExport={handleDoExport}
             onClose={() => setShowExportDialog(false)}
           />
-          <DiagnosticsPanel
-            open={diagnosticsOpen()}
-            diagnostics={allDiagnostics()}
-            onClose={() => setDiagnosticsOpen(false)}
-            onNavigate={handleNavigateToDiagnostic}
-          />
+          {/* DiagnosticsPanel relocated to .editorPanel (docked) — see below */}
           <ViewManageModal
             open={viewManageOpen()}
             store={viewStateStore}
