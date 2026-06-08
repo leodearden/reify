@@ -33,7 +33,7 @@ structure DeterminacyDemo {
     //   b     -> Auto         (auto default, awaiting solver)
     //   d     -> Undetermined (no default)
     param a : Length = 10mm
-    param b : Scalar = auto
+    param b : Length = auto
     param c : Length = 20mm
     param d : Real
 

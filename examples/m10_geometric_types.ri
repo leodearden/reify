@@ -81,7 +81,7 @@ structure def GeometricDemo {
     // 6: Dimensional arithmetic result check
     constraint total_component > 0mm
 
-    // 7: Scalar multiplication check
+    // 7: scalar-multiplication check
     constraint double_x > 0mm
 
     // 8-14: Determinacy of geometric let bindings
