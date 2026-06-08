@@ -8,9 +8,9 @@
 //!   * `crates/**/*.rs`            — inline .ri fixtures + doc-prose in Rust sources
 //!   * `gui/test/**/*.ri`          — GUI fixture files
 //!
-//! This test is RED (~984 sites) until all δ migration steps complete.
-//! It becomes compiler-redundant once γ adds `E_BARE_SCALAR`, but protects
-//! the δ→γ window.
+//! This test is GREEN (δ migration complete). It becomes compiler-redundant
+//! once γ adds `E_BARE_SCALAR`, but protects the δ→γ window as a regression
+//! guard.
 //!
 //! Design decisions:
 //!   * `::Scalar` (Rust enum paths `Type::Scalar` / `Value::Scalar`) are
