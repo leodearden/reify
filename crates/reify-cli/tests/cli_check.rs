@@ -289,8 +289,8 @@ fn check_io_formats_exits_success_no_unresolved() {
         status.success(),
         "reify check should exit 0 for io_formats.ri.\nstdout: {stdout}\nstderr: {stderr}"
     );
-    // The four determined(subject) constraints on concrete box() geometry should
-    // resolve to "All constraints satisfied".  We also accept the
+    // The five determined(subject) constraints on concrete box() geometry
+    // (STLOutput, STEPOutput×3, ThreeMFOutput) should resolve to "All constraints satisfied".  We also accept the
     // "No constraints violated (N indeterminate)" message that reify check
     // prints when constraints resolve to SomeIndeterminate — exit code is still
     // 0 in that case and our primary contract is "exit 0, no unresolved errors".

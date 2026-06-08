@@ -18,4 +18,12 @@ structure def IoFormats {
     sub mf = ThreeMFOutput(subject: part, path: "out.3mf")
     sub disp = DisplayOutput(subject: part, pane: 1, style: DisplayStyle(opacity: 0.5, wireframe: true))
     sub imp = STEPInput(source: "in.step", version: STEPVersion.AP242)
+
+    // Default-resolution coverage: omit provenance → exercises the constructor-valued
+    // Provenance(...) default on STEPInput.
+    sub imp_defaults = STEPInput(source: "defaults.step")
+
+    // Default-resolution coverage: omit style and pane → exercises the DisplayStyle()
+    // constructor default on DisplayOutput.
+    sub disp_defaults = DisplayOutput(subject: part)
 }
