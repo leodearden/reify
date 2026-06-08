@@ -26,7 +26,7 @@ use reify_ast::{
     ConnectDecl, Declaration, Expr, ExprKind, ForallConnectBody, ForallConstraintBody,
     MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, StringPart, SubDecl, WhereClause,
 };
-use reify_core::{ModulePath, SourceSpan};
+use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{
     DocumentHighlight, DocumentHighlightKind, Location, Position, Range, TextEdit, Url,
     WorkspaceEdit,
