@@ -306,9 +306,15 @@ fn value_type_kind_matches(
         // step-6 so Geometry cells are accepted.
         Value::GeometryHandle { .. } => matches!(ty, Type::Geometry),
         Value::AffineMap { .. } => matches!(ty, Type::AffineMap(_)), // task 3958 / α
-        // Topology-selector value (task 4116 / α): kind must match exactly.
-        // PRD §4.4/§9: this is the β behavior, satisfied here because exhaustiveness forces it.
-        Value::Selector(sv) => matches!(ty, Type::Selector(k) if *k == sv.kind),
+        // Topology-selector value (task 4116 / α): kind must match exactly for
+        // single-kind typed cells (PRD §4.4/§9).
+        // PRD §4.2/§11.1 (task 4369/A2): a kind-agnostic `AnySelector` cell also
+        // accepts any concrete selector value — the type carries no kind constraint,
+        // so all three concrete selector kinds satisfy it.
+        Value::Selector(sv) => {
+            matches!(ty, Type::AnySelector)
+                || matches!(ty, Type::Selector(k) if *k == sv.kind)
+        }
         // If a future `Value::TraitObjectInstance` variant is added, add a
         // matching arm here AND relax the runtime assertion so the compiler
         // enforces completeness.
