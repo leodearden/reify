@@ -6,25 +6,27 @@
 //!
 //! ```ri
 //! structure def CurvatureSmoke {
-//!     let s       = sphere(5mm)
-//!     let cyl     = cylinder(10mm, 20mm)
-//!     let pt_s    = point3(5mm, 0mm, 0mm)
-//!     let pt_c    = point3(10mm, 0mm, 0mm)
-//!     let k_surf  = curvature(s, pt_s)
-//!     let k_curve = curvature(cyl, pt_c)
+//!     let s             = sphere(5mm)
+//!     let cyl           = cylinder(10mm, 20mm)
+//!     let pt_s          = point3(5mm, 0mm, 0mm)
+//!     let pt_c          = point3(10mm, 0mm, 0mm)
+//!     let k_surf        = curvature(s, pt_s)
+//!     let k_curve       = curvature(cyl, pt_c)
+//!     let k_surf_face   = curvature(faces(s)[0], pt_s)
+//!     let k_surf_face_t = transpose(k_surf_face)
 //! }
 //! ```
 //!
 //! Two assertions:
 //!
 //! 1. **COMPILE-LEVEL** (always) — `curvature_smoke.ri` parses and compiles
-//!    with no error-severity diagnostics. `curvature` is registered in
-//!    `units.rs` under `GEOMETRY_QUERY_NAMES` (task 3621, KGQ-μ), so the cell
-//!    type resolves to `Scalar<Curvature>`.  At DSL eval time both cells
-//!    resolve to `Value::Undef` because solid handles fail the
-//!    face/edge kernel queries (pre-Phase-3 sub-handle chaining); only
-//!    Warning diagnostics are emitted — not Errors — so the compile assertion
-//!    holds.
+//!    with no error-severity diagnostics. `k_surf` and `k_curve` (let-bound
+//!    solid args) type as `Scalar<Curvature>`; `k_surf_face` (inline
+//!    `faces(s)[0]` arg) types as `Matrix<2,2,Curvature>` via task-4315
+//!    arg-type-aware dispatch; `k_surf_face_t = transpose(k_surf_face)` also
+//!    types as `Matrix<2,2,Curvature>`. At DSL eval time all Undef-path cells
+//!    resolve to `Value::Undef`; only Warning diagnostics are emitted — not
+//!    Errors — so the compile assertion holds.
 //!
 //! 2. **OCCT-BACKED RUNTIME** (gated on `reify_kernel_occt::OCCT_AVAILABLE`) —
 //!    Spawn a real `OcctKernelHandle`, build the geometry directly at the kernel
