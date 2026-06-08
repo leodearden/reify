@@ -21,7 +21,7 @@
 //! `crate::OcctKernel::execute` (lib.rs lines 920-1640+) maps to one entry
 //! here, paired with `ReprKind::BRep`. The grouping mirrors the `Operation`
 //! enum's section comments: Booleans×3, Primitives×5, Modify×5,
-//! Transform×4, Pattern×5, Sweep×8, Curve×6 — total 35 entries.
+//! Transform×5, Pattern×5, Sweep×8, Curve×6 — total 36 entries.
 //!
 //! # Convert ×1 (wired in PRD §8 task δ — task 3435)
 //!
@@ -106,11 +106,12 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (ModifyShell, ReprKind::BRep),
         (ModifyDraft, ReprKind::BRep),
         (ModifyThicken, ReprKind::BRep),
-        // Transform ×4
+        // Transform ×5
         (TransformTranslate, ReprKind::BRep),
         (TransformRotate, ReprKind::BRep),
         (TransformScale, ReprKind::BRep),
         (TransformRotateAround, ReprKind::BRep),
+        (TransformApplyTransform, ReprKind::BRep),
         // Pattern ×5
         (PatternLinear, ReprKind::BRep),
         (PatternCircular, ReprKind::BRep),

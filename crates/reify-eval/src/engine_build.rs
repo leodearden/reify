@@ -6281,6 +6281,7 @@ mod tests {
                 (Operation::TransformRotate, ReprKind::BRep),
                 (Operation::TransformScale, ReprKind::BRep),
                 (Operation::TransformRotateAround, ReprKind::BRep),
+                (Operation::TransformApplyTransform, ReprKind::BRep),
                 (Operation::PatternLinear, ReprKind::BRep),
                 (Operation::PatternCircular, ReprKind::BRep),
                 (Operation::PatternMirror, ReprKind::BRep),
