@@ -36,8 +36,13 @@ SENTINEL="$FIX/.git/reify-main-gate-ok"
 LOG="$FIX/.git/reify-main-gate.log"
 ZERO="0000000000000000000000000000000000000000"
 ONE="1111111111111111111111111111111111111111"
-MAIN_LINE="$ZERO $ONE refs/heads/main"
-BRANCH_LINE="$ZERO $ONE refs/heads/task/foo"
+TWO="2222222222222222222222222222222222222222"
+# A GENUINE advance: existing main (ONE) -> a DIFFERENT existing commit (TWO).
+# Both oids nonzero and distinct, so it passes the genuine-advance filter and IS
+# gated. (Housekeeping shapes — no-op / create / delete — are exercised separately
+# in scenarios g/h/i below and must NEVER be gated.)
+MAIN_LINE="$ONE $TWO refs/heads/main"
+BRANCH_LINE="$ONE $TWO refs/heads/task/foo"
 
 # drive <state> <stdin-line> [ENV=VAL ...] — run the hook in the fixture; sets DRIVE_RC.
 drive() {
@@ -102,5 +107,53 @@ rm -f "$SENTINEL" "$LOG"
 drive committed "$MAIN_LINE" REIFY_MAIN_GATE_ENFORCE=1
 assert "(f) committed state never aborts (exit 0)" test "$DRIVE_RC" -eq 0
 assert "(f) committed state leaves no log" bash -c "! test -f '$LOG'"
+
+# ===========================================================================
+# Genuine-advance filter (the advance-filter change): only old!=new AND both
+# nonzero is a landing. Housekeeping transactions on refs/heads/main — no-op
+# (X->X), creation (0000->X), deletion (X->0000) — must ALWAYS be allowed and
+# never logged, even under ENFORCE, so that `git gc` / `git pack-refs` /
+# `git fetch` are never aborted. These are the cases the 4-day warn-only window
+# showed (~48 events) that would otherwise wedge the repo when enforcing.
+# ===========================================================================
+
+# -- (g) no-op self-move (old==new) -> allowed + silent, even under ENFORCE ----
+echo ""
+echo "--- (g) no-op main move (X->X) -> exit 0, NOT gated, even under ENFORCE ---"
+rm -f "$SENTINEL" "$LOG"
+drive prepared "$ONE $ONE refs/heads/main" REIFY_MAIN_GATE_ENFORCE=1
+assert "(g) no-op move never aborts even under ENFORCE (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(g) no-op move leaves no log (housekeeping, not a landing)" bash -c "! test -f '$LOG'"
+
+# -- (h) ref creation (old all-zero) -> allowed + silent, even under ENFORCE ---
+echo ""
+echo "--- (h) main ref creation (0000->X) -> exit 0, NOT gated, even under ENFORCE ---"
+rm -f "$SENTINEL" "$LOG"
+drive prepared "$ZERO $ONE refs/heads/main" REIFY_MAIN_GATE_ENFORCE=1
+assert "(h) creation never aborts even under ENFORCE (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(h) creation leaves no log (pack-refs/gc churn, not a landing)" bash -c "! test -f '$LOG'"
+
+# -- (i) ref deletion (new all-zero) -> allowed + silent, even under ENFORCE ---
+echo ""
+echo "--- (i) main ref deletion (X->0000) -> exit 0, NOT gated, even under ENFORCE ---"
+rm -f "$SENTINEL" "$LOG"
+drive prepared "$ONE $ZERO refs/heads/main" REIFY_MAIN_GATE_ENFORCE=1
+assert "(i) deletion never aborts even under ENFORCE (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(i) deletion leaves no log (pack-refs/gc churn, not a landing)" bash -c "! test -f '$LOG'"
+
+# -- (j) a housekeeping move does NOT consume a pending sentinel ---------------
+# A real advance is gated and consumes the sentinel; a housekeeping move must
+# leave the sentinel intact so the next GENUINE advance is still recognised as
+# sanctioned (the filter short-circuits before the consume step).
+echo ""
+echo "--- (j) housekeeping move leaves a pending sentinel intact ---"
+rm -f "$LOG"; : > "$SENTINEL"
+drive prepared "$ONE $ONE refs/heads/main"
+assert "(j) no-op move exits 0" test "$DRIVE_RC" -eq 0
+assert "(j) no-op move does NOT consume the sentinel" bash -c "test -e '$SENTINEL'"
+# ...and the subsequent genuine advance then consumes it (sanctioned).
+drive prepared "$ONE $TWO refs/heads/main"
+assert "(j) following genuine advance consumes the sentinel" bash -c "! test -e '$SENTINEL'"
+assert "(j) following genuine advance logged sanctioned" bash -c "grep -q 'sanctioned main move' '$LOG'"
 
 test_summary
