@@ -86,6 +86,9 @@ the same residual). A divergence between them silently produces wrong torques.
 | `Value→closed_chain` dynamics bridge (M / A / rank reduction / KKT routing) | `task 4146` (**landed** — this PRD is its kinematic prerequisite, not a rewrite) |
 | `Frame3` surface type / `.ri` syntax for a per-joint offset (design A) | geometry-transforms-frames PRD (`reference_prd_geometry_transforms_frames_projection`) — verify ownership at promotion |
 | FK / loop-solver / residual-Jacobian consistency | **this PRD** (on promotion) |
+| `relate`→mount frame/axis production: `relate` (docs/prds/v0_6/geometric-relations.md §6/§10, design §8.2) solves the mount frame/axis stored by the offset field (§2 design A origin frame / design B body pose); KIN-OFFSET-1 threads that frame through FK (`walk_fk` / `joint_world_transform`), the loop-residual, and the dynamics constraint-Jacobian | **`geometric-joints.md`** (companion; **not yet authored**) owns the relate↔offset co-design seam, **co-designed** with this PRD per design §8.2; hard-gated on KIN-OFFSET-1 (4331, `deferred`) — author `geometric-joints.md` after 4331 is promoted (stub → full B+H PRD) |
+
+> **Forward-reference (reciprocal-risk seam):** `geometric-joints.md` does **not yet exist** — it is the designated future companion PRD for the joint half. The seam owner is unambiguous: `geometric-joints.md` owns the relate↔offset co-design, resolving the reciprocal-risk ("each side could claim 'the other threads the offset'") by requiring the two PRDs to be co-designed per design §8.2. Author `geometric-joints.md` after task 4331 is promoted from stub to a full B+H PRD. See also: docs/prds/v0_6/geometric-relations.md §6/§10 for the reciprocal record of this seam.
 
 ---
 
