@@ -39,15 +39,12 @@ structure FeaShellTooThickAnnotated {
     // Supports: fully clamped (fixed) at the block root.
     let mount = FixedSupport(target: "root")
 
-    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
-    // has compile-time type `List<Real>` (matching the fn param type).
-    let lc = LoadCase(name: "thick_block", loads: [tip_load], supports: [mount])
-
     // Wrap material in ConstitutiveLawInput so that member-access .law has
     // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
     let ci = ConstitutiveLawInput(law: material)
 
     // FEA solve: force the shell route (proxy for `@shell`) via positional args.
+    // Direct list literals type-check against List<Load> / List<Support> (task 4093).
     // The Reify DSL uses positional-call form exclusively — field labels like
     // `shell_force: ShellForce.On` are stripped by the parser and treated as
     // positional args (see crates/reify-syntax/src/ts_parser.rs).  To set
@@ -61,7 +58,7 @@ structure FeaShellTooThickAnnotated {
     // `ComputeOutcome::Failed` with `DiagnosticCode::ShellTooThick` before running
     // any shell solve (no tet fallback on `ShellForce::On`).
     let result = solve_elastic_static(
-        ci.law, length, width, height, lc.loads, lc.supports,
+        ci.law, length, width, height, [tip_load], [mount],
         ElasticOptions(ElementOrder.P1, none, 1000, 0.000001, none, 0.2, none, 1.0, ShellForce.On)
     )
 

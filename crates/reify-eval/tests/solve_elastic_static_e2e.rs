@@ -815,8 +815,12 @@ fn e2e_cantilever_b1_b2_displacement_stress_fields() {
 
 /// Inline cantilever source opting into deterministic execution via
 /// `ElasticOptions(deterministic: true)`. Mirrors the smoke fixture's
-/// material/geometry/loads/supports plus the ConstitutiveLawInput / LoadCase
-/// coercion workarounds (see `examples/fea_cantilever_smoke.ri`).
+/// material/geometry/loads/supports with the ConstitutiveLawInput coercion
+/// wrapper (see `examples/fea_cantilever_smoke.ri`). The LoadCase bundle is no
+/// longer needed — `solve_elastic_static` now declares `loads: List<Load>` /
+/// `supports: List<Support>` (task 4093), so direct typed list literals
+/// `[tip_load]` / `[mount]` type-check via the resolver's wildcard + per-element
+/// conformance pass.
 const CANTILEVER_DETERMINISTIC_SRC: &str = r#"
 structure FeaCantileverDeterministic {
     param length : Length = 1000mm
@@ -826,11 +830,10 @@ structure FeaCantileverDeterministic {
     let material = Steel_AISI_1045()
     let tip_load = PointLoad(point: "tip", force: 1000.0)
     let mount = FixedSupport(target: "root")
-    let lc = LoadCase(name: "cantilever", loads: [tip_load], supports: [mount])
     let ci = ConstitutiveLawInput(law: material)
 
     let result = solve_elastic_static(
-        ci.law, length, width, height, lc.loads, lc.supports,
+        ci.law, length, width, height, [tip_load], [mount],
         ElasticOptions(deterministic: true)
     )
 }
