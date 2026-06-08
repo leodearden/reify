@@ -1766,8 +1766,8 @@ structure S {
             "builtin/function `box` is not renameable"
         );
         assert!(
-            refuses("Scalar").is_none(),
-            "type name `Scalar` is not renameable"
+            refuses("Length").is_none(),
+            "type name `Length` is not renameable"
         );
         assert!(
             refuses("Bracket").is_none(),
@@ -1851,12 +1851,12 @@ structure S {
             );
         }
 
-        // Where prepare_rename refuses (cursor on the type name `Scalar`),
+        // Where prepare_rename refuses (cursor on the type name `Length`),
         // compute_rename returns None too.
-        let scalar_off = source.find("Scalar").expect("Scalar present");
-        let scalar_pos = offset_to_position(source, scalar_off as u32);
+        let type_off = source.find("Length").expect("Length type present");
+        let type_pos = offset_to_position(source, type_off as u32);
         assert!(
-            compute_rename(source, &parsed, &uri, scalar_pos, "span").is_none(),
+            compute_rename(source, &parsed, &uri, type_pos, "span").is_none(),
             "compute_rename must refuse where prepare_rename refuses"
         );
     }
@@ -2333,12 +2333,12 @@ structure S {
         }
 
         // --- A non-resolvable cursor position yields None. ---
-        // A type-name token (`Scalar`) does not resolve to a local value-member
+        // A type-name token (`Length`) does not resolve to a local value-member
         // binding, so collect_references → None → producer → None.
-        let scalar_off = source.find("Scalar").expect("Scalar present");
-        let scalar_pos = offset_to_position(source, scalar_off as u32);
+        let type_off = source.find("Length").expect("Length type present");
+        let type_pos = offset_to_position(source, type_off as u32);
         assert!(
-            compute_document_highlights(source, &parsed, scalar_pos).is_none(),
+            compute_document_highlights(source, &parsed, type_pos).is_none(),
             "a type-name token is not resolvable, so it produces no highlights"
         );
         // A keyword (`structure`) is likewise non-resolvable.
