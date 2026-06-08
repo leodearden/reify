@@ -74,9 +74,17 @@ No contested-ownership seam introduced (checked against overlay's known pairs). 
 | stdlib `.ri` + `examples/` corpus | consumes | compiles under new resolution | this-prd | queued (δ, η) |
 | GUI / LSP | consumes | inherit via shared `reify-compiler` | n/a (transparent) | — |
 
+## Decompose-time reconciliation (added 2026-06-08, before queueing)
+
+`search_tasks` at decompose-check time surfaced live `dev_capstan.ri` dogfooding work that overlaps this PRD (the PRD's substrate reads were jun3; some reality moved by jun8). **The decompose session MUST reconcile these before filing — do not file duplicates:**
+
+1. **Task 4319 (DONE, jun4)** — "Fix value arithmetic: dimensionless `Scalar` + `Real` silently yields `Undef`" — already added the `(Scalar{DIMENSIONLESS}, Real)`/`(Real, Scalar{DIMENSIONLESS})` mixed arms to `eval_add`/`eval_sub`, returning `Value::Real` (the canonicalization direction this PRD wants). The headline `groove_len` value-layer bug is **fixed on main**. **→ Re-scope β:** β no longer "fixes the add `Undef`". β = route the *producers* (`eval_mul`/`eval_div`/`eval_pow` + external geometry/tolerance/modal sites) through `from_real_scalar` so `Value::Scalar{DIMENSIONLESS}` is never constructed (verified still open: `30mm/10mm` → `3 dimensionless`, an un-collapsed Scalar), add the leak-guard test, and simplify 4319's now-defensive additive arms. Do **not** re-file 4319's work.
+2. **Task 4318 (PENDING, jun8)** — "Catch `param` declared-type vs initializer-dimension mismatch at the declaration (`param x : Real = <length>`)" — is **ε's superset** (ε was the default-literal case `param t:Length=1.0`; 4318 is the initializer-expression case, same mechanism: cross-check a param's declared type against its RHS dimension at the declaration, hard error). **→ Drop ε; fold its literal case into 4318** (add ε's `= <literal>` coverage to 4318's scope) rather than filing a duplicate. This PRD references 4318 as the owner.
+3. **Tasks 4234 + 4235 (PENDING, generic-user-functions ε/ζ)** — add generic **dimension params** (`Scalar<Q>` with `Q` a type param), proposing either a NEW `Type::ScalarParam(String)` variant or generalizing the quantity slot, and editing `resolve_parameterized_builtin_type` (type_resolution.rs:1401-1406) — **the exact Type-enum surgery (α) and Q-slot resolution (γ) this PRD touches.** This is a genuine **G4 cross-PRD seam** (two concurrent restructurings of the scalar/quantity type representation). **→ Ownership/sequencing decision required:** does `Type::Real` deletion (α) land before, after, or jointly-coordinated-with the generic-dimension-param work (4234)? They will hard-conflict if run concurrently on the Type enum + `resolve_parameterized_builtin_type`. **Resolve this with Leo before queueing α/γ.** Candidate default: sequence α *before* 4234 (delete the redundant variant first → 4234 adds its param-slot onto a cleaner enum), making 4234/4235 depend on α.
+
 ## Decomposition plan
 
-Labels are PRD-local; task IDs assigned at decompose.
+Labels are PRD-local; task IDs assigned at decompose. (β/ε re-scoped per the reconciliation above; α/γ gated on the 4234 seam resolution.)
 
 - **δ — Migrate corpus off bare `Scalar` (behavior-preserving).** Modules: `examples/*.ri`, `crates/reify-compiler/stdlib/*.ri`, inline `.ri` fixtures across `crates/**/*.rs` (~31 example sites + ~hundreds of fixture sites). Replace bare `: Scalar` annotations with `Scalar<Length>` / `Length` (bare `Scalar == Length` today, so semantics are unchanged). *Signal:* `cargo test --workspace` + `reify check examples/*.ri` stay green; `grep ': Scalar[^<a-zA-Z]'` over the corpus returns zero. *Prereqs:* none. (Intermediate; unlocks α, γ.) `grammar_confirmed=true`.
 
