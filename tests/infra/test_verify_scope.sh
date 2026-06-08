@@ -352,4 +352,96 @@ assert "C5/no-main: scope=all in plan header (fail-wide, contract C5)" \
 assert "C5/no-main: full scope forced (RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_C5"
 
+# ===========================================================================
+# Branch-scope narrowing scenarios: REIFY_AFFECTED_CRATES_OVERRIDE drives
+# -p flag wiring for clippy, nextest tail, and cargo check (step-2/step-4).
+# RED until step-2 lands (verify.sh has no narrowing yet).
+# ===========================================================================
+
+# plan_for_branch_narrowed <override> <file...>
+# Like plan_for_branch but exports REIFY_AFFECTED_CRATES_OVERRIDE, and also
+# captures the typecheck-action plan into PLAN_OUT_NARROW_TC.
+PLAN_OUT_NARROW_TC=""
+plan_for_branch_narrowed() {
+    local _override="$1"; shift
+    local f
+    git -C "$FIX_B" checkout -q -b task-branch
+    for f in "$@"; do
+        mkdir -p "$FIX_B/$(dirname "$f")"
+        printf 'x\n' > "$FIX_B/$f"
+        git -C "$FIX_B" add "$f"
+    done
+    git -C "$FIX_B" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_B" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    PLAN_OUT_NARROW_TC="$(cd "$FIX_B" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh typecheck --profile debug --scope branch --print-plan 2>/dev/null)" || true
+    git -C "$FIX_B" checkout -q main
+    git -C "$FIX_B" branch -q -D task-branch
+    for f in "$@"; do rm -f "$FIX_B/$f"; done
+}
+
+# ---------------------------------------------------------------------------
+# Scenario B2-narrow: non-OCCT branch + override -> -p flags, no --workspace
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B2-narrow: branch + override -> narrowed -p flags ---"
+plan_for_branch_narrowed "reify-doc reify-ir" crates/reify-doc/src/lib.rs
+# action=all: clippy must use -p flags, NOT --workspace
+assert "B2-narrow/all: clippy has -p reify-doc" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo clippy.*-p reify-doc"' _ "$PLAN_OUT"
+assert "B2-narrow/all: clippy has -p reify-ir" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo clippy.*-p reify-ir"' _ "$PLAN_OUT"
+assert "B2-narrow/all: clippy LACKS --workspace" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_OUT"
+# action=all: nextest tail must use -p flag, NOT --workspace
+assert "B2-narrow/all: nextest tail has -p reify-doc" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-doc"' _ "$PLAN_OUT"
+assert "B2-narrow/all: nextest tail LACKS --workspace" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_OUT"
+# action=typecheck: cargo check must use -p flag, NOT --workspace
+assert "B2-narrow/typecheck: cargo check has -p reify-doc" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo check .*-p reify-doc"' _ "$PLAN_OUT_NARROW_TC"
+assert "B2-narrow/typecheck: cargo check LACKS --workspace" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo check --workspace"' _ "$PLAN_OUT_NARROW_TC"
+
+# ---------------------------------------------------------------------------
+# Scenario Intersect/C3: non-OCCT change but OCCT in override -> gated fires
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario Intersect/C3: non-OCCT change, OCCT in override -> gated pass fires ---"
+# changed=crates/reify-doc/src/lib.rs -> RUN_OCCT_GATE=0 from scope decision.
+# But override includes reify-eval (OCCT) -> affected ∩ OCCT non-empty -> gate runs.
+plan_for_branch_narrowed "reify-doc reify-eval" crates/reify-doc/src/lib.rs
+assert "Intersect/C3: RUN_OCCT_GATE=0 from changed file (reify-doc is non-OCCT)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+assert "Intersect/C3: gated pass present with -p reify-eval" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh.*cargo test .*-p reify-eval"' _ "$PLAN_OUT"
+assert "Intersect/C3: gated pass LACKS reify-kernel-occt (only affected ∩ OCCT, not full OCCT set)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh.*-p reify-kernel-occt"' _ "$PLAN_OUT"
+assert "Intersect/C3: ungated tail has -p reify-doc" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-doc"' _ "$PLAN_OUT"
+assert "Intersect/C3: ungated tail LACKS --workspace" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_OUT"
+
+# ---------------------------------------------------------------------------
+# Scenario C1-guard: scope=all + override -> --workspace preserved, override ignored
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario C1-guard: scope=all + override -> --workspace kept (C1 contract) ---"
+FIX_C1=""
+make_branch_fixture FIX_C1
+git -C "$FIX_C1" checkout -q -b task-branch
+mkdir -p "$FIX_C1/crates/reify-doc/src"
+printf 'x\n' > "$FIX_C1/crates/reify-doc/src/lib.rs"
+git -C "$FIX_C1" add crates
+git -C "$FIX_C1" commit -q -m "task changes"
+PLAN_C1="$(cd "$FIX_C1" && REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile debug --scope all --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_C1" checkout -q main
+git -C "$FIX_C1" branch -q -D task-branch
+assert "C1-guard: clippy keeps --workspace (override ignored for scope=all)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_C1"
+assert "C1-guard: ungated tail keeps --workspace (override ignored for scope=all)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_C1"
+assert "C1-guard: NO affected -p reify-doc in clippy (override ignored for scope=all)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo clippy.*-p reify-doc"' _ "$PLAN_C1"
+
 test_summary
