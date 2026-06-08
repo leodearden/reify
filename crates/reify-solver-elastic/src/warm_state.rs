@@ -380,4 +380,101 @@ mod tests {
             result.iterations
         );
     }
+
+    // ── step-3 (task 4366): equivalence test for both entry points ─────────────
+
+    /// A multi-iteration COLD solve yields the SAME iteration count and
+    /// displacement vector via both `solve_cg_with_warm_state` (no-op closure)
+    /// and `solve_cg_with_warm_state_progress` (recording closure).
+    ///
+    /// Both entry points share `cg_loop`, so equality is guaranteed by
+    /// construction. This test is a regression guard — it passes on current
+    /// correct code and locks the no-op-closure equivalence so a future
+    /// option-(b) fast-path (a direct `solve_cg_warm` bypassing the closure
+    /// indirection) cannot silently diverge from the progress variant.
+    ///
+    /// The 3×3 tridiagonal SPD fixture [[4,-1,0],[-1,4,-1],[0,-1,4]] with
+    /// RHS [1,2,3] provably needs >1 CG iteration (verified by
+    /// `solver::tests::solve_cg_with_progress_multi_iteration_callback_sequence`),
+    /// so `iterations > 1` is non-vacuous here.
+    #[test]
+    fn cold_solve_same_iteration_count_via_both_entry_points() {
+        // 3×3 tridiagonal SPD: same fixture as
+        // solver::tests::solve_cg_with_progress_multi_iteration_callback_sequence.
+        let k = SparseRowMat::try_new_from_triplets(
+            3,
+            3,
+            &[
+                Triplet::new(0_usize, 0_usize, 4.0_f64),
+                Triplet::new(0_usize, 1_usize, -1.0_f64),
+                Triplet::new(1_usize, 0_usize, -1.0_f64),
+                Triplet::new(1_usize, 1_usize, 4.0_f64),
+                Triplet::new(1_usize, 2_usize, -1.0_f64),
+                Triplet::new(2_usize, 1_usize, -1.0_f64),
+                Triplet::new(2_usize, 2_usize, 4.0_f64),
+            ],
+        )
+        .unwrap();
+        let f = vec![1.0_f64, 2.0_f64, 3.0_f64];
+        let opts = CgSolverOptions { tolerance: 1e-12, max_iter: 100 };
+
+        // Entry point A: plain no-op-closure path.
+        let (result_a, _) = solve_cg_with_warm_state(
+            &k,
+            &f,
+            None,
+            opts.clone(),
+            SolverMode::Deterministic,
+        );
+
+        // Entry point B: progress-recording path.
+        let mut records: Vec<(usize, f64)> = Vec::new();
+        let (result_b, _) = solve_cg_with_warm_state_progress(
+            &k,
+            &f,
+            None,
+            opts,
+            SolverMode::Deterministic,
+            &mut |i, r| {
+                records.push((i, r));
+                CgIterationControl::Continue
+            },
+        );
+
+        // Both must converge.
+        assert!(result_a.converged, "entry-point-A cold solve must converge");
+        assert!(result_b.converged, "entry-point-B cold solve must converge");
+
+        // Iteration counts must be identical (both share cg_loop).
+        assert_eq!(
+            result_a.iterations,
+            result_b.iterations,
+            "both entry points must perform the same number of CG iterations: {} vs {}",
+            result_a.iterations,
+            result_b.iterations
+        );
+
+        // The solve is genuinely multi-iteration (locks the gap current tests left).
+        assert!(
+            result_a.iterations > 1,
+            "3×3 tridiagonal fixture must need >1 CG iteration, got {}",
+            result_a.iterations
+        );
+
+        // The recording closure was invoked once per iteration.
+        assert_eq!(
+            records.len(),
+            result_b.iterations,
+            "progress closure must be called once per iteration: {} records vs {} iters",
+            records.len(),
+            result_b.iterations
+        );
+
+        // Displacement vectors are byte-identical.
+        assert_eq!(
+            result_a.u(),
+            result_b.u(),
+            "both entry points must produce identical displacement vectors"
+        );
+    }
 }
