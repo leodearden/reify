@@ -1380,6 +1380,85 @@ mod tests {
         );
     }
 
+    // ── value_type_kind_matches: Type::AnySelector acceptance (task 4369/A2) ──────────────
+
+    /// A concrete `Value::Selector` of any kind satisfies a `Type::AnySelector` cell;
+    /// non-selector values do not; exact-kind enforcement for `Type::Selector(k)` is
+    /// unchanged (regression guard).
+    ///
+    /// Step-5 contract (RED until step-6):
+    /// (a) Face-kind selector against Type::AnySelector → true
+    /// (b) Edge-kind selector against Type::AnySelector → true
+    /// (c) Body-kind selector against Type::AnySelector → true
+    /// (d) Value::Real(1.0) against Type::AnySelector → false (non-selector rejected)
+    /// (e) regression: Face-kind selector against Type::Selector(Edge) → false
+    #[test]
+    fn value_type_kind_matches_any_selector_acceptance() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::{RealizationNodeId, Type};
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+        use reify_ir::{GeometryHandleId, Value};
+
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestPart", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+
+        // Face selector — uses ByNormal (Face-only query, must pair with Face kind).
+        let face_sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target.clone(),
+            LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 },
+        )
+        .expect("face SelectorValue must construct");
+        let face_val = Value::Selector(face_sv.clone());
+
+        // Edge selector — uses LeafQuery::All (kind-agnostic query, pairs with any kind).
+        let edge_sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target.clone(),
+            LeafQuery::All,
+        )
+        .expect("edge SelectorValue must construct");
+        let edge_val = Value::Selector(edge_sv);
+
+        // Body selector — uses LeafQuery::All (kind-agnostic).
+        let body_sv = SelectorValue::leaf(
+            SelectorKind::Body,
+            target.clone(),
+            LeafQuery::All,
+        )
+        .expect("body SelectorValue must construct");
+        let body_val = Value::Selector(body_sv);
+
+        // (a) Face-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&face_val, &Type::AnySelector, None),
+            "Value::Selector(Face) against Type::AnySelector must be true (a)"
+        );
+        // (b) Edge-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&edge_val, &Type::AnySelector, None),
+            "Value::Selector(Edge) against Type::AnySelector must be true (b)"
+        );
+        // (c) Body-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&body_val, &Type::AnySelector, None),
+            "Value::Selector(Body) against Type::AnySelector must be true (c)"
+        );
+        // (d) Non-selector value is rejected by Type::AnySelector.
+        assert!(
+            !value_type_kind_matches(&Value::Real(1.0), &Type::AnySelector, None),
+            "Value::Real against Type::AnySelector must be false (d)"
+        );
+        // (e) Regression: single-kind exact match still enforced (unchanged by task 4369).
+        assert!(
+            !value_type_kind_matches(&face_val, &Type::Selector(SelectorKind::Edge), None),
+            "Value::Selector(Face) against Type::Selector(Edge) must be false (e)"
+        );
+    }
+
     // ── value_type_kind_matches: Type::Error anti-cascade guard (task-1922 / task-448) ──
 
     /// `Value::Real` paired with `Type::Error` must return `true`.
