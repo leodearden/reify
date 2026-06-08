@@ -1792,7 +1792,7 @@ pub(crate) fn try_eval_geometry_query(
 /// direct-dispatch path and to locate fold leaves in the nested path.
 /// `length` / `perimeter` are intentionally excluded (topology-selector path —
 /// see the module note above `try_eval_geometry_query`).
-fn is_geometry_query_call(expr: &reify_ir::CompiledExpr) -> bool {
+pub(crate) fn is_geometry_query_call(expr: &reify_ir::CompiledExpr) -> bool {
     matches!(
         &expr.kind,
         reify_ir::CompiledExprKind::FunctionCall { function, args }
