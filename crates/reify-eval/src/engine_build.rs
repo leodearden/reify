@@ -3997,6 +3997,15 @@ impl Engine {
         // and passes a mutable reference into it; the cache-hit short-circuit
         // returns BEFORE the loop, so the counter stays at 0 on a re-hit.
         dispatch_count: &mut usize,
+        // Task 3437 (ζ): only the TERMINAL realization of an entity (the one
+        // with the highest index, i.e. `r_idx + 1 == template.realizations.len()`)
+        // should probe or insert into the `RealizationCache`. Intermediate
+        // realizations all share the same `entity` cache key; if we probe/insert
+        // for them we get false hits (realization N finds realization N-1's
+        // result for the same entity key) which violates the per-build
+        // reset invariant and produces wrong geometry (the intermediate let-
+        // binding gets the terminal's handle instead of its own).
+        is_terminal_realization: bool,
     ) {
         let RealizationOutputs {
             step_handles,
@@ -4077,6 +4086,7 @@ impl Engine {
         // fallback could serve the Step entry to the Stl demand — cannot arise in
         // reify-eval (no Mesh boolean kernel is linked, so a Mesh demand can never
         // resolve Mesh here) and is task ζ's (#3437) surface, not this task's.
+        if is_terminal_realization {
         if let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
             let cache_probe = realization_cache
                 .lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
@@ -4147,6 +4157,7 @@ impl Engine {
                 return;
             }
         }
+        } // end is_terminal_realization cache-probe guard
 
         let mut had_failure = false;
         // Step-14 (task ε / 3436): captures the terminal output [`ReprKind`]
