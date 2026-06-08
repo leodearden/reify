@@ -26,10 +26,12 @@ trap cleanup EXIT
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 # make_repo — create a fresh throwaway git repo; prints its path
+# Uses -b main so refs/heads/main exists after the first commit; this is
+# required for the G2b genuine-move test (creation events are not gated).
 make_repo() {
     local dir
     dir="$(mktemp -d)"; _TMPDIRS+=("$dir")
-    git -C "$dir" init -q
+    git -C "$dir" init -q -b main
     git -C "$dir" config user.email test@test.com
     git -C "$dir" config user.name Test
     echo "$dir"
@@ -121,10 +123,13 @@ chmod +x "$REPO_E/hooks/reference-transaction"
 # from config.worktree — the shared /tmp/bogus loses the priority battle.
 git -C "$REPO_E" config core.hooksPath /tmp/bogus
 
-# Genuine ref move: main is at C2, moving to C1 (both non-zero, different).
+# Genuine ref move: reset main from C2 to C1 (both non-zero, different).
+# git reset --hard supplies the old OID explicitly, which makes git send
+# old=C2,new=C1 to the reference-transaction hook (not old=0000 as
+# `git update-ref NEW` without explicit old does with extensions.worktreeConfig).
 # Git resolves core.hooksPath → 'hooks' (from config.worktree) → $REPO_E/hooks/
 # → fires reference-transaction → logs the unsanctioned move.
-git -C "$REPO_E" update-ref refs/heads/main "$C1"
+git -C "$REPO_E" reset --hard "$C1" >/dev/null 2>&1
 
 LOG_E="$REPO_E/.git/reify-main-gate.log"
 assert "(e) reference-transaction hook fired and logged 'main move'" \
