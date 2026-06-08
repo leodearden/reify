@@ -19,7 +19,8 @@ use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 /// Returns `Some(value)` if the name is recognised, `None` otherwise.
 pub(crate) fn eval_tensegrity(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
-        "tensegrity_wires" => tensegrity_wires(args),
+        "tensegrity_wires"    => tensegrity_wires(args),
+        "tensegrity_surfaces" => tensegrity_surfaces(args),
         _ => return None,
     })
 }
@@ -182,6 +183,162 @@ fn tensegrity_wires(args: &[Value]) -> Value {
     }
 
     Value::List(wires)
+}
+
+/// Extract index triples from a `List<List<Int>>` field value.
+///
+/// Each inner list must be exactly `[i0, i1, i2]` with all three entries
+/// being `Value::Int`. Out-of-range indices are validated against `n_nodes`
+/// by the caller. Returns `None` on any shape violation (inner length != 3
+/// or non-Int element).
+fn extract_index_triples(v: &Value) -> Option<Vec<(i64, i64, i64)>> {
+    match v {
+        Value::List(triples) => {
+            let mut result = Vec::with_capacity(triples.len());
+            for triple in triples {
+                match triple {
+                    Value::List(indices) if indices.len() == 3 => {
+                        match (&indices[0], &indices[1], &indices[2]) {
+                            (Value::Int(i0), Value::Int(i1), Value::Int(i2)) => {
+                                result.push((*i0, *i1, *i2))
+                            }
+                            _ => return None,
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+            Some(result)
+        }
+        _ => None,
+    }
+}
+
+/// Build a `TensegritySurface` `Value::StructureInstance` using `StructureTypeId(0)`
+/// as the placeholder type_id (SIR-α convention — mirrors `build_wire`).
+fn build_surface(
+    i0: i64, i1: i64, i2: i64,
+    p0: &(Value, Value, Value),
+    p1: &(Value, Value, Value),
+    p2: &(Value, Value, Value),
+) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        ("kind".to_string(), Value::String("membrane".to_string())),
+        ("i0".to_string(),   Value::Int(i0)),
+        ("i1".to_string(),   Value::Int(i1)),
+        ("i2".to_string(),   Value::Int(i2)),
+        ("x0".to_string(),   p0.0.clone()),
+        ("y0".to_string(),   p0.1.clone()),
+        ("z0".to_string(),   p0.2.clone()),
+        ("x1".to_string(),   p1.0.clone()),
+        ("y1".to_string(),   p1.1.clone()),
+        ("z1".to_string(),   p1.2.clone()),
+        ("x2".to_string(),   p2.0.clone()),
+        ("y2".to_string(),   p2.1.clone()),
+        ("z2".to_string(),   p2.2.clone()),
+    ]
+    .into_iter()
+    .collect();
+
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "TensegritySurface".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// `tensegrity_surfaces(t : Tensegrity) -> List<TensegritySurface>`
+///
+/// Converts the `surfaces` triangle list of a `Tensegrity` structure-instance
+/// into a flat list of `TensegritySurface` instances (one per triangle).
+///
+/// # Shape contract
+///
+/// - Exactly 1 argument.
+/// - args[0] must be `Value::StructureInstance` with `type_name == "Tensegrity"`.
+/// - `fields["nodes"]` must be `Value::List` of `Value::Point([x, y, z])`.
+/// - `fields["surfaces"]` — if ABSENT or EMPTY, returns `Value::List([])` (not Undef).
+///   A missing surfaces field is legitimate for non-membrane nets.
+/// - If present, `fields["surfaces"]` must be `Value::List` of
+///   `Value::List` of exactly 3 `Value::Int` indices.
+/// - Every i0/i1/i2 index must be in `0 .. nodes.len()`.
+///
+/// Any actual violation (wrong arity, wrong type, inner-list length != 3,
+/// negative index, out-of-range index, malformed nodes) returns `Value::Undef`
+/// (silent-Undef per DD4 / Reuse-4).
+///
+/// # Output order
+///
+/// Facets are emitted in declaration order (matching `surfaces` list order).
+fn tensegrity_surfaces(args: &[Value]) -> Value {
+    // Arity guard.
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+
+    // arg must be a Tensegrity StructureInstance.
+    let fields = match &args[0] {
+        Value::StructureInstance(data) if data.type_name == "Tensegrity" => &data.fields,
+        _ => return Value::Undef,
+    };
+
+    // Extract nodes list.
+    let nodes = match fields.get(&"nodes".to_string()) {
+        Some(Value::List(ns)) => ns,
+        _ => return Value::Undef,
+    };
+
+    // Pre-extract node XYZ tuples; validate each is a 3-component Point.
+    let node_xyzs: Vec<(Value, Value, Value)> = {
+        let mut v = Vec::with_capacity(nodes.len());
+        for n in nodes.iter() {
+            match extract_node_xyz(n) {
+                Some(xyz) => v.push(xyz),
+                None => return Value::Undef,
+            }
+        }
+        v
+    };
+    let n_nodes = node_xyzs.len();
+
+    // Extract surfaces — ABSENT or EMPTY → return empty list (not Undef).
+    // Design Decision: surfaces is legitimately absent for non-membrane nets.
+    let triples = match fields.get(&"surfaces".to_string()) {
+        None => return Value::List(vec![]),
+        Some(v) => match extract_index_triples(v) {
+            Some(ts) => ts,
+            None => return Value::Undef,
+        },
+    };
+
+    if triples.is_empty() {
+        return Value::List(vec![]);
+    }
+
+    // Emit facets: validate and build each TensegritySurface.
+    let mut facets = Vec::with_capacity(triples.len());
+
+    for (i0, i1, i2) in &triples {
+        let i0 = *i0;
+        let i1 = *i1;
+        let i2 = *i2;
+        // Validate all three indices (negative or out-of-range → Undef).
+        if i0 < 0 || i0 as usize >= n_nodes
+            || i1 < 0 || i1 as usize >= n_nodes
+            || i2 < 0 || i2 as usize >= n_nodes
+        {
+            return Value::Undef;
+        }
+        facets.push(build_surface(
+            i0, i1, i2,
+            &node_xyzs[i0 as usize],
+            &node_xyzs[i1 as usize],
+            &node_xyzs[i2 as usize],
+        ));
+    }
+
+    Value::List(facets)
 }
 
 #[cfg(test)]
