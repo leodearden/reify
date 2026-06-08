@@ -53,6 +53,28 @@ if [ ! -d "$TARGET" ]; then
     exit 1
 fi
 
+# ── pre-flight leak guard ─────────────────────────────────────────────────────
+# git's documentation for extensions.worktreeConfig requires that core.bare (when
+# true) and core.worktree be moved out of shared config before the extension is
+# enabled, or they get mis-scoped per-worktree.  Reify currently has neither, but
+# a loud abort here protects against a future repo state.
+
+_bare="$(git -C "$TARGET" config --get core.bare 2>/dev/null || true)"
+if [ "$_bare" = "true" ]; then
+    echo "ERROR: core.bare=true is set in shared config." >&2
+    echo "  Move core.bare to the main worktree's config.worktree before enabling" >&2
+    echo "  extensions.worktreeConfig, or the bare flag will be scoped per-worktree." >&2
+    exit 1
+fi
+
+_worktree="$(git -C "$TARGET" config --get core.worktree 2>/dev/null || true)"
+if [ -n "$_worktree" ]; then
+    echo "ERROR: core.worktree is set in shared config (value: $_worktree)." >&2
+    echo "  Move core.worktree to the main worktree's config.worktree before enabling" >&2
+    echo "  extensions.worktreeConfig, or it will be scoped per-worktree." >&2
+    exit 1
+fi
+
 # ── step 1: enable extensions.worktreeConfig ─────────────────────────────────
 # Must be done BEFORE the --worktree write so the write lands in config.worktree
 # rather than aliasing to --local (shared .git/config).
