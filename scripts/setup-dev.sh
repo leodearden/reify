@@ -256,6 +256,58 @@ info "Building manifold prebuilt C++ libs (one-time; ~5-10 min cold, fast on re-
 "$(dirname "${BASH_SOURCE[0]}")/build-manifold-deps.sh"
 ok "manifold prebuilt libs ready at /opt/reify-deps/manifold/lib"
 
+# ---------- git-hooks gate: core.hooksPath flap immunity ----------
+#
+# The landing gate (hooks/reference-transaction tripwire + hooks/pre-commit
+# .task stripper + hooks/pre-merge-commit verify) is reached via
+# `core.hooksPath = hooks` (relative — dark-factory's create_worktree asserts
+# it). Two actors fight over that one key in the SHARED .git/config: dark-factory
+# writes `hooks`, while Claude Code's worktree feature rewrites it to the
+# absolute <repo>/.git/hooks (git's inert samples dir) on every worktree enter
+# and never restores it — silently darkening the gate until the next worktree
+# creation flips it back. Rather than police the value, make it irrelevant:
+# point the common .git/hooks at the versioned hooks/ dir, so BOTH `hooks`
+# (relative, per-worktree) and `<repo>/.git/hooks` (absolute) resolve to the
+# real gate. Idempotent. See CLAUDE.md "Landing on main".
+
+info "Wiring .git/hooks -> hooks/ (core.hooksPath flap immunity)..."
+if git rev-parse --git-common-dir &>/dev/null; then
+    _common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
+    _hooks_link="$_common_dir/hooks"
+    if [ -L "$_hooks_link" ] && [ "$(readlink "$_hooks_link")" = "../hooks" ]; then
+        ok ".git/hooks already linked to ../hooks"
+    else
+        if [ -L "$_hooks_link" ]; then
+            rm -f "$_hooks_link"
+        elif [ -d "$_hooks_link" ]; then
+            rm -rf "$_hooks_link.sample-bak"
+            mv "$_hooks_link" "$_hooks_link.sample-bak"
+        else
+            # Stray non-symlink, non-directory file (e.g. a plain file left behind).
+            # Remove it gracefully rather than letting ln fail and abort all of setup-dev.sh.
+            warn ".git/hooks is a stray non-symlink file — removing it to relink"
+            rm -f "$_hooks_link"
+        fi
+        ln -s ../hooks "$_hooks_link"
+        ok ".git/hooks -> ../hooks (gate immune to core.hooksPath value)"
+    fi
+    unset _common_dir _hooks_link
+else
+    warn "not a git work tree — skipping .git/hooks wiring"
+fi
+
+# ---------- main-gate worktree config isolation ----------
+#
+# Enables extensions.worktreeConfig and seeds this worktree's config.worktree
+# with core.hooksPath=hooks so the landing gate (hooks/reference-transaction,
+# hooks/pre-commit, hooks/pre-merge-commit) stays live even when Claude Code
+# rewrites the SHARED .git/config core.hooksPath on every worktree enter.
+# Idempotent. See CLAUDE.md "Landing on main" for rationale.
+
+info "Seeding per-worktree core.hooksPath via extensions.worktreeConfig..."
+"$(dirname "${BASH_SOURCE[0]}")/setup-main-gate-worktree-config.sh"
+ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
+
 # ---------- build-accelerator systemd --user services ----------
 #
 # Build infra installed as systemd --user units so it survives reboots and
