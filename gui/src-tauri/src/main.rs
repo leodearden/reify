@@ -787,7 +787,7 @@ fn main() {
                         eprintln!("Debug server failed: {e}");
                     }
                 });
-                eprintln!("REIFY_DEBUG=1: debug server starting on {}", crate::debug_server::debug_endpoint_url(crate::debug_server::resolve_debug_port()));
+                eprintln!("REIFY_DEBUG=1: debug server starting on {}", reify_gui::debug_server::debug_endpoint_url(reify_gui::debug_server::resolve_debug_port()));
             }
 
             // Notify the frontend of the kernel availability at startup.
