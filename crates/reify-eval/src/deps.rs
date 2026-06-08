@@ -1176,6 +1176,153 @@ mod tests {
         );
     }
 
+    // ── Task 4354 step-1: RED — constraint→realization edge ───────────────────
+    //
+    // A geometry-reading constraint (e.g. `volume(body) < max`) must register as
+    // a dependent of the realization that backs `body` — in BOTH directions:
+    //   (a) reverse: build_from_graph_and_fields → realization_dependents_of(r0) ∋ Constraint(c0)
+    //   (b) forward: build_trace_map_and_fields → trace[Constraint(c0)].realization_reads ∋ r0
+    //
+    // Additionally, a non-geometry scalar constraint must NOT register any
+    // realization read (no over-approximation).
+    //
+    // RED today: deps.rs:344 (forward) and :167 (reverse) both ignore
+    // constraint→realization resolution, so both asserts (a) and (b) fail.
+
+    /// Build a minimal graph with one geometry realization r0 backed by cell `body`,
+    /// one geometry-reading constraint c0 (`volume(body) < literal_max`), and one
+    /// scalar-only constraint c1 (`width < height`).  Assert BOTH directions for c0
+    /// and EMPTY realization_reads for c1.
+    #[test]
+    fn constraint_reads_geometry_cell_registers_realization_edge_both_directions() {
+        use crate::graph::{ConstraintNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_core::{ContentHash, RealizationNodeId};
+        use reify_ir::{BinOp, ReprKind, Value};
+        use reify_test_support::builders::expr as eb;
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // ── geometry cell `body` (Type::Geometry) ─────────────────────────────
+        let body = ValueCellId::new(e, "body");
+        graph.value_cells.insert(
+            body.clone(),
+            ValueCellNode {
+                id: body.clone(),
+                kind: ValueCellKind::Param,
+                cell_type: Type::Geometry,
+                default_expr: None,
+                content_hash: ContentHash::of_str("body"),
+            },
+        );
+
+        // ── scalar params `width` and `height` ────────────────────────────────
+        let width = ValueCellId::new(e, "width");
+        let height = ValueCellId::new(e, "height");
+        for (id, tag) in [(&width, "width"), (&height, "height")] {
+            graph.value_cells.insert(
+                id.clone(),
+                ValueCellNode {
+                    id: id.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::Real,
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(tag),
+                },
+            );
+        }
+
+        // ── realization r0 backed by `body` ───────────────────────────────────
+        let r0 = RealizationNodeId::new(e, 0);
+        graph.realizations.insert(
+            r0.clone(),
+            RealizationNodeData {
+                id: r0.clone(),
+                geometry_cell: Some(body.clone()),
+                operations: vec![],
+                content_hash: ContentHash::of_str("r0"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // ── constraint c0: `volume(body) < 1000.0` ────────────────────────────
+        // volume(body) is a geometry-query call: fn_call("volume", args=[value_ref(body)])
+        let vol_body = eb::fn_call(
+            "volume",
+            "std::volume",
+            vec![CompiledExpr::value_ref(body.clone(), Type::Geometry)],
+            Type::Real,
+        );
+        let max_val = CompiledExpr::literal(Value::Real(1000.0), Type::Real);
+        let c0_expr = CompiledExpr::binop(BinOp::Lt, vol_body, max_val, Type::Bool);
+        let c0 = ConstraintNodeId::new(e, 0);
+        graph.constraints.insert(
+            c0.clone(),
+            ConstraintNodeData {
+                id: c0.clone(),
+                label: None,
+                expr: c0_expr,
+                content_hash: ContentHash::of_str("c0"),
+                optimized_target: None,
+            },
+        );
+
+        // ── constraint c1: `width < height` (scalar only, no geometry reads) ──
+        let c1_expr = CompiledExpr::binop(
+            BinOp::Lt,
+            CompiledExpr::value_ref(width.clone(), Type::Real),
+            CompiledExpr::value_ref(height.clone(), Type::Real),
+            Type::Bool,
+        );
+        let c1 = ConstraintNodeId::new(e, 1);
+        graph.constraints.insert(
+            c1.clone(),
+            ConstraintNodeData {
+                id: c1.clone(),
+                label: None,
+                expr: c1_expr,
+                content_hash: ContentHash::of_str("c1"),
+                optimized_target: None,
+            },
+        );
+
+        // ── (a) reverse: c0 is a dependent of r0 ──────────────────────────────
+        let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
+        let r0_deps = index.realization_dependents_of(&r0);
+        assert!(
+            r0_deps.contains(&NodeId::Constraint(c0.clone())),
+            "realization_dependents_of(r0) must contain Constraint(c0) \
+             (volume(body) < max reads the geometry that r0 produces). \
+             Got: {:?}",
+            r0_deps
+        );
+
+        // ── (b) forward: c0's trace has r0 in realization_reads ───────────────
+        let traces = build_trace_map_and_fields(&graph, &[]);
+        let c0_trace = traces
+            .get(&NodeId::Constraint(c0.clone()))
+            .expect("trace map must contain Constraint(c0)");
+        assert!(
+            c0_trace.realization_reads.contains(&r0),
+            "forward trace for Constraint(c0) must have r0 in realization_reads \
+             (volume(body) reads the geometry that r0 produces). \
+             Got: {:?}",
+            c0_trace.realization_reads
+        );
+
+        // ── no over-approximation: c1 (scalar) has EMPTY realization_reads ────
+        let c1_trace = traces
+            .get(&NodeId::Constraint(c1.clone()))
+            .expect("trace map must contain Constraint(c1)");
+        assert!(
+            c1_trace.realization_reads.is_empty(),
+            "scalar-only constraint c1 (width < height) must have EMPTY \
+             realization_reads. Got: {:?}",
+            c1_trace.realization_reads
+        );
+    }
+
     /// Verify `take_trace` panics when the key is absent.
     #[test]
     #[should_panic(expected = "sorted_child_lets entries are always keys in child_let_traces")]
