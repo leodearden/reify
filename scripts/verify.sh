@@ -582,6 +582,25 @@ build_plan() {
         add "timeout --kill-after=60 45m ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
     fi
 
+    # gui-feature compile-check: type-check reify-gui's #[cfg(feature="gui")] code
+    # (engine.rs, main.rs, tests/*) which is never reached by the workspace-wide
+    # cargo check / clippy / nextest passes (all run without --features gui).
+    #
+    # Placed on the LINT side (DO_LINT=1 && RUN_RUST=1) because:
+    #   - It is a compile-check, semantically adjacent to clippy.
+    #   - LINT is the only action that fires on EVERY merge path (orchestrator
+    #     lint_command, pre-merge-commit `all`, hooks/project-checks `all`).
+    #   - Gating under RUN_RUST (not RUN_GUI) keeps frontend-only/docs-only
+    #     commits fast — only Rust changes can break gui-gated Rust.
+    #
+    # ensure-gui-sidecar-placeholder.sh runs first because tauri_build::build()
+    # (in gui/src-tauri/build.rs) validates bundle.externalBin and panics if
+    # gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk; the stub
+    # satisfies the existence check without clobbering a real built sidecar.
+    if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 45m ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"
+    fi
+
     # test: gated + ungated cargo passes, per profile.
     if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         add_test_passes
