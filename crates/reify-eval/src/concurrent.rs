@@ -1,5 +1,6 @@
 // Concurrent edit support — structs and Engine methods for prepare/apply/rollback/resolve.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -471,6 +472,13 @@ impl Engine {
                 let wave2_eval =
                     crate::dirty::compute_eval_set(&wave2_dirty, &self.demand, trace_map);
 
+                // Runtime diagnostics sink — carries .with_runtime_diagnostics
+                // through cell_eval_ctx so DeterminacyPredicate cells resolve
+                // correctly and any W_FIELD_OUT_OF_BOUNDS warnings are captured.
+                // Drained into result.diagnostics after the wave-2 loop.
+                let runtime_sink: RefCell<Vec<reify_core::Diagnostic>> =
+                    RefCell::new(Vec::new());
+
                 for node_id in &wave2_eval {
                     if let NodeId::Value(vcid) = node_id
                         && let Some(node) = setup.graph.value_cells.get(vcid)
@@ -478,8 +486,11 @@ impl Engine {
                     {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &reify_expr::EvalContext::new(&result.values, &setup.functions)
-                                .with_meta(&setup.meta_map),
+                            &self.cell_eval_ctx(
+                                &result.values,
+                                &result.snapshot_values,
+                                &runtime_sink,
+                            ),
                         );
                         result.values.insert(vcid.clone(), val.clone());
                         result
@@ -496,6 +507,10 @@ impl Engine {
                         );
                     }
                 }
+
+                result
+                    .diagnostics
+                    .extend(runtime_sink.borrow_mut().drain(..));
             }
         }
     }
