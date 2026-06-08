@@ -60,6 +60,10 @@ fn arg_satisfied(arg: &reify_ast::PragmaArg, active: &CfgSet) -> bool {
             key,
             value: PragmaValue::String(v),
         } if key == "target" => active.target.as_deref() == Some(v.as_str()),
+        PragmaArg::KeyValue {
+            key,
+            value: PragmaValue::String(v),
+        } => active.kv.get(key).map(String::as_str) == Some(v.as_str()),
         _ => false,
     }
 }
