@@ -972,3 +972,75 @@ fn tensegrity_surfaces_emits_two_tagged_facets() {
         other => panic!("facet[1].x2 should be Scalar, got {:?}", other),
     }
 }
+
+// ── step-9 (task-4412): CLI golden test ───────────────────────────────────────
+
+/// `reify eval examples/tensegrity_membrane_patch.ri` must print the membrane
+/// patch instance and TensegritySurface values tagged kind: "membrane".
+/// Output compared against the committed golden at
+/// `crates/reify-eval/tests/golden/tensegrity_membrane_patch.txt`.
+/// Regenerate with `REIFY_REGENERATE_GOLDEN=1`.
+///
+/// RED (step-9): `examples/tensegrity_membrane_patch.ri` and the golden don't
+/// exist yet, so `cargo run` fails to read the example.
+#[test]
+fn cli_reify_eval_prints_membrane_patch() {
+    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
+    let workspace_root = std::path::Path::new(manifest)
+        .ancestors()
+        .nth(2)
+        .expect("workspace root is two levels above crates/reify-eval")
+        .to_path_buf();
+    let example = workspace_root.join("examples/tensegrity_membrane_patch.ri");
+    let golden = std::path::Path::new(manifest)
+        .join("tests/golden/tensegrity_membrane_patch.txt");
+
+    let output = std::process::Command::new(env!("CARGO"))
+        .current_dir(&workspace_root)
+        .args([
+            "run",
+            "-q",
+            "-p",
+            "reify-cli",
+            "--bin",
+            "reify",
+            "--",
+            "eval",
+        ])
+        .arg(&example)
+        .output()
+        .expect("failed to spawn `cargo run -p reify-cli -- eval`");
+
+    assert!(
+        output.status.success(),
+        "`reify eval examples/tensegrity_membrane_patch.ri` exited non-zero.\n\
+         stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
+
+    if std::env::var("REIFY_REGENERATE_GOLDEN").is_ok() {
+        std::fs::write(&golden, &stdout).expect("failed to write golden file");
+        return;
+    }
+
+    let expected = std::fs::read_to_string(&golden).unwrap_or_else(|_| {
+        panic!(
+            "golden crates/reify-eval/tests/golden/tensegrity_membrane_patch.txt missing; \
+             run once with REIFY_REGENERATE_GOLDEN=1"
+        )
+    });
+    assert_eq!(
+        stdout, expected,
+        "`reify eval examples/tensegrity_membrane_patch.ri` stdout drifted from the golden; \
+         re-run with REIFY_REGENERATE_GOLDEN=1 to update"
+    );
+
+    // Defense-in-depth: M0 signal — independent of golden content.
+    assert!(
+        stdout.contains("kind: \"membrane\""),
+        "M0 signal: expected at least one TensegritySurface with kind=\"membrane\"; \
+         got:\n{stdout}"
+    );
+}
