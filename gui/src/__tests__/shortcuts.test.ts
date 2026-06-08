@@ -570,3 +570,40 @@ describe('shortcuts.ts source documentation', () => {
     expect(commentCount, 'comment block before _SHORTCUTS_DEF exceeds 5 lines').toBeLessThanOrEqual(5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// toggleDiagnostics shortcut (task-4401)
+// ---------------------------------------------------------------------------
+
+describe('toggleDiagnostics shortcut entry', () => {
+  it('SHORTCUTS contains a toggleDiagnostics entry', () => {
+    const ids = SHORTCUTS.map((s) => s.id);
+    expect(ids).toContain('toggleDiagnostics');
+  });
+
+  it('toggleDiagnostics has key "Ctrl+Shift+M" and category "View"', () => {
+    const entry = getShortcut('toggleDiagnostics');
+    expect(entry).toBeDefined();
+    expect(entry?.key).toBe('Ctrl+Shift+M');
+    expect(entry?.category).toBe('View');
+  });
+
+  it('toggleDiagnostics is not disabled', () => {
+    const entry = getShortcut('toggleDiagnostics');
+    expect(entry?.disabled).not.toBe(true);
+  });
+
+  it('toggleDiagnostics bind matches a Ctrl+Shift+M keydown', () => {
+    const entry = getShortcut('toggleDiagnostics');
+    expect(entry?.bind).toBeDefined();
+    const evt = new KeyboardEvent('keydown', { key: 'm', ctrlKey: true, shiftKey: true });
+    expect(matchesEvent(entry!.bind!, evt)).toBe(true);
+  });
+
+  it('toggleDiagnostics bind does NOT match Ctrl+M without shift', () => {
+    const entry = getShortcut('toggleDiagnostics');
+    expect(entry?.bind).toBeDefined();
+    const evt = new KeyboardEvent('keydown', { key: 'm', ctrlKey: true, shiftKey: false });
+    expect(matchesEvent(entry!.bind!, evt)).toBe(false);
+  });
+});
