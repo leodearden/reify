@@ -6,6 +6,12 @@
 //!
 //! Step 3 (appended later): RED (port-member). References `DiagnosticCode::ParamDefaultTypeMismatch`
 //! which is introduced in step 2.
+//!
+//! Amendment pass: additional coverage tests for:
+//!   - Int-literal guard (`param x : Length = 1` must NOT error)
+//!   - Real-literal guard (`param x : Length = 0.5` must NOT error — extended in amendment)
+//!   - Cross-dimension scalar mismatch (`param x : Length = 5kg` MUST error)
+//!   - Known inference gap for reciprocal-dimension expressions (documented as #[ignore])
 
 use reify_core::DiagnosticCode;
 use reify_test_support::{compile_source, errors_only};
@@ -143,5 +149,116 @@ structure S {
         "expected label span to cover the port-member param declaration containing \
          'param d', but span covers: {:?}",
         sliced
+    );
+}
+
+// ─── Amendment-pass coverage tests ───────────────────────────────────────────
+
+/// The Int-literal and Real-literal idioms for dimensioned Scalar params must
+/// NOT produce `ParamDefaultTypeMismatch`:
+///
+///   `param x : Length = 0`   — Int literal, accepted (whole-number idiom).
+///   `param x : Length = 1`   — Int literal, accepted (whole-number idiom).
+///   `param x : Length = 0.5` — Real literal, accepted (fractional idiom,
+///                               extended in the amendment-pass guard fix).
+///   `param x : Length = 70.0` — Real literal, accepted.
+///
+/// These cover the most novel branch in `check_param_default_type` — the
+/// Int-for-Scalar early-return — and its new Real-for-Scalar extension.
+#[test]
+fn param_int_and_real_literal_on_dimensioned_scalar_do_not_error() {
+    let source = r#"
+structure S {
+    param zero_int   : Length = 0
+    param one_int    : Length = 1
+    param half_real  : Length = 0.5
+    param large_real : Length = 70.0
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let false_pos = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        false_pos.is_none(),
+        "unexpected ParamDefaultTypeMismatch for Int/Real literal on Length param; \
+         Int and dimensionless-Real literals must be accepted for any dimensioned Scalar; \
+         got: {:?}",
+        false_pos
+    );
+}
+
+/// A param whose declared type is a dimensioned Scalar but whose initializer
+/// evaluates to a *different* dimensioned Scalar (e.g. `Length = 5kg`) MUST
+/// produce `ParamDefaultTypeMismatch` — this is the primary intended catch of
+/// the check.  Scalar[m] and Scalar[kg] are incompatible under `type_compatible`.
+#[test]
+fn param_different_scalar_dimensions_error() {
+    let source = r#"
+structure S {
+    param bad_mass : Length = 5kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected ParamDefaultTypeMismatch for 'param bad_mass : Length = 5kg' \
+         (Scalar[m] ≠ Scalar[kg]); got: {:?}",
+        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+    );
+
+    let diag = mismatch.unwrap();
+    assert!(
+        diag.message.contains("bad_mass"),
+        "error message should mention 'bad_mass'; got: {:?}",
+        diag.message
+    );
+}
+
+/// Known inference limitation: `1.0 / 1m` is inferred as `Type::Real`
+/// (dimensionless) rather than `Type::Scalar[1/m]` (reciprocal-length).
+///
+/// The Real-literal guard in `check_param_default_type` (extended in this
+/// amendment pass) silently accepts this as "dimensionless literal on dimensioned
+/// param", preventing a false-positive error.  However, the *correct* behavior
+/// once inference is fixed would be to *emit* `ParamDefaultTypeMismatch` because
+/// `Length (Scalar[m]) ≠ reciprocal-length (Scalar[1/m])`.
+///
+/// This `#[ignore]` test asserts the future-correct behavior: that a
+/// `param x : Length = 1.0 / 1m` declaration IS an error.  It currently FAILS
+/// (no error is produced, because the Real-literal guard skips the check).
+/// When the compiler correctly infers `1.0 / 1m` as `Scalar[1/m]`, the
+/// Real-literal guard no longer applies and `type_compatible(Scalar[m], Scalar[1/m])`
+/// returns `false` → error → this test passes.
+///
+/// To verify the fix: remove the `Type::Real` arm from the Scalar guard in
+/// `check_param_default_type` and confirm this test passes with `--include-ignored`.
+#[test]
+#[ignore = "inference gap: 1.0/1m infers Real not Scalar[1/m]; unignore when inference fixed"]
+fn param_reciprocal_dim_mismatch_detected_after_inference_fix() {
+    let source = r#"
+structure S {
+    // Length (Scalar[m]) ≠ reciprocal-length (Scalar[1/m]).
+    // When inference tracks 1.0/1m as Scalar[1/m], this MUST be a mismatch error.
+    param bad_dim : Length = 1.0 / 1m
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let mismatch = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        mismatch.is_some(),
+        "expected ParamDefaultTypeMismatch for 'Length = 1.0/1m' once inference is fixed; \
+         currently passes via the Real-literal guard (1.0/1m infers Real, not Scalar[1/m])"
     );
 }

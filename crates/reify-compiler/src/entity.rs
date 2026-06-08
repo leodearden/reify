@@ -398,10 +398,24 @@ fn check_param_default_type(
     let Some(default) = default_expr else {
         return;
     };
-    // `param x : Length = 1` — whole-number literal idiom.
-    // Int is accepted for any dimensioned Scalar (extends the Int→Real widening
-    // that type_compatible already provides for the Real case).
-    if matches!(declared, Type::Scalar { .. }) && matches!(default.result_type, Type::Int) {
+    // `param x : Length = 1` or `= 0.5` — whole-number or fractional literal idiom.
+    // Both Int and dimensionless Real are accepted for any dimensioned Scalar.
+    // This mirrors the Int→Real widening that type_compatible already provides for
+    // the Real declared case, extended to the Scalar declared case:
+    //   - `param x : Length = 0`   → Int literal, accepted (whole-number idiom).
+    //   - `param x : Length = 0.5` → Real literal, accepted (fractional idiom).
+    // Rejecting `= 0.5` while accepting `= 0` would be a surprising footgun since
+    // users routinely write fractional dimensionless defaults for dimensioned params.
+    //
+    // NOTE: compound expressions whose result_type happens to be Real (e.g. a
+    // reciprocal-dimension division `0.001 / 1m` that compile_expr infers as Real
+    // rather than Scalar[1/m] due to an inference gap) are also silently accepted
+    // here. This is a known limitation; when the compiler correctly infers
+    // reciprocal-dimension expressions as Scalar types this guard can be narrowed
+    // to literal-only expressions (a separate future task).
+    if matches!(declared, Type::Scalar { .. })
+        && matches!(default.result_type, Type::Int | Type::Real)
+    {
         return;
     }
     if !type_compatible(declared, &default.result_type) {
