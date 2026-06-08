@@ -860,6 +860,11 @@ mod tests {
     // `crate::math_signatures`, imported here to pin disjointness from the five
     // geometry families, the dynamics-query family, AND the construction family.
     use crate::math_signatures::MATH_OPERATION_NAMES;
+    // §13 joint-constructor family (mechanism β, task 4311) — single source of
+    // truth in `crate::joint_signatures`, imported here to pin disjointness from
+    // all eight sibling families (regression-lock: catches any future colliding
+    // name added to EITHER the joint slice or a sibling slice).
+    use crate::joint_signatures::JOINT_TYPED_FN_NAMES;
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
@@ -2173,5 +2178,65 @@ mod tests {
     #[test]
     fn split_is_not_a_geometry_kinematic_query() {
         assert!(!is_geometry_kinematic_query("split"));
+    }
+
+    /// Disjointness regression-lock for the §13 joint-constructor family
+    /// (mechanism β, task 4311). Every `JOINT_TYPED_FN_NAMES` entry must be
+    /// absent from all eight sibling slices so a name satisfies at most one
+    /// classification predicate in `expr.rs::resolve_function_overload`'s
+    /// `NoUserFunctions` ladder.
+    ///
+    /// This test is GREEN on arrival — the 17 joint names are inherently
+    /// disjoint from the existing families. It acts as a regression lock:
+    /// adding a colliding name to EITHER the joint slice OR a sibling slice
+    /// triggers a failure, catching the bug at test time rather than at
+    /// production call-time.
+    ///
+    /// Mirrors `math_typed_fn_names_are_disjoint_from_other_families` and
+    /// `dynamics_query_names_are_disjoint_from_other_families`.
+    #[test]
+    fn joint_typed_fn_names_are_disjoint_from_other_families() {
+        for name in JOINT_TYPED_FN_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+        }
     }
 }
