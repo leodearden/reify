@@ -40,8 +40,7 @@ pub struct CfgSet {
 ///
 /// All other shapes are unsatisfiable (term evaluates to `false`) in v1.
 pub fn cfg_satisfied(pragma: &reify_ast::Pragma, active: &CfgSet) -> bool {
-    let _ = (pragma, active);
-    false
+    pragma.args.iter().all(|arg| arg_satisfied(arg, active))
 }
 
 /// Evaluates a single pragma arg against `active`.
@@ -53,8 +52,12 @@ pub fn cfg_satisfied(pragma: &reify_ast::Pragma, active: &CfgSet) -> bool {
 ///
 /// **Unsatisfiable** (term = `false`) for all other shapes:
 /// KeyValue with Number/Bool/Quantity/Ident value; Bare with Number/String/Bool/Quantity value.
-fn arg_satisfied(_arg: &reify_ast::PragmaArg, _active: &CfgSet) -> bool {
-    false
+fn arg_satisfied(arg: &reify_ast::PragmaArg, active: &CfgSet) -> bool {
+    use reify_ast::{PragmaArg, PragmaValue};
+    match arg {
+        PragmaArg::Bare(PragmaValue::Ident(flag)) => active.flags.contains(flag),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
