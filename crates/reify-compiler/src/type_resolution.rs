@@ -570,6 +570,13 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "FaceSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Face)),
         "EdgeSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Edge)),
         "BodySelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
+        // Kind-agnostic selector param annotation (PRD §4.2/§11.1, task 4369/A2).
+        // Bare "Selector" resolves to Type::AnySelector so a param declared as
+        // `target : Selector` accepts a Selector value of ANY concrete kind
+        // (Face/Edge/Body), while single-kind params (FaceSelector etc.) keep
+        // exact-kind checking.  resolve_type_with_aliases inherits this arm
+        // automatically since it delegates to resolve_type_name for builtin names.
+        "Selector" => Some(Type::AnySelector),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::Real),
