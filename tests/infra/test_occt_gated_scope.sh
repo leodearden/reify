@@ -117,12 +117,19 @@ while IFS= read -r crate; do
 done <<< "$DECLARED_CRATES"
 
 echo ""
-echo "--- Test 5: gated release invocation has '-p <crate>' for each declared crate ---"
-while IFS= read -r crate; do
-    [ -z "$crate" ] && continue
-    assert "gated release invocation has '-p $crate'" \
-        bash -c "printf '%s' \"\$GATED_RELEASE\" | grep -qF ' -p $crate'"
-done <<< "$DECLARED_CRATES"
+echo "--- Test 5: gated release invocation scoped to only reify-eval (sensitivity-scoped) ---"
+# Only reify-eval is in both the OCCT set and the release-sensitive set (it has
+# OCCT C++ deps AND debug_assertions-dependent tests). The other 3 OCCT crates
+# (reify-kernel-occt, reify-cli, reify-config) have zero release-sensitive tests
+# and correctly drop out of the release pass.
+assert "gated release invocation has '-p reify-eval'" \
+    bash -c "printf '%s' \"\$GATED_RELEASE\" | grep -qF ' -p reify-eval'"
+assert "gated release does NOT have '-p reify-kernel-occt' (no release-sensitive tests)" \
+    bash -c "! printf '%s' \"\$GATED_RELEASE\" | grep -qF ' -p reify-kernel-occt'"
+assert "gated release does NOT have '-p reify-cli' (no release-sensitive tests)" \
+    bash -c "! printf '%s' \"\$GATED_RELEASE\" | grep -qF ' -p reify-cli'"
+assert "gated release does NOT have '-p reify-config' (no release-sensitive tests)" \
+    bash -c "! printf '%s' \"\$GATED_RELEASE\" | grep -qF ' -p reify-config'"
 
 echo ""
 echo "--- Test 6: gated invocations do not contain --workspace ---"
@@ -139,26 +146,41 @@ assert "gated release invocation does not contain --workspace" \
 # keeps the assertions valid for both runner spellings.
 UNGATED_DEBUG="$(printf '%s\n' "$TEST_PLAN_SEGS" \
     | grep -E 'cargo (test|nextest run) --workspace' | grep -v 'cargo-test-occt-gated\.sh' | grep -v -- '--release' || true)"
+# Ungated release: after sensitivity-scoping, uses -p flags (not --workspace).
+# Match any non-gated cargo (test|nextest run) line that carries --release.
 UNGATED_RELEASE="$(printf '%s\n' "$TEST_PLAN_SEGS" \
-    | grep -E 'cargo (test|nextest run) --workspace' | grep -v 'cargo-test-occt-gated\.sh' | grep -- '--release' || true)"
+    | grep -v 'cargo-test-occt-gated\.sh' \
+    | grep -E 'cargo (test|nextest run)' \
+    | grep -- '--release' || true)"
 export UNGATED_DEBUG UNGATED_RELEASE
 
 echo ""
-echo "--- Test 7: ungated workspace passes exist (one debug, one release) ---"
+echo "--- Test 7: ungated passes exist (one debug, one release) ---"
 assert "ungated debug pass (cargo test --workspace, no gate, no --release) exists" \
     test -n "$UNGATED_DEBUG"
-assert "ungated release pass (cargo test --workspace --release, no gate) exists" \
+assert "ungated release pass (-p scoped, --release, no gate) exists" \
     test -n "$UNGATED_RELEASE"
 
 echo ""
-echo "--- Test 8: ungated passes have --exclude <crate> for each declared crate ---"
+echo "--- Test 8: ungated debug has --exclude; ungated release is sensitivity-scoped (no --workspace/--exclude) ---"
+# Debug side unchanged: each OCCT crate is still --exclude'd from the debug workspace pass.
 while IFS= read -r crate; do
     [ -z "$crate" ] && continue
     assert "ungated debug has '--exclude $crate'" \
         bash -c "printf '%s' \"\$UNGATED_DEBUG\" | grep -qF ' --exclude $crate'"
-    assert "ungated release has '--exclude $crate'" \
-        bash -c "printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' --exclude $crate'"
 done <<< "$DECLARED_CRATES"
+# Release side: sensitivity-scoped to -p flags, so --workspace and --exclude are absent.
+# The 3 non-eval OCCT crates must be absent from the ungated release pass entirely.
+assert "ungated release does NOT have '--workspace'" \
+    bash -c "! printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' --workspace'"
+assert "ungated release does NOT have '--exclude'" \
+    bash -c "! printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' --exclude'"
+assert "ungated release does NOT have '-p reify-kernel-occt'" \
+    bash -c "! printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' -p reify-kernel-occt'"
+assert "ungated release does NOT have '-p reify-cli'" \
+    bash -c "! printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' -p reify-cli'"
+assert "ungated release does NOT have '-p reify-config'" \
+    bash -c "! printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' -p reify-config'"
 
 echo ""
 echo "--- Test 9: ungated passes are wrapped in 'timeout --kill-after=60 [0-9]+m' ---"
@@ -181,8 +203,12 @@ echo ""
 echo "--- Test 11: gated release appears before ungated release in the plan ---"
 _GATED_RELEASE_IDX="$(printf '%s\n' "$_ALL_SEGS" \
     | grep -n 'cargo-test-occt-gated\.sh' | grep -- '--release' | head -1 | cut -d: -f1 || true)"
+# After sensitivity-scoping, ungated release uses -p flags (not --workspace);
+# match any non-gated cargo (test|nextest run) line carrying --release.
 _UNGATED_RELEASE_IDX="$(printf '%s\n' "$_ALL_SEGS" \
-    | grep -nE 'cargo (test|nextest run) --workspace' | grep -v 'cargo-test-occt-gated' | grep -- '--release' | head -1 | cut -d: -f1 || true)"
+    | grep -nE 'cargo (test|nextest run)' \
+    | grep -v 'cargo-test-occt-gated' \
+    | grep -- '--release' | head -1 | cut -d: -f1 || true)"
 assert "gated release (segment ${_GATED_RELEASE_IDX:-?}) precedes ungated release (segment ${_UNGATED_RELEASE_IDX:-?})" \
     bash -c "[ '${_GATED_RELEASE_IDX:-0}' -gt 0 ] && [ '${_UNGATED_RELEASE_IDX:-0}' -gt 0 ] && [ '${_GATED_RELEASE_IDX:-0}' -lt '${_UNGATED_RELEASE_IDX:-0}' ]"
 

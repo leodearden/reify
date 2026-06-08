@@ -34,8 +34,8 @@ export TEST_PLAN_SEGS LINT_PLAN_SEGS
 echo ""
 echo "--- Test 1: release workspace test pass present in the plan ---"
 
-assert "plan contains a 'cargo (test|nextest run) --workspace … --release' pass" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo (test|nextest run) --workspace.*--release'"
+assert "plan contains a release test pass with -p-scoped crates (sensitivity-scoped, no --workspace)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -v 'cargo-test-occt-gated\.sh' | grep -qE 'cargo (test|nextest run).*--release'"
 
 # -- Test 2: debug pass preserved ----------------------------------------------
 echo ""
@@ -60,7 +60,7 @@ echo "--- Test 4: release pass appears after debug pass in the plan ---"
 assert "ungated release pass appears after the ungated debug pass" \
     bash -c "
         DEBUG_IDX=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -nE 'cargo (test|nextest run) --workspace' | grep -v -- '--release' | head -1 | cut -d: -f1)
-        RELEASE_IDX=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -nE 'cargo (test|nextest run) --workspace' | grep -- '--release' | head -1 | cut -d: -f1)
+        RELEASE_IDX=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -nE 'cargo (test|nextest run)' | grep -v 'cargo-test-occt-gated\.sh' | grep -- '--release' | head -1 | cut -d: -f1)
         [ -n \"\$DEBUG_IDX\" ] && [ -n \"\$RELEASE_IDX\" ] && [ \"\$RELEASE_IDX\" -gt \"\$DEBUG_IDX\" ]
     "
 

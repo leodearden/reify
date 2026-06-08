@@ -84,6 +84,14 @@ fi
 # shellcheck source=scripts/occt-scope-lib.sh
 source "$SCRIPT_DIR/occt-scope-lib.sh"
 
+# Shared release-sensitivity scope logic (release_declared_set / release_sensitive_set).
+if [ ! -f "$SCRIPT_DIR/release-scope-lib.sh" ]; then
+    echo "verify.sh: ERROR — scripts/release-scope-lib.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/release-scope-lib.sh
+source "$SCRIPT_DIR/release-scope-lib.sh"
+
 usage() {
     sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
@@ -498,6 +506,25 @@ done
 P_FLAGS="${P_FLAGS# }"
 EXCLUDE_FLAGS="${EXCLUDE_FLAGS# }"
 
+# Release-sensitive crate flags: split by OCCT membership into gated and ungated.
+# Gated: OCCT ∩ release-sensitive = reify-eval only (stays flock-gated in release).
+# Ungated: release-sensitive ∖ OCCT = the non-OCCT crates (full nextest concurrency).
+# reify-kernel-occt, reify-cli, reify-config have zero release-sensitive tests and
+# correctly drop out of the release pass; the debug full-workspace pass covers them.
+_RELEASE_DECLARED="$(release_declared_set)"
+_RELEASE_GATED_FLAGS=""
+_RELEASE_UNGATED_FLAGS=""
+while IFS= read -r _rc; do
+    [ -z "$_rc" ] && continue
+    if is_occt_crate "$_rc"; then
+        _RELEASE_GATED_FLAGS+=" -p $_rc"
+    else
+        _RELEASE_UNGATED_FLAGS+=" -p $_rc"
+    fi
+done <<<"$_RELEASE_DECLARED"
+_RELEASE_GATED_FLAGS="${_RELEASE_GATED_FLAGS# }"
+_RELEASE_UNGATED_FLAGS="${_RELEASE_UNGATED_FLAGS# }"
+
 # Ungated tail runner: prefer cargo-nextest (one global pool over ~hundreds of
 # test binaries) with a graceful fallback to plain `cargo test` when nextest is
 # not installed. OCCT crates are excluded from this pass (they run gated).
@@ -540,20 +567,48 @@ add_test_passes() {
             rel=""; gated_timeout=3600; outer_timeout="60m"
         fi
 
-        # Gated pass: OCCT-touching crates, bounded via the semaphore wrapper,
-        # single-threaded. No outer timeout — the wrapper owns it via
-        # REIFY_OCCT_TEST_TIMEOUT (lock-wait time does not consume the budget).
-        if [ "$RUN_OCCT_GATE" -eq 1 ]; then
-            add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh ${CARGO_PRIO}cargo test ${P_FLAGS}${rel} -- --test-threads=1"
-        fi
+        if [ "$profile" = "release" ]; then
+            # Release pass: sensitivity-scoped to the release-sensitive crate set
+            # (scripts/release-sensitive-crates.txt, guarded by
+            # tests/infra/test_release_scoped_scope.sh). Only crates with
+            # debug_assertions/overflow-checks-dependent tests need to re-run in
+            # release; the DEBUG full-workspace pass covers every other crate, so
+            # total merge-gate coverage is preserved.
 
-        # Ungated tail: everything except the OCCT crates, full concurrency.
-        if [ "$NEXTEST" -eq 1 ]; then
-            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run --workspace ${EXCLUDE_FLAGS}${rel}"
+            # Gated release: OCCT-touching release-sensitive crates only (reify-eval).
+            # reify-kernel-occt, reify-cli, reify-config have zero release-sensitive
+            # tests and drop out of the release pass entirely.
+            if [ "$RUN_OCCT_GATE" -eq 1 ] && [ -n "$_RELEASE_GATED_FLAGS" ]; then
+                add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh ${CARGO_PRIO}cargo test ${_RELEASE_GATED_FLAGS}${rel} -- --test-threads=1"
+            fi
+
+            # Ungated release: non-OCCT release-sensitive crates, full concurrency.
+            if [ -n "$_RELEASE_UNGATED_FLAGS" ]; then
+                if [ "$NEXTEST" -eq 1 ]; then
+                    ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${_RELEASE_UNGATED_FLAGS}${rel}"
+                else
+                    ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${_RELEASE_UNGATED_FLAGS}${rel} -- --test-threads=1"
+                fi
+                add "$ungated"
+            fi
         else
-            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test --workspace ${EXCLUDE_FLAGS}${rel} -- --test-threads=1"
+            # Debug pass: full workspace (unchanged).
+
+            # Gated pass: OCCT-touching crates, bounded via the semaphore wrapper,
+            # single-threaded. No outer timeout — the wrapper owns it via
+            # REIFY_OCCT_TEST_TIMEOUT (lock-wait time does not consume the budget).
+            if [ "$RUN_OCCT_GATE" -eq 1 ]; then
+                add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh ${CARGO_PRIO}cargo test ${P_FLAGS}${rel} -- --test-threads=1"
+            fi
+
+            # Ungated tail: everything except the OCCT crates, full concurrency.
+            if [ "$NEXTEST" -eq 1 ]; then
+                ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run --workspace ${EXCLUDE_FLAGS}${rel}"
+            else
+                ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test --workspace ${EXCLUDE_FLAGS}${rel} -- --test-threads=1"
+            fi
+            add "$ungated"
         fi
-        add "$ungated"
     done
 }
 
