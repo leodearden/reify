@@ -3541,6 +3541,53 @@ describe('App merged diagnostics rendering', () => {
   });
 });
 
+describe('App diagnostics panel splitter (step 11)', () => {
+  let compileDiagnosticsCallback: ((diags: any[]) => void) | undefined;
+
+  beforeEach(() => {
+    compileDiagnosticsCallback = undefined;
+    vi.mocked((bridge as any).onCompileDiagnostics).mockImplementation(async (cb: any) => {
+      compileDiagnosticsCallback = cb;
+      return () => {};
+    });
+  });
+
+  const warningDiag = {
+    file_path: 'helper.ri',
+    line: 3, column: 1, end_line: 3, end_column: 10,
+    severity: 'Warning',
+    message: 'splitter test warning',
+    code: null,
+  };
+
+  it('splitter-problems is absent when panel is collapsed (default)', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+    compileDiagnosticsCallback!([warningDiag]);
+    await waitFor(() => expect(screen.getByTestId('diagnostics-count')).toBeTruthy());
+
+    // Default: panel is collapsed — splitter should not be in the DOM
+    expect(document.querySelector('[data-testid="splitter-problems"]')).toBeNull();
+  });
+
+  it('splitter-problems is present inside editor-panel when panel is expanded', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+    compileDiagnosticsCallback!([warningDiag]);
+    await waitFor(() => expect(screen.getByTestId('diagnostics-count')).toBeTruthy());
+
+    // Expand the panel
+    fireEvent.click(screen.getByTestId('diagnostics-count'));
+    await waitFor(() => {
+      expect(screen.getByTestId('diagnostics-panel').getAttribute('data-collapsed')).toBe('false');
+    });
+
+    // Splitter should now appear inside the editor panel
+    const editorPanel = screen.getByTestId('editor-panel');
+    expect(editorPanel.querySelector('[data-testid="splitter-problems"]')).toBeTruthy();
+  });
+});
+
 describe('App Escape clears multi-selection', () => {
   it('pressing Escape after multi-selection empties selectedEntities', async () => {
     await renderAndWaitForReady();
