@@ -71,6 +71,15 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
+# Defensively re-assert the relative gate path so hooks/reference-transaction is
+# live at the exact refs/heads/main move below.  Claude Code's worktree feature
+# can overwrite core.hooksPath to the inert .git/hooks samples dir; this is the
+# guard for the manual-landing path (see task 4380).  When core.hooksPath is
+# already 'hooks' this is a true no-op.
+# TODO(post-4379): switch to `git config --worktree core.hooksPath hooks` once
+#   task 4379 (extensions.worktreeConfig isolation) lands.
+git config core.hooksPath hooks
+
 # Sanction the upcoming refs/heads/main move for hooks/reference-transaction.
 # shellcheck source=hooks/main-gate-lib.sh
 . "$ROOT/hooks/main-gate-lib.sh"
