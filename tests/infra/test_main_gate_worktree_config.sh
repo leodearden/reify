@@ -61,6 +61,27 @@ assert "(a) scripts/setup-main-gate-worktree-config.sh is executable" \
     test -x "$HELPER"
 
 # ==============================================================================
+# (a2) CLI contract: --help, extra args, nonexistent target
+# ==============================================================================
+echo ""
+echo "--- (a2) CLI contract ---"
+
+RC_HELP=0
+"$HELPER" --help >/dev/null 2>&1 || RC_HELP=$?
+assert "(a2) --help exits 0" \
+    test "$RC_HELP" -eq 0
+
+RC_TWO=0
+"$HELPER" /tmp /tmp >/dev/null 2>&1 || RC_TWO=$?
+assert "(a2) two positional args exits non-zero" \
+    test "$RC_TWO" -ne 0
+
+RC_NODIR=0
+"$HELPER" "/nonexistent-setup-main-gate-test-path" >/dev/null 2>&1 || RC_NODIR=$?
+assert "(a2) nonexistent target dir exits non-zero" \
+    test "$RC_NODIR" -ne 0
+
+# ==============================================================================
 # (b) extensions.worktreeConfig is enabled after running the helper
 # ==============================================================================
 echo ""
