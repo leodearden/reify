@@ -2484,6 +2484,7 @@ impl Engine {
                 let val = reify_expr::eval_expr(
                     expr,
                     &eval_ctx_with_meta(&values, &functions, &self.meta_map)
+                        .with_determinacy(&new_snapshot.values)
                         .with_runtime_diagnostics(&runtime_sink),
                 );
                 values.insert(vcid.clone(), val.clone());
