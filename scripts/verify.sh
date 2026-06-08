@@ -508,7 +508,7 @@ EXCLUDE_FLAGS="${EXCLUDE_FLAGS# }"
 
 # Release-sensitive crate flags: split by OCCT membership into gated and ungated.
 # Gated: OCCT ∩ release-sensitive = reify-eval only (stays flock-gated in release).
-# Ungated: release-sensitive ∖ OCCT = the 6 non-OCCT crates (full nextest concurrency).
+# Ungated: release-sensitive ∖ OCCT = the non-OCCT crates (full nextest concurrency).
 # reify-kernel-occt, reify-cli, reify-config have zero release-sensitive tests and
 # correctly drop out of the release pass; the debug full-workspace pass covers them.
 _RELEASE_DECLARED="$(release_declared_set)"

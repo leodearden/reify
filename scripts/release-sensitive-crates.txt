@@ -10,7 +10,7 @@
 #   Cargo.toml:155-158), so non-sensitive crates are fully covered by the debug pass.
 #
 # How to verify:
-#   Run the two anchored greps below over the workspace and collect their crate hits:
+#   Run the three greps below over the workspace and collect their crate hits:
 #
 #   Mechanism A — tests ignored in debug, exercised only in release:
 #     grep -rlE '^\s*#\[cfg_attr\(debug_assertions,\s*ignore' \
@@ -20,9 +20,17 @@
 #     grep -rlE '^\s*#\[cfg\(not\(debug_assertions\)\)\]' \
 #         --include='*.rs' crates/ gui/src-tauri/
 #
+#   Mechanism C — runtime cfg!(debug_assertions) profile branching (macro must appear
+#   before any '/' on the line to exclude comment lines):
+#     grep -rlE '^[^/]*cfg!\(debug_assertions\)' \
+#         --include='*.rs' crates/ gui/src-tauri/
+#     grep -rlE '^[^/]*cfg!\(not\(debug_assertions\)\)' \
+#         --include='*.rs' crates/ gui/src-tauri/
+#
 #   Map each hit file to its crate (crates/<dir> → <dir>; gui/src-tauri/* → reify-gui).
-#   The anchoring on '^\s*#\[' excludes doc-comment false positives.
-#   The union of the two hit sets (sorted, unique) must equal this list.
+#   Mechanisms A+B anchor on '^\s*#\[' to exclude doc-comment false positives.
+#   Mechanism C anchors on '^[^/]*' (macro before first '/') to exclude comment lines.
+#   The union of all hit sets (sorted, unique) must equal this list.
 #
 # Cross-references:
 #   scripts/release-scope-lib.sh — provides release_declared_set (reads this file)
@@ -41,6 +49,7 @@ reify-core
 reify-eval
 reify-expr
 reify-gui
+reify-mesh-morph
 reify-runtime
 reify-solver-elastic
 reify-stdlib
