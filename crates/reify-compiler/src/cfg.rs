@@ -39,6 +39,7 @@ pub struct CfgSet {
 ///   `active.kv.get(key) == Some(v)`. Reads **only** `CfgSet.kv`.
 ///
 /// All other shapes are unsatisfiable (term evaluates to `false`) in v1.
+// G-allow: intermediate cfg-predicate evaluator (PRD conditional-compilation task beta/3987); sole consumer is task gamma/3990 (#cfg DAG import-gating), pending.
 pub fn cfg_satisfied(pragma: &reify_ast::Pragma, active: &CfgSet) -> bool {
     pragma.args.iter().all(|arg| arg_satisfied(arg, active))
 }
