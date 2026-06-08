@@ -6762,4 +6762,175 @@ mod tests {
             "joint field must be the input fixed joint verbatim"
         );
     }
+
+    // ── transform_at: uniform origin threading (step-1: B1 + B2 + cross-kind) ──
+
+    /// Build a pure-translation origin Transform: identity rotation + (tx,ty,tz) in metres.
+    fn make_origin_transform(tx: f64, ty: f64, tz: f64) -> Value {
+        Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(tx),
+                Value::length(ty),
+                Value::length(tz),
+            ])),
+        }
+    }
+
+    /// Insert an `"origin"` key into a joint `Value::Map`.
+    fn with_origin(joint: Value, origin: Value) -> Value {
+        let mut m = match joint {
+            Value::Map(m) => m,
+            other => panic!("with_origin: expected Value::Map, got {:?}", other),
+        };
+        m.insert(Value::String("origin".to_string()), origin);
+        Value::Map(m)
+    }
+
+    /// Extract `(w, x, y, z)` rotation tuple from a `Value::Transform`.
+    fn extract_rotation_tuple(v: &Value) -> (f64, f64, f64, f64) {
+        match v {
+            Value::Transform { rotation, .. } => match rotation.as_ref() {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                other => panic!("extract_rotation_tuple: expected Orientation, got {:?}", other),
+            },
+            other => panic!("extract_rotation_tuple: expected Transform, got {:?}", other),
+        }
+    }
+
+    /// Extract `[tx, ty, tz]` (SI values) from a `Value::Transform`.
+    fn extract_translation_array(v: &Value) -> [f64; 3] {
+        match v {
+            Value::Transform { translation, .. } => match translation.as_ref() {
+                Value::Vector(comps) if comps.len() == 3 => [
+                    comps[0].as_f64().expect("extract_translation_array: t[0] not numeric"),
+                    comps[1].as_f64().expect("extract_translation_array: t[1] not numeric"),
+                    comps[2].as_f64().expect("extract_translation_array: t[2] not numeric"),
+                ],
+                other => panic!("extract_translation_array: expected Vector(3), got {:?}", other),
+            },
+            other => panic!("extract_translation_array: expected Transform, got {:?}", other),
+        }
+    }
+
+    /// B1: revolute-z joint with origin=(0.2,0,0) m.
+    ///
+    /// `transform_at(joint_with_origin, θ=π/3)` must equal
+    /// `compose_transforms(&origin, &bare_motion)` (PRD §7.2 identity).
+    /// Also asserts: translation == (0.2,0,0) m (invariant under θ), rotation == R_z(π/3).
+    ///
+    /// RED: fails today because transform_at ignores the "origin" key.
+    #[test]
+    fn transform_at_revolute_with_origin_equals_composed() {
+        let pi = std::f64::consts::PI;
+        let theta = pi / 3.0;
+
+        let base_joint = revolute_z_joint();
+        let origin = make_origin_transform(0.2, 0.0, 0.0);
+        let joint_with_origin = with_origin(base_joint.clone(), origin.clone());
+
+        // bare_motion: revolute-z at θ without origin key.
+        let bare_motion = eval_builtin("transform_at", &[base_joint, Value::angle(theta)]);
+        // Expected via the defining identity: origin ∘ bare_motion.
+        let expected = crate::geometry::compose_transforms(&origin, &bare_motion);
+        let exp_rot = extract_rotation_tuple(&expected);
+        let exp_trans = extract_translation_array(&expected);
+
+        let result = eval_builtin("transform_at", &[joint_with_origin, Value::angle(theta)]);
+
+        // Main invariant: result == origin ∘ bare_motion.
+        assert_transform_approx(&result, exp_rot, exp_trans, 1e-12,
+            "revolute-z with origin=(0.2,0,0): transform_at should == origin∘bare_motion");
+
+        // Translation must reflect the pivot, invariant under joint angle.
+        let [tx, ty, tz] = extract_translation_array(&result);
+        assert!(
+            (tx - 0.2).abs() < 1e-12,
+            "revolute-z with origin: tx should be 0.2 m, got {tx}",
+        );
+        assert!(ty.abs() < 1e-12, "revolute-z with origin: ty should be 0, got {ty}");
+        assert!(tz.abs() < 1e-12, "revolute-z with origin: tz should be 0, got {tz}");
+
+        // Rotation must be R_z(π/3) = (cos(π/6), 0, 0, sin(π/6)).
+        let (w, x, y, z) = extract_rotation_tuple(&result);
+        let qw = (theta / 2.0).cos();
+        let qz = (theta / 2.0).sin();
+        let matches_pos = (w - qw).abs() < 1e-12 && x.abs() < 1e-12
+            && y.abs() < 1e-12 && (z - qz).abs() < 1e-12;
+        let matches_neg = (w + qw).abs() < 1e-12 && x.abs() < 1e-12
+            && y.abs() < 1e-12 && (z + qz).abs() < 1e-12;
+        assert!(
+            matches_pos || matches_neg,
+            "revolute-z with origin: rotation should be R_z(π/3) ≈ ({qw},0,0,{qz}) up to sign, \
+             got ({w},{x},{y},{z})"
+        );
+    }
+
+    /// Cross-kind: prismatic-x joint with origin=(0.2,0,0) m.
+    ///
+    /// Pre-compose must be OUTSIDE the per-kind match — not revolute-only.
+    ///
+    /// RED: fails today because transform_at ignores the "origin" key.
+    #[test]
+    fn transform_at_prismatic_with_origin_equals_composed() {
+        let base_joint = prismatic_x_joint();
+        let origin = make_origin_transform(0.2, 0.0, 0.0);
+        let joint_with_origin = with_origin(base_joint.clone(), origin.clone());
+
+        let bare_motion = eval_builtin("transform_at", &[base_joint, Value::length(0.5)]);
+        let expected = crate::geometry::compose_transforms(&origin, &bare_motion);
+        let exp_rot = extract_rotation_tuple(&expected);
+        let exp_trans = extract_translation_array(&expected);
+
+        let result = eval_builtin("transform_at", &[joint_with_origin, Value::length(0.5)]);
+
+        // origin=(0.2,0,0), bare=(0.5,0,0) → composed t = I*(0.5,0,0)+(0.2,0,0) = (0.7,0,0).
+        assert_transform_approx(&result, exp_rot, exp_trans, 1e-12,
+            "prismatic-x with origin=(0.2,0,0): transform_at should == origin∘bare_motion");
+    }
+
+    /// B2 byte-identity: revolute-z WITHOUT "origin" key yields the pre-change Transform verbatim.
+    ///
+    /// The absent-origin path must be byte-identical to pre-change (PRD §7.4).
+    #[test]
+    fn transform_at_revolute_without_origin_is_byte_identical() {
+        let pi = std::f64::consts::PI;
+        let theta = pi / 3.0;
+        let joint = revolute_z_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::angle(theta)]);
+
+        // Expected: zero-length translation + R_z(π/3) quaternion.
+        let qw = (theta / 2.0).cos();
+        let qz = (theta / 2.0).sin();
+        assert_transform_approx(
+            &result,
+            (qw, 0.0, 0.0, qz),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "revolute-z without origin: zero translation + R_z(π/3) quaternion",
+        );
+    }
+
+    /// B2 byte-identity: prismatic-x WITHOUT "origin" key yields the pre-change Transform verbatim.
+    ///
+    /// The absent-origin path must be byte-identical to pre-change (PRD §7.4).
+    #[test]
+    fn transform_at_prismatic_without_origin_is_byte_identical() {
+        let joint = prismatic_x_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::length(0.5)]);
+
+        // Expected: translation (0.5,0,0) m + identity quaternion.
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.5, 0.0, 0.0],
+            1e-12,
+            "prismatic-x without origin: (0.5,0,0) m + identity rotation",
+        );
+    }
 }
