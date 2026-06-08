@@ -78,7 +78,8 @@ fi
 # already 'hooks' this is a true no-op.
 # TODO(post-4379): switch to `git config --worktree core.hooksPath hooks` once
 #   task 4379 (extensions.worktreeConfig isolation) lands.
-git config core.hooksPath hooks
+git config core.hooksPath hooks \
+    || { echo 'land.sh: ERROR — could not set core.hooksPath (read-only or locked config); aborting before the main move to avoid landing with a dark gate.' >&2; exit 1; }
 
 # Sanction the upcoming refs/heads/main move for hooks/reference-transaction.
 # shellcheck source=hooks/main-gate-lib.sh
