@@ -82,10 +82,13 @@ fn std_tensegrity_module_loads_with_no_errors() {
     );
 }
 
-/// The std/tensegrity module must declare exactly five top-level structures:
-/// Strut, Cable, Tensegrity, TensegrityWire, FormFindResult.
+/// The std/tensegrity module must declare exactly six top-level structures:
+/// Strut, Cable, Membrane, Tensegrity, TensegrityWire, FormFindResult.
+///
+/// RED (step-3): expects 6 — fails until `structure def Membrane` is added
+/// to tensegrity.ri in step-4.
 #[test]
-fn std_tensegrity_module_has_five_structures() {
+fn std_tensegrity_module_has_six_structures() {
     let module = load_stdlib_module();
 
     let structures: Vec<&str> = module
@@ -95,7 +98,7 @@ fn std_tensegrity_module_has_five_structures() {
         .map(|t| t.name.as_str())
         .collect();
 
-    let expected = ["Strut", "Cable", "Tensegrity", "TensegrityWire", "FormFindResult"];
+    let expected = ["Strut", "Cable", "Membrane", "Tensegrity", "TensegrityWire", "FormFindResult"];
     assert_eq!(
         structures.len(),
         expected.len(),
@@ -111,6 +114,77 @@ fn std_tensegrity_module_has_five_structures() {
             structures
         );
     }
+}
+
+// ─── Membrane structure ───────────────────────────────────────────────────────
+
+/// `Membrane` has exactly 3 params:
+///   - `thickness : Length`          — required, no default
+///   - `material  : ElasticMaterial` — required, no default
+///   - `prestress : Pressure`        — defaults to 0*1Pa (isotropic surface stress σ)
+///
+/// RED (step-3): fails until `structure def Membrane` is added in step-4.
+#[test]
+fn membrane_structure_has_thickness_material_and_prestress_default() {
+    let template = find_structure("Membrane");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        3,
+        "Membrane should have exactly 3 param cells (thickness, material, prestress), got: {:?}",
+        names
+    );
+
+    // thickness: Length, required
+    let thickness = params
+        .iter()
+        .find(|vc| vc.id.member == "thickness")
+        .unwrap_or_else(|| panic!("Membrane missing 'thickness' param; got: {:?}", names));
+    assert_eq!(
+        thickness.cell_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        "Membrane.thickness should be Length (Scalar[m]), got {:?}",
+        thickness.cell_type
+    );
+    assert!(
+        thickness.default_expr.is_none(),
+        "Membrane.thickness should have no default (required param)"
+    );
+
+    // material: ElasticMaterial, required
+    let material = params
+        .iter()
+        .find(|vc| vc.id.member == "material")
+        .unwrap_or_else(|| panic!("Membrane missing 'material' param; got: {:?}", names));
+    assert_eq!(
+        material.cell_type,
+        Type::TraitObject("ElasticMaterial".to_string()),
+        "Membrane.material should be TraitObject(ElasticMaterial), got {:?}",
+        material.cell_type
+    );
+    assert!(
+        material.default_expr.is_none(),
+        "Membrane.material should have no default (required param)"
+    );
+
+    // prestress: Pressure, defaults to 0*1Pa
+    let prestress = params
+        .iter()
+        .find(|vc| vc.id.member == "prestress")
+        .unwrap_or_else(|| panic!("Membrane missing 'prestress' param; got: {:?}", names));
+    assert_eq!(
+        prestress.cell_type,
+        Type::Scalar { dimension: DimensionVector::PRESSURE },
+        "Membrane.prestress should be Pressure (Scalar[Pa]), got {:?}",
+        prestress.cell_type
+    );
+    // prestress defaults to 0*1Pa per PRD §3.
+    assert!(
+        prestress.default_expr.is_some(),
+        "Membrane.prestress should have a default expression (= 0*1Pa per PRD §3)"
+    );
 }
 
 // ─── Strut structure ─────────────────────────────────────────────────────────

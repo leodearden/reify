@@ -731,6 +731,103 @@ fn cli_reify_eval_prints_t_prism_wireframe() {
     );
 }
 
+// ── step-3 (task-4412): Membrane ctor eval test ───────────────────────────────
+
+/// `Membrane(thickness: 2mm, material: Steel_AISI_1045())` evaluates to a
+/// `Value::StructureInstance` with type_name "Membrane". The `prestress` field
+/// carries the 0*1Pa default (Pressure-dimensioned Scalar with si_value ~0.0).
+///
+/// RED (step-3): fails until `structure def Membrane` is added to tensegrity.ri
+/// in step-4. After step-4 the SIR ctor-lowering path handles it automatically.
+#[test]
+fn membrane_ctor_evaluates_to_structure_instance_with_prestress_default() {
+    const SOURCE: &str = r#"
+structure def F {
+    let m = Membrane(thickness: 2mm, material: Steel_AISI_1045())
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let id = ValueCellId::new("F", "m");
+    let v = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("F.m cell missing from eval result"));
+
+    match v {
+        Value::StructureInstance(data) => {
+            assert_eq!(
+                data.type_name, "Membrane",
+                "type_name should be Membrane, got {:?}",
+                data.type_name
+            );
+
+            // thickness: Length-dimensioned scalar
+            let th = field(&data.fields, "thickness").unwrap_or_else(|| {
+                panic!(
+                    "Membrane missing thickness field; fields: {:?}",
+                    data.fields.iter().map(|(k, _)| k).collect::<Vec<_>>()
+                )
+            });
+            match th {
+                Value::Scalar { dimension, .. } => assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "Membrane.thickness should have LENGTH dimension, got {:?}",
+                    dimension
+                ),
+                other => panic!("Membrane.thickness should be Scalar, got {:?}", other),
+            }
+
+            // material: nested StructureInstance (Steel_AISI_1045)
+            let mat = field(&data.fields, "material")
+                .unwrap_or_else(|| panic!("Membrane missing material field"));
+            match mat {
+                Value::StructureInstance(mdata) => assert_eq!(
+                    mdata.type_name, "Steel_AISI_1045",
+                    "Membrane.material should be Steel_AISI_1045, got {:?}",
+                    mdata.type_name
+                ),
+                other => panic!(
+                    "Membrane.material should be StructureInstance, got {:?}",
+                    other
+                ),
+            }
+
+            // prestress: defaults to 0*1Pa → Pressure-dimensioned Scalar, si_value ~0.0
+            let ps = field(&data.fields, "prestress").unwrap_or_else(|| {
+                panic!(
+                    "Membrane missing prestress field (should be filled by 0*1Pa default); \
+                     fields: {:?}",
+                    data.fields.iter().map(|(k, _)| k).collect::<Vec<_>>()
+                )
+            });
+            match ps {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::PRESSURE,
+                        "Membrane.prestress should have PRESSURE dimension, got {:?}",
+                        dimension
+                    );
+                    assert!(
+                        si_value.abs() < 1e-10,
+                        "Membrane.prestress default should be ~0 Pa, got si_value={}",
+                        si_value
+                    );
+                }
+                other => panic!(
+                    "Membrane.prestress should be Scalar, got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!("expected Value::StructureInstance for F.m, got {:?}", other),
+    }
+}
+
 /// args[0] is Tensegrity-shaped but struts references out-of-range index → Undef.
 #[test]
 fn tensegrity_wires_undef_on_out_of_range_index() {
