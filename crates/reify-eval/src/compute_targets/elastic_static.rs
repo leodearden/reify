@@ -445,14 +445,14 @@ pub fn solve_elastic_static_trampoline(
     // ~200 emit calls rather than 2000.  The cancel poll is unaffected.
     const PROGRESS_STRIDE: usize = 10;
     let mut progress_closure = |iter: usize, residual: f64| -> CgIterationControl {
-        if let Some(ref sink) = ctx_sink {
-            if iter == 1 || iter % PROGRESS_STRIDE == 0 {
-                sink.on_iteration(&crate::solver_progress::SolverProgressUpdate {
-                    solver_kind: "cg",
-                    iter: iter as u32,
-                    residual,
-                });
-            }
+        if let Some(ref sink) = ctx_sink
+            && (iter == 1 || iter.is_multiple_of(PROGRESS_STRIDE))
+        {
+            sink.on_iteration(&crate::solver_progress::SolverProgressUpdate {
+                solver_kind: "cg",
+                iter: iter as u32,
+                residual,
+            });
         }
         if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
             CgIterationControl::Cancel
