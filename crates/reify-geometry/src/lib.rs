@@ -351,9 +351,11 @@ mod tests {
     /// Minimal in-test stub kernel that only supports `measure_mesh_deviation`.
     /// Implements the four required trait methods as `unimplemented!()` stubs,
     /// following the CountingKernel minimal-stub pattern from reify-ir/src/geometry.rs.
-    struct DeviationStubKernel {
-        deviation: Option<f64>,
-    }
+    ///
+    /// Returns a value derived from both forwarded arguments (handle ID + vertex
+    /// count) so a delegation bug that passes the wrong handle or mesh produces a
+    /// different result and the assertion catches it.
+    struct DeviationStubKernel;
 
     impl GeometryKernel for DeviationStubKernel {
         fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
@@ -377,19 +379,26 @@ mod tests {
             unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
         }
 
-        fn measure_mesh_deviation(&self, _handle: GeometryHandleId, _mesh: &Mesh) -> Option<f64> {
-            self.deviation
+        fn measure_mesh_deviation(&self, handle: GeometryHandleId, mesh: &Mesh) -> Option<f64> {
+            // Encode both forwarded arguments into the return value so the delegation
+            // test can verify the correct handle and mesh were passed through — not just
+            // that some value was returned.  A wrong handle or wrong mesh produces a
+            // different f64 and the assertion catches it.
+            Some(handle.0 as f64 + mesh.vertices.len() as f64)
         }
     }
 
     #[test]
     fn measure_mesh_deviation_delegates_to_registered_kernel() {
-        const SENTINEL: f64 = 0.00123;
         let mut planner = SingleKernelHolder::new();
-        planner.register_kernel(Box::new(DeviationStubKernel { deviation: Some(SENTINEL) }));
-        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
-        let result = planner.measure_mesh_deviation(GeometryHandleId(1), &mesh);
-        assert_eq!(result, Some(SENTINEL));
+        planner.register_kernel(Box::new(DeviationStubKernel));
+        // Non-trivial handle id (5) and mesh with 3 vertex floats so the expected
+        // encoded value is unambiguous: 5.0 (handle) + 3.0 (vertex count) = 8.0.
+        // Passing a wrong handle or an empty/default mesh produces a different
+        // result and the assertion catches the forwarding bug.
+        let mesh = Mesh { vertices: vec![0.0_f32, 1.0, 2.0], indices: vec![], normals: None };
+        let result = planner.measure_mesh_deviation(GeometryHandleId(5), &mesh);
+        assert_eq!(result, Some(8.0));
     }
 
     #[test]
