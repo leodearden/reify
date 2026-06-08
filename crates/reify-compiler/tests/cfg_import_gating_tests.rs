@@ -6,7 +6,7 @@
 //! S7: W_CFG_NO_IMPORT — a `#cfg` not immediately preceding an import emits a warning.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::{compile_project_with_entry_source_cfg, ModuleDag, ModuleResolver};
@@ -28,7 +28,7 @@ fn target_cfg(target: &str) -> CfgSet {
 ///
 /// - `main.ri`: gated imports for linux/wasm + ungated import for common
 /// - `platform_linux.ri`, `platform_wasm.ri`, `common.ri`: stub structures
-fn write_gating_fixtures(dir: &PathBuf) {
+fn write_gating_fixtures(dir: &Path) {
     let entry_src = "#cfg(target = \"linux\")\nimport platform_linux\n\
                      #cfg(target = \"wasm\")\nimport platform_wasm\n\
                      import common";
