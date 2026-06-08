@@ -9,9 +9,9 @@
 //! ([`crate::compile_builder::pre_pass`]) only warns on UNKNOWN module-pragma names;
 //! the two passes run at different phases and emit non-overlapping diagnostic sets.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
-use reify_ast::{ParsedModule, Pragma, PragmaArg, PragmaValue};
+use reify_ast::{Declaration, ParsedModule, Pragma, PragmaArg, PragmaValue};
 use reify_core::{Diagnostic, DiagnosticLabel, DimensionVector, SourceSpan};
 use reify_ir::Value;
 
@@ -26,6 +26,7 @@ pub(crate) fn apply_module_pragmas(parsed: &ParsedModule, module: &mut CompiledM
     apply_solver_pragma(parsed, module);
     apply_kernel_pragma(parsed, module);
     apply_cfg_pragma(parsed, module);
+    apply_cfg_no_import_warning(parsed, module);
     apply_deterministic_pragma(parsed, module);
     warn_block_level_precision(module);
     warn_block_level_solver(module);
@@ -837,6 +838,52 @@ fn apply_cfg_pragma(parsed: &ParsedModule, module: &mut CompiledModule) {
             module.diagnostics.push(
                 Diagnostic::error(MALFORMED_MSG)
                     .with_label(DiagnosticLabel::new(pragma.span, "malformed #cfg")),
+            );
+        }
+    }
+}
+
+/// Warn when a `#cfg(...)` pragma is not positionally attached to any import.
+///
+/// A `#cfg` that precedes a non-import declaration (or appears at EOF) gates
+/// nothing and is silently ignored during compilation; this warning surfaces it
+/// to the user so they can either move the pragma or remove it.
+///
+/// The check is orthogonal to `apply_cfg_pragma`'s E_CFG_MALFORMED validator:
+/// a malformed `#cfg` still triggers this warning if it is also unattached
+/// (placement and arg-shape are independent failure modes, per PRD D-4).
+///
+/// **Implementation note:** `cfg_predicates` on each `ImportDecl` carry the
+/// same `SourceSpan` as the corresponding entry in `parsed.pragmas`, because
+/// they are clones of the same `Pragma` value (see ts_parser.rs dual-storage).
+/// We therefore identify "attached" cfg pragmas by span equality.
+fn apply_cfg_no_import_warning(parsed: &ParsedModule, module: &mut CompiledModule) {
+    // Collect the spans of every #cfg pragma that is attached to some import.
+    let attached: HashSet<SourceSpan> = parsed
+        .declarations
+        .iter()
+        .filter_map(|d| {
+            if let Declaration::Import(i) = d {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .flat_map(|i| i.cfg_predicates.iter().map(|p| p.span))
+        .collect();
+
+    // For each module-level #cfg whose span is NOT in the attached set, warn.
+    for pragma in &parsed.pragmas {
+        if pragma.name != "cfg" {
+            continue;
+        }
+        if !attached.contains(&pragma.span) {
+            module.diagnostics.push(
+                Diagnostic::warning(
+                    "W_CFG_NO_IMPORT: #cfg pragma has no following import; \
+                     it gates nothing and is ignored",
+                )
+                .with_label(DiagnosticLabel::new(pragma.span, "no following import")),
             );
         }
     }
