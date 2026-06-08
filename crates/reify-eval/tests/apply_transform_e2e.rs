@@ -9,8 +9,24 @@ use reify_core::Severity;
 use reify_ir::{ExportFormat, GeometryOp, GeometryQuery, Value};
 use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
 
-/// Parse the x-component from a JSON centroid string produced by GeometryQuery::Centroid.
-/// Format: `{"x":<f>,"y":<f>,"z":<f>}`
+/// Parse the x-component from a JSON centroid value produced by `GeometryQuery::Centroid`.
+///
+/// # Format contract
+///
+/// The centroid JSON producer (`OcctKernel::query` → `GeometryQuery::Centroid`) emits
+/// **compact** JSON with no whitespace between the key and value: `{"x":<f>,"y":<f>,"z":<f>}`
+/// where `<f>` is a standard Rust `f64` `Display` (decimal or scientific notation, no leading
+/// space).  The field order is always `x`, `y`, `z`.
+///
+/// This substring-search convention is identical to `parse_centroid_z` in
+/// `centered_primitives_e2e.rs` and `parse_centroid` in `stress_query_consistency.rs`,
+/// which are the established codebase patterns for this query result.  If the JSON format
+/// ever changes (e.g. spaces added after `:`, key order shuffled), ALL three helpers will
+/// need updating simultaneously — the format is owned by the OCCT kernel query handler.
+///
+/// `serde_json` is not yet a dev-dependency of `reify-eval`; should the format become
+/// less stable, adding it and deserializing into `{x:f64, y:f64, z:f64}` is the
+/// preferred upgrade path.
 fn parse_centroid_x(val: &Value) -> f64 {
     match val {
         Value::String(s) => {
@@ -19,7 +35,7 @@ fn parse_centroid_x(val: &Value) -> f64 {
             let end = s[start..].find([',', '}']).expect("centroid x end not found") + start;
             s[start..end].trim().parse::<f64>().expect("centroid x parse failed")
         }
-        other => panic!("expected String (centroid JSON), got {:?}", other),
+        other => panic!("expected Value::String (centroid JSON), got {:?}", other),
     }
 }
 
@@ -138,6 +154,32 @@ fn apply_transform_malformed_arg_mock() {
 /// no Error diagnostics; then direct kernel queries for Volume ≈ 1e-6 m³ (0.1%)
 /// and Centroid x ≈ +0.005 m.
 ///
+/// # Coverage structure
+///
+/// This test intentionally has two independent parts:
+///
+/// **Part 1** (compile pipeline integration): verifies that the full compile → eval →
+/// OCCT-kernel path produces a non-Undef STEP output with no errors.  It proves the
+/// name is recognized, the eval arm fires, and the OCCT execute arm runs without error.
+/// It does NOT directly verify the rotation/translation values because `Engine::build()`
+/// serialises the geometry to STEP bytes and the kernel handle is not accessible for
+/// post-build queries.
+///
+/// **Part 2** (kernel geometry correctness): exercises `GeometryOp::ApplyTransform`
+/// directly on a fresh `OcctKernel` to assert the volume is preserved and the centroid
+/// shifts by the expected translation.  This uses the SAME rotation/translation values
+/// that the compile pipeline will produce.
+///
+/// **Transitive closure**: `apply_transform_happy_path_mock` (above) already verifies
+/// that the compile → eval path produces EXACTLY those rotation/translation values in the
+/// `GeometryOp::ApplyTransform` IR node (within 1e-9).  Part 1 + Part 2 together with
+/// the mock test therefore give full end-to-end coverage:
+///   mock: compile→eval values correct  +  Part 2: OCCT kernel applies them correctly
+///   Part 1: the pipeline actually reaches the OCCT kernel without error
+///
+/// A fully composed end-to-end query would require `Engine` to expose post-build kernel
+/// queries (not yet in the public API); this would be the preferred future upgrade.
+///
 /// RED: "apply_transform" not yet in GEOMETRY_FUNCTION_NAMES → call unrecognized →
 /// geometry Undef → no STEP output (or empty/Error diagnostics) → assertion fails.
 #[test]
@@ -148,6 +190,7 @@ fn apply_transform_occt_acceptance() {
     }
 
     // ── Part 1: full compile-source pipeline ─────────────────────────────────
+    // Verifies: name recognized → compile dispatch → eval arm → OCCT execute → STEP output.
     let source = r#"structure S {
     let g = apply_transform(
         box(10mm, 10mm, 10mm),
@@ -181,9 +224,12 @@ fn apply_transform_occt_acceptance() {
     assert!(!output.is_empty(), "STEP output must be non-empty");
 
     // ── Part 2: direct kernel — Volume + Centroid ─────────────────────────────
-    // box(10mm,10mm,10mm) centered at origin → volume = 1e-3 * 1e-3 * 1e-3 = 1e-9 m³?
-    // Wait: 10mm = 0.01m, volume = 0.01^3 = 1e-6 m³.
-    // apply_transform with z-rotation(90°) + x-translation(+5mm) is volume-invariant.
+    // Verifies: the exact rotation [w,0,0,z] + translation [0.005,0,0] the compile→eval
+    // path produces (confirmed by the mock test) correctly moves the centroid and preserves
+    // volume when applied via OcctKernel directly.
+    // box(10mm,10mm,10mm): 10mm = 0.01m → volume = 0.01^3 = 1e-6 m³, centroid at origin.
+    // orient_axis_angle(z,90°): rotation-only, volume-invariant, centroid stays at origin.
+    // vec3(5mm,0,0): translates centroid to (+0.005m, 0, 0).
     let mut kernel = reify_kernel_occt::OcctKernel::new();
     let w = std::f64::consts::FRAC_1_SQRT_2;
 

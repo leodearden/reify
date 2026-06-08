@@ -833,4 +833,39 @@ mod tests {
             "try_infer_traits_for_function_call(\"wedge\", ..) must return Some(all())"
         );
     }
+
+    /// `apply_transform` is dispatched as a `combine_transform` passthrough (same arm as
+    /// `translate`/`rotate`/`scale`/`rotate_around`), so its inferred traits must equal
+    /// what those combinators return for the same args.
+    ///
+    /// With no geometry-typed arg, `first_geometry_arg_in_env` returns the defensive default
+    /// `InferredTraits::all()`, and `combine_transform(all()) == all()`, so both
+    /// `apply_transform` and `translate` should return `Some(InferredTraits::all())`.
+    ///
+    /// This pins three invariants:
+    /// 1. The name IS dispatched (returns `Some`, not `None` = unknown).
+    /// 2. It falls into the `combine_transform` arm (same result as `translate`).
+    /// 3. `combine_transform` is an all-preserving identity — consistent with task 4164 §DD.
+    #[test]
+    fn apply_transform_is_dispatched_as_combine_transform_passthrough() {
+        let apply = try_infer_traits_for_function_call("apply_transform", &[]);
+        let translate = try_infer_traits_for_function_call("translate", &[]);
+
+        assert!(
+            apply.is_some(),
+            "apply_transform must be a dispatched name (Some), not unknown (None)"
+        );
+        assert_eq!(
+            apply,
+            Some(InferredTraits::all()),
+            "apply_transform with no geometry arg must return Some(all()) \
+             (combine_transform identity passthrough, defensive default)"
+        );
+        assert_eq!(
+            apply,
+            translate,
+            "apply_transform dispatch result must equal translate dispatch result \
+             (both are combine_transform passthroughs in the same match arm)"
+        );
+    }
 }
