@@ -444,4 +444,74 @@ assert "C1-guard: ungated tail keeps --workspace (override ignored for scope=all
 assert "C1-guard: NO affected -p reify-doc in clippy (override ignored for scope=all)" \
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo clippy.*-p reify-doc"' _ "$PLAN_C1"
 
+# ===========================================================================
+# B7 and B9 scenarios (step-3):
+#   B7: branch, Cargo.lock changed -> affected_crates returns ALL (C4 path-match)
+#       -> no narrowing, --workspace kept. GREEN now, stays green (regression guard).
+#   B9-default: staged without --narrow -> --workspace preserved (current behavior).
+#       GREEN now, stays green (regression guard).
+#   B9-narrowed: staged + --narrow + override -> narrowed -p flags.
+#       RED until step-4 adds --narrow parsing to verify.sh.
+# ===========================================================================
+
+# plan_for_staged_narrowed <override> <file...>
+# Like plan_for but exports REIFY_AFFECTED_CRATES_OVERRIDE and passes --narrow.
+# Captures PLAN_OUT (all action) and PLAN_OUT_NARROW_TC (typecheck action).
+plan_for_staged_narrowed() {
+    local _override="$1"; shift
+    local f
+    for f in "$@"; do
+        mkdir -p "$FIX/$(dirname "$f")"
+        printf 'x\n' > "$FIX/$f"
+        git -C "$FIX" add "$f"
+    done
+    PLAN_OUT="$(cd "$FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh all --profile debug --scope staged --narrow --include-infra --print-plan 2>/dev/null)" || true
+    PLAN_OUT_NARROW_TC="$(cd "$FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$_override" bash scripts/verify.sh typecheck --profile debug --scope staged --narrow --print-plan 2>/dev/null)" || true
+    git -C "$FIX" reset -q -- . 2>/dev/null || true
+    for f in "$@"; do rm -f "$FIX/$f"; done
+}
+
+# ---------------------------------------------------------------------------
+# Scenario B7: branch, Cargo.lock -> ALL fallback, --workspace preserved
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B7: branch Cargo.lock -> affected=ALL, --workspace preserved ---"
+plan_for_branch Cargo.lock
+assert "B7/Cargo.lock: clippy keeps --workspace (affected=ALL, no narrowing)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_OUT"
+assert "B7/Cargo.lock: ungated tail keeps --workspace (affected=ALL, no narrowing)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_OUT"
+assert "B7/Cargo.lock: NO affected -p narrowing (affected=ALL, no narrowing)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo clippy.*-p reify-"' _ "$PLAN_OUT"
+
+# ---------------------------------------------------------------------------
+# Scenario B9-default: staged without --narrow -> current --workspace behavior
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B9-default: staged without --narrow -> --workspace preserved ---"
+plan_for staged crates/reify-doc/src/lib.rs
+assert "B9-default: ungated tail keeps --workspace (staged, no --narrow flag)" \
+    plan_has 'cargo (test|nextest run) --workspace --exclude'
+assert "B9-default: clippy keeps --workspace (staged, no --narrow flag)" \
+    plan_has 'cargo clippy --workspace'
+
+# ---------------------------------------------------------------------------
+# Scenario B9-narrowed: staged + --narrow + override -> narrowed -p flags
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B9-narrowed: staged --narrow + override -> narrowed -p flags (RED: --narrow not yet parsed) ---"
+plan_for_staged_narrowed "reify-doc reify-ir" crates/reify-doc/src/lib.rs
+assert "B9-narrowed/all: clippy has -p reify-doc" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo clippy.*-p reify-doc"' _ "$PLAN_OUT"
+assert "B9-narrowed/all: clippy LACKS --workspace" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_OUT"
+assert "B9-narrowed/all: nextest tail has -p reify-doc" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-doc"' _ "$PLAN_OUT"
+assert "B9-narrowed/all: nextest tail LACKS --workspace" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_OUT"
+assert "B9-narrowed/typecheck: cargo check has -p reify-doc" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo check .*-p reify-doc"' _ "$PLAN_OUT_NARROW_TC"
+assert "B9-narrowed/typecheck: cargo check LACKS --workspace" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo check --workspace"' _ "$PLAN_OUT_NARROW_TC"
+
 test_summary
