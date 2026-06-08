@@ -14,7 +14,9 @@ use crate::orientation::normalize_quaternion;
 pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "prismatic" => {
-            if args.len() != 2 {
+            // Accept 2 args (axis, range) or 3 args (axis, range, pivot) — PRD §7.1.
+            // A positional 3rd pivot arg matches the couple/planar/cylindrical precedent.
+            if args.len() != 2 && args.len() != 3 {
                 return Some(Value::Undef);
             }
             if validate_axis(&args[0]).is_none() {
@@ -26,10 +28,20 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             // The axis is stored as the raw (potentially unnormalized) input.
             // `transform_at` normalizes it to unit length at evaluation time.
             // `joint_axis` returns this raw value — see its doc-comment.
-            make_joint("prismatic", args[0].clone(), args[1].clone())
+            let origin = if args.len() == 3 {
+                match pivot_to_origin(&args[2]) {
+                    Some(o) => Some(o),
+                    None => return Some(Value::Undef),
+                }
+            } else {
+                None
+            };
+            make_joint("prismatic", args[0].clone(), args[1].clone(), origin)
         }
         "revolute" => {
-            if args.len() != 2 {
+            // Accept 2 args (axis, range) or 3 args (axis, range, pivot) — PRD §7.1.
+            // A positional 3rd pivot arg matches the couple/planar/cylindrical precedent.
+            if args.len() != 2 && args.len() != 3 {
                 return Some(Value::Undef);
             }
             if validate_axis(&args[0]).is_none() {
@@ -41,7 +53,15 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             // The axis is stored as the raw (potentially unnormalized) input.
             // `transform_at` normalizes it to unit length at evaluation time.
             // `joint_axis` returns this raw value — see its doc-comment.
-            make_joint("revolute", args[0].clone(), args[1].clone())
+            let origin = if args.len() == 3 {
+                match pivot_to_origin(&args[2]) {
+                    Some(o) => Some(o),
+                    None => return Some(Value::Undef),
+                }
+            } else {
+                None
+            };
+            make_joint("revolute", args[0].clone(), args[1].clone(), origin)
         }
         // 3-DOF planar joint: two prismatic DOFs (along axis_x and axis_y) plus one
         // revolute DOF (about axis_x × axis_y). Per PRD v0_2/kinematic-constraints.md
@@ -1549,9 +1569,54 @@ fn make_cylindrical_joint(axis: Value, translation_range: Value, rotation_range:
     Value::Map(m)
 }
 
-/// Build a joint `Value::Map` with the standard three-key layout:
-/// `"kind"`, `"axis"`, `"range"`.
-fn make_joint(kind: &str, axis: Value, range: Value) -> Value {
+/// Lift a pivot `Value::Point` or `Value::Vector` of exactly three LENGTH-dimensioned,
+/// finite components into a pure-translation SE(3) origin Transform.
+///
+/// Returns `None` if:
+/// - the value is not a `Value::Point` or `Value::Vector` with exactly 3 components,
+/// - any component is not a `Value::Scalar` with `dimension == LENGTH`, or
+/// - any component's `si_value` is non-finite (NaN / ±∞).
+///
+/// Resolves PRD §7.1 / §11 Q1 + Q3: positional 3rd pivot arg → "origin" key.
+/// Dimensionless pivots (bare `Real`) are rejected to avoid silently mis-scaling
+/// `point3(40,0,0)` as 40 m instead of the user's intended 40 mm (PRD B9 rationale).
+fn pivot_to_origin(pivot: &Value) -> Option<Value> {
+    let comps = match pivot {
+        Value::Point(c) if c.len() == 3 => c,
+        Value::Vector(c) if c.len() == 3 => c,
+        _ => return None,
+    };
+    let mut vals = [0.0f64; 3];
+    for (i, comp) in comps.iter().enumerate() {
+        match comp {
+            Value::Scalar { si_value, dimension } if *dimension == DimensionVector::LENGTH => {
+                if !si_value.is_finite() {
+                    return None;
+                }
+                vals[i] = *si_value;
+            }
+            _ => return None,
+        }
+    }
+    Some(Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(vals[0]),
+            Value::length(vals[1]),
+            Value::length(vals[2]),
+        ])),
+    })
+}
+
+/// Build a joint `Value::Map` with the standard layout: `"kind"`, `"axis"`, `"range"`,
+/// and optionally `"origin"` (PRD §7.1 — inserted only when `Some`, absent ⇒ byte-identical
+/// map to pre-change).
+fn make_joint(kind: &str, axis: Value, range: Value, origin: Option<Value>) -> Value {
     let mut m = BTreeMap::new();
     m.insert(
         Value::String("kind".to_string()),
@@ -1559,6 +1624,10 @@ fn make_joint(kind: &str, axis: Value, range: Value) -> Value {
     );
     m.insert(Value::String("axis".to_string()), axis);
     m.insert(Value::String("range".to_string()), range);
+    // Insert "origin" only when Some — absent origin leaves the map byte-identical to pre-change.
+    if let Some(o) = origin {
+        m.insert(Value::String("origin".to_string()), o);
+    }
     Value::Map(m)
 }
 
