@@ -57,6 +57,32 @@ export function savePanelLayout(layout: PanelLayout): void {
   }
 }
 
+export type ProblemsClampOptions = {
+  minPanelHeight: number;
+  editorMinHeight: number;
+  splitterThickness: number;
+};
+
+/**
+ * Clamp the problems panel height so that the editor area keeps at least
+ * `editorMinHeight` and the splitter itself fits.
+ *
+ * available = containerHeight - editorMinHeight - splitterThickness
+ * Returns Math.max(minPanelHeight, Math.min(preferred, available)).
+ * When the container is too small (available < minPanelHeight), returns
+ * minPanelHeight — the parent CSS overflow:hidden will clip.
+ *
+ * Pure: no DOM, no signals.
+ */
+export function clampProblemsHeight(
+  preferred: number,
+  containerHeight: number,
+  opts: ProblemsClampOptions,
+): number {
+  const available = containerHeight - opts.editorMinHeight - opts.splitterThickness;
+  return Math.max(opts.minPanelHeight, Math.min(preferred, available));
+}
+
 export type SidePanelHeights = {
   designTree: number;
   property: number;
