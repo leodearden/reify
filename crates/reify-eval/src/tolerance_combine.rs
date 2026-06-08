@@ -12,9 +12,13 @@
 //! so there is a single gate implementation that cannot drift (retiring the
 //! TODO that lived in the extractor's doc before task 4199 γ).
 //!
-//! The canonical recognition shape:
-//! `UserFunctionCall("RepresentationWithin", [<ValueRef typed StructureRef>,
-//! <Literal Scalar LENGTH finite>=0])`
+//! The canonical recognition shape (either compiler IR variant):
+//! `UserFunctionCall("RepresentationWithin", ..)` (synthetic/test expressions)
+//! or `FunctionCall { function: ResolvedFunction { name: "RepresentationWithin",
+//! .. }, .. }` (compiler-resolved stdlib calls) — both are matched identically
+//! by `match_representation_within_shape`.
+//!
+//! In both cases: args == `[<ValueRef typed StructureRef>, <Literal Scalar LENGTH finite>=0]`.
 
 use crate::graph::ConstraintNodeData;
 use reify_core::{ConstraintNodeId, DimensionVector, Diagnostic, Type, ValueCellId};
@@ -88,12 +92,23 @@ pub fn combine_demanded_tolerance(
 fn match_representation_within_shape(
     expr: &CompiledExpr,
 ) -> Option<(ValueCellId, String, f64)> {
-    // Gate 2: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1]).
+    // Gate 2: top-level call to "RepresentationWithin" with exactly 2 args.
+    //
+    // The compiler emits two different IR variants for function calls:
+    //  • `UserFunctionCall` — used for calls to user-defined functions and by
+    //    synthetic/test-built expressions (e.g. the tolerance_fixtures helpers).
+    //  • `FunctionCall { function: ResolvedFunction, .. }` — emitted when the
+    //    compiler resolves "RepresentationWithin" as a stdlib function
+    //    (qualified_name "std::RepresentationWithin").
+    //
+    // Both variants carry the same args vector and are matched identically
+    // by this gate; only the name field location differs.
     let (function_name, args) = match &expr.kind {
         CompiledExprKind::UserFunctionCall {
             function_name,
             args,
-        } => (function_name, args),
+        } => (function_name.as_str(), args),
+        CompiledExprKind::FunctionCall { function, args } => (function.name.as_str(), args),
         _ => return None,
     };
     if function_name != "RepresentationWithin" {
@@ -1020,7 +1035,7 @@ mod tests {
     // recognizer; tests here provide regression coverage.
 
     use reify_core::RealizationNodeId;
-    use reify_ir::{GeometryHandleId, StructureInstanceData, StructureTypeId};
+    use reify_ir::GeometryHandleId;
 
     /// Build a canonical `RepresentationWithin(ValueRef(subject.self):StructureRef(name), bound_m)`
     /// expression for step-3 eval tests.
