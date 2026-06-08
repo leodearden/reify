@@ -161,4 +161,61 @@ mod tests {
         let p = cfg_pragma(vec![kv_string("target", "linux")]);
         assert!(!cfg_satisfied(&p, &CfgSet::default()));
     }
+
+    // -------------------------------------------------------------------------
+    // Step 5: general (non-target) KeyValue → CfgSet.kv, strict separation
+    // -------------------------------------------------------------------------
+
+    fn kv_set(pairs: &[(&str, &str)]) -> CfgSet {
+        CfgSet {
+            kv: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn feature_kv_present_is_true() {
+        let p = cfg_pragma(vec![kv_string("feature", "x")]);
+        assert!(cfg_satisfied(&p, &kv_set(&[("feature", "x")])));
+    }
+
+    #[test]
+    fn feature_kv_wrong_value() {
+        let p = cfg_pragma(vec![kv_string("feature", "x")]);
+        assert!(!cfg_satisfied(&p, &kv_set(&[("feature", "y")])));
+    }
+
+    #[test]
+    fn feature_kv_absent_key() {
+        let p = cfg_pragma(vec![kv_string("feature", "x")]);
+        assert!(!cfg_satisfied(&p, &kv_set(&[])));
+    }
+
+    #[test]
+    fn target_key_does_not_read_kv() {
+        // target="linux" with CfgSet{target:None, kv:{target:"linux"}} → false
+        // The target arg must NOT fall through to kv lookup.
+        let p = cfg_pragma(vec![kv_string("target", "linux")]);
+        let active = CfgSet {
+            target: None,
+            kv: [("target".into(), "linux".into())].into_iter().collect(),
+            ..Default::default()
+        };
+        assert!(!cfg_satisfied(&p, &active));
+    }
+
+    #[test]
+    fn non_target_key_does_not_read_target() {
+        // feature="x" with CfgSet{target:Some("x"), kv:{}} → false
+        // A non-target key must NOT read active.target.
+        let p = cfg_pragma(vec![kv_string("feature", "x")]);
+        let active = CfgSet {
+            target: Some("x".into()),
+            ..Default::default()
+        };
+        assert!(!cfg_satisfied(&p, &active));
+    }
 }
