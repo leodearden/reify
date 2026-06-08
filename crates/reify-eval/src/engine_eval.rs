@@ -5228,3 +5228,51 @@ mod revalidation_tests {
         );
     }
 }
+
+// --- Task 4364: suppress eval-side E_MECHANISM_NONDRIVING_JOINT double-emission ---
+//
+// Unit tests for the pure helper `nondriving_joint_compile_spans` (step-1/2)
+// and the `detect_error_map_diagnostics` suppress-predicate seam (step-3/4).
+// Mirror the `revalidation_tests` pattern: hand-built fixtures, `use super::...`,
+// no .ri files or CompiledModule construction needed.
+//
+// RED until `nondriving_joint_compile_spans` is defined (step-2).
+#[cfg(test)]
+mod nondriving_joint_suppression_tests {
+    use super::nondriving_joint_compile_spans;
+    use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
+    use std::collections::HashSet;
+
+    /// `nondriving_joint_compile_spans` must collect only the label spans of
+    /// `MechanismNonDrivingJoint`-coded diagnostics, ignoring:
+    /// - `MechanismNonDrivingJoint` diagnostics that carry NO label,
+    /// - diagnostics with a different code that DO carry a label.
+    ///
+    /// This pins the helper's filtering contract: only matching-code labelled
+    /// spans reach the eval-side suppression predicate.
+    #[test]
+    fn compile_spans_collects_only_matching_code_labelled_spans() {
+        let span = SourceSpan::new(10, 20);
+
+        let diagnostics = vec![
+            // (a) matching code + label → span is collected
+            Diagnostic::error("a")
+                .with_code(DiagnosticCode::MechanismNonDrivingJoint)
+                .with_label(DiagnosticLabel::new(span, "x")),
+            // (b) matching code but NO label → span is NOT collected
+            Diagnostic::error("b").with_code(DiagnosticCode::MechanismNonDrivingJoint),
+            // (c) different code but HAS a label → span is NOT collected
+            Diagnostic::error("c")
+                .with_code(DiagnosticCode::MechanismDuplicateSolid)
+                .with_label(DiagnosticLabel::new(SourceSpan::new(100, 200), "y")),
+        ];
+
+        let result = nondriving_joint_compile_spans(&diagnostics);
+        let expected: HashSet<SourceSpan> = [span].iter().copied().collect();
+        assert_eq!(
+            result, expected,
+            "must collect exactly the label spans of MechanismNonDrivingJoint diagnostics; \
+             unlabelled same-code and labelled different-code diagnostics must be excluded"
+        );
+    }
+}
