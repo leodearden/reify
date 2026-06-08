@@ -491,6 +491,88 @@ fn geo_fn(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExp
     }
 }
 
+/// Returns `(x_id, y_id, problem)` for a `pt_pt_distance == 10mm` geometric problem.
+///
+/// Both `registry_dispatches_geometric_to_solvespace` and
+/// `production_registry_routes_geometric_to_solvespace` use this fixture — only the
+/// registry construction differs between the two.  If the geometric fixture changes,
+/// edit here once.
+fn pt_pt_distance_problem() -> (reify_core::ValueCellId, reify_core::ValueCellId, ResolutionProblem) {
+    let x_id = vcid("Point", "x");
+    let y_id = vcid("Point", "y");
+
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+
+    // point3d(x, y, 0) — auto params for x, y
+    let pt = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("Point", "x", Type::length()),
+            value_ref_typed("Point", "y", Type::length()),
+            zero.clone(),
+        ],
+        Type::dimensionless_scalar(),
+    );
+
+    // origin at (0, 0, 0)
+    let origin = geo_fn(
+        "point3d",
+        vec![zero.clone(), zero.clone(), zero],
+        Type::dimensionless_scalar(),
+    );
+
+    // distance(pt, origin) == 10mm
+    let dist_call = geo_fn("pt_pt_distance", vec![pt, origin], Type::length());
+    let constraint_expr = eq(dist_call, literal(mm(10.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: false,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: false,
+            },
+        ],
+        constraints: vec![(cnid("Point", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+    };
+
+    (x_id, y_id, problem)
+}
+
+/// Asserts `result` is `SolveResult::Solved` and `sqrt(x²+y²) ≈ 0.01 m` (10 mm) within 1e-6 m.
+fn assert_solved_distance_10mm(
+    result: SolveResult,
+    x_id: &reify_core::ValueCellId,
+    y_id: &reify_core::ValueCellId,
+) {
+    match result {
+        SolveResult::Solved { values, .. } => {
+            let x_val = values.get(x_id).unwrap().as_f64().unwrap();
+            let y_val = values.get(y_id).unwrap().as_f64().unwrap();
+            let actual_dist = (x_val * x_val + y_val * y_val).sqrt();
+            assert!(
+                (actual_dist - 0.01).abs() < 1e-6,
+                "distance should be ~10mm (0.01m), got {} m",
+                actual_dist,
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
+
 /// SolverRegistry dispatches geometric constraints to SolveSpaceSolver.
 ///
 /// Creates a registry with DimensionalSolver + SolveSpaceSolver, then sends
@@ -504,75 +586,8 @@ fn registry_dispatches_geometric_to_solvespace() {
         None,
         None,
     );
-
-    let x_id = vcid("Point", "x");
-    let y_id = vcid("Point", "y");
-
-    let zero = literal(Value::Scalar {
-        si_value: 0.0,
-        dimension: DimensionVector::LENGTH,
-    });
-
-    // point3d(x, y, 0) — auto params for x, y
-    let pt = geo_fn(
-        "point3d",
-        vec![
-            value_ref_typed("Point", "x", Type::length()),
-            value_ref_typed("Point", "y", Type::length()),
-            zero.clone(),
-        ],
-        Type::dimensionless_scalar(),
-    );
-
-    // origin at (0, 0, 0)
-    let origin = geo_fn(
-        "point3d",
-        vec![zero.clone(), zero.clone(), zero],
-        Type::dimensionless_scalar(),
-    );
-
-    // distance(pt, origin) == 10mm
-    let dist_call = geo_fn("pt_pt_distance", vec![pt, origin], Type::length());
-    let constraint_expr = eq(dist_call, literal(mm(10.0)));
-
-    let problem = ResolutionProblem {
-        auto_params: vec![
-            AutoParam {
-                id: x_id.clone(),
-                param_type: Type::length(),
-                bounds: None,
-                free: false,
-            },
-            AutoParam {
-                id: y_id.clone(),
-                param_type: Type::length(),
-                bounds: None,
-                free: false,
-            },
-        ],
-        constraints: vec![(cnid("Point", 0), constraint_expr)],
-        current_values: ValueMap::new(),
-        objective: None,
-        functions: vec![].into(),
-    };
-
-    let result = registry.solve(&problem);
-    match result {
-        SolveResult::Solved { values, .. } => {
-            let x_val = values.get(&x_id).unwrap().as_f64().unwrap();
-            let y_val = values.get(&y_id).unwrap().as_f64().unwrap();
-            let actual_dist = (x_val * x_val + y_val * y_val).sqrt();
-            assert!(
-                (actual_dist - 0.01).abs() < 1e-6,
-                "registry should dispatch to SolveSpaceSolver: distance should be ~10mm (0.01m), got {} m",
-                actual_dist,
-            );
-        }
-        other => panic!(
-            "expected Solved via SolveSpaceSolver dispatch, got {:?}",
-            other
-        ),
-    }
+    let (x_id, y_id, problem) = pt_pt_distance_problem();
+    assert_solved_distance_10mm(registry.solve(&problem), &x_id, &y_id);
 }
 
 /// `SolverRegistry::production()` dispatches geometric constraints to SolveSpaceSolver.
@@ -585,76 +600,8 @@ fn registry_dispatches_geometric_to_solvespace() {
 #[test]
 fn production_registry_routes_geometric_to_solvespace() {
     let registry = SolverRegistry::production();
-
-    let x_id = vcid("Point", "x");
-    let y_id = vcid("Point", "y");
-
-    let zero = literal(Value::Scalar {
-        si_value: 0.0,
-        dimension: DimensionVector::LENGTH,
-    });
-
-    // point3d(x, y, 0) — auto params for x, y
-    let pt = geo_fn(
-        "point3d",
-        vec![
-            value_ref_typed("Point", "x", Type::length()),
-            value_ref_typed("Point", "y", Type::length()),
-            zero.clone(),
-        ],
-        Type::dimensionless_scalar(),
-    );
-
-    // origin at (0, 0, 0)
-    let origin = geo_fn(
-        "point3d",
-        vec![zero.clone(), zero.clone(), zero],
-        Type::dimensionless_scalar(),
-    );
-
-    // distance(pt, origin) == 10mm
-    let dist_call = geo_fn("pt_pt_distance", vec![pt, origin], Type::length());
-    let constraint_expr = eq(dist_call, literal(mm(10.0)));
-
-    let problem = ResolutionProblem {
-        auto_params: vec![
-            AutoParam {
-                id: x_id.clone(),
-                param_type: Type::length(),
-                bounds: None,
-                free: false,
-            },
-            AutoParam {
-                id: y_id.clone(),
-                param_type: Type::length(),
-                bounds: None,
-                free: false,
-            },
-        ],
-        constraints: vec![(cnid("Point", 0), constraint_expr)],
-        current_values: ValueMap::new(),
-        objective: None,
-        functions: vec![].into(),
-    };
-
-    let result = registry.solve(&problem);
-    match result {
-        SolveResult::Solved { values, .. } => {
-            let x_val = values.get(&x_id).unwrap().as_f64().unwrap();
-            let y_val = values.get(&y_id).unwrap().as_f64().unwrap();
-            let actual_dist = (x_val * x_val + y_val * y_val).sqrt();
-            assert!(
-                (actual_dist - 0.01).abs() < 1e-6,
-                "production registry should dispatch to SolveSpaceSolver: \
-                 distance should be ~10mm (0.01m), got {} m",
-                actual_dist,
-            );
-        }
-        other => panic!(
-            "expected Solved via production registry (SolveSpaceSolver), got {:?}",
-            other
-        ),
-    }
+    let (x_id, y_id, problem) = pt_pt_distance_problem();
+    assert_solved_distance_10mm(registry.solve(&problem), &x_id, &y_id);
 }
 
 /// Mixed dimensional + geometric constraints solved through SolverRegistry.
