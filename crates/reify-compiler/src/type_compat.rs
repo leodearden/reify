@@ -392,6 +392,7 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         | Type::Axis
         | Type::BoundingBox
         | Type::Selector(_)
+        | Type::AnySelector
         | Type::Error => false,
     }
 }
@@ -579,6 +580,7 @@ pub(crate) fn unify(
         | (Type::Axis, _)
         | (Type::BoundingBox, _)
         | (Type::Selector(_), _)
+        | (Type::AnySelector, _)
         | (Type::Error, _) => Ok(()),
     }
 }

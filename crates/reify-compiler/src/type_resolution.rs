@@ -1238,6 +1238,7 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::Axis
         | Type::BoundingBox
         | Type::Selector(_)
+        | Type::AnySelector
         | Type::Error => ty.clone(),
     }
 }

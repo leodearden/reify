@@ -815,6 +815,7 @@ fn format_type_repr(t: &Type) -> String {
         Type::Transform(_) => "Transform",
         Type::AffineMap(_) => "AffineMap",
         Type::Selector(_) => "Selector",
+        Type::AnySelector => "Selector",
         Type::Range(_) => "Range",
         Type::Plane => "Plane",
         Type::Axis => "Axis",
