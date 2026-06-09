@@ -274,6 +274,45 @@ fn check_absent_module_decl_exits_success_with_warning() {
     );
 }
 
+// --- io-export α: std.io.formats occurrence surface (task 4284) ---
+
+#[test]
+fn check_io_formats_exits_success_no_unresolved() {
+    // Guard for task 4284: examples/io_formats.ri exercises the new STEPOutput,
+    // STLOutput, ThreeMFOutput, DisplayOutput, STEPInput occurrences plus
+    // STEPVersion and DisplayStyle.  Must exit 0 with no unresolved-type or
+    // unresolved-name:undef errors.
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::example_path("io_formats.ri"));
+
+    assert!(
+        status.success(),
+        "reify check should exit 0 for io_formats.ri.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    // The five determined(subject) constraints on concrete box() geometry
+    // (STLOutput, STEPOutput×3, ThreeMFOutput) should resolve to "All constraints satisfied".  We also accept the
+    // "No constraints violated (N indeterminate)" message that reify check
+    // prints when constraints resolve to SomeIndeterminate — exit code is still
+    // 0 in that case and our primary contract is "exit 0, no unresolved errors".
+    // This matches the pattern used in cli_integration_smoke.rs.
+    assert!(
+        stdout.contains("All constraints satisfied") || stdout.contains("No constraints violated"),
+        "stdout should contain a success constraint message, got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("unresolved type"),
+        "stderr must not contain 'unresolved type', got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unresolved name: undef"),
+        "stderr must not contain 'unresolved name: undef', got: {stderr}"
+    );
+    assert!(
+        !stdout.contains("VIOLATED"),
+        "stdout must not contain 'VIOLATED', got: {stdout}"
+    );
+}
+
 // --- E_OBJECTIVE_CONFLICT CLI tests (task 4010, boundary B3) ---
 
 /// B3 positive: a structure with conflicting objectives (`minimize mass` +

@@ -115,7 +115,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           data-testid="tessellation-errors"
           data-has-errors={diagnosticSummary().errorCount > 0 ? 'true' : 'false'}
           aria-label={`Show ${pluralize(props.tessellationDiagnostics?.length ?? 0, 'tessellation diagnostic')}`}
-          aria-expanded={props.diagnosticsCollapsed !== undefined ? String(!props.diagnosticsCollapsed) : undefined}
+          aria-expanded={props.diagnosticsCollapsed !== undefined ? (props.diagnosticsCollapsed ? 'false' : 'true') : undefined}
           onClick={() => props.onToggleDiagnostics?.()}
         >
           <span class={styles.pipelineLabel}>Tessellation</span>
@@ -129,7 +129,7 @@ export const StatusBar: Component<StatusBarProps> = (props) => {
           class={`${styles.section} ${styles.diagnosticsTrigger}`}
           data-testid="diagnostics-count"
           aria-label={`Show ${pluralize(props.compileDiagnostics?.length ?? 0, 'compile diagnostic')}`}
-          aria-expanded={props.diagnosticsCollapsed !== undefined ? String(!props.diagnosticsCollapsed) : undefined}
+          aria-expanded={props.diagnosticsCollapsed !== undefined ? (props.diagnosticsCollapsed ? 'false' : 'true') : undefined}
           onClick={() => props.onToggleDiagnostics?.()}
         >
           <span class={styles.pipelineLabel}>Compile</span>
