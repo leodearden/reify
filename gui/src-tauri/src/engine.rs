@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use tracing::warn;
 
-use reify_compiler::{CompiledModule, ValueCellKind, Visibility};
+use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_eval::cache::NodeId;
 use reify_eval::{CancellationHandle, CheckResult, Engine};
 use reify_core::{ContentHash, DimensionVector, ModulePath, Severity, ValueCellId};
@@ -15,7 +15,7 @@ use reify_ir::{ConstraintChecker, DeterminacyState, ExportFormat, GeometryKernel
 #[cfg(test)]
 use reify_ir::ConstraintSolver;
 
-use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo};
 
 use crate::types::{
     AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
@@ -844,11 +844,11 @@ fn compile_entry_with_imports(
         .iter()
         .filter_map(|decl| {
             if let reify_ast::Declaration::Import(imp) = decl {
-                let satisfied = imp
-                    .cfg_predicates
-                    .iter()
-                    .all(|p| reify_compiler::cfg::cfg_satisfied(p, &host_cfg));
-                if satisfied {
+                // Gate each DIRECT import through the canonical shared predicate
+                // (`module_dag::import_cfg_satisfied`) rather than re-inlining
+                // `cfg_predicates.iter().all(cfg_satisfied)`, so the GUI and CLI
+                // gating semantics cannot drift.
+                if reify_compiler::module_dag::import_cfg_satisfied(imp, &host_cfg) {
                     Some(imp.path.clone())
                 } else {
                     None
@@ -930,71 +930,28 @@ fn compile_entry_with_imports(
     // compiled.templates so that reify_eval::Engine::eval / unfold can find them
     // via find_template(&module.templates, name).
     //
-    // Visibility filter: only Visibility::Public templates are merged.  Private
-    // structures from imported modules must not be reachable to the eval engine,
-    // mirroring compile-time import semantics.
-    //
-    // Std.* modules are excluded: stdlib structures are not expected to appear as
-    // top-level GUI entities.
-    //
-    // De-duplication: first-wins/warns — skip any imported template whose name
-    // already exists in `compiled.templates` (either declared by the entry or
-    // merged from an earlier import), and emit a Diagnostic::warning so the user
-    // sees the shadowing instead of a silent skip.  Mirrors the compiler's
-    // cross-prelude alias collision policy — see the `pub_alias_collision_warnings`
-    // loop inside `compile_with_prelude_context` in reify-compiler/src/lib.rs.
-    //
-    // `templates_origin` maps each template name to the module path that first
-    // declared it.  It is pre-seeded with the entry's already-compiled templates
-    // (origin = module_name) before the import loop runs, so entry-vs-import
-    // collisions also emit a Warning naming both sides.
+    // The first-wins merge policy — the `Visibility::Public` filter, the de-dup,
+    // and the collision warning — lives in the shared
+    // `reify_compiler::module_dag::merge_imported_pub_templates` helper so this
+    // GUI dirty-buffer bridge and the CLI `reify check` bridge
+    // (`compile_entry_with_stdlib_cfg`) cannot drift. Std.* imports are excluded
+    // (stdlib structures are not top-level GUI entities); cfg-gated-out imports
+    // are already absent from `import_paths`.
     //
     // v1 limitation: only DIRECT imports are merged.  If helper.ri itself imports
     // util.ri, Util's template will be absent from this list and find_template will
     // fail at eval for any sub referencing Util.  A future fix should iterate all
     // dag.modules entries instead of just import_paths.
-    let mut templates_origin: HashMap<String, String> = HashMap::new();
-    // Pre-seed with entry-declared templates so entry-vs-import collisions are
-    // detected and warned, mirroring the import-vs-import path below.
-    for tmpl in &compiled.templates {
-        templates_origin.insert(tmpl.name.clone(), module_name.to_string());
-    }
-    for import_path in &import_paths {
-        if is_stdlib_path(import_path) {
-            continue;
-        }
-        if let Some(imported_module) = dag.modules.get(import_path) {
-            for template in &imported_module.templates {
-                if template.visibility != Visibility::Public {
-                    continue;
-                }
-                if let Some(prior_origin) = templates_origin.get(&template.name) {
-                    // Collision: emit a warning naming both the prior declarer and the
-                    // colliding import, mirroring the `pub_alias_collision_warnings`
-                    // wording inside `compile_with_prelude_context`.
-                    //
-                    // The `templates_origin` invariant guarantees every name present in
-                    // `compiled.templates` is also present in the map (seeded from entry
-                    // templates before the loop, updated on every successful merge), so
-                    // `if let Some(...)` is both the O(1) membership test and the origin
-                    // lookup — no separate `iter().any(...)` scan or fallback needed.
-                    compiled.diagnostics.push(
-                        Diagnostic::warning(format!(
-                            "imported pub structure '{}' declared in both '{}' and '{}'; first-wins",
-                            template.name, prior_origin, import_path
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            SourceSpan::prelude(),
-                            "cross-import collision",
-                        )),
-                    );
-                    continue;
-                }
-                compiled.templates.push(template.clone());
-                templates_origin.insert(template.name.clone(), import_path.clone());
-            }
-        }
-    }
+    let merge_inputs: Vec<(&str, &CompiledModule)> = import_paths
+        .iter()
+        .filter(|p| !is_stdlib_path(p))
+        .filter_map(|p| dag.modules.get(p).map(|module| (p.as_str(), module)))
+        .collect();
+    reify_compiler::module_dag::merge_imported_pub_templates(
+        &mut compiled,
+        module_name,
+        &merge_inputs,
+    );
 
     Ok((compiled, parsed))
 }
