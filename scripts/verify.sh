@@ -66,13 +66,13 @@
 #   psi-gate action             — `verify.sh psi-gate` runs only the gate and exits;
 #                                  used as the first test-phase plan entry (test/all).
 #
-# OCCT safety:
+# OCCT safety (task 4451):
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
-#   cargo's test-binary parallelism. Cross-WORKTREE contention (concurrent worktrees)
-#   is bounded by an N-slot counting semaphore in scripts/cargo-test-occt-gated.sh;
-#   intra-process contention is bounded by `-- --test-threads=1`. The OCCT-touching
-#   crate set is
-#   defined exactly once in scripts/occt-scope-lib.sh and shared with the drift test.
+#   cargo's per-test-binary process model (nextest). Intra-run concurrency is bounded
+#   by the nextest `occt` test-group (max-threads = 4) in .config/nextest.toml; this
+#   limits peak OCCT RSS to ≤4×~2GiB ≈ 8GiB, well within the 32GiB host headroom.
+#   The OCCT-touching crate set is defined exactly once in scripts/occt-scope-lib.sh
+#   and shared with the nextest.toml filter drift check.
 
 set -euo pipefail
 
@@ -429,6 +429,9 @@ apply_env
 # ---------------------------------------------------------------------------
 RUN_RUST=0
 RUN_GUI=0
+# RUN_OCCT_GATE: diagnostic-only after task 4451 folded OCCT into the nextest pool.
+# Still computed (gate=1 when OCCT-touching files change) and printed in the
+# --print-plan header for observability; it no longer gates any test emission.
 RUN_OCCT_GATE=0
 CHANGED_FILES_RAW=""   # post-.task/ filtered file list; set by decide_scope for branch/staged
 
@@ -535,8 +538,6 @@ decide_scope
 AFFECTED=""
 NARROW_ACTIVE=0
 AFFECTED_ALL_FLAGS=""
-AFFECTED_OCCT_FLAGS=""
-AFFECTED_UNGATED_FLAGS=""
 
 _narrowing_eligible=0
 if [ "$SCOPE" = "branch" ] && [ "$RUN_RUST" -eq 1 ]; then
@@ -566,21 +567,16 @@ if [ "$_narrowing_eligible" -eq 1 ]; then
 fi
 
 if [ "$NARROW_ACTIVE" -eq 1 ]; then
-    # Split affected set into OCCT, non-OCCT, and all-crate -p flag strings.
+    # Build the affected-crate -p flag string. Task 4451: no gated/ungated split;
+    # all affected crates (including OCCT ones) go through the single nextest pass,
+    # with the occt test-group (max-threads=4) bounding their concurrency.
     # Word-split $AFFECTED (safe: Rust crate names never contain spaces).
     # shellcheck disable=SC2086
     for _nc in $AFFECTED; do
         [ -z "$_nc" ] && continue
         AFFECTED_ALL_FLAGS+=" -p $_nc"
-        if is_occt_crate "$_nc"; then
-            AFFECTED_OCCT_FLAGS+=" -p $_nc"
-        else
-            AFFECTED_UNGATED_FLAGS+=" -p $_nc"
-        fi
     done
     AFFECTED_ALL_FLAGS="${AFFECTED_ALL_FLAGS# }"
-    AFFECTED_OCCT_FLAGS="${AFFECTED_OCCT_FLAGS# }"
-    AFFECTED_UNGATED_FLAGS="${AFFECTED_UNGATED_FLAGS# }"
     # Guard: a whitespace-only REIFY_AFFECTED_CRATES_OVERRIDE passes the non-empty check
     # above but word-splits to nothing, leaving all flag vars empty. Empty AFFECTED_ALL_FLAGS
     # with NARROW_ACTIVE=1 would cause narrowed cargo check/clippy to run with no -p selector
@@ -597,40 +593,22 @@ fi
 PLAN=()
 add() { PLAN+=("$1"); }
 
-# OCCT crate flags, in occt-touching-crates.txt order.
-_OCCT_CRATES=()
-while IFS= read -r _c; do [ -n "$_c" ] && _OCCT_CRATES+=("$_c"); done <<<"$_OCCT_DECLARED"
-P_FLAGS=""
-EXCLUDE_FLAGS=""
-for _c in "${_OCCT_CRATES[@]}"; do
-    P_FLAGS+=" -p $_c"
-    EXCLUDE_FLAGS+=" --exclude $_c"
-done
-P_FLAGS="${P_FLAGS# }"
-EXCLUDE_FLAGS="${EXCLUDE_FLAGS# }"
-
-# Release-sensitive crate flags: split by OCCT membership into gated and ungated.
-# Gated: OCCT ∩ release-sensitive = reify-eval only (stays flock-gated in release).
-# Ungated: release-sensitive ∖ OCCT = the non-OCCT crates (full nextest concurrency).
+# Release-sensitive crate flags: ALL release-sensitive crates in one nextest -p set.
+# Task 4451: the gated/ungated split is gone; the nextest occt group (max-threads=4)
+# bounds intra-run concurrency for OCCT-touching release-sensitive crates (reify-eval).
 # reify-kernel-occt, reify-cli, reify-config have zero release-sensitive tests and
 # correctly drop out of the release pass; the debug full-workspace pass covers them.
 _RELEASE_DECLARED="$(release_declared_set)"
-_RELEASE_GATED_FLAGS=""
-_RELEASE_UNGATED_FLAGS=""
+_RELEASE_ALL_FLAGS=""
 while IFS= read -r _rc; do
     [ -z "$_rc" ] && continue
-    if is_occt_crate "$_rc"; then
-        _RELEASE_GATED_FLAGS+=" -p $_rc"
-    else
-        _RELEASE_UNGATED_FLAGS+=" -p $_rc"
-    fi
+    _RELEASE_ALL_FLAGS+=" -p $_rc"
 done <<<"$_RELEASE_DECLARED"
-_RELEASE_GATED_FLAGS="${_RELEASE_GATED_FLAGS# }"
-_RELEASE_UNGATED_FLAGS="${_RELEASE_UNGATED_FLAGS# }"
+_RELEASE_ALL_FLAGS="${_RELEASE_ALL_FLAGS# }"
 
-# Ungated tail runner: prefer cargo-nextest (one global pool over ~hundreds of
-# test binaries) with a graceful fallback to plain `cargo test` when nextest is
-# not installed. OCCT crates are excluded from this pass (they run gated).
+# Test runner: prefer cargo-nextest (one global pool over ~hundreds of test
+# binaries, OCCT concurrency bounded by the occt test-group) with a graceful
+# fallback to plain `cargo test -- --test-threads=1` when nextest is not installed.
 NEXTEST=0
 if cargo nextest --version >/dev/null 2>&1; then
     NEXTEST=1
@@ -648,25 +626,25 @@ wrap_subshell() {
     esac
 }
 
-# emit_gated_ungated <gated_flags> <ungated_selector> <rel> <gated_timeout> <outer_timeout>
-# Emit a gated OCCT cargo-test pass (iff gated_flags non-empty) and an ungated
-# nextest/cargo-test pass (iff ungated_selector non-empty). Unifies the three emission
-# sites (release / narrowed-debug / full-workspace-debug) so a future timeout or
-# --kill-after change applies uniformly rather than drifting across independent copies.
-emit_gated_ungated() {
-    local gated_flags="$1" ungated_selector="$2" rel="$3" gated_timeout="$4" outer_timeout="$5"
-    local ungated
-    if [ -n "$gated_flags" ]; then
-        add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh ${CARGO_PRIO}cargo test ${gated_flags}${rel} -- --test-threads=1"
+# emit_nextest_pass <selector> <rel> <outer_timeout>
+# Emit a single nextest (or cargo-test fallback) pass.
+# selector: "--workspace" (full-workspace) or "-p crate1 -p crate2 ..." (narrowed/release)
+# rel: "" (debug) or " --release"
+# outer_timeout: e.g. "90m" or "75m"
+# Task 4451: replaces emit_gated_ungated; the flock-gated OCCT pass is dropped.
+# OCCT crates are now included in the pool; the nextest occt test-group (max-threads=4)
+# bounds their intra-run concurrency for FD/memory headroom.
+emit_nextest_pass() {
+    local selector="$1" rel="$2" outer_timeout="$3"
+    local cmd
+    if [ "$NEXTEST" -eq 1 ]; then
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}"
+    else
+        # Fallback: single-threaded (OCCT serialization via the nextest occt group is
+        # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} -- --test-threads=1"
     fi
-    if [ -n "$ungated_selector" ]; then
-        if [ "$NEXTEST" -eq 1 ]; then
-            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${ungated_selector}${rel}"
-        else
-            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${ungated_selector}${rel} -- --test-threads=1"
-        fi
-        add "$ungated"
-    fi
+    add "$cmd"
 }
 
 add_test_passes() {
@@ -676,63 +654,47 @@ add_test_passes() {
     # In --print-plan mode: printed faithfully as a normal plan line.
     add "./scripts/verify.sh psi-gate"
 
-    local profile rel gated_timeout outer_timeout _eff_gated
+    local profile rel outer_timeout
     # Timeout budgets sized to absorb a COLD merge-worktree workspace compile.
     # Bumped 2026-06-03 (Leo) after recurring exit-124 cold-compile timeouts on the
     # merge gate (esc-4178 / esc-4180 cluster killed the debug nextest mid-compile at
-    # the old 30m; the OCCT gate hit the old 2700s). sccache shares rustc output
-    # across worktrees, so warm runs finish well inside these — the larger caps only
-    # bite a genuinely cold cache.
-    # Bumped 2026-06-09 (task #4447): debug outer_timeout 60m→90m to give the cold
-    # merge-gate `cargo nextest run --workspace` pass headroom after task-4421's
-    # consecutive_merge_thrash SIGKILL; debug gated_timeout 3600→5400 for consistency
-    # with the release 4800. NOTE: the gated values AND the outer timeout are asserted
-    # in tests/infra/test_occt_flock_gate.sh (Test 17) — keep them in sync.
+    # the old 30m). sccache shares rustc output across worktrees, so warm runs finish
+    # well inside these — the larger caps only bite a genuinely cold cache.
+    # Bumped 2026-06-09 (task #4447): debug outer_timeout 60m→90m.
+    # NOTE: the outer timeouts are asserted in tests/infra/test_occt_flock_gate.sh
+    # (Test 17) — keep them in sync.
     for profile in "${PROFILES[@]}"; do
         if [ "$profile" = "release" ]; then
-            rel=" --release"; gated_timeout=4800; outer_timeout="75m"
+            rel=" --release"; outer_timeout="75m"
         else
-            rel=""; gated_timeout=5400; outer_timeout="90m"
+            rel=""; outer_timeout="90m"
         fi
 
         if [ "$profile" = "release" ]; then
-            # Release pass: sensitivity-scoped to the release-sensitive crate set
-            # (scripts/release-sensitive-crates.txt, guarded by
-            # tests/infra/test_release_scoped_scope.sh). Only crates with
-            # debug_assertions/overflow-checks-dependent tests need to re-run in
-            # release; the DEBUG full-workspace pass covers every other crate, so
-            # total merge-gate coverage is preserved.
+            # Release pass: ALL release-sensitive crates in one nextest pass (task 4451).
+            # The nextest occt group (max-threads=4) bounds concurrency for OCCT-touching
+            # release-sensitive crates (e.g. reify-eval). Only crates with
+            # debug_assertions/overflow-checks-dependent tests need to re-run in release;
+            # the DEBUG full-workspace pass covers every other crate.
             # NARROW_ACTIVE is intentionally not applied here. The release pass is
             # scoped by release-sensitivity (task/4390), not the affected-crate set
             # (task/4060). Over-running the full release-sensitive set on a rare
             # --profile both --scope branch is safe (fail-wide), and avoids entangling
             # two orthogonal scoping axes — do not "fix" this by narrowing this pass.
-
-            # Gated release: OCCT-touching release-sensitive crates only (reify-eval).
-            # reify-kernel-occt, reify-cli, reify-config have zero release-sensitive
-            # tests and drop out of the release pass entirely.
-            # Ungated release: non-OCCT release-sensitive crates, full concurrency.
-            _eff_gated=""
-            [ "$RUN_OCCT_GATE" -eq 1 ] && _eff_gated="$_RELEASE_GATED_FLAGS"
-            emit_gated_ungated "$_eff_gated" "$_RELEASE_UNGATED_FLAGS" "$rel" "$gated_timeout" "$outer_timeout"
+            emit_nextest_pass "$_RELEASE_ALL_FLAGS" "$rel" "$outer_timeout"
         else
             # Debug pass.
             if [ "$NARROW_ACTIVE" -eq 1 ]; then
-                # Narrowed debug pass: -p per affected crate, split by OCCT membership.
-                # The gated-run condition keys on the affected∩OCCT intersection (NOT
-                # RUN_OCCT_GATE): an OCCT crate can enter the affected set as a reverse-dep
-                # of a changed non-OCCT crate where RUN_OCCT_GATE=0 (C3 completeness —
-                # gating on RUN_OCCT_GATE would silently skip that OCCT dependent).
-                emit_gated_ungated "$AFFECTED_OCCT_FLAGS" "$AFFECTED_UNGATED_FLAGS" "$rel" "$gated_timeout" "$outer_timeout"
+                # Narrowed debug pass: all affected crates (including OCCT) in one nextest
+                # pass. Task 4451: no gated/ungated split; the nextest occt group bounds
+                # OCCT concurrency (C3 completeness: an OCCT crate enters the affected set
+                # as a reverse-dep of a changed non-OCCT crate even when RUN_OCCT_GATE=0).
+                emit_nextest_pass "$AFFECTED_ALL_FLAGS" "$rel" "$outer_timeout"
             else
                 # Full-workspace debug pass (scope=all and non-narrow branch/staged).
-                # Gated pass: OCCT-touching crates, bounded via the semaphore wrapper,
-                # single-threaded. No outer timeout — the wrapper owns it via
-                # REIFY_OCCT_TEST_TIMEOUT (lock-wait time does not consume the budget).
-                # Ungated tail: everything except the OCCT crates, full concurrency.
-                _eff_gated=""
-                [ "$RUN_OCCT_GATE" -eq 1 ] && _eff_gated="$P_FLAGS"
-                emit_gated_ungated "$_eff_gated" "--workspace ${EXCLUDE_FLAGS}" "$rel" "$gated_timeout" "$outer_timeout"
+                # Task 4451: OCCT crates are now IN the pool (--workspace, no --exclude);
+                # the nextest occt test-group (max-threads=4) bounds their concurrency.
+                emit_nextest_pass "--workspace" "$rel" "$outer_timeout"
             fi
         fi
     done
