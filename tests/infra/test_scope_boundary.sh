@@ -150,3 +150,39 @@ assert "B4P2/typecheck: cargo check carries -p $Y_CRATE" \
     plan_has "$PLAN_B4_TC" "cargo check .*-p $Y_CRATE"
 assert "B4P2/typecheck: cargo check lacks --workspace (narrowed)" \
     plan_lacks "$PLAN_B4_TC" 'cargo check --workspace'
+
+# ---------------------------------------------------------------------------
+# B5: merge gate full — scope=all keeps --workspace, no narrowing (C1)
+# ---------------------------------------------------------------------------
+# C1 invariant: --scope all is structurally unreachable for narrowing.
+# Narrowing is gated behind scope∈{branch,staged}; scope=all returns early in
+# decide_scope, so REIFY_AFFECTED_CRATES_OVERRIDE is never consulted.
+#
+# NOTE on "zero -p": under --scope all the OCCT gated TEST pass legitimately
+# carries -p (e.g. "-p reify-kernel-occt -p reify-eval …") as a serialization
+# split — its union with "--workspace --exclude <occt>" still covers the whole
+# workspace.  That -p is NOT contract-C1 narrowing.  We therefore scope the
+# "zero -p" assertion to the clippy and cargo-check passes only.
+echo ""
+echo "--- B5: merge gate full (scope=all keeps --workspace, zero narrowing -p) ---"
+
+PLAN_ALL=""
+PLAN_ALL_TC=""
+PLAN_ALL_OVR=""
+
+assert "B5: NARROW_ACTIVE=0 in scope=all plan header (C1 preserved)" \
+    plan_has "$PLAN_ALL" 'NARROW_ACTIVE=0'
+assert "B5: clippy keeps --workspace for scope=all (C1 preserved)" \
+    plan_has "$PLAN_ALL" 'cargo clippy --workspace'
+assert "B5: clippy carries NO narrowing -p for scope=all" \
+    plan_lacks "$PLAN_ALL" 'cargo clippy.*-p [a-z]'
+assert "B5: typecheck keeps cargo check --workspace for scope=all" \
+    plan_has "$PLAN_ALL_TC" 'cargo check --workspace'
+assert "B5: typecheck carries NO narrowing -p for scope=all" \
+    plan_lacks "$PLAN_ALL_TC" 'cargo check.*-p [a-z]'
+assert "B5: ungated test tail spans full workspace (--workspace --exclude)" \
+    plan_has "$PLAN_ALL" 'cargo (test|nextest run) --workspace --exclude'
+assert "B5/C1-structural: override under scope=all still gives --workspace clippy" \
+    plan_has "$PLAN_ALL_OVR" 'cargo clippy --workspace'
+assert "B5/C1-structural: override under scope=all does NOT produce -p $Y_CRATE in clippy" \
+    plan_lacks "$PLAN_ALL_OVR" "cargo clippy.*-p $Y_CRATE"
