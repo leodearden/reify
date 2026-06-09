@@ -303,6 +303,37 @@ fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3]
     Some((mass, com, inertia))
 }
 
+// ── resolve_body_mass — single mass read-path (task 4278) ────────────────────
+
+/// The single canonical read-path for body mass in every inverse-dynamics and
+/// modal consumer.
+///
+/// Reads `body.solid` and returns `Some(MassProperties StructureInstance)` when
+/// the solid is a `Value::StructureInstance` with `type_name == "MassProperties"`.
+///
+/// Rung precedences (highest first):
+/// (a) **Explicit MassProperties** — `body.solid` is a `MassProperties`
+///     StructureInstance → `Some(solid.clone())`.
+/// (b) **Derived geometry×density** — documented TODO(3620 tail / task 4271):
+///     real-geometry solid with density; stub returns `None`.
+/// (c) **Unresolvable** — missing `solid` key, wrong type, non-MassProperties
+///     StructureInstance → `None`.
+///
+/// Consumers extract fields from the returned `Value` via
+/// [`mass_properties_from_value`].
+pub fn resolve_body_mass(body: &Value) -> Option<Value> {
+    let bm = match body {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let solid = map_get(bm, "solid")?;
+    match solid {
+        Value::StructureInstance(d) if d.type_name == "MassProperties" => Some(solid.clone()),
+        // TODO(3620 tail / task 4271): real-geometry×density derived rung
+        _ => None,
+    }
+}
+
 // ── MassProperties constructor helpers (task 4278) ──────────────────────────
 
 /// Build a canonical registry-free `MassProperties` `Value::StructureInstance`
