@@ -7238,4 +7238,99 @@ mod tests {
             "prismatic 3-arg with NaN pivot component should give Undef, got {result:?}"
         );
     }
+
+    // ── KIN-OFFSET γ step-1: B2 cross-kind absent-origin no-op invariance ────────
+    //
+    // α (task 4331) only tested revolute/prismatic byte-identity for the
+    // absent-origin path.  This test closes the gap: every JOINT_KINDS member
+    // built WITHOUT an "origin" key must return the expected bare-motion
+    // transform from `transform_at` — i.e. the uniform pre-compose at
+    // joints.rs:494-504 is a true no-op when origin is absent (PRD §7.4).
+
+    /// B2 cross-kind: `transform_at` on a joint built WITHOUT an "origin" key
+    /// returns the expected bare-motion transform for EVERY kind in JOINT_KINDS
+    /// (prismatic, revolute, coupling, fixed, planar, spherical, cylindrical).
+    ///
+    /// α (task 4331) already covered revolute + prismatic.  This test adds
+    /// the remaining five kinds so the absent-origin no-op invariance at
+    /// joints.rs:494-504 is exhaustively pinned across ALL JOINT_KINDS.
+    ///
+    /// Expected GREEN against post-α main; RED would mean a kind silently
+    /// broke the absent-origin path (PRD §7.4).
+    #[test]
+    fn transform_at_all_kinds_absent_origin_no_op_invariance() {
+        let pi = std::f64::consts::PI;
+
+        // ── (1) revolute: θ = π/3 → {R_z(π/3), (0,0,0)} ───────────────────
+        {
+            let theta = pi / 3.0;
+            let j = revolute_z_joint();
+            let r = eval_builtin("transform_at", &[j, Value::angle(theta)]);
+            let qw = (theta / 2.0).cos();
+            let qz = (theta / 2.0).sin();
+            assert_transform_approx(&r, (qw, 0.0, 0.0, qz), [0.0, 0.0, 0.0], 1e-12,
+                "revolute absent-origin: R_z(π/3), zero trans");
+        }
+
+        // ── (2) prismatic: d = 0.5 m → {I, (0.5,0,0)} ──────────────────────
+        {
+            let j = prismatic_x_joint();
+            let r = eval_builtin("transform_at", &[j, Value::length(0.5)]);
+            assert_transform_approx(&r, (1.0, 0.0, 0.0, 0.0), [0.5, 0.0, 0.0], 1e-12,
+                "prismatic absent-origin: (0.5,0,0), identity rot");
+        }
+
+        // ── (3) fixed: any value → identity transform {I, (0,0,0)} ──────────
+        {
+            let j = eval_builtin("fixed", &[]);
+            let r = eval_builtin("transform_at", &[j, Value::Real(0.0)]);
+            assert_transform_approx(&r, (1.0, 0.0, 0.0, 0.0), [0.0, 0.0, 0.0], 1e-12,
+                "fixed absent-origin: identity transform");
+        }
+
+        // ── (4) coupling (parent=revolute_z, ratio=1): θ = π/3 → {R_z(π/3), (0,0,0)} ─
+        {
+            let theta = pi / 3.0;
+            let parent = revolute_z_joint();
+            let coupling = eval_builtin("couple", &[parent, Value::Real(1.0)]);
+            let r = eval_builtin("transform_at", &[coupling, Value::angle(theta)]);
+            let qw = (theta / 2.0).cos();
+            let qz = (theta / 2.0).sin();
+            assert_transform_approx(&r, (qw, 0.0, 0.0, qz), [0.0, 0.0, 0.0], 1e-12,
+                "coupling(revolute_z,ratio=1) absent-origin: R_z(π/3), zero trans");
+        }
+
+        // ── (5) planar +X+Y: motion=[0.3m, 0.4m, 0] → {I, (0.3,0.4,0)} ────
+        {
+            let j = planar_xy_joint();
+            let motion = Value::List(vec![
+                Value::length(0.3),
+                Value::length(0.4),
+                Value::angle(0.0),
+            ]);
+            let r = eval_builtin("transform_at", &[j, motion]);
+            // Planar rotation θ=0 → identity quaternion; translation = (0.3, 0.4, 0).
+            assert_transform_approx(&r, (1.0, 0.0, 0.0, 0.0), [0.3, 0.4, 0.0], 1e-12,
+                "planar absent-origin: (0.3,0.4,0), identity rot");
+        }
+
+        // ── (6) spherical: identity quaternion → {I, (0,0,0)} ──────────────
+        {
+            let j = spherical_joint();
+            let motion = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+            let r = eval_builtin("transform_at", &[j, motion]);
+            assert_transform_approx(&r, (1.0, 0.0, 0.0, 0.0), [0.0, 0.0, 0.0], 1e-12,
+                "spherical absent-origin: identity orientation, zero trans");
+        }
+
+        // ── (7) cylindrical +Z: motion=[0.5m, 0 rad] → {I, (0,0,0.5)} ──────
+        {
+            let j = cylindrical_z_joint();
+            let motion = Value::List(vec![Value::length(0.5), Value::angle(0.0)]);
+            let r = eval_builtin("transform_at", &[j, motion]);
+            // θ=0 → identity rotation; translation along +Z = (0,0,0.5).
+            assert_transform_approx(&r, (1.0, 0.0, 0.0, 0.0), [0.0, 0.0, 0.5], 1e-12,
+                "cylindrical absent-origin: (0,0,0.5), identity rot");
+        }
+    }
 }
