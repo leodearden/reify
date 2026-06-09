@@ -332,9 +332,11 @@ pub(crate) fn phase_auto_type_param_resolution(
     //
     // Order:
     //   1. Extend ctx.templates with the new (deduplicated) monomorphs.
-    //   2. Rewrite each originating sub's `structure_name` to the mono name
+    //   2. Build a name→index map for O(1) owner lookup (avoids an O(rewrites ×
+    //      templates) scan when many auto: use-sites or many templates are present).
+    //   3. Rewrite each originating sub's `structure_name` to the mono name
     //      (applies to ALL use-sites, including deduped ones).
-    //   3. Apply the existing `type_args[pos]→StructureRef` slot rewrites.
+    //   4. Apply the existing `type_args[pos]→StructureRef` slot rewrites.
     //
     // `sub_index` keys are unique per (owner, sub_index) so this safely targets
     // each `SubComponentDecl` even when match-arm clusters reuse `sub_name`
@@ -343,22 +345,33 @@ pub(crate) fn phase_auto_type_param_resolution(
     // 1. Push deduplicated monomorph templates.
     ctx.templates.extend(monomorph_clones);
 
-    // 2. Rewrite structure_name for ALL use-sites (including deduped ones).
+    // 2. Build a name→index map over the (now-extended) ctx.templates for O(1)
+    //    owner lookup in steps 3 and 4.  Monomorphs pushed in step 1 are
+    //    included so self-referential rewrites (if ever needed) resolve correctly.
+    let owner_to_idx: HashMap<String, usize> = ctx
+        .templates
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.clone(), i))
+        .collect();
+
+    // 3. Rewrite structure_name for ALL use-sites (including deduped ones).
     for (owner, sub_index, mono_name) in structure_name_rewrites {
-        if let Some(template) = ctx.templates.iter_mut().find(|t| t.name == owner)
-            && let Some(sub) = template.sub_components.get_mut(sub_index)
-        {
-            sub.structure_name = mono_name;
+        if let Some(&idx) = owner_to_idx.get(&owner) {
+            if let Some(sub) = ctx.templates[idx].sub_components.get_mut(sub_index) {
+                sub.structure_name = mono_name;
+            }
         }
     }
 
-    // 3. Apply type_args[pos]→StructureRef slot rewrites (pre-existing behaviour).
+    // 4. Apply type_args[pos]→StructureRef slot rewrites (pre-existing behaviour).
     for (owner, sub_index, position, resolved_name) in rewrites {
-        if let Some(template) = ctx.templates.iter_mut().find(|t| t.name == owner)
-            && let Some(sub) = template.sub_components.get_mut(sub_index)
-            && let Some(slot) = sub.type_args.get_mut(position)
-        {
-            *slot = Type::StructureRef(resolved_name);
+        if let Some(&idx) = owner_to_idx.get(&owner) {
+            if let Some(sub) = ctx.templates[idx].sub_components.get_mut(sub_index) {
+                if let Some(slot) = sub.type_args.get_mut(position) {
+                    *slot = Type::StructureRef(resolved_name);
+                }
+            }
         }
     }
 
