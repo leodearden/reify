@@ -122,19 +122,22 @@ async function main() {
   }
   console.log('  OK: activeFile confirmed');
 
-  // Step 4: navigate cursor to `x` at line 1 col 10 (0-indexed)
+  // Step 4: focus the CodeMirror editor and navigate cursor to `x` at line 1 col 10 (0-indexed)
   // Fixture content:
   //   line 0: "structure Smoke {"
   //   line 1: "    param x: Scalar = 1mm"   ← x at col 10
   //   line 2: "    let y = x + x"
   //   line 3: "}"
   //
-  // From cursor at (0,0): Down → line 1; End → col 24; 14×Left → col 10 (x)
-  log('Navigating cursor to `x` at line 1 col 10…');
+  // focus_editor: calls ctx.editorView.focus() so keyboard() dispatches to CM.
+  // Then from cursor at (0,0): Down → line 1; End → col 24; 14×Left → col 10 (x)
+  log('Focusing editor and navigating cursor to `x` at line 1 col 10…');
+  await rpc('focus_editor');              // make CM contentDOM the activeElement
+  await sleep(50);
   await keyboard('Home', { ctrl: true }); // ensure start
   await keyboard('ArrowDown');             // → line 1
   await keyboard('End');                   // → col 24 (end of line 1)
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < 15; i++) {
     await keyboard('ArrowLeft');           // → col 10
   }
   await sleep(200);
@@ -150,10 +153,11 @@ async function main() {
 
   // Step 6: verify find-uses-panel is visible
   log('Checking list_elements for find-uses-panel…');
-  const elements = await rpc('list_elements');
-  if (!elements) fail('list_elements returned null');
+  const elementsRaw = await rpc('list_elements');
+  if (!elementsRaw) fail('list_elements returned null');
+  // list_elements returns { elements: [...] }; unwrap to flat array
+  const elements = Array.isArray(elementsRaw) ? elementsRaw : (elementsRaw?.elements ?? []);
 
-  // elements is an array of {testId, tagName, visible, bounds}
   const findUsesPanel = elements.find(e => e.testId === 'find-uses-panel');
   if (!findUsesPanel) {
     fail(`find-uses-panel not found in DOM. Panel testIds present: ${elements.map(e => e.testId).filter(t => t?.includes('find')).join(', ')}`);
@@ -208,7 +212,8 @@ async function main() {
   }
 
   // The panel should be closed after navigation
-  const elementsAfter = await rpc('list_elements');
+  const elementsAfterRaw = await rpc('list_elements');
+  const elementsAfter = Array.isArray(elementsAfterRaw) ? elementsAfterRaw : (elementsAfterRaw?.elements ?? []);
   const panelAfterClick = elementsAfter?.find(e => e.testId === 'find-uses-panel');
   if (panelAfterClick && panelAfterClick.visible) {
     fail('find-uses-panel is still visible after clicking a result (expected auto-close)');
