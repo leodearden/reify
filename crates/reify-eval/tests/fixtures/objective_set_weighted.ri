@@ -26,8 +26,8 @@
 //   asserts mass < 5 mm and stiffness > 46 mm (wide tolerance to accommodate
 //   Nelder-Mead convergence).
 structure WeightedObjective {
-    param mass: Scalar = auto
-    param stiffness: Scalar = auto
+    param mass: Length = auto
+    param stiffness: Length = auto
 
     constraint mass < 50mm
     constraint stiffness > 1mm

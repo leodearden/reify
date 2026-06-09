@@ -368,20 +368,20 @@ mod tests {
         let source = "\
 import std.math
 structure Bracket {
-    param width : Scalar = 80mm
+    param width : Length = 80mm
     let footprint = width * width
 }
 occurrence def Joint {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 trait Rigid {
-    param mass : Scalar = 5mm
+    param mass : Length = 5mm
 }
 enum Shape {
     Point,
     Circle
 }
-fn area(w : Scalar) -> Scalar { w }
+fn area(w : Length) -> Scalar { w }
 ";
 
         lsp.handle_request(

@@ -412,8 +412,8 @@ fn loft_non_geometry_profiles_silent_fallback() {
     // for downstream analysis), and no per-argument geometry-expression
     // error is added.
     let source = r#"structure S {
-    param x: Scalar = 5
-    param y: Scalar = 10
+    param x: Length = 5
+    param y: Length = 10
     let result = loft(x, y)
 }"#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test_loft_diag"));

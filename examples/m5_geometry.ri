@@ -1,9 +1,9 @@
 structure def Flange {
-    param radius : Scalar = 50mm
-    param height : Scalar = 10mm
+    param radius : Length = 50mm
+    param height : Length = 10mm
     param hole_count : Int = 6
-    param bolt_circle_radius : Scalar = 35mm
-    param hole_radius : Scalar = 3mm
+    param bolt_circle_radius : Length = 35mm
+    param hole_radius : Length = 3mm
 
     constraint radius > bolt_circle_radius
     constraint hole_count > 0

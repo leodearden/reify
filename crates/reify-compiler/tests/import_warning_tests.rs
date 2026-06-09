@@ -22,7 +22,7 @@ fn assert_no_import_warning_for(b_source: &str, module_name: &str) {
 
     fs::write(
         dir.join("a.ri"),
-        "pub structure Foo {\n    param x: Scalar = 1mm\n}",
+        "pub structure Foo {\n    param x: Length = 1mm\n}",
     )
     .unwrap();
 
@@ -62,7 +62,7 @@ fn assert_no_import_warning_for(b_source: &str, module_name: &str) {
 #[test]
 fn module_dag_resolved_user_import_emits_no_warning() {
     assert_no_import_warning_for(
-        "import a\nstructure Bar {\n    param y: Scalar = 2mm\n}",
+        "import a\nstructure Bar {\n    param y: Length = 2mm\n}",
         "a",
     );
 }
@@ -80,7 +80,7 @@ fn module_dag_resolved_user_import_emits_no_warning() {
 /// (d) A squiggle label is present, anchoring the underline to the import span.
 #[test]
 fn compile_with_stdlib_unresolved_user_import_emits_specific_warning() {
-    let source = "import shapes\nstructure S {\n    param w: Scalar = 80mm\n}";
+    let source = "import shapes\nstructure S {\n    param w: Length = 80mm\n}";
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
@@ -190,7 +190,7 @@ fn compile_with_stdlib_resolved_std_import_emits_no_warning() {
 #[test]
 fn module_dag_resolved_destructured_import_emits_no_warning() {
     assert_no_import_warning_for(
-        "import a.{Foo}\nstructure Bar {\n    param y: Scalar = 2mm\n    sub f = Foo(x: 3mm)\n}",
+        "import a.{Foo}\nstructure Bar {\n    param y: Length = 2mm\n    sub f = Foo(x: 3mm)\n}",
         "a",
     );
 }

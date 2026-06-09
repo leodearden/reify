@@ -1140,7 +1140,7 @@ mod tests {
         // Edit (did_change) to a different valid source bumps the version and
         // structurally invalidates the cache: the new document owns a fresh,
         // empty cache, so its parse is a DIFFERENT Arc reflecting the new text.
-        let v2 = "structure A {\n    param x: Scalar = 1mm\n}\nstructure B {\n    param y: Scalar = 2mm\n}";
+        let v2 = "structure A {\n    param x: Length = 1mm\n}\nstructure B {\n    param y: Length = 2mm\n}";
         server
             .did_change(DidChangeTextDocumentParams {
                 text_document: VersionedTextDocumentIdentifier {
@@ -1285,7 +1285,7 @@ mod tests {
     //
     // Positions reference the canonical bracket fixture (0-based):
     //   line 0: `structure Bracket {`
-    //   line 1: `    param width: Scalar = 80mm`   (Scalar type at col 17)
+    //   line 1: `    param width: Length = 80mm`   (Scalar type at col 17)
     //   line 7: `    let volume = width * height * thickness`  (width use at col 17)
 
     #[tokio::test]
@@ -1746,7 +1746,7 @@ mod tests {
         // Write a module in the custom stdlib
         std::fs::write(
             custom_stdlib.join("mymod.ri"),
-            "structure Widget {\n    param size: Scalar = 5mm\n}",
+            "structure Widget {\n    param size: Length = 5mm\n}",
         )
         .unwrap();
 
@@ -1823,7 +1823,7 @@ mod tests {
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
         // Write the target file: parts.ri
-        let parts_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         std::fs::write(tmp_dir.join("parts.ri"), parts_source).unwrap();
 
         // Initialize with workspace root
@@ -1899,17 +1899,17 @@ mod tests {
         // Write three target files
         std::fs::write(
             tmp_dir.join("parts.ri"),
-            "structure Hole {\n    param diameter: Scalar = 10mm\n}",
+            "structure Hole {\n    param diameter: Length = 10mm\n}",
         )
         .unwrap();
         std::fs::write(
             tmp_dir.join("fasteners.ri"),
-            "structure Bolt {\n    param length: Scalar = 20mm\n}",
+            "structure Bolt {\n    param length: Length = 20mm\n}",
         )
         .unwrap();
         std::fs::write(
             tmp_dir.join("utils.ri"),
-            "structure Helper {\n    param size: Scalar = 5mm\n}",
+            "structure Helper {\n    param size: Length = 5mm\n}",
         )
         .unwrap();
 
@@ -2116,7 +2116,7 @@ structure Assembly {
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
         // Write parts.ri on disk with ONLY Hole (no Plate)
-        let disk_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let disk_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         std::fs::write(tmp_dir.join("parts.ri"), disk_source).unwrap();
 
         // Initialize with workspace root
@@ -2131,7 +2131,7 @@ structure Assembly {
 
         // Open parts.ri in the editor with MODIFIED content that adds Plate on line 0.
         // The editor version differs from disk — Plate only exists in the editor buffer.
-        let editor_source = "structure Plate {\n    param width: Scalar = 5mm\n}\nstructure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let editor_source = "structure Plate {\n    param width: Length = 5mm\n}\nstructure Hole {\n    param diameter: Length = 10mm\n}";
         let parts_uri = Url::from_file_path(tmp_dir.join("parts.ri")).unwrap();
         server
             .did_open(DidOpenTextDocumentParams {

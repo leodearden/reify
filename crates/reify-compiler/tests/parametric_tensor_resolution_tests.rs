@@ -101,7 +101,7 @@ fn tensor_2_3_moment_of_inertia_resolves_to_typed_tensor() {
     assert_eq!(
         inertia, expected,
         "Tensor<2, 3, MomentOfInertia> must resolve to Type::Tensor {{ rank: 2, \
-         n: 3, quantity: Scalar(MOMENT_OF_INERTIA) }}"
+         n: 3, quantity: Scalar<MomentOfInertia> }}"
     );
 }
 
@@ -118,7 +118,7 @@ fn matrix_3_2_length_resolves_to_typed_matrix() {
     assert_eq!(
         transform, expected,
         "Matrix<3, 2, Length> must resolve to Type::Matrix {{ m: 3, n: 2, \
-         quantity: Scalar(LENGTH) }}"
+         quantity: Scalar<Length> }}"
     );
 }
 
@@ -168,7 +168,7 @@ structure def Demo {
 /// see `stdlib_stress_alias_resolves_to_pressure_dimension` and
 /// `stdlib_strain_alias_resolves_to_dimensionless` for the acceptance tests
 /// that verify a user module can write `param yield : Stress` and resolve it
-/// to `Type::Scalar(PRESSURE)` without an in-module alias decl.  This
+/// to `Type:: Scalar<Pressure>` without an in-module alias decl.  This
 /// smoke test is retained as a fast-fail load-time assertion: it exercises the
 /// stdlib loader path and confirms no Error diagnostics appear in the prelude
 /// modules themselves.
@@ -193,7 +193,7 @@ fn stdlib_stress_strain_aliases_load_without_errors() {
 /// Prior to task 2750, `PreludeContext` carried modules and pre-flattened enums
 /// but not alias data; this test ensures the `Stress` alias is now propagated
 /// through the prelude-seeding mechanism introduced in step-4 and resolves to
-/// `Type::Scalar(PRESSURE)` in a user-module param annotation.
+/// `Type:: Scalar<Pressure>` in a user-module param annotation.
 ///
 /// See also: `stdlib_strain_alias_resolves_to_dimensionless`.
 #[test]
@@ -229,7 +229,7 @@ fn stdlib_stress_alias_resolves_to_pressure_dimension() {
         Type::Scalar {
             dimension: DimensionVector::PRESSURE,
         },
-        "param `yield : Stress` must resolve to Type::Scalar(PRESSURE) via stdlib prelude alias"
+        "param `yield : Stress` must resolve to Type:: Scalar<Pressure> via stdlib prelude alias"
     );
 }
 
@@ -271,6 +271,6 @@ fn stdlib_strain_alias_resolves_to_dimensionless() {
         Type::Scalar {
             dimension: DimensionVector::DIMENSIONLESS,
         },
-        "param `elongation : Strain` must resolve to Type::Scalar(DIMENSIONLESS) via stdlib prelude alias"
+        "param `elongation : Strain` must resolve to Type:: Scalar<Real> via stdlib prelude alias"
     );
 }

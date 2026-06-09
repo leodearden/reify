@@ -1366,7 +1366,7 @@ fn value_negate_point3_returns_undef() {
     assert_eq!(result, Value::Undef);
 }
 
-// ─── step-7 (task 398): Scalar * Value::Point / Value::Vector multiplication ───
+// ─── step-7 (task 398): Length * Value::Point / Value::Vector multiplication ───
 
 /// Scalar(Real) * Value::Vector → Value::Vector (scaled components).
 #[test]

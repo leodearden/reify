@@ -1952,7 +1952,7 @@ mod tests {
     #[test]
     fn extrude_symmetric_compiler_rejects_one_arg() {
         let source = r#"structure S {
-    param profile: Scalar = 5mm
+    param profile: Length = 5mm
     let result = extrude_symmetric(profile)
 }"#;
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_extsym1"));
@@ -1983,8 +1983,8 @@ mod tests {
     #[test]
     fn extrude_symmetric_compiler_rejects_three_args() {
         let source = r#"structure S {
-    param profile: Scalar = 5mm
-    param dist: Scalar = 10mm
+    param profile: Length = 5mm
+    param dist: Length = 10mm
     let result = extrude_symmetric(profile, dist, dist)
 }"#;
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_extsym3"));
@@ -2015,8 +2015,8 @@ mod tests {
     #[test]
     fn sweep_guided_compiler_rejects_two_args() {
         let source = r#"structure S {
-    param a: Scalar = 1mm
-    param b: Scalar = 1mm
+    param a: Length = 1mm
+    param b: Length = 1mm
     let result = sweep_guided(a, b)
 }"#;
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_swg2"));
@@ -2047,10 +2047,10 @@ mod tests {
     #[test]
     fn sweep_guided_compiler_rejects_four_args() {
         let source = r#"structure S {
-    param a: Scalar = 1mm
-    param b: Scalar = 1mm
-    param c: Scalar = 1mm
-    param d: Scalar = 1mm
+    param a: Length = 1mm
+    param b: Length = 1mm
+    param c: Length = 1mm
+    param d: Length = 1mm
     let result = sweep_guided(a, b, c, d)
 }"#;
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_swg4"));
@@ -2082,9 +2082,9 @@ mod tests {
     #[test]
     fn sweep_guided_compiler_rejects_non_geometry_args() {
         let source = r#"structure S {
-    param a: Scalar = 1mm
-    param b: Scalar = 1mm
-    param c: Scalar = 1mm
+    param a: Length = 1mm
+    param b: Length = 1mm
+    param c: Length = 1mm
     let result = sweep_guided(a, b, c)
 }"#;
         let parsed =
@@ -2167,8 +2167,8 @@ mod tests {
     #[test]
     fn extrude_symmetric_compiler_accepts_two_args() {
         let source = r#"structure S {
-    param profile: Scalar = 5mm
-    param dist: Scalar = 10mm
+    param profile: Length = 5mm
+    param dist: Length = 10mm
     let result = extrude_symmetric(profile, dist)
 }"#;
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_extsym2"));
@@ -2355,9 +2355,9 @@ mod tests {
     #[test]
     fn loft_guided_compiler_non_geom_args_silent_fallback() {
         let source = r#"structure S {
-    param a: Scalar = 1mm
-    param b: Scalar = 1mm
-    param c: Scalar = 1mm
+    param a: Length = 1mm
+    param b: Length = 1mm
+    param c: Length = 1mm
     let result = loft_guided(a, b, c)
 }"#;
         let parsed =

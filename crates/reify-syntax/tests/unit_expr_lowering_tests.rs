@@ -71,7 +71,7 @@ fn div(a: UnitExpr, b: UnitExpr) -> UnitExpr {
 
 /// Parse `param x : T = <quantity>` and return the lowered `UnitExpr`.
 fn unit_of(quantity: &str) -> UnitExpr {
-    let source = format!("structure S {{ param x : Scalar = {quantity} }}");
+    let source = format!("structure S {{ param x : Length = {quantity} }}");
     match parse_param_default_kind(&source) {
         ExprKind::QuantityLiteral { unit, .. } => unit,
         other => panic!("expected QuantityLiteral for `{quantity}`, got {:?}", other),
@@ -141,7 +141,7 @@ fn signed_negative_exponent() {
 fn space_separated_mul_stays_binop() {
     // `5kg * m` (space before `*`) → BinOp(*, QuantityLiteral(5, kg), Ident(m))
     // The external scanner's unit-mul op only fires when immediately adjacent.
-    let kind = parse_param_default_kind("structure S { param x : Scalar = 5kg * m }");
+    let kind = parse_param_default_kind("structure S { param x : Length = 5kg * m }");
     match kind {
         ExprKind::BinOp { op, left, right } => {
             assert_eq!(op, "*");
@@ -166,7 +166,7 @@ fn space_separated_mul_stays_binop() {
 fn digit_after_slash_stays_binop() {
     // `25USD/1kg` (slash followed by a digit) → BinOp(/, 25USD, 1kg)
     // The external scanner's unit-div op only fires when the next char is a unit-start.
-    let kind = parse_param_default_kind("structure S { param x : Scalar = 25USD/1kg }");
+    let kind = parse_param_default_kind("structure S { param x : Length = 25USD/1kg }");
     match kind {
         ExprKind::BinOp { op, left, right } => {
             assert_eq!(op, "/");

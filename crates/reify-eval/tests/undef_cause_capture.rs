@@ -95,7 +95,7 @@ fn layer1_non_solver_origins_recorded() {
         causes.get(&u_id)
     );
 
-    // "k" is `param k: Scalar = auto`, no solver → AwaitingSolve.
+    // "k" is `param k: Length = auto`, no solver → AwaitingSolve.
     let k_id = ValueCellId::new("UndefDemo", "k");
     assert!(
         matches!(causes.get(&k_id), Some(UndefCause::AwaitingSolve { .. })),

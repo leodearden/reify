@@ -15,7 +15,7 @@
 // pattern targets via the current compiler — see design decisions in plan.json).
 
 structure def BaseElement {
-    param element_size : Scalar = 10mm
+    param element_size : Length = 10mm
 
     constraint element_size > 0mm
 
@@ -27,7 +27,7 @@ structure def BaseElement {
 // linear_pattern_2d(target, dx1,dy1,dz1, count1, spacing1, dx2,dy2,dz2, count2, spacing2)
 
 structure def PatternRow {
-    param w : Scalar = 10mm
+    param w : Length = 10mm
 
     let row = linear_pattern_2d(w, 1, 0, 0, 5, 20, 0, 1, 0, 1, 0)
 }
@@ -37,7 +37,7 @@ structure def PatternRow {
 // crash or produce Error diagnostics for zero-instance patterns.
 
 structure def PatternCountZero {
-    param w : Scalar = 10mm
+    param w : Length = 10mm
 
     let empty_pattern = linear_pattern_2d(w, 1, 0, 0, 0, 20, 0, 1, 0, 0, 20)
 }
@@ -47,7 +47,7 @@ structure def PatternCountZero {
 // case compiles and evaluates correctly.
 
 structure def PatternCountOne {
-    param w : Scalar = 10mm
+    param w : Length = 10mm
 
     let single_pattern = linear_pattern_2d(w, 1, 0, 0, 1, 20, 0, 1, 0, 1, 20)
 }
@@ -56,7 +56,7 @@ structure def PatternCountOne {
 // 10×10 grid: 100 instances. Tests compiler and evaluator at scale.
 
 structure def PatternGrid10x10 {
-    param w : Scalar = 10mm
+    param w : Length = 10mm
 
     let grid = linear_pattern_2d(w, 1, 0, 0, 10, 20, 0, 1, 0, 10, 20)
 }
@@ -68,7 +68,7 @@ structure def PatternGrid10x10 {
 // (dx, dy, dz) transforms; here 2 transforms = 7 total args.
 
 structure def PatternComposed {
-    param w : Scalar = 10mm
+    param w : Length = 10mm
 
     let linear  = linear_pattern_2d(w, 1, 0, 0, 3, 20, 0, 1, 0, 3, 20)
     let shifted = arbitrary_pattern(w, 10, 0, 0, 0, 20, 0)
@@ -80,8 +80,8 @@ structure def PatternComposed {
 // geometry-let ident). Produces 1 realization with 3 Union operations.
 
 structure def BooleanFold {
-    param a : Scalar = 10mm
-    param b : Scalar = 20mm
+    param a : Length = 10mm
+    param b : Length = 20mm
 
     let folded = union_all(
         box(a, a, a),
