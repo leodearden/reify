@@ -39,6 +39,19 @@ reflect a real run on this host.
 | (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 14 | 13 |
 | (d) gui-only | `gui/src/editor/foo.ts` | — | 14 | 3 |
 
+Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
+drift guard.  Update by re-running the regeneration commands in the section
+below and replacing the counts; then re-run the test to confirm it passes.
+
+<!-- THROUGHPUT-COUNTS:BEGIN -->
+| shape | all | branch |
+|-------|-----|--------|
+| docs-only  | 14 |  0 |
+| reify-doc  | 14 | 13 |
+| reify-eval | 14 | 13 |
+| gui-only   | 14 |  3 |
+<!-- THROUGHPUT-COUNTS:END -->
+
 ## Heavy-Work Narrowed Markers
 
 `scope=all` always produces: `cargo clippy --workspace`, the full OCCT gated
