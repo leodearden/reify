@@ -198,3 +198,108 @@ structure def UseBeam {
          (the structure binds Material once; the qualifier is disambiguation-only)"
     );
 }
+
+// ─── Step-9 RED: error / edge paths (each: no panic + a clear diagnostic) ──────
+
+/// Returns true if any diagnostic's combined text contains `needle`.
+fn any_diag_mentions(errors: &[&reify_core::Diagnostic], needle: &str) -> bool {
+    errors.iter().any(|d| diag_haystack(d).contains(needle))
+}
+
+/// Returns true if any diagnostic carries `code`.
+fn any_diag_has_code(errors: &[&reify_core::Diagnostic], code: DiagnosticCode) -> bool {
+    errors.iter().any(|d| d.code == Some(code))
+}
+
+/// (a) Unknown member: `Beam::Bogus` where no conformed trait declares `Bogus`.
+/// Must yield an `UnresolvedType` (or equivalent) error naming the member, and
+/// must NOT be reported as `AmbiguousAssocType`.
+///
+/// Fails after step-8: bare `declaring_traits.len() == 0` returns `None` with no
+/// diagnostic, so the param silently falls back to `Type::Real`.
+#[test]
+fn unknown_member_qualified_assoc_is_unresolved_not_ambiguous() {
+    let source = r#"
+structure Steel {}
+trait HasMaterial { type Material }
+structure def Beam : HasMaterial {
+    type Material = Steel
+}
+structure def UseBeam {
+    param m : Beam::Bogus
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !any_diag_has_code(&errors, DiagnosticCode::AmbiguousAssocType),
+        "unknown member must NOT be reported as ambiguous; got: {:?}",
+        errors
+    );
+    assert!(
+        any_diag_has_code(&errors, DiagnosticCode::UnresolvedType)
+            && any_diag_mentions(&errors, "Bogus"),
+        "expected an UnresolvedType error naming `Bogus`; got: {:?}",
+        errors
+    );
+}
+
+/// (b) Bad disambiguator: `Beam::(HasSkin::Material)` where `Beam` does NOT
+/// conform to `HasSkin`. Must yield a 'does not conform' diagnostic and not an
+/// `AmbiguousAssocType`.
+#[test]
+fn bad_disambiguator_nonconforming_trait_diagnoses() {
+    let source = r#"
+structure Steel {}
+trait HasMaterial { type Material }
+trait HasSkin { type Material }
+structure def Beam : HasMaterial {
+    type Material = Steel
+}
+structure def UseBeam {
+    param m : Beam::(HasSkin::Material)
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !any_diag_has_code(&errors, DiagnosticCode::AmbiguousAssocType),
+        "a bad disambiguator must NOT be reported as ambiguous; got: {:?}",
+        errors
+    );
+    assert!(
+        any_diag_mentions(&errors, "does not conform") && any_diag_mentions(&errors, "HasSkin"),
+        "expected a 'does not conform' diagnostic naming `HasSkin`; got: {:?}",
+        errors
+    );
+}
+
+/// (c) Type-parameter base: `T::Material` at a definition site, where `T` is an
+/// unbound type parameter. Must yield a clear 'type parameter' diagnostic (no
+/// concrete `StructureRef` exists at definition time) and must not panic.
+///
+/// Fails after step-8: the registry lookup misses for `T` and the helper returns
+/// `None` silently, so the param falls back to `Type::Real` with no diagnostic.
+#[test]
+fn type_parameter_base_qualified_assoc_diagnoses() {
+    let source = r#"
+structure def UseT<T> {
+    param m : T::Material
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !any_diag_has_code(&errors, DiagnosticCode::AmbiguousAssocType),
+        "a type-parameter base must NOT be reported as ambiguous; got: {:?}",
+        errors
+    );
+    assert!(
+        any_diag_mentions(&errors, "type parameter") && any_diag_mentions(&errors, "T"),
+        "expected a clear 'type parameter' diagnostic naming `T`; got: {:?}",
+        errors
+    );
+}
