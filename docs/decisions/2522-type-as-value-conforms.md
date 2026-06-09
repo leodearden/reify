@@ -363,3 +363,79 @@ v0.2 additions. The existing `is_watertight` / `is_manifold` / `is_orientable` h
 and `try_eval_conformance_query` are not modified by this task.
 
 ---
+
+## Implementation Notes
+
+### Crate / file map
+
+The four pipeline stages each touch a specific crate and file:
+
+| Stage | Crate | File | Change |
+|---|---|---|---|
+| A — Parsing / elaboration | `reify-ast` | `crates/reify-ast/src/ast.rs` | Add `ExprKind::TraitTag { name: String }` variant |
+| B — Type-checking | `reify-core` | `crates/reify-core/src/ty.rs` | Add `Type::TraitTagType { trait_name: String }` variant |
+| C — Lowering | `reify-ir` | `crates/reify-ir/src/expr.rs` | Handle `ExprKind::TraitTag` in the compiler's expression-lowering pass |
+| D.1 — Value repr | `reify-ir` | `crates/reify-ir/src/value.rs` | Add `Value::TraitTag(String)` variant + cover all derives |
+| D.2 — Eval dispatch | `reify-eval` | `crates/reify-eval/src/geometry_ops.rs` | Extend `try_eval_conformance_query` to handle `"conforms"` + `Value::TraitTag` arg |
+| D.3 — Eval wiring | `reify-eval` | `crates/reify-eval/src/engine_build.rs` | Ensure `conforms` is included in the post-process conformance-query pass |
+| Sugar aliases | `reify-compiler` | `crates/reify-compiler/src/units.rs` | Add `"conforms"` to `GEOMETRY_QUERY_HELPER_NAMES` (or a sibling classifier) |
+
+Additionally, the compiler's expression-elaboration pass (wherever `ExprKind::Ident` is
+resolved to typed expressions) must check whether the identifier names a declared trait
+and, if so, re-lower it to `ExprKind::TraitTag` with type `Type::TraitTagType`.
+
+### Suggested sub-task breakdown for v0.2
+
+1. **`Value::TraitTag` + `Type::TraitTagType` variants** — Add both new variants,
+   implement all derive obligations (see Stage D table), add unit tests for `Ord`,
+   `ContentHash`, and serde round-trip. This is the foundation; all other sub-tasks
+   depend on it.
+
+2. **`ExprKind::TraitTag` elaboration** — Add the `ExprKind::TraitTag` variant,
+   implement the trait-name → `TraitTag` resolution in the elaborator (re-lower
+   `Ident` to `TraitTag` when the identifier is a declared trait), and add
+   `Type::TraitTagType` to the type-checking result. Unit tests: known trait resolves
+   to `TraitTag`; unknown identifier does not; `R : Trait` bound rejection test.
+
+3. **`conforms` lowering** — Lower `ExprKind::TraitTag { name }` to
+   `CompiledExprKind::Literal(Value::TraitTag(name))` in the compiler's expression
+   lowering pass. Add `conforms` to the stdlib prelude (alongside the three helpers).
+
+4. **Eval-time dispatch** — Extend `try_eval_conformance_query` to handle `"conforms"`
+   with a `Value::TraitTag` second argument. Wire through `engine_build.rs`. Integration
+   tests: `conforms(box(10mm,10mm,10mm), Watertight)` returns `Bool(true)`;
+   `conforms(open_shell, Watertight)` returns `Bool(false)`;
+   user-assertion short-circuit applies to generic form.
+
+5. **Sugar alias validation** — Confirm `is_watertight(g)` remains forward-compatible
+   with the generic path. Add a test asserting both spellings produce identical `Bool`
+   results for the same geometry.
+
+### Acceptance criteria
+
+The v0.2 implementation is complete when:
+
+1. `conforms(box(10mm,10mm,10mm), Watertight)` evaluates to `Bool(true)` in an
+   integration test using the real OCCT kernel.
+2. `conforms(open_shell_fixture, Watertight)` evaluates to `Bool(false)`.
+3. `conforms(g, UnknownTrait)` is rejected at **compile time** with a
+   `R : Trait` bound violation diagnostic (not a runtime panic).
+4. `conforms(user_asserted_watertight_struct, Watertight)` short-circuits to
+   `Bool(true)` without invoking the kernel (escape-hatch parity with monomorphic helpers).
+5. `is_watertight(g)` continues to produce the same result as `conforms(g, Watertight)`
+   for all fixtures.
+6. `Value::TraitTag("Watertight")` round-trips through serde and `ContentHash` without
+   mutation.
+7. Snapshot determinism tests pass after the new variant is introduced.
+
+### Forward-compat note
+
+Existing call sites `is_watertight(g)`, `is_manifold(g)`, `is_orientable(g)` are
+**unconditionally forward-compatible**: the three helper names are preserved in the
+stdlib prelude regardless of whether the refactoring to generic sugar is implemented.
+A future implementer may choose to route them through `conforms` internally while
+keeping the three names as top-level aliases, or to keep them as independent
+implementations — both are valid; the acceptance criteria require only result parity,
+not a specific implementation strategy.
+
+---
