@@ -61,6 +61,32 @@ fn cell_f64(v: &Value) -> Option<f64> {
     }
 }
 
+/// Extract an `f64` from a **mass** value cell.
+///
+/// Accepts dimensionless numerics (`Int`, `Real`) and `Scalar`s whose dimension
+/// is exactly [`DimensionVector::MASS`].  Rejects any `Scalar` with a different
+/// dimension (e.g. `Length`, `Angle`) — a caller passing `5 m` as a mass
+/// argument would otherwise be silently accepted and treated as `5 kg`,
+/// producing a physically-wrong `MassProperties` with no diagnostic.
+///
+/// This is intentionally stricter than the bare [`cell_f64`] used elsewhere:
+/// the mass field of a `MassProperties` is dimension-aware (it is stored as a
+/// `Scalar{dimension:MASS}`), so input validation must be too.  Dimensionless
+/// numerics are still accepted for ergonomics (`point_mass(2.5)` in unit-free
+/// test helpers), matching the sibling `dynamics_ops` behaviour.
+fn cell_mass_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar { si_value, dimension } if *dimension == DimensionVector::MASS => {
+            Some(*si_value)
+        }
+        // Wrong dimension (e.g. Length, Angle): reject so the caller can
+        // surface Value::Undef rather than silently producing wrong mass.
+        Value::Scalar { .. } => None,
+        // Dimensionless Int/Real are accepted for test ergonomics.
+        other => cell_f64(other),
+    }
+}
+
 /// Extract an `f64` from a compliant-field value cell: handles the
 /// `Value::Option(Some(inner))` wrapper (recursing into `inner`) and
 /// `Value::Option(None)` (→ `None`), plus all the bare shapes that
@@ -349,6 +375,16 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
 /// Returns `None` for non-dynamics names, non-mechanism args[0], or fully-
 /// resolvable mechanisms (no spurious fire). Closing-edge bodies are excluded
 /// from the walk because the closed-chain RNEA never reads their mass.
+///
+/// **Best-effort attribution.** This hook re-derives the Undef cause
+/// independently of the actual call; it does not receive the real reason the
+/// builtin returned `Value::Undef`. If `inverse_dynamics_lower` returns `Undef`
+/// for an unrelated reason (e.g. malformed trajectory, missing world transform)
+/// while a body also happens to have unresolvable mass, the diagnostic will
+/// attribute the failure to mass. This matches the established behaviour of the
+/// sibling `stackup_diagnose` / `fea_diagnose` / `geometry_diagnose` hooks and
+/// is acceptable — the hook provides a best-effort hint, not an authoritative
+/// root-cause analysis.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
     match name {
         "inverse_dynamics_lower" | "inverse_dynamics_at_snapshot_lower" => {}
@@ -425,12 +461,13 @@ fn make_mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Val
 
 /// Evaluate `mass_properties(mass, com, inertia)` — a full `MassProperties`
 /// with caller-supplied centre-of-mass and inertia tensor. Validates arity and
-/// field shapes; returns `Value::Undef` on any malformed input.
+/// field shapes; returns `Value::Undef` on any malformed input, including a
+/// mass argument whose dimension is not `MASS` (e.g. a `Length` scalar).
 fn eval_mass_properties(args: &[Value]) -> Value {
     if args.len() != 3 {
         return Value::Undef;
     }
-    let mass = match cell_f64(&args[0]) {
+    let mass = match cell_mass_f64(&args[0]) {
         Some(m) => m,
         None => return Value::Undef,
     };
@@ -446,13 +483,15 @@ fn eval_mass_properties(args: &[Value]) -> Value {
 }
 
 /// Evaluate `point_mass(mass)` — a degenerate `MassProperties` with com at the
-/// origin and zero inertia tensor. Returns `Value::Undef` for wrong arity or a
-/// non-numeric mass argument.
+/// origin and zero inertia tensor. Returns `Value::Undef` for wrong arity, a
+/// non-numeric mass argument, or a mass scalar whose dimension is not `MASS`
+/// (e.g. a `Length` scalar — would silently produce a wrong MassProperties
+/// without this guard).
 fn eval_point_mass(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
     }
-    let mass = match cell_f64(&args[0]) {
+    let mass = match cell_mass_f64(&args[0]) {
         Some(m) => m,
         None => return Value::Undef,
     };
@@ -3182,6 +3221,36 @@ mod tests {
         assert!(matches!(r, Value::Undef), "non-numeric arg must return Undef, got {r:?}");
     }
 
+    // ── amendment: dimension-mismatch guards (reviewer suggestion 1) ─────────
+    //
+    // Passing a wrong-dimension Scalar (e.g. Length instead of Mass) must return
+    // Value::Undef rather than silently producing a physically-wrong MassProperties.
+
+    #[test]
+    fn eval_dynamics_point_mass_length_scalar_returns_undef() {
+        // 5 m is a Length, NOT a Mass — must be rejected.
+        let length_arg = Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH };
+        let r = eval_dynamics("point_mass", &[length_arg])
+            .expect("point_mass recognised");
+        assert!(
+            matches!(r, Value::Undef),
+            "Length-dimensioned scalar must return Undef (not silently treat as 5 kg), got {r:?}"
+        );
+    }
+
+    #[test]
+    fn eval_dynamics_point_mass_dimensionless_real_still_accepted() {
+        // Dimensionless Real is still accepted for test ergonomics.
+        let r = eval_dynamics("point_mass", &[Value::Real(3.0)])
+            .expect("point_mass recognised");
+        assert!(
+            !matches!(r, Value::Undef),
+            "dimensionless Real must still be accepted, got {r:?}"
+        );
+        let (mass, _, _) = mass_properties_from_value(&r).expect("must be MassProperties");
+        assert!((mass - 3.0).abs() < 1e-12, "mass should be 3.0, got {mass}");
+    }
+
     // ── task-4278 step-3 RED: mass_properties(mass, com, inertia) constructor ───
     //
     // eval_dynamics("mass_properties", &[mass, com, inertia]) must round-trip via
@@ -3267,6 +3336,22 @@ mod tests {
         ]);
         let r = eval_dynamics("mass_properties", &[mass, com, bad_inertia]).expect("recognised");
         assert!(matches!(r, Value::Undef), "non-3×3 inertia must return Undef");
+    }
+
+    #[test]
+    fn eval_dynamics_mass_properties_length_mass_arg_returns_undef() {
+        // Passing a Length scalar as the mass argument must be rejected.
+        // Without the dimension guard, 5 m would be silently treated as 5 kg.
+        let length_mass = Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH };
+        let com = Value::Point(vec![Value::length(0.0); 3]);
+        let inertia_val = Value::Matrix(
+            [[0.0f64; 3]; 3].iter().map(|row| row.iter().map(|&x| Value::Real(x)).collect()).collect(),
+        );
+        let r = eval_dynamics("mass_properties", &[length_mass, com, inertia_val]).expect("recognised");
+        assert!(
+            matches!(r, Value::Undef),
+            "Length-dimensioned mass arg must return Undef (not silently treat as kg), got {r:?}"
+        );
     }
 
     // ── task-4278 step-5 RED: resolve_body_mass ────────────────────────────────
