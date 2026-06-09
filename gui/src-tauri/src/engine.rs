@@ -2305,7 +2305,7 @@ impl EngineSession {
                 // overhead: one ValueMap scan), so non-FEA scenes pay no
                 // tessellation-path cost.
                 if let Some(check) = self.core.last_check() {
-                    apply_fea_channels(&mut meshes, &check.values);
+                    apply_fea_channels(&mut meshes, &check.values, None);
                 }
                 // Populate shell-extract channels (element_kind, region_tags,
                 // vonMises_top/mid/bottom, per-face normals) for shell-classified
@@ -4807,65 +4807,144 @@ pub(crate) fn displaced_sample(
 ///
 /// Returns `None` if no such result is found or either field is absent/Undef.
 /// Mirrors `extract_buckling_data` for the ElasticResult variant.
+/// Delegates to `resolve_elastic_result_sampled_fields` for per-value resolution.
 pub(crate) fn extract_elastic_result_fields(
     values: &reify_ir::ValueMap,
 ) -> Option<(&reify_ir::SampledField, &reify_ir::SampledField)> {
-    use reify_ir::{FieldSourceKind, Value};
-
     for (_, value) in values.iter() {
-        let data = match value {
-            Value::StructureInstance(d) if d.type_name == "ElasticResult" => d,
-            _ => continue,
-        };
-
-        let resolve_sampled = |field_name: &str| -> Option<&reify_ir::SampledField> {
-            let field_val = data.fields.get(field_name)?;
-            match field_val {
-                Value::Field {
-                    source: FieldSourceKind::Sampled,
-                    lambda,
-                    ..
-                } => match lambda.as_ref() {
-                    Value::SampledField(sf) => Some(sf),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-
-        let stress_sf = resolve_sampled("stress")?;
-        let disp_sf = resolve_sampled("displacement")?;
-        return Some((stress_sf, disp_sf));
+        if let Some(pair) = resolve_elastic_result_sampled_fields(value) {
+            return Some(pair);
+        }
     }
     None
 }
 
+/// Extract stress and displacement `SampledField` references from a single
+/// `Value::StructureInstance("ElasticResult")` value.
+///
+/// Returns `None` if the value is not an `ElasticResult` or either `"stress"`/
+/// `"displacement"` field is absent or not a `Sampled` `SampledField`.
+/// Used by both the single-case path (`extract_elastic_result_fields`) and the
+/// multi-case path (`try_extract_from_multi_case_cell`).
+fn resolve_elastic_result_sampled_fields<'a>(
+    value: &'a reify_ir::Value,
+) -> Option<(&'a reify_ir::SampledField, &'a reify_ir::SampledField)> {
+    use reify_ir::{FieldSourceKind, Value};
+
+    let data = match value {
+        Value::StructureInstance(d) if d.type_name == "ElasticResult" => d,
+        _ => return None,
+    };
+
+    let stress_sf = match data.fields.get("stress") {
+        Some(Value::Field { source: FieldSourceKind::Sampled, lambda, .. }) => {
+            match lambda.as_ref() {
+                Value::SampledField(sf) => sf,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let disp_sf = match data.fields.get("displacement") {
+        Some(Value::Field { source: FieldSourceKind::Sampled, lambda, .. }) => {
+            match lambda.as_ref() {
+                Value::SampledField(sf) => sf,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    Some((stress_sf, disp_sf))
+}
+
+/// Try to extract stress/displacement fields from a single `Value::Map` cell that
+/// carries a `MultiCaseResult` shape (`Map{"cases" -> Map{name -> ElasticResult}}`).
+///
+/// `active_case` selects which case's `ElasticResult` to use:
+/// - `Some(name)` if the name is present in the cases map, otherwise lex-first.
+/// - `None` → lex-first (matching `detect_multi_case_result`'s default).
+///
+/// Returns `None` if `cell_val` is not a `MultiCaseResult` shape, the active case
+/// has no `ElasticResult`, or either `"stress"`/`"displacement"` field is absent/Undef.
+fn try_extract_from_multi_case_cell<'a>(
+    cell_val: &'a reify_ir::Value,
+    active_case: Option<&str>,
+) -> Option<(&'a reify_ir::SampledField, &'a reify_ir::SampledField)> {
+    use reify_ir::Value;
+
+    // Must be a MultiCaseResult-shaped map.
+    let detected =
+        reify_eval::multi_load_dispatch::detect_multi_case_result(cell_val)?;
+
+    // Resolve the case name to use: the requested name if it exists, else lex-first.
+    let case_name_to_use: String = match active_case {
+        Some(name) if detected.available_cases.contains(&name.to_string()) => {
+            name.to_string()
+        }
+        _ => detected.active_case_id,
+    };
+
+    // Navigate into Map{"cases" -> Map{name -> ElasticResult}}.
+    let outer = match cell_val {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let cases_map = match outer.get(&Value::String("cases".to_string())) {
+        Some(Value::Map(m)) => m,
+        _ => return None,
+    };
+    let case_val = cases_map.get(&Value::String(case_name_to_use))?;
+
+    // Extract SampledFields from the active case's ElasticResult.
+    resolve_elastic_result_sampled_fields(case_val)
+}
+
 /// Fill per-vertex FEA scalar/displacement channels on all meshes.
 ///
-/// If `values` contains an `ElasticResult` (detected via
-/// `extract_elastic_result_fields`), this function:
-/// - Sets `mesh.scalar_channels["vonMises"]` (length = vertex_count) by
-///   sampling the stress field at each vertex; OOB/out-of-solid vertices
-///   receive `SCALAR_CHANNEL_OOB_SENTINEL`.
-/// - Sets `mesh.displaced_positions` (length = vertices.len()) by sampling
-///   the displacement field at each vertex and adding it to the vertex
-///   position (warp = 1); OOB/out-of-solid vertices keep their original
+/// `active_case` selects which case to render for multi-case scenes:
+/// - `None` (or an unknown name) → lex-first case, matching the
+///   `detect_multi_case_result` default.
+/// - `Some(name)` → that case's `ElasticResult`, if present; falls back to
+///   lex-first when the name is absent from the cases map.
+///
+/// **Source resolution order** (first match wins):
+/// 1. A top-level `Value::StructureInstance("ElasticResult")` in `values`
+///    (the single-case path, unchanged from task 4087).
+/// 2. A `MultiCaseResult`-shaped `Value::Map` cell (`Map{"cases" -> Map{…}}`),
+///    where the active case's value is a `Value::StructureInstance("ElasticResult")`.
+///
+/// If no `ElasticResult` is found via either path, the meshes are left untouched
+/// (non-FEA meshes keep empty `scalar_channels` and `None` `displaced_positions`).
+///
+/// Per-vertex channels set when an `ElasticResult` is found:
+/// - `mesh.scalar_channels["vonMises"]` (length = vertex_count): von-Mises stress
+///   sampled at each vertex; OOB/out-of-solid vertices receive
+///   `SCALAR_CHANNEL_OOB_SENTINEL`.
+/// - `mesh.displaced_positions` (length = `vertices.len()`): vertex positions
+///   plus warp = 1 displacement; OOB/out-of-solid vertices keep their original
 ///   position.
 ///
-/// If no `ElasticResult` is present, the meshes are left untouched (non-FEA
-/// meshes keep empty scalar_channels and None displaced_positions).
-///
-/// The sampling tolerance is chosen as 1% of the minimum grid spacing
-/// (or 1e-9 if spacing cannot be determined), so that surface vertices that
-/// lie exactly on the field boundary are not incorrectly classified as OOB
-/// due to floating-point rounding.
+/// The sampling tolerance is 1% of the minimum grid spacing (or 1e-9 if spacing
+/// cannot be determined), so that surface vertices lying exactly on the field
+/// boundary are not misclassified as OOB due to floating-point rounding.
 pub(crate) fn apply_fea_channels(
     meshes: &mut [crate::types::MeshData],
     values: &reify_ir::ValueMap,
+    active_case: Option<&str>,
 ) {
-    let (stress_sf, disp_sf) = match extract_elastic_result_fields(values) {
-        Some(pair) => pair,
-        None => return,
+    // Try single-case path first (top-level ElasticResult).
+    // If not found, try multi-case path (MultiCaseResult cell).
+    let (stress_sf, disp_sf) = if let Some(pair) = extract_elastic_result_fields(values) {
+        pair
+    } else {
+        // Scan all cells for the first MultiCaseResult-shaped value.
+        let multi_pair = values
+            .iter()
+            .find_map(|(_, cell_val)| try_extract_from_multi_case_cell(cell_val, active_case));
+        match multi_pair {
+            Some(pair) => pair,
+            None => return,
+        }
     };
 
     // Tolerance: 1% of the minimum grid spacing (or a small absolute fallback).

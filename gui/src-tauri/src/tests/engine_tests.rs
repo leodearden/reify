@@ -10599,7 +10599,7 @@ fn apply_fea_channels_with_elastic_result_fills_channels() {
     let map = make_elastic_result_value_map(stress_sf, disp_sf);
     let mut meshes = vec![make_test_mesh_data()];
 
-    crate::engine::apply_fea_channels(&mut meshes, &map);
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
 
     let mesh = &meshes[0];
     let vertex_count = mesh.vertices.len() / 3; // = 3
@@ -10660,7 +10660,7 @@ fn apply_fea_channels_without_elastic_result_leaves_meshes_untouched() {
     let map = reify_ir::ValueMap::new(); // no ElasticResult
     let mut meshes = vec![make_test_mesh_data()];
 
-    crate::engine::apply_fea_channels(&mut meshes, &map);
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
 
     let mesh = &meshes[0];
     assert!(
