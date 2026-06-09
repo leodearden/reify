@@ -783,8 +783,13 @@ build_plan() {
     # NOTE: "|| true" is intentionally avoided here — the npm ci hardening test
     # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
     # "npm ci.*|| true", and the trap is on the same line as the npm ci call.
+    # The kill is wrapped in `if … ; then :; fi` instead: set -e applies INSIDE
+    # an EXIT trap, and on green runs the bg PID is already reaped by the wait
+    # step, so a bare `kill …; true` aborts at the failed kill and turns a
+    # fully-green run into exit 1 (task 4457). An if-condition is exempt from
+    # set -e and contains no "|| true" token.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; true' EXIT"
+        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi' EXIT"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
