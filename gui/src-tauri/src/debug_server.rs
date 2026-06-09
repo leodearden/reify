@@ -2759,4 +2759,94 @@ mod tests {
             reset_schema["required"]
         );
     }
+
+    // ── Task 3026 step-17: RED — set_fea_case debug-MCP tool registration ──
+    //
+    // (a) tool_defs() must include set_fea_case with object schema, required
+    //     `case` string param, and a non-empty description.
+    // (b) handle_set_fea_case must exist and route to the engine
+    //     set_active_fea_case path.
+    //
+    // Both tests FAIL until step-18 adds the def, dispatch arm, and handler.
+
+    #[test]
+    fn tool_defs_includes_set_fea_case() {
+        let defs = tool_defs();
+
+        // FAILS until step-18 registers the set_fea_case ToolDef.
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "set_fea_case")
+            .expect("set_fea_case must be present in tool_defs()");
+
+        // Non-empty description
+        assert!(
+            !entry.description.is_empty(),
+            "set_fea_case: description must be non-empty"
+        );
+
+        let schema = &entry.input_schema;
+
+        // Object schema
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "set_fea_case: input_schema.type must be 'object'"
+        );
+
+        // `case` must be a string property
+        assert_eq!(
+            schema["properties"]["case"]["type"].as_str(),
+            Some("string"),
+            "set_fea_case: properties.case.type must be 'string'"
+        );
+
+        // `case` must be required
+        let required = schema["required"]
+            .as_array()
+            .expect("set_fea_case: input_schema.required must be an array");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("case")),
+            "'case' must be listed in set_fea_case required"
+        );
+    }
+
+    /// Verify that `handle_set_fea_case` routes to the engine's
+    /// `set_active_fea_case` path by loading the multi-case fixture and
+    /// switching to the "overload" case.  Mirrors the approach used by
+    /// `run_on_engine_does_not_poison_mutex_when_closure_panics`.
+    ///
+    /// FAILS TO COMPILE until step-18 adds `handle_set_fea_case`.
+    #[tokio::test]
+    async fn handle_set_fea_case_routes_to_engine() {
+        let engine = crate::tests::make_test_engine();
+
+        // Load the three-case fixture so the engine has a compiled module.
+        {
+            let mut locked = engine.lock().unwrap();
+            locked
+                .load_from_source(
+                    include_str!("../../../../examples/fea_multi_case_bracket.ri"),
+                    "FeaMultiCaseBracket",
+                )
+                .expect("load_from_source must succeed for fea_multi_case_bracket.ri");
+        }
+
+        // FAILS TO COMPILE until step-18 adds handle_set_fea_case.
+        let result = handle_set_fea_case(&engine, json!({"case": "overload"})).await;
+
+        assert!(
+            result.is_ok(),
+            "handle_set_fea_case('overload') must return Ok; got: {:?}",
+            result.err()
+        );
+        let body = result.unwrap();
+        assert!(body.is_object(), "handle_set_fea_case result must be a JSON object");
+        // Echo: body must carry the selected case name.
+        assert_eq!(
+            body["case"].as_str(),
+            Some("overload"),
+            "handle_set_fea_case response must echo the case name; got: {body:?}"
+        );
+    }
 }
