@@ -1,0 +1,29 @@
+// io_formats.ri — exercises the std.io.formats occurrence surface
+//
+// Instantiates every new occurrence introduced by task 4284:
+//   STEPOutput, STLOutput, ThreeMFOutput, DisplayOutput, STEPInput
+// Also exercises STEPVersion (all three variants used across subs) and
+// DisplayStyle.
+//
+// Auto-discovered by crates/reify-compiler/tests/examples_smoke.rs and
+// run by crates/reify-cli/tests/cli_check.rs::check_io_formats_exits_success_no_unresolved.
+
+structure def IoFormats {
+    let part = box(10mm, 20mm, 5mm)
+
+    sub stl = STLOutput(subject: part, path: "out.stl", resolution: 0.2mm)
+    sub step_ap203 = STEPOutput(subject: part, path: "ap203.step", version: STEPVersion.AP203)
+    sub step_ap214 = STEPOutput(subject: part, path: "ap214.step", version: STEPVersion.AP214)
+    sub step_ap242 = STEPOutput(subject: part, path: "ap242.step", version: STEPVersion.AP242)
+    sub mf = ThreeMFOutput(subject: part, path: "out.3mf")
+    sub disp = DisplayOutput(subject: part, pane: 1, style: DisplayStyle(opacity: 0.5, wireframe: true))
+    sub imp = STEPInput(source: "in.step", version: STEPVersion.AP242)
+
+    // Default-resolution coverage: omit provenance → exercises the constructor-valued
+    // Provenance(...) default on STEPInput.
+    sub imp_defaults = STEPInput(source: "defaults.step")
+
+    // Default-resolution coverage: omit style and pane → exercises the DisplayStyle()
+    // constructor default on DisplayOutput.
+    sub disp_defaults = DisplayOutput(subject: part)
+}

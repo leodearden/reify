@@ -243,9 +243,32 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     // adding it there would wrongly accept `List<Geometry>` at a Selector param
     // (mirrors the same design decision made for Tensor→Matrix, Rule 3 — also
     // one-directional and placed here rather than in `implicitly_converts_to`).
+    //
+    // NOTE: `Type::AnySelector` is intentionally excluded from this match.
+    // Kind-agnostic selector params resolve to node-sets via task 4092 (a
+    // kind-uniform path), NOT via List<Geometry> widening — so there is no
+    // valid `(Type::List<Geometry>, Type::AnySelector)` coercion at present.
+    // If a List<Geometry> path for agnostic selectors is ever needed, extend
+    // the match deliberately to `Type::Selector(_) | Type::AnySelector`.
     if let (Type::List(inner), Type::Selector(_)) = (param_ty, arg_ty)
         && matches!(inner.as_ref(), Type::Geometry)
     {
+        return true;
+    }
+    // PRD §4.2/§11.1 (task 4369/A2): a kind-agnostic `AnySelector` param accepts
+    // any concrete selector argument (Face, Edge, Body — and Vertex once A1 lands),
+    // ONE-DIRECTIONALLY. A single-kind `Selector(k)` param must NOT accept an
+    // agnostic arg (see test step-3(e)).
+    //
+    // This guard lives here (not in `implicitly_converts_to`) for the same reason
+    // as the List<Geometry> rule above: `type_compatible` calls
+    // `implicitly_converts_to` in BOTH directions, so placing it there would also
+    // accept the reverse (a concrete-kind param accepting an agnostic arg), which
+    // would violate the one-directional PRD D3 requirement.
+    //
+    // Identity (AnySelector vs AnySelector) is already covered by
+    // `implicitly_converts_to`'s `from == to` short-circuit below.
+    if matches!((param_ty, arg_ty), (Type::AnySelector, Type::Selector(_))) {
         return true;
     }
     // Bidirectional implicit tensor/vector/matrix conversions
@@ -392,6 +415,7 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         | Type::Axis
         | Type::BoundingBox
         | Type::Selector(_)
+        | Type::AnySelector
         | Type::Error => false,
     }
 }
@@ -579,6 +603,7 @@ pub(crate) fn unify(
         | (Type::Axis, _)
         | (Type::BoundingBox, _)
         | (Type::Selector(_), _)
+        | (Type::AnySelector, _)
         | (Type::Error, _) => Ok(()),
     }
 }
@@ -1557,6 +1582,97 @@ mod tests {
                 &Type::Selector(SelectorKind::Face)
             ),
             "List<Real> param with Selector(Face) arg must be incompatible (only List<Geometry> coerces)"
+        );
+    }
+
+    // ── AnySelector compat (task 4369 / A2) ────────────────────────────────────
+    //
+    // Contract (PRD §4.2/D3): `type_compatible(AnySelector, Selector(k))` is
+    // true for every concrete k (the agnostic param accepts all kinds).  The
+    // rule is ONE-DIRECTIONAL: a single-kind param does NOT accept an agnostic
+    // arg.  Non-selector arguments are also rejected.
+    //
+    // Tests (a)/(b)/(c) are RED until step-4 adds the rule in `type_compatible`.
+    // Tests (d)/(e)/(f)/(g) are GREEN from pre-1 and serve as regression guards.
+
+    /// (a) AnySelector param accepts a Face-kind selector arg.
+    /// RED until step-4.
+    #[test]
+    fn type_compatible_any_selector_param_face_arg_is_true() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            type_compatible(&Type::AnySelector, &Type::Selector(SelectorKind::Face)),
+            "AnySelector param with Selector(Face) arg must be compatible (PRD §4.2/D3)"
+        );
+    }
+
+    /// (b) AnySelector param accepts an Edge-kind selector arg.
+    /// RED until step-4.
+    #[test]
+    fn type_compatible_any_selector_param_edge_arg_is_true() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            type_compatible(&Type::AnySelector, &Type::Selector(SelectorKind::Edge)),
+            "AnySelector param with Selector(Edge) arg must be compatible (PRD §4.2/D3)"
+        );
+    }
+
+    /// (c) AnySelector param accepts a Body-kind selector arg.
+    /// RED until step-4.
+    #[test]
+    fn type_compatible_any_selector_param_body_arg_is_true() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            type_compatible(&Type::AnySelector, &Type::Selector(SelectorKind::Body)),
+            "AnySelector param with Selector(Body) arg must be compatible (PRD §4.2/D3)"
+        );
+    }
+
+    /// (d) AnySelector param rejects a non-selector arg.
+    /// GREEN from pre-1 (no rule fires → falls through to false).
+    #[test]
+    fn type_compatible_any_selector_param_real_arg_is_false() {
+        assert!(
+            !type_compatible(&Type::AnySelector, &Type::Real),
+            "AnySelector param with Real arg must be incompatible"
+        );
+    }
+
+    /// (e) ONE-DIRECTIONAL: a single-kind param does NOT accept an agnostic arg.
+    /// GREEN from pre-1 (no rule fires for this direction).
+    #[test]
+    fn type_compatible_face_selector_param_any_selector_arg_is_false() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            !type_compatible(
+                &Type::Selector(SelectorKind::Face),
+                &Type::AnySelector
+            ),
+            "Selector(Face) param with AnySelector arg must be incompatible (one-directional)"
+        );
+    }
+
+    /// (f) Regression: single-kind cross-kind rejection unchanged.
+    /// GREEN from pre-1 (exact-equality check is untouched).
+    #[test]
+    fn type_compatible_any_selector_regression_face_body_cross_kind_is_false() {
+        use reify_core::ty::SelectorKind;
+        assert!(
+            !type_compatible(
+                &Type::Selector(SelectorKind::Face),
+                &Type::Selector(SelectorKind::Body)
+            ),
+            "Selector(Face) param with Selector(Body) arg must be incompatible (kind mismatch)"
+        );
+    }
+
+    /// (g) Identity: AnySelector param with AnySelector arg is compatible.
+    /// GREEN from pre-1 (from==to short-circuit in implicitly_converts_to).
+    #[test]
+    fn type_compatible_any_selector_identity_is_true() {
+        assert!(
+            type_compatible(&Type::AnySelector, &Type::AnySelector),
+            "AnySelector param with AnySelector arg must be compatible (identity)"
         );
     }
 

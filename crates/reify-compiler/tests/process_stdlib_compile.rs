@@ -226,6 +226,7 @@ fn process_category_traits_each_refine_process() {
                 ("layer_thickness", length.clone()),
                 ("min_feature_size", length.clone()),
                 ("build_volume", Type::Geometry),
+                ("max_overhang_angle", angle.clone()),
             ],
         ),
         (
@@ -308,8 +309,9 @@ fn process_category_traits_each_refine_process() {
 
 // ─── step-7: DFMRule trait surface ───────────────────────────────────────────
 
-/// DFMRule has no refinements and exactly three required params in order:
-/// rule_name : String, severity : DFMSeverity, applies_to : Process.
+/// DFMRule has no refinements and exactly four required params in order:
+/// rule_name : String, severity : DFMSeverity, applies_to : Process,
+/// subject : Solid (resolves to Type::Geometry).
 #[test]
 fn dfmrule_trait_surface_has_rule_name_severity_and_process_applicability() {
     let t = find_trait("DFMRule");
@@ -320,11 +322,11 @@ fn dfmrule_trait_surface_has_rule_name_severity_and_process_applicability() {
         t.refinements
     );
 
-    // Exactly three required members, in declaration order.
+    // Exactly four required members, in declaration order.
     assert_eq!(
         t.required_members.len(),
-        3,
-        "DFMRule should have exactly 3 required members; got: {:?}",
+        4,
+        "DFMRule should have exactly 4 required members; got: {:?}",
         t.required_members
             .iter()
             .map(|r| &r.name)
@@ -342,6 +344,10 @@ fn dfmrule_trait_surface_has_rule_name_severity_and_process_applicability() {
         t.required_members[2].name, "applies_to",
         "DFMRule required_members[2] should be 'applies_to'"
     );
+    assert_eq!(
+        t.required_members[3].name, "subject",
+        "DFMRule required_members[3] should be 'subject'"
+    );
 
     assert_eq!(
         param_type("DFMRule", "rule_name"),
@@ -357,6 +363,127 @@ fn dfmrule_trait_surface_has_rule_name_severity_and_process_applicability() {
         param_type("DFMRule", "applies_to"),
         Type::TraitObject("Process".into()),
         "DFMRule.applies_to must be Type::TraitObject(\"Process\")"
+    );
+    assert_eq!(
+        param_type("DFMRule", "subject"),
+        Type::Geometry,
+        "DFMRule.subject must be Type::Geometry (Solid resolves to Type::Geometry)"
+    );
+}
+
+// ─── task-4407 step-3: DFMRule.subject RED tests ─────────────────────────────
+
+/// β conformance lock — DFMRule.subject (negative):
+/// A DFMRule conformer omitting `subject` must emit a missing-required-member
+/// Error diagnostic.
+#[test]
+fn dfmrule_conformer_missing_subject_emits_missing_member_error() {
+    let source = r#"
+import std.process
+
+structure def MinWallCheck : DFMRule {
+    param rule_name  : String      = "min_wall"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = MilledPart()
+}
+
+structure def MilledPart : Subtracting {
+    param duration         : Time   = 30min
+    param cost             : Money  = 50USD
+    param tool_access      : Solid  = box(200mm, 150mm, 100mm)
+    param min_feature_size : Length = 0.5mm
+    param achievable_finish: Length = 0.0016mm
+}
+"#;
+    // Note: `subject` is intentionally omitted from MinWallCheck.
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "MinWallCheck omitting 'subject' should emit an error diagnostic"
+    );
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("missing required member") && error_msg.contains("subject"),
+        "error should mention 'missing required member' and 'subject', got: {}",
+        error_msg
+    );
+}
+
+/// β conformance lock — DFMRule.subject (positive):
+/// A complete DFMRule conformer supplying all four members including
+/// `param subject : Solid = box(...)` compiles with zero Error diagnostics
+/// and exposes a `subject` value cell of type Type::Geometry (the cell γ reads).
+#[test]
+fn dfmrule_conformer_with_subject_compiles_clean_and_exposes_subject() {
+    let source = r#"
+import std.process
+
+structure def MilledPart : Subtracting {
+    param duration           : Time   = 30min
+    param cost               : Money  = 50USD
+    param tool_access        : Solid  = box(200mm, 150mm, 100mm)
+    param min_feature_size   : Length = 0.5mm
+    param achievable_finish  : Length = 0.0016mm
+    param max_overhang_angle : Angle  = 45deg
+}
+
+structure def MinWallCheck : DFMRule {
+    param rule_name  : String      = "min_wall"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = MilledPart()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (a-1) Zero error-severity diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "MinWallCheck with all DFMRule params should compile clean; errors: {:?}",
+        errors
+    );
+
+    // (a-2) The compiled MinWallCheck template exposes a `subject` value cell
+    //       with the correct type (Type::Geometry — Solid resolves to Type::Geometry).
+    let rule = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "MinWallCheck")
+        .expect("MinWallCheck template should be present after clean compile");
+
+    let subject_cell = rule
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "subject")
+        .unwrap_or_else(|| {
+            panic!(
+                "MinWallCheck should have a 'subject' value cell; found: {:?}",
+                rule.value_cells
+                    .iter()
+                    .map(|vc| &vc.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        subject_cell.cell_type,
+        Type::Geometry,
+        "MinWallCheck.subject cell_type should be Type::Geometry"
     );
 }
 
@@ -639,6 +766,23 @@ structure def CheckedPart {
     );
 }
 
+// Shared FdmPrinter : Adding fixture (all required params including max_overhang_angle).
+// Used by `fits_build_volume_over_adding_conformer_compiles_clean` and
+// `adding_conformer_with_all_params_compiles_clean_and_exposes_max_overhang_angle`
+// so both tests stay in sync when the Adding trait surface changes.
+const FDMPRINTER_ALL_PARAMS_SOURCE: &str = r#"
+import std.process
+
+structure def FdmPrinter : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 10USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 45deg
+}
+"#;
+
 // ─── step-7 (task-4274): FitsBuildVolume compile-clean + cardinality lock ─────
 
 /// γ compile-clean lock — `FitsBuildVolume` over a full Adding conformer.
@@ -656,25 +800,17 @@ structure def CheckedPart {
 /// RED: `FitsBuildVolume` does not exist yet → "unknown constraint def" error.
 #[test]
 fn fits_build_volume_over_adding_conformer_compiles_clean() {
-    let source = r#"
-import std.process
-
-structure def FdmPrinter : Adding {
-    param duration        : Time   = 60min
-    param cost            : Money  = 10USD
-    param layer_thickness : Length = 0.2mm
-    param min_feature_size: Length = 0.4mm
-    param build_volume    : Solid  = box(200mm, 200mm, 200mm)
-}
-
-structure def SmallPart {
+    let source = format!(
+        r#"{}
+structure def SmallPart {{
     let proc = FdmPrinter()
     param part : Solid = box(50mm, 50mm, 50mm)
     constraint FitsBuildVolume(proc: proc, part: part)
-}
-"#;
+}}"#,
+        FDMPRINTER_ALL_PARAMS_SOURCE
+    );
 
-    let compiled = compile_source_with_stdlib(source);
+    let compiled = compile_source_with_stdlib(&source);
 
     let errors: Vec<_> = compiled
         .diagnostics
@@ -687,6 +823,102 @@ structure def SmallPart {
         errors
     );
 }
+
+// ─── task-4407 step-1: Adding.max_overhang_angle RED tests ───────────────────
+
+/// β conformance lock — Adding.max_overhang_angle (negative):
+/// An FdmPrinter : Adding conformer omitting `max_overhang_angle` must
+/// emit a missing-required-member Error diagnostic.
+#[test]
+fn adding_conformer_missing_max_overhang_angle_emits_missing_member_error() {
+    let source = r#"
+import std.process
+
+structure def FdmPrinter : Adding {
+    param duration         : Time   = 60min
+    param cost             : Money  = 10USD
+    param layer_thickness  : Length = 0.2mm
+    param min_feature_size : Length = 0.4mm
+    param build_volume     : Solid  = box(200mm, 200mm, 200mm)
+}
+"#;
+    // Note: `max_overhang_angle` is intentionally omitted.
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "FdmPrinter omitting 'max_overhang_angle' should emit an error diagnostic"
+    );
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("missing required member") && error_msg.contains("max_overhang_angle"),
+        "error should mention 'missing required member' and 'max_overhang_angle', got: {}",
+        error_msg
+    );
+}
+
+/// β conformance lock — Adding.max_overhang_angle (positive):
+/// A complete FdmPrinter : Adding conformer supplying all params including
+/// `param max_overhang_angle : Angle = 45deg` compiles with zero Error
+/// diagnostics and exposes a `max_overhang_angle` value cell of type
+/// Type::Scalar{ANGLE} (the cell γ reads).
+#[test]
+fn adding_conformer_with_all_params_compiles_clean_and_exposes_max_overhang_angle() {
+    let compiled = compile_source_with_stdlib(FDMPRINTER_ALL_PARAMS_SOURCE);
+
+    // (a-1) Zero error-severity diagnostics.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "FdmPrinter with all Adding params should compile clean; errors: {:?}",
+        errors
+    );
+
+    // (a-2) The compiled FdmPrinter template exposes a `max_overhang_angle` value cell
+    //       with the correct type (Type::Scalar{ANGLE}).
+    let printer = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "FdmPrinter")
+        .expect("FdmPrinter template should be present after clean compile");
+
+    let moa_cell = printer
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "max_overhang_angle")
+        .unwrap_or_else(|| {
+            panic!(
+                "FdmPrinter should have a 'max_overhang_angle' value cell; found: {:?}",
+                printer
+                    .value_cells
+                    .iter()
+                    .map(|vc| &vc.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        moa_cell.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::ANGLE
+        },
+        "FdmPrinter.max_overhang_angle cell_type should be Type::Scalar{{ANGLE}}"
+    );
+}
+
+// ─── cardinality lock + example compile ────────────────────────────────────────
 
 /// γ name-presence lock — the std/process module must contain each of the six
 /// named DFM constraint defs:
