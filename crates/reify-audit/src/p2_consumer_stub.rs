@@ -475,9 +475,21 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let mut matches = groups.remove(&(task_id.clone(), path.clone())).unwrap();
         matches.sort_by_key(|(ln, _, _)| *ln);
 
+        // Phase-4 severity: Low when (a) the task title signals stub/placeholder,
+        // OR (b) every match in the group is a `// fixme` maintenance label
+        // (documented permanent maintenance trap, weaker signal than `// stub`
+        // or `// placeholder`). Mixed groups (fixme + other families) stay Medium.
         let severity = ctx.task_metadata
             .get(&task_id)
-            .map(|m| if title_signals_stub(&m.title) { Severity::Low } else { Severity::Medium })
+            .map(|m| {
+                if title_signals_stub(&m.title) {
+                    Severity::Low
+                } else if matches.iter().all(|(_, _, label)| *label == "// fixme") {
+                    Severity::Low
+                } else {
+                    Severity::Medium
+                }
+            })
             .unwrap_or(Severity::Medium);
 
         let summary = {
