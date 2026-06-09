@@ -100,7 +100,6 @@ orch_daily_cost_ceiling_usd: 10000.0
 # When one account hits its cap, UsageGate rotates to the next in list order.
 usage_cap:
   enabled: true
-  pause_threshold: 0.96
   wait_for_reset: true
   probe_interval_secs: 300
   max_probe_interval_secs: 1800
