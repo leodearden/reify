@@ -482,9 +482,9 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let severity = ctx.task_metadata
             .get(&task_id)
             .map(|m| {
-                if title_signals_stub(&m.title) {
-                    Severity::Low
-                } else if matches.iter().all(|(_, _, label)| *label == "// fixme") {
+                if title_signals_stub(&m.title)
+                    || matches.iter().all(|(_, _, label)| *label == "// fixme")
+                {
                     Severity::Low
                 } else {
                     Severity::Medium
