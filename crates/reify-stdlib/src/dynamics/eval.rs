@@ -3294,4 +3294,132 @@ mod tests {
         // A non-Map Value is not a body.
         assert!(resolve_body_mass(&Value::Real(0.0)).is_none());
     }
+
+    // ── task-4278 step-7 RED: inverse_dynamics retrofit + typed diagnostic ───────
+    //
+    // (a) point_mass body → inverse_dynamics_lower yields finite torques.
+    // (b) non-resolvable body.solid → Undef + diagnose returns DynamicsBodyMassUnresolved.
+    // (c) resolvable mechanism → diagnose returns None.
+    // RED because `diagnose` does not exist yet (step-8).
+
+    /// Build a MotionTrajectory for a single-revolute mechanism: two motionless
+    /// samples at the given joint angle θ (rad).
+    fn motionless_trajectory(theta: f64) -> Value {
+        mint_instance(
+            "MotionTrajectory",
+            vec![
+                ("mechanism".to_string(), Value::Real(0.0)),
+                (
+                    "samples".to_string(),
+                    Value::List(vec![
+                        trajectory_sample(0.0, theta, 0.0, 0.0),
+                        trajectory_sample(1.0, theta, 0.0, 0.0),
+                    ]),
+                ),
+            ],
+        )
+    }
+
+    /// Build a 1-body revolute mechanism with the given solid.
+    fn revolute_mechanism_with_solid(solid: Value) -> Value {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("revolute", &[axis_y, range]);
+        let mech0 = eval_builtin("mechanism", &[]);
+        eval_builtin("body", &[mech0, solid, joint])
+    }
+
+    #[test]
+    fn inverse_dynamics_lower_point_mass_yields_finite_torque() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        let pm = eval_builtin(
+            "point_mass",
+            &[Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS }],
+        );
+        // Build a mechanism with com at origin — pick θ = 0 for a zero-gravity
+        // torque case (gravity acts along z, com at origin → zero arm).  We only
+        // need FINITE (not panic/Undef) output to confirm the RNEA ran.
+        let mech = revolute_mechanism_with_solid(pm);
+        let theta = -PI / 6.0;
+        let traj = motionless_trajectory(theta);
+
+        let result = eval_dynamics("inverse_dynamics_lower", &[mech, traj])
+            .expect("inverse_dynamics_lower is a recognised intrinsic");
+        assert!(
+            !matches!(result, Value::Undef),
+            "point_mass body must not return Undef, got {result:?}"
+        );
+        let per_sample = match &result {
+            Value::List(s) => s,
+            other => panic!("expected List<List<JointForce>>, got {other:?}"),
+        };
+        assert!(!per_sample.is_empty(), "must have at least one sample");
+        // Each sample must contain at least one finite JointForce.
+        for sample_forces in per_sample {
+            let forces = match sample_forces {
+                Value::List(f) => f,
+                other => panic!("inner sample must be a List, got {other:?}"),
+            };
+            assert!(!forces.is_empty(), "sample must have at least one JointForce");
+            let value = field(&forces[0], "JointForce", "value");
+            let torque = num(field(value, "ScalarTorque", "magnitude"));
+            assert!(torque.is_finite(), "torque must be finite, got {torque}");
+        }
+    }
+
+    #[test]
+    fn diagnose_unresolvable_body_emits_dynamics_body_mass_unresolved() {
+        use reify_core::diagnostics::DiagnosticCode;
+        use crate::eval_builtin;
+
+        // Build a mechanism whose body.solid is a plain Real (non-resolvable).
+        let mech = revolute_mechanism_with_solid(Value::Real(1.0));
+        let theta = -std::f64::consts::PI / 6.0;
+        let traj = motionless_trajectory(theta);
+
+        // inverse_dynamics_lower must return Undef for an unresolvable body.
+        let result = eval_dynamics("inverse_dynamics_lower", &[mech.clone(), traj.clone()])
+            .expect("inverse_dynamics_lower recognised");
+        assert!(
+            matches!(result, Value::Undef),
+            "unresolvable solid must return Undef, got {result:?}"
+        );
+
+        // diagnose must emit DynamicsBodyMassUnresolved.
+        let diag = diagnose("inverse_dynamics_lower", &[mech, traj])
+            .expect("diagnose must return Some for unresolvable body");
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::DynamicsBodyMassUnresolved),
+            "wrong diagnostic code: {diag:?}"
+        );
+    }
+
+    #[test]
+    fn diagnose_resolvable_mechanism_returns_none() {
+        use crate::eval_builtin;
+
+        let pm = eval_builtin(
+            "point_mass",
+            &[Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS }],
+        );
+        let mech = revolute_mechanism_with_solid(pm);
+        let theta = -std::f64::consts::PI / 6.0;
+        let traj = motionless_trajectory(theta);
+
+        let diag = diagnose("inverse_dynamics_lower", &[mech, traj]);
+        assert!(
+            diag.is_none(),
+            "a fully-resolvable mechanism must not emit a diagnostic, got {diag:?}"
+        );
+    }
 }
