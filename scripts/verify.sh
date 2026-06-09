@@ -778,13 +778,23 @@ build_plan() {
     # Cleanup trap: registered in the same eval so it fires on any EXIT (success
     # or failure). If a foreground rust gate fails before the wait join, the
     # executor calls exit and the trap kills the still-running npm job instead of
-    # orphaning it. "2>/dev/null; true" suppresses errors (no such process) on
-    # the happy path where wait has already reaped the job before EXIT fires.
+    # orphaning it.
+    #
+    # The kill is wrapped in an `if ...; then :; fi` rather than a bare sequence.
+    # On the happy path `wait` has already reaped the job before EXIT fires, so
+    # the kill returns 1 (no such process). Under the script's `set -euo
+    # pipefail`, a *bare* `kill ...; true` poisons the exit code: bash aborts the
+    # trap body at the failing kill BEFORE reaching `true`, flipping a fully
+    # passing run (rc=0 after "all checks passed") to rc=1 (regression from
+    # commit 9b398f7a26; esc-3993-22). An `if` *condition* is exempt from set -e,
+    # so `if kill ...; then :; fi` swallows the no-such-process failure without
+    # aborting — and still reaps the job on the fail path (kill succeeds → `:`).
     # NOTE: "|| true" is intentionally avoided here — the npm ci hardening test
     # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
-    # "npm ci.*|| true", and the trap is on the same line as the npm ci call.
+    # "npm ci.*|| true", and the trap is on the same line as the npm ci call;
+    # the `if`-guard achieves the same set -e safety without that token.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; true' EXIT"
+        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi' EXIT"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
