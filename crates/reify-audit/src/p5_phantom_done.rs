@@ -464,6 +464,47 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
                         ],
                     });
                 }
+
+                // (a) Task-id-referencing commit reachable on main rescue.
+                // `git log main --grep=<task_id>` only returns commits reachable
+                // from main, so a non-empty result means a "Merge task/<id>
+                // into main" or task-id-referencing commit is on main.
+                // The branch ref may have been reaped and the claimed commit
+                // unresolvable, but the work is demonstrably on main.
+                // Downgrade to Low so the operator can inspect without it
+                // escalating as a genuine phantom-done.
+                {
+                    let siblings = ctx.git.log_grep(MAIN_BASE, &meta.task_id);
+                    if !siblings.is_empty() {
+                        let mut evidence: Vec<EvidenceRef> = siblings
+                            .iter()
+                            .map(|c| EvidenceRef::Commit {
+                                sha: c.sha.clone(),
+                                subject: c.subject.clone(),
+                            })
+                            .collect();
+                        evidence.push(EvidenceRef::RunsDb {
+                            table: "events".to_string(),
+                            key: format!(
+                                "task_id={} AND event_type=task_completed",
+                                meta.task_id
+                            ),
+                        });
+                        return Some(Finding {
+                            pattern: Pattern::P5PhantomDone,
+                            severity: Severity::Low,
+                            task_id: meta.task_id.clone(),
+                            summary: format!(
+                                "task-id-referencing commit reachable on main (landed, not \
+                                 phantom-done); no task_completed event in runs.db — \
+                                 stale/rebuilt provenance or reaped branch (task {})",
+                                meta.task_id
+                            ),
+                            evidence,
+                        });
+                    }
+                }
+
                 return Some(Finding {
                     pattern: Pattern::P5PhantomDone,
                     severity: Severity::High,
