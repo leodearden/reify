@@ -778,21 +778,22 @@ build_plan() {
     # Cleanup trap: registered in the same eval so it fires on any EXIT (success
     # or failure). If a foreground rust gate fails before the wait join, the
     # executor calls exit and the trap kills the still-running npm job instead of
-    # orphaning it. The "if kill ...; then :; fi" form suppresses errors (no such
-    # process) on the happy path where wait has already reaped the job before EXIT
-    # fires. Crucially, wrapping kill in an `if` condition makes it immune to
-    # `set -e`: under bash 5.2 a bare "kill <dead_pid>; true" aborts the EXIT trap
-    # via errexit on kill's rc=1 BEFORE `true` runs, so the trap (and the whole
-    # script) exits 1 even when every check passed (esc-4431-30). The `if`
-    # condition's failure is handled by the construct, not errexit.
+    # orphaning it.
+    #
+    # The kill is wrapped in an `if ...; then :; fi` rather than a bare sequence.
+    # On the happy path `wait` has already reaped the job before EXIT fires, so
+    # the kill returns 1 (no such process). Under the script's `set -euo
+    # pipefail`, a *bare* `kill ...; true` poisons the exit code: bash aborts the
+    # trap body at the failing kill BEFORE reaching `true`, flipping a fully
+    # passing run (rc=0 after "all checks passed") to rc=1 (regression from
+    # commit 9b398f7a26; esc-3993-22, independently reproduced under bash 5.2 as
+    # esc-4431-30). An `if` *condition* is exempt from set -e, so
+    # `if kill ...; then :; fi` swallows the no-such-process failure without
+    # aborting — and still reaps the job on the fail path (kill succeeds → `:`).
     # NOTE: "|| true" is intentionally avoided here — the npm ci hardening test
     # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
-    # "npm ci.*|| true", and the trap is on the same line as the npm ci call.
-    # The kill is wrapped in `if … ; then :; fi` instead: set -e applies INSIDE
-    # an EXIT trap, and on green runs the bg PID is already reaped by the wait
-    # step, so a bare `kill …; true` aborts at the failed kill and turns a
-    # fully-green run into exit 1 (task 4457). An if-condition is exempt from
-    # set -e and contains no "|| true" token.
+    # "npm ci.*|| true", and the trap is on the same line as the npm ci call;
+    # the `if`-guard achieves the same set -e safety without that token.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
         add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi' EXIT"
     fi
