@@ -10,6 +10,7 @@ use indexmap::IndexSet;
 
 use reify_core::{Diagnostic, ModulePathParseError};
 
+use crate::cfg::{CfgSet, cfg_satisfied};
 use crate::CompiledModule;
 
 /// Resolves import dot-paths to filesystem paths.
@@ -105,6 +106,9 @@ pub struct ModuleDag {
     in_progress: IndexSet<String>,
     /// Source committed on the first `std.*` resolution (all-or-nothing invariant).
     stdlib_mode: Option<StdlibMode>,
+    /// Active compile-time configuration for evaluating `#cfg(...)` predicates.
+    /// `CfgSet::default()` means no cfg constraints — all imports are followed.
+    cfg: CfgSet,
 }
 
 /// Build an "invalid module path" [`Diagnostic`] vec.
@@ -254,12 +258,27 @@ impl ModuleDag {
             topo_order: Vec::new(),
             in_progress: IndexSet::new(),
             stdlib_mode: None,
+            cfg: CfgSet::default(),
+        }
+    }
+
+    /// Construct a `ModuleDag` with an active `CfgSet` for `#cfg(...)` gating.
+    ///
+    /// Imports whose predicates are unsatisfied against `cfg` are skipped (not
+    /// recursed into, not added to the DAG, not included in any prelude).
+    pub fn with_cfg(cfg: CfgSet) -> Self {
+        Self {
+            cfg,
+            ..Self::new()
         }
     }
 
     /// Compile a module and all its transitive dependencies.
     ///
     /// Performs DFS with cycle detection. Returns diagnostics on error.
+    ///
+    /// Imports with `#cfg(...)` predicates that are not satisfied by `self.cfg`
+    /// are skipped entirely (not recursed into, not included in the prelude).
     ///
     /// **Stdlib resolution precedence for `std.*` paths:**
     ///
@@ -442,9 +461,13 @@ impl ModuleDag {
             // Single pass: compile each import dependency and collect its path.
             // Merges the previous two-pass pattern (compile + collect_import_preludes)
             // into one iteration over parsed.declarations.
+            // Imports with unsatisfied `#cfg(...)` predicates are skipped entirely.
             let mut import_paths: Vec<String> = Vec::new();
             for decl in &parsed.declarations {
                 if let reify_ast::Declaration::Import(import) = decl {
+                    if !import_cfg_satisfied(import, &self.cfg) {
+                        continue;
+                    }
                     self.compile_module(&import.path, resolver)?;
                     import_paths.push(import.path.clone());
                 }
@@ -605,6 +628,14 @@ mod tests {
     }
 }
 
+/// Returns `true` iff all `#cfg(...)` predicates on `import` are satisfied by `cfg`.
+///
+/// An import with no `cfg_predicates` is vacuously satisfied (always followed).
+/// Stacked `#cfg` pragmas are ANDed: all must be satisfied (PRD D-1).
+fn import_cfg_satisfied(import: &reify_ast::ImportDecl, cfg: &CfgSet) -> bool {
+    import.cfg_predicates.iter().all(|p| cfg_satisfied(p, cfg))
+}
+
 /// Compile a project starting from an entry file.
 ///
 /// Builds the full module DAG, detects cycles, and returns modules in
@@ -646,6 +677,25 @@ pub fn compile_project_with_entry_source(
     entry_source: &str,
     resolver: &ModuleResolver,
 ) -> Result<Vec<CompiledModule>, Vec<Diagnostic>> {
+    compile_project_with_entry_source_cfg(entry_path, entry_source, resolver, &CfgSet::default())
+}
+
+/// Compile a project using a caller-supplied in-memory string for the entry
+/// module's source, with an active `CfgSet` for `#cfg(...)` import gating.
+///
+/// Imports whose `#cfg(...)` predicates are unsatisfied against `cfg` are
+/// skipped entirely: not recursed into, not compiled, not included in the
+/// entry prelude. An empty `CfgSet` (the default) is vacuously satisfied
+/// for all imports, so behaviour is identical to `compile_project_with_entry_source`.
+///
+/// Returns modules in topological order (dependencies before dependents), or
+/// a non-empty `Vec<Diagnostic>` on parse / compile error.
+pub fn compile_project_with_entry_source_cfg(
+    entry_path: &Path,
+    entry_source: &str,
+    resolver: &ModuleResolver,
+    cfg: &CfgSet,
+) -> Result<Vec<CompiledModule>, Vec<Diagnostic>> {
     let entry_name = entry_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -661,11 +711,14 @@ pub fn compile_project_with_entry_source(
             .collect());
     }
 
-    let mut dag = ModuleDag::new();
+    let mut dag = ModuleDag::with_cfg(cfg.clone());
 
-    // Recursively compile all imports
+    // Recursively compile imports that satisfy the active cfg.
     for decl in &parsed.declarations {
         if let reify_ast::Declaration::Import(import) = decl {
+            if !import_cfg_satisfied(import, cfg) {
+                continue;
+            }
             dag.compile_module(&import.path, resolver)?;
         }
     }
@@ -674,11 +727,9 @@ pub fn compile_project_with_entry_source(
     // exported definitions) are visible in the entry module.
     // Block-scope the preludes so the shared borrows of dag.modules are
     // dropped before the mutable borrow in dag.modules.insert below.
+    // Only satisfied imports were compiled above, so the same gate is applied
+    // here to avoid a `.expect()` panic on an uncompiled (gated-out) import.
     let compiled_entry = {
-        // Collect only Import declarations, then look up each compiled module.
-        // All imports were recursively compiled above, so every lookup is infallible.
-        // Splitting the filter from the lookup lets .expect() make any violation
-        // loud in both debug and release builds.
         let preludes: Vec<&CompiledModule> = parsed
             .declarations
             .iter()
@@ -689,10 +740,11 @@ pub fn compile_project_with_entry_source(
                     None
                 }
             })
+            .filter(|import| import_cfg_satisfied(import, cfg))
             .map(|import| {
                 dag.modules
                     .get(&import.path)
-                    .expect("invariant: import compiled before entry prelude collection")
+                    .expect("invariant: satisfied import compiled before entry prelude collection")
             })
             .collect();
         crate::compile_with_prelude_refs(&parsed, &preludes)

@@ -664,6 +664,9 @@ pub struct ImportDecl {
     pub content_hash: ContentHash,
     /// Annotations preceding this declaration.
     pub annotations: Vec<Annotation>,
+    /// `#cfg(...)` pragmas attached positionally to this import; ANDed for DAG gating,
+    /// empty for an ungated import.
+    pub cfg_predicates: Vec<Pragma>,
 }
 
 /// A single variant inside an `enum` declaration.

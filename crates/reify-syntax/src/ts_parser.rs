@@ -297,12 +297,16 @@ impl<'a> Lowering<'a> {
         // Second pass: lower all declarations.
         // Annotations immediately before a declaration are accumulated in
         // `pending_annotations` and drained into the declaration's `annotations` field.
+        // `#cfg(...)` pragmas immediately before an import are accumulated in
+        // `pending_cfg` and drained into the import's `cfg_predicates` field.
         let mut pending_annotations: Vec<Annotation> = Vec::new();
+        let mut pending_cfg: Vec<Pragma> = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "structure_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_structure(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Structure(decl));
@@ -310,6 +314,7 @@ impl<'a> Lowering<'a> {
                 }
                 "occurrence_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_occurrence(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Occurrence(decl));
@@ -317,13 +322,16 @@ impl<'a> Lowering<'a> {
                 }
                 "import_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let cfg_predicates = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_import(child) {
                         decl.annotations = annotations;
+                        decl.cfg_predicates = cfg_predicates;
                         self.declarations.push(Declaration::Import(decl));
                     }
                 }
                 "enum_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_enum(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Enum(decl));
@@ -331,6 +339,7 @@ impl<'a> Lowering<'a> {
                 }
                 "function_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_function(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Function(decl));
@@ -338,6 +347,7 @@ impl<'a> Lowering<'a> {
                 }
                 "trait_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_trait(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Trait(decl));
@@ -345,6 +355,7 @@ impl<'a> Lowering<'a> {
                 }
                 "field_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_field(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Field(decl));
@@ -352,6 +363,7 @@ impl<'a> Lowering<'a> {
                 }
                 "purpose_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_purpose(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Purpose(decl));
@@ -359,6 +371,7 @@ impl<'a> Lowering<'a> {
                 }
                 "constraint_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_constraint_def(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Constraint(decl));
@@ -366,6 +379,7 @@ impl<'a> Lowering<'a> {
                 }
                 "unit_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_unit(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Unit(decl));
@@ -373,6 +387,7 @@ impl<'a> Lowering<'a> {
                 }
                 "type_alias_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_type_alias(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::TypeAlias(decl));
@@ -385,6 +400,9 @@ impl<'a> Lowering<'a> {
                 }
                 "pragma" => {
                     if let Some(pragma) = self.lower_pragma(child) {
+                        if pragma.name == "cfg" {
+                            pending_cfg.push(pragma.clone());
+                        }
                         self.module_pragmas.push(pragma);
                     }
                 }
@@ -393,6 +411,7 @@ impl<'a> Lowering<'a> {
                     // Extract the dotted path by collecting `identifier` children
                     // of the `path` (import_path) field — mirrors lower_import's
                     // segment-collection loop.
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(path_node) = child.child_by_field_name("path") {
                         let mut segments = Vec::new();
                         let mut seg_cursor = path_node.walk();
@@ -432,9 +451,10 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    // Consume any pending annotations so they don't leak past a
-                    // syntax error to the next successfully-parsed declaration.
+                    // Consume any pending annotations and pending cfg so they don't
+                    // leak past a syntax error to the next successfully-parsed declaration.
                     let _ = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     self.push_error(
                         format!("syntax error: {}", self.node_text(child)),
                         self.span(child),
@@ -521,6 +541,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             annotations: vec![],
+            cfg_predicates: vec![],
         })
     }
 
