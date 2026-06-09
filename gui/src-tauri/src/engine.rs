@@ -1103,11 +1103,10 @@ impl EngineSession {
     /// `last_check`).  An unknown case name falls back to the lex-first default
     /// (same semantics as `apply_fea_channels`).
     pub fn set_active_fea_case(&mut self, name: &str) -> Result<GuiState, String> {
-        self.active_fea_case = Some(name.to_string());
-
         if self.core.compiled().is_none() || self.core.last_check().is_none() {
             return Err("Cannot switch FEA case: no module loaded".to_string());
         }
+        self.active_fea_case = Some(name.to_string());
 
         // Clone bare tessellation mesh geometry from cache (O(mesh bytes), no kernel call).
         let mut meshes = self.tess_mesh_cache.clone().unwrap_or_default();
@@ -1135,57 +1134,10 @@ impl EngineSession {
             )
         };
 
-        // Build files from source_map (unchanged since last load).
-        let mut files: Vec<FileData> = self
-            .core
-            .source_map()
-            .iter()
-            .map(|(path, content)| FileData {
-                path: path.clone(),
-                content: content.clone(),
-            })
-            .collect();
-
-        // One-snapshot invariant: splice in any live-edit failing source, mirroring
-        // the same logic in build_gui_state so callers get a consistent GuiState.
-        if let Some(f) = &self.compile_failure
-            && f.kind == CompileFailureKind::LiveEdit
-        {
-            if let Some(entry) = files.iter_mut().find(|fd| fd.path == f.file_key) {
-                entry.content = f.source.clone();
-            } else {
-                files.push(FileData {
-                    path: f.file_key.clone(),
-                    content: f.source.clone(),
-                });
-            }
-        }
-
-        // Compile diagnostics (same as build_gui_state logic; no new compile happened).
-        let mut compile_diagnostics = self.get_diagnostics();
-        if let Some(f) = &self.compile_failure
-            && f.kind == CompileFailureKind::LiveEdit
-        {
-            compile_diagnostics.extend(f.diags.iter().cloned());
-        }
-        if self.compile_failure.is_none()
-            && let Some(msg) = &self.last_reload_error
-        {
-            let file_path = self
-                .resolve_source()
-                .map(|(k, _)| k)
-                .unwrap_or("<unknown>");
-            compile_diagnostics.push(DiagnosticInfo {
-                file_path: file_path.to_owned(),
-                line: 1,
-                column: 1,
-                end_line: 1,
-                end_column: 1,
-                severity: "Error".to_owned(),
-                message: msg.clone(),
-                code: Some("hot-reload-error".to_owned()),
-            });
-        }
+        // Build files and compile diagnostics via shared helpers so both
+        // `build_gui_state` and `set_active_fea_case` stay in sync.
+        let files = self.build_files_with_live_edit();
+        let compile_diagnostics = self.build_compile_diagnostics();
 
         // Tessellation diagnostics from the cache (no re-tessellation → same diags).
         let tessellation_diagnostics = self.tess_diag_cache.clone();
@@ -2264,6 +2216,73 @@ impl EngineSession {
         self.core.compiled().is_some() && self.core.last_check().is_some()
     }
 
+    /// Build the list of source files for `GuiState`, incorporating the live-edit
+    /// splice when a `LiveEdit` failure is stored.
+    ///
+    /// Shared by `build_gui_state` and `set_active_fea_case` to ensure consistent
+    /// `files` data across initial load and case-switch paths.
+    fn build_files_with_live_edit(&self) -> Vec<FileData> {
+        let mut files: Vec<FileData> = self
+            .core
+            .source_map()
+            .iter()
+            .map(|(path, content)| FileData {
+                path: path.clone(),
+                content: content.clone(),
+            })
+            .collect();
+
+        // One-snapshot invariant: splice in any live-edit failing source so
+        // `files[].content` and `compile_diagnostics` are from the same snapshot.
+        if let Some(f) = &self.compile_failure
+            && f.kind == CompileFailureKind::LiveEdit
+        {
+            if let Some(entry) = files.iter_mut().find(|fd| fd.path == f.file_key) {
+                entry.content = f.source.clone();
+            } else {
+                files.push(FileData {
+                    path: f.file_key.clone(),
+                    content: f.source.clone(),
+                });
+            }
+        }
+
+        files
+    }
+
+    /// Build compile diagnostics for `GuiState`, appending live-edit failures
+    /// and hot-reload errors when present.
+    ///
+    /// Shared by `build_gui_state` and `set_active_fea_case` so both paths
+    /// produce identical diagnostic data and cannot silently drift.
+    fn build_compile_diagnostics(&self) -> Vec<DiagnosticInfo> {
+        let mut compile_diagnostics = self.get_diagnostics();
+        if let Some(f) = &self.compile_failure
+            && f.kind == CompileFailureKind::LiveEdit
+        {
+            compile_diagnostics.extend(f.diags.iter().cloned());
+        }
+        if self.compile_failure.is_none()
+            && let Some(msg) = &self.last_reload_error
+        {
+            let file_path = self
+                .resolve_source()
+                .map(|(k, _)| k)
+                .unwrap_or("<unknown>");
+            compile_diagnostics.push(DiagnosticInfo {
+                file_path: file_path.to_owned(),
+                line: 1,
+                column: 1,
+                end_line: 1,
+                end_column: 1,
+                severity: "Error".to_owned(),
+                message: msg.clone(),
+                code: Some("hot-reload-error".to_owned()),
+            });
+        }
+        compile_diagnostics
+    }
+
     /// Build the full GUI state from the current engine state.
     ///
     /// # One-snapshot invariant (task 4258)
@@ -2455,23 +2474,36 @@ impl EngineSession {
                         vector_channels: std::collections::HashMap::new(),
                     })
                     .collect();
-                // Cache bare tessellation data (geometry only, no FEA/shell
-                // channels) so set_active_fea_case can re-source FEA channels
-                // for a new case without re-running tessellate_snapshot.
-                // The clone here is O(mesh bytes) but paid only once per
-                // tessellation; set_active_fea_case reads the cache without
-                // touching the kernel at all.
-                self.tess_mesh_cache = Some(meshes.iter().map(|m| MeshData {
-                    entity_path: m.entity_path.clone(),
-                    vertices: m.vertices.clone(),
-                    indices: m.indices.clone(),
-                    normals: m.normals.clone(),
-                    scalar_channels: std::collections::HashMap::new(),
-                    displaced_positions: None,
-                    element_kind: None,
-                    region_tags: None,
-                    vector_channels: std::collections::HashMap::new(),
-                }).collect());
+                // Cache bare tessellation geometry ONLY for FEA scenes: when a
+                // MultiCaseResult or single-case ElasticResult is present in the
+                // evaluated values, `set_active_fea_case` needs the cached bare-mesh
+                // buffers (vertices/indices/normals) to re-source channels without
+                // re-tessellating.  Non-FEA scenes skip the O(mesh bytes) clone so
+                // they don't pay the cost of a feature they never use.
+                // A non-FEA scene that later acquires FEA values must go through
+                // `build_gui_state` again (as always happens in production via the
+                // normal commit_state → build_gui_state path) before case-switching.
+                let has_fea = self.core.last_check()
+                    .map(|check| values_have_fea_data(&check.values))
+                    .unwrap_or(false);
+                if has_fea {
+                    self.tess_mesh_cache = Some(meshes.iter().map(|m| MeshData {
+                        entity_path: m.entity_path.clone(),
+                        vertices: m.vertices.clone(),
+                        indices: m.indices.clone(),
+                        normals: m.normals.clone(),
+                        scalar_channels: std::collections::HashMap::new(),
+                        displaced_positions: None,
+                        element_kind: None,
+                        region_tags: None,
+                        vector_channels: std::collections::HashMap::new(),
+                    }).collect());
+                } else {
+                    // Invalidate any stale cache from a prior FEA scene so a
+                    // subsequent set_active_fea_case on a non-FEA scene does not
+                    // serve geometry from the wrong model.
+                    self.tess_mesh_cache = None;
+                }
                 self.tess_diag_cache = tess_diags.clone();
                 // Populate per-vertex FEA scalar/displacement channels when an
                 // ElasticResult is present in the evaluated values.  The helper
@@ -2504,85 +2536,13 @@ impl EngineSession {
             },
         };
 
-        // Build files from the last-good source_map.
-        let mut files: Vec<FileData> = self
-            .core
-            .source_map()
-            .iter()
-            .map(|(path, content)| FileData {
-                path: path.clone(),
-                content: content.clone(),
-            })
-            .collect();
-
-        // One-snapshot invariant (task 4258): when a LiveEdit failure is stored,
-        // override the matching files entry's content with the failing buffer so
-        // `files[].content` and `compile_diagnostics` are computed from the same
-        // source snapshot.  meshes/values/get_source_location intentionally stay
-        // last-good (they describe the last successfully compiled module) — only
-        // the SOURCE text is retargeted to the failing buffer.
-        //
-        // The `else` branch handles the unlikely edge case where the failing file
-        // was not present in source_map (e.g. a brand-new file on first load
-        // without a prior success for that key) — push a new entry so diagnostics
-        // can always be indexed against a source.
-        if let Some(f) = &self.compile_failure
-            && f.kind == CompileFailureKind::LiveEdit
-        {
-            if let Some(entry) = files.iter_mut().find(|fd| fd.path == f.file_key) {
-                entry.content = f.source.clone();
-            } else {
-                files.push(FileData {
-                    path: f.file_key.clone(),
-                    content: f.source.clone(),
-                });
-            }
-        }
-
-        // Collect compile diagnostics (errors, warnings, info) from the most
-        // recently compiled module. Called after tessellate_snapshot so the
-        // mutable engine borrow is already released.  Takes &self — coexists
-        // safely with the existing immutable borrows of compiled/check/files.
-        //
-        // Also append any live compile failures (from a failed live edit while a
-        // prior good compile was still in `self.compiled`).  Appending rather than
-        // replacing preserves warnings/info from the last good state; Error entries
-        // from a `LiveEdit` failure follow them, so frontends sorting by severity
-        // will surface errors first.  Only `LiveEdit` failures reach this branch
-        // (a `ColdStart` failure is stored only when `compiled` is `None`, which
-        // short-circuits above — so here `compiled` is `Some` and any stored failure
-        // is `LiveEdit`).
-        let mut compile_diagnostics = self.get_diagnostics();
-        if let Some(f) = &self.compile_failure
-            && f.kind == CompileFailureKind::LiveEdit
-        {
-            compile_diagnostics.extend(f.diags.iter().cloned());
-        }
-        // Synthesize a reload-error DiagnosticInfo when the session is stale due
-        // to a hot-reload failure that did NOT produce a structured compile_failure
-        // (i.e. the check()-panic path where compile_failure is None).  Gating on
-        // `compile_failure.is_none()` avoids double-reporting: in the compile-error
-        // path both `compile_failure` (structured diags) and `last_reload_error`
-        // (joined message) are set; the structured diags already reach the frontend
-        // via the LiveEdit append above, so adding the message again would duplicate.
-        if self.compile_failure.is_none()
-            && let Some(msg) = &self.last_reload_error
-        {
-            let file_path = self
-                .resolve_source()
-                .map(|(k, _)| k)
-                .unwrap_or("<unknown>");
-            compile_diagnostics.push(DiagnosticInfo {
-                file_path: file_path.to_owned(),
-                line: 1,
-                column: 1,
-                end_line: 1,
-                end_column: 1,
-                severity: "Error".to_owned(),
-                message: msg.clone(),
-                code: Some("hot-reload-error".to_owned()),
-            });
-        }
+        // Build files and compile diagnostics via shared helpers.
+        // See `build_files_with_live_edit` and `build_compile_diagnostics` for
+        // the full one-snapshot invariant, live-edit splice, and hot-reload-error
+        // synthesis logic. Both helpers are also called from `set_active_fea_case`
+        // to keep the two paths consistent.
+        let files = self.build_files_with_live_edit();
+        let compile_diagnostics = self.build_compile_diagnostics();
 
         // Extract tensegrity wire descriptors from value cells.
         // Scoped borrow released before GuiState construction.
@@ -4999,6 +4959,16 @@ pub(crate) fn extract_elastic_result_fields(
         }
     }
     None
+}
+
+/// Returns `true` if `values` contains any top-level `ElasticResult`
+/// or any `MultiCaseResult`-shaped cell — indicating a scene with FEA data
+/// that warrants caching the tessellation geometry for case-switching.
+fn values_have_fea_data(values: &reify_ir::ValueMap) -> bool {
+    extract_elastic_result_fields(values).is_some()
+        || values.iter().any(|(_, v)| {
+            reify_eval::multi_load_dispatch::detect_multi_case_result(v).is_some()
+        })
 }
 
 /// Extract stress and displacement `SampledField` references from a single

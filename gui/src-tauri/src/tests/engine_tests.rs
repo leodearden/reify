@@ -12264,26 +12264,18 @@ fn engine_session_active_fea_case_default_then_switch() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
-    // Load bracket_source: tessellate_snapshot runs, populating tess_mesh_cache.
-    // MockGeometryKernel returns 3 vertices per realization: [0,0,0],[1,0,0],[0,1,0].
-    let load_state = session
+    // Load bracket_source: this is a non-FEA scene, so tess_mesh_cache is NOT
+    // populated (gated on FEA presence since amendment 3).
+    session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source must succeed for bracket_source");
 
     let tess_count_after_load = tess_arc.lock().unwrap().len();
     assert!(tess_count_after_load > 0, "initial load must produce ≥1 tessellation call");
 
-    // Capture initial vertices/indices from the load result.
-    let vertices_before: Vec<f32> = load_state.meshes.iter()
-        .flat_map(|m| m.vertices.iter().cloned())
-        .collect();
-    let indices_before: Vec<u32> = load_state.meshes.iter()
-        .flat_map(|m| m.indices.iter().cloned())
-        .collect();
-    assert!(!vertices_before.is_empty(), "MockGeometryKernel must produce vertices for bracket body");
-
     // Inject a MultiCaseResult CheckResult with "operating" (100 MPa) and
     // "overload" (200 MPa) Sampled-field ElasticResult cases.
+    // This simulates what happens in production when check() returns FEA values.
     let values = make_multi_case_value_map();
     let check = CheckResult {
         values,
@@ -12292,6 +12284,27 @@ fn engine_session_active_fea_case_default_then_switch() {
         resolved_params: std::collections::HashMap::new(),
     };
     session.inject_check_for_test(check); // FAILS TO COMPILE (step-4 adds this)
+
+    // Rebuild GuiState with FEA values so tess_mesh_cache is populated (FEA-gated).
+    // In production, build_gui_state is always called after check() returns FEA data;
+    // inject_check_for_test is test-only and does not trigger a rebuild automatically.
+    let fea_state = session.build_gui_state()
+        .expect("build_gui_state must succeed with injected FEA check");
+    let tess_count_after_rebuild = tess_arc.lock().unwrap().len();
+    assert!(
+        tess_count_after_rebuild >= tess_count_after_load,
+        "rebuild tessellates again (tess_count_after_load={}, tess_count_after_rebuild={})",
+        tess_count_after_load, tess_count_after_rebuild
+    );
+
+    // Capture vertices from the FEA-enabled rebuild (these are what the cache holds).
+    let vertices_before: Vec<f32> = fea_state.meshes.iter()
+        .flat_map(|m| m.vertices.iter().cloned())
+        .collect();
+    let indices_before: Vec<u32> = fea_state.meshes.iter()
+        .flat_map(|m| m.indices.iter().cloned())
+        .collect();
+    assert!(!vertices_before.is_empty(), "MockGeometryKernel must produce vertices for bracket body");
 
     // (a) Initial active case is None — lex-first "operating" is the implicit default.
     assert_eq!(session.get_active_fea_case(), None); // FAILS TO COMPILE (step-4 adds this)
@@ -12308,7 +12321,8 @@ fn engine_session_active_fea_case_default_then_switch() {
         "get_active_fea_case must return 'overload' after set"
     );
 
-    // (d) Vertices/indices are byte-identical — tessellation was NOT repeated.
+    // (d) Vertices/indices are byte-identical — tessellation was NOT repeated
+    // (set_active_fea_case serves geometry from tess_mesh_cache, no kernel call).
     let vertices_after: Vec<f32> = state_overload.meshes.iter()
         .flat_map(|m| m.vertices.iter().cloned())
         .collect();
@@ -12323,12 +12337,12 @@ fn engine_session_active_fea_case_default_then_switch() {
         indices_before, indices_after,
         "indices must be byte-identical after case switch (no re-tessellation)"
     );
-    // Tessellation count must not increase.
+    // Tessellation count must not increase from the post-rebuild baseline.
     let tess_count_after_set = tess_arc.lock().unwrap().len();
     assert_eq!(
-        tess_count_after_set, tess_count_after_load,
-        "set_active_fea_case must not trigger tessellation (before={}, after={})",
-        tess_count_after_load, tess_count_after_set
+        tess_count_after_set, tess_count_after_rebuild,
+        "set_active_fea_case must not trigger tessellation (rebuild={}, after_set={})",
+        tess_count_after_rebuild, tess_count_after_set
     );
 
     // (c) scalar_channels["vonMises"] reflects "overload" (200 MPa at vertex 0).
