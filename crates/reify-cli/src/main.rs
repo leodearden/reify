@@ -182,6 +182,70 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
     Ok(compiled)
 }
 
+/// Like [`parse_and_compile`], but seeds the active [`CfgSet`] and walks a
+/// `#cfg(...)`-gated user-import DAG via
+/// [`reify_compiler::module_dag::compile_entry_with_stdlib_cfg`].
+///
+/// Used only by `reify check`. It preserves single-file behavior — the full
+/// stdlib prelude is still seeded, so every existing `reify check` input keeps
+/// resolving stdlib names — while additionally following the entry's
+/// cfg-satisfied user imports, so `--cfg target=...` selects which platform
+/// modules resolve (task δ's user-observable signal).
+///
+/// The module-path declaration check (spec §7.1/§7.2, task γ) is performed
+/// *inside* `compile_entry_with_stdlib_cfg` (via `attach_module_path_diag`), so
+/// — unlike [`parse_and_compile`] — this function must NOT re-run it, else the
+/// diagnostic would be emitted twice.
+fn parse_and_compile_with_cfg(
+    path: &str,
+    cfg: &CfgSet,
+) -> Result<reify_compiler::CompiledModule, ExitCode> {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return Err(ExitCode::FAILURE);
+        }
+    };
+
+    // file_stem() strips only the last extension — same module-name derivation
+    // as parse_and_compile (see its comment for the dotted-stem limitation).
+    let module_name = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unnamed");
+
+    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
+
+    if !parsed.errors.is_empty() {
+        for err in &parsed.errors {
+            eprintln!("Parse error: {}", err.message);
+        }
+        return Err(ExitCode::FAILURE);
+    }
+
+    // Resolve sibling user imports relative to the entry file's parent dir. The
+    // stdlib_root mirrors the GUI heuristic (parent/crates/reify-compiler/stdlib);
+    // when that path is absent the resolver falls back to the embedded stdlib,
+    // which is always present via load_stdlib() in the prelude anyway.
+    let parent_dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(
+        parent_dir,
+        parent_dir.join("crates/reify-compiler/stdlib"),
+    );
+
+    let compiled =
+        reify_compiler::module_dag::compile_entry_with_stdlib_cfg(&parsed, &resolver, cfg);
+
+    for diag in &compiled.diagnostics {
+        eprintln!("{}: {}", diag.severity, diag.message);
+    }
+
+    Ok(compiled)
+}
+
 /// One per-param binding parsed from a `--purpose` flag value.
 ///
 /// `param` is the per-param name in the multi-pair form (`p:A`), or `None`
@@ -338,13 +402,15 @@ fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
 }
 
 /// Usage line printed to stderr for any `reify check` usage error.
-const CHECK_USAGE: &str = "Usage: reify check [--purpose <name>=<binding>]... <file>";
+const CHECK_USAGE: &str =
+    "Usage: reify check [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
     // `--purpouse` fails loud instead of being silently treated as a file path.
     let mut purpose_values: Vec<String> = Vec::new();
+    let mut cfg_values: Vec<String> = Vec::new();
     let mut file: Option<&str> = None;
     let mut i = 0;
     while i < args.len() {
@@ -357,6 +423,15 @@ fn cmd_check(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
                 purpose_values.push(args[i + 1].clone());
+                i += 2;
+            }
+            "--cfg" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --cfg requires a value");
+                    eprintln!("{}", CHECK_USAGE);
+                    return ExitCode::FAILURE;
+                }
+                cfg_values.push(args[i + 1].clone());
                 i += 2;
             }
             flag if flag.starts_with("--") => {
@@ -381,7 +456,17 @@ fn cmd_check(args: &[String]) -> ExitCode {
         }
     };
 
-    let compiled = match parse_and_compile(file) {
+    // Build the active cfg from the repeated `--cfg` values: target is
+    // host-defaulted and overridable only by `--cfg target=<v>` (PRD §4 D-2).
+    let cfg = match build_cfg_set(&cfg_values) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let compiled = match parse_and_compile_with_cfg(file, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };
