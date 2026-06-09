@@ -26,7 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::Type;
+use reify_core::{ContentHash, Type};
 use reify_ir::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
 };
@@ -35,7 +35,8 @@ use crate::CompiledModule;
 use crate::auto_type_param::{AutoTypeParam, resolve_auto_type_params_with_backtracking};
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::traits_phase::build_trait_registry;
-use crate::types::{AutoTypeSubstitution, EntityKind, TopologyTemplate};
+use crate::type_resolution::substitute_type_params;
+use crate::types::{AutoTypeSubstitution, EntityKind, TopologyTemplate, mangle_monomorph_name};
 
 /// A compile-time [`ConstraintChecker`] that returns
 /// [`Satisfaction::Indeterminate`] for every input constraint.
@@ -88,15 +89,21 @@ pub(crate) fn phase_auto_type_param_resolution(
     let requests = std::mem::take(&mut ctx.pending_auto_resolutions);
 
     // Pass 1 — resolve every request while holding immutable registry borrows.
-    // Collect (owner, sub_index, position, resolved_name) rewrites and the raw
-    // substitution pairs; defer the mutation of `ctx.templates` to pass 2 so the
-    // registry's `&TopologyTemplate` borrows don't conflict with `&mut`. We key
-    // rewrites by `sub_index` (not `sub_name`) because match-arm clusters reuse
+    // Collect:
+    //   * `rewrites`         — (owner, sub_index, position, resolved_name)
+    //                          for the existing type_args[pos]→StructureRef slot rewrite
+    //   * `subst_pairs`      — raw (param_name, template_name) aggregation
+    //   * `monomorph_clones` — per-use-site (TopologyTemplate, owner, sub_index, mono_name)
+    //                          built from target clones with TypeParam→StructureRef substituted
+    //
+    // `ctx.templates` mutation is deferred to pass 2 so the registry's
+    // `&TopologyTemplate` borrows don't conflict with `&mut`. We key rewrites
+    // by `sub_index` (not `sub_name`) because match-arm clusters reuse
     // `sub_name` across multiple `SubComponentDecl`s — a name-only `find` would
     // resolve every arm's rewrite to arm[0], silently dropping the rest. The
     // index is captured at the request push site in `entity.rs` (where it
     // equals the about-to-be-pushed-position in the local `sub_components` vec).
-    let (rewrites, subst_pairs) = {
+    let (rewrites, subst_pairs, monomorph_clones) = {
         // Template registry: prelude `structure def`s first, then local
         // overrides — identical composition to `phase_pending_bound_checks`.
         let template_registry: HashMap<String, &TopologyTemplate> = prelude
@@ -113,6 +120,8 @@ pub(crate) fn phase_auto_type_param_resolution(
         // (owner_structure, sub_index, type_args_position, resolved_template_name)
         let mut rewrites: Vec<(String, usize, usize, String)> = Vec::new();
         let mut subst_pairs: Vec<(String, String)> = Vec::new();
+        // (clone, owner_structure, sub_index, mono_name)
+        let mut monomorph_clones: Vec<(TopologyTemplate, String, usize, String)> = Vec::new();
 
         for req in &requests {
             // Look up the instantiated template; an unknown target is handled by
@@ -157,26 +166,86 @@ pub(crate) fn phase_auto_type_param_resolution(
                 diagnostics,
             );
 
-            for (param_name, template_name) in outcome.substitution {
-                if let Some(&position) = name_to_position.get(&param_name) {
+            // Build Σ = {param_name → StructureRef(resolved)} and collect
+            // candidates in (position, resolved_name) order for the mangle.
+            let mut sigma: HashMap<String, Type> = HashMap::new();
+            let mut candidates_by_position: Vec<(usize, String)> = Vec::new();
+
+            for (param_name, template_name) in &outcome.substitution {
+                if let Some(&position) = name_to_position.get(param_name.as_str()) {
                     rewrites.push((
                         req.owner_structure.clone(),
                         req.sub_index,
                         position,
                         template_name.clone(),
                     ));
+                    sigma.insert(param_name.clone(), Type::StructureRef(template_name.clone()));
+                    candidates_by_position.push((position, template_name.clone()));
                 }
-                subst_pairs.push((param_name, template_name));
+                subst_pairs.push((param_name.clone(), template_name.clone()));
+            }
+
+            // Synthesize a monomorph if at least one type-param was resolved.
+            if !sigma.is_empty() {
+                // Sort by position to guarantee deterministic mangle order
+                // regardless of outcome.substitution iteration order.
+                candidates_by_position.sort_by_key(|(pos, _)| *pos);
+                let ordered_candidates: Vec<String> =
+                    candidates_by_position.into_iter().map(|(_, c)| c).collect();
+                let mono_name =
+                    mangle_monomorph_name(&req.target_name, &ordered_candidates);
+
+                // Clone the target template and rewrite it as a monomorph.
+                let mut mono = target.clone();
+                mono.name = mono_name.clone();
+                // A monomorph has no free type parameters — it is concrete.
+                mono.type_params.clear();
+                // Substitute TypeParam→StructureRef in top-level value_cells.
+                for cell in &mut mono.value_cells {
+                    cell.cell_type = substitute_type_params(&cell.cell_type, &sigma);
+                }
+                // Mix the mono name into the content_hash so two distinct
+                // monomorphs that clone the same source hash (e.g. Bearing$A
+                // vs Bearing$B) produce different cache keys.
+                mono.content_hash =
+                    mono.content_hash.combine(ContentHash::of_str(&mono_name));
+
+                monomorph_clones.push((
+                    mono,
+                    req.owner_structure.clone(),
+                    req.sub_index,
+                    mono_name,
+                ));
             }
         }
 
-        (rewrites, subst_pairs)
+        (rewrites, subst_pairs, monomorph_clones)
     };
 
-    // Pass 2 — apply placeholder rewrites and store the deduped substitution.
+    // Pass 2 — push monomorph clones, apply structure_name and type_args rewrites.
+    //
+    // Order:
+    //   1. Extend ctx.templates with the new monomorphs (moving them out of the
+    //      local Vec avoids an extra clone).
+    //   2. Rewrite each originating sub's `structure_name` to the mono name.
+    //   3. Apply the existing `type_args[pos]→StructureRef` slot rewrites.
+    //
     // `sub_index` keys are unique per (owner, sub_index) so this safely targets
     // each `SubComponentDecl` even when match-arm clusters reuse `sub_name`
     // across multiple arms within the same template.
+
+    // 1. Push monomorph templates.
+    for (mono, owner, sub_index, mono_name) in monomorph_clones {
+        ctx.templates.push(mono);
+        // 2. Rewrite structure_name in the originating sub.
+        if let Some(template) = ctx.templates.iter_mut().find(|t| t.name == owner)
+            && let Some(sub) = template.sub_components.get_mut(sub_index)
+        {
+            sub.structure_name = mono_name;
+        }
+    }
+
+    // 3. Apply type_args[pos]→StructureRef slot rewrites (pre-existing behaviour).
     for (owner, sub_index, position, resolved_name) in rewrites {
         if let Some(template) = ctx.templates.iter_mut().find(|t| t.name == owner)
             && let Some(sub) = template.sub_components.get_mut(sub_index)

@@ -781,6 +781,31 @@ impl TopologyTemplate {
     }
 }
 
+/// Compute the monomorphized template name for a generic instantiation.
+///
+/// Joins the generic name with each resolved candidate in type-parameter
+/// **position order**, separated by `$`. The `$` character is illegal in
+/// `.ri` source identifiers (grammar.js:1490), so the resulting name is
+/// guaranteed to be collision-free with any user-declared template.
+///
+/// # Examples
+/// ```text
+/// mangle_monomorph_name("Bearing", &["GasketSeal"])   → "Bearing$GasketSeal"
+/// mangle_monomorph_name("Pair",    &["FooA", "BarB"]) → "Pair$FooA$BarB"
+/// ```
+///
+/// Callers are responsible for supplying `candidates` in position order
+/// (sorted ascending by the corresponding `type_params` index) so that the
+/// name is a deterministic pure function of `(generic, ordered_candidates)`.
+pub fn mangle_monomorph_name(generic: &str, candidates: &[String]) -> String {
+    let mut name = String::from(generic);
+    for c in candidates {
+        name.push('$');
+        name.push_str(c);
+    }
+    name
+}
+
 /// Look up a topology template by name in a slice of compiled templates.
 ///
 /// Returns `Some(&template)` for the first match, or `None` if no template has
