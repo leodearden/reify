@@ -47,6 +47,20 @@ make_branch_fixture() {
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh" "$dir/scripts/affected-crates-lib.sh"
     chmod +x "$dir/scripts/verify.sh"
+    # Preflight: fail loudly if verify.sh sources a lib that was not copied to the
+    # fixture.  Without this check a new 'source "$SCRIPT_DIR/foo.sh"' line in
+    # verify.sh would be silently swallowed by the 2>/dev/null on the --print-plan
+    # invocations, surfacing only as an opaque all-plan-non-empty sanity failure.
+    while IFS= read -r _lib; do
+        [ -f "$dir/scripts/$_lib" ] || {
+            echo "ERROR: make_branch_fixture: '$_lib' is source'd by verify.sh" \
+                 "but was not copied to the fixture." >&2
+            echo "       Fix: add cp \"\$REPO_ROOT/scripts/$_lib\" \"\$dir/scripts/$_lib\"" \
+                 "in make_branch_fixture." >&2
+            exit 1
+        }
+    done < <(grep -E 'source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
+                 | sed 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|' || true)
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"
