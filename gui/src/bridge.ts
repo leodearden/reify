@@ -717,6 +717,24 @@ export async function onFeaCaseChanged(
 }
 
 /**
+ * Wire the inbound `fea-case-changed` event into a store (task 3026 step-10).
+ *
+ * Calls `onFeaCaseChanged` and routes each valid payload into
+ * `store.applyFeaCaseChanged`, populating `state.availableCases` and
+ * `state.activeCaseId`.
+ *
+ * Returns the Tauri UnlistenFn promise so the caller can unsubscribe on
+ * cleanup (e.g. component teardown in Viewport via onCleanup).
+ */
+export function subscribeFeaCaseToStore(
+  store: { applyFeaCaseChanged(payload: FeaCaseChanged): void },
+): Promise<UnlistenFn> {
+  return onFeaCaseChanged((payload) => {
+    store.applyFeaCaseChanged(payload);
+  });
+}
+
+/**
  * Subscribe to `solver-progress` Tauri events (GR-016 ζ).
  *
  * Emitted at the end of each CG iteration by `solve_cg_with_progress` in

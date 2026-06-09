@@ -11,6 +11,7 @@ import { bakeColours } from './colormap';
 import { computeScalarRange } from './scalarRange';
 import { pickDefaultScalarChannel } from './defaultScalarChannel';
 import type { ViewportStore, CameraState, FeaModeStore } from '../stores';
+import { subscribeFeaCaseToStore } from '../bridge';
 
 export interface ViewportProps {
   /**
@@ -177,12 +178,20 @@ export function Viewport(props: ViewportProps) {
     // 'end' fires once per interaction (pointerup/touchend) — correct granularity for persistence
     controls.controls.addEventListener('end', persistCamera);
 
+    // Subscribe inbound fea-case-changed events into the FEA store (task 3026 step-10).
+    // Stored here so the unlisten can be called in onCleanup.
+    let feaCaseUnlistenP: Promise<() => void> | undefined;
+
     // Bridge FEA-mode store → meshManager colorize pipeline.
     // Captured once at mount; the store reference must not change for the component lifetime.
     // Track-then-act pattern: reads all reactive dependencies (enabled/channel/palette/range)
     // at the top of the effect so any change to any of them rebuilds the bake closure.
     if (props.feaModeStore) {
       const feaStore = props.feaModeStore;
+
+      // Wire inbound fea-case-changed events → store.applyFeaCaseChanged.
+      // Populates availableCases / activeCaseId so the case-picker dropdown appears.
+      feaCaseUnlistenP = subscribeFeaCaseToStore(feaStore);
       // Performance note: channel/palette/range are read INSIDE the if(enabled) branch so
       // they are only tracked as reactive dependencies while FEA mode is active. When
       // enabled===false, only `enabled` is tracked, so changes to channel/palette/range do
@@ -391,6 +400,7 @@ export function Viewport(props: ViewportProps) {
     onCleanup(() => {
       disposed = true;
       cancelAnimationFrame(animationFrameId);
+      feaCaseUnlistenP?.then((u) => u()).catch(() => {});
       controls.controls.removeEventListener('change', requestRender);
       controls.controls.removeEventListener('end', persistCamera);
       resizeObserver.disconnect();
