@@ -818,6 +818,38 @@ pub fn find_template<'a>(
     templates.iter().find(|t| t.name == name)
 }
 
+/// Return `true` iff synthesizing a monomorph named `mono` would collide with a
+/// pre-existing template that was **not** created by α's current monomorphization
+/// pass.
+///
+/// The predicate is `true` when both conditions hold:
+/// 1. A template named `mono` already exists in `templates`.
+/// 2. `mono` is **not** in `created_monomorphs` (the phase-local set of names α
+///    has already synthesized in this pass).
+///
+/// # Why this is impossible from source
+///
+/// `$` is illegal in `.ri` source identifiers (grammar.js:1490), so a
+/// user-declared template can never have a name like `Bearing$GasketSeal`.  The
+/// guard exists solely as a defensive regression fence: if a future compiler
+/// change inadvertently introduces a template with such a name (e.g., via a
+/// separate code-generation pass), this guard converts the silent overwrite into
+/// a build-error diagnostic.
+///
+/// # Usage in the monomorphization pass
+///
+/// In `phase_auto_type_param_resolution` (pass-1), call this **before**
+/// inserting the new monomorph name into `created_monomorphs` and before pushing
+/// the cloned template.  If it returns `true`, push an Error diagnostic and skip
+/// the use-site; do not proceed with the clone or the `structure_name` rewrite.
+pub fn monomorph_name_would_collide(
+    templates: &[TopologyTemplate],
+    created_monomorphs: &std::collections::HashSet<String>,
+    mono: &str,
+) -> bool {
+    find_template(templates, mono).is_some() && !created_monomorphs.contains(mono)
+}
+
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
 #[derive(Debug, Clone)]
 pub struct CompiledConnection {

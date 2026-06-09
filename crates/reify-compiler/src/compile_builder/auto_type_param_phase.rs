@@ -26,7 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::{ContentHash, Type};
+use reify_core::{ContentHash, Diagnostic, Type};
 use reify_ir::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
 };
@@ -36,7 +36,10 @@ use crate::auto_type_param::{AutoTypeParam, resolve_auto_type_params_with_backtr
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::type_resolution::{substitute_expr_result_types, substitute_type_params};
-use crate::types::{AutoTypeSubstitution, EntityKind, TopologyTemplate, mangle_monomorph_name};
+use crate::types::{
+    AutoTypeSubstitution, EntityKind, TopologyTemplate, mangle_monomorph_name,
+    monomorph_name_would_collide,
+};
 
 /// A compile-time [`ConstraintChecker`] that returns
 /// [`Satisfaction::Indeterminate`] for every input constraint.
@@ -235,6 +238,26 @@ pub(crate) fn phase_auto_type_param_resolution(
                     candidates_by_position.into_iter().map(|(_, c)| c).collect();
                 let mono_name =
                     mangle_monomorph_name(&req.target_name, &ordered_candidates);
+
+                // Defensive collision guard: a pre-existing template named
+                // `mono_name` that was NOT created by α in this pass would be
+                // silently overwritten in pass-2.  This is impossible from valid
+                // `.ri` source (`$` is illegal in identifiers), but guard
+                // converts any future compiler regression into a build error.
+                //
+                // Skip both the clone AND the structure_name rewrite for this
+                // use-site — there is no safe target to point the sub at.
+                if monomorph_name_would_collide(
+                    &ctx.templates,
+                    &created_monomorphs,
+                    &mono_name,
+                ) {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "internal: synthesized monomorph name `{mono_name}` collides with \
+                         a pre-existing template (impossible from source; this is a compiler bug)"
+                    )));
+                    continue;
+                }
 
                 // Dedup: clone the template only once per distinct mono_name.
                 // `HashSet::insert` returns true on first insertion.
