@@ -95,7 +95,7 @@ plan_lacks() { ! printf '%s\n' "$1" | grep -qE "$2"; }
 echo ""
 echo "--- B4 Part 1: real reverse closure includes dependent Y ---"
 
-AFFECTED_SET=""
+AFFECTED_SET="$(cd "$REPO_ROOT" && affected_crates "$X_FILE")"
 
 assert "B4P1: affected set is NOT the ALL sentinel (genuinely narrowed)" \
     bash -c '[ "$1" != "ALL" ]' _ "$AFFECTED_SET"
