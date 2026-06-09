@@ -25,6 +25,13 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 echo "=== linker-config contract tests ==="
 
+# Preflight: tomllib is stdlib on Python ≥3.11; if unavailable, skip cleanly
+# rather than aborting mid-test with an opaque ImportError traceback.
+python3 -c 'import tomllib' 2>/dev/null || {
+    echo "SKIP: python3 tomllib not available (requires Python ≥3.11); skipping linker-config tests"
+    exit 0
+}
+
 CONFIG="$REPO_ROOT/.cargo/config.toml"
 BENCH_DOC="$REPO_ROOT/docs/notes/linker-rustlld-vs-mold-bench.md"
 
@@ -63,6 +70,23 @@ if action == 'check_build_scope':
             sys.exit(1)
     sys.exit(0)
 
+elif action == 'check_target_fuse_ld':
+    # Verify -Clink-arg=-fuse-ld=mold is explicitly in [target.x86_64-unknown-linux-gnu].rustflags.
+    # This closes the positive-placement loop: it is not enough that [build] lacks the flag;
+    # when mold is the chosen linker the flag MUST be present in the target table.
+    target_flags = (
+        cfg.get('target', {})
+           .get('x86_64-unknown-linux-gnu', {})
+           .get('rustflags', [])
+    )
+    if isinstance(target_flags, str):
+        target_flags = [target_flags]
+    for flag in target_flags:
+        if '-Clink-arg=-fuse-ld=mold' in str(flag):
+            sys.exit(0)
+    print('FAIL: -Clink-arg=-fuse-ld=mold not found in [target.x86_64-unknown-linux-gnu].rustflags', file=sys.stderr)
+    sys.exit(1)
+
 elif action == 'effective_linker':
     # Read [target.x86_64-unknown-linux-gnu].rustflags (NOT the .manifold sub-table).
     target_flags = (
@@ -95,6 +119,15 @@ echo "--- Test 1 (a): no -fuse-ld in [build].rustflags (target-scoped only) ---"
 
 assert "no -Clink-arg=-fuse-ld= in [build].rustflags" \
     python3 "$_PARSE_PY" "$CONFIG" check_build_scope
+
+# Positive placement: when mold is the chosen linker the flag must be present
+# in [target.x86_64-unknown-linux-gnu].rustflags — not merely absent from [build].
+# This catches a misplaced flag under a wrong table (e.g. a cfg() table) that
+# would satisfy the negative check above but violate the target-scoping contract.
+if [ "$EFFECTIVE_LINKER" = "mold" ]; then
+    assert "-Clink-arg=-fuse-ld=mold present in [target.x86_64-unknown-linux-gnu].rustflags" \
+        python3 "$_PARSE_PY" "$CONFIG" check_target_fuse_ld
+fi
 
 # -- Test 2 (b): RESOLVABILITY ------------------------------------------------
 echo ""
