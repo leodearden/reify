@@ -2472,6 +2472,96 @@ mod tests {
         );
     }
 
+    /// Step-3 RED — P5 merged-arm: all deliverable files present on main despite
+    /// no task_completed event and no reachable task-id commit. (b) rescue.
+    ///
+    /// Fixture:
+    /// - NO task_completed event for "4285"
+    /// - kind="merged"; commit="reaped_sha_4285" (not an ancestor)
+    /// - log_grep("main","4285") → [] so (a) rescue does NOT fire
+    /// - Every metadata.files entry set_path_tracked_on true → (b) fires
+    ///
+    /// Expected: exactly one P5PhantomDone at Severity::Low whose summary
+    /// mentions "deliverable" and "present".
+    ///
+    /// Fails after step-2 impl (still High because (a) is empty and merged
+    /// arm has no (b) rescue yet).
+    #[test]
+    fn merged_no_event_deliverable_present_downgrades_to_low() {
+        let conn = seed_db();
+        // No task_completed event.
+
+        let mut git = MockGitOps::new();
+        // Claimed commit not an ancestor.
+        git.set_is_ancestor("reaped_sha_4285", "main", false);
+        // log_grep returns empty → (a) rescue does NOT fire.
+        git.set_log_grep("main", "4285", vec![]);
+        // Empty diff for the claimed commit.
+        git.set_diff_changed_paths("main", "reaped_sha_4285", vec![]);
+        // ALL metadata.files entries are tracked on main → (b) should fire.
+        git.set_path_tracked_on("main", "crates/x/foo.rs", true);
+        git.set_path_tracked_on("main", "crates/x/bar.rs", true);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4285".to_string(),
+            TaskMetadata {
+                task_id: "4285".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/x/foo.rs".to_string(),
+                    "crates/x/bar.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("reaped_sha_4285".to_string()),
+                    note: None,
+                }),
+                title: "Wire foo and bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "all deliverables present on main → must downgrade to Low; got {:?}",
+            f.severity
+        );
+        assert_eq!(f.task_id, "4285");
+        let s = f.summary.to_lowercase();
+        assert!(
+            s.contains("deliverable") && s.contains("present"),
+            "summary should mention 'deliverable' and 'present'; got {:?}",
+            f.summary
+        );
+    }
+
     /// Step-1 RED — P5 merged-arm: task-id-referencing commit reachable from
     /// main despite no task_completed event in runs.db. Models the task-4284
     /// false-positive: the merge commit `4f7b633f` is reachable on main but
