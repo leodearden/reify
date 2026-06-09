@@ -2855,12 +2855,14 @@ mod tests {
         );
     }
 
-    /// Verify that `handle_set_fea_case` routes to the engine's
+    /// Verify that `set_fea_case_on_engine` routes to the engine's
     /// `set_active_fea_case` path by loading the multi-case fixture and
     /// switching to the "overload" case.  Mirrors the approach used by
     /// `run_on_engine_does_not_poison_mutex_when_closure_panics`.
     ///
-    /// FAILS TO COMPILE until step-18 adds `handle_set_fea_case`.
+    /// Retargeted from `handle_set_fea_case` in step-23: the full handler now
+    /// needs a `DebugServerState`/AppHandle that cannot be built headlessly, so
+    /// the engine-routing contract is covered by the extracted helper instead.
     #[tokio::test]
     async fn handle_set_fea_case_routes_to_engine() {
         let engine = crate::tests::make_test_engine();
@@ -2876,21 +2878,91 @@ mod tests {
                 .expect("load_from_source must succeed for fea_multi_case_bracket.ri");
         }
 
-        // FAILS TO COMPILE until step-18 adds handle_set_fea_case.
-        let result = handle_set_fea_case(&engine, json!({"case": "overload"})).await;
+        let result = set_fea_case_on_engine(&engine, "overload").await;
 
         assert!(
             result.is_ok(),
-            "handle_set_fea_case('overload') must return Ok; got: {:?}",
+            "set_fea_case_on_engine('overload') must return Ok; got: {:?}",
             result.err()
         );
-        let body = result.unwrap();
-        assert!(body.is_object(), "handle_set_fea_case result must be a JSON object");
-        // Echo: body must carry the selected case name.
+        let gui_state = result.unwrap();
+        assert!(
+            !gui_state.meshes.is_empty(),
+            "set_fea_case_on_engine must return GuiState with >= 1 mesh"
+        );
+    }
+
+    // ── Task 3026 step-22: RED — fea_case_frontend_payload carries GuiState ──
+    //
+    // Pure helper test: assert that `fea_case_frontend_payload` serializes a
+    // GuiState's scalar_channels into a JSON object whose `guiState` field
+    // survives a `serde_json::from_value::<GuiState>` round-trip with vonMises
+    // values intact.  No kernel, no Tauri AppHandle, no fixture.
+    //
+    // FAILS TO COMPILE until step-23 adds `fea_case_frontend_payload`.
+    #[test]
+    fn set_fea_case_pushes_gui_state_payload_to_frontend() {
+        use crate::types::{GuiState, MeshData};
+        use std::collections::HashMap;
+
+        // Build a minimal GuiState with one mesh carrying a known vonMises channel.
+        // vertex_count = 3, so scalar_channels["vonMises"] must have length 3.
+        let von_mises = vec![200.0_f32, 200.0, 200.0];
+        let mut channels = HashMap::new();
+        channels.insert("vonMises".to_string(), von_mises.clone());
+
+        let mesh = MeshData {
+            entity_path: "test/mesh".to_string(),
+            // 3 vertices (9 floats) → vertex_count = 3
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+            scalar_channels: channels,
+            displaced_positions: None,
+            element_kind: None,
+            region_tags: None,
+            vector_channels: HashMap::new(),
+        };
+        let gui_state = GuiState {
+            meshes: vec![mesh],
+            values: vec![],
+            constraints: vec![],
+            files: vec![],
+            tessellation_diagnostics: vec![],
+            compile_diagnostics: vec![],
+            tensegrity_wires: vec![],
+        };
+
+        // FAILS TO COMPILE until step-23 adds `fea_case_frontend_payload`.
+        let payload = fea_case_frontend_payload("overload", &gui_state)
+            .expect("fea_case_frontend_payload must return Ok");
+
+        // (a) must return a JSON object
+        assert!(
+            payload.is_object(),
+            "fea_case_frontend_payload must return a JSON object"
+        );
+
+        // (b) payload["case"] must be "overload"
         assert_eq!(
-            body["case"].as_str(),
+            payload["case"].as_str(),
             Some("overload"),
-            "handle_set_fea_case response must echo the case name; got: {body:?}"
+            "payload[\"case\"] must be \"overload\""
+        );
+
+        // (c) round-trip payload["guiState"] through serde_json::from_value to
+        // verify the vonMises channel survives the serialization path intact.
+        let round_tripped: crate::types::GuiState =
+            serde_json::from_value(payload["guiState"].clone())
+                .expect("GuiState round-trip must succeed");
+        let vm = round_tripped.meshes[0]
+            .scalar_channels
+            .get("vonMises")
+            .expect("vonMises channel must be present after round-trip");
+        assert_eq!(
+            vm,
+            &von_mises,
+            "vonMises values must survive the serde round-trip byte-identical"
         );
     }
 }
