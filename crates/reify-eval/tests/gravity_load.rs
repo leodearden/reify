@@ -156,6 +156,24 @@ structure def GravityMagOverride {
                     other
                 ),
             }
+            // direction must retain its [0,0,-1] default when only magnitude is overridden
+            match field(&data.fields, "direction") {
+                Some(Value::List(items)) => {
+                    assert_eq!(items.len(), 3, "direction must have 3 elements; got {:?}", items);
+                    assert_eq!(items[0], Value::Real(0.0), "direction[0] must be 0.0 (default)");
+                    assert_eq!(items[1], Value::Real(0.0), "direction[1] must be 0.0 (default)");
+                    assert_eq!(
+                        items[2],
+                        Value::Real(-1.0),
+                        "direction[2] must be -1.0 (default −Z) when only magnitude is overridden"
+                    );
+                }
+                other => panic!(
+                    "Gravity direction must retain default [0,0,-1] when only magnitude is \
+                     overridden; got {:?}",
+                    other
+                ),
+            }
         }
         other => panic!(
             "expected Value::StructureInstance for GravityMagOverride.g — got {other:?}"
@@ -225,6 +243,52 @@ structure def GravityDirOverride {
         }
         other => panic!(
             "expected Value::StructureInstance for GravityDirOverride.g — got {other:?}"
+        ),
+    }
+}
+
+/// Member-access chain `self.g.magnitude` reads through the `Gravity` structure
+/// instance and resolves to `Value::Scalar { ACCELERATION, ≈9.80665 }`.
+///
+/// Mirrors `pressure_load_member_access_magnitude` in `pressure_load.rs` — covers
+/// the member-access evaluator path, which is distinct from the ctor round-trip path
+/// tested above.
+#[test]
+fn gravity_member_access_magnitude() {
+    const SOURCE: &str = r#"
+structure def GravityMagAccess {
+    let g         = Gravity()
+    let magnitude = self.g.magnitude
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let id = ValueCellId::new("GravityMagAccess", "magnitude");
+    let mag = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("GravityMagAccess.magnitude cell missing from eval result"));
+
+    match mag {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::ACCELERATION,
+                "self.g.magnitude must have ACCELERATION dimension; got {:?}",
+                dimension
+            );
+            assert!(
+                (si_value - 9.80665).abs() < 1e-9,
+                "self.g.magnitude si_value: expected ≈9.80665, got {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "self.g.magnitude must resolve to Value::Scalar{{ACCELERATION, 9.80665}}; \
+             got {other:?}"
         ),
     }
 }
