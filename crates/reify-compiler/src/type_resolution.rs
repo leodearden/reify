@@ -757,18 +757,65 @@ pub(crate) fn resolve_qualified_assoc_type(
     type_param_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Type> {
-    // base must be a bare structure name (`Named` with no type args).
+    // base must be a bare structure name (`Named` with no type args). The
+    // lowering always produces this shape; the guarded arms give a defined
+    // diagnostic should a future grammar extension produce something else.
     let reify_ast::TypeExprKind::Named {
         name: base_name,
         type_args,
     } = &base.kind
     else {
+        diagnostics.push(
+            Diagnostic::error(
+                "qualified associated-type base must be a structure name".to_string(),
+            )
+            .with_code(DiagnosticCode::UnresolvedType)
+            .with_label(DiagnosticLabel::new(span, "expected a structure name here")),
+        );
         return None;
     };
     if !type_args.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "qualified associated-type base `{base_name}` must not have type arguments"
+            ))
+            .with_code(DiagnosticCode::UnresolvedType)
+            .with_label(DiagnosticLabel::new(span, "remove the type arguments")),
+        );
         return None;
     }
-    let template = template_registry.get(base_name.as_str())?;
+
+    // A type-parameter base (`T::Material`) has no concrete structure binding at a
+    // definition site (PRD §3.5 adds no associated-type-projection Type variant);
+    // emit a clear, dedicated diagnostic rather than mis-resolving or panicking.
+    if type_param_names.contains(base_name.as_str()) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "associated-type access on type parameter `{base_name}` is not supported \
+                 here; use a concrete structure (e.g. `Beam::{member}`)"
+            ))
+            .with_code(DiagnosticCode::UnresolvedType)
+            .with_label(DiagnosticLabel::new(
+                span,
+                format!("`{base_name}` is a type parameter, not a concrete structure"),
+            )),
+        );
+        return None;
+    }
+
+    // The base structure must already be compiled (source order: prelude + earlier
+    // local structures). A miss is an unknown or forward-referenced structure.
+    let Some(template) = template_registry.get(base_name.as_str()) else {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "unknown structure `{base_name}` in qualified associated type \
+                 `{base_name}::{member}`"
+            ))
+            .with_code(DiagnosticCode::UnresolvedType)
+            .with_label(DiagnosticLabel::new(span, "unknown structure")),
+        );
+        return None;
+    };
 
     // The conformed traits of `base` that declare an assoc type named `member`.
     let declaring_traits: Vec<&str> = template
@@ -777,8 +824,6 @@ pub(crate) fn resolve_qualified_assoc_type(
         .filter(|t| trait_declares_assoc_type(trait_registry, t, member))
         .map(String::as_str)
         .collect();
-
-    let _ = type_param_names; // consumed by a later step (type-parameter base check)
 
     // The single resolved `Type` bound to `member`. A structure binds each
     // associated-type name exactly once, so this is independent of the qualifier.
@@ -818,7 +863,23 @@ pub(crate) fn resolve_qualified_assoc_type(
                 );
                 None
             }
-            _ => None,
+            // Zero conformed traits declare `member`: the structure genuinely has
+            // no such associated type. (The declared-but-unbound case has
+            // `len >= 1` and resolves to `None` via `resolved_member` above
+            // WITHOUT a new diagnostic — anti-cascade, reported at the producer.)
+            _ => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "structure `{base_name}` has no associated type `{member}`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{base_name}` has no associated type `{member}`"),
+                    )),
+                );
+                None
+            }
         },
         // FORK-G paren disambiguator (`Base::(Trait::Member)`): the qualifier must
         // name a trait `Base` conforms to AND that declares `member`. When valid,
