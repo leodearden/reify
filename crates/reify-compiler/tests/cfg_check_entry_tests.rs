@@ -186,3 +186,124 @@ fn entry_merges_pub_templates_from_cfg_satisfied_import() {
         compiled_wasm.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 }
+
+/// Write a project where TWO cfg-satisfied imports each export the same pub
+/// structure `Widget`, triggering the cross-import first-wins collision path.
+///
+/// Both imports are gated on `#cfg(target = "linux")`, so compiling under
+/// `target = "linux"` follows both and the merge sees a name collision.
+fn write_collision_fixtures(dir: &Path) {
+    let entry_src = "#cfg(target = \"linux\")\nimport helper_a\n\
+                     #cfg(target = \"linux\")\nimport helper_b\n\
+                     \n\
+                     structure def Entry {\n\
+                     \x20   param x: Real\n\
+                     }\n";
+    fs::write(dir.join("main.ri"), entry_src).unwrap();
+    fs::write(
+        dir.join("helper_a.ri"),
+        "pub structure def Widget { param x: Real }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("helper_b.ri"),
+        "pub structure def Widget { param y: Real }\n",
+    )
+    .unwrap();
+}
+
+/// Two cfg-satisfied imports that both declare `pub structure Widget` collide:
+/// the merge keeps the first declarer (first-wins, `Widget` merged exactly once)
+/// and pushes a `Warning` naming both module origins. Exercises the
+/// cross-import collision branch of `merge_imported_pub_templates`.
+#[test]
+fn entry_collision_between_two_cfg_satisfied_imports_emits_first_wins_warning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    write_collision_fixtures(dir);
+
+    let parsed = parse_entry(dir);
+    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
+    let compiled = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("linux"));
+
+    // First-wins: 'Widget' is merged exactly once despite two declarers.
+    let widget_count = compiled.templates.iter().filter(|t| t.name == "Widget").count();
+    assert_eq!(
+        widget_count, 1,
+        "first-wins: 'Widget' must be merged exactly once; templates: {:?}",
+        compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+
+    // A kind-neutral first-wins Warning names both colliding module origins.
+    let warning = compiled
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("imported pub template")
+                && d.message.contains("Widget")
+                && d.message.contains("first-wins")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a first-wins collision Warning for 'Widget'; diagnostics: {:?}",
+                dump_diags(&compiled)
+            )
+        });
+    for origin in ["helper_a", "helper_b"] {
+        assert!(
+            warning.message.contains(&format!("'{}'", origin)),
+            "collision warning should name module '{}' in quoted form; got: {}",
+            origin,
+            warning.message
+        );
+    }
+}
+
+/// Write a project whose entry follows an import of a module that does NOT exist
+/// on disk. The import is cfg-satisfied (`#cfg(target = "linux")`), so under
+/// `target = "linux"` it is followed and its resolution failure must surface.
+fn write_missing_import_fixtures(dir: &Path) {
+    let entry_src = "#cfg(target = \"linux\")\nimport missing_module\n\
+                     \n\
+                     structure def Entry {\n\
+                     \x20   param x: Real\n\
+                     }\n";
+    fs::write(dir.join("main.ri"), entry_src).unwrap();
+    // Intentionally do NOT create missing_module.ri.
+}
+
+/// A *satisfied* import pointing at a missing module surfaces its failure as an
+/// `Error`-severity diagnostic on the returned entry `CompiledModule` rather than
+/// short-circuiting (no early `Err`): the entry still compiles (its own `Entry`
+/// template is present) and the import failure rides along as a diagnostic. This
+/// is the diagnostics-embedded contract `cmd_check` relies on to map a broken
+/// gated-DAG import to a non-zero exit.
+#[test]
+fn entry_followed_import_missing_module_surfaces_error_diagnostic() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    write_missing_import_fixtures(dir);
+
+    let parsed = parse_entry(dir);
+    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
+    let compiled = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("linux"));
+
+    // The followed-but-missing import surfaces an Error diagnostic naming it.
+    assert!(
+        has_error_containing(&compiled, "missing_module")
+            && has_error_containing(&compiled, "not found"),
+        "a followed import of a missing module must surface an Error diagnostic \
+         naming it; diagnostics: {:?}",
+        dump_diags(&compiled)
+    );
+
+    // Not an early return: the entry itself still compiled, so its own template
+    // is present alongside the import-failure diagnostic.
+    assert!(
+        entry_has_template(&compiled, "Entry"),
+        "the entry must still compile despite the broken import (diagnostics \
+         embedded, not an early Err); templates: {:?}",
+        compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+}
