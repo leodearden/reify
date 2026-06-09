@@ -109,6 +109,7 @@ pub(crate) fn eval_dynamics(name: &str, args: &[Value]) -> Option<Value> {
             Some(eval_inverse_dynamics_at_snapshot(args))
         }
         "inverse_dynamics_lower" => Some(eval_inverse_dynamics(args)),
+        "point_mass" => Some(eval_point_mass(args)),
         _ => None,
     }
 }
@@ -299,6 +300,53 @@ fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3]
     let com = vec3_from_value(data.fields.get("com")?)?;
     let inertia = inertia_3x3_from_value(data.fields.get("inertia")?)?;
     Some((mass, com, inertia))
+}
+
+// ── MassProperties constructor helpers (task 4278) ──────────────────────────
+
+/// Build a canonical registry-free `MassProperties` `Value::StructureInstance`
+/// matching the `assemble_mass_properties` shape:
+/// - `mass`   → `Value::Scalar { dimension: MASS }`
+/// - `com`    → `Value::Point` of `Value::length` scalars (SI metres)
+/// - `inertia`→ `Value::Matrix` of `Value::Real` (3×3)
+/// - `origin` → `Value::Real(0.0)` (unused sentinel, mirrors `dynamics_ops`)
+fn make_mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
+    let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
+    let inertia_matrix = Value::Matrix(
+        inertia
+            .iter()
+            .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+            .collect(),
+    );
+    mint_instance(
+        "MassProperties",
+        vec![
+            (
+                "mass".to_string(),
+                Value::Scalar {
+                    si_value: mass,
+                    dimension: DimensionVector::MASS,
+                },
+            ),
+            ("com".to_string(), com_point),
+            ("inertia".to_string(), inertia_matrix),
+            ("origin".to_string(), Value::Real(0.0)),
+        ],
+    )
+}
+
+/// Evaluate `point_mass(mass)` — a degenerate `MassProperties` with com at the
+/// origin and zero inertia tensor. Returns `Value::Undef` for wrong arity or a
+/// non-numeric mass argument.
+fn eval_point_mass(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let mass = match cell_f64(&args[0]) {
+        Some(m) => m,
+        None => return Value::Undef,
+    };
+    make_mass_properties(mass, [0.0, 0.0, 0.0], [[0.0; 3]; 3])
 }
 
 /// Convert a `Value::Transform { rotation: Orientation, translation: Vector }`
