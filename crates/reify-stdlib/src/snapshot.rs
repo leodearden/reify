@@ -905,9 +905,10 @@ fn joint_world_transform(
     //
     // PRD §7.2 no-bypass invariant (route 2): the per-joint transform MUST route
     // through `transform_at` and MUST NOT be reconstructed from the joint Map fields
-    // directly. `transform_at` applies the "origin" pre-compose uniformly
-    // (joints.rs:494-504), so any pivot offset is baked in here automatically.
-    // Verified behaviourally by γ B8 route-2 test and the B3 FK test.
+    // directly. `transform_at` applies the "origin" pre-compose uniformly, so any pivot
+    // offset is baked in here automatically. Verified behaviourally by
+    // `joint_world_transform_offset_equals_transform_at_route2` and
+    // `snapshot_analytic_two_link_offset_chain_world_transform`.
     let motion_value = value_for(joint, bindings)?;
     let t_local = eval_builtin("transform_at", &[joint.clone(), motion_value]);
     if t_local.is_undef() {
@@ -3095,8 +3096,8 @@ mod tests {
     /// `transform_at(j, v)` for an offset-bearing joint with a world parent.
     ///
     /// The parent is world (identity pose) so T_joint_world = I ∘ transform_at(j, v) = transform_at(j, v).
-    /// Proves the `joint_world_transform` consumer (snapshot.rs:906) routes
-    /// through `transform_at` without reconstructing the per-joint transform (PRD §7.2).
+    /// Proves `joint_world_transform` routes through `transform_at` without
+    /// reconstructing the per-joint transform (PRD §7.2).
     #[test]
     fn joint_world_transform_offset_equals_transform_at_route2() {
         let j = offset_revolute_z(0.3);
@@ -3147,8 +3148,8 @@ mod tests {
     /// B8 route 4: the offset propagates into the snapshot `world_transform` —
     /// an offset joint's snapshot translation differs from the no-offset version.
     ///
-    /// The snapshot `world_transform` is what the dynamics reads at eval.rs:451/535;
-    /// this confirms that FK input is offset-aware (PRD §7.2).
+    /// The snapshot `world_transform` is what the dynamics reads in
+    /// `snapshot_inverse_dynamics`; this confirms that FK input is offset-aware (PRD §7.2).
     #[test]
     fn snapshot_world_transform_offset_joint_differs_from_no_offset_route4() {
         let v = std::f64::consts::PI / 6.0;

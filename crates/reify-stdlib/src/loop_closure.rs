@@ -86,8 +86,9 @@ pub fn chain_transform(chain: &[Value], values: &[JointValue]) -> Option<Value> 
         let v_value = value_for_joint(joint, v)?;
         // PRD §7.2 no-bypass invariant (route 1): per-joint transforms MUST route through
         // `transform_at` and MUST NOT be reconstructed from the joint Map directly.
-        // `transform_at` applies the "origin" pre-compose uniformly (joints.rs:494-504),
-        // so any offset is baked in here. Verified behaviourally by γ B8 route-1 test.
+        // `transform_at` applies the "origin" pre-compose uniformly, so any offset is baked
+        // in here. Verified behaviourally by
+        // `chain_transform_offset_single_joint_equals_transform_at_route1`.
         let next = eval_builtin("transform_at", &[joint.clone(), v_value]);
         if next.is_undef() {
             return None;
@@ -2343,8 +2344,8 @@ mod tests {
     /// B8 route 1: `chain_transform([j], [Scalar(v)])` reproduces
     /// `transform_at(j, v)` exactly for an offset-bearing joint.
     ///
-    /// Proves the chain_transform consumer (loop_closure.rs:87) routes
-    /// every offset through `transform_at` — no bypass (PRD §7.2).
+    /// Proves `chain_transform` routes every offset through `transform_at`
+    /// — no bypass (PRD §7.2).
     #[test]
     fn chain_transform_offset_single_joint_equals_transform_at_route1() {
         let j = offset_revolute_z(0.3);

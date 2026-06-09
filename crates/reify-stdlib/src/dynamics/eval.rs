@@ -2972,7 +2972,7 @@ mod tests {
     // ── KIN-OFFSET γ step-7 (B3): dynamics offset FK + finitude ─────────────────
     //
     // B3 dynamics: asserts (A) the snapshot body's world_transform that the dynamics
-    // reads at eval.rs:451/535 is offset-aware (matches hand-computed offset-shifted
+    // reads (in snapshot_inverse_dynamics) is offset-aware (matches hand-computed offset-shifted
     // position, exact SE(3) composition, tol ≈1e-9) and (B) inverse_dynamics on the
     // offset mechanism returns a finite, well-formed result — not Undef.
     //
@@ -3102,9 +3102,13 @@ mod tests {
 
         let value = field(&forces[0], "JointForce", "value");
         let torque = num(field(value, "ScalarTorque", "magnitude"));
+        // For offset_revolute_z(0.1): axis = Z, CoM = (0,0,−0.1) in body frame.
+        // World CoM = R_z(θ)·(0,0,−0.1) + (0.1,0,0) = (0.1, 0, −0.1).
+        // Gravity τ_z = (r × F)·ẑ where r = CoM − pivot = (0,0,−0.1) and F = (0,0,−g).
+        // r × F = (0,0,−0.1) × (0,0,−g) = (0,0,0) — CoM lies on the Z axis, so τ_z = 0.
         assert!(
-            torque.is_finite(),
-            "B3 dynamics: inverse_dynamics torque must be finite with offset joint, got {torque}"
+            torque.abs() < 1e-6,
+            "B3 dynamics: torque must be ~0 for on-axis CoM (analytic Z-torque = 0), got {torque}"
         );
     }
 }
