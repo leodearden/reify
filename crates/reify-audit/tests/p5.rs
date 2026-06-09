@@ -2472,6 +2472,112 @@ mod tests {
         );
     }
 
+    /// Step-1 RED — P5 merged-arm: task-id-referencing commit reachable from
+    /// main despite no task_completed event in runs.db. Models the task-4284
+    /// false-positive: the merge commit `4f7b633f` is reachable on main but
+    /// the branch ref was reaped, so the claimed commit SHA is unresolvable
+    /// and is_ancestor returns false.
+    ///
+    /// Fixture:
+    /// - NO task_completed event in runs.db for "4284"
+    /// - kind="merged"; commit="reaped_sha_4284" (not an ancestor of main)
+    /// - log_grep("main","4284") → [GitCommit{sha:"4f7b633f", ...}]  ← (a) fires
+    /// - metadata.files non-empty; path_tracked_on defaults false         ← (b) does not fire
+    ///
+    /// Expected: exactly one P5PhantomDone at Severity::Low whose summary
+    /// mentions the work landed/is reachable on main and whose evidence
+    /// includes an EvidenceRef::Commit citing "4f7b633f".
+    ///
+    /// Fails on current code (merged Ok(false) + non-ancestor → High
+    /// "no task_completed event").
+    #[test]
+    fn merged_no_event_task_id_commit_reachable_downgrades_to_low() {
+        let conn = seed_db();
+        // Deliberately do NOT insert a task_completed event for "4284".
+
+        let mut git = MockGitOps::new();
+        // The claimed commit is NOT an ancestor of main (branch was reaped).
+        git.set_is_ancestor("reaped_sha_4284", "main", false);
+        // log_grep finds the real merge commit on main — (a) rescue should fire.
+        let merge_commit = GitCommit {
+            sha: "4f7b633f".to_string(),
+            subject: "Merge task/4284 into main".to_string(),
+        };
+        git.set_log_grep("main", "4284", vec![merge_commit]);
+        // Provide empty diff so the git-diff leg produces nothing useful.
+        git.set_diff_changed_paths("main", "reaped_sha_4284", vec![]);
+        // metadata.files has a real entry but path_tracked_on defaults false,
+        // so (b) does NOT rescue.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4284".to_string(),
+            TaskMetadata {
+                task_id: "4284".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/deliver.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("reaped_sha_4284".to_string()),
+                    note: None,
+                }),
+                title: "Wire deliver into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "task-id commit reachable on main → must downgrade to Low; got {:?}",
+            f.severity
+        );
+        assert_eq!(f.task_id, "4284");
+        // Summary must mention reachability / landed / not phantom-done.
+        let s = f.summary.to_lowercase();
+        assert!(
+            s.contains("reachable") || s.contains("landed") || s.contains("not phantom"),
+            "summary should mention reachable/landed/not phantom; got {:?}",
+            f.summary
+        );
+        // Evidence must include EvidenceRef::Commit citing the merge commit sha.
+        let cited_commit = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::Commit { sha, .. } => Some(sha.as_str()),
+            _ => None,
+        });
+        assert_eq!(
+            cited_commit,
+            Some("4f7b633f"),
+            "Low finding must include EvidenceRef::Commit {{ sha: '4f7b633f' }}; got {:?}",
+            f.evidence
+        );
+    }
+
     /// H1 FP guard — domain-noun "stub" in a test fn name that tests a
     /// LEGITIMATE stub-kernel module, NOT a placeholder test.
     ///
