@@ -1595,6 +1595,113 @@ mod tests {
         );
     }
 
+    /// Step-7 RED — P2 comment-prose suppression: executable-code-token families
+    /// (2 unimplemented!, 3 panic!(not yet), 4 tracing::warn!, 5 Value::Undef)
+    /// must NOT fire when the matched line is a pure `//` comment.
+    ///
+    /// Three sub-cases:
+    ///   (1) pure `//` comment containing "Value::Undef" + "stub" text
+    ///       (models reify-expr:2011 / fea.rs:52) → no finding for that path
+    ///   (2) genuine code line `Value::Undef => { /* pending */ }` → still flagged
+    ///   (3) pure `//` comment containing `unimplemented!()` → no finding
+    ///
+    /// Fails on current code (Families 2/5 fire on the comment lines).
+    #[test]
+    fn code_token_families_skip_pure_comment_lines() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "CP1";
+        let task_branch = format!("task/{}", task_id);
+
+        // Path A: pure `//` comment with Value::Undef + stub → must NOT flag
+        let path_a = "crates/x/comment_prose.rs";
+        // Path B: genuine code line with Value::Undef + pending → MUST flag
+        let path_b = "crates/x/code_line.rs";
+        // Path C: pure `//` comment with unimplemented!() → must NOT flag
+        let path_c = "crates/x/comment_unimpl.rs";
+
+        let mut git = MockGitOps::new();
+        // Path A: prose comment about Value::Undef (models reify-expr:2011)
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_a,
+            vec![(2011, "        // solve would appear as a stub ElasticResult rather than Value::Undef.".to_string())],
+        );
+        // Path B: real code line — must still flag
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_b,
+            vec![(42, "    Value::Undef => { /* pending */ }".to_string())],
+        );
+        // Path C: comment containing unimplemented!() as prose
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_c,
+            vec![(10, "    // this arm calls unimplemented!() for now".to_string())],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            benign_meta(task_id, vec![
+                path_a.to_string(),
+                path_b.to_string(),
+                path_c.to_string(),
+            ]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        // Only path_b should produce a finding.
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly 1 finding (only code-line path_b); got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        // The finding must reference path_b (the real code line).
+        assert!(
+            f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path } => path == path_b,
+                _ => false,
+            }),
+            "finding must reference path_b ({path_b}); got {:?}",
+            f.evidence
+        );
+        // path_a and path_c must NOT appear in findings.
+        assert!(
+            !findings.iter().any(|f| f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path } => path == path_a,
+                _ => false,
+            })),
+            "pure-comment path_a must NOT be flagged; got {:?}",
+            findings
+        );
+        assert!(
+            !findings.iter().any(|f| f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path } => path == path_c,
+                _ => false,
+            })),
+            "pure-comment path_c must NOT be flagged; got {:?}",
+            findings
+        );
+    }
+
 } // mod tests
 
 } // mod p2
