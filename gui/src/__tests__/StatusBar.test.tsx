@@ -636,3 +636,71 @@ describe('StatusBar pipeline labels and diagnostics total', () => {
     expect(screen.queryByTestId('diagnostics-total')).toBeNull();
   });
 });
+
+describe('StatusBar diagnosticsCollapsed prop — aria-expanded', () => {
+  function makeDiag(severity: 'Error' | 'Warning' | 'Info', message = 'test'): DiagnosticInfo {
+    return {
+      file_path: 'test.ri',
+      line: 1, column: 1, end_line: 1, end_column: 1,
+      severity,
+      message,
+      code: null,
+    };
+  }
+
+  it('tessellation-errors button has aria-expanded="false" when diagnosticsCollapsed={true}', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error')]}
+        diagnosticsCollapsed={true}
+      />
+    ));
+    const btn = screen.getByTestId('tessellation-errors');
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('tessellation-errors button has aria-expanded="true" when diagnosticsCollapsed={false}', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        tessellationDiagnostics={[makeDiag('Error')]}
+        diagnosticsCollapsed={false}
+      />
+    ));
+    const btn = screen.getByTestId('tessellation-errors');
+    expect(btn.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('diagnostics-count button has aria-expanded="false" when diagnosticsCollapsed={true}', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+        diagnosticsCollapsed={true}
+      />
+    ));
+    const btn = screen.getByTestId('diagnostics-count');
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('diagnostics-count button has aria-expanded="true" when diagnosticsCollapsed={false}', () => {
+    render(() => (
+      <StatusBar
+        evalStatus={{ phase: 'idle' }}
+        meshes={{}}
+        constraints={{}}
+        compileDiagnostics={[makeDiag('Warning')]}
+        diagnosticsCollapsed={false}
+      />
+    ));
+    const btn = screen.getByTestId('diagnostics-count');
+    expect(btn.getAttribute('aria-expanded')).toBe('true');
+  });
+});

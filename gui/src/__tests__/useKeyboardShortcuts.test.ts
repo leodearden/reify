@@ -709,3 +709,41 @@ describe('runCommand', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// toggleDiagnostics keyboard shortcut dispatch (task-4401)
+// ---------------------------------------------------------------------------
+
+describe('useKeyboardShortcuts — toggleDiagnostics shortcut', () => {
+  let dispose: () => void;
+
+  afterEach(() => {
+    dispose?.();
+  });
+
+  it('dispatching Ctrl+Shift+M calls onToggleDiagnostics callback', () => {
+    const onToggleDiagnostics = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onToggleDiagnostics });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'm', ctrlKey: true, shiftKey: true, bubbles: true }),
+    );
+    expect(onToggleDiagnostics).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+M (without shift) does NOT call onToggleDiagnostics', () => {
+    const onToggleDiagnostics = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onToggleDiagnostics });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'm', ctrlKey: true, shiftKey: false, bubbles: true }),
+    );
+    expect(onToggleDiagnostics).not.toHaveBeenCalled();
+  });
+});

@@ -151,9 +151,10 @@ describe('list_elements — chrome surface enumeration (T0 capstone)', () => {
     };
     render(() => (
       <DiagnosticsPanel
-        open={true}
+        collapsed={false}
+        height={160}
         diagnostics={[diag]}
-        onClose={() => {}}
+        onToggleCollapsed={() => {}}
         onNavigate={() => {}}
       />
     ));
