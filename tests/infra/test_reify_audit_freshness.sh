@@ -196,5 +196,27 @@ chmod +x "$REBUILD_TMPDIR/cargo"
 assert "guard rebuild-mode: fake cargo that does NOT freshen bin → exits non-zero" \
     env PATH="$REBUILD_TMPDIR:$PATH" bash -c "source '$FRESHNESS_LIB' && ! reify_audit_guard '$STUBBORN_BIN' rebuild '$REPO_ROOT' 2>/dev/null"
 
+# ==============================================================================
+# Check 8: doc-wiring single-source-of-truth greps (RED until step-8 updates
+#          the /audit skill docs to reference the freshness guard)
+#
+# Mirrors check 5e in test_reify_audit_predone_wrapper.sh: one-line structural
+# greps, not prose pins. These lock that neither skill document can silently
+# regress to "prefer the prebuilt release binary unconditionally."
+# ==============================================================================
+echo ""
+echo "--- Check 8: doc-wiring — skill docs reference reify-audit-freshness.sh ---"
+
+CLI_INVOCATION_MD="$REPO_ROOT/.claude/skills/audit/references/cli-invocation.md"
+SKILL_MD="$REPO_ROOT/.claude/skills/audit/SKILL.md"
+
+assert "cli-invocation.md references reify-audit-freshness.sh" \
+    bash -c 'grep -qF "reify-audit-freshness.sh" "$1"' \
+    -- "$CLI_INVOCATION_MD"
+
+assert "SKILL.md binary-resolution step references freshness guard" \
+    bash -c 'grep -qiF "freshness" "$1" || grep -qF "reify-audit-freshness.sh" "$1"' \
+    -- "$SKILL_MD"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
