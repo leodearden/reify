@@ -272,6 +272,100 @@ fn multi_param_monomorph_uses_position_order() {
     );
 }
 
+// ─── step-5: expr result_type substitution ────────────────────────────────────
+
+/// Monomorph body expressions must have NO node whose `result_type` is
+/// `Type::TypeParam(_)`. This covers value-cell `default_expr`s and
+/// constraint exprs.
+///
+/// Fixture adds `let seal_ref = seal` which produces a `ValueRef(seal)` node
+/// with `result_type == Type::TypeParam("T")` in the generic template; after
+/// monomorphization it must be `Type::StructureRef("GasketSeal")`.
+///
+/// RED until step-6 adds `substitute_expr_result_types`.
+#[test]
+fn monomorph_body_exprs_have_no_typeparam_result_type() {
+    let source = r#"
+        trait Seal {}
+        structure def GasketSeal : Seal {}
+        structure def Bearing<T: Seal> {
+            param seal : T
+            let seal_ref = seal
+        }
+        structure def Assembly { sub b = Bearing<auto: Seal>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 0, "expected no error diagnostics, got: {:?}", errors);
+
+    let monomorph = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bearing$GasketSeal")
+        .expect("expected 'Bearing$GasketSeal' monomorph");
+
+    // Walk every value-cell default_expr and every constraint expr: none may
+    // carry result_type == TypeParam(_).
+    let mut typeparam_result_types: Vec<String> = Vec::new();
+    for cell in &monomorph.value_cells {
+        if let Some(expr) = &cell.default_expr {
+            expr.walk(&mut |node| {
+                if matches!(&node.result_type, Type::TypeParam(_)) {
+                    typeparam_result_types.push(format!(
+                        "value_cell '{}' expr node result_type={:?}",
+                        cell.id.member, node.result_type
+                    ));
+                }
+            });
+        }
+    }
+    for (i, constraint) in monomorph.constraints.iter().enumerate() {
+        constraint.expr.walk(&mut |node| {
+            if matches!(&node.result_type, Type::TypeParam(_)) {
+                typeparam_result_types.push(format!(
+                    "constraint[{}] expr node result_type={:?}",
+                    i, node.result_type
+                ));
+            }
+        });
+    }
+
+    assert!(
+        typeparam_result_types.is_empty(),
+        "Bearing$GasketSeal monomorph must have no TypeParam result_type nodes in exprs, found: {:?}",
+        typeparam_result_types
+    );
+
+    // Specific check: seal_ref's default_expr root node result_type is
+    // StructureRef("GasketSeal") after substitution.
+    let seal_ref_cell = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "seal_ref")
+        .expect("expected 'seal_ref' value cell in Bearing$GasketSeal");
+    assert_eq!(
+        seal_ref_cell.cell_type,
+        Type::StructureRef("GasketSeal".to_string()),
+        "'seal_ref' cell_type must be StructureRef(GasketSeal)"
+    );
+    let seal_ref_expr = seal_ref_cell
+        .default_expr
+        .as_ref()
+        .expect("'seal_ref' let must have a default_expr");
+    assert_eq!(
+        seal_ref_expr.result_type,
+        Type::StructureRef("GasketSeal".to_string()),
+        "'seal_ref' default_expr root result_type must be StructureRef(GasketSeal), got: {:?}",
+        seal_ref_expr.result_type
+    );
+}
+
 // ─── regression lock ──────────────────────────────────────────────────────────
 
 /// Regression lock (invariant 2): a module with no `auto:` use-sites produces
