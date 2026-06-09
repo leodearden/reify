@@ -236,3 +236,130 @@ existing `GEOMETRY_QUERY_HELPER_NAMES` classifier in
 `crates/reify-compiler/src/units.rs`.
 
 ---
+
+## Alternatives Considered
+
+### Option A — `Value::TraitTag` + `Type::TraitTagType` (CHOSEN)
+
+See the *Decision* section above. Trait identities become first-class runtime values;
+the generic `conforms` is the dispatch hub; the three monomorphic helpers become sugar.
+
+**Pros:**
+- Closes the type-as-value gap in a *reusable* way: `Value::TraitTag` and
+  `Type::TraitTagType` are general machinery that future trait-parametric APIs can build on
+  (e.g., `trait_name_of(g) → String`, a hypothetical `has_trait(g, T) → Bool`).
+- Uniform generic dispatch: one `conforms` name, any trait, compile-time `R : Trait` check.
+- Satisfies the value-representability invariant (stable string symbol, round-trips
+  cleanly through `ContentHash` / `Journal` / `BTreeSet`/`BTreeMap` ordering).
+- The three monomorphic helpers are preserved as forward-compatible aliases; zero
+  source-level churn at existing call sites.
+
+**Cons:**
+- Every `Value` derive — `Ord`/`Hash`/`content_hash`/serde — must cover the new variant.
+  The obligation table in Stage D enumerates the work.
+- Snapshot/journal determinism must be re-validated after adding the variant (even though
+  no existing snapshot can contain it, the derive order matters for future snapshots).
+- The elaboration-time type-param machinery (`auto-type-param-resolution.md`) and the
+  new runtime type-as-value path must be kept distinct: elaboration-time params are
+  *type-level* substitutions resolved before lowering; `Value::TraitTag` is a *value-level*
+  entity produced at lowering. Confusing the two would be a design error.
+
+---
+
+### Option B — Keep per-trait helpers only; `conforms` as compile-time macro/sugar
+
+Implement `conforms(g, Watertight)` as purely syntactic sugar that the compiler
+*immediately* desugars to `is_watertight(g)` at the call site, with no new `Value`
+variant and no runtime trait tag. The `conforms` name is an alias resolved entirely
+during elaboration.
+
+**Pros:** No new `Value` variant, no derive obligations, no snapshot impact.
+
+**Cons:**
+- Only works for the *closed* set of 7 v0.1 traits. Once user-defined traits or an
+  open trait extension mechanism is added, compile-time-only sugar breaks: the compiler
+  cannot enumerate all future trait names.
+- No runtime polymorphism: a function that takes a `Type<R>` parameter and passes
+  it to `conforms` is impossible without a value carrier — the trait "tag" cannot be
+  stored in a list, returned from a function, or held in a map.
+- Locks the architecture into a closed-set assumption that contradicts the long-term
+  direction.
+
+---
+
+### Option C — Stringly-typed `conforms(g, "Watertight")`
+
+Express the trait argument as a string literal: `conforms(g, "Watertight")` where the
+second argument is `Value::String("Watertight")`, with no new type-system machinery.
+
+**Pros:** No new `Value` variant (uses existing `Value::String`). Trivial to implement.
+
+**Cons:**
+- The `R : Trait` bound cannot be checked at compile time: `conforms(g, "NonExistent")`
+  is a type-correct expression that fails only at runtime.
+- Pollutes the value space: `Value::String("Watertight")` is indistinguishable from any
+  other string — a trait tag and a user string share the same representation.
+- Defeats the purpose of a type system: users lose autocomplete, static error messages,
+  and any future tooling that reasons about trait conformance.
+
+---
+
+### Option D — Defer entirely / never implement
+
+Accept that `conforms<T, R>` is permanently out of scope; the three monomorphic helpers
+are the final API surface.
+
+**Pros:** Zero cost for v0.1.
+
+**Cons:**
+- The PRD explicitly scopes generic `conforms` to v0.2, not "never". Deferring the
+  design (this ADR) to a future implementer without a recorded decision record increases
+  the risk of an architecturally inconsistent implementation.
+- As the trait set grows (user-defined traits, domain-lib traits), the monomorphic-only
+  API becomes unwieldy: every new trait requires a new `is_<trait_name>` stdlib function.
+
+---
+
+## Consequences
+
+### Positive
+
+- The type-as-value gap is closed in a principled, reusable way: `Value::TraitTag` and
+  `Type::TraitTagType` are general enough to support future type-valued APIs beyond
+  conformance testing.
+- Uniform generic dispatch under one `conforms` name; the compiler enforces `R : Trait`
+  at compile time, so runtime trait-name mismatches are impossible.
+- Existing `is_watertight` / `is_manifold` / `is_orientable` call sites remain valid
+  indefinitely — the helpers are preserved as forward-compatible sugar aliases.
+- `Value::TraitTag` satisfies the value-representability invariant: stable string content,
+  deterministic ordering and hashing, clean journal/snapshot round-trips.
+
+### Negative / Trade-offs
+
+- **Derive obligations.** Every place the `Value` enum is pattern-matched or derived must
+  cover `Value::TraitTag`. In practice: `impl Ord for Value`, `impl ContentHash for Value`,
+  serde impls, and any match-exhaustiveness site in the codebase. The Stage D table enumerates
+  the required impls; exhaustiveness is enforced by the Rust compiler.
+- **Snapshot/journal determinism re-validation.** Adding any new `Value` variant requires
+  re-running the existing snapshot determinism tests (even though no existing snapshot
+  contains `Value::TraitTag`). This is a standard cost of extending the value domain.
+- **Elaboration vs. runtime type-param distinction.** The auto-type-param-resolution
+  machinery resolves `<T : Trait>` bounds at elaboration time (before lowering). The new
+  `Value::TraitTag` is a runtime value produced *at* lowering. Implementers must ensure
+  the two paths remain distinct: trait-tag values are not type parameters; type parameters
+  are not trait-tag values. A guard in the elaborator should reject `Type<R>` in a position
+  that only accepts a type parameter.
+- **Open-vs-closed-trait-set risk.** In v0.1 the seven geometry marker traits are a fixed,
+  compiler-known set. Generic `conforms` dispatch only pays off once the set is open or
+  user-defined. The Option A machinery is designed for extensibility, but the v0.2 test
+  suite should validate that the dispatch path correctly rejects unknown trait names with
+  a type error rather than a runtime panic.
+
+### Scope boundary
+
+This ADR does not change any currently-shipped code. The `Value::TraitTag` variant,
+`Type::TraitTagType`, `ExprKind::TraitTag`, and the `conforms` stdlib function are all
+v0.2 additions. The existing `is_watertight` / `is_manifold` / `is_orientable` helpers
+and `try_eval_conformance_query` are not modified by this task.
+
+---
