@@ -340,6 +340,16 @@ if [ -n "$_MERGE_HEAD" ] && [ -f "$_MERGE_HEAD" ] && [ "$SCOPE" != "all" ]; then
     SCOPE="all"
 fi
 
+# Defensive belt-and-braces (contract C2): the merge gate never narrows. The
+# dark-factory orchestrator's post-merge verify stamps DF_VERIFY_ROLE=merge;
+# force --scope all so a future caller cannot hand the merge gate a narrowing
+# scope (branch/staged). Independent of the role-driven --profile default above
+# and of the affected-crate machinery. Mirrors the MERGE_HEAD force.
+if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "$SCOPE" != "all" ]; then
+    echo "verify.sh: DF_VERIFY_ROLE=merge — forcing --scope all (merge gate never narrows, contract C2)" >&2
+    SCOPE="all"
+fi
+
 # Run all relative-path commands from the repo root, matching how both the
 # orchestrator (project_root) and the git hook ($ROOT) invoke verification.
 cd "$REPO_ROOT"
