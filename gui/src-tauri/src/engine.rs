@@ -824,15 +824,35 @@ fn compile_entry_with_imports(
     let stdlib_root = project_root.join("crates/reify-compiler/stdlib");
 
     let resolver = reify_compiler::module_dag::ModuleResolver::new(project_root, &stdlib_root);
-    let mut dag = reify_compiler::module_dag::ModuleDag::new();
 
-    // Collect import paths from the parsed module (top-level Import declarations only).
+    // The GUI dirty-buffer path uses the host default active cfg (PRD §4 D-2):
+    // there is no GUI cfg selector in v1, so `target` is the compiling host's
+    // platform string (std::env::consts::OS) and no flags/kv are set. Build the
+    // DAG with this cfg so TRANSITIVE imports are gated by it too (mirrors the
+    // CLI's compile_entry_with_stdlib_cfg).
+    let host_cfg = reify_compiler::cfg::CfgSet::host_default();
+    let mut dag = reify_compiler::module_dag::ModuleDag::with_cfg(host_cfg.clone());
+
+    // Collect import paths from the parsed module (top-level Import declarations
+    // only), gating each DIRECT import by its `#cfg(...)` predicates against the
+    // host cfg. An import whose predicates are unsatisfied (e.g. a non-host
+    // `#cfg(target = ...)`) is dropped here, so it is skipped uniformly by the
+    // compile loop, the prelude `user_import_refs` collection, and the
+    // pub-template-merge loop below — all three iterate this filtered list.
     let import_paths: Vec<String> = parsed
         .declarations
         .iter()
         .filter_map(|decl| {
             if let reify_ast::Declaration::Import(imp) = decl {
-                Some(imp.path.clone())
+                let satisfied = imp
+                    .cfg_predicates
+                    .iter()
+                    .all(|p| reify_compiler::cfg::cfg_satisfied(p, &host_cfg));
+                if satisfied {
+                    Some(imp.path.clone())
+                } else {
+                    None
+                }
             } else {
                 None
             }
