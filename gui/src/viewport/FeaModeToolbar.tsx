@@ -14,6 +14,7 @@
 import { Show, createSignal, For, type Component } from 'solid-js';
 import type { FeaModeStore } from '../stores';
 import type { Palette } from './colormap';
+import { FeaCasePickerDropdown } from '../panels/FeaCasePickerDropdown';
 
 const PALETTE_OPTIONS: Palette[] = ['viridis', 'magma', 'rainbow'];
 const DEFAULT_CHANNELS = ['vonMises', 'displacement_magnitude'];
@@ -142,6 +143,12 @@ export const FeaModeToolbar: Component<FeaModeToolbarProps> = (props) => {
       {/* Body: channel / palette / range controls — visible when not collapsed AND enabled */}
       <Show when={!collapsed() && props.store.state.enabled}>
         <div style={{ 'margin-top': '8px', display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
+          {/* Multi-load-case picker — hidden when availableCases is empty (single-case) */}
+          <FeaCasePickerDropdown
+            store={props.store}
+            availableCases={props.store.state.availableCases}
+          />
+
           {/* Channel dropdown */}
           <label style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
             <span>Channel</span>
