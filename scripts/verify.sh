@@ -812,8 +812,17 @@ build_plan() {
     # Overlap path: background the node lane BEFORE the foreground rust cheap
     # gates (clippy + gui-feature-check) so they run concurrently. The bg PID
     # variable persists into the join entry below (same executor shell).
+    #
+    # Cleanup trap: registered in the same eval so it fires on any EXIT (success
+    # or failure). If a foreground rust gate fails before the wait join, the
+    # executor calls exit and the trap kills the still-running npm job instead of
+    # orphaning it. "2>/dev/null; true" suppresses errors (no such process) on
+    # the happy path where wait has already reaped the job before EXIT fires.
+    # NOTE: "|| true" is intentionally avoided here — the npm ci hardening test
+    # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
+    # "npm ci.*|| true", and the trap is on the same line as the npm ci call.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!"
+        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; true' EXIT"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
