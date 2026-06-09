@@ -778,8 +778,13 @@ build_plan() {
     # Cleanup trap: registered in the same eval so it fires on any EXIT (success
     # or failure). If a foreground rust gate fails before the wait join, the
     # executor calls exit and the trap kills the still-running npm job instead of
-    # orphaning it. "2>/dev/null; true" suppresses errors (no such process) on
-    # the happy path where wait has already reaped the job before EXIT fires.
+    # orphaning it. The "if kill ...; then :; fi" form suppresses errors (no such
+    # process) on the happy path where wait has already reaped the job before EXIT
+    # fires. Crucially, wrapping kill in an `if` condition makes it immune to
+    # `set -e`: under bash 5.2 a bare "kill <dead_pid>; true" aborts the EXIT trap
+    # via errexit on kill's rc=1 BEFORE `true` runs, so the trap (and the whole
+    # script) exits 1 even when every check passed (esc-4431-30). The `if`
+    # condition's failure is handled by the construct, not errexit.
     # NOTE: "|| true" is intentionally avoided here — the npm ci hardening test
     # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
     # "npm ci.*|| true", and the trap is on the same line as the npm ci call.
