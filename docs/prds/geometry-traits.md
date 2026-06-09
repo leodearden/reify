@@ -157,6 +157,7 @@ structure def TrustedShell : Watertight {
   `is_manifold` / `is_orientable`. The generic form can be added later as
   syntactic sugar over the helpers without breaking source — call sites
   written as `is_watertight(g)` are forward-compatible.
+  See `docs/decisions/2522-type-as-value-conforms.md` for the v0.2 design.
 
 ## Design notes for task 2320
 
