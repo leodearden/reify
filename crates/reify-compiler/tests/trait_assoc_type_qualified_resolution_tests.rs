@@ -137,3 +137,64 @@ structure def UseBeam {
         );
     }
 }
+
+// ─── Step-7 RED: paren disambiguator (FORK-G) ─────────────────────────────────
+
+/// The FORK-G paren disambiguator `Beam::(Trait::Material)` resolves the
+/// otherwise-ambiguous two-trait case distinctly, with no `AmbiguousAssocType`.
+/// Because the structure binds `Material` exactly once, BOTH qualifiers
+/// (`HasMaterial` and `HasSkin`) resolve to the same `Type::StructureRef("Steel")`
+/// — the qualifier is disambiguation-only.
+///
+/// Fails after step-6: the helper does not yet handle `trait_name = Some(..)`,
+/// so it returns `None` and the params fall back to `Type::Real`.
+#[test]
+fn paren_disambiguated_qualified_assoc_resolves_both_qualifiers() {
+    let source = r#"
+structure Steel {}
+trait HasMaterial { type Material }
+trait HasSkin { type Material }
+structure def Beam : HasMaterial + HasSkin {
+    type Material = Steel
+}
+structure def UseBeam {
+    param m : Beam::(HasMaterial::Material)
+    param m2 : Beam::(HasSkin::Material)
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for paren-disambiguated qualifiers; got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseBeam")
+        .expect("UseBeam template should be compiled");
+
+    let cell_type = |member: &str| {
+        template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == member)
+            .unwrap_or_else(|| panic!("value cell `{member}` should exist"))
+            .cell_type
+            .clone()
+    };
+
+    assert_eq!(
+        cell_type("m"),
+        Type::StructureRef("Steel".to_string()),
+        "`Beam::(HasMaterial::Material)` should resolve to Type::StructureRef(\"Steel\")"
+    );
+    assert_eq!(
+        cell_type("m2"),
+        Type::StructureRef("Steel".to_string()),
+        "`Beam::(HasSkin::Material)` should resolve to the same Type::StructureRef(\"Steel\") \
+         (the structure binds Material once; the qualifier is disambiguation-only)"
+    );
+}
