@@ -54,6 +54,15 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
         return None;
     }
 
+    // A pure `//` comment line (trimmed start begins with `//`). The
+    // executable-code-token families (2 unimplemented!, 3 panic!(not yet),
+    // 4 tracing::warn!, 5 Value::Undef) match executable syntax that should
+    // not appear in a `//` comment context — such lines are prose *about* the
+    // tokens, not executable arms. Family 1 (TODO variants) and Family 6 (bare
+    // labels) are intentionally unchanged because they are definitionally comment
+    // markers and are expected to appear in `//` lines.
+    let is_comment_line = t.starts_with("//");
+
     let lower = line.to_lowercase();
 
     // Family 1 — TODO variants.  Sub-checks run only on the content INSIDE
@@ -85,26 +94,30 @@ fn line_matches_stub(line: &str) -> Option<&'static str> {
         }
     }
 
-    // Family 2 — unimplemented!
-    if lower.contains("unimplemented!(") {
-        return Some("unimplemented!");
-    }
+    // Families 2–5 are executable-code-token families. Skip them when the line
+    // is a pure `//` comment (prose ABOUT the token, not an executable arm).
+    if !is_comment_line {
+        // Family 2 — unimplemented!
+        if lower.contains("unimplemented!(") {
+            return Some("unimplemented!");
+        }
 
-    // Family 3 — panic!(... not yet ...)
-    if lower.contains("panic!(") && lower.contains("not yet") {
-        return Some("panic!(not yet)");
-    }
+        // Family 3 — panic!(... not yet ...)
+        if lower.contains("panic!(") && lower.contains("not yet") {
+            return Some("panic!(not yet)");
+        }
 
-    // Family 4 — tracing::warn! with task_*_pending reason field.
-    if lower.contains("tracing::warn!(") && lower.contains("reason=\"task_") && lower.contains("_pending\"") {
-        return Some("tracing::warn!(task_pending)");
-    }
+        // Family 4 — tracing::warn! with task_*_pending reason field.
+        if lower.contains("tracing::warn!(") && lower.contains("reason=\"task_") && lower.contains("_pending\"") {
+            return Some("tracing::warn!(task_pending)");
+        }
 
-    // Family 5 — Value::Undef arm with pending/stub/placeholder in comment.
-    if lower.contains("value::undef")
-        && (lower.contains("pending") || lower.contains("stub") || lower.contains("placeholder"))
-    {
-        return Some("Value::Undef(pending/stub/placeholder)");
+        // Family 5 — Value::Undef arm with pending/stub/placeholder in comment.
+        if lower.contains("value::undef")
+            && (lower.contains("pending") || lower.contains("stub") || lower.contains("placeholder"))
+        {
+            return Some("Value::Undef(pending/stub/placeholder)");
+        }
     }
 
     // Family 6 — bare line-comment markers (case-insensitive, label-anchored).
