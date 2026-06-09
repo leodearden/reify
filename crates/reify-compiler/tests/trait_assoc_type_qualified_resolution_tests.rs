@@ -10,7 +10,7 @@
 //! (`TopologyTemplate.assoc_types` / `.trait_bounds`); the base structure must be
 //! declared BEFORE its consumer (source-order compilation).
 
-use reify_core::Type;
+use reify_core::{DiagnosticCode, Type};
 use reify_test_support::{compile_source, errors_only};
 
 // ─── Step-3 RED: bare-unique qualified access ─────────────────────────────────
@@ -61,4 +61,79 @@ structure def UseBeam {
          got: {:?}",
         m_cell.cell_type
     );
+}
+
+// ─── Step-5 RED: two-trait ambiguity ──────────────────────────────────────────
+
+/// Collect the message plus every label message of a diagnostic into one
+/// haystack, so substring assertions are agnostic to whether a name lands in the
+/// top-level message or in an attached label.
+fn diag_haystack(d: &reify_core::Diagnostic) -> String {
+    let mut s = d.message.clone();
+    for label in &d.labels {
+        s.push('\n');
+        s.push_str(&label.message);
+    }
+    s
+}
+
+/// When `Beam` conforms to TWO traits that each declare `type Material`, a bare
+/// `param m : Beam::Material` is ambiguous: exactly one `AmbiguousAssocType`
+/// diagnostic must be raised, naming the structure, the member, and both
+/// candidate traits. The structure `Beam` itself must compile clean (no
+/// `ConflictingTraitAssocType`) — this pins the achievability premise (a second
+/// same-name *required* assoc type dedups silently; conflict fires only for
+/// differing trait *defaults*).
+///
+/// Fails after step-4: the helper returns `None` for `declaring_traits.len() >= 2`
+/// without emitting any diagnostic, so zero `AmbiguousAssocType` are produced.
+#[test]
+fn two_trait_bare_qualified_assoc_is_ambiguous() {
+    let source = r#"
+structure Steel {}
+trait HasMaterial { type Material }
+trait HasSkin { type Material }
+structure def Beam : HasMaterial + HasSkin {
+    type Material = Steel
+}
+structure def UseBeam {
+    param m : Beam::Material
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // Achievability premise: Beam compiles clean — two same-name *required* assoc
+    // types do not conflict (conflict fires only for differing trait defaults).
+    let conflicts: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ConflictingTraitAssocType))
+        .collect();
+    assert!(
+        conflicts.is_empty(),
+        "Beam : HasMaterial, HasSkin with `type Material = Steel` must compile clean \
+         (no ConflictingTraitAssocType); got: {:?}",
+        conflicts
+    );
+
+    let ambiguous: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AmbiguousAssocType))
+        .collect();
+    assert_eq!(
+        ambiguous.len(),
+        1,
+        "expected exactly one AmbiguousAssocType for bare `Beam::Material`; all errors: {:?}",
+        errors
+    );
+
+    let haystack = diag_haystack(ambiguous[0]);
+    for needle in ["Beam", "Material", "HasMaterial", "HasSkin"] {
+        assert!(
+            haystack.contains(needle),
+            "AmbiguousAssocType diagnostic should name `{}`; full text: {:?}",
+            needle,
+            haystack
+        );
+    }
 }
