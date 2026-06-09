@@ -1,0 +1,79 @@
+// Self-contained three-case multi-load FEA fixture for task 3026.
+//
+// Provides the `fea_multi_case_bracket.ri` solve fixture consumed by:
+//   - The GUI EngineSession integration test (task 3026 step-15/16,
+//     `gui_fixture_multi_case_bracket_produces_three_case_result`)
+//   - The visual-regression catalogue (task 3026 steps 17–21)
+//
+// Design follows `multi_case_compute_node.rs`'s TWO_CASE_SOURCE exactly,
+// extended to three named cases matching the PRD "End-to-end example":
+//   "operating"  — nominal in-service load (1 kN tip)
+//   "overload"   — 2× safety-factor design overload (2 kN tip)
+//   "transport"  — 3× pseudo-static 5-g shipping scenario (3 kN tip)
+//
+// All cases share the same clamped root support and the same 1 m cantilever
+// geometry, so overload.max_von_mises > operating.max_von_mises >0 holds.
+//
+// Geometry: rectangular cantilever box (length=1000mm, width=100mm,
+// height=100mm) — identical to fea_cantilever_smoke.ri and the TWO_CASE_SOURCE
+// fixture; the MockGeometryKernel in the engine test ignores the geometry
+// handle and the OCCT kernel is not invoked during the headless solve.
+//
+// `@optimized("solver::multi_case")` on `solve_load_cases` routes the call to
+// the multi_case trampoline when `register_compute_fns` is wired (task 4086).
+//
+// ConstitutiveLawInput wrapper: required until trait subtype coercion lands at
+// fn call sites (esc-3851-32). See fea_cantilever_smoke.ri for the rationale.
+
+structure FeaMultiCaseBracket {
+    // ── Geometry ─────────────────────────────────────────────────────────────
+    param length    : Length = 1000mm
+    param width     : Length = 100mm
+    param height    : Length = 100mm
+
+    // Geometry realization: provides the surface mesh for GUI stress-contour
+    // rendering (task 4087 / task 3026 case-picker).
+    let body = box(length, width, height)
+
+    // ── Material ─────────────────────────────────────────────────────────────
+    // Steel_AISI_1045: E=205 GPa, ν=0.29 (same as cantilever smoke fixture).
+    let ci = ConstitutiveLawInput(law: Steel_AISI_1045())
+
+    // ── Per-case load+support bundles ─────────────────────────────────────────
+    //
+    // All three cases share the same FixedSupport at "root"; only the tip
+    // PointLoad magnitude varies.  This is the canonical multi-case shape:
+    // shared BCs, per-case load variation — mesh + factorisation reused
+    // across cases (PRD "Cache reuse is the natural common case").
+    let mount = FixedSupport(target: "root")
+
+    let lc_operating = LoadCase(
+        name:     "operating",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [mount],
+    )
+
+    let lc_overload = LoadCase(
+        name:     "overload",
+        loads:    [PointLoad(point: "tip", force: 2000.0)],
+        supports: [mount],
+    )
+
+    let lc_transport = LoadCase(
+        name:     "transport",
+        loads:    [PointLoad(point: "tip", force: 3000.0)],
+        supports: [mount],
+    )
+
+    // ── Solve all cases ────────────────────────────────────────────────────────
+    //
+    // `solve_load_cases` is dispatched to the "solver::multi_case" trampoline
+    // (task 4088) when the GUI EngineSession is fed via `register_compute_fns`
+    // (task 4086).  Returns a MultiCaseResult-shaped Value::Map whose "cases"
+    // inner map holds one Sampled-Field ElasticResult per case name.
+    let result = solve_load_cases(
+        ci.law, length, width, height,
+        [lc_operating, lc_overload, lc_transport],
+        ElasticOptions()
+    )
+}
