@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use indexmap::IndexSet;
 
-use reify_core::{Diagnostic, ModulePathParseError};
+use reify_core::{Diagnostic, DiagnosticLabel, ModulePathParseError, SourceSpan};
 
 use crate::cfg::{CfgSet, cfg_satisfied};
 use crate::CompiledModule;
@@ -861,6 +861,55 @@ pub fn compile_entry_with_stdlib_cfg(
 
     // Surface any import-compile failures as diagnostics on the entry module.
     compiled.diagnostics.extend(import_error_diags);
+
+    // Merge `pub` templates from cfg-satisfied non-std direct imports into the
+    // entry's `compiled.templates` so cross-module entities (e.g. a `sub` whose
+    // structure is declared in a followed platform module) resolve for
+    // downstream eval. Mirrors the GUI's `compile_entry_with_imports` merge
+    // (gui/src-tauri/src/engine.rs) and the compiler's cross-prelude alias
+    // policy: first-wins, with a `Warning` on every name collision.
+    //
+    // `templates_origin` (template name → declaring module path) is pre-seeded
+    // with the entry's own templates so BOTH entry-vs-import and
+    // import-vs-import collisions emit a Warning naming both sides. Only
+    // `Visibility::Public` imported templates are merged — private imports must
+    // not leak, mirroring compile-time import semantics. Gated-out and `std.*`
+    // imports are skipped via the same predicate as the prelude build above, so
+    // a template from a gated-out import is never merged.
+    let entry_origin = compiled.path.0.join(".");
+    let mut templates_origin: HashMap<String, String> = HashMap::new();
+    for tmpl in &compiled.templates {
+        templates_origin.insert(tmpl.name.clone(), entry_origin.clone());
+    }
+    for decl in &parsed.declarations {
+        if let reify_ast::Declaration::Import(import) = decl {
+            if is_std_import_path(&import.path) || !import_cfg_satisfied(import, cfg) {
+                continue;
+            }
+            if let Some(imported_module) = dag.modules.get(&import.path) {
+                for template in &imported_module.templates {
+                    if template.visibility != crate::Visibility::Public {
+                        continue;
+                    }
+                    if let Some(prior_origin) = templates_origin.get(&template.name) {
+                        compiled.diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "imported pub structure '{}' declared in both '{}' and '{}'; first-wins",
+                                template.name, prior_origin, import.path
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                SourceSpan::prelude(),
+                                "cross-import collision",
+                            )),
+                        );
+                        continue;
+                    }
+                    compiled.templates.push(template.clone());
+                    templates_origin.insert(template.name.clone(), import.path.clone());
+                }
+            }
+        }
+    }
 
     compiled
 }
