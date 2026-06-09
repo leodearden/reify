@@ -290,6 +290,23 @@ pub(crate) fn phase_auto_type_param_resolution(
                             substitute_expr_result_types(expr, &sigma);
                         }
                     }
+                    // Substitute TypeParam in sub-component type_args so that nested
+                    // generic instantiations like `sub inner = Inner<T>()` become
+                    // `Inner<StructureRef(c)>` in the monomorph.
+                    for sub in &mut mono.sub_components {
+                        for arg in &mut sub.type_args {
+                            *arg = substitute_type_params(arg, &sigma);
+                        }
+                    }
+                    // α partial-coverage: the following collections are NOT
+                    // substituted and are documented as known gaps for M-013 α.
+                    // They are only relevant when a generic body carries TypeParam
+                    // in these positions, which is uncommon in current practice.
+                    // β/γ tasks (constraint-aware selection, value population)
+                    // can extend coverage as needed:
+                    //   - sub_components[*].args  (CompiledExpr call-site values)
+                    //   - realizations, connections, objective (geometry/eval exprs)
+                    //   - match_arm_groups, forall_templates, assoc_fns, assoc_types
                     // Mix the mono name into the content_hash so two distinct
                     // monomorphs that clone the same source hash (e.g. Bearing$A
                     // vs Bearing$B) produce different cache keys.

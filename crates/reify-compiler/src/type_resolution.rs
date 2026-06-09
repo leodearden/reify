@@ -1302,7 +1302,17 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
                 substitute_expr_result_types(arg, subst);
             }
         }
-        CompiledExprKind::Lambda { body, .. } => {
+        CompiledExprKind::Lambda { params, body, .. } => {
+            // Substitute TypeParam→StructureRef in lambda parameter type
+            // annotations (e.g., `|x: T| ...` inside a generic body).
+            // Mirrors the explicit annotation positions — NOT included in
+            // CompiledExpr::walk because walk only traverses sub-expressions;
+            // we substitute here to prevent residual TypeParam in param types.
+            for (_, ty) in params.iter_mut() {
+                if let Some(t) = ty {
+                    *t = substitute_type_params(t, subst);
+                }
+            }
             substitute_expr_result_types(body, subst);
         }
         CompiledExprKind::ListLiteral(elements) => {
@@ -1367,7 +1377,11 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
         // Leaf placeholder — no child expressions.
         CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
         // Mirror walk: only ordered_args and defaults are traversed; `lets`
-        // contains template-local refs intentionally skipped by walk.
+        // contains template-local value refs (structural, not type-bearing)
+        // and is intentionally skipped by CompiledExpr::walk — we mirror
+        // that decision here.  Any result_type TypeParam nodes inside a
+        // `lets` subtree are therefore NOT substituted, which is an accepted
+        // α partial-coverage limitation (symmetric with walk's precedent).
         CompiledExprKind::StructureInstanceCtor {
             ordered_args,
             defaults,

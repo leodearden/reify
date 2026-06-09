@@ -512,6 +512,73 @@ fn resolved_subcomponent_has_no_typeparam_cell() {
     );
 }
 
+// ─── amendment: sub_components.type_args coverage ────────────────────────────
+
+/// α coverage: sub_components[*].type_args are substituted so that nested
+/// generic instantiations like `sub inner = Inner<T>()` become
+/// `Inner<StructureRef(GasketSeal)>` in the monomorph.
+///
+/// This pins the substitution introduced by the amendment pass for M-013 α.
+/// Other collections (realizations, connections, objective, match_arm_groups,
+/// forall_templates, assoc_fns) are documented as known α gaps in
+/// auto_type_param_phase.rs and are NOT asserted here.
+#[test]
+fn monomorph_sub_component_type_args_are_substituted() {
+    let source = r#"
+        trait Seal {}
+        structure def GasketSeal : Seal {}
+        structure def Inner<T: Seal> { param t : T }
+        structure def Outer<T: Seal> { sub inner = Inner<T>() }
+        structure def Assembly { sub o = Outer<auto: Seal>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 0, "expected no error diagnostics, got: {:?}", errors);
+
+    let outer_mono = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Outer$GasketSeal")
+        .expect("expected 'Outer$GasketSeal' monomorph");
+
+    // The sub 'inner' in Outer$GasketSeal must reference Inner with
+    // StructureRef("GasketSeal") in type_args — not TypeParam("T").
+    let sub_inner = outer_mono
+        .sub_components
+        .iter()
+        .find(|s| s.name == "inner")
+        .expect("expected sub 'inner' in 'Outer$GasketSeal'");
+    assert_eq!(
+        sub_inner.type_args.first(),
+        Some(&Type::StructureRef("GasketSeal".to_string())),
+        "Outer$GasketSeal sub 'inner' type_args[0] must be StructureRef(GasketSeal), got: {:?}",
+        sub_inner.type_args
+    );
+
+    // No TypeParam should remain in any sub_component type_args of the monomorph.
+    let residual_typeparams: Vec<_> = outer_mono
+        .sub_components
+        .iter()
+        .flat_map(|sub| {
+            sub.type_args
+                .iter()
+                .filter(|t| matches!(t, Type::TypeParam(_)))
+                .map(|t| format!("sub '{}' type_args: {:?}", sub.name, t))
+        })
+        .collect();
+    assert!(
+        residual_typeparams.is_empty(),
+        "Outer$GasketSeal must have no TypeParam in sub_component type_args, found: {:?}",
+        residual_typeparams
+    );
+}
+
 // ─── regression lock ──────────────────────────────────────────────────────────
 
 /// Regression lock (invariant 2): a module with no `auto:` use-sites produces
