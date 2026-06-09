@@ -1577,6 +1577,10 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
+    // Inverse-dynamics Undef: body has no resolvable mass.
+    if let Some(diag) = reify_stdlib::dynamics_diagnose(name, args) {
+        sink.borrow_mut().push(diag);
+    }
 }
 
 /// Emit the task-3871 PRB-flexure diagnostics for a builtin call `result`.

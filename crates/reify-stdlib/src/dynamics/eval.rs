@@ -38,6 +38,7 @@ use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 use crate::joints::motion_subspace_columns;
 use crate::loop_closure::{extract_loop_closure_chains, loop_residual_jacobian_by_joint};
 use crate::mechanism::is_world;
+use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::dimension::DimensionVector;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use std::collections::BTreeMap;
@@ -334,6 +335,61 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
     }
 }
 
+// ── dynamics diagnose hook (task 4278) ───────────────────────────────────────
+
+/// Undef-path diagnostic hook for `inverse_dynamics` intrinsics.
+///
+/// Mirrors the `stackup_diagnose` / `fea_diagnose` / `geometry_diagnose`
+/// pattern: called by `reify-expr`'s `emit_undef_builtin_diagnostics` after
+/// the builtin returns `Value::Undef`, re-derives the cause by inspecting the
+/// mechanism's spanning-tree bodies, and emits
+/// [`DiagnosticCode::DynamicsBodyMassUnresolved`] for the first body whose mass
+/// cannot be resolved via [`resolve_body_mass`].
+///
+/// Returns `None` for non-dynamics names, non-mechanism args[0], or fully-
+/// resolvable mechanisms (no spurious fire). Closing-edge bodies are excluded
+/// from the walk because the closed-chain RNEA never reads their mass.
+pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
+    match name {
+        "inverse_dynamics_lower" | "inverse_dynamics_at_snapshot_lower" => {}
+        _ => return None,
+    }
+    let mech = match args.first() {
+        Some(Value::Map(m)) => m,
+        _ => return None,
+    };
+    let bodies = match map_get(mech, "bodies") {
+        Some(Value::List(b)) => b,
+        _ => return None,
+    };
+    // Closing-edge bodies are appended at the end; their mass is never read by
+    // the RNEA so we skip them to avoid false positives.
+    let n_lc = match map_get(mech, "loop_closures") {
+        Some(Value::List(lc)) => lc.len(),
+        _ => 0,
+    };
+    let n_tree = bodies.len().saturating_sub(n_lc);
+    for body in &bodies[..n_tree] {
+        if resolve_body_mass(body).is_none() {
+            let id_str = match body {
+                Value::Map(bm) => match map_get(bm, "id") {
+                    Some(Value::Int(k)) => k.to_string(),
+                    _ => "?".to_string(),
+                },
+                _ => "?".to_string(),
+            };
+            return Some(
+                Diagnostic::error(&format!(
+                    "inverse_dynamics: body '{id_str}' has no resolvable mass \
+                     (no MassProperties on body.solid)"
+                ))
+                .with_code(DiagnosticCode::DynamicsBodyMassUnresolved),
+            );
+        }
+    }
+    None
+}
+
 // ── MassProperties constructor helpers (task 4278) ──────────────────────────
 
 /// Build a canonical registry-free `MassProperties` `Value::StructureInstance`
@@ -583,7 +639,6 @@ fn snapshot_inverse_dynamics(
 
     let mut at_joints: Vec<&Value> = Vec::with_capacity(n);
     let mut ids: Vec<i64> = Vec::with_capacity(n);
-    let mut solids: Vec<&Value> = Vec::with_capacity(n);
     for b in bodies {
         let bm = match b {
             Value::Map(m) => m,
@@ -594,7 +649,6 @@ fn snapshot_inverse_dynamics(
             Some(Value::Int(k)) => *k,
             _ => return None,
         });
-        solids.push(map_get(bm, "solid")?);
     }
 
     // ── parent body index per body (None = world-parented base) ──
@@ -633,7 +687,8 @@ fn snapshot_inverse_dynamics(
     // ── build RneaLinks in topological order ──
     let mut links: Vec<RneaLink> = Vec::with_capacity(n);
     for &bi in &ordered {
-        let (mass, com, inertia_about_com) = mass_properties_from_value(solids[bi])?;
+        let mp = resolve_body_mass(&bodies[bi])?;
+        let (mass, com, inertia_about_com) = mass_properties_from_value(&mp)?;
         let child_frame = frame3_from_transform_value(world_tf.get(&ids[bi])?)?;
         let xc = SpatialTransform6::from_frame3(&child_frame);
         // X_{p→i}: base link is ᶜXᵂ = from_frame3(world_transform) (pins the
@@ -1125,7 +1180,6 @@ fn closed_chain_inverse_dynamics(
     // ── per-spanning-tree-body fields ─────────────────────────────────────────
     let mut at_joints: Vec<&Value> = Vec::with_capacity(n_tree);
     let mut ids: Vec<i64> = Vec::with_capacity(n_tree);
-    let mut solids: Vec<&Value> = Vec::with_capacity(n_tree);
     for b in tree_bodies {
         let bm = match b {
             Value::Map(m) => m,
@@ -1136,7 +1190,6 @@ fn closed_chain_inverse_dynamics(
             Some(Value::Int(k)) => *k,
             _ => return None,
         });
-        solids.push(map_get(bm, "solid")?);
     }
 
     // ── parent index per spanning-tree body (None = world root) ──────────────
@@ -1196,7 +1249,8 @@ fn closed_chain_inverse_dynamics(
     // ── build RneaLinks in topological order ──────────────────────────────────
     let mut links: Vec<RneaLink> = Vec::with_capacity(n_tree);
     for &bi in &ordered {
-        let (mass, com, inertia_about_com) = mass_properties_from_value(solids[bi])?;
+        let mp = resolve_body_mass(&tree_bodies[bi])?;
+        let (mass, com, inertia_about_com) = mass_properties_from_value(&mp)?;
         let child_frame = frame3_from_transform_value(world_tf.get(&ids[bi])?)?;
         let xc = SpatialTransform6::from_frame3(&child_frame);
         let parent_to_child = match parent_idx[bi] {

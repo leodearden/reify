@@ -86,6 +86,16 @@ pub use flexures::flexure_diagnose;
 /// solid (plain geometry, wrong type, missing key).
 pub use dynamics::eval::resolve_body_mass;
 
+/// Public re-export of the inverse_dynamics Undef-path diagnostic classifier
+/// (task 4278).
+///
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
+/// push `DynamicsBodyMassUnresolved` into the `EvalContext` sink when an
+/// `inverse_dynamics` call returns `Value::Undef` because a spanning-tree body
+/// has no resolvable mass. Mirrors the `stackup_diagnose` / `fea_diagnose` /
+/// `geometry_diagnose` pattern.
+pub use dynamics::eval::diagnose as dynamics_diagnose;
+
 /// Public re-export of the von Mises scalar kernel for cross-crate reuse.
 ///
 /// Called by `crates/reify-expr/src/field_reductions.rs` in the
