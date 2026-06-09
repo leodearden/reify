@@ -263,11 +263,13 @@ assert "wrapper propagates child exit code 0 (no High findings)" \
 echo ""
 echo "--- Check 7: freshness guard (stale binary refuses with exit 125) ---"
 
-# 7a: Static wiring — the wrapper must reference reify-audit-freshness.sh.
-# This is the single-source-of-truth grep, mirroring check 5e for the snapshot
-# filter. RED until step-6 adds the source line.
-assert "wrapper script references reify-audit-freshness.sh" \
-    bash -c 'grep -qF "reify-audit-freshness.sh" "$1"' \
+# 7a: Static wiring — the wrapper must have an actual `source` line for the
+# freshness guard library (not just a mention in a comment). A commented-out
+# reference passes a bare substring grep but does not wire the guard.
+# Pattern: `^[[:space:]]*(source|.)` at line start, then whitespace, then the
+# filename — matches the real source line and rejects `# source ...` comments.
+assert "wrapper has an actual 'source' line for reify-audit-freshness.sh" \
+    bash -c 'grep -qE '"'"'^[[:space:]]*(source|\.)[[:space:]]+.*reify-audit-freshness\.sh'"'"' "$1"' \
     -- "$REPO_ROOT/scripts/reify-audit-predone-wrapper.sh"
 
 # 7b: Behavioral — stale binary should refuse (exit 125) BEFORE MCP is called.
