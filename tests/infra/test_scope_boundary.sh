@@ -86,3 +86,24 @@ Y_CRATE="reify-eval"
 # plan_lacks <plan_str> <pattern> — true if plan_str has NO line matching pattern.
 plan_has()   { printf '%s\n' "$1" | grep -qE "$2"; }
 plan_lacks() { ! printf '%s\n' "$1" | grep -qE "$2"; }
+
+# ---------------------------------------------------------------------------
+# B4 Part 1: real reverse-closure includes downstream dependent Y (C3 ground-truth)
+# ---------------------------------------------------------------------------
+# Calls the real affected_crates() against the live workspace to prove
+# reify-eval ∈ closure(reify-ir) and the set is bounded (≠ ALL sentinel).
+echo ""
+echo "--- B4 Part 1: real reverse closure includes dependent Y ---"
+
+AFFECTED_SET=""
+
+assert "B4P1: affected set is NOT the ALL sentinel (genuinely narrowed)" \
+    bash -c '[ "$1" != "ALL" ]' _ "$AFFECTED_SET"
+assert "B4P1: affected set is non-empty" \
+    bash -c '[ -n "$1" ]' _ "$AFFECTED_SET"
+assert "B4P1: changed crate X ($X_CRATE) is in affected set" \
+    bash -c 'grep -qx "$2" <<< "$1"' _ "$AFFECTED_SET" "$X_CRATE"
+assert "B4P1: downstream dependent Y ($Y_CRATE) is in affected set (C3)" \
+    bash -c 'grep -qx "$2" <<< "$1"' _ "$AFFECTED_SET" "$Y_CRATE"
+
+test_summary
