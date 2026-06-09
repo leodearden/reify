@@ -2350,7 +2350,7 @@ mod tests {
         let j = offset_revolute_z(0.3);
         let v = std::f64::consts::PI / 6.0;
 
-        let chain_result = super::chain_transform(&[j.clone()], &[JointValue::Scalar(v)])
+        let chain_result = super::chain_transform(std::slice::from_ref(&j), &[JointValue::Scalar(v)])
             .expect("chain_transform must return Some for an offset revolute joint");
         let direct = eval_builtin("transform_at", &[j.clone(), Value::angle(v)]);
         assert!(!direct.is_undef(), "transform_at with offset must not return Undef");

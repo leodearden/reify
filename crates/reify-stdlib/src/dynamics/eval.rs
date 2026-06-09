@@ -2990,7 +2990,6 @@ mod tests {
     #[test]
     fn inverse_dynamics_offset_joint_fk_world_transform_correct_and_finite() {
         use crate::eval_builtin;
-        use crate::test_fixtures::offset_revolute_z;
         use std::f64::consts::PI;
 
         // ── Offset revolute-Z joint, range [−π, π] (admits θ = π/6) ──────────
