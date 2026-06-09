@@ -775,18 +775,21 @@ build_plan() {
     # gates (clippy + gui-feature-check) so they run concurrently. The bg PID
     # variable persists into the join entry below (same executor shell).
     #
-    # Cleanup trap: registered as a separate plan entry (same executor shell, so
-    # _VERIFY_NODE_BG_PID is visible). Split onto its own line so the hardening
-    # test (test_npm_ci_hardening.sh Test 3) — which checks that no plan line
-    # contains "npm ci.*|| true" — doesn't false-positive on the trap's || true.
-    # "|| true" in the trap is needed (not "; true") because set -euo pipefail
-    # applies inside EXIT trap handlers; "kill; true" exits the trap early if
-    # kill finds no process (PID already reaped by wait), whereas "kill || true"
-    # makes the kill-failure short-circuit to true (POSIX AND-OR list exemption
-    # from set -e), so the EXIT trap always exits 0.
+    # Cleanup trap: registered in the same eval so it fires on any EXIT (success
+    # or failure). If a foreground rust gate fails before the wait join, the
+    # executor calls exit and the trap kills the still-running npm job instead of
+    # orphaning it. "2>/dev/null; true" suppresses errors (no such process) on
+    # the happy path where wait has already reaped the job before EXIT fires.
+    # NOTE: "|| true" is intentionally avoided here — the npm ci hardening test
+    # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
+    # "npm ci.*|| true", and the trap is on the same line as the npm ci call.
+    # The kill is wrapped in `if … ; then :; fi` instead: set -e applies INSIDE
+    # an EXIT trap, and on green runs the bg PID is already reaped by the wait
+    # step, so a bare `kill …; true` aborts at the failed kill and turns a
+    # fully-green run into exit 1 (task 4457). An if-condition is exempt from
+    # set -e and contains no "|| true" token.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!"
-        add "trap 'kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null || true' EXIT"
+        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi' EXIT"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
