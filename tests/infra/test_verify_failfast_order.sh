@@ -105,4 +105,80 @@ assert "all plan: contains npm ci && npm run typecheck && npm test (gui chain in
 assert "all plan: contains cargo-test-occt-gated.sh (gated pass preserved)" \
     bash -c 'printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$ALL_PLAN"
 
+# ===========================================================================
+# Test 4: bounded overlap — action=all: node lane is BACKGROUNDED and joined
+# before the pole (step-3 RED; FAIL until step-4 impl adds backgrounding)
+# ===========================================================================
+echo ""
+echo "--- Test 4: action=all: node lane backgrounded + joined before psi-gate ---"
+
+# (a) exactly one backgrounded npm line (carries & + _VERIFY_NODE_BG_PID=$!)
+assert "all plan: exactly one backgrounded node line (bg start + PID capture)" \
+    bash -c '
+        CNT=$(printf "%s\n" "$1" | grep -cE "npm run typecheck.*&[[:space:]]*_VERIFY_NODE_BG_PID=\\\$!" || true)
+        [ "$CNT" -eq 1 ]
+    ' _ "$ALL_PLAN"
+
+# (b) a later wait line matching ^wait .*_VERIFY_NODE_BG_PID
+assert "all plan: wait for _VERIFY_NODE_BG_PID line present" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^wait .*_VERIFY_NODE_BG_PID"' _ "$ALL_PLAN"
+
+# (c) overlap positioning: bg-node < clippy < wait < psi-gate
+assert "all plan: bg node index < cargo clippy index" \
+    bash -c '
+        BG_IDX=$(printf "%s\n" "$1" | grep -n "_VERIFY_NODE_BG_PID=" | head -1 | cut -d: -f1)
+        CLIPPY_IDX=$(printf "%s\n" "$1" | grep -n "cargo clippy" | head -1 | cut -d: -f1)
+        [ -n "$BG_IDX" ] && [ -n "$CLIPPY_IDX" ] && [ "$BG_IDX" -lt "$CLIPPY_IDX" ]
+    ' _ "$ALL_PLAN"
+
+assert "all plan: cargo clippy index < wait index" \
+    bash -c '
+        CLIPPY_IDX=$(printf "%s\n" "$1" | grep -n "cargo clippy" | head -1 | cut -d: -f1)
+        WAIT_IDX=$(printf "%s\n" "$1" | grep -nE "^wait .*_VERIFY_NODE_BG_PID" | head -1 | cut -d: -f1)
+        [ -n "$CLIPPY_IDX" ] && [ -n "$WAIT_IDX" ] && [ "$CLIPPY_IDX" -lt "$WAIT_IDX" ]
+    ' _ "$ALL_PLAN"
+
+assert "all plan: wait index < psi-gate index" \
+    bash -c '
+        WAIT_IDX=$(printf "%s\n" "$1" | grep -nE "^wait .*_VERIFY_NODE_BG_PID" | head -1 | cut -d: -f1)
+        PSI_IDX=$(printf "%s\n" "$1" | grep -n "\./scripts/verify\.sh psi-gate" | head -1 | cut -d: -f1)
+        [ -n "$WAIT_IDX" ] && [ -n "$PSI_IDX" ] && [ "$WAIT_IDX" -lt "$PSI_IDX" ]
+    ' _ "$ALL_PLAN"
+
+# (d) f2 regression lock: no 'nice.*ensure-gui-sidecar-placeholder' on one line
+# (copied verbatim from test_verify_gui_feature_check.sh:146-148)
+assert "all plan: f2 ensure-gui-sidecar-placeholder NOT preceded by nice/ionice" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "nice -n.*ensure-gui-sidecar-placeholder"' _ "$ALL_PLAN"
+
+# (e) role-prio regression lock: only cargo lines carry the nice/ionice prefix
+# (copied verbatim from test_verify_role_prio.sh:107-109, with task role)
+ROLE_ALL_PLAN="$(DF_VERIFY_ROLE=task bash "$REPO_ROOT/scripts/verify.sh" all --scope all --print-plan | grep -v '^#')"
+export ROLE_ALL_PLAN
+assert "all plan (task role): only cargo lines carry nice/ionice prefix (node/wait lines clean)" \
+    bash -c '! printf "%s\n" "$1" | grep -F "nice -n 15 ionice -c 2 -n 7 " | grep -vq "cargo"' _ "$ROLE_ALL_PLAN"
+
+# ===========================================================================
+# Test 5: no backgrounding for action=test — plain lines, no overlap
+# (step-3 RED; FAIL until step-4 lands; but (f)/(g) will pass after step-2)
+# ===========================================================================
+echo ""
+echo "--- Test 5: action=test: node lane NOT backgrounded (plain lines only) ---"
+
+# (f) no _VERIFY_NODE_BG_PID sentinel in plain test plan
+assert "plain test plan: _VERIFY_NODE_BG_PID NOT present (no backgrounding for test)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "_VERIFY_NODE_BG_PID"' _ "$PLAIN_TEST_PLAN"
+
+# (g) no ^wait line in plain test plan
+assert "plain test plan: no ^wait line (no join for test)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "^wait "' _ "$PLAIN_TEST_PLAN"
+
+# (h) npm run typecheck still present and still before psi-gate (ordering holds without bgd)
+# — re-asserts Test 1's guarantee from the plain-test-plan perspective
+assert "plain test plan: npm run typecheck present and before psi-gate" \
+    bash -c '
+        NPM_IDX=$(printf "%s\n" "$1" | grep -n "npm run typecheck" | head -1 | cut -d: -f1)
+        PSI_IDX=$(printf "%s\n" "$1" | grep -n "\./scripts/verify\.sh psi-gate" | head -1 | cut -d: -f1)
+        [ -n "$NPM_IDX" ] && [ -n "$PSI_IDX" ] && [ "$NPM_IDX" -lt "$PSI_IDX" ]
+    ' _ "$PLAIN_TEST_PLAN"
+
 test_summary
