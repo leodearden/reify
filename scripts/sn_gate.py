@@ -183,8 +183,16 @@ def attribute_fix_forward(
         strong = False
         if cluster_task_ids:
             for tid in cluster_task_ids:
+                # Match common reify fix-forward attribution patterns:
+                #   task-NNNN  (fix(task-NNNN): ...)        ← dash notation
+                #   task/NNNN  (revert of Merge task/NNNN)  ← slash notation
+                #   task #NNNN or task NNNN                 ← prose notation
+                #   (NNNN)     (fix(NNNN): ...)             ← bare number in parens
+                #   (task NNNN) or (task-NNNN)              ← full form in parens
                 if re.search(
-                    r"(task[/\s#]+{tid}|\(task\s+{tid}\)|revert.*task.*{tid})".format(tid=re.escape(tid)),
+                    r"(task[-/\s#]+{tid}|\(task[-\s]+{tid}\)|\({tid}\)|revert.*task.*{tid})".format(
+                        tid=re.escape(tid)
+                    ),
                     commit.subject,
                     re.IGNORECASE,
                 ):

@@ -376,6 +376,26 @@ class TestAttributeFixForward(unittest.TestCase):
         self.assertTrue(followed)
         self.assertTrue(strong)
 
+    def test_strong_attribution_via_task_dash_notation(self):
+        """fix(task-NNNN): ... notation (common in reify commits) → strong."""
+        cluster = self._make_cluster("4016")
+        following = [
+            self._make_commit("f1", 100, "fix(task-4016): commit declaration_span field"),
+        ]
+        followed, strong = sn_gate.attribute_fix_forward(cluster, following, lookahead_seconds=86400)
+        self.assertTrue(followed)
+        self.assertTrue(strong, "task-NNNN notation should be strong attribution")
+
+    def test_strong_attribution_via_bare_number_in_parens(self):
+        """fix(NNNN): ... notation (bare task_id in parens) → strong."""
+        cluster = self._make_cluster("4146")
+        following = [
+            self._make_commit("f1", 100, "fix(4146): correct clippy lint"),
+        ]
+        followed, strong = sn_gate.attribute_fix_forward(cluster, following, lookahead_seconds=86400)
+        self.assertTrue(followed)
+        self.assertTrue(strong, "bare task_id in parens should be strong attribution")
+
 
 # ---------------------------------------------------------------------------
 # step-5: Tests for estimate_s (synthetic fixtures)
