@@ -505,6 +505,40 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
                     }
                 }
 
+                // (b) Deliverable-presence rescue for the merged Ok(false) arm.
+                // Mirrors the git-diff leg's path_tracked_on rescue: if every
+                // metadata.files entry resolves to a tracked path on main, the
+                // work landed even though the runs.db row is missing (stale or
+                // rebuilt provenance). Downgrade to Low.
+                if !meta.files.is_empty() {
+                    let all_present = meta.files.iter().all(|p| ctx.git.path_tracked_on(MAIN_BASE, p));
+                    if all_present {
+                        return Some(Finding {
+                            pattern: Pattern::P5PhantomDone,
+                            severity: Severity::Low,
+                            task_id: meta.task_id.clone(),
+                            summary: format!(
+                                "deliverable present on main (every metadata.files entry \
+                                 resolves to a tracked path); no task_completed event in \
+                                 runs.db — stale/rebuilt provenance, not phantom-done (task {})",
+                                meta.task_id
+                            ),
+                            evidence: vec![
+                                EvidenceRef::MetadataFiles {
+                                    entries: meta.files.clone(),
+                                },
+                                EvidenceRef::RunsDb {
+                                    table: "events".to_string(),
+                                    key: format!(
+                                        "task_id={} AND event_type=task_completed",
+                                        meta.task_id
+                                    ),
+                                },
+                            ],
+                        });
+                    }
+                }
+
                 return Some(Finding {
                     pattern: Pattern::P5PhantomDone,
                     severity: Severity::High,
