@@ -258,6 +258,9 @@ assert "Test 17: debug invocation sets REIFY_OCCT_TEST_TIMEOUT=3600" \
 assert "Test 17: release invocation sets REIFY_OCCT_TEST_TIMEOUT=4800 (sensitivity-scoped to -p reify-eval)" \
     bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'REIFY_OCCT_TEST_TIMEOUT=4800 ./scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-eval --release'"
 
+assert "Test 17: debug full-workspace ungated pass uses 90m outer timeout" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 90m .*cargo (nextest run|test) --workspace'"
+
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
 # detached daemon by cargo via RUSTC_WRAPPER) inherited FD 9 and outlived
