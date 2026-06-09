@@ -784,7 +784,7 @@ build_plan() {
     # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
     # "npm ci.*|| true", and the trap is on the same line as the npm ci call.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; true' EXIT"
+        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null || true' EXIT"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
