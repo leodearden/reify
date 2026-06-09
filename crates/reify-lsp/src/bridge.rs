@@ -663,7 +663,7 @@ fn area(w : Length) -> Scalar { w }
         let uri = "file:///signal.ri";
         let source = "\
 structure Bracket {
-    param width : Scalar = 80mm
+    param width : Length = 80mm
     let footprint = width * width
 }
 ";

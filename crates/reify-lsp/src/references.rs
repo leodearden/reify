@@ -2622,7 +2622,7 @@ structure S {
         // _include_declaration_toggle), so this pins only the span→Location mapping.
         let source = "\
 structure S {
-    param base: Scalar = 1mm
+    param base: Length = 1mm
     let a = base
     let b = base
 }";

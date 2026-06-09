@@ -1,4 +1,4 @@
 structure Smoke {
-    param x: Scalar = 1mm
+    param x: Length = 1mm
     let y = x + x
 }
