@@ -11,7 +11,7 @@
 //! declared BEFORE its consumer (source-order compilation).
 
 use reify_core::{DiagnosticCode, Type};
-use reify_test_support::{compile_source, errors_only};
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 
 // ─── Step-3 RED: bare-unique qualified access ─────────────────────────────────
 
@@ -301,5 +301,63 @@ structure def UseT<T> {
         any_diag_mentions(&errors, "type parameter") && any_diag_mentions(&errors, "T"),
         "expected a clear 'type parameter' diagnostic naming `T`; got: {:?}",
         errors
+    );
+}
+
+// ─── Step-11 RED: end-to-end via the CI example file ──────────────────────────
+
+/// Absolute path to the workspace `examples/` directory, resolved at compile
+/// time from this crate's manifest directory (two levels up) — the same scheme
+/// `examples_smoke.rs` uses.
+const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
+
+/// End-to-end: the CI example `examples/trait_assoc_type_qualified.ri` compiles
+/// clean WITH the stdlib prelude (the same path `examples_smoke` exercises), and
+/// its consumer structure's bare (`Beam::Material`) and paren-disambiguated
+/// (`Beam::(HasMaterial::Material)`) params both resolve to the structure's bound
+/// material `Type::StructureRef("IotaSteel")`.
+///
+/// RED until step-12 creates the file: `read_to_string` fails and the test panics.
+#[test]
+fn example_file_qualified_assoc_compiles_and_resolves() {
+    let path = std::path::Path::new(EXAMPLES_DIR).join("trait_assoc_type_qualified.ri");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+
+    let module = compile_source_with_stdlib(&source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "examples/trait_assoc_type_qualified.ri must compile clean with stdlib; got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseBeam")
+        .expect("UseBeam template should be compiled");
+
+    let cell_type = |member: &str| {
+        template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == member)
+            .unwrap_or_else(|| panic!("value cell `{member}` should exist"))
+            .cell_type
+            .clone()
+    };
+
+    // Bare-unique access: `Beam` conforms to a single trait declaring `Material`.
+    assert_eq!(
+        cell_type("m"),
+        Type::StructureRef("IotaSteel".to_string()),
+        "bare `Beam::Material` should resolve to Type::StructureRef(\"IotaSteel\")"
+    );
+    // FORK-G paren disambiguator resolves to the same single binding.
+    assert_eq!(
+        cell_type("n"),
+        Type::StructureRef("IotaSteel".to_string()),
+        "`Beam::(HasMaterial::Material)` should resolve to Type::StructureRef(\"IotaSteel\")"
     );
 }
