@@ -778,18 +778,44 @@ pub(crate) fn resolve_qualified_assoc_type(
         .map(String::as_str)
         .collect();
 
-    // Bare access (`Base::Member`), exactly one declaring trait: resolve via the
-    // single `assoc_types` entry. Zero / multiple declaring traits and the
-    // `Base::(Trait::Member)` disambiguator are handled by later steps.
-    if trait_name.is_none() && declaring_traits.len() == 1 {
-        return template
-            .assoc_types
-            .iter()
-            .find(|a| a.type_name == member)
-            .map(|a| a.resolved.clone());
+    // Bare access (`Base::Member`): resolve only when exactly one conformed
+    // trait declares `member`. Two or more is genuinely ambiguous (the qualifier
+    // is required); zero is handled by a later step. The `Base::(Trait::Member)`
+    // disambiguator (`trait_name = Some`) is also handled by a later step.
+    if trait_name.is_none() {
+        match declaring_traits.len() {
+            1 => {
+                return template
+                    .assoc_types
+                    .iter()
+                    .find(|a| a.type_name == member)
+                    .map(|a| a.resolved.clone());
+            }
+            n if n >= 2 => {
+                // Two or more conformed traits declare `member`: the intended
+                // declaration is ambiguous. A structure binds each associated-type
+                // name once, so the qualifier is disambiguation-only — point the
+                // user at the FORK-G paren form `Base::(Trait::Member)`.
+                let candidates = declaring_traits.join("`, `");
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "ambiguous associated type `{base_name}::{member}`: declared by \
+                         traits `{candidates}`; qualify as `{base_name}::(<Trait>::{member})` \
+                         to disambiguate"
+                    ))
+                    .with_code(DiagnosticCode::AmbiguousAssocType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("ambiguous; use `{base_name}::(<Trait>::{member})`"),
+                    )),
+                );
+                return None;
+            }
+            _ => {}
+        }
     }
 
-    let _ = (span, type_param_names, diagnostics);
+    let _ = type_param_names;
     None
 }
 
