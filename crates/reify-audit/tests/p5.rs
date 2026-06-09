@@ -2472,6 +2472,102 @@ mod tests {
         );
     }
 
+    /// Step-5 RED — P5 git-diff-leg: task-id commit reachable on main (siblings
+    /// non-empty) but coverage check fails and deliverable-presence also fails.
+    /// Pure-reachability fallback in the siblings block should fire.
+    ///
+    /// Fixture (models task 4242 in the git-diff leg):
+    /// - task_completed event IS present for "4242" (bypasses merged-arm entirely)
+    /// - kind="found_on_main"; commit="stale_sha_4242"
+    /// - diff_changed_paths("main","stale_sha_4242") → [] (all files missing)
+    /// - log_grep("main","4242") → [sibling_sha] (siblings non-empty → block entered)
+    /// - diff_changed_paths("main","sibling_sha") → [] (coverage FAILS — none of
+    ///   the missing files covered by sibling)
+    /// - path_tracked_on("main","crates/x/deliver.rs") defaults false → (b) doesn't rescue
+    ///
+    /// Expected: exactly one P5PhantomDone at Severity::Low citing the sibling commit.
+    ///
+    /// Fails on current code (coverage fails + files absent → High).
+    #[test]
+    fn git_diff_leg_task_id_commit_reachable_downgrades_to_low() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "4242");
+
+        let mut git = MockGitOps::new();
+        // Primary diff: claimed commit covers nothing → all files missing.
+        git.set_diff_changed_paths("main", "stale_sha_4242", vec![]);
+        // Sibling rescue: siblings non-empty but their diff covers NONE of the
+        // missing files → coverage check fails (still_missing non-empty).
+        let sibling = GitCommit {
+            sha: "sibling_sha_4242".to_string(),
+            subject: "feat(task-4242) step-2 GREEN".to_string(),
+        };
+        git.set_log_grep("main", "4242", vec![sibling]);
+        // Sibling diff covers an unrelated file — NOT crates/x/deliver.rs.
+        git.set_diff_changed_paths("main", "sibling_sha_4242", vec!["docs/unrelated.md".to_string()]);
+        // path_tracked_on defaults false → deliverable-presence does NOT rescue.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4242".to_string(),
+            TaskMetadata {
+                task_id: "4242".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/deliver.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("found_on_main".to_string()),
+                    commit: Some("stale_sha_4242".to_string()),
+                    note: None,
+                }),
+                title: "Git-diff-leg pure-reachability test task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "task-id commit reachable (siblings non-empty) → must downgrade to Low; got {:?}",
+            f.severity
+        );
+        assert_eq!(f.task_id, "4242");
+        // Evidence must cite the sibling commit.
+        let cited_sibling = f.evidence.iter().any(|e| match e {
+            EvidenceRef::Commit { sha, .. } => sha == "sibling_sha_4242",
+            _ => false,
+        });
+        assert!(
+            cited_sibling,
+            "expected EvidenceRef::Commit citing sibling_sha_4242; got {:?}",
+            f.evidence
+        );
+    }
+
     /// Step-3 RED — P5 merged-arm: all deliverable files present on main despite
     /// no task_completed event and no reachable task-id commit. (b) rescue.
     ///
