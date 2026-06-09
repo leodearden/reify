@@ -12234,3 +12234,129 @@ fn apply_fea_channels_single_case_top_level_unchanged_regression() {
         .expect("displaced_positions must be Some for single-case regression");
     assert_eq!(dp.len(), mesh.vertices.len());
 }
+
+// ── Task 3026 step-3: RED — EngineSession active-case state + re-source ──────
+//
+// Tests:
+//   (a) get_active_fea_case() returns None initially (no explicit case set;
+//       lex-first "operating" is used implicitly by apply_fea_channels).
+//   (b) set_active_fea_case("overload") returns Ok(GuiState) and makes
+//       get_active_fea_case() return Some("overload").
+//   (c) The returned GuiState's scalar_channels["vonMises"] reflects the
+//       "overload" case (200 MPa), distinct from the "operating" case (100 MPa).
+//   (d) mesh vertices/indices are byte-identical to the pre-switch values
+//       (geometry served from the cached tessellation snapshot, not re-tessellated).
+//
+// Fails to COMPILE until step-4 adds:
+//   - active_fea_case: Option<String> on EngineSession (init None)
+//   - get_active_fea_case(&self) -> Option<String>
+//   - set_active_fea_case(&mut self, name: &str) -> Result<GuiState, String>
+//   - inject_check_for_test(&mut self, check: CheckResult) test helper
+
+/// EngineSession active-case: None default → switch to "overload" → verify scalar channels and no re-tessellation.
+#[test]
+fn engine_session_active_fea_case_default_then_switch() {
+    use reify_eval::CheckResult;
+
+    // Build session with a recording kernel so we can count tessellation calls.
+    let kernel = MockGeometryKernel::new();
+    let tess_arc = kernel.tessellate_tolerances_ref();
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Load bracket_source: tessellate_snapshot runs, populating tess_mesh_cache.
+    // MockGeometryKernel returns 3 vertices per realization: [0,0,0],[1,0,0],[0,1,0].
+    let load_state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source must succeed for bracket_source");
+
+    let tess_count_after_load = tess_arc.lock().unwrap().len();
+    assert!(tess_count_after_load > 0, "initial load must produce ≥1 tessellation call");
+
+    // Capture initial vertices/indices from the load result.
+    let vertices_before: Vec<f32> = load_state.meshes.iter()
+        .flat_map(|m| m.vertices.iter().cloned())
+        .collect();
+    let indices_before: Vec<u32> = load_state.meshes.iter()
+        .flat_map(|m| m.indices.iter().cloned())
+        .collect();
+    assert!(!vertices_before.is_empty(), "MockGeometryKernel must produce vertices for bracket body");
+
+    // Inject a MultiCaseResult CheckResult with "operating" (100 MPa) and
+    // "overload" (200 MPa) Sampled-field ElasticResult cases.
+    let values = make_multi_case_value_map();
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+    session.inject_check_for_test(check); // FAILS TO COMPILE (step-4 adds this)
+
+    // (a) Initial active case is None — lex-first "operating" is the implicit default.
+    assert_eq!(session.get_active_fea_case(), None); // FAILS TO COMPILE (step-4 adds this)
+
+    // Switch to "overload".
+    let state_overload = session
+        .set_active_fea_case("overload") // FAILS TO COMPILE (step-4 adds this)
+        .expect("set_active_fea_case('overload') must succeed");
+
+    // (b) Getter returns Some("overload") after switch.
+    assert_eq!(
+        session.get_active_fea_case(),
+        Some("overload".to_string()),
+        "get_active_fea_case must return 'overload' after set"
+    );
+
+    // (d) Vertices/indices are byte-identical — tessellation was NOT repeated.
+    let vertices_after: Vec<f32> = state_overload.meshes.iter()
+        .flat_map(|m| m.vertices.iter().cloned())
+        .collect();
+    let indices_after: Vec<u32> = state_overload.meshes.iter()
+        .flat_map(|m| m.indices.iter().cloned())
+        .collect();
+    assert_eq!(
+        vertices_before, vertices_after,
+        "vertices must be byte-identical after case switch (no re-tessellation)"
+    );
+    assert_eq!(
+        indices_before, indices_after,
+        "indices must be byte-identical after case switch (no re-tessellation)"
+    );
+    // Tessellation count must not increase.
+    let tess_count_after_set = tess_arc.lock().unwrap().len();
+    assert_eq!(
+        tess_count_after_set, tess_count_after_load,
+        "set_active_fea_case must not trigger tessellation (before={}, after={})",
+        tess_count_after_load, tess_count_after_set
+    );
+
+    // (c) scalar_channels["vonMises"] reflects "overload" (200 MPa at vertex 0).
+    // MockGeometryKernel vertex 0 is at [0,0,0]; overload stress field has
+    // 200e6 Pa uniaxial at node (0,0,0) → von Mises ≈ 200e6 Pa.
+    let mesh_overload = state_overload.meshes.first()
+        .expect("must have at least one mesh after set_active_fea_case('overload')");
+    let vm_overload = mesh_overload.scalar_channels.get("vonMises")
+        .expect("mesh must have vonMises channel after set_active_fea_case('overload')");
+    let vertex_count = vertices_before.len() / 3; // 3 floats per vertex
+    assert_eq!(vm_overload.len(), vertex_count,
+        "vonMises channel length must equal vertex count ({vertex_count})");
+
+    // Switch back to "operating" to verify the channels differ between cases.
+    let state_operating = session
+        .set_active_fea_case("operating")
+        .expect("set_active_fea_case('operating') must succeed");
+    let mesh_operating = state_operating.meshes.first()
+        .expect("must have at least one mesh after set_active_fea_case('operating')");
+    let vm_operating = mesh_operating.scalar_channels.get("vonMises")
+        .expect("mesh must have vonMises channel for 'operating' case");
+
+    // Overload (200 MPa) must produce a larger von Mises value at vertex 0 than
+    // operating (100 MPa). Both are in-bounds (vertex 0 at [0,0,0] is the
+    // nearest-neighbor for node (0,0,0) in both stress fields).
+    assert!(
+        vm_overload[0] > vm_operating[0] + 1.0_f32,
+        "overload vonMises[0] ({:.0}) must exceed operating vonMises[0] ({:.0}) by >1 Pa (ratio ~2×)",
+        vm_overload[0], vm_operating[0]
+    );
+}
