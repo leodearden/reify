@@ -524,5 +524,154 @@ class TestEstimateS(unittest.TestCase):
         self.assertAlmostEqual(result.ambiguous_frac, 0.5, places=9)  # 2/4 weak
 
 
+# ---------------------------------------------------------------------------
+# step-7: Tests for decide (deterministic go/no-go)
+# ---------------------------------------------------------------------------
+
+class TestDecide(unittest.TestCase):
+    """Tests for the decide() function covering all classification branches."""
+
+    # ── GO cases ─────────────────────────────────────────────────────────────
+
+    def test_go_n2_s2_clears_with_margin(self):
+        """s2=0.7 clears N=2 with margin (0.7≥0.6+margin), n2=20, not ambiguous."""
+        result = sn_gate.decide(s2=0.7, n2=20, s3=0.2, n3=15,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.classification, "GO")
+        self.assertEqual(result.chosen_N, 2)
+
+    def test_go_n3_preferred_over_n2_when_both_clear(self):
+        """s3=0.50>0.40 clears N=3 (and s2=0.7 also clears N=2) → GO, chosen_N=3."""
+        result = sn_gate.decide(s2=0.7, n2=20, s3=0.50, n3=15,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.classification, "GO")
+        self.assertEqual(result.chosen_N, 3, "Must pick largest clearing N")
+
+    def test_go_n3_minimum_above_upper_band(self):
+        """s3 just at upper band edge (1/3+0.2/3 = 0.3+0.0667=0.3667) → margin just OK."""
+        # upper_band_N3 = 1/3 + 0.2/3 ≈ 0.4000
+        result = sn_gate.decide(s2=0.7, n2=15, s3=0.42, n3=12,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.classification, "GO")
+        self.assertEqual(result.chosen_N, 3)
+
+    # ── NO-GO cases ──────────────────────────────────────────────────────────
+
+    def test_no_go_s2_below_lower_band(self):
+        """No N clears AND s2=0.30 ≤ 0.40 (lower band), n2=20, not ambiguous → NO-GO."""
+        result = sn_gate.decide(s2=0.30, n2=20, s3=0.20, n3=15,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.classification, "NO-GO")
+        self.assertIsNone(result.chosen_N)
+
+    def test_no_go_s2_exactly_at_lower_band(self):
+        """s2=0.40 is at the lower band boundary → NO-GO (comfortably ≤ 0.40)."""
+        result = sn_gate.decide(s2=0.40, n2=20, s3=0.20, n3=15,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.classification, "NO-GO")
+
+    # ── MARGINAL: deciding N in band ─────────────────────────────────────────
+
+    def test_marginal_band_n2(self):
+        """s2=0.55 in N=2 band (0.40, 0.60) → MARGINAL."""
+        result = sn_gate.decide(s2=0.55, n2=20, s3=0.20, n3=15,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.classification, "MARGINAL")
+        self.assertIsNone(result.chosen_N)
+
+    def test_marginal_deciding_n3_in_band(self):
+        """s3=0.38 ∈ N=3 band (0.2667, 0.40) but clears 1/3=0.333... → deciding N=3 in band → MARGINAL.
+        s2=0.7 also clears N=2 with margin, but since N=3 is the LARGEST clearing N and it's in band,
+        the result must be MARGINAL (no silent fall-back to N=2)."""
+        result = sn_gate.decide(s2=0.7, n2=20, s3=0.38, n3=15,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.classification, "MARGINAL",
+                         "Marginality judged on the deciding (largest-clearing) N, NOT a fall-back N=2")
+        self.assertIsNone(result.chosen_N)
+        self.assertEqual(result.deciding_N, 3)
+
+    # ── MARGINAL: thin sample ────────────────────────────────────────────────
+
+    def test_marginal_thin_sample(self):
+        """s2=0.7, n2=6 < 10 (thin) → MARGINAL."""
+        result = sn_gate.decide(s2=0.7, n2=6, s3=0.2, n3=5,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.classification, "MARGINAL")
+        self.assertIsNone(result.chosen_N)
+
+    def test_marginal_thin_at_boundary(self):
+        """n2=9 (< thin=10) → MARGINAL even if s2 clears with margin."""
+        result = sn_gate.decide(s2=0.7, n2=9, s3=0.2, n3=8,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.classification, "MARGINAL")
+
+    def test_go_exactly_at_thin_boundary(self):
+        """n2=10 (= thin=10) → NOT thin, so if s also clears with margin → GO."""
+        result = sn_gate.decide(s2=0.7, n2=10, s3=0.2, n3=8,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.classification, "GO")
+        self.assertEqual(result.chosen_N, 2)
+
+    # ── MARGINAL: ambiguous attribution ──────────────────────────────────────
+
+    def test_marginal_ambiguous_n2(self):
+        """s2=0.7 clears with margin, n2=20, but amb2>0 → MARGINAL."""
+        result = sn_gate.decide(s2=0.7, n2=20, s3=0.2, n3=15,
+                                amb2=0.5, amb3=0.0)
+        self.assertEqual(result.classification, "MARGINAL")
+
+    def test_marginal_ambiguous_n3(self):
+        """s3=0.50 clears N=3 with margin, n3=15, but amb3>0 → MARGINAL at deciding N=3."""
+        result = sn_gate.decide(s2=0.7, n2=20, s3=0.50, n3=15,
+                                amb2=0.0, amb3=0.5)
+        self.assertEqual(result.classification, "MARGINAL")
+
+    # ── MARGINAL: no N clears, not comfortable ────────────────────────────────
+
+    def test_marginal_no_clear_s2_in_band(self):
+        """s2=0.45 in N=2 band (no N clears) → MARGINAL."""
+        result = sn_gate.decide(s2=0.45, n2=20, s3=0.20, n3=15,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.classification, "MARGINAL")
+        self.assertIsNone(result.chosen_N)
+
+    # ── deciding_N set correctly ─────────────────────────────────────────────
+
+    def test_deciding_n_is_none_when_no_n_clears(self):
+        """When no N clears 1/N, deciding_N is None."""
+        result = sn_gate.decide(s2=0.30, n2=20, s3=0.20, n3=15,
+                                amb2=0.0, amb3=0.0)
+        self.assertIsNone(result.deciding_N)
+
+    def test_deciding_n_is_2_when_only_n2_clears(self):
+        """When only N=2 clears, deciding_N=2."""
+        result = sn_gate.decide(s2=0.7, n2=20, s3=0.20, n3=15,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.deciding_N, 2)
+
+    def test_deciding_n_is_3_when_n3_clears(self):
+        """When N=3 clears (even if N=2 also clears), deciding_N=3."""
+        result = sn_gate.decide(s2=0.7, n2=20, s3=0.50, n3=15,
+                                amb2=0.0, amb3=0.0)
+        self.assertEqual(result.deciding_N, 3)
+
+    # ── per_n structure ──────────────────────────────────────────────────────
+
+    def test_per_n_keys_present(self):
+        """per_n must contain keys 2 and 3."""
+        result = sn_gate.decide(s2=0.7, n2=20, s3=0.2, n3=15,
+                                amb2=0.0, amb3=0.0)
+        self.assertIn(2, result.per_n)
+        self.assertIn(3, result.per_n)
+
+    def test_per_n_has_required_fields(self):
+        """Each per_n entry must have s, n, clears, margin, in_band, thin, ambiguous."""
+        result = sn_gate.decide(s2=0.7, n2=20, s3=0.2, n3=15,
+                                amb2=0.0, amb3=0.0)
+        for n in [2, 3]:
+            for key in ["s", "n", "clears", "margin", "in_band", "thin", "ambiguous"]:
+                self.assertIn(key, result.per_n[n], f"per_n[{n}] missing key: {key}")
+
+
 if __name__ == "__main__":
     unittest.main()
