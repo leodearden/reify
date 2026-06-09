@@ -93,6 +93,29 @@ assert "declared OCCT-touching set equals cargo-metadata-derived set (no missing
     test -z "$_DIFF_OUT"
 
 # ---------------------------------------------------------------------------
+# Nextest occt-group assertions (task 4451):
+# (a) [test-groups] occt max-threads = 4 (bounded; was inert 1 when staged).
+# (b) [[profile.default.overrides]] filter for test-group 'occt' contains
+#     package(<crate>) for every declared OCCT crate (drift catch: a missing
+#     crate would escape the max-threads cap and run unbounded in the pool).
+# RED: max-threads = 1 today; GREEN after step-2 impl raises it to 4.
+# ---------------------------------------------------------------------------
+NEXTEST_TOML="$REPO_ROOT/.config/nextest.toml"
+
+echo ""
+echo "--- Nextest occt-group (task 4451): max-threads = 4 (bounded, not inert 1) ---"
+assert "nextest.toml: [test-groups] occt has max-threads = 4 (bounded, not inert 1)" \
+    grep -qF 'occt = { max-threads = 4 }' "$NEXTEST_TOML"
+
+echo ""
+echo "--- Nextest occt-group (task 4451): filter drift check (every declared crate is package()-filtered) ---"
+while IFS= read -r crate; do
+    [ -z "$crate" ] && continue
+    assert "nextest.toml occt-group filter contains package($crate)" \
+        grep -qF "package($crate)" "$NEXTEST_TOML"
+done <<< "$DECLARED_CRATES"
+
+# ---------------------------------------------------------------------------
 # Tests 4–5: gated invocations use -p <crate> (not --workspace)
 # ---------------------------------------------------------------------------
 # Source of truth is now scripts/verify.sh --print-plan (the oracle that the
