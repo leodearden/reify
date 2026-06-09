@@ -2493,6 +2493,37 @@ mod tests {
         assert_eq!(s, "\"TopologyAttributeAmbiguousAfterSplit\"");
     }
 
+    // --- AmbiguousAssocType tests (task 3974 — E_AMBIGUOUS_ASSOC_TYPE) ---
+    // Pairs with `resolve_qualified_assoc_type` in
+    // `crates/reify-compiler/src/type_resolution.rs` (qualified-assoc resolver).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip, severity, and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::AmbiguousAssocType` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::AmbiguousAssocType)`.
+    /// Pins the error-severity contract and variant existence for a bare
+    /// qualified associated-type access ambiguous across two conformed traits
+    /// (`Beam::Material` where two conformed traits each declare `Material`).
+    #[test]
+    fn diagnostic_code_ambiguous_assoc_type_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::AmbiguousAssocType);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::AmbiguousAssocType));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::AmbiguousAssocType`
+    /// serializes as `"AmbiguousAssocType"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_ambiguous_assoc_type_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::AmbiguousAssocType).unwrap();
+        assert_eq!(s, "\"AmbiguousAssocType\"");
+    }
+
     // --- TopologyAttributeLocalIndexReassigned tests (task 2654 — W_TOPOLOGY_ATTRIBUTE_LOCAL_INDEX_REASSIGNED) ---
     // Pairs with the local-index reassignment detector to be wired in
     // `crates/reify-eval/src/topology_attribute_propagation.rs` in a follow-up
