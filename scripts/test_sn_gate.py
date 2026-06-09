@@ -377,5 +377,152 @@ class TestAttributeFixForward(unittest.TestCase):
         self.assertTrue(strong)
 
 
+# ---------------------------------------------------------------------------
+# step-5: Tests for estimate_s (synthetic fixtures)
+# ---------------------------------------------------------------------------
+
+class TestEstimateS(unittest.TestCase):
+    """Tests for estimate_s using controlled synthetic cluster sets."""
+
+    def _make_cluster_with_size(
+        self,
+        n: int,
+        base_seconds: int = 0,
+        task_id_prefix: str = "9",
+    ) -> sn_gate.Cluster:
+        """Return a cluster with n merges."""
+        from datetime import datetime, timedelta
+        base = datetime(2026, 6, 9, 0, 0, 0, tzinfo=timezone.utc)
+        merges = []
+        for i in range(n):
+            ts = base + timedelta(seconds=base_seconds + i * 5)
+            tid = f"{task_id_prefix}{base_seconds:06d}{i}"
+            merges.append(sn_gate.CommitInfo(
+                sha=f"m{base_seconds}{i}", timestamp=ts,
+                subject=f"Merge task/{tid} into main",
+                is_merge=True, task_id=tid,
+            ))
+        return sn_gate.Cluster(merges=merges)
+
+    def _make_fix_commit(self, seconds_after_base: int, strong_task_id: str = None) -> sn_gate.CommitInfo:
+        from datetime import datetime, timedelta
+        # Places fix-forward relative to a base of 2026-06-09T00:00:00Z
+        ts = datetime(2026, 6, 9, 0, 0, 0, tzinfo=timezone.utc) + timedelta(seconds=seconds_after_base)
+        if strong_task_id:
+            subj = f"fix(task/{strong_task_id}): correct bad merge"
+        else:
+            subj = "fix(verify): generic timeout patch"
+        return sn_gate.CommitInfo(sha=f"fix{seconds_after_base}", timestamp=ts,
+                                  subject=subj, is_merge=False, task_id=None)
+
+    def _build_following_index(
+        self,
+        clusters: list,
+        fix_commits_by_cluster_idx: dict,
+    ) -> dict:
+        """Build a simple following_index for testing: cluster→list of fix commits."""
+        return {i: fix_commits_by_cluster_idx.get(i, []) for i in range(len(clusters))}
+
+    # ── 10 two-member clusters, 3 STRONG follows ────────────────────────────
+
+    def test_10_two_member_clusters_3_strong_follows(self):
+        """s(2) = 0.7 with 10 clusters, 3 followed strongly → ambiguous_frac = 0."""
+        clusters = [self._make_cluster_with_size(2, base_seconds=i * 1000) for i in range(10)]
+        fix_idx: dict = {}
+        # Clusters 0, 1, 2 are followed by a strong fix-forward
+        for cluster_i in [0, 1, 2]:
+            cluster = clusters[cluster_i]
+            # A fix commit that references the first task_id in the cluster
+            tid = cluster.task_ids[0]
+            fix_ts_offset = cluster_i * 1000 + 100  # well within lookahead
+            fix_commit = self._make_fix_commit(fix_ts_offset, strong_task_id=tid)
+            fix_idx[cluster_i] = [fix_commit]
+
+        following_index = self._build_following_index(clusters, fix_idx)
+        result = sn_gate.estimate_s(clusters, following_index, n=2, lookahead=86400)
+        self.assertEqual(result.sample_size, 10)
+        self.assertAlmostEqual(result.s_point, 0.7, places=9)
+        self.assertAlmostEqual(result.ambiguous_frac, 0.0, places=9)
+
+    # ── Case with one weak follow → ambiguous_frac > 0 ─────────────────────
+
+    def test_weak_follow_gives_ambiguous_frac(self):
+        """2 clusters, 1 followed (weakly) → s=0.5, ambiguous_frac=1.0."""
+        clusters = [self._make_cluster_with_size(2, base_seconds=i * 1000) for i in range(2)]
+        fix_idx = {
+            0: [self._make_fix_commit(100, strong_task_id=None)],  # weak fix
+        }
+        following_index = self._build_following_index(clusters, fix_idx)
+        result = sn_gate.estimate_s(clusters, following_index, n=2, lookahead=86400)
+        self.assertEqual(result.sample_size, 2)
+        self.assertAlmostEqual(result.s_point, 0.5, places=9)
+        self.assertAlmostEqual(result.ambiguous_frac, 1.0, places=9)
+
+    # ── n=3 sampling (only clusters of size ≥3 count) ──────────────────────
+
+    def test_n3_counts_only_size_ge3_clusters(self):
+        """When n=3: size-2 clusters excluded; only size-3 clusters count."""
+        size3_clusters = [self._make_cluster_with_size(3, base_seconds=i * 2000) for i in range(5)]
+        size2_clusters = [self._make_cluster_with_size(2, base_seconds=10000 + i * 2000) for i in range(5)]
+        all_clusters = size3_clusters + size2_clusters
+        fix_idx: dict = {}
+        # Follow 2 of the size-3 clusters strongly
+        for cluster_i in [0, 1]:
+            tid = size3_clusters[cluster_i].task_ids[0]
+            fix_commit = self._make_fix_commit(cluster_i * 2000 + 100, strong_task_id=tid)
+            fix_idx[cluster_i] = [fix_commit]
+        following_index = self._build_following_index(all_clusters, fix_idx)
+        result = sn_gate.estimate_s(all_clusters, following_index, n=3, lookahead=86400)
+        # Only 5 size-3 clusters eligible; 2 followed → s = 1 - 2/5 = 0.6
+        self.assertEqual(result.sample_size, 5)
+        self.assertAlmostEqual(result.s_point, 0.6, places=9)
+
+    def test_no_eligible_clusters_returns_nan(self):
+        """When no clusters meet the size threshold, sample_size=0 and s=nan."""
+        import math
+        clusters = [self._make_cluster_with_size(1) for _ in range(5)]  # all singletons
+        following_index = {i: [] for i in range(5)}
+        result = sn_gate.estimate_s(clusters, following_index, n=2, lookahead=86400)
+        self.assertEqual(result.sample_size, 0)
+        self.assertTrue(math.isnan(result.s_point))
+
+    def test_zero_follows_gives_s1(self):
+        """No fix-forwards → s=1.0 (perfect success rate)."""
+        clusters = [self._make_cluster_with_size(2, base_seconds=i * 1000) for i in range(5)]
+        following_index = {i: [] for i in range(5)}
+        result = sn_gate.estimate_s(clusters, following_index, n=2, lookahead=86400)
+        self.assertEqual(result.sample_size, 5)
+        self.assertAlmostEqual(result.s_point, 1.0, places=9)
+        self.assertAlmostEqual(result.ambiguous_frac, 0.0, places=9)
+
+    def test_all_followed_gives_s0(self):
+        """All clusters followed by fix-forward → s=0.0."""
+        clusters = [self._make_cluster_with_size(2, base_seconds=i * 1000) for i in range(4)]
+        fix_idx = {}
+        for i, cluster in enumerate(clusters):
+            fix_idx[i] = [self._make_fix_commit(i * 1000 + 50)]
+        following_index = self._build_following_index(clusters, fix_idx)
+        result = sn_gate.estimate_s(clusters, following_index, n=2, lookahead=86400)
+        self.assertAlmostEqual(result.s_point, 0.0, places=9)
+
+    def test_mixed_strong_weak_ambiguous_frac(self):
+        """4 followed: 2 strong, 2 weak → ambiguous_frac = 0.5."""
+        clusters = [self._make_cluster_with_size(2, base_seconds=i * 1000) for i in range(4)]
+        fix_idx = {}
+        for i, cluster in enumerate(clusters):
+            if i < 2:
+                # Strong follow
+                tid = cluster.task_ids[0]
+                fix_idx[i] = [self._make_fix_commit(i * 1000 + 50, strong_task_id=tid)]
+            else:
+                # Weak follow
+                fix_idx[i] = [self._make_fix_commit(i * 1000 + 50, strong_task_id=None)]
+        following_index = self._build_following_index(clusters, fix_idx)
+        result = sn_gate.estimate_s(clusters, following_index, n=2, lookahead=86400)
+        self.assertEqual(result.sample_size, 4)
+        self.assertAlmostEqual(result.s_point, 0.0, places=9)  # all 4 followed
+        self.assertAlmostEqual(result.ambiguous_frac, 0.5, places=9)  # 2/4 weak
+
+
 if __name__ == "__main__":
     unittest.main()
