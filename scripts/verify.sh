@@ -23,6 +23,9 @@
 #                                            tracked modifications — untracked new files not
 #                                            classified). Fails wide to all on error.
 #                                  Default: all.
+#   --narrow                       With --scope staged: narrow test/check/clippy passes to
+#                                  the affected-crate set. No-op for --scope branch (already
+#                                  narrowing) and --scope all (always full workspace, C1).
 #   --include-infra                Also run the cheap static infra checks
 #                                  (sync_comments / run_all on the test side;
 #                                  pm-standardization / event-inventory on the lint side).
@@ -92,8 +95,16 @@ fi
 # shellcheck source=scripts/release-scope-lib.sh
 source "$SCRIPT_DIR/release-scope-lib.sh"
 
+# Affected-crate reverse-closure (Phase-2 narrowing: maps changed files → workspace crates).
+if [ ! -f "$SCRIPT_DIR/affected-crates-lib.sh" ]; then
+    echo "verify.sh: ERROR — scripts/affected-crates-lib.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/affected-crates-lib.sh
+source "$SCRIPT_DIR/affected-crates-lib.sh"
+
 usage() {
-    sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
@@ -228,6 +239,7 @@ ACTION=""
 PROFILE="debug"
 PROFILE_EXPLICIT=0   # set to 1 if --profile was given explicitly; keeps explicit authoritative
 SCOPE="all"
+NARROW=0             # --narrow: opt-in to affected-crate narrowing for --scope staged
 INCLUDE_INFRA=0
 PRINT_PLAN=0
 
@@ -247,6 +259,8 @@ while [ "$#" -gt 0 ]; do
             SCOPE="${2:?--scope requires an argument}"; shift 2 ;;
         --scope=*)
             SCOPE="${1#*=}"; shift ;;
+        --narrow)
+            NARROW=1; shift ;;
         --include-infra)
             INCLUDE_INFRA=1; shift ;;
         --print-plan)
@@ -406,6 +420,7 @@ apply_env
 RUN_RUST=0
 RUN_GUI=0
 RUN_OCCT_GATE=0
+CHANGED_FILES_RAW=""   # post-.task/ filtered file list; set by decide_scope for branch/staged
 
 # is_occt_crate <crate-name> — true iff the crate is in the declared OCCT set.
 _OCCT_DECLARED="$(occt_declared_set)"
@@ -481,12 +496,90 @@ decide_scope() {
         esac
     done <<< "$_files"
 
+    # Capture for Phase-2 narrowing (after .task/ filter). scope=all returns early
+    # above, leaving CHANGED_FILES_RAW="" (never narrowing-eligible).
+    CHANGED_FILES_RAW="$_files"
+
     RUN_RUST=$rust
     # Any Rust change implies the (fast) GUI checks too.
     RUN_GUI=$(( rust | gui ))
     RUN_OCCT_GATE=$gate
 }
 decide_scope
+
+# ---------------------------------------------------------------------------
+# Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
+#
+# Eligible when: (scope=branch OR (scope=staged AND --narrow)) AND RUN_RUST=1.
+# scope=all is structurally unreachable for narrowing (C1 — returns early in
+# decide_scope, leaving CHANGED_FILES_RAW="", and the condition is never true).
+# --narrow is a no-op for scope=branch (already narrowing) and scope=all
+# (condition never true).
+#
+# REIFY_AFFECTED_CRATES_OVERRIDE — testability/operator knob (whitespace/newline-
+# separated crate names). When set AND narrowing is eligible, used verbatim in
+# place of calling affected_crates(). This mirrors the REIFY_PSI_GATE_PROC_PATH
+# knob idiom and allows hermetic --print-plan assertions in the workspace-less
+# fixture (where cargo metadata fails and affected_crates() always returns ALL).
+# ---------------------------------------------------------------------------
+AFFECTED=""
+NARROW_ACTIVE=0
+AFFECTED_ALL_FLAGS=""
+AFFECTED_OCCT_FLAGS=""
+AFFECTED_UNGATED_FLAGS=""
+
+_narrowing_eligible=0
+if [ "$SCOPE" = "branch" ] && [ "$RUN_RUST" -eq 1 ]; then
+    _narrowing_eligible=1
+elif [ "$SCOPE" = "staged" ] && [ "$NARROW" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+    _narrowing_eligible=1
+fi
+
+if [ "$_narrowing_eligible" -eq 1 ]; then
+    if [ -n "${REIFY_AFFECTED_CRATES_OVERRIDE:-}" ]; then
+        # Operator/testability override: use verbatim crate list.
+        AFFECTED="${REIFY_AFFECTED_CRATES_OVERRIDE}"
+    elif [ -n "$CHANGED_FILES_RAW" ]; then
+        # Real run: compute reverse-closure from the captured changed-file list.
+        _af_args=()
+        while IFS= read -r _af_f; do
+            [ -n "$_af_f" ] && _af_args+=("$_af_f")
+        done <<< "$CHANGED_FILES_RAW"
+        if [ "${#_af_args[@]}" -gt 0 ]; then
+            AFFECTED="$(affected_crates "${_af_args[@]}")"
+        fi
+    fi
+    # NARROW_ACTIVE iff AFFECTED is non-empty and is NOT the sentinel "ALL".
+    if [ -n "$AFFECTED" ] && [ "$AFFECTED" != "ALL" ]; then
+        NARROW_ACTIVE=1
+    fi
+fi
+
+if [ "$NARROW_ACTIVE" -eq 1 ]; then
+    # Split affected set into OCCT, non-OCCT, and all-crate -p flag strings.
+    # Word-split $AFFECTED (safe: Rust crate names never contain spaces).
+    # shellcheck disable=SC2086
+    for _nc in $AFFECTED; do
+        [ -z "$_nc" ] && continue
+        AFFECTED_ALL_FLAGS+=" -p $_nc"
+        if is_occt_crate "$_nc"; then
+            AFFECTED_OCCT_FLAGS+=" -p $_nc"
+        else
+            AFFECTED_UNGATED_FLAGS+=" -p $_nc"
+        fi
+    done
+    AFFECTED_ALL_FLAGS="${AFFECTED_ALL_FLAGS# }"
+    AFFECTED_OCCT_FLAGS="${AFFECTED_OCCT_FLAGS# }"
+    AFFECTED_UNGATED_FLAGS="${AFFECTED_UNGATED_FLAGS# }"
+    # Guard: a whitespace-only REIFY_AFFECTED_CRATES_OVERRIDE passes the non-empty check
+    # above but word-splits to nothing, leaving all flag vars empty. Empty AFFECTED_ALL_FLAGS
+    # with NARROW_ACTIVE=1 would cause narrowed cargo check/clippy to run with no -p selector
+    # and narrowed test passes to emit zero commands (silent coverage gap). Fall back to
+    # full-workspace to preserve the fail-wide invariant for a malformed knob value.
+    if [ -z "$AFFECTED_ALL_FLAGS" ]; then
+        NARROW_ACTIVE=0
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Plan construction (built ONCE; print vs execute branches only at the leaves)
@@ -545,6 +638,27 @@ wrap_subshell() {
     esac
 }
 
+# emit_gated_ungated <gated_flags> <ungated_selector> <rel> <gated_timeout> <outer_timeout>
+# Emit a gated OCCT cargo-test pass (iff gated_flags non-empty) and an ungated
+# nextest/cargo-test pass (iff ungated_selector non-empty). Unifies the three emission
+# sites (release / narrowed-debug / full-workspace-debug) so a future timeout or
+# --kill-after change applies uniformly rather than drifting across independent copies.
+emit_gated_ungated() {
+    local gated_flags="$1" ungated_selector="$2" rel="$3" gated_timeout="$4" outer_timeout="$5"
+    local ungated
+    if [ -n "$gated_flags" ]; then
+        add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh ${CARGO_PRIO}cargo test ${gated_flags}${rel} -- --test-threads=1"
+    fi
+    if [ -n "$ungated_selector" ]; then
+        if [ "$NEXTEST" -eq 1 ]; then
+            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${ungated_selector}${rel}"
+        else
+            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${ungated_selector}${rel} -- --test-threads=1"
+        fi
+        add "$ungated"
+    fi
+}
+
 add_test_passes() {
     # PSI gate: must pass before any cargo test work starts.
     # In execute mode: eval runs this as a subprocess that inherits DF_VERIFY_ROLE
@@ -552,7 +666,7 @@ add_test_passes() {
     # In --print-plan mode: printed faithfully as a normal plan line.
     add "./scripts/verify.sh psi-gate"
 
-    local profile rel gated_timeout outer_timeout ungated
+    local profile rel gated_timeout outer_timeout _eff_gated
     # Timeout budgets sized to absorb a COLD merge-worktree workspace compile.
     # Bumped 2026-06-03 (Leo) after recurring exit-124 cold-compile timeouts on the
     # merge gate (esc-4178 / esc-4180 cluster killed the debug nextest mid-compile at
@@ -574,40 +688,38 @@ add_test_passes() {
             # debug_assertions/overflow-checks-dependent tests need to re-run in
             # release; the DEBUG full-workspace pass covers every other crate, so
             # total merge-gate coverage is preserved.
+            # NARROW_ACTIVE is intentionally not applied here. The release pass is
+            # scoped by release-sensitivity (task/4390), not the affected-crate set
+            # (task/4060). Over-running the full release-sensitive set on a rare
+            # --profile both --scope branch is safe (fail-wide), and avoids entangling
+            # two orthogonal scoping axes — do not "fix" this by narrowing this pass.
 
             # Gated release: OCCT-touching release-sensitive crates only (reify-eval).
             # reify-kernel-occt, reify-cli, reify-config have zero release-sensitive
             # tests and drop out of the release pass entirely.
-            if [ "$RUN_OCCT_GATE" -eq 1 ] && [ -n "$_RELEASE_GATED_FLAGS" ]; then
-                add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh ${CARGO_PRIO}cargo test ${_RELEASE_GATED_FLAGS}${rel} -- --test-threads=1"
-            fi
-
             # Ungated release: non-OCCT release-sensitive crates, full concurrency.
-            if [ -n "$_RELEASE_UNGATED_FLAGS" ]; then
-                if [ "$NEXTEST" -eq 1 ]; then
-                    ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${_RELEASE_UNGATED_FLAGS}${rel}"
-                else
-                    ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${_RELEASE_UNGATED_FLAGS}${rel} -- --test-threads=1"
-                fi
-                add "$ungated"
-            fi
+            _eff_gated=""
+            [ "$RUN_OCCT_GATE" -eq 1 ] && _eff_gated="$_RELEASE_GATED_FLAGS"
+            emit_gated_ungated "$_eff_gated" "$_RELEASE_UNGATED_FLAGS" "$rel" "$gated_timeout" "$outer_timeout"
         else
-            # Debug pass: full workspace (unchanged).
-
-            # Gated pass: OCCT-touching crates, bounded via the semaphore wrapper,
-            # single-threaded. No outer timeout — the wrapper owns it via
-            # REIFY_OCCT_TEST_TIMEOUT (lock-wait time does not consume the budget).
-            if [ "$RUN_OCCT_GATE" -eq 1 ]; then
-                add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh ${CARGO_PRIO}cargo test ${P_FLAGS}${rel} -- --test-threads=1"
-            fi
-
-            # Ungated tail: everything except the OCCT crates, full concurrency.
-            if [ "$NEXTEST" -eq 1 ]; then
-                ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run --workspace ${EXCLUDE_FLAGS}${rel}"
+            # Debug pass.
+            if [ "$NARROW_ACTIVE" -eq 1 ]; then
+                # Narrowed debug pass: -p per affected crate, split by OCCT membership.
+                # The gated-run condition keys on the affected∩OCCT intersection (NOT
+                # RUN_OCCT_GATE): an OCCT crate can enter the affected set as a reverse-dep
+                # of a changed non-OCCT crate where RUN_OCCT_GATE=0 (C3 completeness —
+                # gating on RUN_OCCT_GATE would silently skip that OCCT dependent).
+                emit_gated_ungated "$AFFECTED_OCCT_FLAGS" "$AFFECTED_UNGATED_FLAGS" "$rel" "$gated_timeout" "$outer_timeout"
             else
-                ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test --workspace ${EXCLUDE_FLAGS}${rel} -- --test-threads=1"
+                # Full-workspace debug pass (scope=all and non-narrow branch/staged).
+                # Gated pass: OCCT-touching crates, bounded via the semaphore wrapper,
+                # single-threaded. No outer timeout — the wrapper owns it via
+                # REIFY_OCCT_TEST_TIMEOUT (lock-wait time does not consume the budget).
+                # Ungated tail: everything except the OCCT crates, full concurrency.
+                _eff_gated=""
+                [ "$RUN_OCCT_GATE" -eq 1 ] && _eff_gated="$P_FLAGS"
+                emit_gated_ungated "$_eff_gated" "--workspace ${EXCLUDE_FLAGS}" "$rel" "$gated_timeout" "$outer_timeout"
             fi
-            add "$ungated"
         fi
     done
 }
@@ -629,12 +741,20 @@ build_plan() {
     # typecheck (cargo check) only when NOT also linting — clippy --all-targets
     # is a strict superset of `cargo check`, so running both would be redundant.
     if [ "$DO_TYPECHECK" -eq 1 ] && [ "$DO_LINT" -eq 0 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo check --workspace --tests"
+        if [ "$NARROW_ACTIVE" -eq 1 ]; then
+            add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo check ${AFFECTED_ALL_FLAGS} --tests"
+        else
+            add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo check --workspace --tests"
+        fi
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "timeout --kill-after=60 45m ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
+        if [ "$NARROW_ACTIVE" -eq 1 ]; then
+            add "timeout --kill-after=60 45m ${CARGO_PRIO}cargo clippy ${AFFECTED_ALL_FLAGS} --all-targets -- -D warnings"
+        else
+            add "timeout --kill-after=60 45m ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
+        fi
     fi
 
     # gui-feature compile-check: type-check reify-gui's #[cfg(feature="gui")] code
@@ -714,6 +834,7 @@ build_plan
 if [ "$PRINT_PLAN" -eq 1 ]; then
     echo "# verify.sh plan — action=$ACTION profile=$PROFILE scope=$SCOPE include_infra=$INCLUDE_INFRA nextest=$NEXTEST role=$DF_VERIFY_ROLE"
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
+    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-}"
     echo "# --- environment (process-level; inherited by every command below) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
