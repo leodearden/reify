@@ -3419,3 +3419,109 @@ describe('debug bridge scroll', () => {
     expect(typeof result.error).toBe('string');
   });
 });
+
+// ---------------------------------------------------------------------------
+// debug bridge apply_gui_state (task-3026 step-24 RED → step-25 GREEN)
+//
+// The Rust `handle_set_fea_case` pushes a rebuilt GuiState to the frontend
+// via `query_frontend("apply_gui_state", { guiState, case })`.  This handler
+// applies the GuiState WITHOUT resetting the view (geometry is shared across
+// cases; only the contour changes), so the camera stays fixed and per-case
+// screenshots differ only in the scalar-channel colours.
+// ---------------------------------------------------------------------------
+describe('debug bridge apply_gui_state', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(handler: DebugRequestHandler, id: number, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await handler({ payload: { id, command: 'apply_gui_state', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  /** Minimal RawGuiState fixture with one mesh carrying a known vonMises channel. */
+  const rawGuiStateWithVonMises = {
+    meshes: [
+      {
+        entity_path: 'body/bracket',
+        vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        indices: [0, 1, 2],
+        normals: null,
+        scalar_channels: { vonMises: [200.0, 200.0, 200.0] },
+      },
+    ],
+    values: [],
+    constraints: [],
+    files: [],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+  };
+
+  it('(a) returns { ok: true, case: "overload" } on success', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    const result = await dispatch(capturedHandler!, 6000, {
+      guiState: rawGuiStateWithVonMises,
+      case: 'overload',
+    });
+
+    expect(result).toEqual({ ok: true, case: 'overload' });
+  });
+
+  it('(b) calls initFromState exactly once with converted GuiState carrying the vonMises channel', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await dispatch(capturedHandler!, 6001, {
+      guiState: rawGuiStateWithVonMises,
+      case: 'overload',
+    });
+
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+    const passed = vi.mocked(stores.engine.initFromState).mock.calls[0][0];
+    // Mesh must be present and carry the vonMises channel converted to Float32Array
+    expect(passed.meshes).toHaveLength(1);
+    expect(passed.meshes[0].scalar_channels).toBeDefined();
+    expect(passed.meshes[0].scalar_channels!['vonMises']).toEqual(new Float32Array([200.0, 200.0, 200.0]));
+  });
+
+  it('(c) does NOT call resetToDefaultView — camera must be preserved across case switches', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await dispatch(capturedHandler!, 6002, {
+      guiState: rawGuiStateWithVonMises,
+      case: 'overload',
+    });
+
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('(d) omitting guiState returns { error } and does not call initFromState', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = await dispatch(capturedHandler!, 6003, { case: 'overload' });
+
+    expect(result).toHaveProperty('error');
+    expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+});
