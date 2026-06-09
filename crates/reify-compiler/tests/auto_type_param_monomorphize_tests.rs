@@ -392,7 +392,7 @@ fn resolved_subcomponent_has_no_typeparam_cell() {
         structure def GasketSeal : Seal {}
         structure def Bearing<T: Seal> {
             param use_premium : Bool = true
-            if use_premium { param seal : T }
+            where use_premium { param seal : T }
         }
         structure def Assembly { sub b = Bearing<auto: Seal>() }
     "#;

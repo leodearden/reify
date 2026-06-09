@@ -66,6 +66,40 @@ impl ConstraintChecker for CompileTimeIndeterminateChecker {
     }
 }
 
+/// Apply `substitute_type_params` and `substitute_expr_result_types` to every
+/// `ValueCellDecl` in a collection: rewrites `cell_type` and, when present,
+/// the root expr and all descendant nodes' `result_type` in `default_expr`.
+///
+/// Factored out so the same logic can be applied uniformly to
+/// `value_cells`, `guarded_groups.members/else_members`, and `ports.members`
+/// without repetition.
+fn substitute_value_cell_collection(
+    cells: &mut Vec<crate::types::ValueCellDecl>,
+    sigma: &std::collections::HashMap<String, reify_core::Type>,
+) {
+    for cell in cells {
+        cell.cell_type = substitute_type_params(&cell.cell_type, sigma);
+        if let Some(expr) = &mut cell.default_expr {
+            substitute_expr_result_types(expr, sigma);
+        }
+    }
+}
+
+/// Apply `substitute_expr_result_types` to every `CompiledConstraint.expr` in
+/// a collection.
+///
+/// Factored out so the same logic can be applied uniformly to
+/// `constraints`, `guarded_groups.constraints/else_constraints`, and
+/// `ports.constraints` without repetition.
+fn substitute_constraint_collection(
+    constraints: &mut Vec<crate::types::CompiledConstraint>,
+    sigma: &std::collections::HashMap<String, reify_core::Type>,
+) {
+    for constraint in constraints {
+        substitute_expr_result_types(&mut constraint.expr, sigma);
+    }
+}
+
 /// Drain `ctx.pending_auto_resolutions`, resolve each `auto:` type-arg use-site,
 /// rewrite placeholder slots to concrete `StructureRef`s, and aggregate the
 /// module's `auto_type_substitution`.
@@ -212,18 +246,26 @@ pub(crate) fn phase_auto_type_param_resolution(
                     // A monomorph has no free type parameters — it is concrete.
                     mono.type_params.clear();
                     // Substitute TypeParam→StructureRef in top-level value_cells.
-                    for cell in &mut mono.value_cells {
-                        cell.cell_type = substitute_type_params(&cell.cell_type, &sigma);
-                        // Also substitute TypeParam in every body expression's
-                        // result_type nodes so `let` aliases and constraints
-                        // don't carry stale TypeParam result_types.
-                        if let Some(expr) = &mut cell.default_expr {
+                    substitute_value_cell_collection(&mut mono.value_cells, &sigma);
+                    // Substitute TypeParam in top-level constraint expressions.
+                    substitute_constraint_collection(&mut mono.constraints, &sigma);
+                    // Substitute TypeParam in guarded-group members, else_members,
+                    // constraints, else_constraints, and guard_expr.
+                    // This covers `if guard { param seal : T }` patterns (invariant 1).
+                    for group in &mut mono.guarded_groups {
+                        substitute_expr_result_types(&mut group.guard_expr, &sigma);
+                        substitute_value_cell_collection(&mut group.members, &sigma);
+                        substitute_constraint_collection(&mut group.constraints, &sigma);
+                        substitute_value_cell_collection(&mut group.else_members, &sigma);
+                        substitute_constraint_collection(&mut group.else_constraints, &sigma);
+                    }
+                    // Substitute TypeParam in port members and constraints.
+                    for port in &mut mono.ports {
+                        substitute_value_cell_collection(&mut port.members, &sigma);
+                        substitute_constraint_collection(&mut port.constraints, &sigma);
+                        if let Some(expr) = &mut port.frame_expr {
                             substitute_expr_result_types(expr, &sigma);
                         }
-                    }
-                    // Substitute TypeParam in constraint expression result_types.
-                    for constraint in &mut mono.constraints {
-                        substitute_expr_result_types(&mut constraint.expr, &sigma);
                     }
                     // Mix the mono name into the content_hash so two distinct
                     // monomorphs that clone the same source hash (e.g. Bearing$A
