@@ -53,6 +53,19 @@ print(port)
 '
 }
 
+# Portable file mtime: print the file's modification time as a Unix epoch integer.
+#
+# Usage: portable_mtime <file>
+#
+# Prints the mtime as a decimal integer (seconds since the Unix epoch).
+# Returns non-zero when the file is missing or unreadable (both stat forms fail).
+#
+# Idiom already open-coded in scripts/tree-sitter-generate.sh:95 and
+# scripts/verify.sh:122 — lifted here so all callers share one portable helper.
+portable_mtime() {
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+}
+
 # Portable timeout: run a command with a wall-clock time limit.
 #
 # Usage: portable_timeout <seconds> <cmd> [args...]
