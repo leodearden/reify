@@ -828,5 +828,192 @@ class TestCLIJsonOutput(unittest.TestCase):
             os.unlink(tmppath)
 
 
+# ---------------------------------------------------------------------------
+# step-11: Tests for summarize_runs_db (in-memory sqlite3 fixtures)
+# ---------------------------------------------------------------------------
+
+import sqlite3
+
+class TestSummarizeRunsDb(unittest.TestCase):
+    """Tests for summarize_runs_db using in-memory sqlite3 fixtures.
+
+    Never touches the real cross-repo dark-factory runs.db.
+    """
+
+    def _make_conn_with_task_results(self, rows: list) -> sqlite3.Connection:
+        """Create in-memory DB with task_results(run_id, task_id, verify_attempts)."""
+        conn = sqlite3.connect(":memory:")
+        conn.execute("""
+            CREATE TABLE task_results (
+                run_id TEXT,
+                task_id TEXT,
+                outcome TEXT,
+                verify_attempts INTEGER,
+                review_cycles INTEGER
+            )
+        """)
+        for row in rows:
+            conn.execute(
+                "INSERT INTO task_results (run_id, task_id, outcome, verify_attempts, review_cycles) "
+                "VALUES (?, ?, ?, ?, ?)",
+                row,
+            )
+        conn.commit()
+        return conn
+
+    def _make_conn_with_events(self, rows: list) -> sqlite3.Connection:
+        """Create in-memory DB with events(timestamp,run_id,task_id,event_type,...)."""
+        conn = sqlite3.connect(":memory:")
+        conn.execute("""
+            CREATE TABLE events (
+                timestamp TEXT,
+                run_id TEXT,
+                task_id TEXT,
+                event_type TEXT,
+                phase TEXT,
+                role TEXT,
+                data TEXT,
+                cost_usd REAL,
+                duration_ms INTEGER
+            )
+        """)
+        for row in rows:
+            conn.execute(
+                "INSERT INTO events (timestamp, run_id, task_id, event_type, phase, role, data, cost_usd, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                row,
+            )
+        conn.commit()
+        return conn
+
+    def _make_conn_with_both(self, task_result_rows, event_rows) -> sqlite3.Connection:
+        """Create in-memory DB with both tables."""
+        conn = sqlite3.connect(":memory:")
+        conn.execute("""
+            CREATE TABLE task_results (
+                run_id TEXT, task_id TEXT, outcome TEXT,
+                verify_attempts INTEGER, review_cycles INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE events (
+                timestamp TEXT, run_id TEXT, task_id TEXT, event_type TEXT,
+                phase TEXT, role TEXT, data TEXT, cost_usd REAL, duration_ms INTEGER
+            )
+        """)
+        for row in task_result_rows:
+            conn.execute(
+                "INSERT INTO task_results VALUES (?,?,?,?,?)", row
+            )
+        for row in event_rows:
+            conn.execute(
+                "INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)", row
+            )
+        conn.commit()
+        return conn
+
+    # ── Members with verify_attempts > 1 ─────────────────────────────────────
+
+    def test_members_with_extra_verify_attempts(self):
+        """Returns task_ids with verify_attempts > 1 in members_with_extra_verify_attempts."""
+        conn = self._make_conn_with_task_results([
+            ("run1", "100", "done", 1, 0),
+            ("run2", "101", "done", 2, 0),  # extra verify
+            ("run3", "102", "done", 3, 0),  # extra verify
+            ("run4", "103", "done", 1, 0),
+        ])
+        result = sn_gate.summarize_runs_db(conn, ["100", "101", "102", "103"])
+        self.assertIsNotNone(result)
+        self.assertIn("members_with_extra_verify_attempts", result)
+        self.assertIn("101", result["members_with_extra_verify_attempts"])
+        self.assertIn("102", result["members_with_extra_verify_attempts"])
+        self.assertNotIn("100", result["members_with_extra_verify_attempts"])
+
+    def test_no_extra_verify_attempts_returns_empty_list(self):
+        """All verify_attempts == 1 → members_with_extra_verify_attempts is empty."""
+        conn = self._make_conn_with_task_results([
+            ("run1", "200", "done", 1, 0),
+            ("run2", "201", "done", 1, 0),
+        ])
+        result = sn_gate.summarize_runs_db(conn, ["200", "201"])
+        self.assertIsNotNone(result)
+        extra = result.get("members_with_extra_verify_attempts", [])
+        self.assertEqual(extra, [])
+
+    # ── Re-verify events ──────────────────────────────────────────────────────
+
+    def test_members_with_reverify_event(self):
+        """Returns task_ids with re-verify events in members_with_reverify_event."""
+        conn = self._make_conn_with_events([
+            ("2026-06-01T12:00:00Z", "r1", "300", "re-verify", "verify", "agent", "{}", 0.1, 5000),
+            ("2026-06-01T12:01:00Z", "r2", "301", "build", "build", "agent", "{}", 0.0, 1000),
+        ])
+        result = sn_gate.summarize_runs_db(conn, ["300", "301"])
+        self.assertIsNotNone(result)
+        self.assertIn("members_with_reverify_event", result)
+        self.assertIn("300", result["members_with_reverify_event"])
+        self.assertNotIn("301", result["members_with_reverify_event"])
+
+    # ── Both tables ──────────────────────────────────────────────────────────
+
+    def test_both_tables_combined(self):
+        """With both tables, result contains both corroboration keys."""
+        conn = self._make_conn_with_both(
+            task_result_rows=[
+                ("r1", "400", "done", 2, 0),
+                ("r2", "401", "done", 1, 0),
+            ],
+            event_rows=[
+                ("2026-06-01T12:00:00Z", "r3", "400", "re-verify", "verify", "a", "{}", 0.0, 0),
+            ],
+        )
+        result = sn_gate.summarize_runs_db(conn, ["400", "401"])
+        self.assertIsNotNone(result)
+        self.assertIn("members_with_extra_verify_attempts", result)
+        self.assertIn("members_with_reverify_event", result)
+
+    # ── Graceful degradation ──────────────────────────────────────────────────
+
+    def test_no_tables_returns_none(self):
+        """Empty DB (no tables) → returns None gracefully."""
+        conn = sqlite3.connect(":memory:")
+        result = sn_gate.summarize_runs_db(conn, ["100"])
+        self.assertIsNone(result)
+
+    def test_empty_task_id_list_returns_result_or_none(self):
+        """Empty task_id list: no error (may return None or empty dict)."""
+        conn = self._make_conn_with_task_results([])
+        # Should not raise; result can be None or {}
+        try:
+            result = sn_gate.summarize_runs_db(conn, [])
+            # Either None or a dict without error
+            self.assertTrue(result is None or isinstance(result, dict))
+        except Exception as e:
+            self.fail(f"summarize_runs_db raised with empty task_ids: {e}")
+
+    def test_task_ids_not_in_db_returns_empty_lists(self):
+        """Task IDs not present in DB → empty lists for each key."""
+        conn = self._make_conn_with_task_results([
+            ("r1", "999", "done", 2, 0),
+        ])
+        result = sn_gate.summarize_runs_db(conn, ["1000", "1001"])
+        # Either None or empty lists
+        if result is not None:
+            extra = result.get("members_with_extra_verify_attempts", [])
+            self.assertEqual(extra, [])
+
+    def test_tolerates_missing_verify_attempts_column(self):
+        """If verify_attempts column is absent, does not raise."""
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE task_results (run_id TEXT, task_id TEXT, outcome TEXT)")
+        conn.execute("INSERT INTO task_results VALUES ('r1', '100', 'done')")
+        conn.commit()
+        try:
+            result = sn_gate.summarize_runs_db(conn, ["100"])
+            # Should not raise; result can be None or partial
+        except Exception as e:
+            self.fail(f"summarize_runs_db raised on missing verify_attempts column: {e}")
+
+
 if __name__ == "__main__":
     unittest.main()
