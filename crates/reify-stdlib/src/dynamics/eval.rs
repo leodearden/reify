@@ -448,6 +448,11 @@ fn snapshot_inverse_dynamics(
             Some(Value::Int(n)) => *n,
             _ => return None,
         };
+        // PRD §7.2 no-bypass invariant (route 4): the `world_transform` read here is
+        // the FK pose baked by `snapshot()` via `joint_world_transform` → `transform_at`.
+        // Any pivot offset is already composed into this value — this site reads the
+        // offset-aware pose and MUST NOT reconstruct per-joint transforms from the joint Map.
+        // Verified behaviourally by γ B8 route-4 test and the B3 dynamics test.
         world_tf.insert(id, map_get(sbm, "world_transform")?);
     }
 
