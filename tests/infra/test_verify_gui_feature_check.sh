@@ -45,7 +45,22 @@ make_fixture() {
     cp "$REPO_ROOT/scripts/occt-touching-crates.txt"    "$dir/scripts/occt-touching-crates.txt"
     cp "$REPO_ROOT/scripts/release-scope-lib.sh"        "$dir/scripts/release-scope-lib.sh"
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
+    cp "$REPO_ROOT/scripts/affected-crates-lib.sh"       "$dir/scripts/affected-crates-lib.sh"
     chmod +x "$dir/scripts/verify.sh"
+    # Preflight: fail loudly if verify.sh sources a lib that was not copied to the
+    # fixture.  Without this check a new 'source "$SCRIPT_DIR/foo.sh"' line in
+    # verify.sh would surface only as an opaque "scripts/foo.sh not found" startup
+    # error on every plan invocation (the pre-existing affected-crates-lib.sh gap).
+    while IFS= read -r _lib; do
+        [ -f "$dir/scripts/$_lib" ] || {
+            echo "ERROR: make_fixture: '$_lib' is source'd by verify.sh" \
+                 "but was not copied to the fixture." >&2
+            echo "       Fix: add cp \"\$REPO_ROOT/scripts/$_lib\" \"\$dir/scripts/$_lib\"" \
+                 "in make_fixture." >&2
+            exit 1
+        }
+    done < <(grep -E 'source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
+                 | sed 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|' || true)
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"
