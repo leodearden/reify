@@ -1646,6 +1646,28 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_CONFLICTING_TRAIT_ASSOC_TYPE`
     /// (see task 3972; trait-assoc-type iota-β).
     ConflictingTraitAssocType,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    ///          (`resolve_qualified_assoc_type`, the qualified-assoc type-expr resolver).
+    ///
+    /// Canonical message form:
+    /// `"ambiguous associated type '<Structure>::<Member>': declared by traits '<A>' and '<B>'; \
+    ///  qualify with '<Structure>::(<Trait>::<Member>)' to disambiguate"`.
+    ///
+    /// Emitted as a `Severity::Error` when a bare qualified associated-type access
+    /// `Base::Member` (a `TypeExprKind::QualifiedAssoc` with no `trait_name`) names a
+    /// member that is declared by two or more of `Base`'s conformed traits, so the
+    /// intended declaration is ambiguous. A single label is attached at the type-expr
+    /// span suggesting the `Base::(Trait::Member)` paren disambiguator (FORK-G). The
+    /// structure binds the associated type once, so the qualifier is
+    /// disambiguation-only — every valid qualifier resolves to the same `Type`.
+    ///
+    /// Sibling of [`TraitAssocTypeNotBound`] / [`ConflictingTraitAssocType`] (the
+    /// producer-side assoc-type diagnostics); this code is the consumer-side
+    /// resolution diagnostic.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AMBIGUOUS_ASSOC_TYPE`
+    /// (see task 3974; trait-assoc-type iota-ε).
+    AmbiguousAssocType,
     /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Pow + Scalar branch).
     ///
     /// Emitted as a `Severity::Error` when a dimensioned (`Scalar<Q>`) value is
