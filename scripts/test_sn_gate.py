@@ -192,5 +192,190 @@ class TestClusterMerges(unittest.TestCase):
         self.assertEqual(clusters[0].size, 3)
 
 
+# ---------------------------------------------------------------------------
+# step-3: Tests for is_fix_forward and attribute_fix_forward (synthetic fixtures)
+# ---------------------------------------------------------------------------
+
+class TestIsFixForward(unittest.TestCase):
+    """Tests for is_fix_forward using synthetic subject strings."""
+
+    def _check_true(self, subject: str):
+        self.assertTrue(
+            sn_gate.is_fix_forward(subject),
+            f"Expected is_fix_forward=True for: {subject!r}",
+        )
+
+    def _check_false(self, subject: str):
+        self.assertFalse(
+            sn_gate.is_fix_forward(subject),
+            f"Expected is_fix_forward=False for: {subject!r}",
+        )
+
+    # Patterns that should match (case-insensitive)
+    def test_fix_colon_matches(self):
+        self._check_true("fix(verify): raise timeout")
+
+    def test_fix_paren_matches(self):
+        self._check_true("fix(infra): add retry")
+
+    def test_fix_dash_matches(self):
+        self._check_true("fix-forward: handle edge case")
+
+    def test_fix_space_forward_matches(self):
+        self._check_true("fix forward: correct merge")
+
+    def test_revert_matches(self):
+        self._check_true("revert: undo bad merge")
+
+    def test_revert_quoted_matches(self):
+        self._check_true("Revert \"some commit message\"")
+
+    def test_hotfix_matches(self):
+        self._check_true("hotfix: patch security issue")
+
+    def test_case_insensitive_fix(self):
+        self._check_true("Fix(lint): correct style")
+        self._check_true("FIX: important patch")
+
+    def test_case_insensitive_revert(self):
+        self._check_true("REVERT: roll back task 123")
+
+    def test_case_insensitive_hotfix(self):
+        self._check_true("Hotfix: emergency patch")
+
+    # Patterns that should NOT match
+    def test_merge_does_not_match(self):
+        self._check_false("Merge task/4421 into main")
+
+    def test_feat_does_not_match(self):
+        self._check_false("feat(sn_gate): add estimator")
+
+    def test_docs_does_not_match(self):
+        self._check_false("docs(prd): update manifest")
+
+    def test_test_does_not_match(self):
+        self._check_false("test(infra): add unit test")
+
+    def test_chore_does_not_match(self):
+        self._check_false("chore: bump version")
+
+    def test_fixup_in_middle_does_not_match(self):
+        # "fixup" in the middle of a line should not match (anchored to start)
+        self._check_false("apply fixup for issue 123")
+
+    def test_empty_string_does_not_match(self):
+        self._check_false("")
+
+
+class TestAttributeFixForward(unittest.TestCase):
+    """Tests for attribute_fix_forward using synthetic cluster + commit fixtures."""
+
+    def _make_commit(
+        self,
+        sha: str,
+        seconds_offset: int,
+        subject: str,
+        is_merge: bool = False,
+        task_id: str = None,
+    ) -> sn_gate.CommitInfo:
+        from datetime import datetime, timedelta
+        base = datetime(2026, 6, 9, 12, 0, 0, tzinfo=timezone.utc)
+        ts = base + timedelta(seconds=seconds_offset)
+        return sn_gate.CommitInfo(sha=sha, timestamp=ts, subject=subject,
+                                  is_merge=is_merge, task_id=task_id)
+
+    def _make_cluster(self, *task_ids: str) -> sn_gate.Cluster:
+        from datetime import datetime, timedelta
+        base = datetime(2026, 6, 9, 12, 0, 0, tzinfo=timezone.utc)
+        merges = []
+        for i, tid in enumerate(task_ids):
+            ts = base + timedelta(seconds=i * 5)
+            merges.append(sn_gate.CommitInfo(
+                sha=f"m{i}", timestamp=ts,
+                subject=f"Merge task/{tid} into main",
+                is_merge=True, task_id=tid,
+            ))
+        return sn_gate.Cluster(merges=merges)
+
+    def test_no_following_commits_returns_not_followed(self):
+        cluster = self._make_cluster("100", "101")
+        followed, strong = sn_gate.attribute_fix_forward(cluster, [], lookahead_seconds=86400)
+        self.assertFalse(followed)
+        self.assertFalse(strong)
+
+    def test_no_fix_forward_in_following_returns_not_followed(self):
+        cluster = self._make_cluster("100", "101")
+        following = [
+            self._make_commit("c1", 60, "feat(x): add feature"),
+            self._make_commit("c2", 120, "docs: update readme"),
+        ]
+        followed, strong = sn_gate.attribute_fix_forward(cluster, following, lookahead_seconds=86400)
+        self.assertFalse(followed)
+
+    def test_strong_hit_with_task_id_reference(self):
+        # Fix-forward commit explicitly references task 100 (a cluster member)
+        cluster = self._make_cluster("100", "101")
+        following = [
+            self._make_commit("fix1", 600, "fix(task/100): correct bad merge"),
+        ]
+        followed, strong = sn_gate.attribute_fix_forward(cluster, following, lookahead_seconds=86400)
+        self.assertTrue(followed, "Should detect fix-forward")
+        self.assertTrue(strong, "Should be strong attribution (task_id in subject)")
+
+    def test_weak_hit_without_task_id_reference(self):
+        # Fix-forward commit does NOT reference any cluster task_id
+        cluster = self._make_cluster("100", "101")
+        following = [
+            self._make_commit("fix1", 600, "fix(verify): generic timeout patch"),
+        ]
+        followed, strong = sn_gate.attribute_fix_forward(cluster, following, lookahead_seconds=86400)
+        self.assertTrue(followed, "Should detect fix-forward")
+        self.assertFalse(strong, "Should be weak attribution (no task_id reference)")
+
+    def test_fix_forward_beyond_lookahead_not_counted(self):
+        cluster = self._make_cluster("100")
+        # Fix-forward commit beyond the lookahead window
+        following = [
+            self._make_commit("fix1", 90000, "fix(x): out of window"),  # 90000s > 86400s
+        ]
+        followed, strong = sn_gate.attribute_fix_forward(cluster, following, lookahead_seconds=86400)
+        self.assertFalse(followed, "Fix-forward beyond lookahead should not count")
+
+    def test_first_fix_forward_in_window_is_returned(self):
+        # First fix-forward wins; second fix-forward is ignored
+        cluster = self._make_cluster("100")
+        following = [
+            self._make_commit("fix1", 60, "fix(verify): first fix"),  # weak
+            self._make_commit("fix2", 120, "fix(task/100): second fix"),  # strong, but after fix1
+        ]
+        followed, strong = sn_gate.attribute_fix_forward(cluster, following, lookahead_seconds=86400)
+        self.assertTrue(followed)
+        # fix1 (weak) is the first fix-forward, so strong=False
+        self.assertFalse(strong, "First fix-forward (weak) should be attributed")
+
+    def test_empty_cluster_returns_not_followed(self):
+        cluster = sn_gate.Cluster(merges=[])
+        following = [self._make_commit("fix1", 60, "fix: something")]
+        followed, strong = sn_gate.attribute_fix_forward(cluster, following)
+        self.assertFalse(followed)
+
+    def test_revert_is_detected_as_fix_forward(self):
+        cluster = self._make_cluster("200")
+        following = [
+            self._make_commit("r1", 300, "revert: undo task/200 merge"),
+        ]
+        followed, strong = sn_gate.attribute_fix_forward(cluster, following, lookahead_seconds=86400)
+        self.assertTrue(followed)
+
+    def test_strong_attribution_via_task_in_parens(self):
+        cluster = self._make_cluster("4421")
+        following = [
+            self._make_commit("f1", 100, "fix: correct issue (task 4421)"),
+        ]
+        followed, strong = sn_gate.attribute_fix_forward(cluster, following, lookahead_seconds=86400)
+        self.assertTrue(followed)
+        self.assertTrue(strong)
+
+
 if __name__ == "__main__":
     unittest.main()
