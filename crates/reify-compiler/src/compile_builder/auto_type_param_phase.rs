@@ -357,21 +357,20 @@ pub(crate) fn phase_auto_type_param_resolution(
 
     // 3. Rewrite structure_name for ALL use-sites (including deduped ones).
     for (owner, sub_index, mono_name) in structure_name_rewrites {
-        if let Some(&idx) = owner_to_idx.get(&owner) {
-            if let Some(sub) = ctx.templates[idx].sub_components.get_mut(sub_index) {
-                sub.structure_name = mono_name;
-            }
+        if let Some(&idx) = owner_to_idx.get(&owner)
+            && let Some(sub) = ctx.templates[idx].sub_components.get_mut(sub_index)
+        {
+            sub.structure_name = mono_name;
         }
     }
 
     // 4. Apply type_args[pos]→StructureRef slot rewrites (pre-existing behaviour).
     for (owner, sub_index, position, resolved_name) in rewrites {
-        if let Some(&idx) = owner_to_idx.get(&owner) {
-            if let Some(sub) = ctx.templates[idx].sub_components.get_mut(sub_index) {
-                if let Some(slot) = sub.type_args.get_mut(position) {
-                    *slot = Type::StructureRef(resolved_name);
-                }
-            }
+        if let Some(&idx) = owner_to_idx.get(&owner)
+            && let Some(sub) = ctx.templates[idx].sub_components.get_mut(sub_index)
+            && let Some(slot) = sub.type_args.get_mut(position)
+        {
+            *slot = Type::StructureRef(resolved_name);
         }
     }
 
