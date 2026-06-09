@@ -110,7 +110,6 @@ mod tests {
         for (c, deps) in edges {
             for d in deps {
                 forward.entry(d.clone()).or_default();
-                reverse.entry(d.clone()).or_default();
                 reverse.entry(d.clone()).or_default().push(c.clone());
             }
             forward.insert(c.clone(), deps.clone());
