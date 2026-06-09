@@ -271,4 +271,100 @@ assert "note: contains >=1 wall-clock actual (time measurement line)" \
 assert "note: contains machine/load caveat line" \
     bash -c '[ -f "$1" ] && grep -qiE "(host|machine|cpu|load|sccache warm|warm sccache|hardware)" "$1"' _ "$NOTE"
 
+# ===========================================================================
+# Test group 3: note↔oracle sync drift guard (RED until S4 adds sentinel block)
+#
+# Parses the per-shape recorded counts from a machine-parseable sentinel block
+# in docs/notes/verify-scope-throughput.md, then re-derives the same counts
+# live from the --print-plan oracle and asserts equality.  Modeled on the
+# declared==derived idiom in tests/infra/test_occt_gated_scope.sh.
+#
+# The sentinel block format (added to the note in S4):
+#   <!-- THROUGHPUT-COUNTS:BEGIN -->
+#   | shape | all | branch |
+#   |-------|-----|--------|
+#   | docs-only  | 14 |  0 |
+#   | reify-doc  | 14 | 13 |
+#   | reify-eval | 14 | 13 |
+#   | gui-only   | 14 |  3 |
+#   <!-- THROUGHPUT-COUNTS:END -->
+#
+# RED until the note emits counts in this exact format with values matching
+# the live oracle (S2 wrote counts in a human-readable table only).
+# ===========================================================================
+echo ""
+echo "--- Note↔oracle sync drift guard (requires THROUGHPUT-COUNTS sentinel block) ---"
+
+assert "sync: note contains THROUGHPUT-COUNTS:BEGIN sentinel" \
+    bash -c '[ -f "$1" ] && grep -q "THROUGHPUT-COUNTS:BEGIN" "$1"' _ "$NOTE"
+
+assert "sync: note contains THROUGHPUT-COUNTS:END sentinel" \
+    bash -c '[ -f "$1" ] && grep -q "THROUGHPUT-COUNTS:END" "$1"' _ "$NOTE"
+
+# note_count_for <shape-grep-key> <all|branch>
+# Extracts the recorded count from the sentinel block for a shape.
+# Returns empty string when the sentinel block or shape row is absent.
+note_count_for() {
+    local _shape="$1" _col
+    case "$2" in
+        all)    _col=3 ;;
+        branch) _col=4 ;;
+        *)      printf ''; return ;;
+    esac
+    awk '/THROUGHPUT-COUNTS:BEGIN/,/THROUGHPUT-COUNTS:END/' "$NOTE" \
+        | grep "$_shape" \
+        | awk -F'|' -v c="$_col" 'NR==1{ val=$c; gsub(/ /,"",val); print val }' || true
+}
+
+# Re-derive live counts for each shape using the same fixture and oracle as
+# test group 1.  FIX is still at main after the structural tests above.
+
+# Shape (a): docs-only
+plan_for_shape "docs/note.md"
+LIVE_ALL_A=$(plan_cmdcount "$PLAN_ALL_OUT")
+LIVE_BR_A=$(plan_cmdcount "$PLAN_BR_OUT")
+REC_ALL_A=$(note_count_for "docs-only" "all")
+REC_BR_A=$(note_count_for "docs-only" "branch")
+
+assert "sync: docs-only scope=all: note($REC_ALL_A) == live($LIVE_ALL_A)" \
+    test "$REC_ALL_A" = "$LIVE_ALL_A"
+assert "sync: docs-only scope=branch: note($REC_BR_A) == live($LIVE_BR_A)" \
+    test "$REC_BR_A" = "$LIVE_BR_A"
+
+# Shape (b): reify-doc (non-OCCT)
+plan_for_shape_narrowed "reify-doc" "crates/reify-doc/src/lib.rs"
+LIVE_ALL_B=$(plan_cmdcount "$PLAN_ALL_OUT")
+LIVE_BR_B=$(plan_cmdcount "$PLAN_BR_OUT")
+REC_ALL_B=$(note_count_for "reify-doc" "all")
+REC_BR_B=$(note_count_for "reify-doc" "branch")
+
+assert "sync: reify-doc scope=all: note($REC_ALL_B) == live($LIVE_ALL_B)" \
+    test "$REC_ALL_B" = "$LIVE_ALL_B"
+assert "sync: reify-doc scope=branch: note($REC_BR_B) == live($LIVE_BR_B)" \
+    test "$REC_BR_B" = "$LIVE_BR_B"
+
+# Shape (c): reify-eval (OCCT)
+plan_for_shape_narrowed "reify-eval" "crates/reify-eval/src/lib.rs"
+LIVE_ALL_C=$(plan_cmdcount "$PLAN_ALL_OUT")
+LIVE_BR_C=$(plan_cmdcount "$PLAN_BR_OUT")
+REC_ALL_C=$(note_count_for "reify-eval" "all")
+REC_BR_C=$(note_count_for "reify-eval" "branch")
+
+assert "sync: reify-eval scope=all: note($REC_ALL_C) == live($LIVE_ALL_C)" \
+    test "$REC_ALL_C" = "$LIVE_ALL_C"
+assert "sync: reify-eval scope=branch: note($REC_BR_C) == live($LIVE_BR_C)" \
+    test "$REC_BR_C" = "$LIVE_BR_C"
+
+# Shape (d): gui-only
+plan_for_shape "gui/src/editor/foo.ts"
+LIVE_ALL_D=$(plan_cmdcount "$PLAN_ALL_OUT")
+LIVE_BR_D=$(plan_cmdcount "$PLAN_BR_OUT")
+REC_ALL_D=$(note_count_for "gui-only" "all")
+REC_BR_D=$(note_count_for "gui-only" "branch")
+
+assert "sync: gui-only scope=all: note($REC_ALL_D) == live($LIVE_ALL_D)" \
+    test "$REC_ALL_D" = "$LIVE_ALL_D"
+assert "sync: gui-only scope=branch: note($REC_BR_D) == live($LIVE_BR_D)" \
+    test "$REC_BR_D" = "$LIVE_BR_D"
+
 test_summary
