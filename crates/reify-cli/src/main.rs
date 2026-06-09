@@ -224,10 +224,15 @@ fn parse_and_compile_with_cfg(
         return Err(ExitCode::FAILURE);
     }
 
-    // Resolve sibling user imports relative to the entry file's parent dir. The
-    // stdlib_root mirrors the GUI heuristic (parent/crates/reify-compiler/stdlib);
-    // when that path is absent the resolver falls back to the embedded stdlib,
-    // which is always present via load_stdlib() in the prelude anyway.
+    // Resolve sibling user imports relative to the entry file's parent dir.
+    //
+    // `stdlib_root` is INERT on this code path: `compile_entry_with_stdlib_cfg`
+    // skips every `std.*` import (the full stdlib is seeded into the prelude via
+    // `load_stdlib()` instead), so the resolver's stdlib_root is never consulted
+    // for a `reify check`. We still pass the GUI/LSP-heuristic path
+    // (parent/crates/reify-compiler/stdlib) rather than a bogus sentinel so the
+    // resolver is constructed identically to that bridge; its value has no
+    // observable effect here.
     let parent_dir = std::path::Path::new(path)
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
