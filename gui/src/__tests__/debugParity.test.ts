@@ -74,8 +74,13 @@ const PURE_ENGINE_SIDE = [
 /**
  * Handlers reachable via the REST endpoint that are intentionally NOT
  * advertised in tools/list, so they have no tool_def in debug_server.rs.
+ *
+ * Also includes `apply_gui_state`: the landing point for the Rust
+ * `query_frontend("apply_gui_state", ...)` push from `handle_set_fea_case`.
+ * It is called FROM Rust TO the frontend (not invoked as an MCP tool by the
+ * harness), so it has no tool_def entry (task 3026).
  */
-const REST_ONLY_HANDLERS = ['clear_selection', 'toggle_select'];
+const REST_ONLY_HANDLERS = ['clear_selection', 'toggle_select', 'apply_gui_state'];
 
 // --- handler key set (hoisted; shared across checks c/d/e) ---
 // Handler bodies are lazy arrows; buildHandlers construction only calls
