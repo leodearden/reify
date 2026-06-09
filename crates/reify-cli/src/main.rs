@@ -1822,6 +1822,46 @@ mod tests {
     }
 
     #[test]
+    fn build_cfg_set_empty_is_host_default() {
+        // No `--cfg` args ⇒ the host-default active cfg (target = host platform,
+        // empty flags/kv), identical to CfgSet::host_default (PRD §4 D-2).
+        assert_eq!(
+            build_cfg_set(&[]),
+            Ok(reify_compiler::cfg::CfgSet::host_default()),
+        );
+    }
+
+    #[test]
+    fn build_cfg_set_target_override_replaces_host() {
+        // `--cfg target=wasm` overrides the host-default target.
+        let cfg = build_cfg_set(&["target=wasm".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.target.as_deref(), Some("wasm"));
+    }
+
+    #[test]
+    fn build_cfg_set_flag_keeps_host_target() {
+        // A bare flag must NOT clear the host-default target (D-2 robustness): a
+        // feature flag should never silently disable platform gating.
+        let cfg = build_cfg_set(&["feat".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.target.as_deref(), Some(std::env::consts::OS));
+        assert!(cfg.flags.contains("feat"));
+    }
+
+    #[test]
+    fn build_cfg_set_non_target_kv_keeps_host_target() {
+        // A non-`target` key=value lands in `kv` and leaves the host target intact.
+        let cfg = build_cfg_set(&["k=v".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.kv.get("k").map(String::as_str), Some("v"));
+        assert_eq!(cfg.target.as_deref(), Some(std::env::consts::OS));
+    }
+
+    #[test]
+    fn build_cfg_set_rejects_malformed_value() {
+        // A malformed `--cfg` value (empty key) propagates parse_cfg_flag's error.
+        assert!(build_cfg_set(&["=bad".to_string()]).is_err());
+    }
+
+    #[test]
     fn report_eval_output_returns_correct_outcome_variants() {
         let no_diags: Vec<reify_core::Diagnostic> = vec![];
 
