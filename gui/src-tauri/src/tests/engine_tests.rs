@@ -12360,3 +12360,117 @@ fn engine_session_active_fea_case_default_then_switch() {
         vm_overload[0], vm_operating[0]
     );
 }
+
+// ── Task 3026 step-15: RED — GUI fixture-solve de-risk ────────────────────────
+//
+// Asserts that a GUI EngineSession fed the `fea_multi_case_bracket.ri` fixture
+// produces a real multi-case solve result:
+//   - Some cell in check.values has detect_multi_case_result returning
+//     available_cases == ["operating", "overload", "transport"]
+//   - Each case's ElasticResult is a Value::StructureInstance("ElasticResult")
+//     with a non-Undef Sampled `stress` field (Value::Field with
+//     FieldSourceKind::Sampled), proving the GUI end-to-end produces data
+//     the case-picker can consume.
+//
+// FAILS TO COMPILE until step-16 creates examples/fea_multi_case_bracket.ri.
+
+/// B-fixture: GUI EngineSession end-to-end produces a 3-case MultiCaseResult.
+///
+/// Loads `examples/fea_multi_case_bracket.ri` in a fresh EngineSession
+/// (SimpleConstraintChecker + MockGeometryKernel) and asserts:
+///   - `detect_multi_case_result` fires for some cell in check.values
+///   - `available_cases == ["operating", "overload", "transport"]`
+///   - Each case's ElasticResult has a Sampled `stress` field (non-Undef)
+///
+/// Mirrors the 4086 B4 pattern (`register_compute_fns_dispatch_yields_real_elastic_result`).
+#[test]
+fn gui_fixture_multi_case_bracket_produces_three_case_result() {
+    use reify_ir::{FieldSourceKind, Value};
+
+    let source = include_str!("../../../../examples/fea_multi_case_bracket.ri");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(source, "FeaMultiCaseBracket")
+        .expect("load_from_source must succeed for fea_multi_case_bracket.ri");
+
+    let check = session
+        .last_check_for_test()
+        .expect("last_check_for_test must be Some after load_from_source");
+
+    // Find the first cell that is a MultiCaseResult (detect_multi_case_result returns Some).
+    let (cell_id, detected) = check
+        .values
+        .iter()
+        .filter_map(|(id, v)| {
+            reify_eval::multi_load_dispatch::detect_multi_case_result(v)
+                .map(|d| (id, d))
+        })
+        .next()
+        .unwrap_or_else(|| {
+            let all_ids: Vec<_> = check.values.iter().map(|(id, _)| id).collect();
+            panic!(
+                "no cell in check.values matched detect_multi_case_result; \
+                 cells present: {all_ids:?}"
+            )
+        });
+
+    // Available cases must be exactly ["operating", "overload", "transport"].
+    assert_eq!(
+        detected.available_cases,
+        vec!["operating".to_string(), "overload".to_string(), "transport".to_string()],
+        "cell {cell_id:?}: available_cases mismatch"
+    );
+
+    // Each case must carry a real ElasticResult with a Sampled stress field.
+    let outer_map = match check.values.get(cell_id).unwrap() {
+        Value::Map(m) => m,
+        other => panic!("cell {cell_id:?} must be Value::Map (MultiCaseResult), got: {other:?}"),
+    };
+    let cases_map = match outer_map.get(&Value::String("cases".to_string())) {
+        Some(Value::Map(m)) => m,
+        other => panic!("cell {cell_id:?}: 'cases' key must be Value::Map, got: {other:?}"),
+    };
+
+    for case_name in ["operating", "overload", "transport"] {
+        let case_val = cases_map
+            .get(&Value::String(case_name.to_string()))
+            .unwrap_or_else(|| panic!("cases map must contain \"{case_name}\""));
+
+        // Each case must be a Value::StructureInstance("ElasticResult").
+        let er_fields = match case_val {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.type_name, "ElasticResult",
+                    "case \"{case_name}\" must be StructureInstance(\"ElasticResult\"), \
+                     got type_name=\"{}\"",
+                    data.type_name
+                );
+                &data.fields
+            }
+            other => panic!(
+                "case \"{case_name}\" must be Value::StructureInstance(\"ElasticResult\"), \
+                 got: {other:?}"
+            ),
+        };
+
+        // The `stress` field must be a Sampled Field (non-Undef).
+        let stress_val = er_fields
+            .get("stress")
+            .unwrap_or_else(|| panic!("case \"{case_name}\": stress field missing from ElasticResult"));
+        match stress_val {
+            Value::Field { source, .. } => {
+                assert!(
+                    matches!(source, FieldSourceKind::Sampled),
+                    "case \"{case_name}\": stress source must be Sampled, got: {source:?}"
+                );
+            }
+            other => panic!(
+                "case \"{case_name}\": expected stress to be Value::Field (Sampled), got: {other:?}"
+            ),
+        }
+    }
+}
