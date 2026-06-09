@@ -1650,8 +1650,9 @@ pub enum DiagnosticCode {
     ///          (`resolve_qualified_assoc_type`, the qualified-assoc type-expr resolver).
     ///
     /// Canonical message form:
-    /// `"ambiguous associated type '<Structure>::<Member>': declared by traits '<A>' and '<B>'; \
-    ///  qualify with '<Structure>::(<Trait>::<Member>)' to disambiguate"`.
+    /// `"ambiguous associated type '<Structure>::<Member>': declared by traits '<A>', '<B>'; \
+    ///  qualify as '<Structure>::(<Trait>::<Member>)' to disambiguate"`.
+    /// (Trait names are comma-joined; the phrasing is "qualify as".)
     ///
     /// Emitted as a `Severity::Error` when a bare qualified associated-type access
     /// `Base::Member` (a `TypeExprKind::QualifiedAssoc` with no `trait_name`) names a
