@@ -790,11 +790,6 @@ build_plan() {
         add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 45m ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"
     fi
 
-    # test: gated + ungated cargo passes, per profile.
-    if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add_test_passes
-    fi
-
     # GUI ecosystem (npm). Rust changes imply these too; they are fast. Only
     # meaningful when there is a GUI check to run — the GUI has a test side
     # (npm test) and a typecheck (npm run typecheck) but no `cargo check`
@@ -812,6 +807,10 @@ build_plan() {
     # test side catches this class in the cheap inner loop. The block is built ONCE
     # (not per-profile), so a single `&& npm run typecheck` means action=all runs it
     # exactly once — no double-run.
+    #
+    # FAIL-FAST: emitted BEFORE add_test_passes (the expensive pole) so a broken
+    # gui tsc fails the plan in ~minutes, not after 85 min of Rust build+test.
+    # (task #4448 / incident fix for #4446)
     if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
         # typecheck always (whenever the block runs, test OR lint); npm test only
         # on the test side.
@@ -829,6 +828,8 @@ build_plan() {
     # Cheap static infra checks (opt-in). Test-side and lint-side, mirroring the
     # historical orchestrator split. Tied to RUN_RUST (the heavy gate) so a
     # frontend-only or docs-only staged commit stays fast.
+    #
+    # FAIL-FAST: emitted BEFORE add_test_passes (task #4448).
     if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$DO_TEST" -eq 1 ]; then
             add "if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi"
@@ -838,6 +839,14 @@ build_plan() {
             add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
             add "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
         fi
+    fi
+
+    # test: gated + ungated cargo passes, per profile.
+    # Emitted LAST — this is the expensive long-pole (psi-gate + full cargo
+    # nextest run + OCCT-gated passes). All cheap gates run before this.
+    # (task #4448 fail-fast reorder)
+    if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+        add_test_passes
     fi
 }
 build_plan
