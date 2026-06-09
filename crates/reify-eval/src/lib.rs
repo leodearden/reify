@@ -38,6 +38,10 @@ pub mod kernel_registry;
 pub use engine_eval::ASSERT_MSG_PREFIX;
 #[doc(hidden)]
 pub use engine_eval::is_representable_cell_type;
+/// Re-exported for integration tests that need to assert against the progress
+/// throttle cadence without duplicating the constant.  Hidden from public docs.
+#[doc(hidden)]
+pub use compute_targets::elastic_static::PROGRESS_STRIDE;
 mod engine_purposes;
 mod engine_tolerance;
 mod geometry_ops;
