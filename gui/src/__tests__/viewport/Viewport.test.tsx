@@ -42,6 +42,19 @@ vi.mock('../../viewport/colormap', () => ({
   bakeColours: mockBakeColours,
 }));
 
+// Hoisted bridge mocks — must be hoisted so vi.mock factory can reference them.
+// subscribeFeaCaseToStore: wired in Viewport by step-10 (returns an unlisten fn).
+// setActiveFeaCase: wired in Viewport by step-14 (outbound case-selection call).
+const mockSubscribeFeaCaseToStore = vi.hoisted(() => vi.fn(() => Promise.resolve(() => {})));
+const mockSetActiveFeaCase = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+
+// Mock the bridge module used by Viewport so that IPC calls are captured
+// without hitting the real Tauri backend (which doesn't exist in jsdom).
+vi.mock('../../bridge', () => ({
+  subscribeFeaCaseToStore: mockSubscribeFeaCaseToStore,
+  setActiveFeaCase: mockSetActiveFeaCase,
+}));
+
 // Mock the viewport modules
 const mockResize = vi.fn();
 const mockRendererRender = vi.fn();
@@ -1223,6 +1236,38 @@ describe('Viewport FEA Lock Current + readout wiring', () => {
 // 'vonMises_top' (the PREFERRED_FEA_CHANNELS second entry, highest preference
 // among the three shell channels).
 // ─────────────────────────────────────────────────────────────────────────────
+// Viewport FEA outbound case-selection effect (task 3026 step-13 — RED)
+// Verifies that Viewport.tsx wires feaModeStore.activeCaseId changes to a
+// setActiveFeaCase(case) bridge call — step-14 adds the createEffect.
+describe('Viewport FEA outbound case-selection effect (task 3026 step-13)', () => {
+  it('(a) setActiveCaseId("overload") fires setActiveFeaCase with the case name', () => {
+    const store = createFeaModeStore();
+    mockSetActiveFeaCase.mockClear();
+
+    render(() => <Viewport meshes={{}} viewportId="test-case-sel-a" feaModeStore={store as any} />);
+
+    // On initial mount activeCaseId is null — no outbound call expected
+    expect(mockSetActiveFeaCase).not.toHaveBeenCalled();
+
+    // Transition to a non-null case selection
+    store.setActiveCaseId('overload');
+
+    // FAILS until step-14 adds the createEffect watching activeCaseId
+    expect(mockSetActiveFeaCase).toHaveBeenCalledWith('overload');
+    expect(mockSetActiveFeaCase).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) no outbound call on initial mount when activeCaseId is null (default)', () => {
+    const store = createFeaModeStore();
+    mockSetActiveFeaCase.mockClear();
+
+    render(() => <Viewport meshes={{}} viewportId="test-case-sel-b" feaModeStore={store as any} />);
+
+    // activeCaseId defaults to null → no setActiveFeaCase call on mount
+    expect(mockSetActiveFeaCase).not.toHaveBeenCalled();
+  });
+});
+
 describe('Viewport FEA auto-enable determinism', () => {
   it('(test-1) channels inserted as {vonMises_bottom, vonMises_mid, vonMises_top} → channel is vonMises_top', () => {
     const store = createFeaModeStore();
