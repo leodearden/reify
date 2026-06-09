@@ -122,8 +122,19 @@ test_summary
 echo ""
 echo "--- B4 Part 2: narrowed per-task plan carries -p Y across test+clippy+check ---"
 
-PLAN_B4_ALL=""
-PLAN_B4_TC=""
+FIX_B4_P2=""
+make_branch_fixture FIX_B4_P2
+git -C "$FIX_B4_P2" checkout -q -b task-branch
+mkdir -p "$FIX_B4_P2/$( dirname "$X_FILE" )"
+printf 'x\n' > "$FIX_B4_P2/$X_FILE"
+git -C "$FIX_B4_P2" add crates
+git -C "$FIX_B4_P2" commit -q -m "task changes"
+PLAN_B4_ALL="$(cd "$FIX_B4_P2" && REIFY_AFFECTED_CRATES_OVERRIDE="$AFFECTED_SET" \
+    bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)"
+PLAN_B4_TC="$(cd "$FIX_B4_P2" && REIFY_AFFECTED_CRATES_OVERRIDE="$AFFECTED_SET" \
+    bash scripts/verify.sh typecheck --profile debug --scope branch --print-plan 2>/dev/null)"
+git -C "$FIX_B4_P2" checkout -q main
+git -C "$FIX_B4_P2" branch -q -D task-branch
 
 assert "B4P2: NARROW_ACTIVE=1 in narrowed plan header" \
     plan_has "$PLAN_B4_ALL" 'NARROW_ACTIVE=1'
