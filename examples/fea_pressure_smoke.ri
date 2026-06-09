@@ -16,7 +16,9 @@
 // checks that solve completes without errors and max_von_mises is positive and finite.
 //
 // Type-coercion notes: see `fea_cantilever_smoke.ri` header for the rationale
-// behind ConstitutiveLawInput and LoadCase wrappers.
+// behind the ConstitutiveLawInput wrapper.  The LoadCase bundle is no longer
+// needed — `solve_elastic_static` now declares `loads: List<Load>` /
+// `supports: List<Support>` (task 4093), so direct list literals type-check.
 
 structure FeaPressureSmoke {
     // Geometry: 1 m long beam with 100 mm × 100 mm square cross-section.
@@ -34,17 +36,14 @@ structure FeaPressureSmoke {
     // Supports: fully clamped (fixed) at the beam root (x_min face).
     let mount = FixedSupport(target: "root")
 
-    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
-    // has compile-time type `List<Real>` (matching the fn param type).
-    let lc = LoadCase(name: "pressure_case", loads: [pressure], supports: [mount])
-
     // Wrap material in ConstitutiveLawInput so that member-access .law has
     // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
     let ci = ConstitutiveLawInput(law: material)
 
     // FEA solve via the @optimized trampoline.
+    // Direct list literals type-check against List<Load> / List<Support> (task 4093).
     let result = solve_elastic_static(
-        ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
+        ci.law, length, width, height, [pressure], [mount], ElasticOptions()
     )
 
     // Geometry realization (deferred — no kernel call at eval time).

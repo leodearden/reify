@@ -1,0 +1,35 @@
+// Stdlib: FEA Nominal Types  (`std.fea.types`)
+//
+// Provides the marker-trait surface for FEA loads and supports.  These traits
+// MUST be declared in an earlier module than `std.solver.elastic` so that
+// `solve_elastic_static` can reference `List<Load>` / `List<Support>` as its
+// parameter types; the sequential growing-prelude loader compiles this module
+// immediately before `std.solver.elastic` (see `stdlib_loader.rs`).
+//
+// Design rationale (mirrors the proven cross-module precedent):
+//   `ConstitutiveLaw` lives in `std.constitutive` (#10) and is consumed by
+//   `solve_elastic_static(material: ConstitutiveLaw)` in `std.solver.elastic`
+//   (#11). `Load` and `Support` follow the exact same pattern: they are declared
+//   here in `std.fea.types` (#10.5, effectively) and consumed by
+//   `solve_elastic_static(loads: List<Load>, supports: List<Support>)` (#11).
+//
+// Empty-marker rationale:
+//   Each conforming structure def declares its own natural fields
+//   (`PointLoad.point`/`.force`, `PressureLoad.magnitude`/`.face`/`.direction`,
+//   `FixedSupport.target`, etc.).  Forcing shared field shapes onto the trait
+//   body would violate Q-SIR-4 (preserve-don't-redesign) for the pre-existing
+//   Map-shape consumers.  The empty-marker form gives nominal-conformance
+//   identity without imposing a dead-field contract.
+//
+// Conforming structure defs (all in `std.fea.multi_case`, which compiles AFTER
+// this module via the growing prelude):
+//   Load:    PointLoad, PressureLoad, TractionLoad, BodyForce
+//   Support: FixedSupport
+
+// Empty-marker Load trait.  Each conforming structure def declares its own
+// natural field shapes; the trait provides only nominal-conformance identity,
+// not a shared field contract.
+trait Load { }
+
+// Empty-marker Support trait.  Parallels `trait Load { }` above.
+trait Support { }

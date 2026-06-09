@@ -69,8 +69,8 @@ structure def MaterialFrame {
 // (e.g. `AnisotropicMaterial.law` below) and so downstream PRDs can
 // declare their own conforming structures.
 //
-// Empty-marker pattern follows `trait Load { }` in std.fea.multi_case
-// (relaxed in DD1; see fea_multi_case.ri:293).
+// Empty-marker pattern follows `trait Load { }` in std.fea.types
+// (relaxed in DD1; see fea_types.ri).
 trait ConstitutiveLaw { }
 
 // ── OrthotropicMaterial ──────────────────────────────────────────────────────

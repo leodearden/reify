@@ -17,17 +17,15 @@
 //
 // Encoding deviations from the PRD:
 //   1. PRD writes `loads : List<Load>` and `supports : List<Support>`.
-//      `Load` and `Support` are not statically-typed structs in the current
-//      stdlib: runtime load/support instances are kind-tagged `Value::Map`s
-//      produced by `point_load`, `fixed_support`, `pinned_support`, etc.
-//      (name-dispatched builtins) or `PointLoad`, `PressureLoad`, `FixedSupport`
-//      (structure defs — SIR-α/β). Using
-//      `List<Real>` here is a placeholder pending a `trait def Load` /
-//      `trait def Support` marker that all kind-constructors satisfy;
-//      a `TODO(load-trait)` note on each field tracks the future tightening.
-//      Runtime type-checking is shallow kind-match only, so `List<Real>`
-//      silently accepts a `Value::List` of load/support `Value::Map`s
-//      without runtime rejection.
+//      The `Load` and `Support` marker traits are now declared in the
+//      dedicated earlier module `std.fea.types` (loaded before
+//      `std.solver.elastic` in `stdlib_loader.rs`), which lets
+//      `solve_elastic_static` reference `List<Load>` / `List<Support>`.
+//      `LoadCase.loads` / `LoadCase.supports` remain `List<Real>` for now
+//      (tightening LoadCase is a clean follow-up — see TODO(load-trait)
+//      below).  Runtime type-checking is shallow kind-match only, so
+//      `List<Real>` silently accepts a `Value::List` of load/support
+//      `Value::StructureInstance`s without runtime rejection.
 //   2. `LoadCase` has no `constraint` blocks: neither `loads` nor `supports`
 //      can be validated for non-emptiness or uniqueness at the struct level
 //      (constraint clauses evaluate per-instance scalar predicates; they
@@ -86,15 +84,17 @@ structure def LoadCase {
     //
     // TODO(load-trait): replace `List<Real>` with `List<Load>` once all
     // load constructors are migrated to structure defs conforming to
-    // `trait Load { }` and the solver wiring (PRD task 16) is ready.
+    // `trait Load { }` (now in `std.fea.types`).  This tightening is a
+    // clean follow-up; `solve_elastic_static` has already been tightened.
     param loads : List<Real>
 
     // Boundary-condition supports for this case.  Each element is a runtime
     // kind-tagged Map produced by `fixed_support`, `pinned_support`, etc.
     //
-    // TODO(load-trait): replace `List<Real>` with `List<Support>` once
-    // `trait def Support` is declared and the kind-constructor builtins
-    // are annotated.
+    // TODO(load-trait): replace `List<Real>` with `List<Support>` once the
+    // kind-constructor builtins are annotated.  `trait Support { }` now
+    // lives in `std.fea.types`; `solve_elastic_static` has already been
+    // tightened.
     param supports : List<Real>
 
     // Optional solver-knob override for this case.  `none` instructs
@@ -268,7 +268,7 @@ structure def MultiCaseResult {
 // task 3544's plan): PressureLoad's natural fields (magnitude/face/direction)
 // don't match PointLoad's force/point shape, and carrying dead fields on every
 // pressure load would violate Q-SIR-4 (preserve-don't-redesign). The
-// empty-marker form parallels `trait Support { }` already in this file, and
+// empty-marker form parallels `trait Support { }` in std.fea.types (fea_types.ri), and
 // is a strict relaxation for PointLoad (its structure def already declares
 // `point` and `force` explicitly so removing them from the trait body doesn't
 // break conformance).  Future wave-2 loads (TractionLoad, BodyForce, Gravity)
@@ -280,19 +280,14 @@ structure def MultiCaseResult {
 // field shapes against the existing `loads.rs` / `supports.rs` Map-shape
 // consumers).
 //
-// Trait surface — `Load` and `Support` are empty marker traits; each conforming
-// structure def declares its own natural fields. `Real`/`String` placeholders
-// in the structure defs follow the precedent set by `LoadCase.loads : List<Real>`
+// Trait surface — `Load` and `Support` are empty marker traits declared in
+// the earlier module `std.fea.types` (loaded before `std.solver.elastic`
+// in `stdlib_loader.rs`).  Conforming structure defs in THIS file get their
+// trait bindings from the growing prelude which carries `std.fea.types` by
+// the time `std.fea.multi_case` compiles.  `Real`/`String` placeholders in
+// the structure defs follow the precedent set by `LoadCase.loads : List<Real>`
 // (header note 1 above) — dimension-typed slots tighten in follow-up waves once
 // the dimensional type aliases land.
-
-// Empty-marker Load trait (relaxed from the wave-1 point-load-centric body in
-// task 3544 DD1). Each conforming structure def declares its own natural field
-// shapes; the trait provides only nominal-conformance identity, not a shared
-// field contract. Parallels `trait Support { }` below.
-trait Load { }
-
-trait Support { }
 
 // PointLoad — wave-1 replacement for the `point_load` builtin (loads.rs).
 // Field defaults let bare `PointLoad()` calls succeed (covers SIR-α boundary

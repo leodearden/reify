@@ -48,10 +48,6 @@ structure ThinWalledBracket {
     // Supports: fully clamped (fixed) at the bracket root.
     let mount = FixedSupport(target: "root")
 
-    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
-    // has compile-time type `List<Real>` (matching the fn param type).
-    let lc = LoadCase(name: "bracket", loads: [tip_load], supports: [mount])
-
     // Wrap material in ConstitutiveLawInput so that member-access .law has
     // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
     let ci = ConstitutiveLawInput(law: material)
@@ -59,11 +55,12 @@ structure ThinWalledBracket {
     // FEA solve: the @optimized dispatcher routes this call to the
     // `solver::elastic_static` trampoline.
     //
+    // Direct list literals type-check against List<Load> / List<Support> (task 4093).
     // Bare `ElasticOptions()` uses all solver defaults (shell_force=Auto,
     // shell_threshold=0.2); the 0.02 aspect ratio auto-classifies this as a
     // shell solve end-to-end.
     let result = solve_elastic_static(
-        ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
+        ci.law, length, width, height, [tip_load], [mount], ElasticOptions()
     )
 
     // Expose the peak von Mises as a top-level cell for `reify eval` output.

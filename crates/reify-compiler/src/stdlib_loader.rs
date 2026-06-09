@@ -86,6 +86,17 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.constitutive",
                 include_str!("../stdlib/constitutive.ri"),
             ),
+            // `std.fea.types` declares the empty marker traits `Load` and
+            // `Support`.  It MUST precede `std.solver.elastic` so that
+            // `solve_elastic_static`'s `loads : List<Load>` / `supports :
+            // List<Support>` params can resolve in the growing prelude.
+            // Zero dependencies (empty marker traits) — placement is free.
+            // Mirrors the `std.constitutive` → `std.solver.elastic` pattern
+            // for `ConstitutiveLaw`.
+            (
+                "std.fea.types",
+                include_str!("../stdlib/fea_types.ri"),
+            ),
             (
                 "std.solver.elastic",
                 include_str!("../stdlib/solver_elastic.ri"),
