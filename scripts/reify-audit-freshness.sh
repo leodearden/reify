@@ -94,6 +94,15 @@ reify_audit_is_stale() {
 
     # Fail-open: if we can't determine the epoch, treat as fresh.
     if [ -z "$epoch" ]; then
+        # Distinguish two cases:
+        #   (a) Not a git repo at all (CI checkout, temp dir) — silent fail-open,
+        #       this is a legitimate edge invocation.
+        #   (b) Valid git tree but crates/reify-audit has NO history — likely the
+        #       crate path was renamed or moved, silently disabling the guard.
+        #       Emit a warning so the disabled state is not invisible.
+        if git -C "$repo_root" rev-parse --git-dir >/dev/null 2>&1; then
+            echo "reify-audit freshness guard: crates/reify-audit has no git history under '$repo_root'; guard disabled (fail-open). If the crate path changed, update reify-audit-freshness.sh." >&2
+        fi
         return 1
     fi
 

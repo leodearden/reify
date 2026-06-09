@@ -11,6 +11,8 @@
 #        fresh exits 0 silently
 #  10:   reify_audit_guard rebuild-mode: fake cargo that touches bin → exit 0
 #  11:   reify_audit_guard rebuild-mode: fake cargo that does NOT freshen → non-zero
+#  12:   is_stale warns (stderr) when inside a git repo with no crates/reify-audit
+#        history — fail-open (fresh) but not silent (likely renamed crate path)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -194,6 +196,44 @@ chmod +x "$REBUILD_TMPDIR/cargo"
 
 assert "guard rebuild-mode: fake cargo that does NOT freshen bin → exits non-zero" \
     env PATH="$REBUILD_TMPDIR:$PATH" bash -c "source '$FRESHNESS_LIB' && ! reify_audit_guard '$STUBBORN_BIN' rebuild '$REPO_ROOT' 2>/dev/null"
+
+# ==============================================================================
+# Check 12: reify_audit_is_stale — git repo with no crates/reify-audit history
+#           → fail-open (fresh, exit 1) AND emits a stderr warning
+#           This exercises the guard's renamed-crate-path detection (suggestion 3):
+#           a non-git dir is legitimately silent; a git tree with no such history
+#           is likely a misconfiguration and must warn so the silent disable is
+#           visible.
+# ==============================================================================
+echo ""
+echo "--- Check 12: is_stale warns when git repo has no crates/reify-audit history ---"
+
+# Create a minimal git repo that has no crates/reify-audit history at all.
+GIT_NO_HIST_DIR=$(mktemp -d /tmp/test-git-nohist-XXXXXX)
+trap 'rm -rf "$TMPDIR_FRESHNESS" "$NON_GIT_DIR" "$REBUILD_TMPDIR" "$GIT_NO_HIST_DIR"' EXIT
+git -C "$GIT_NO_HIST_DIR" init -q
+touch "$GIT_NO_HIST_DIR/placeholder"
+git -C "$GIT_NO_HIST_DIR" add placeholder
+git -C "$GIT_NO_HIST_DIR" \
+    -c user.name="Test" \
+    -c user.email="test@test.com" \
+    commit -qm "init" 2>/dev/null
+touch "$GIT_NO_HIST_DIR/fake-bin"
+
+# 12a: Still returns fresh (fail-open) — guard must not block in this case.
+assert "is_stale fails open (fresh/exit 1) in git repo with no crates/reify-audit history" \
+    bash -c "source '$FRESHNESS_LIB' && ! reify_audit_is_stale '$GIT_NO_HIST_DIR/fake-bin' '$GIT_NO_HIST_DIR' 2>/dev/null"
+
+# 12b: But emits a warning to stderr (not silent like the non-git case).
+# Pattern: source freshness lib, then run is_stale with stderr→stdout, pipe to grep.
+# Pipeline exit code = grep's exit code (0 if warning found).
+assert "is_stale emits a stderr warning in git repo with no crates/reify-audit history" \
+    bash -c "source '$FRESHNESS_LIB' && reify_audit_is_stale '$GIT_NO_HIST_DIR/fake-bin' '$GIT_NO_HIST_DIR' 2>&1 | grep -qi 'crates/reify-audit'"
+
+# 12c: Non-git dir (Check 7) is still silent — confirm no regression.
+# Capture stderr from is_stale; a silent path leaves the var empty.
+assert "is_stale is silent (no warning) for a non-git repo_root" \
+    bash -c "source '$FRESHNESS_LIB'; warn=\$(reify_audit_is_stale '$NON_GIT_DIR/fake-bin' '$NON_GIT_DIR' 2>&1 >/dev/null); [ -z \"\$warn\" ]"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
