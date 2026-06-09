@@ -359,6 +359,7 @@ def build_report(
         "n2": result2.sample_size,
         "s3": result3.s_point,
         "n3": result3.sample_size,
+        "ambiguous": result2.ambiguous_frac > 0 or result3.ambiguous_frac > 0,
         "ambiguous2": result2.ambiguous_frac,
         "ambiguous3": result3.ambiguous_frac,
         "classification": decision.classification,

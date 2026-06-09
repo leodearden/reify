@@ -673,5 +673,160 @@ class TestDecide(unittest.TestCase):
                 self.assertIn(key, result.per_n[n], f"per_n[{n}] missing key: {key}")
 
 
+# ---------------------------------------------------------------------------
+# step-9: Tests for build_report and --json CLI output contract
+# ---------------------------------------------------------------------------
+
+import json as json_mod
+import subprocess
+import tempfile
+import os
+
+class TestBuildReport(unittest.TestCase):
+    """Tests for build_report: JSON summary keys and markdown content."""
+
+    def _make_estimates(self, s2=0.7, n2=15, amb2=0.0, s3=0.50, n3=12, amb3=0.0):
+        return (
+            sn_gate.EstimateResult(n=2, s_point=s2, sample_size=n2, ambiguous_frac=amb2),
+            sn_gate.EstimateResult(n=3, s_point=s3, sample_size=n3, ambiguous_frac=amb3),
+        )
+
+    # ── GO case ──────────────────────────────────────────────────────────────
+
+    def test_go_summary_keys(self):
+        """JSON summary must contain all required keys for GO (per plan step-9 spec)."""
+        r2, r3 = self._make_estimates()
+        decision = sn_gate.decide(s2=0.7, n2=15, s3=0.50, n3=12, amb2=0.0, amb3=0.0)
+        summary, _ = sn_gate.build_report(r2, r3, decision, window=300, lookahead=86400)
+        for key in ["s2", "n2", "s3", "n3", "ambiguous", "classification", "chosen_N", "recommended_action"]:
+            self.assertIn(key, summary, f"summary missing key: {key!r}")
+
+    def test_go_recommended_action(self):
+        """GO classification → recommended_action = 'flip 1705-1708 pending'."""
+        r2, r3 = self._make_estimates()
+        decision = sn_gate.decide(s2=0.7, n2=15, s3=0.50, n3=12, amb2=0.0, amb3=0.0)
+        summary, _ = sn_gate.build_report(r2, r3, decision, window=300, lookahead=86400)
+        self.assertEqual(summary["recommended_action"], "flip 1705-1708 pending")
+
+    def test_no_go_recommended_action(self):
+        """NO-GO classification → recommended_action = 'cancel 1705-1708 + info-escalate'."""
+        r2 = sn_gate.EstimateResult(n=2, s_point=0.30, sample_size=20, ambiguous_frac=0.0)
+        r3 = sn_gate.EstimateResult(n=3, s_point=0.20, sample_size=15, ambiguous_frac=0.0)
+        decision = sn_gate.decide(s2=0.30, n2=20, s3=0.20, n3=15, amb2=0.0, amb3=0.0)
+        summary, _ = sn_gate.build_report(r2, r3, decision, window=300, lookahead=86400)
+        self.assertEqual(decision.classification, "NO-GO")
+        self.assertEqual(summary["recommended_action"], "cancel 1705-1708 + info-escalate")
+
+    def test_marginal_recommended_action(self):
+        """MARGINAL classification → recommended_action = 'leave deferred + escalate'."""
+        r2 = sn_gate.EstimateResult(n=2, s_point=0.55, sample_size=20, ambiguous_frac=0.0)
+        r3 = sn_gate.EstimateResult(n=3, s_point=0.20, sample_size=15, ambiguous_frac=0.0)
+        decision = sn_gate.decide(s2=0.55, n2=20, s3=0.20, n3=15, amb2=0.0, amb3=0.0)
+        summary, _ = sn_gate.build_report(r2, r3, decision, window=300, lookahead=86400)
+        self.assertEqual(decision.classification, "MARGINAL")
+        self.assertEqual(summary["recommended_action"], "leave deferred + escalate")
+
+    def test_summary_s2_n2_values_match_estimates(self):
+        """summary s2/n2/s3/n3 must match the provided estimate objects."""
+        r2, r3 = self._make_estimates(s2=0.65, n2=18, s3=0.42, n3=11)
+        decision = sn_gate.decide(s2=0.65, n2=18, s3=0.42, n3=11, amb2=0.0, amb3=0.0)
+        summary, _ = sn_gate.build_report(r2, r3, decision, window=300, lookahead=86400)
+        self.assertAlmostEqual(summary["s2"], 0.65, places=5)
+        self.assertEqual(summary["n2"], 18)
+        self.assertAlmostEqual(summary["s3"], 0.42, places=5)
+        self.assertEqual(summary["n3"], 11)
+
+    # ── Markdown content ──────────────────────────────────────────────────────
+
+    def test_markdown_contains_s2_value(self):
+        """Markdown must contain the s(2) point estimate as a number."""
+        r2, r3 = self._make_estimates(s2=0.700, n2=15)
+        decision = sn_gate.decide(s2=0.700, n2=15, s3=0.50, n3=12, amb2=0.0, amb3=0.0)
+        _, md = sn_gate.build_report(r2, r3, decision, window=300, lookahead=86400)
+        self.assertIn("0.700", md, "Markdown must contain s(2)=0.700")
+
+    def test_markdown_contains_n2_value(self):
+        """Markdown must contain the N=2 sample size."""
+        r2, r3 = self._make_estimates(n2=15)
+        decision = sn_gate.decide(s2=0.7, n2=15, s3=0.50, n3=12, amb2=0.0, amb3=0.0)
+        _, md = sn_gate.build_report(r2, r3, decision, window=300, lookahead=86400)
+        self.assertIn("15", md, "Markdown must contain n(2)=15")
+
+    def test_markdown_contains_s3_value(self):
+        """Markdown must contain the s(3) point estimate as a number."""
+        r2, r3 = self._make_estimates(s3=0.500, n3=12)
+        decision = sn_gate.decide(s2=0.7, n2=15, s3=0.500, n3=12, amb2=0.0, amb3=0.0)
+        _, md = sn_gate.build_report(r2, r3, decision, window=300, lookahead=86400)
+        self.assertIn("0.500", md, "Markdown must contain s(3)=0.500")
+
+    def test_markdown_contains_classification(self):
+        """Markdown must contain the classification string."""
+        r2, r3 = self._make_estimates()
+        decision = sn_gate.decide(s2=0.7, n2=15, s3=0.50, n3=12, amb2=0.0, amb3=0.0)
+        _, md = sn_gate.build_report(r2, r3, decision, window=300, lookahead=86400)
+        self.assertIn(decision.classification, md)
+
+    def test_markdown_contains_window_and_lookahead(self):
+        """Markdown must reference the window and lookahead parameters (methodology)."""
+        r2, r3 = self._make_estimates()
+        decision = sn_gate.decide(s2=0.7, n2=15, s3=0.50, n3=12, amb2=0.0, amb3=0.0)
+        _, md = sn_gate.build_report(r2, r3, decision, window=300, lookahead=86400)
+        self.assertIn("300", md, "Markdown must contain window=300")
+        self.assertIn("86400", md, "Markdown must contain lookahead=86400")
+
+
+class TestCLIJsonOutput(unittest.TestCase):
+    """Black-box CLI smoke tests for --json output contract."""
+
+    def _make_git_log_fixture(self) -> str:
+        """Return a minimal git-log-style fixture with a 3-merge cluster."""
+        return "\n".join([
+            "abc0001|2026-06-01T12:00:00+00:00|Merge task/100 into main",
+            "abc0002|2026-06-01T12:00:10+00:00|Merge task/101 into main",
+            "abc0003|2026-06-01T12:00:20+00:00|Merge task/102 into main",
+            "abc0004|2026-06-01T13:00:00+00:00|feat(x): some feature",
+        ])
+
+    def test_json_output_has_required_keys(self):
+        """--json output must contain all required top-level keys."""
+        fixture = self._make_git_log_fixture()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write(fixture)
+            tmppath = f.name
+        try:
+            result = subprocess.run(
+                ["python3", "scripts/sn_gate.py",
+                 "--git-log-file", tmppath,
+                 "--window", "300",
+                 "--lookahead", "86400",
+                 "--json"],
+                capture_output=True, text=True, check=True,
+            )
+            data = json_mod.loads(result.stdout)
+            for key in ["s2", "n2", "s3", "n3", "classification", "chosen_N", "recommended_action"]:
+                self.assertIn(key, data, f"JSON output missing key: {key!r}")
+        finally:
+            os.unlink(tmppath)
+
+    def test_json_recommended_action_is_valid_string(self):
+        """--json recommended_action must be one of the three known values."""
+        valid = {"flip 1705-1708 pending", "cancel 1705-1708 + info-escalate", "leave deferred + escalate"}
+        fixture = self._make_git_log_fixture()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write(fixture)
+            tmppath = f.name
+        try:
+            result = subprocess.run(
+                ["python3", "scripts/sn_gate.py",
+                 "--git-log-file", tmppath,
+                 "--json"],
+                capture_output=True, text=True, check=True,
+            )
+            data = json_mod.loads(result.stdout)
+            self.assertIn(data["recommended_action"], valid)
+        finally:
+            os.unlink(tmppath)
+
+
 if __name__ == "__main__":
     unittest.main()
