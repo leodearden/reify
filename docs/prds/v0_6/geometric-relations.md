@@ -4,7 +4,7 @@
 
 **Design of record:** `docs/design/geometric-relations.md` (decisions A–O locked, §14, interactive 2026-06-08). This PRD is the **decomposition contract** for that design's *core* — the static assembly-mate system (design §11 steps 1–8). It does **not** re-open the locked decisions; read the design doc for the full ontology (§2 datum lattice), vocabulary (§3), and rationale. Durable record: `~/.claude/projects/-home-leo-src-reify/memory/project_geometric_constraint_relations_design.md`.
 
-**Scope boundary (why "core"):** the **joint half** (design §8 / §11 step 9 — `joint…with`, the self-checking law, mount→FK offset, couplings-on-the-scalar-side) is **out of scope here** and ships as a companion PRD `geometric-joints.md`, hard-gated on **KIN-OFFSET-1** (`docs/prds/v0_6/kinematic-inter-joint-offsets.md`, task 4331, *deferred*) and co-designed with it per design §8.2. Geometry-in-the-loop solving is a separate future PRD (design §12). See **Out of scope**.
+**Scope boundary (why "core"):** the **joint half** (design §8 / §11 step 9 — `joint…with`, the self-checking law, mount→FK offset, couplings-on-the-scalar-side) is **out of scope here** and ships as the now-authored companion PRD `geometric-joints.md`, hard-gated on **KIN-OFFSET-1** (`docs/prds/v0_6/kinematic-inter-joint-offsets.md`, task 4331, *promoted — active (B+H)*) and co-designed with it per design §8.2. Geometry-in-the-loop solving is a separate future PRD (design §12). See **Out of scope**.
 
 ---
 
@@ -100,7 +100,7 @@ These are **locked** (design §14) — listed so the decomposition isn't re-liti
 | `generic-user-functions.md` (4232 done / 4235 pending) | consumes | kind-generic `coincident<D: Datum>`; `codim(D)` at monomorphization | generics PRD owns generics; this PRD consumes | 4232 done; kind-generic gated on 4235 |
 | mechanism-completion / mechanism subsystem | produces (joint half) | joint = relate-defined mount + mechanism-owned motion variable | `geometric-joints.md` | **out of scope here** |
 
-No new contested-ownership seam introduced (checked against the overlay's known trio). The one reciprocal-risk seam — relate↔KIN-OFFSET-1 (each could claim "the other threads the offset") — is resolved by **co-design under the joint-half PRD**, which is why 4331 should be promoted first.
+No new contested-ownership seam introduced (checked against the overlay's known trio). The one reciprocal-risk seam — relate↔KIN-OFFSET-1 (each could claim "the other threads the offset") — is resolved by **co-design under the joint-half PRD**: KIN-OFFSET-1 (promoted — active (B+H)) owns the `origin` field + its threading (§7); `geometric-joints.md` (now authored) owns producing the mount frame via `relate` and writing it to that field.
 
 ---
 
@@ -180,7 +180,7 @@ Greek labels here; task IDs assigned at decompose time. **Phase 1 = foundation**
 
 ## 10. Out of scope for this PRD
 
-- **The joint half** (design §8 / §11 step 9): `joint…with`, the self-checking law, mount→FK offset threading, couplings-on-the-scalar-side → companion **`geometric-joints.md`**, hard-gated on **KIN-OFFSET-1** (task 4331, deferred; see KIN-OFFSET-1 §6) and **co-designed with it** (design §8.2). Promote 4331 (stub → full B+H PRD) before authoring the joint half. The `joint … with` grammar (fixtures `gr-05a/05b` FAIL today) is that PRD's grammar producer, not δ.
+- **The joint half** (design §8 / §11 step 9): `joint…with`, the self-checking law, mount→FK offset threading, couplings-on-the-scalar-side → the now-authored companion **`geometric-joints.md`**, which **depends on KIN-OFFSET-1** (task 4331, promoted — active (B+H); see KIN-OFFSET-1 §7) per design §8.2 (`geometric-joints.md` owns producing the mount frame; KIN-OFFSET-1 owns the `origin` field + threading). The `joint … with` grammar (fixtures `gr-05a/05b` FAIL today) is that PRD's grammar producer, not δ.
 - **Geometry-in-the-loop solving** (a relation whose datum depends on the very pose it constrains) — `E_EVAL_UNRESOLVED`; a future PRD reintroducing a bounded fixpoint scoped to the `Resolution` node (design §12).
 - **Closed kinematic loops with mobility** via the geometric solver — owned by the existing loop-closure Newton solver (design §8.3).
 - **First-class partial application** of relations (depends on closure/function-value support; relations are still first-class bindable/passable/conjoinable values).
