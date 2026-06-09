@@ -799,6 +799,21 @@ export async function onModeShapeFrame(
 }
 
 /**
+ * Invoke the `set_active_fea_case` Tauri command (task 3026 step-14).
+ *
+ * Tells the engine to switch the active FEA load case and rebuild the
+ * per-case scalar channels (von-Mises / displaced_positions) from the
+ * named case's ElasticResult.  The returned GuiState is applied by the
+ * existing state-apply path in the caller.
+ *
+ * The `case` parameter name matches the Rust handler's `#[tauri::command]`
+ * parameter: `set_active_fea_case(case: String)`.
+ */
+export async function setActiveFeaCase(caseName: string): Promise<void> {
+  return invoke('set_active_fea_case', { case: caseName });
+}
+
+/**
  * Cancel an in-flight FEA solve (GR-016 ζ).
  *
  * Invokes the `cancel_solve` Tauri command which calls `.cancel()` on the

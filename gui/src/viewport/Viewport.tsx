@@ -11,7 +11,7 @@ import { bakeColours } from './colormap';
 import { computeScalarRange } from './scalarRange';
 import { pickDefaultScalarChannel } from './defaultScalarChannel';
 import type { ViewportStore, CameraState, FeaModeStore } from '../stores';
-import { subscribeFeaCaseToStore } from '../bridge';
+import { subscribeFeaCaseToStore, setActiveFeaCase } from '../bridge';
 
 export interface ViewportProps {
   /**
@@ -253,6 +253,18 @@ export function Viewport(props: ViewportProps) {
         const cur = untrack(() => feaStore.state.range);
         if (cur.min === r.min && cur.max === r.max) return;
         feaStore.setRange({ mode: 'auto', min: r.min, max: r.max });
+      });
+
+      // Outbound case-selection effect (task 3026 step-14): watches activeCaseId
+      // and calls setActiveFeaCase when it transitions to a non-null value.
+      // Mirrors the showDeformed/warpFactor pattern — null means "no multi-case
+      // result observed yet" so we guard on null to avoid a spurious command on
+      // initial mount.
+      createEffect(() => {
+        const activeCaseId = feaStore.state.activeCaseId;
+        if (activeCaseId !== null) {
+          setActiveFeaCase(activeCaseId);
+        }
       });
     }
 
