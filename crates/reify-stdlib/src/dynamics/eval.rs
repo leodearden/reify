@@ -3073,4 +3073,91 @@ mod tests {
             .expect("point_mass recognised");
         assert!(matches!(r, Value::Undef), "non-numeric arg must return Undef, got {r:?}");
     }
+
+    // ── task-4278 step-3 RED: mass_properties(mass, com, inertia) constructor ───
+    //
+    // eval_dynamics("mass_properties", &[mass, com, inertia]) must round-trip via
+    // mass_properties_from_value. RED until step-4 adds the dispatch arm.
+
+    #[test]
+    fn eval_dynamics_mass_properties_roundtrip() {
+        let mass_val = Value::Scalar { si_value: 3.0, dimension: DimensionVector::MASS };
+        let com_val = Value::Point(vec![Value::length(0.1), Value::length(0.2), Value::length(0.3)]);
+        let inertia = [[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]];
+        let inertia_val = Value::Matrix(
+            inertia.iter().map(|row| row.iter().map(|&x| Value::Real(x)).collect()).collect(),
+        );
+
+        let result = eval_dynamics("mass_properties", &[mass_val, com_val, inertia_val])
+            .expect("mass_properties is a recognised dynamics constructor");
+        assert!(!matches!(result, Value::Undef), "valid args must not return Undef");
+
+        let (m, com, got_inertia) = mass_properties_from_value(&result)
+            .expect("result must be a MassProperties");
+        assert!((m - 3.0).abs() < 1e-12, "mass mismatch: {m}");
+        assert!((com[0] - 0.1).abs() < 1e-12, "com[0] mismatch: {}", com[0]);
+        assert!((com[1] - 0.2).abs() < 1e-12, "com[1] mismatch: {}", com[1]);
+        assert!((com[2] - 0.3).abs() < 1e-12, "com[2] mismatch: {}", com[2]);
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (got_inertia[r][c] - inertia[r][c]).abs() < 1e-12,
+                    "inertia[{r}][{c}] mismatch"
+                );
+            }
+        }
+        match &result {
+            Value::StructureInstance(d) => assert_eq!(d.type_name, "MassProperties"),
+            other => panic!("expected StructureInstance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_dynamics_mass_properties_list_com_accepted() {
+        // com supplied as a Value::List of numeric scalars (not Point) — must also work
+        let mass_val = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        let com_val = Value::List(vec![Value::length(0.0), Value::length(0.0), Value::length(0.5)]);
+        let inertia_val = Value::Matrix(
+            [[0.0f64; 3]; 3].iter().map(|row| row.iter().map(|&x| Value::Real(x)).collect()).collect(),
+        );
+        let result = eval_dynamics("mass_properties", &[mass_val, com_val, inertia_val])
+            .expect("mass_properties recognised");
+        assert!(!matches!(result, Value::Undef), "List com must be accepted");
+        let (_, com, _) = mass_properties_from_value(&result).expect("must be MassProperties");
+        assert!((com[2] - 0.5).abs() < 1e-12, "com[2] via List: {}", com[2]);
+    }
+
+    #[test]
+    fn eval_dynamics_mass_properties_wrong_arity_returns_undef() {
+        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        // 0 args
+        assert!(matches!(
+            eval_dynamics("mass_properties", &[]).expect("recognised"),
+            Value::Undef
+        ));
+        // 1 arg
+        assert!(matches!(
+            eval_dynamics("mass_properties", &[mass.clone()]).expect("recognised"),
+            Value::Undef
+        ));
+        // 2 args
+        let com = Value::Point(vec![Value::length(0.0); 3]);
+        assert!(matches!(
+            eval_dynamics("mass_properties", &[mass, com]).expect("recognised"),
+            Value::Undef
+        ));
+    }
+
+    #[test]
+    fn eval_dynamics_mass_properties_non_3x3_inertia_returns_undef() {
+        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        let com = Value::Point(vec![Value::length(0.0); 3]);
+        // 2×3 matrix (not 3×3)
+        let bad_inertia = Value::Matrix(vec![
+            vec![Value::Real(0.0); 3],
+            vec![Value::Real(0.0); 3],
+        ]);
+        let r = eval_dynamics("mass_properties", &[mass, com, bad_inertia]).expect("recognised");
+        assert!(matches!(r, Value::Undef), "non-3×3 inertia must return Undef");
+    }
 }
