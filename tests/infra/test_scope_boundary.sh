@@ -107,3 +107,35 @@ assert "B4P1: downstream dependent Y ($Y_CRATE) is in affected set (C3)" \
     bash -c 'grep -qx "$2" <<< "$1"' _ "$AFFECTED_SET" "$Y_CRATE"
 
 test_summary
+
+# ---------------------------------------------------------------------------
+# B4 Part 2: the affected set -> -p wiring across test+clippy+check passes
+# ---------------------------------------------------------------------------
+# Exercises the REIFY_AFFECTED_CRATES_OVERRIDE -> NARROW_ACTIVE=1 -> flag-
+# emission path hermetically.  The override replays the REAL Part-1 set into
+# a fixture that has no cargo workspace (where affected_crates() would return
+# ALL), keeping the proof grounded in the live graph.
+#
+# reify-eval is OCCT, so its -p lands in the gated pass (AFFECTED_OCCT_FLAGS);
+# non-OCCT dependents (reify-ir, reify-compiler, …) land in the ungated tail
+# (AFFECTED_UNGATED_FLAGS); clippy/cargo-check get the full set (AFFECTED_ALL).
+echo ""
+echo "--- B4 Part 2: narrowed per-task plan carries -p Y across test+clippy+check ---"
+
+PLAN_B4_ALL=""
+PLAN_B4_TC=""
+
+assert "B4P2: NARROW_ACTIVE=1 in narrowed plan header" \
+    plan_has "$PLAN_B4_ALL" 'NARROW_ACTIVE=1'
+assert "B4P2/all: clippy carries -p $Y_CRATE" \
+    plan_has "$PLAN_B4_ALL" "cargo clippy.*-p $Y_CRATE"
+assert "B4P2/all: clippy lacks --workspace (narrowed)" \
+    plan_lacks "$PLAN_B4_ALL" 'cargo clippy --workspace'
+assert "B4P2/all: gated OCCT test pass carries -p $Y_CRATE (reify-eval is OCCT)" \
+    plan_has "$PLAN_B4_ALL" "cargo-test-occt-gated\\.sh.*cargo test .*-p $Y_CRATE"
+assert "B4P2/all: ungated test tail lacks --workspace (narrowed to affected set)" \
+    plan_lacks "$PLAN_B4_ALL" 'cargo (test|nextest run) --workspace'
+assert "B4P2/typecheck: cargo check carries -p $Y_CRATE" \
+    plan_has "$PLAN_B4_TC" "cargo check .*-p $Y_CRATE"
+assert "B4P2/typecheck: cargo check lacks --workspace (narrowed)" \
+    plan_lacks "$PLAN_B4_TC" 'cargo check --workspace'
