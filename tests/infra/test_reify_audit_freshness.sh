@@ -166,7 +166,7 @@ EOF
 chmod +x "$FAKE_CARGO_TOUCH"
 
 assert "guard rebuild-mode: fake cargo that freshens bin → exit 0" \
-    bash -c "export PATH='$REBUILD_TMPDIR:\$PATH' && source '$FRESHNESS_LIB' && reify_audit_guard '$REBUILD_BIN' rebuild '$REPO_ROOT' 2>/dev/null"
+    env PATH="$REBUILD_TMPDIR:$PATH" bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$REBUILD_BIN' rebuild '$REPO_ROOT' 2>/dev/null"
 
 # ==============================================================================
 # Check 11: reify_audit_guard rebuild — fake cargo that does NOT freshen → non-zero
@@ -194,7 +194,7 @@ cp "$FAKE_CARGO_NOOP" "$REBUILD_TMPDIR/cargo"
 chmod +x "$REBUILD_TMPDIR/cargo"
 
 assert "guard rebuild-mode: fake cargo that does NOT freshen bin → exits non-zero" \
-    bash -c "export PATH='$REBUILD_TMPDIR:\$PATH' && source '$FRESHNESS_LIB' && ! reify_audit_guard '$STUBBORN_BIN' rebuild '$REPO_ROOT' 2>/dev/null"
+    env PATH="$REBUILD_TMPDIR:$PATH" bash -c "source '$FRESHNESS_LIB' && ! reify_audit_guard '$STUBBORN_BIN' rebuild '$REPO_ROOT' 2>/dev/null"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
