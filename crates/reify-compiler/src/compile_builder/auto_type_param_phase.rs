@@ -103,7 +103,7 @@ pub(crate) fn phase_auto_type_param_resolution(
     // resolve every arm's rewrite to arm[0], silently dropping the rest. The
     // index is captured at the request push site in `entity.rs` (where it
     // equals the about-to-be-pushed-position in the local `sub_components` vec).
-    let (rewrites, subst_pairs, monomorph_clones) = {
+    let (rewrites, subst_pairs, monomorph_clones, structure_name_rewrites) = {
         // Template registry: prelude `structure def`s first, then local
         // overrides — identical composition to `phase_pending_bound_checks`.
         let template_registry: HashMap<String, &TopologyTemplate> = prelude
@@ -120,8 +120,15 @@ pub(crate) fn phase_auto_type_param_resolution(
         // (owner_structure, sub_index, type_args_position, resolved_template_name)
         let mut rewrites: Vec<(String, usize, usize, String)> = Vec::new();
         let mut subst_pairs: Vec<(String, String)> = Vec::new();
-        // (clone, owner_structure, sub_index, mono_name)
-        let mut monomorph_clones: Vec<(TopologyTemplate, String, usize, String)> = Vec::new();
+        // New monomorph clones to push (deduplicated by mono_name).
+        let mut new_mono_templates: Vec<TopologyTemplate> = Vec::new();
+        // (owner_structure, sub_index, mono_name) for EVERY use-site, including
+        // deduped ones — every use-site must point at its shared monomorph.
+        let mut structure_name_rewrites: Vec<(String, usize, String)> = Vec::new();
+        // Phase-local dedup set keyed on the full monomorph name
+        // (= generic + "$" + ordered candidates).  Clone-once, share across
+        // all use-sites that map to the same name.
+        let mut created_monomorphs: HashSet<String> = HashSet::new();
 
         for req in &requests {
             // Look up the instantiated template; an unknown target is handled by
@@ -195,23 +202,30 @@ pub(crate) fn phase_auto_type_param_resolution(
                 let mono_name =
                     mangle_monomorph_name(&req.target_name, &ordered_candidates);
 
-                // Clone the target template and rewrite it as a monomorph.
-                let mut mono = target.clone();
-                mono.name = mono_name.clone();
-                // A monomorph has no free type parameters — it is concrete.
-                mono.type_params.clear();
-                // Substitute TypeParam→StructureRef in top-level value_cells.
-                for cell in &mut mono.value_cells {
-                    cell.cell_type = substitute_type_params(&cell.cell_type, &sigma);
+                // Dedup: clone the template only once per distinct mono_name.
+                // `HashSet::insert` returns true on first insertion.
+                if created_monomorphs.insert(mono_name.clone()) {
+                    // First use-site for this (generic, candidates) pair — build
+                    // the monomorph template.
+                    let mut mono = target.clone();
+                    mono.name = mono_name.clone();
+                    // A monomorph has no free type parameters — it is concrete.
+                    mono.type_params.clear();
+                    // Substitute TypeParam→StructureRef in top-level value_cells.
+                    for cell in &mut mono.value_cells {
+                        cell.cell_type = substitute_type_params(&cell.cell_type, &sigma);
+                    }
+                    // Mix the mono name into the content_hash so two distinct
+                    // monomorphs that clone the same source hash (e.g. Bearing$A
+                    // vs Bearing$B) produce different cache keys.
+                    mono.content_hash =
+                        mono.content_hash.combine(ContentHash::of_str(&mono_name));
+                    new_mono_templates.push(mono);
                 }
-                // Mix the mono name into the content_hash so two distinct
-                // monomorphs that clone the same source hash (e.g. Bearing$A
-                // vs Bearing$B) produce different cache keys.
-                mono.content_hash =
-                    mono.content_hash.combine(ContentHash::of_str(&mono_name));
-
-                monomorph_clones.push((
-                    mono,
+                // Record the structure_name rewrite for this use-site regardless
+                // of whether a new clone was created — every sub that resolved to
+                // this monomorph must point at the shared template.
+                structure_name_rewrites.push((
                     req.owner_structure.clone(),
                     req.sub_index,
                     mono_name,
@@ -219,25 +233,26 @@ pub(crate) fn phase_auto_type_param_resolution(
             }
         }
 
-        (rewrites, subst_pairs, monomorph_clones)
+        (rewrites, subst_pairs, new_mono_templates, structure_name_rewrites)
     };
 
     // Pass 2 — push monomorph clones, apply structure_name and type_args rewrites.
     //
     // Order:
-    //   1. Extend ctx.templates with the new monomorphs (moving them out of the
-    //      local Vec avoids an extra clone).
-    //   2. Rewrite each originating sub's `structure_name` to the mono name.
+    //   1. Extend ctx.templates with the new (deduplicated) monomorphs.
+    //   2. Rewrite each originating sub's `structure_name` to the mono name
+    //      (applies to ALL use-sites, including deduped ones).
     //   3. Apply the existing `type_args[pos]→StructureRef` slot rewrites.
     //
     // `sub_index` keys are unique per (owner, sub_index) so this safely targets
     // each `SubComponentDecl` even when match-arm clusters reuse `sub_name`
     // across multiple arms within the same template.
 
-    // 1. Push monomorph templates.
-    for (mono, owner, sub_index, mono_name) in monomorph_clones {
-        ctx.templates.push(mono);
-        // 2. Rewrite structure_name in the originating sub.
+    // 1. Push deduplicated monomorph templates.
+    ctx.templates.extend(monomorph_clones);
+
+    // 2. Rewrite structure_name for ALL use-sites (including deduped ones).
+    for (owner, sub_index, mono_name) in structure_name_rewrites {
         if let Some(template) = ctx.templates.iter_mut().find(|t| t.name == owner)
             && let Some(sub) = template.sub_components.get_mut(sub_index)
         {
