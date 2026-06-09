@@ -8,7 +8,7 @@
 //! `SubComponentDecl.structure_name` to the monomorph name.
 
 use reify_core::{Severity, Type};
-use reify_test_support::{compile_source_with_stdlib, parse_and_compile_with_stdlib};
+use reify_test_support::compile_source_with_stdlib;
 
 /// Keystone test: a single `auto:` use-site produces a monomorph template.
 ///
@@ -596,7 +596,7 @@ fn no_auto_module_produces_zero_monomorphs() {
         structure def Assembly { sub b = Bearing() }
     "#;
 
-    let compiled = parse_and_compile_with_stdlib(source);
+    let compiled = compile_source_with_stdlib(source);
 
     // No template name should contain '$' (the monomorph name separator).
     let monomorphs: Vec<&str> = compiled
