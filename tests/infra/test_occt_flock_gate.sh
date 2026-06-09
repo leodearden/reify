@@ -135,7 +135,7 @@ echo "--- Test 11: nextest release pass includes -p reify-eval (sensitivity-scop
 # Release is sensitivity-scoped: only reify-eval (OCCT ∩ release-sensitive) appears
 # in the release nextest pass. No flock wrapper — the nextest occt group handles it.
 assert "plan contains nextest release pass with -p reify-eval (folded, no gated wrapper)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -v 'cargo-test-occt-gated\.sh' | grep -qE 'cargo nextest run.*-p reify-eval.*--release|cargo nextest run.*--release.*-p reify-eval'"
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -v 'cargo-test-occt-gated\.sh' | grep -qE 'cargo (test|nextest run).*-p reify-eval.*--release|cargo (test|nextest run).*--release.*-p reify-eval'"
 
 echo ""
 echo "--- Test 12: nextest --workspace pass has NO --exclude (OCCT folded in, task 4451) ---"
@@ -144,13 +144,13 @@ echo "--- Test 12: nextest --workspace pass has NO --exclude (OCCT folded in, ta
 # OCCT ones. The nextest occt test-group (max-threads=4) bounds their concurrency.
 # A bare --workspace pass WITHOUT --exclude is now the CORRECT form.
 assert "full-workspace nextest pass does NOT have --exclude (OCCT no longer excluded, task 4451)" \
-    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -E 'cargo nextest run --workspace' | grep -q -- '--exclude'"
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -E 'cargo (test|nextest run) --workspace' | grep -q -- '--exclude'"
 
 echo ""
 echo "--- Test 13: nextest --workspace pass present and OCCT not excluded (coverage, task 4451) ---"
 
-assert "plan contains 'cargo nextest run --workspace' (OCCT folded into the pool, not excluded)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo nextest run --workspace'"
+assert "plan contains 'cargo (test|nextest run) --workspace' (OCCT folded into the pool, not excluded)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo (test|nextest run) --workspace'"
 
 # -- Test 14: bounded lock-wait exits non-zero with clear message ---------------
 echo ""

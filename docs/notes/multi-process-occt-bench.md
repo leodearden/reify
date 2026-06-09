@@ -52,8 +52,11 @@ process-init explosion dominated. With max-threads=N>1:
   process-init overhead.
 - Per-process address-space isolation keeps OCCT race-free (same insight as the semaphore;
   nextest's per-process model gives this automatically).
-- The nextest occt group bounds intra-run concurrency to N=4 for FD/memory headroom
-  (same safety invariant as the semaphore, now expressed in nextest config).
+- The nextest occt group bounds intra-run OCCT concurrency to N=4 for FD/memory
+  headroom (intra-run only; cross-worktree bounding from the semaphore is intentionally
+  dropped — the merge lane is serial so the gate itself never overlaps, and concurrent
+  task-verify runs are capped by orchestrator scheduling, which is the effective host
+  concurrency bound in practice).
 - Estimated throughput improvement on the serial merge lane (cost-centre C):
   reify-eval ≈ (106 s init + 98 s work) / 4 ≈ 51 s vs the serial cargo-test baseline
   ~111.5 s — a real ~2× speedup, validated empirically (see §(c) below).

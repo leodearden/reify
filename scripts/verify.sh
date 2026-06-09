@@ -429,6 +429,9 @@ apply_env
 # ---------------------------------------------------------------------------
 RUN_RUST=0
 RUN_GUI=0
+# RUN_OCCT_GATE: diagnostic-only after task 4451 folded OCCT into the nextest pool.
+# Still computed (gate=1 when OCCT-touching files change) and printed in the
+# --print-plan header for observability; it no longer gates any test emission.
 RUN_OCCT_GATE=0
 CHANGED_FILES_RAW=""   # post-.task/ filtered file list; set by decide_scope for branch/staged
 

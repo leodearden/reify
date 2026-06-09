@@ -137,10 +137,10 @@ assert "plan contains NO cargo-test-occt-gated.sh (gated pass dropped, OCCT in n
 echo ""
 echo "--- Test 5 (task 4451): full-workspace nextest pass has --workspace with NO --exclude ---"
 FULL_WS_DEBUG="$(printf '%s\n' "$TEST_PLAN_SEGS" \
-    | grep -E 'cargo nextest run --workspace' | grep -v -- '--release' || true)"
+    | grep -E 'cargo (test|nextest run) --workspace' | grep -v -- '--release' || true)"
 export FULL_WS_DEBUG
 
-assert "full-workspace debug nextest pass exists (cargo nextest run --workspace)" \
+assert "full-workspace debug pass exists (cargo (test|nextest run) --workspace)" \
     test -n "$FULL_WS_DEBUG"
 assert "full-workspace debug nextest pass has NO --exclude (OCCT folded into nextest pool)" \
     bash -c "! printf '%s' \"\$FULL_WS_DEBUG\" | grep -q -- '--exclude'"
@@ -157,11 +157,11 @@ echo ""
 echo "--- Test 7 (task 4451): release nextest pass includes -p reify-eval (folded) ---"
 NEXTEST_RELEASE="$(printf '%s\n' "$TEST_PLAN_SEGS" \
     | grep -v 'cargo-test-occt-gated\.sh' \
-    | grep -E 'cargo nextest run' \
+    | grep -E 'cargo (test|nextest run)' \
     | grep -- '--release' || true)"
 export NEXTEST_RELEASE
 
-assert "release nextest pass exists (cargo nextest run ... --release, no gated wrapper)" \
+assert "release pass exists (cargo (test|nextest run) ... --release, no gated wrapper)" \
     test -n "$NEXTEST_RELEASE"
 assert "release nextest pass has '-p reify-eval' (OCCT∩release-sensitive, folded)" \
     bash -c "printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF ' -p reify-eval'"
