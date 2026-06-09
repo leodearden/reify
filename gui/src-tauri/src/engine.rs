@@ -552,6 +552,28 @@ pub struct EngineSession {
     /// Surfaced via `is_stale()` / `reload_error()` for the debug API and
     /// via `build_gui_state`'s synthetic DiagnosticInfo for the GUI channel.
     last_reload_error: Option<String>,
+    /// Explicitly selected FEA case name for multi-case results.
+    ///
+    /// `None` (the initial value) means "use the lex-first case" — the same
+    /// default that `detect_multi_case_result` and `emit_fea_case_if_any`
+    /// use for `active_case_id`.  Set by `set_active_fea_case`; read by
+    /// `apply_fea_channels` and `build_gui_state` when assembling FEA channels.
+    active_fea_case: Option<String>,
+    /// Cache of bare tessellation mesh data (vertices/indices/normals, no FEA
+    /// or shell channels).
+    ///
+    /// Populated by `build_gui_state` immediately after `tessellate_snapshot`,
+    /// before `apply_fea_channels` and `apply_shell_channels`.  `None` until
+    /// the first successful tessellation.  Used by `set_active_fea_case` to
+    /// re-source per-case FEA channels without re-tessellating — critical for
+    /// keeping case-switch latency sub-frame even with large OCCT meshes.
+    tess_mesh_cache: Option<Vec<MeshData>>,
+    /// Cache of tessellation diagnostics from the last `tessellate_snapshot`.
+    ///
+    /// Populated alongside `tess_mesh_cache` in `build_gui_state`.  Used by
+    /// `set_active_fea_case` so the returned GuiState accurately reflects the
+    /// last tessellation result (no re-tessellation → same diagnostics).
+    tess_diag_cache: Vec<DiagnosticInfo>,
 }
 
 /// Trait for sinking auto-resolve loop events to the GUI transport layer.
@@ -1016,6 +1038,9 @@ impl EngineSession {
             solve_cancel_sink: None,
             solver_progress_sink: None,
             last_reload_error: None,
+            active_fea_case: None,
+            tess_mesh_cache: None,
+            tess_diag_cache: Vec::new(),
         }
     }
 
@@ -1055,6 +1080,137 @@ impl EngineSession {
     /// in `CheckResult.values`. Replaces any previously installed emitter.
     pub fn set_mode_shape_frame_emitter(&mut self, emitter: Arc<dyn ModeShapeFrameEmitter>) {
         self.mode_shape_frame_emitter = Some(emitter);
+    }
+
+    // ── Task 3026: active FEA case ────────────────────────────────────────────
+
+    /// Return the explicitly selected FEA case name, or `None` if none has been
+    /// set (the lex-first case is used implicitly by `apply_fea_channels`).
+    pub fn get_active_fea_case(&self) -> Option<String> {
+        self.active_fea_case.clone()
+    }
+
+    /// Switch the displayed FEA case and return a rebuilt `GuiState`.
+    ///
+    /// Stores `name` as the active case and rebuilds the GuiState mesh payload
+    /// by cloning the cached tessellation snapshot (`tess_mesh_cache`) and
+    /// re-applying `apply_fea_channels` with the new case — **no re-evaluation
+    /// and no re-tessellation** occur.  The rest of GuiState (values, constraints,
+    /// files, compile diagnostics, tensegrity wires, tessellation diagnostics) is
+    /// rebuilt from the already-committed `last_check` / `source_map`.
+    ///
+    /// Returns `Err` when no module has been loaded yet (no `compiled` or no
+    /// `last_check`).  An unknown case name falls back to the lex-first default
+    /// (same semantics as `apply_fea_channels`).
+    pub fn set_active_fea_case(&mut self, name: &str) -> Result<GuiState, String> {
+        self.active_fea_case = Some(name.to_string());
+
+        if self.core.compiled().is_none() || self.core.last_check().is_none() {
+            return Err("Cannot switch FEA case: no module loaded".to_string());
+        }
+
+        // Clone bare tessellation mesh geometry from cache (O(mesh bytes), no kernel call).
+        let mut meshes = self.tess_mesh_cache.clone().unwrap_or_default();
+
+        // Re-apply FEA channels for the new active case.
+        {
+            let check = self.core.last_check().unwrap();
+            apply_fea_channels(&mut meshes, &check.values, self.active_fea_case.as_deref());
+        }
+
+        // Re-apply shell channels (pure read from engine cache, no tessellation).
+        {
+            let shell_views = self.core.engine().shell_gui_mesh_data();
+            apply_shell_channels(&mut meshes, &shell_views);
+        }
+
+        // Build values, constraints, tensegrity wires from the cached check + compiled.
+        let (values, constraints, tensegrity_wires) = {
+            let compiled = self.core.compiled().unwrap();
+            let check = self.core.last_check().unwrap();
+            (
+                build_values(compiled, check, Some(self.core.engine())),
+                build_constraints(compiled, check),
+                build_tensegrity_wires(compiled, check),
+            )
+        };
+
+        // Build files from source_map (unchanged since last load).
+        let mut files: Vec<FileData> = self
+            .core
+            .source_map()
+            .iter()
+            .map(|(path, content)| FileData {
+                path: path.clone(),
+                content: content.clone(),
+            })
+            .collect();
+
+        // One-snapshot invariant: splice in any live-edit failing source, mirroring
+        // the same logic in build_gui_state so callers get a consistent GuiState.
+        if let Some(f) = &self.compile_failure
+            && f.kind == CompileFailureKind::LiveEdit
+        {
+            if let Some(entry) = files.iter_mut().find(|fd| fd.path == f.file_key) {
+                entry.content = f.source.clone();
+            } else {
+                files.push(FileData {
+                    path: f.file_key.clone(),
+                    content: f.source.clone(),
+                });
+            }
+        }
+
+        // Compile diagnostics (same as build_gui_state logic; no new compile happened).
+        let mut compile_diagnostics = self.get_diagnostics();
+        if let Some(f) = &self.compile_failure
+            && f.kind == CompileFailureKind::LiveEdit
+        {
+            compile_diagnostics.extend(f.diags.iter().cloned());
+        }
+        if self.compile_failure.is_none()
+            && let Some(msg) = &self.last_reload_error
+        {
+            let file_path = self
+                .resolve_source()
+                .map(|(k, _)| k)
+                .unwrap_or("<unknown>");
+            compile_diagnostics.push(DiagnosticInfo {
+                file_path: file_path.to_owned(),
+                line: 1,
+                column: 1,
+                end_line: 1,
+                end_column: 1,
+                severity: "Error".to_owned(),
+                message: msg.clone(),
+                code: Some("hot-reload-error".to_owned()),
+            });
+        }
+
+        // Tessellation diagnostics from the cache (no re-tessellation → same diags).
+        let tessellation_diagnostics = self.tess_diag_cache.clone();
+
+        Ok(GuiState {
+            meshes,
+            values,
+            constraints,
+            files,
+            tessellation_diagnostics,
+            compile_diagnostics,
+            tensegrity_wires,
+        })
+    }
+
+    /// Inject a `CheckResult` directly into `last_check` for testing.
+    ///
+    /// Bypasses the full parse/compile/eval cycle — useful for tests that need
+    /// to assert on FEA-channel or case-switch behavior with hand-crafted
+    /// `MultiCaseResult` values without performing a real FEA solve.
+    /// Does NOT clear `tess_mesh_cache` so tessellation geometry from a prior
+    /// `load_from_source` / `build_gui_state` call is reused.
+    #[cfg(test)]
+    pub(crate) fn inject_check_for_test(&mut self, check: reify_eval::CheckResult) {
+        self.core.commit_check(check);
     }
 
     /// Install a solve-cancellation sink on this session (task γ/4086).
@@ -2299,13 +2455,32 @@ impl EngineSession {
                         vector_channels: std::collections::HashMap::new(),
                     })
                     .collect();
+                // Cache bare tessellation data (geometry only, no FEA/shell
+                // channels) so set_active_fea_case can re-source FEA channels
+                // for a new case without re-running tessellate_snapshot.
+                // The clone here is O(mesh bytes) but paid only once per
+                // tessellation; set_active_fea_case reads the cache without
+                // touching the kernel at all.
+                self.tess_mesh_cache = Some(meshes.iter().map(|m| MeshData {
+                    entity_path: m.entity_path.clone(),
+                    vertices: m.vertices.clone(),
+                    indices: m.indices.clone(),
+                    normals: m.normals.clone(),
+                    scalar_channels: std::collections::HashMap::new(),
+                    displaced_positions: None,
+                    element_kind: None,
+                    region_tags: None,
+                    vector_channels: std::collections::HashMap::new(),
+                }).collect());
+                self.tess_diag_cache = tess_diags.clone();
                 // Populate per-vertex FEA scalar/displacement channels when an
                 // ElasticResult is present in the evaluated values.  The helper
                 // returns early when no ElasticResult is found (negligible
                 // overhead: one ValueMap scan), so non-FEA scenes pay no
-                // tessellation-path cost.
+                // tessellation-path cost.  Pass active_fea_case so multi-case
+                // results sample the correct case; None falls back to lex-first.
                 if let Some(check) = self.core.last_check() {
-                    apply_fea_channels(&mut meshes, &check.values, None);
+                    apply_fea_channels(&mut meshes, &check.values, self.active_fea_case.as_deref());
                 }
                 // Populate shell-extract channels (element_kind, region_tags,
                 // vonMises_top/mid/bottom, per-face normals) for shell-classified
@@ -2319,7 +2494,14 @@ impl EngineSession {
                 apply_shell_channels(&mut meshes, &shell_views);
                 (meshes, tess_diags)
             }
-            None => (Vec::new(), Vec::new()),
+            None => {
+                // No tessellation result (no compiled module or no realizations).
+                // Populate caches with empty data so set_active_fea_case can
+                // safely clone them without checking for None.
+                self.tess_mesh_cache = Some(Vec::new());
+                self.tess_diag_cache = Vec::new();
+                (Vec::new(), Vec::new())
+            },
         };
 
         // Build files from the last-good source_map.
