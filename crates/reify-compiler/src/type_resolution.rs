@@ -743,9 +743,17 @@ fn trait_declares_assoc_type(
 /// declarations (`trait_bounds` + `trait_registry`), not of the dedup-by-name
 /// table.
 ///
-/// Returns `None` when the access does not resolve; genuine-error cases push a
-/// diagnostic (added incrementally across this task's steps), and the caller
-/// poisons the param type to a placeholder.
+/// Return value:
+/// - `Some(ty)`: resolved to the bound associated type.
+/// - `Some(Type::Error)`: the member is declared by a conformed trait but the
+///   structure never bound it (declared-but-unbound). The root-cause
+///   `TraitAssocTypeNotBound` was already emitted at the producer, so this returns
+///   the `Type::Error` poison sentinel — exactly as [`resolve_assoc_type_name`]
+///   does for the bare-name case — WITHOUT a new diagnostic, so the caller
+///   suppresses a downstream type-mismatch cascade rather than mis-poisoning to a
+///   concrete `Type::Real`.
+/// - `None`: a genuine error (each path pushes its own diagnostic); the caller
+///   poisons the param to a concrete `Type::Real` placeholder.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_qualified_assoc_type(
     base: &reify_ast::TypeExpr,
@@ -827,15 +835,23 @@ pub(crate) fn resolve_qualified_assoc_type(
 
     // The single resolved `Type` bound to `member`. A structure binds each
     // associated-type name exactly once, so this is independent of the qualifier.
-    // `None` here means no binding exists — e.g. a declared-but-unbound required
-    // type already reported at the producer; we return `None` WITHOUT a new
-    // diagnostic (anti-cascade).
+    //
+    // Both call sites below invoke this ONLY after establishing that `member` IS
+    // declared by a conformed trait (bare path: exactly one declaring trait;
+    // disambiguated path: the named trait declares it). So a missing `assoc_types`
+    // entry is the declared-but-unbound case — already reported at the producer as
+    // `TraitAssocTypeNotBound`. Poison it to `Type::Error` (the same sentinel
+    // [`resolve_assoc_type_name`] returns for its bare-name equivalent) so the
+    // caller suppresses a downstream type-mismatch cascade: a structure-ref usage
+    // seeing the concrete `Type::Real` fallback would spuriously mismatch. No new
+    // diagnostic is emitted here (anti-cascade).
     let resolved_member = || {
         template
             .assoc_types
             .iter()
             .find(|a| a.type_name == member)
             .map(|a| a.resolved.clone())
+            .unwrap_or(Type::Error)
     };
 
     match trait_name {
@@ -843,7 +859,7 @@ pub(crate) fn resolve_qualified_assoc_type(
         // trait declares `member`. Two or more is genuinely ambiguous (the
         // qualifier is required); zero is handled by a later step.
         None => match declaring_traits.len() {
-            1 => resolved_member(),
+            1 => Some(resolved_member()),
             n if n >= 2 => {
                 // A structure binds each associated-type name once, so the
                 // qualifier is disambiguation-only — point the user at the FORK-G
@@ -865,8 +881,9 @@ pub(crate) fn resolve_qualified_assoc_type(
             }
             // Zero conformed traits declare `member`: the structure genuinely has
             // no such associated type. (The declared-but-unbound case has
-            // `len >= 1` and resolves to `None` via `resolved_member` above
-            // WITHOUT a new diagnostic — anti-cascade, reported at the producer.)
+            // `len >= 1` and resolves to `Some(Type::Error)` via `resolved_member`
+            // above WITHOUT a new diagnostic — anti-cascade, reported at the
+            // producer.)
             _ => {
                 diagnostics.push(
                     Diagnostic::error(format!(
@@ -914,7 +931,7 @@ pub(crate) fn resolve_qualified_assoc_type(
                 );
                 return None;
             }
-            resolved_member()
+            Some(resolved_member())
         }
     }
 }
