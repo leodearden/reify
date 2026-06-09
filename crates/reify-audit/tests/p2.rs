@@ -132,7 +132,22 @@ mod tests {
         );
         for f in &findings {
             assert_eq!(f.pattern, Pattern::P2ConsumerStub, "wrong pattern: {:?}", f);
-            assert_eq!(f.severity, Severity::Medium, "benign title should → Medium: {:?}", f);
+            // Family-i (crates/x/i.rs — `// fixme`) is Severity::Low after the
+            // step-10 FIXME-downgrade impl; all other families remain Medium.
+            let expected_severity = if f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path } => path == "crates/x/i.rs",
+                _ => false,
+            }) {
+                Severity::Low
+            } else {
+                Severity::Medium
+            };
+            assert_eq!(
+                f.severity,
+                expected_severity,
+                "family-i should be Low, others Medium: {:?}",
+                f
+            );
         }
         // Each finding's evidence must reference the correct file path.
         for path in &paths {
@@ -1592,6 +1607,113 @@ mod tests {
             f.summary.contains("line 2"),
             "summary must reference the pre-existing stub at line 2; got: {}",
             f.summary
+        );
+    }
+
+    /// Step-9 RED — P2 FIXME downgrade: a (task_id, path) group whose all
+    /// matches have the `// fixme` label must be emitted at Severity::Low
+    /// (maintenance marker, not a stub). Models reify-geometry:46.
+    ///
+    /// Three sub-cases:
+    ///   (a) only `// fixme` lines → Severity::Low
+    ///   (b) mixing `// fixme` + `unimplemented!()` code line → Severity::Medium
+    ///   (c) `// stub: wire later` → Severity::Medium (unchanged)
+    ///
+    /// Fails on current code (fixme → Medium).
+    #[test]
+    fn fixme_label_downgrades_to_low() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "FX1";
+        let task_branch = format!("task/{}", task_id);
+
+        // (a) Only fixme lines → Low
+        let path_a = "crates/x/fixme_only.rs";
+        // (b) fixme + unimplemented!() code line → Medium (mixed group stays Medium)
+        let path_b = "crates/x/fixme_mixed.rs";
+        // (c) // stub: wire later → Medium
+        let path_c = "crates/x/stub_label.rs";
+
+        let mut git = MockGitOps::new();
+        // (a) only `// fixme`
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_a,
+            vec![
+                (46, "    // FIXME: permanent maintenance trap".to_string()),
+            ],
+        );
+        // (b) fixme + unimplemented!() code line
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_b,
+            vec![
+                (10, "    // fixme".to_string()),
+                (11, "    unimplemented!()".to_string()),
+            ],
+        );
+        // (c) stub label
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_c,
+            vec![(5, "    // stub: wire later".to_string())],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            benign_meta(task_id, vec![
+                path_a.to_string(),
+                path_b.to_string(),
+                path_c.to_string(),
+            ]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        // Expect 3 findings — one per path.
+        assert_eq!(findings.len(), 3, "expected 3 findings; got {:?}", findings);
+
+        let find_for = |path: &str| -> Option<&reify_audit::Finding> {
+            findings.iter().find(|f| f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path: p } => p == path,
+                _ => false,
+            }))
+        };
+
+        // (a) fixme-only → Low
+        let fa = find_for(path_a).expect("finding for path_a must exist");
+        assert_eq!(
+            fa.severity, Severity::Low,
+            "fixme-only group must be Severity::Low; got {:?}", fa.severity
+        );
+
+        // (b) fixme + unimplemented!() → Medium
+        let fb = find_for(path_b).expect("finding for path_b must exist");
+        assert_eq!(
+            fb.severity, Severity::Medium,
+            "mixed fixme+unimplemented group must be Severity::Medium; got {:?}", fb.severity
+        );
+
+        // (c) stub label → Medium
+        let fc = find_for(path_c).expect("finding for path_c must exist");
+        assert_eq!(
+            fc.severity, Severity::Medium,
+            "// stub label must remain Severity::Medium; got {:?}", fc.severity
         );
     }
 
