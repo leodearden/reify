@@ -2992,24 +2992,12 @@ mod tests {
         use crate::eval_builtin;
         use std::f64::consts::PI;
 
-        // ── Offset revolute-Z joint, range [−π, π] (admits θ = π/6) ──────────
-        // Use the 3-arg constructor with a wider range than offset_revolute_z's
-        // default 0..π, so θ=π/6 is unambiguously in-range.
-        let axis_z = crate::test_fixtures::axis_z_unit();
-        let range = Value::Range {
-            lower: Some(Box::new(Value::angle(-PI))),
-            upper: Some(Box::new(Value::angle(PI))),
-            lower_inclusive: true,
-            upper_inclusive: true,
-        };
-        let pivot = eval_builtin(
-            "point3",
-            &[Value::length(0.1), Value::length(0.0), Value::length(0.0)],
-        );
-        let joint = eval_builtin("revolute", &[axis_z, range, pivot]);
+        // ── Shared offset_revolute_z(0.1) fixture ─────────────────────────────
+        // offset_revolute_z uses range 0..π; θ=π/6 ≈ 0.52 is well within it.
+        let joint = crate::test_fixtures::offset_revolute_z(0.1);
         assert!(
             matches!(joint, Value::Map(_)),
-            "offset revolute-Z with wide range must yield a Map, got {:?}",
+            "offset_revolute_z(0.1) must yield a Map, got {:?}",
             joint
         );
 
