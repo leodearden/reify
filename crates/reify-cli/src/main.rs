@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use reify_compiler::cfg::CfgSet;
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::TestStatus;
 
@@ -305,6 +306,35 @@ fn parse_cfg_flag(value: &str) -> Result<CfgArg, String> {
             })
         }
     }
+}
+
+/// Build the active [`CfgSet`] from the repeated `--cfg <value>` arguments.
+///
+/// Starts from [`CfgSet::host_default`] (target = the compiling host's platform)
+/// and folds each parsed [`CfgArg`] in order:
+/// - `target=<v>` overrides the target;
+/// - any other `key=value` is inserted into `kv`;
+/// - a bare flag is inserted into `flags`.
+///
+/// Per PRD §4 D-2, `target` is host-defaulted and overridable ONLY by an explicit
+/// `--cfg target=<v>`; bare flags and non-`target` key/values never clear it, so
+/// passing a feature flag cannot silently disable platform gating.
+fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
+    let mut cfg = CfgSet::host_default();
+    for value in values {
+        match parse_cfg_flag(value)? {
+            CfgArg::KeyValue { key, value } if key == "target" => {
+                cfg.target = Some(value);
+            }
+            CfgArg::KeyValue { key, value } => {
+                cfg.kv.insert(key, value);
+            }
+            CfgArg::Flag(flag) => {
+                cfg.flags.insert(flag);
+            }
+        }
+    }
+    Ok(cfg)
 }
 
 /// Usage line printed to stderr for any `reify check` usage error.
