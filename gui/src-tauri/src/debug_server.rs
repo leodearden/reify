@@ -374,6 +374,24 @@ fn tool_defs() -> Vec<ToolDef> {
                 }
             }),
         },
+        ToolDef {
+            name: "set_fea_case",
+            description: "Select the active FEA load case for multi-case results. \
+                          Updates the engine's active_fea_case field and rebuilds the \
+                          GuiState so the re-sourced contour is reflected immediately. \
+                          Used by the visual-regression harness to select a case before \
+                          taking a screenshot. Returns { ok: true, case: <selected_name> }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "case": {
+                        "type": "string",
+                        "description": "Name of the load case to activate (e.g. 'operating', 'overload', 'transport')."
+                    }
+                },
+                "required": ["case"]
+            }),
+        },
         // --- DOM/style/layout/window inspection tools (R1) ---
         ToolDef {
             name: "query_selector",
@@ -974,6 +992,7 @@ async fn dispatch_tool(
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
         "wait_for" => handle_wait_for(state, params).await,
         "wait_for_selector" => handle_wait_for_selector(state, params).await,
+        "set_fea_case" => handle_set_fea_case(&state.engine, params).await,
         _ => {
             // Frontend-mediated: delegate to DebugBridge.
             // list_console_errors falls through here — it returns instantly so
@@ -1239,6 +1258,31 @@ async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<
     let relpath = fixture_relpath(name)
         .ok_or_else(|| format!("unknown fixture: {name}"))?;
     open_path_into_engine(state, &relpath).await
+}
+
+/// Select the active FEA load case on the engine and return an echo response.
+///
+/// Extracts the `case` param from `params`, delegates to
+/// `EngineSession::set_active_fea_case`, and returns
+/// `{"ok": true, "case": <selected_name>}`.  Used by `dispatch_tool` for the
+/// `set_fea_case` MCP tool and by the visual-regression harness to select a case
+/// before taking a screenshot.
+async fn handle_set_fea_case(
+    engine: &Arc<Mutex<EngineSession>>,
+    params: Value,
+) -> Result<Value, String> {
+    let case = params["case"]
+        .as_str()
+        .ok_or_else(|| "`case` param is required".to_string())?
+        .to_owned();
+    let case_for_closure = case.clone();
+    run_on_engine(engine, move |session| {
+        session
+            .set_active_fea_case(&case_for_closure)
+            .map(|_| ())
+    })
+    .await?;
+    Ok(json!({"ok": true, "case": case}))
 }
 
 // --- MCP Streamable HTTP handler ---
