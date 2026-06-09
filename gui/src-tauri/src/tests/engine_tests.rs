@@ -12022,3 +12022,215 @@ fn build_gui_state_live_edit_same_file_content_is_failing_buffer_warning_positio
         bad_lines.len()
     );
 }
+
+// ── Task 3026 step-1: RED — apply_fea_channels multi-case sourcing ────────────
+//
+// Tests:
+//   (a) MultiCaseResult ValueMap + active_case=None  → uses lex-first case
+//       ("operating" < "overload") — von Mises from 100 MPa stress field.
+//   (b) MultiCaseResult ValueMap + active_case=Some("overload") → uses "overload"
+//       (200 MPa stress field — distinct, larger von Mises than "operating").
+//   (c) Single top-level ElasticResult (no multi-case wrapper) still works
+//       unchanged with active_case=None (regression guard for the 4087 path).
+//
+// All three tests call `apply_fea_channels(&mut meshes, &map, active_case)` with
+// a NEW third parameter that does not yet exist in the function signature.
+// This file fails to compile (RED) until step-2 adds `active_case: Option<&str>`
+// to `apply_fea_channels`.
+
+/// Build a synthetic `Value::StructureInstance("ElasticResult")` (not a ValueMap).
+///
+/// Used as the per-case payload in `multi_case_result_value` for multi-case tests.
+/// Mirrors `make_elastic_result_value_map` but returns the inner Value directly
+/// instead of wrapping it in a top-level ValueMap cell.
+fn make_elastic_result_value(
+    stress_sf: reify_ir::SampledField,
+    disp_sf: reify_ir::SampledField,
+) -> reify_ir::Value {
+    use reify_ir::{FieldSourceKind, Value};
+    use std::sync::Arc;
+
+    let stress_field = Value::Field {
+        domain_type: reify_core::Type::Real,
+        codomain_type: reify_core::Type::Real,
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(stress_sf)),
+    };
+    let disp_field = Value::Field {
+        domain_type: reify_core::Type::Real,
+        codomain_type: reify_core::Type::Real,
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(disp_sf)),
+    };
+
+    let mut fields = reify_ir::PersistentMap::new();
+    fields.insert("stress".to_string(), stress_field);
+    fields.insert("displacement".to_string(), disp_field);
+    fields.insert("max_von_mises".to_string(), Value::Real(100e6));
+
+    Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+        type_id: reify_ir::StructureTypeId(0),
+        type_name: "ElasticResult".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Build a stress SampledField with 200e6 uniaxial at node (0,0,0).
+///
+/// Distinct from `make_stress_field()` (100e6 at (0,0,0)), used as the
+/// "overload" case so the two cases produce distinguishable von Mises values.
+fn make_overload_stress_field() -> reify_ir::SampledField {
+    let mut data = Vec::with_capacity(8 * 9);
+    // (0,0,0): uniaxial 200 MPa — von Mises = 200e6 (2× the "operating" case)
+    data.extend_from_slice(&[200e6_f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    data.extend_from_slice(&[0.0_f64; 9]); // (0,0,1)
+    data.extend_from_slice(&[0.0_f64; 9]); // (0,1,0)
+    data.extend_from_slice(&[0.0_f64; 9]); // (0,1,1)
+    data.extend_from_slice(&[0.0_f64; 9]); // (1,0,0)
+    data.extend_from_slice(&[0.0_f64; 9]); // (1,0,1)
+    let nan9 = [f64::NAN; 9];
+    data.extend_from_slice(&nan9);          // (1,1,0): NaN out-of-solid
+    data.extend_from_slice(&[0.0_f64; 9]); // (1,1,1)
+
+    reify_ir::SampledField {
+        name: "stress".to_string(),
+        kind: reify_ir::SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![1.0, 1.0, 1.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+        interpolation: reify_ir::InterpolationKind::NearestNeighbor,
+        data,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// Build a ValueMap whose single cell is a MultiCaseResult with "operating" (100 MPa)
+/// and "overload" (200 MPa) ElasticResult cases.
+///
+/// Lex order: "operating" < "overload", so "operating" is the lex-first default.
+fn make_multi_case_value_map() -> reify_ir::ValueMap {
+    use reify_test_support::multi_case_result_value;
+
+    let er_op = make_elastic_result_value(make_stress_field(), make_disp_field());
+    let er_ov = make_elastic_result_value(make_overload_stress_field(), make_disp_field());
+    let mcr = multi_case_result_value(&[("operating", er_op), ("overload", er_ov)]);
+
+    let mut map = reify_ir::ValueMap::new();
+    let cell_id = reify_core::ValueCellId::new("FEABracket", "result");
+    map.insert(cell_id, mcr);
+    map
+}
+
+/// apply_fea_channels with MultiCaseResult + active_case=None uses lex-first ("operating").
+///
+/// "operating" < "overload" lexicographically, so the lex-first default picks "operating"
+/// (the 100 MPa stress case). von Mises must be positive at v0 and sentinel at v2 (OOB).
+#[test]
+fn apply_fea_channels_multi_case_no_active_uses_lex_first() {
+    let map = make_multi_case_value_map();
+    let mut meshes = vec![make_test_mesh_data()];
+    let vertex_count = meshes[0].vertices.len() / 3; // = 3
+
+    // active_case = None  →  lex-first case "operating" (100 MPa)
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    let mesh = &meshes[0];
+    let vm = mesh
+        .scalar_channels
+        .get("vonMises")
+        .expect("vonMises must be filled from lex-first MultiCaseResult case");
+    assert_eq!(vm.len(), vertex_count, "vonMises len must == vertex_count");
+
+    // v0 (0.05, 0.05, 0.05) is in-bounds near node (0,0,0); "operating" stress = 100 MPa
+    assert!(
+        vm[0] > 0.0 && vm[0] != crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "in-bounds vertex must have positive von Mises from 'operating' case, got {}",
+        vm[0]
+    );
+    // v2 is OOB → sentinel
+    assert_eq!(
+        vm[2],
+        crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "OOB vertex must equal SCALAR_CHANNEL_OOB_SENTINEL"
+    );
+
+    // displaced_positions must be Some with correct length
+    let dp = mesh
+        .displaced_positions
+        .as_ref()
+        .expect("displaced_positions must be Some after multi-case apply_fea_channels");
+    assert_eq!(dp.len(), mesh.vertices.len());
+}
+
+/// apply_fea_channels with MultiCaseResult + active_case=Some("overload") uses "overload".
+///
+/// "overload" has 200 MPa vs "operating" 100 MPa: the von Mises at v0 must be
+/// strictly larger for "overload" than for "operating".
+#[test]
+fn apply_fea_channels_multi_case_active_overload_uses_overload_case() {
+    let map = make_multi_case_value_map();
+    let mut meshes_op = vec![make_test_mesh_data()];
+    let mut meshes_ov = vec![make_test_mesh_data()];
+
+    crate::engine::apply_fea_channels(&mut meshes_op, &map, None);
+    crate::engine::apply_fea_channels(&mut meshes_ov, &map, Some("overload"));
+
+    let vm_op = meshes_op[0]
+        .scalar_channels
+        .get("vonMises")
+        .expect("'operating' case must fill vonMises");
+    let vm_ov = meshes_ov[0]
+        .scalar_channels
+        .get("vonMises")
+        .expect("'overload' case must fill vonMises");
+
+    // v0 in "operating" = 100 MPa von Mises; v0 in "overload" = 200 MPa von Mises.
+    assert!(
+        vm_ov[0] > vm_op[0],
+        "overload (200 MPa) von Mises ({}) must exceed operating (100 MPa) von Mises ({}) at v0",
+        vm_ov[0],
+        vm_op[0]
+    );
+    // Both in-bounds → neither should equal the OOB sentinel.
+    assert_ne!(
+        vm_op[0], crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "operating in-bounds v0 must not equal OOB sentinel"
+    );
+    assert_ne!(
+        vm_ov[0], crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "overload in-bounds v0 must not equal OOB sentinel"
+    );
+}
+
+/// Regression: top-level single ElasticResult (no multi-case wrapper) still works with
+/// active_case=None.
+///
+/// Guards the original 4087 `extract_elastic_result_fields` / single-case path;
+/// it must remain unaffected after the multi-case extension.
+#[test]
+fn apply_fea_channels_single_case_top_level_unchanged_regression() {
+    let stress_sf = make_stress_field();
+    let disp_sf = make_disp_field();
+    let map = make_elastic_result_value_map(stress_sf, disp_sf);
+    let mut meshes = vec![make_test_mesh_data()];
+    let vertex_count = meshes[0].vertices.len() / 3;
+
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    let mesh = &meshes[0];
+    let vm = mesh
+        .scalar_channels
+        .get("vonMises")
+        .expect("single-case top-level ElasticResult must fill vonMises");
+    assert_eq!(vm.len(), vertex_count);
+    assert!(vm[0] >= 0.0, "in-bounds vertex must have non-negative von Mises");
+    assert_eq!(vm[2], crate::types::SCALAR_CHANNEL_OOB_SENTINEL);
+
+    let dp = mesh
+        .displaced_positions
+        .as_ref()
+        .expect("displaced_positions must be Some for single-case regression");
+    assert_eq!(dp.len(), mesh.vertices.len());
+}
