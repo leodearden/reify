@@ -1724,6 +1724,64 @@ mod tests {
     }
 
     #[test]
+    fn parse_cfg_flag_parses_target_key_value() {
+        // `target=wasm` is the key=value form: an explicit platform override.
+        assert_eq!(
+            parse_cfg_flag("target=wasm"),
+            Ok(CfgArg::KeyValue {
+                key: "target".to_string(),
+                value: "wasm".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_parses_bare_flag() {
+        // A value with no `=` is a bare boolean flag.
+        assert_eq!(
+            parse_cfg_flag("linux"),
+            Ok(CfgArg::Flag("linux".to_string())),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_parses_non_target_key_value() {
+        // Any `key=value` (not just `target=`) is a key/value cfg entry.
+        assert_eq!(
+            parse_cfg_flag("feature=x"),
+            Ok(CfgArg::KeyValue {
+                key: "feature".to_string(),
+                value: "x".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_allows_empty_value() {
+        // `target=` is the explicit empty-value form: the key is present and the
+        // value is the empty string, matching cfg.rs's kv empty-string semantics.
+        assert_eq!(
+            parse_cfg_flag("target="),
+            Ok(CfgArg::KeyValue {
+                key: "target".to_string(),
+                value: String::new(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_rejects_empty_key() {
+        // `=v` has an empty key — there is no cfg name to set.
+        assert!(parse_cfg_flag("=v").is_err());
+    }
+
+    #[test]
+    fn parse_cfg_flag_rejects_empty_input() {
+        // An empty value is neither a flag nor a `key=value` — rejected.
+        assert!(parse_cfg_flag("").is_err());
+    }
+
+    #[test]
     fn report_eval_output_returns_correct_outcome_variants() {
         let no_diags: Vec<reify_core::Diagnostic> = vec![];
 
