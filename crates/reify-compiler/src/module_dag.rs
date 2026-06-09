@@ -767,3 +767,100 @@ pub fn compile_project_with_entry_source_cfg(
 
     Ok(modules)
 }
+
+/// `true` iff `path` addresses the standard library (`std` or `std.*`).
+///
+/// Such imports are skipped by [`compile_entry_with_stdlib_cfg`]: the full
+/// stdlib is already seeded into the prelude via `stdlib_loader::load_stdlib()`,
+/// so resolving `std.*` through the DAG would be redundant work.
+fn is_std_import_path(path: &str) -> bool {
+    path == "std" || path.starts_with("std.")
+}
+
+/// Compile an entry module for `reify check` with the full stdlib prelude seeded
+/// **and** a `#cfg(...)`-gated user-import DAG.
+///
+/// This is the bridge `reify check` needs that neither existing compiler entry
+/// point provides alone:
+/// - [`crate::compile_with_stdlib`] seeds the stdlib prelude but follows no
+///   user-import DAG (single module only).
+/// - [`compile_project_with_entry_source_cfg`] gates imports by `#cfg(...)` but
+///   does **not** seed the stdlib prelude.
+///
+/// Mirrors the GUI's `compile_entry_with_imports` bridge — `load_stdlib()`
+/// chained with user-import refs → [`crate::PreludeContext`] →
+/// [`crate::compile_with_prelude_context`] — and layers Task γ's cfg gating on
+/// top: imports whose `#cfg(...)` predicates are unsatisfied against `cfg` are
+/// skipped entirely (not compiled, not added to the prelude). `std.*` imports
+/// are also skipped because the full stdlib is already present via
+/// `load_stdlib()`.
+///
+/// **Diagnostics-embedded contract.** A *satisfied* import that points at a
+/// missing or broken module surfaces its failure as `Error`-severity
+/// diagnostics on the returned [`CompiledModule`] rather than as an `Err`,
+/// matching [`crate::compile_with_stdlib`]'s contract so the CLI's "any Error
+/// diagnostic → exit non-zero" logic handles gated-DAG import failures
+/// uniformly. A *gated-out* import is inert (its module is never resolved), so
+/// it can never produce such an error (mirrors γ's
+/// `cfg_gating_unsatisfied_import_never_resolved`).
+pub fn compile_entry_with_stdlib_cfg(
+    parsed: &reify_ast::ParsedModule,
+    resolver: &ModuleResolver,
+    cfg: &CfgSet,
+) -> CompiledModule {
+    let mut dag = ModuleDag::with_cfg(cfg.clone());
+
+    // Compile each cfg-satisfied non-std user import. Collect — do NOT
+    // early-return on — import-compile errors so a broken import still lets the
+    // entry compile (with the failure surfaced as a diagnostic below).
+    let mut import_error_diags: Vec<Diagnostic> = Vec::new();
+    for decl in &parsed.declarations {
+        if let reify_ast::Declaration::Import(import) = decl {
+            if is_std_import_path(&import.path) || !import_cfg_satisfied(import, cfg) {
+                continue;
+            }
+            if let Err(diags) = dag.compile_module(&import.path, resolver) {
+                import_error_diags.extend(diags);
+            }
+        }
+    }
+
+    // Build the prelude: the full stdlib (always seeded, target-independent)
+    // chained with the cfg-satisfied non-std user imports that actually
+    // compiled. A satisfied-but-failed import is absent from `dag.modules`, so
+    // `filter_map` over `.get()` skips it (its error is already collected); an
+    // `.expect()` would panic on that path, which is why this differs from
+    // `compile_project_with_entry_source_cfg` (which early-returns on import
+    // error and so can assume presence).
+    let stdlib_modules = crate::stdlib_loader::load_stdlib();
+    let mut compiled = {
+        let user_import_refs: Vec<&CompiledModule> = parsed
+            .declarations
+            .iter()
+            .filter_map(|d| match d {
+                reify_ast::Declaration::Import(import) => Some(import),
+                _ => None,
+            })
+            .filter(|import| {
+                !is_std_import_path(&import.path) && import_cfg_satisfied(import, cfg)
+            })
+            .filter_map(|import| dag.modules.get(&import.path))
+            .collect();
+
+        let prelude_refs: Vec<&CompiledModule> = stdlib_modules
+            .iter()
+            .chain(user_import_refs.iter().copied())
+            .collect();
+
+        crate::compile_with_prelude_context(parsed, &crate::PreludeContext::new(&prelude_refs))
+    };
+
+    // Enforce module-path declaration (spec §7.1/§7.2, task γ). The entry source
+    // is always a user module, so no stdlib exclusion is needed.
+    attach_module_path_diag(&mut compiled, parsed);
+
+    // Surface any import-compile failures as diagnostics on the entry module.
+    compiled.diagnostics.extend(import_error_diags);
+
+    compiled
+}
