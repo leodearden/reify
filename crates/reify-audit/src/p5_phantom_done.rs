@@ -670,6 +670,47 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
                 evidence,
             });
         }
+
+        // Pure-reachability fallback: coverage check failed (still_missing
+        // non-empty) but siblings are non-empty, which means a task-id-referencing
+        // commit IS reachable on main. The claimed commit may be unresolvable /
+        // the diff unreliable, but the work demonstrably landed. Downgrade to Low
+        // so the operator can inspect without it escalating as phantom-done.
+        // Cite the first contributing sibling (or all siblings if none contributed).
+        let cite_commits: Vec<EvidenceRef> = if !contributing.is_empty() {
+            contributing
+                .iter()
+                .map(|c| EvidenceRef::Commit {
+                    sha: c.sha.clone(),
+                    subject: c.subject.clone(),
+                })
+                .collect()
+        } else {
+            siblings
+                .iter()
+                .map(|c| EvidenceRef::Commit {
+                    sha: c.sha.clone(),
+                    subject: c.subject.clone(),
+                })
+                .collect()
+        };
+        let mut evidence = cite_commits;
+        evidence.push(EvidenceRef::MetadataFiles {
+            entries: still_missing.clone(),
+        });
+        return Some(Finding {
+            pattern: Pattern::P5PhantomDone,
+            severity: Severity::Low,
+            task_id: meta.task_id.clone(),
+            summary: format!(
+                "task-id-referencing commit reachable on main (not phantom-done); \
+                 claimed commit unresolvable / diff unreliable — {} metadata.files \
+                 entries not confirmed in sibling diffs (task {})",
+                still_missing.len(),
+                meta.task_id
+            ),
+            evidence,
+        });
     }
 
     // Deliverable-presence rescue. If every metadata.files entry resolves to a
