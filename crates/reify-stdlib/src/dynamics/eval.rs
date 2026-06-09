@@ -2963,4 +2963,66 @@ mod tests {
              (fail-honest one-per-body invariant)"
         );
     }
+
+    // ── task-4278 step-1 RED: point_mass constructor ───────────────────────────
+    //
+    // `eval_dynamics("point_mass", &[mass_scalar])` must return a MassProperties
+    // StructureInstance with mass==supplied value, com==[0,0,0], inertia==zeros.
+    // RED until step-2 adds the dispatch arm.
+
+    #[test]
+    fn eval_dynamics_point_mass_roundtrip() {
+        let result = eval_dynamics(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 2.5,
+                dimension: DimensionVector::MASS,
+            }],
+        )
+        .expect("point_mass is a recognised dynamics constructor");
+        assert!(
+            !matches!(result, Value::Undef),
+            "point_mass with valid arg must not return Undef"
+        );
+        let (mass, com, inertia) =
+            mass_properties_from_value(&result).expect("result must be a MassProperties");
+        assert!((mass - 2.5).abs() < 1e-12, "mass should be 2.5 kg, got {mass}");
+        for &c in &com {
+            assert!(c.abs() < 1e-12, "com should be origin, got {com:?}");
+        }
+        for row in &inertia {
+            for &v in row {
+                assert!(v.abs() < 1e-12, "inertia should be zero, got {inertia:?}");
+            }
+        }
+        // type_name must be "MassProperties"
+        match &result {
+            Value::StructureInstance(d) => {
+                assert_eq!(d.type_name, "MassProperties", "wrong type_name");
+            }
+            other => panic!("expected StructureInstance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_dynamics_point_mass_wrong_arity_returns_undef() {
+        // zero args → Undef
+        let r0 = eval_dynamics("point_mass", &[]).expect("point_mass recognised");
+        assert!(
+            matches!(r0, Value::Undef),
+            "zero args must return Undef, got {r0:?}"
+        );
+        // two args → Undef
+        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        let r2 = eval_dynamics("point_mass", &[mass.clone(), mass])
+            .expect("point_mass recognised");
+        assert!(matches!(r2, Value::Undef), "two args must return Undef, got {r2:?}");
+    }
+
+    #[test]
+    fn eval_dynamics_point_mass_non_numeric_arg_returns_undef() {
+        let r = eval_dynamics("point_mass", &[Value::String("bad".to_string())])
+            .expect("point_mass recognised");
+        assert!(matches!(r, Value::Undef), "non-numeric arg must return Undef, got {r:?}");
+    }
 }
