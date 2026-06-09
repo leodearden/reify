@@ -194,8 +194,10 @@ assert "reify-eval: branch plan non-empty (OCCT shape has work)" \
 assert "reify-eval: branch_count <= all_count (narrowed subset invariant)" \
     test "$COUNT_BR_C" -le "$COUNT_ALL_C"
 
-assert "reify-eval: branch plan HAS gated pass with -p reify-eval (narrowing mechanism)" \
-    plan_br_has 'cargo-test-occt-gated\.sh.*-p reify-eval'
+assert "reify-eval: branch plan HAS nextest pass with -p reify-eval (task 4451: OCCT folded into nextest pool)" \
+    plan_br_has 'cargo nextest run.*-p reify-eval'
+assert "reify-eval: branch plan has NO cargo-test-occt-gated.sh (gated pass dropped, task 4451)" \
+    plan_br_lacks 'cargo-test-occt-gated\.sh'
 
 assert "reify-eval: branch plan LACKS --workspace in narrowed commands" \
     plan_br_lacks 'cargo (clippy|test|nextest run) --workspace'
