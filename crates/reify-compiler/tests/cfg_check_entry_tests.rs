@@ -149,3 +149,40 @@ fn entry_target_wasm_gates_out_linux_import_but_keeps_stdlib() {
         dump_diags(&compiled)
     );
 }
+
+/// True iff `module.templates` contains a template named `name`.
+fn entry_has_template(module: &reify_compiler::CompiledModule, name: &str) -> bool {
+    module.templates.iter().any(|t| t.name == name)
+}
+
+/// Pub templates from a cfg-satisfied import are merged into the entry's
+/// `compiled.templates` so cross-module entities resolve for downstream eval.
+///
+/// `platform_linux` exports `pub structure def LinuxOnly`. Under `target="linux"`
+/// the import is followed and `LinuxOnly` is merged into the entry's templates;
+/// under `target="wasm"` the import is gated out and `LinuxOnly` is absent.
+#[test]
+fn entry_merges_pub_templates_from_cfg_satisfied_import() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    write_entry_fixtures(dir);
+
+    let parsed = parse_entry(dir);
+    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
+
+    let compiled_linux = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("linux"));
+    assert!(
+        entry_has_template(&compiled_linux, "LinuxOnly"),
+        "under target=linux the pub structure 'LinuxOnly' from the followed \
+         platform_linux import must be merged into entry.templates; templates: {:?}",
+        compiled_linux.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+
+    let compiled_wasm = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("wasm"));
+    assert!(
+        !entry_has_template(&compiled_wasm, "LinuxOnly"),
+        "under target=wasm the platform_linux import is gated out, so 'LinuxOnly' \
+         must NOT be in entry.templates; templates: {:?}",
+        compiled_wasm.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+}
