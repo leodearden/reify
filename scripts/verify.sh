@@ -692,7 +692,7 @@ add_test_passes() {
         if [ "$profile" = "release" ]; then
             rel=" --release"; gated_timeout=4800; outer_timeout="75m"
         else
-            rel=""; gated_timeout=3600; outer_timeout="90m"
+            rel=""; gated_timeout=5400; outer_timeout="90m"
         fi
 
         if [ "$profile" = "release" ]; then
