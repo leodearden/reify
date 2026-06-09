@@ -528,4 +528,113 @@ assert "B9-narrowed/typecheck: cargo check has -p reify-doc" \
 assert "B9-narrowed/typecheck: cargo check LACKS --workspace" \
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo check --workspace"' _ "$PLAN_OUT_NARROW_TC"
 
+# ===========================================================================
+# Merge-gate contract guard (T2 / PRD §4 B5+B6, contract C2)
+#
+# MG-* labels follow PRD §4 table labels; they are DISTINCT from the file's
+# pre-existing local B4/B5/B6 labels (which cover unrelated branch-scope
+# cases and already diverge from the PRD §4 table labels).
+# ===========================================================================
+echo ""
+echo "=== Merge-gate contract guard (T2 / contract C2) ==="
+
+# ---------------------------------------------------------------------------
+# Scenario MG-B6a: role=merge defeats active narrowing (RED until step-2 impl)
+# ---------------------------------------------------------------------------
+# Fixture: resolvable local main, no MERGE_HEAD — the ONLY path to scope=all
+# is the new role-guard. REIFY_AFFECTED_CRATES_OVERRIDE is set to prove the
+# guard defeats active branch-diff narrowing (the strongest form of the
+# invariant: would-be-narrowed plan is forced back to full --workspace).
+echo ""
+echo "--- Scenario MG-B6a: role=merge + --scope branch + override -> scope=all forced, narrowing defeated (RED until guard) ---"
+FIX_MG_B6A=""
+make_branch_fixture FIX_MG_B6A
+git -C "$FIX_MG_B6A" checkout -q -b task-branch
+mkdir -p "$FIX_MG_B6A/crates/reify-doc/src"
+printf 'x\n' > "$FIX_MG_B6A/crates/reify-doc/src/lib.rs"
+git -C "$FIX_MG_B6A" add crates
+git -C "$FIX_MG_B6A" commit -q -m "task changes"
+PLAN_MG_B6A="$(cd "$FIX_MG_B6A" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_MG_B6A" checkout -q main
+git -C "$FIX_MG_B6A" branch -q -D task-branch
+assert "MG-B6a: scope=all in plan header (role=merge forces full scope)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "scope=all"' _ "$PLAN_MG_B6A"
+assert "MG-B6a: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (forced scope=all -> full workspace)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_MG_B6A"
+assert "MG-B6a: clippy keeps --workspace (override narrowing defeated by role-guard)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_MG_B6A"
+assert "MG-B6a: ungated tail keeps --workspace (override narrowing defeated by role-guard)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace"' _ "$PLAN_MG_B6A"
+assert "MG-B6a: NO -p reify-doc anywhere (override narrowing defeated by role-guard)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B6A"
+
+# ---------------------------------------------------------------------------
+# Scenario MG-B6b: role=merge force is unconditional (RED until step-2 impl)
+# ---------------------------------------------------------------------------
+# Docs-only branch => scope=branch classifies RUN_RUST=0 RUN_GUI=0 -> empty
+# plan. With the role-guard, SCOPE is forced to all before decide_scope,
+# so the plan becomes the full workspace: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1.
+echo ""
+echo "--- Scenario MG-B6b: role=merge + --scope branch on docs-only branch -> unconditional scope=all (RED until guard) ---"
+FIX_MG_B6B=""
+make_branch_fixture FIX_MG_B6B
+git -C "$FIX_MG_B6B" checkout -q -b task-branch
+mkdir -p "$FIX_MG_B6B/docs"
+printf 'x\n' > "$FIX_MG_B6B/docs/note.md"
+git -C "$FIX_MG_B6B" add docs
+git -C "$FIX_MG_B6B" commit -q -m "task changes"
+PLAN_MG_B6B="$(cd "$FIX_MG_B6B" && DF_VERIFY_ROLE=merge bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_MG_B6B" checkout -q main
+git -C "$FIX_MG_B6B" branch -q -D task-branch
+assert "MG-B6b: scope=all in plan header (docs-only branch forced to full scope)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "scope=all"' _ "$PLAN_MG_B6B"
+assert "MG-B6b: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (forced full scope, not empty docs plan)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_MG_B6B"
+
+# ---------------------------------------------------------------------------
+# Scenario MG-B5: merge gate full; OCCT+release -p axes permitted (GREEN now)
+# ---------------------------------------------------------------------------
+# role=merge + --profile both + --scope all: scope=all ignores the override
+# (C1 contract: no branch-diff narrowing). But --profile both LEGITIMATELY
+# emits -p flags on the OCCT gated pass and the release-sensitivity pass.
+# Assert: reify-doc / reify-ir (override sentinels, neither OCCT nor
+# release-sensitive) never appear; POSITIVELY permit the OCCT gated -p and
+# the release-sensitivity -p axes.
+echo ""
+echo "--- Scenario MG-B5: merge gate full (both profiles); OCCT+release -p permitted, no branch-diff narrowing (GREEN, regression guard) ---"
+FIX_MG_B5=""
+make_branch_fixture FIX_MG_B5
+git -C "$FIX_MG_B5" checkout -q -b task-branch
+mkdir -p "$FIX_MG_B5/crates/reify-doc/src"
+printf 'x\n' > "$FIX_MG_B5/crates/reify-doc/src/lib.rs"
+git -C "$FIX_MG_B5" add crates
+git -C "$FIX_MG_B5" commit -q -m "task changes"
+PLAN_MG_B5="$(cd "$FIX_MG_B5" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_MG_B5" checkout -q main
+git -C "$FIX_MG_B5" branch -q -D task-branch
+assert "MG-B5: scope=all in plan header" \
+    bash -c 'printf "%s\n" "$1" | grep -q "scope=all"' _ "$PLAN_MG_B5"
+assert "MG-B5: clippy keeps --workspace (scope=all ignores override, C1 contract)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo clippy --workspace"' _ "$PLAN_MG_B5"
+assert "MG-B5: ungated debug tail keeps --workspace --exclude" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace --exclude"' _ "$PLAN_MG_B5"
+assert "MG-B5: NO -p reify-doc (no branch-diff narrowing in merge gate)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B5"
+assert "MG-B5: NO -p reify-ir (no branch-diff narrowing in merge gate)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-ir"' _ "$PLAN_MG_B5"
+assert "MG-B5: OCCT gated pass present with -p (permitted axis: OCCT gate)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh.*-p"' _ "$PLAN_MG_B5"
+assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: release scope)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-.*--release"' _ "$PLAN_MG_B5"
+
+# ---------------------------------------------------------------------------
+# Scenario MG-hook: pre-merge-commit hook drift guard (GREEN now)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario MG-hook: pre-merge-commit invokes verify.sh --scope all, not --scope branch/staged (GREEN, drift guard) ---"
+assert "MG-hook: pre-merge-commit calls verify.sh with --scope all" \
+    grep -qE 'verify\.sh.*--scope all' "$REPO_ROOT/hooks/pre-merge-commit"
+assert "MG-hook: pre-merge-commit does NOT pass --scope branch or --scope staged" \
+    bash -c '! grep -qE "verify\.sh.*--scope (branch|staged)" "$1"' _ "$REPO_ROOT/hooks/pre-merge-commit"
+
 test_summary
