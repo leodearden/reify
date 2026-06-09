@@ -762,6 +762,69 @@ build_plan() {
         fi
     fi
 
+    # GUI ecosystem (npm). Rust changes imply these too; they are fast. Only
+    # meaningful when there is a GUI check to run — the GUI has a test side
+    # (npm test) and a typecheck (npm run typecheck) but no `cargo check`
+    # analogue, so a pure typecheck action skips it entirely (verify.sh's own
+    # `typecheck` action is cargo-check-only; the GUI ecosystem has no equivalent).
+    #
+    # The GUI typecheck (tsc --noEmit) now runs whenever this block runs — on the
+    # TEST side as well as the lint side — not lint-only as before. Rationale: the
+    # orchestrator's inner TDD loop runs `verify.sh test --scope branch` (npm test
+    # = vitest), which never type-checks; a type-only break that renders fine at
+    # runtime (e.g. a solid-js <Show> function-child rejected by the non-keyed
+    # overload) therefore stayed invisible through development and only surfaced at
+    # lint/merge time — by which point, since any Rust change forces RUN_GUI=1, it
+    # blocks every task's branch verify on an inherited error. Putting tsc on the
+    # test side catches this class in the cheap inner loop. The block is built ONCE
+    # (not per-profile), so a single `&& npm run typecheck` means action=all runs it
+    # exactly once — no double-run.
+    #
+    # FAIL-FAST: emitted BEFORE add_test_passes (the expensive pole) so a broken
+    # gui tsc fails the plan in ~minutes, not after 85 min of Rust build+test.
+    # (task #4448 / incident fix for #4446)
+    #
+    # BOUNDED node||cargo OVERLAP (task #4448, Leo's directive): when a rust
+    # foreground cheap gate (clippy/gui-feature-check) is also emitted for this
+    # action (DO_LINT=1 && RUN_RUST=1), background the node lane so it runs
+    # concurrently with those gates. Node npm runs off the rustc jobserver →
+    # zero jobserver contention. bg PID variable persists across plan entries
+    # because the executor evals every entry in this shell (same-shell eval).
+    # For action=test there is no rust foreground gate; the node lane stays plain
+    # (pure fail-fast reorder, no overlap). For action=typecheck the node lane is
+    # empty (gui block gated on test||lint) → unchanged.
+    local _gui_cmd="" _sidecar_cmd="" _ts_cmd="" _node_lane=""
+    if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
+        # typecheck always (whenever the block runs, test OR lint); npm test only
+        # on the test side.
+        local gui_inner="npm ci && npm run typecheck"
+        [ "$DO_TEST" -eq 1 ] && gui_inner+=" && npm test"
+        _gui_cmd="if test -d gui; then $(wrap_subshell gui 15 "$gui_inner"); fi"
+
+        # sidecar has no vitest side; both typecheck passes run whenever the block does.
+        local sidecar_inner="npm ci && npm run typecheck && npm run typecheck:test"
+        _sidecar_cmd="if test -f gui/sidecar/package-lock.json; then $(wrap_subshell gui/sidecar 10 "$sidecar_inner"); fi"
+
+        _ts_cmd="if test -f tree-sitter-reify/package-lock.json; then $(wrap_subshell tree-sitter-reify 10 "npm ci"); fi"
+        _node_lane="${_gui_cmd} && ${_sidecar_cmd} && ${_ts_cmd}"
+    fi
+
+    # Overlap path: background the node lane BEFORE the foreground rust cheap
+    # gates (clippy + gui-feature-check) so they run concurrently. The bg PID
+    # variable persists into the join entry below (same executor shell).
+    #
+    # Cleanup trap: registered in the same eval so it fires on any EXIT (success
+    # or failure). If a foreground rust gate fails before the wait join, the
+    # executor calls exit and the trap kills the still-running npm job instead of
+    # orphaning it. "2>/dev/null; true" suppresses errors (no such process) on
+    # the happy path where wait has already reaped the job before EXIT fires.
+    # NOTE: "|| true" is intentionally avoided here — the npm ci hardening test
+    # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
+    # "npm ci.*|| true", and the trap is on the same line as the npm ci call.
+    if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
+        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; true' EXIT"
+    fi
+
     # lint: clippy over all targets, warnings-as-errors.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$NARROW_ACTIVE" -eq 1 ]; then
@@ -790,45 +853,25 @@ build_plan() {
         add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 45m ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"
     fi
 
-    # test: gated + ungated cargo passes, per profile.
-    if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add_test_passes
+    # Overlap join: wait for the background node lane before infra checks / pole.
+    # Maximises the concurrency window (join as late as possible while still
+    # preceding the expensive pole and infra checks).
+    if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
+        add 'wait "$_VERIFY_NODE_BG_PID"'
     fi
 
-    # GUI ecosystem (npm). Rust changes imply these too; they are fast. Only
-    # meaningful when there is a GUI check to run — the GUI has a test side
-    # (npm test) and a typecheck (npm run typecheck) but no `cargo check`
-    # analogue, so a pure typecheck action skips it entirely (verify.sh's own
-    # `typecheck` action is cargo-check-only; the GUI ecosystem has no equivalent).
-    #
-    # The GUI typecheck (tsc --noEmit) now runs whenever this block runs — on the
-    # TEST side as well as the lint side — not lint-only as before. Rationale: the
-    # orchestrator's inner TDD loop runs `verify.sh test --scope branch` (npm test
-    # = vitest), which never type-checks; a type-only break that renders fine at
-    # runtime (e.g. a solid-js <Show> function-child rejected by the non-keyed
-    # overload) therefore stayed invisible through development and only surfaced at
-    # lint/merge time — by which point, since any Rust change forces RUN_GUI=1, it
-    # blocks every task's branch verify on an inherited error. Putting tsc on the
-    # test side catches this class in the cheap inner loop. The block is built ONCE
-    # (not per-profile), so a single `&& npm run typecheck` means action=all runs it
-    # exactly once — no double-run.
-    if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
-        # typecheck always (whenever the block runs, test OR lint); npm test only
-        # on the test side.
-        local gui_inner="npm ci && npm run typecheck"
-        [ "$DO_TEST" -eq 1 ] && gui_inner+=" && npm test"
-        add "if test -d gui; then $(wrap_subshell gui 15 "$gui_inner"); fi"
-
-        # sidecar has no vitest side; both typecheck passes run whenever the block does.
-        local sidecar_inner="npm ci && npm run typecheck && npm run typecheck:test"
-        add "if test -f gui/sidecar/package-lock.json; then $(wrap_subshell gui/sidecar 10 "$sidecar_inner"); fi"
-
-        add "if test -f tree-sitter-reify/package-lock.json; then $(wrap_subshell tree-sitter-reify 10 "npm ci"); fi"
+    # Plain path: node lane as sequential lines (no foreground rust gate, e.g. action=test).
+    if [ -n "$_node_lane" ] && { [ "$DO_LINT" -eq 0 ] || [ "$RUN_RUST" -eq 0 ]; }; then
+        add "$_gui_cmd"
+        add "$_sidecar_cmd"
+        add "$_ts_cmd"
     fi
 
     # Cheap static infra checks (opt-in). Test-side and lint-side, mirroring the
     # historical orchestrator split. Tied to RUN_RUST (the heavy gate) so a
     # frontend-only or docs-only staged commit stays fast.
+    #
+    # FAIL-FAST: emitted BEFORE add_test_passes (task #4448).
     if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$DO_TEST" -eq 1 ]; then
             add "if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi"
@@ -838,6 +881,14 @@ build_plan() {
             add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
             add "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
         fi
+    fi
+
+    # test: gated + ungated cargo passes, per profile.
+    # Emitted LAST — this is the expensive long-pole (psi-gate + full cargo
+    # nextest run + OCCT-gated passes). All cheap gates run before this.
+    # (task #4448 fail-fast reorder)
+    if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+        add_test_passes
     fi
 }
 build_plan
