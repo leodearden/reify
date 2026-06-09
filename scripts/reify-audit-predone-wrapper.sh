@@ -41,6 +41,17 @@ set -euo pipefail
 # ── Self-locate so the wrapper works from any worktree ───────────────────────
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# ── Freshness guard ──────────────────────────────────────────────────────────
+# Source the shared freshness guard library. The guard is called in REFUSE mode
+# after flag validation: if REIFY_AUDIT_BIN predates the last crates/reify-audit
+# commit, the wrapper exits 125 with a reinstall hint rather than running a
+# stale detector. REFUSE mode is used here (not REBUILD) because auto-install
+# on the synchronous per-done-flip hot path would add minutes per flip and race
+# across concurrent flips. The operator reinstall command:
+#   cargo install --path crates/reify-audit --root ~/.cargo --force
+# shellcheck source=scripts/reify-audit-freshness.sh
+source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
+
 # ── Constants ────────────────────────────────────────────────────────────────
 MCP_URL="${FUSED_MEMORY_MCP_URL:-http://localhost:8002/mcp}"
 MCP_TIMEOUT="${FUSED_MEMORY_MCP_TIMEOUT:-10}"
@@ -124,6 +135,11 @@ case "$task_id" in
         exit 125
         ;;
 esac
+
+# ── Freshness check (fail-closed, before any MCP calls) ─────────────────────
+# Refuse if REIFY_AUDIT_BIN predates the last crates/reify-audit commit.
+# Exit code 125 carries the reinstall hint to stderr so the operator can fix it.
+reify_audit_guard "$REIFY_AUDIT_BIN" refuse "$REPO_ROOT"
 
 # ── Materialize snapshot from fused-memory MCP ───────────────────────────────
 SNAPSHOT=$(mktemp /tmp/reify-audit-snapshot-XXXXXX.json)
