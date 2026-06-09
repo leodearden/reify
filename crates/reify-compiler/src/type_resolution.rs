@@ -695,6 +695,104 @@ pub(crate) fn resolve_assoc_type_name(
     None
 }
 
+/// Does conformed trait `trait_name` declare an associated type named `member`?
+///
+/// Scans the trait's `required_members` for a `RequirementKind::AssocType` with
+/// the name, and its `defaults` for a `DefaultKind::AssocType` whose name
+/// matches. This is the basis for both ambiguity counting (how many of a
+/// structure's conformed traits declare `member`) and disambiguator validation
+/// (does the qualifier trait actually declare `member`). (task 3974 ιₑ)
+///
+/// A trait absent from `trait_registry` answers `false` — it cannot declare the
+/// member it does not define.
+fn trait_declares_assoc_type(
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    trait_name: &str,
+    member: &str,
+) -> bool {
+    let Some(compiled) = trait_registry.get(trait_name) else {
+        return false;
+    };
+    compiled
+        .required_members
+        .iter()
+        .any(|r| r.name == member && matches!(r.kind, RequirementKind::AssocType(_)))
+        || compiled
+            .defaults
+            .iter()
+            .any(|d| d.name.as_deref() == Some(member) && matches!(d.kind, DefaultKind::AssocType(_)))
+}
+
+/// Resolve a qualified associated-type type-expr (`Base::Member`, or the FORK-G
+/// paren-disambiguated `Base::(Trait::Member)`) to a concrete [`Type`], reading
+/// iota-β's resolved associated-type table off the base structure's compiled
+/// [`TopologyTemplate`]. (task 3974 ιₑ)
+///
+/// Caller-side fallback mirroring [`resolve_assoc_type_name`]: the generic
+/// [`resolve_type_expr_with_aliases`] lacks the cross-structure
+/// `template_registry` / `trait_registry`, so it keeps returning `None` for
+/// `QualifiedAssoc`, and the entity.rs param `None =>` arm — which HAS the
+/// registries in scope — calls this helper instead.
+///
+/// `base` must be a bare `Named` with no type args (the structure name). The
+/// resolved `Type` comes from the single `template.assoc_types` entry keyed by
+/// `member`: a structure binds each associated-type name exactly once, so every
+/// valid trait qualifier resolves to the same `Type` — the qualifier is
+/// disambiguation-only (matching the value-side `obj.(Trait::member)`
+/// convention, FORK-G). Ambiguity is therefore a property of the trait
+/// declarations (`trait_bounds` + `trait_registry`), not of the dedup-by-name
+/// table.
+///
+/// Returns `None` when the access does not resolve; genuine-error cases push a
+/// diagnostic (added incrementally across this task's steps), and the caller
+/// poisons the param type to a placeholder.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_qualified_assoc_type(
+    base: &reify_ast::TypeExpr,
+    trait_name: Option<&str>,
+    member: &str,
+    span: SourceSpan,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    type_param_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    // base must be a bare structure name (`Named` with no type args).
+    let reify_ast::TypeExprKind::Named {
+        name: base_name,
+        type_args,
+    } = &base.kind
+    else {
+        return None;
+    };
+    if !type_args.is_empty() {
+        return None;
+    }
+    let template = template_registry.get(base_name.as_str())?;
+
+    // The conformed traits of `base` that declare an assoc type named `member`.
+    let declaring_traits: Vec<&str> = template
+        .trait_bounds
+        .iter()
+        .filter(|t| trait_declares_assoc_type(trait_registry, t, member))
+        .map(String::as_str)
+        .collect();
+
+    // Bare access (`Base::Member`), exactly one declaring trait: resolve via the
+    // single `assoc_types` entry. Zero / multiple declaring traits and the
+    // `Base::(Trait::Member)` disambiguator are handled by later steps.
+    if trait_name.is_none() && declaring_traits.len() == 1 {
+        return template
+            .assoc_types
+            .iter()
+            .find(|a| a.type_name == member)
+            .map(|a| a.resolved.clone());
+    }
+
+    let _ = (span, type_param_names, diagnostics);
+    None
+}
+
 /// Resolve a simple name to a `Type::Enum` if it matches a declared enum; `None` otherwise.
 ///
 /// Does NOT perform builtin/alias/trait fallback — use `resolve_type_with_aliases` first

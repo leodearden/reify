@@ -793,6 +793,33 @@ pub(crate) fn compile_entity(
                                     )
                                 {
                                     ty
+                                } else if let reify_ast::TypeExprKind::QualifiedAssoc {
+                                    base,
+                                    trait_name,
+                                    member,
+                                } = &type_expr.kind
+                                {
+                                    // Qualified associated-type access (`Beam::Material` /
+                                    // `Beam::(Trait::Material)`), task 3974 ιₑ. The generic
+                                    // resolver lacks the cross-structure registries, so
+                                    // resolve here where `entity_template_registry` +
+                                    // `trait_registry` are in scope. The helper owns its own
+                                    // diagnostics (anti-cascade — no second UnresolvedType);
+                                    // an unresolved access poisons the param to `Type::Real`,
+                                    // matching the bare-name fallback below.
+                                    match resolve_qualified_assoc_type(
+                                        base,
+                                        trait_name.as_deref(),
+                                        member,
+                                        type_expr.span,
+                                        &entity_template_registry,
+                                        trait_registry,
+                                        &type_param_names,
+                                        diagnostics,
+                                    ) {
+                                        Some(t) => t,
+                                        None => Type::Real,
+                                    }
                                 } else {
                                     diagnostics.push(
                                         Diagnostic::error(format!(
