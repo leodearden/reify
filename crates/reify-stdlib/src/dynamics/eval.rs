@@ -110,6 +110,7 @@ pub(crate) fn eval_dynamics(name: &str, args: &[Value]) -> Option<Value> {
         }
         "inverse_dynamics_lower" => Some(eval_inverse_dynamics(args)),
         "point_mass" => Some(eval_point_mass(args)),
+        "mass_properties" => Some(eval_mass_properties(args)),
         _ => None,
     }
 }
@@ -333,6 +334,28 @@ fn make_mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Val
             ("origin".to_string(), Value::Real(0.0)),
         ],
     )
+}
+
+/// Evaluate `mass_properties(mass, com, inertia)` — a full `MassProperties`
+/// with caller-supplied centre-of-mass and inertia tensor. Validates arity and
+/// field shapes; returns `Value::Undef` on any malformed input.
+fn eval_mass_properties(args: &[Value]) -> Value {
+    if args.len() != 3 {
+        return Value::Undef;
+    }
+    let mass = match cell_f64(&args[0]) {
+        Some(m) => m,
+        None => return Value::Undef,
+    };
+    let com = match vec3_from_value(&args[1]) {
+        Some(c) => c,
+        None => return Value::Undef,
+    };
+    let inertia = match inertia_3x3_from_value(&args[2]) {
+        Some(i) => i,
+        None => return Value::Undef,
+    };
+    make_mass_properties(mass, com, inertia)
 }
 
 /// Evaluate `point_mass(mass)` — a degenerate `MassProperties` with com at the
