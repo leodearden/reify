@@ -778,24 +778,31 @@ pub(crate) fn resolve_qualified_assoc_type(
         .map(String::as_str)
         .collect();
 
-    // Bare access (`Base::Member`): resolve only when exactly one conformed
-    // trait declares `member`. Two or more is genuinely ambiguous (the qualifier
-    // is required); zero is handled by a later step. The `Base::(Trait::Member)`
-    // disambiguator (`trait_name = Some`) is also handled by a later step.
-    if trait_name.is_none() {
-        match declaring_traits.len() {
-            1 => {
-                return template
-                    .assoc_types
-                    .iter()
-                    .find(|a| a.type_name == member)
-                    .map(|a| a.resolved.clone());
-            }
+    let _ = type_param_names; // consumed by a later step (type-parameter base check)
+
+    // The single resolved `Type` bound to `member`. A structure binds each
+    // associated-type name exactly once, so this is independent of the qualifier.
+    // `None` here means no binding exists — e.g. a declared-but-unbound required
+    // type already reported at the producer; we return `None` WITHOUT a new
+    // diagnostic (anti-cascade).
+    let resolved_member = || {
+        template
+            .assoc_types
+            .iter()
+            .find(|a| a.type_name == member)
+            .map(|a| a.resolved.clone())
+    };
+
+    match trait_name {
+        // Bare access (`Base::Member`): resolve only when exactly one conformed
+        // trait declares `member`. Two or more is genuinely ambiguous (the
+        // qualifier is required); zero is handled by a later step.
+        None => match declaring_traits.len() {
+            1 => resolved_member(),
             n if n >= 2 => {
-                // Two or more conformed traits declare `member`: the intended
-                // declaration is ambiguous. A structure binds each associated-type
-                // name once, so the qualifier is disambiguation-only — point the
-                // user at the FORK-G paren form `Base::(Trait::Member)`.
+                // A structure binds each associated-type name once, so the
+                // qualifier is disambiguation-only — point the user at the FORK-G
+                // paren form `Base::(Trait::Member)`.
                 let candidates = declaring_traits.join("`, `");
                 diagnostics.push(
                     Diagnostic::error(format!(
@@ -809,14 +816,46 @@ pub(crate) fn resolve_qualified_assoc_type(
                         format!("ambiguous; use `{base_name}::(<Trait>::{member})`"),
                     )),
                 );
+                None
+            }
+            _ => None,
+        },
+        // FORK-G paren disambiguator (`Base::(Trait::Member)`): the qualifier must
+        // name a trait `Base` conforms to AND that declares `member`. When valid,
+        // resolve to the same single binding (no ambiguity check — the qualifier
+        // is disambiguation-only).
+        Some(t) => {
+            if !template.trait_bounds.iter().any(|b| b == t) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "structure `{base_name}` does not conform to trait `{t}` in qualified \
+                         associated type `{base_name}::({t}::{member})`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{base_name}` does not conform to `{t}`"),
+                    )),
+                );
                 return None;
             }
-            _ => {}
+            if !trait_declares_assoc_type(trait_registry, t, member) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "trait `{t}` does not declare associated type `{member}` in qualified \
+                         associated type `{base_name}::({t}::{member})`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{t}` has no associated type `{member}`"),
+                    )),
+                );
+                return None;
+            }
+            resolved_member()
         }
     }
-
-    let _ = type_param_names;
-    None
 }
 
 /// Resolve a simple name to a `Type::Enum` if it matches a declared enum; `None` otherwise.
