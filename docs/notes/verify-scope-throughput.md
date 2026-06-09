@@ -34,10 +34,10 @@ reflect a real run on this host.
 
 | Shape | Changed file | Override | scope=all | scope=branch |
 |-------|-------------|---------|-----------|--------------|
-| (a) docs-only | `docs/note.md` | — | 12 | 0 |
-| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 12 | 12 |
-| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 12 | 12 |
-| (d) gui-only | `gui/src/editor/foo.ts` | — | 12 | 3 |
+| (a) docs-only | `docs/note.md` | — | 13 | 0 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 13 | 13 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 13 | 13 |
+| (d) gui-only | `gui/src/editor/foo.ts` | — | 13 | 3 |
 
 Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
 drift guard.  Update by re-running the regeneration commands in the section
@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 12 |  0 |
-| reify-doc  | 12 | 12 |
-| reify-eval | 12 | 12 |
-| gui-only   | 12 |  3 |
+| docs-only  | 13 |  0 |
+| reify-doc  | 13 | 13 |
+| reify-eval | 13 | 13 |
+| gui-only   | 13 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 ## Heavy-Work Narrowed Markers
@@ -74,7 +74,7 @@ For shape (c), the scope=branch plan equals scope=all minus: replacing
 `--workspace` with `-p reify-eval` in clippy/nextest (narrowing). Task 4451:
 the gated pass is gone; reify-eval runs in the single nextest pool.
 
-For shape (d), 11 of the 12 scope=all steps are Rust; branch scope drops
+For shape (d), 12 of the 13 scope=all steps are Rust; branch scope drops
 all of them and retains only the 3 GUI npm steps.
 
 ## Wall-Clock Measurements
@@ -90,7 +90,7 @@ real  0.233 s
 
 The branch scope detects that only docs were changed, produces an empty plan
 (0 steps), and exits immediately.  The equivalent scope=all run would proceed
-to execute all 12 steps including `cargo clippy --workspace` (≈ 20 s warm)
+to execute all 13 steps including `cargo clippy --workspace` (≈ 20 s warm)
 and `cargo nextest run --workspace` (≈ 10+ min warm; task 4451: OCCT crates
 are now in the pool, bounded by the nextest occt group max-threads=4).
 
@@ -104,15 +104,15 @@ Scripting overhead only — plan is printed but no steps execute.
 
 ## Delta as Evidence
 
-- **docs-only branch:** saves all 12 steps. Verify exits in < 0.3 s.
+- **docs-only branch:** saves all 13 steps. Verify exits in < 0.3 s.
 - **non-OCCT crate branch (reify-doc):** narrows `--workspace` clippy and
-  nextest to `-p reify-doc`.  12 vs 12 plan steps (same count; savings are
+  nextest to `-p reify-doc`.  13 vs 13 plan steps (same count; savings are
   wall-clock from skipping unaffected crate compilation).
 - **OCCT-touching crate branch (reify-eval):** clippy and nextest narrowed
   to `-p reify-eval` (task 4451: gated pass folded into the nextest pool).
-  12 vs 12 plan steps.
+  13 vs 13 plan steps.
 - **gui-only branch:** skips all Rust steps; runs only the GUI npm steps.
-  3 vs 12 plan steps.
+  3 vs 13 plan steps.
 
 No numeric improvement threshold is asserted here.  The step counts and the
 absent/narrowed heavy-work markers are the evidence.
