@@ -163,15 +163,20 @@ structure def GravityMagOverride {
     }
 }
 
-/// task 4439 step-1: `Gravity(direction: [1.0, 0.0, 0.0])` round-trips the
-/// direction override — `direction` must be `Value::List([1.0, 0.0, 0.0])`.
+/// task 4439 step-1: `Gravity` with an explicit direction override round-trips
+/// correctly — `direction` must be `Value::List([1.0, 0.0, 0.0])`.
+///
+/// Both params are supplied in declaration order (`magnitude` first, `direction`
+/// second) because structure-def constructors use positional binding — the same
+/// pattern as `PointLoad(point: "", force: 0.0, direction: […])` in
+/// `structure_instance_e2e.rs:552`.
 ///
 /// RED: same unknown-ctor path as above.
 #[test]
 fn gravity_direction_override_round_trips() {
     const SOURCE: &str = r#"
 structure def GravityDirOverride {
-    let g = Gravity(direction: [1.0, 0.0, 0.0])
+    let g = Gravity(magnitude: STANDARD_GRAVITY(), direction: [1.0, 0.0, 0.0])
 }
 "#;
 
