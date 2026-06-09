@@ -22,8 +22,12 @@ source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
 
 # REBUILD mode: if the release binary predates the last crates/reify-audit
 # commit, cargo-build it before selecting it. Falls through silently if fresh.
+# Use `|| true` so that a failed rebuild (toolchain absent, compile error, etc.)
+# degrades to the `cargo run` fallback below rather than aborting the script
+# when the invoking context uses `set -e`. A failed rebuild means the guard
+# returns 125, but the fallback `cargo run --release --quiet` still works.
 RELEASE_BIN="$REPO_ROOT/target/release/reify-audit"
-reify_audit_guard "$RELEASE_BIN" rebuild "$REPO_ROOT"
+reify_audit_guard "$RELEASE_BIN" rebuild "$REPO_ROOT" || true
 
 # Preferred — release binary (now guaranteed fresh or just rebuilt)
 if [ -x "$RELEASE_BIN" ]; then
