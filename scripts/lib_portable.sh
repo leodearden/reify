@@ -61,7 +61,9 @@ print(port)
 # Returns non-zero when the file is missing or unreadable (both stat forms fail).
 #
 # Idiom already open-coded in scripts/tree-sitter-generate.sh:95 and
-# scripts/verify.sh:122 — lifted here so all callers share one portable helper.
+# scripts/verify.sh:122 — intended to replace those inline copies; callers
+# should source lib_portable.sh and call portable_mtime rather than
+# re-inlining the stat idiom.
 portable_mtime() {
     stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
 }

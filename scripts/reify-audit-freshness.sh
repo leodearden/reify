@@ -25,11 +25,23 @@
 # crates/reify-audit/ (`git log -1 --format=%ct -- crates/reify-audit`).
 # A binary with mtime >= crate epoch is considered fresh.
 #
+# SCOPE LIMITATION
+# -----------------
+# The freshness reference only tracks changes inside crates/reify-audit/. A
+# fix that lands in a workspace dependency crate (one that reify-audit links but
+# that lives elsewhere) does NOT advance this epoch — the binary may be judged
+# fresh even though it predates the fix. Dependency changes that affect
+# reify-audit behaviour must also touch crates/reify-audit/ (e.g. bump the dep
+# version in Cargo.toml) or be added to scripts/release-sensitive-crates.txt so
+# the merge-gate release pass rebuilds target/release/reify-audit.
+#
 # FAIL-OPEN POLICY
 # -----------------
 # If the crate commit epoch is undeterminable (non-git repo_root / no history),
 # the guard fails OPEN (treats binary as fresh) to avoid breaking edge/test
 # invocations. A definitively-stale or missing binary always refuses/rebuilds.
+# Note: if we ARE inside a git tree but the path yields no history, a warning
+# is emitted to stderr (likely a renamed/moved crate path) — see is_stale below.
 #
 # USAGE
 # -----
