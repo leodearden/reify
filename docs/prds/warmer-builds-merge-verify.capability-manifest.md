@@ -15,15 +15,16 @@ Evidence commands were run from `/home/leo/src/reify` (reify substrate) and `/ho
 
 *Downstream consumers (intermediate):* δ (Phase 5), ε (companion). Cross-project: filed in `dark_factory` project; reify δ/ε depend via qualified `dark_factory:<id>` edges.
 
-## α — Phase 2 · reify · switch off bfd (leaf)
+## α — Phase 2 · reify · benchmark rust-lld vs mold, keep winner (leaf)
 
 | Capability | Evidence | Verdict |
 |---|---|---|
 | `mold` linker on PATH | `command -v mold` → `/usr/bin/mold` (`mold 2.30.0`) | PASS (present) |
 | `rust-lld` + `gcc-ld/ld.lld` bundled (zero host install) | `<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld` + `…/gcc-ld/ld.lld` present (rustc 1.96.0) | PASS (present) |
 | target-scoped `rustflags` slot | `grep:.cargo/config.toml:2` `[target.x86_64-unknown-linux-gnu]` (holds `runner`; `rustflags` is additive; manifold `links` override at `:21` is a separate table) | PASS (wired) |
-| no crate passes a bfd-specific linker arg | design-checked: only manifold `rustc-link-lib = static=…/stdc++` (both linkers handle); re-confirm at impl | PASS (re-verify in α) |
-| linker speedup (`lld` 2–5× / `mold` 3–10× vs bfd) | **benchmarked in-task**, winner recorded in bench doc; not a frozen bound | PASS (numeric-floor N/A) |
+| no crate passes a bfd-specific linker arg | design-checked: only manifold `rustc-link-lib = static=…/stdc++` (both linkers handle); confirmed at impl (α) | PASS (re-verified in α) |
+| rust-lld is already the active default (not bfd) | confirmed by `.comment = "Linker: LLD 22.1.2"` in workspace binaries; bfd is opt-in and NOT in use on this host | PASS (corrected premise) |
+| rust-lld-vs-mold speedup | **benchmarked in-task** (`docs/notes/linker-rustlld-vs-mold-bench.md`): rust-lld (median 1.4 s) faster than mold (1.8 s, +26%) in controlled link-only measurement; no config change; winner recorded in bench doc | PASS (numeric-floor N/A) |
 
 ## β — Phase 3 · reify · trim debug debuginfo (leaf)
 
