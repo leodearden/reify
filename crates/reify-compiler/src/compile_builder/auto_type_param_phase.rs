@@ -35,7 +35,7 @@ use crate::CompiledModule;
 use crate::auto_type_param::{AutoTypeParam, resolve_auto_type_params_with_backtracking};
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::traits_phase::build_trait_registry;
-use crate::type_resolution::substitute_type_params;
+use crate::type_resolution::{substitute_expr_result_types, substitute_type_params};
 use crate::types::{AutoTypeSubstitution, EntityKind, TopologyTemplate, mangle_monomorph_name};
 
 /// A compile-time [`ConstraintChecker`] that returns
@@ -214,6 +214,16 @@ pub(crate) fn phase_auto_type_param_resolution(
                     // Substitute TypeParam→StructureRef in top-level value_cells.
                     for cell in &mut mono.value_cells {
                         cell.cell_type = substitute_type_params(&cell.cell_type, &sigma);
+                        // Also substitute TypeParam in every body expression's
+                        // result_type nodes so `let` aliases and constraints
+                        // don't carry stale TypeParam result_types.
+                        if let Some(expr) = &mut cell.default_expr {
+                            substitute_expr_result_types(expr, &sigma);
+                        }
+                    }
+                    // Substitute TypeParam in constraint expression result_types.
+                    for constraint in &mut mono.constraints {
+                        substitute_expr_result_types(&mut constraint.expr, &sigma);
                     }
                     // Mix the mono name into the content_hash so two distinct
                     // monomorphs that clone the same source hash (e.g. Bearing$A
