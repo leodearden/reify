@@ -3245,7 +3245,7 @@ mod tests {
         ));
         // 1 arg
         assert!(matches!(
-            eval_dynamics("mass_properties", &[mass.clone()]).expect("recognised"),
+            eval_dynamics("mass_properties", std::slice::from_ref(&mass)).expect("recognised"),
             Value::Undef
         ));
         // 2 args
@@ -3433,7 +3433,6 @@ mod tests {
     #[test]
     fn diagnose_unresolvable_body_emits_dynamics_body_mass_unresolved() {
         use reify_core::diagnostics::DiagnosticCode;
-        use crate::eval_builtin;
 
         // Build a mechanism whose body.solid is a plain Real (non-resolvable).
         let mech = revolute_mechanism_with_solid(Value::Real(1.0));
