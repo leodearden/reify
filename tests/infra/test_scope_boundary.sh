@@ -106,8 +106,6 @@ assert "B4P1: changed crate X ($X_CRATE) is in affected set" \
 assert "B4P1: downstream dependent Y ($Y_CRATE) is in affected set (C3)" \
     bash -c 'grep -qx "$2" <<< "$1"' _ "$AFFECTED_SET" "$Y_CRATE"
 
-test_summary
-
 # ---------------------------------------------------------------------------
 # B4 Part 2: the affected set -> -p wiring across test+clippy+check passes
 # ---------------------------------------------------------------------------
@@ -166,9 +164,13 @@ assert "B4P2/typecheck: cargo check lacks --workspace (narrowed)" \
 echo ""
 echo "--- B5: merge gate full (scope=all keeps --workspace, zero narrowing -p) ---"
 
-PLAN_ALL=""
-PLAN_ALL_TC=""
-PLAN_ALL_OVR=""
+# scope=all returns early in decide_scope — it consults neither git diff nor
+# cargo metadata, so the output is independent of the repo's working state and
+# REIFY_AFFECTED_CRATES_OVERRIDE is structurally never read.  No fixture needed.
+PLAN_ALL="$(bash "$REPO_ROOT/scripts/verify.sh" all --profile debug --scope all --print-plan 2>/dev/null)"
+PLAN_ALL_TC="$(bash "$REPO_ROOT/scripts/verify.sh" typecheck --profile debug --scope all --print-plan 2>/dev/null)"
+PLAN_ALL_OVR="$(REIFY_AFFECTED_CRATES_OVERRIDE="$AFFECTED_SET" \
+    bash "$REPO_ROOT/scripts/verify.sh" all --profile debug --scope all --print-plan 2>/dev/null)"
 
 assert "B5: NARROW_ACTIVE=0 in scope=all plan header (C1 preserved)" \
     plan_has "$PLAN_ALL" 'NARROW_ACTIVE=0'
@@ -186,3 +188,5 @@ assert "B5/C1-structural: override under scope=all still gives --workspace clipp
     plan_has "$PLAN_ALL_OVR" 'cargo clippy --workspace'
 assert "B5/C1-structural: override under scope=all does NOT produce -p $Y_CRATE in clippy" \
     plan_lacks "$PLAN_ALL_OVR" "cargo clippy.*-p $Y_CRATE"
+
+test_summary
