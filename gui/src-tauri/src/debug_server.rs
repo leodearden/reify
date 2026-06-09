@@ -992,7 +992,7 @@ async fn dispatch_tool(
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
         "wait_for" => handle_wait_for(state, params).await,
         "wait_for_selector" => handle_wait_for_selector(state, params).await,
-        "set_fea_case" => handle_set_fea_case(&state.engine, params).await,
+        "set_fea_case" => handle_set_fea_case(state, params).await,
         _ => {
             // Frontend-mediated: delegate to DebugBridge.
             // list_console_errors falls through here — it returns instantly so
@@ -1260,29 +1260,58 @@ async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<
     open_path_into_engine(state, &relpath).await
 }
 
-/// Select the active FEA load case on the engine and return an echo response.
+/// Pure serializer: packs a `GuiState` and a case name into the JSON object
+/// sent to `query_frontend("apply_gui_state", ...)`.
 ///
-/// Extracts the `case` param from `params`, delegates to
-/// `EngineSession::set_active_fea_case`, and returns
-/// `{"ok": true, "case": <selected_name>}`.  Used by `dispatch_tool` for the
-/// `set_fea_case` MCP tool and by the visual-regression harness to select a case
-/// before taking a screenshot.
-async fn handle_set_fea_case(
+/// Returns `Ok(json!({ "guiState": <serialized>, "case": case }))`.
+/// Tested headlessly by `set_fea_case_pushes_gui_state_payload_to_frontend`
+/// (step-22), which round-trips `payload["guiState"]` to verify the
+/// `vonMises` channel survives serde intact.
+///
+/// Pure/deterministic: no kernel, no Tauri handle, no I/O.
+pub fn fea_case_frontend_payload(
+    case: &str,
+    gui_state: &crate::types::GuiState,
+) -> Result<Value, String> {
+    let gs = serde_json::to_value(gui_state)
+        .map_err(|e| format!("serialize gui_state failed: {e}"))?;
+    Ok(json!({ "guiState": gs, "case": case }))
+}
+
+/// Run `EngineSession::set_active_fea_case` on an OS thread (avoids the
+/// tokio-panic from OCCT's `blocking_send`) and return the rebuilt `GuiState`.
+///
+/// Tested via `handle_set_fea_case_routes_to_engine` (step-23 retarget).
+pub async fn set_fea_case_on_engine(
     engine: &Arc<Mutex<EngineSession>>,
+    case: &str,
+) -> Result<crate::types::GuiState, String> {
+    let case = case.to_owned();
+    run_on_engine(engine, move |session| session.set_active_fea_case(&case)).await
+}
+
+/// Select the active FEA load case on the engine, push the rebuilt `GuiState`
+/// to the frontend via `apply_gui_state`, and return an echo response.
+///
+/// Flow (mirrors `open_path_into_engine`):
+///  1. `set_fea_case_on_engine` — re-sources scalar_channels for the new case.
+///  2. `fea_case_frontend_payload` — serializes GuiState + case name into JSON.
+///  3. `query_frontend("apply_gui_state", ...)` — frontend applies the GuiState
+///     WITHOUT a view reset so the camera stays fixed across case switches.
+///  4. Returns `{"ok": true, "case": <name>}` so the visual-regression harness
+///     can confirm the switch and proceed to screenshot.
+async fn handle_set_fea_case(
+    state: &DebugServerState,
     params: Value,
 ) -> Result<Value, String> {
     let case = params["case"]
         .as_str()
         .ok_or_else(|| "`case` param is required".to_string())?
         .to_owned();
-    let case_for_closure = case.clone();
-    run_on_engine(engine, move |session| {
-        session
-            .set_active_fea_case(&case_for_closure)
-            .map(|_| ())
-    })
-    .await?;
-    Ok(json!({"ok": true, "case": case}))
+    let gs = set_fea_case_on_engine(&state.engine, &case).await?;
+    let fp = fea_case_frontend_payload(&case, &gs)?;
+    state.debug_bridge.query_frontend("apply_gui_state", fp).await?;
+    Ok(json!({ "ok": true, "case": case }))
 }
 
 // --- MCP Streamable HTTP handler ---
