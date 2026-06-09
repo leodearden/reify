@@ -267,6 +267,46 @@ fn parse_purpose_flag(value: &str) -> Result<PurposeActivation, String> {
     })
 }
 
+/// One parsed `--cfg <value>` argument.
+///
+/// - `Flag(name)` — a bare boolean flag (`--cfg debug`).
+/// - `KeyValue { key, value }` — a `key=value` entry (`--cfg target=wasm`,
+///   `--cfg feature=x`). An empty `value` is permitted (`--cfg target=`),
+///   matching `CfgSet`'s kv empty-string semantics.
+#[derive(Debug, PartialEq)]
+enum CfgArg {
+    Flag(String),
+    KeyValue { key: String, value: String },
+}
+
+/// Parse a single `--cfg <value>` flag value into a [`CfgArg`].
+///
+/// Grammar:
+/// - no `=` → bare flag; the value must be non-empty (`""` is an error).
+/// - `key=value` → key/value entry; the key must be non-empty (`=v` is an
+///   error). The value may be empty (`target=` yields an empty-string value).
+///
+/// Mirrors [`parse_purpose_flag`]'s error-message style.
+fn parse_cfg_flag(value: &str) -> Result<CfgArg, String> {
+    match value.split_once('=') {
+        None => {
+            if value.is_empty() {
+                return Err("--cfg value is empty".to_string());
+            }
+            Ok(CfgArg::Flag(value.to_string()))
+        }
+        Some((key, val)) => {
+            if key.is_empty() {
+                return Err(format!("--cfg value '{}' has an empty key", value));
+            }
+            Ok(CfgArg::KeyValue {
+                key: key.to_string(),
+                value: val.to_string(),
+            })
+        }
+    }
+}
+
 /// Usage line printed to stderr for any `reify check` usage error.
 const CHECK_USAGE: &str = "Usage: reify check [--purpose <name>=<binding>]... <file>";
 
