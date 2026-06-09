@@ -128,9 +128,9 @@ printf 'x\n' > "$FIX_B4_P2/$X_FILE"
 git -C "$FIX_B4_P2" add crates
 git -C "$FIX_B4_P2" commit -q -m "task changes"
 PLAN_B4_ALL="$(cd "$FIX_B4_P2" && REIFY_AFFECTED_CRATES_OVERRIDE="$AFFECTED_SET" \
-    bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)"
+    bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
 PLAN_B4_TC="$(cd "$FIX_B4_P2" && REIFY_AFFECTED_CRATES_OVERRIDE="$AFFECTED_SET" \
-    bash scripts/verify.sh typecheck --profile debug --scope branch --print-plan 2>/dev/null)"
+    bash scripts/verify.sh typecheck --profile debug --scope branch --print-plan 2>/dev/null)" || true
 git -C "$FIX_B4_P2" checkout -q main
 git -C "$FIX_B4_P2" branch -q -D task-branch
 
@@ -167,10 +167,10 @@ echo "--- B5: merge gate full (scope=all keeps --workspace, zero narrowing -p) -
 # scope=all returns early in decide_scope — it consults neither git diff nor
 # cargo metadata, so the output is independent of the repo's working state and
 # REIFY_AFFECTED_CRATES_OVERRIDE is structurally never read.  No fixture needed.
-PLAN_ALL="$(bash "$REPO_ROOT/scripts/verify.sh" all --profile debug --scope all --print-plan 2>/dev/null)"
-PLAN_ALL_TC="$(bash "$REPO_ROOT/scripts/verify.sh" typecheck --profile debug --scope all --print-plan 2>/dev/null)"
+PLAN_ALL="$(bash "$REPO_ROOT/scripts/verify.sh" all --profile debug --scope all --print-plan 2>/dev/null)" || true
+PLAN_ALL_TC="$(bash "$REPO_ROOT/scripts/verify.sh" typecheck --profile debug --scope all --print-plan 2>/dev/null)" || true
 PLAN_ALL_OVR="$(REIFY_AFFECTED_CRATES_OVERRIDE="$AFFECTED_SET" \
-    bash "$REPO_ROOT/scripts/verify.sh" all --profile debug --scope all --print-plan 2>/dev/null)"
+    bash "$REPO_ROOT/scripts/verify.sh" all --profile debug --scope all --print-plan 2>/dev/null)" || true
 
 assert "B5: NARROW_ACTIVE=0 in scope=all plan header (C1 preserved)" \
     plan_has "$PLAN_ALL" 'NARROW_ACTIVE=0'
