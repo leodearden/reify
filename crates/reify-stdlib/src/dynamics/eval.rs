@@ -379,7 +379,7 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
                 _ => "?".to_string(),
             };
             return Some(
-                Diagnostic::error(&format!(
+                Diagnostic::error(format!(
                     "inverse_dynamics: body '{id_str}' has no resolvable mass \
                      (no MassProperties on body.solid)"
                 ))
