@@ -2870,7 +2870,7 @@ mod tests {
             let mut locked = engine.lock().unwrap();
             locked
                 .load_from_source(
-                    include_str!("../../../../examples/fea_multi_case_bracket.ri"),
+                    include_str!("../../../examples/fea_multi_case_bracket.ri"),
                     "FeaMultiCaseBracket",
                 )
                 .expect("load_from_source must succeed for fea_multi_case_bracket.ri");
