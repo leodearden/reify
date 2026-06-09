@@ -3183,4 +3183,84 @@ mod tests {
         let r = eval_dynamics("mass_properties", &[mass, com, bad_inertia]).expect("recognised");
         assert!(matches!(r, Value::Undef), "non-3×3 inertia must return Undef");
     }
+
+    // ── task-4278 step-5 RED: resolve_body_mass ────────────────────────────────
+    //
+    // resolve_body_mass(&body) must return Some(MassProperties) for a body whose
+    // solid is a MassProperties StructureInstance, and None for non-resolvable
+    // solids. RED until step-6 implements the function.
+
+    /// Build a body Map with the given solid as its `solid` field.  Mimics what
+    /// mechanism.rs does when adding a body: the solid is stored verbatim.
+    fn body_with_solid(solid: Value) -> Value {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("revolute", &[axis_y, range]);
+        let mech0 = eval_builtin("mechanism", &[]);
+        let mech = eval_builtin("body", &[mech0, solid, joint]);
+        // Extract bodies[0] — the body Map.
+        match mech {
+            Value::Map(ref m) => {
+                let bodies = match map_get(m, "bodies") {
+                    Some(Value::List(b)) => b,
+                    _ => panic!("mechanism missing bodies"),
+                };
+                bodies[0].clone()
+            }
+            other => panic!("body() must return a Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_body_mass_returns_some_for_mass_properties_solid() {
+        let pm = eval_dynamics("point_mass", &[
+            Value::Scalar { si_value: 2.5, dimension: DimensionVector::MASS },
+        ])
+        .expect("point_mass recognised");
+        let body = body_with_solid(pm);
+
+        let resolved = resolve_body_mass(&body).expect("MassProperties solid must resolve");
+        let (mass, com, _) = mass_properties_from_value(&resolved)
+            .expect("resolved value must be a valid MassProperties");
+        assert!((mass - 2.5).abs() < 1e-12, "mass should be 2.5 kg, got {mass}");
+        for &c in &com {
+            assert!(c.abs() < 1e-12, "com should be origin for point_mass, got {com:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_body_mass_returns_none_for_real_solid() {
+        let body = body_with_solid(Value::Real(1.0));
+        assert!(
+            resolve_body_mass(&body).is_none(),
+            "a plain Real solid must not resolve"
+        );
+    }
+
+    #[test]
+    fn resolve_body_mass_returns_none_for_absent_solid() {
+        // Hand-craft a body Map with no `solid` key at all.
+        let body = Value::Map({
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(Value::String("id".to_string()), Value::Int(0));
+            m
+        });
+        assert!(
+            resolve_body_mass(&body).is_none(),
+            "a body Map with no solid key must return None"
+        );
+    }
+
+    #[test]
+    fn resolve_body_mass_returns_none_for_non_map_body() {
+        // A non-Map Value is not a body.
+        assert!(resolve_body_mass(&Value::Real(0.0)).is_none());
+    }
 }
