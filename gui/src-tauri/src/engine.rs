@@ -5008,9 +5008,9 @@ pub(crate) fn extract_elastic_result_fields(
 /// `"displacement"` field is absent or not a `Sampled` `SampledField`.
 /// Used by both the single-case path (`extract_elastic_result_fields`) and the
 /// multi-case path (`try_extract_from_multi_case_cell`).
-fn resolve_elastic_result_sampled_fields<'a>(
-    value: &'a reify_ir::Value,
-) -> Option<(&'a reify_ir::SampledField, &'a reify_ir::SampledField)> {
+fn resolve_elastic_result_sampled_fields(
+    value: &reify_ir::Value,
+) -> Option<(&reify_ir::SampledField, &reify_ir::SampledField)> {
     use reify_ir::{FieldSourceKind, Value};
 
     let data = match value {
