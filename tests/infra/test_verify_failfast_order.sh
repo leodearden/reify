@@ -87,8 +87,11 @@ assert "merge test plan: contains tree-sitter-generate.sh" \
 assert "merge test plan: contains npm ci && npm run typecheck && npm test (gui chain intact)" \
     bash -c 'printf "%s\n" "$1" | grep -q "npm ci && npm run typecheck && npm test"' _ "$MERGE_TEST_PLAN"
 
-assert "merge test plan: no cargo-test-occt-gated.sh (OCCT folded into nextest pool, task 4451)" \
+assert "merge test plan: gated OCCT pass ABSENT (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$MERGE_TEST_PLAN"
+
+assert "merge test plan: nextest --workspace pass present, no --exclude (task 4451: OCCT in pool)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$MERGE_TEST_PLAN"
 
 assert "all plan: contains cargo clippy (rust lint gate for action=all)" \
     bash -c 'printf "%s\n" "$1" | grep -q "cargo clippy"' _ "$ALL_PLAN"
@@ -102,8 +105,11 @@ assert "all plan: contains tree-sitter-generate.sh" \
 assert "all plan: contains npm ci && npm run typecheck && npm test (gui chain intact)" \
     bash -c 'printf "%s\n" "$1" | grep -q "npm ci && npm run typecheck && npm test"' _ "$ALL_PLAN"
 
-assert "all plan: no cargo-test-occt-gated.sh (OCCT folded into nextest pool, task 4451)" \
+assert "all plan: gated OCCT pass ABSENT (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -q "cargo-test-occt-gated\.sh"' _ "$ALL_PLAN"
+
+assert "all plan: nextest --workspace pass present, no --exclude (task 4451: OCCT in pool)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run --workspace" && ! printf "%s\n" "$1" | grep -qE "cargo nextest run --workspace.*--exclude"' _ "$ALL_PLAN"
 
 # ===========================================================================
 # Test 4: bounded overlap — action=all: node lane is BACKGROUNDED and joined
