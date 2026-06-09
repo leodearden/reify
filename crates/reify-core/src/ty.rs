@@ -191,6 +191,22 @@ pub enum Type {
     ///
     /// Introduced in task 4116 α.
     Selector(SelectorKind),
+    /// Kind-agnostic topology selector: a param/field annotation that accepts a
+    /// `Selector` value of ANY concrete kind (Face, Edge, or Body — and Vertex
+    /// once A1 lands).
+    ///
+    /// Used as the declared type for FEA boundary-condition targets
+    /// (`FixedSupport.target : Selector`) where the kind of the selected
+    /// geometry is not constrained at the type level (PRD §4.2/§11.1,
+    /// task 4369 / A2).  Single-kind selector params (`Type::Selector(k)`) keep
+    /// exact-kind checking; only params declared with the bare `Selector`
+    /// annotation resolve to this variant.
+    ///
+    /// There is no `Value::AnySelector`; at runtime the cell always holds a
+    /// concrete `Value::Selector(sv)` whose kind is checked by
+    /// `value_type_kind_matches` (which accepts any `sv.kind` against this
+    /// cell type).
+    AnySelector,
     /// Compile-time-only union of mutually-exclusive arm types from a
     /// `match`-block decl cluster (PRD `match-block-decls.md` §6.4).
     ///
@@ -454,6 +470,7 @@ impl std::fmt::Display for Type {
             Type::BoundingBox => write!(f, "BoundingBox"),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
             Type::Selector(kind) => write!(f, "{}", kind),
+            Type::AnySelector => write!(f, "Selector"),
             Type::Error => write!(f, "<error>"),
             Type::Union(arms) => write!(
                 f,

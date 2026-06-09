@@ -570,6 +570,13 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "FaceSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Face)),
         "EdgeSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Edge)),
         "BodySelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
+        // Kind-agnostic selector param annotation (PRD §4.2/§11.1, task 4369/A2).
+        // Bare "Selector" resolves to Type::AnySelector so a param declared as
+        // `target : Selector` accepts a Selector value of ANY concrete kind
+        // (Face/Edge/Body), while single-kind params (FaceSelector etc.) keep
+        // exact-kind checking.  resolve_type_with_aliases inherits this arm
+        // automatically since it delegates to resolve_type_name for builtin names.
+        "Selector" => Some(Type::AnySelector),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::Real),
@@ -1238,6 +1245,7 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::Axis
         | Type::BoundingBox
         | Type::Selector(_)
+        | Type::AnySelector
         | Type::Error => ty.clone(),
     }
 }
@@ -2389,6 +2397,63 @@ mod tests {
             result,
             Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
             "resolve_type_with_aliases(\"BodySelector\", …) should return Type::Selector(Body)"
+        );
+    }
+
+    // ── AnySelector type-name resolution (task 4369 / A2) ────────────────────
+    //
+    // The bare `Selector` spelling (no kind qualifier) must resolve to
+    // `Type::AnySelector` so that param annotations like `target : Selector`
+    // accept any concrete selector kind at the type-compat level.
+    //
+    // Tests (a) and (b) are RED until step-2 adds the resolver arm.
+    // Test (c) is GREEN from pre-1's Display arm (documents the
+    // resolver<->Display round-trip contract).
+
+    /// (a) `resolve_type_name("Selector")` must return `Type::AnySelector`.
+    ///
+    /// RED until step-2 adds `"Selector" => Some(Type::AnySelector)` to
+    /// `resolve_type_name`.
+    #[test]
+    fn resolve_type_name_recognises_any_selector() {
+        assert_eq!(
+            resolve_type_name("Selector"),
+            Some(Type::AnySelector),
+            "\"Selector\" should resolve to Type::AnySelector"
+        );
+    }
+
+    /// (b) `resolve_type_with_aliases("Selector", …)` must return
+    /// `Type::AnySelector` — it inherits the builtin arm automatically.
+    ///
+    /// RED until step-2 adds the arm to `resolve_type_name`.
+    #[test]
+    fn resolve_type_with_aliases_inherits_any_selector() {
+        let reg = TypeAliasRegistry::new();
+        let result = resolve_type_with_aliases(
+            "Selector",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::AnySelector),
+            "resolve_type_with_aliases(\"Selector\", …) should return Type::AnySelector"
+        );
+    }
+
+    /// (c) Display round-trip: `Type::AnySelector` formats as `"Selector"`,
+    /// which is the same spelling the resolver accepts (task 4369/A2 §11.1).
+    ///
+    /// GREEN from pre-1's Display arm.
+    #[test]
+    fn any_selector_display_matches_resolver_spelling() {
+        assert_eq!(
+            format!("{}", Type::AnySelector),
+            "Selector",
+            "Type::AnySelector should display as \"Selector\" to match the resolver spelling"
         );
     }
 

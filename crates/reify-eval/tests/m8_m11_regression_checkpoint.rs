@@ -11,7 +11,7 @@
 //!   - M9: trait conformance (`structure def Foo : Trait`), constraint definitions.
 //!   - M10: geometric builtins (`point3`, `vec3`, `orient_identity`, `transform3`, `frame3`).
 //!   - M11: field calculus (`field def`, `sample`, `gradient`), `@test` annotation.
-//!   - Compile-time exhaustive `match` guards for all 27 `Type` variants.
+//!   - Compile-time exhaustive `match` guards for all 29 `Type` variants.
 //!   - Compile-time exhaustive `match` guards for all 25 `Value` variants, with
 //!     runtime calls to `Display`, `content_hash`, `try_infer_type`, `format_hover`.
 //!
@@ -358,7 +358,7 @@ fn checkpoint_m11_field_sample_at_three() {
 
 // ── Type / Value variant coverage ────────────────────────────────────────────
 
-/// Compile-time exhaustiveness guard for all 28 `Type` variants.
+/// Compile-time exhaustiveness guard for all 29 `Type` variants.
 ///
 /// This function is NEVER called at runtime. Its only purpose is to force a
 /// compile error if a new `Type` variant is added without updating this list.
@@ -402,6 +402,8 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
         Type::AffineMap(_) => true,
         // Topology selector (task 4116 / α)
         Type::Selector(_) => true,
+        // Kind-agnostic topology selector (task 4369 / A2)
+        Type::AnySelector => true,
         // 3D geometric primitives
         Type::Plane | Type::Axis | Type::BoundingBox => true,
         // Matrix
@@ -464,14 +466,14 @@ fn assert_all_value_variants_listed(v: &reify_ir::Value) {
     };
 }
 
-/// Verify that `assert_all_type_variants_listed` covers all 27 `Type` variants
+/// Verify that `assert_all_type_variants_listed` covers all 29 `Type` variants
 /// by constructing one instance of each and calling the guard.
 ///
 /// If a new variant is ever added to `Type` without being listed in
 /// `assert_all_type_variants_listed`, this file will fail to compile.
 #[test]
 fn checkpoint_type_variant_coverage() {
-    // Build one instance of each of the 27 Type variants.
+    // Build one instance of each of the 29 Type variants.
     let all_types: Vec<Type> = vec![
         // Primitive scalars (4)
         Type::Bool,
@@ -543,12 +545,14 @@ fn checkpoint_type_variant_coverage() {
             Type::StructureRef("HexHead".to_string()),
             Type::StructureRef("SocketHead".to_string()),
         ]),
+        // Kind-agnostic topology selector (task 4369 / A2) (1)
+        Type::AnySelector,
     ];
 
     assert_eq!(
         all_types.len(),
-        28,
-        "expected exactly 28 Type variants; update this test if the enum changes"
+        29,
+        "expected exactly 29 Type variants; update this test if the enum changes"
     );
 
     // Drive the exhaustiveness guard with each variant. Compile error here means

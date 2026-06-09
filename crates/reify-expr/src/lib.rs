@@ -1222,6 +1222,7 @@ fn type_carries_type_param(t: &Type) -> bool {
         | Type::Axis
         | Type::BoundingBox
         | Type::Selector(_)
+        | Type::AnySelector
         | Type::Error => false,
     }
 }
