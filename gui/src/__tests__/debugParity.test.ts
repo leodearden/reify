@@ -65,6 +65,10 @@ const PURE_ENGINE_SIDE = [
   'morph_stats',
   'mesh_morph_stats',
   'load_fixture',
+  // set_fea_case has a named dispatch_tool arm in Rust (handle_set_fea_case)
+  // that calls session.set_active_fea_case() — no query_frontend call, so no
+  // TS handler is needed (task 3026).
+  'set_fea_case',
 ];
 
 /**
