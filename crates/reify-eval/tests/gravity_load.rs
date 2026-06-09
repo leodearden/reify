@@ -293,6 +293,65 @@ structure def GravityMagAccess {
     }
 }
 
+/// Member-access chain `self.g.direction` reads through the `Gravity` structure
+/// instance and resolves to `Value::List([0.0, 0.0, -1.0])` — the canonical
+/// −Z unit vector default.
+///
+/// Covers the member-access evaluator path for the `List<Real>`-valued
+/// `direction` field, which is materially distinct from the scalar `magnitude`
+/// member-access shape tested above.  `PressureLoad.direction` is a `String`;
+/// this is the first Load-conformer whose `direction` is a `List<Real>`, so
+/// this test exercises a distinct read-through path.
+#[test]
+fn gravity_member_access_direction() {
+    const SOURCE: &str = r#"
+structure def GravityDirAccess {
+    let g         = Gravity()
+    let direction = self.g.direction
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let id = ValueCellId::new("GravityDirAccess", "direction");
+    let dir = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("GravityDirAccess.direction cell missing from eval result"));
+
+    match dir {
+        Value::List(items) => {
+            assert_eq!(
+                items.len(),
+                3,
+                "self.g.direction must have 3 elements; got {:?}",
+                items
+            );
+            assert_eq!(
+                items[0],
+                Value::Real(0.0),
+                "self.g.direction[0] must be 0.0"
+            );
+            assert_eq!(
+                items[1],
+                Value::Real(0.0),
+                "self.g.direction[1] must be 0.0"
+            );
+            assert_eq!(
+                items[2],
+                Value::Real(-1.0),
+                "self.g.direction[2] must be -1.0 (−Z default)"
+            );
+        }
+        other => panic!(
+            "self.g.direction must resolve to Value::List([0.0, 0.0, -1.0]); \
+             got {other:?}"
+        ),
+    }
+}
+
 /// task 4439 step-1: `param load : Load = Gravity()` compiles without any
 /// Error-severity diagnostics — positive conformance test.
 ///
