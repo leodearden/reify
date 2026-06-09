@@ -682,13 +682,17 @@ add_test_passes() {
     # merge gate (esc-4178 / esc-4180 cluster killed the debug nextest mid-compile at
     # the old 30m; the OCCT gate hit the old 2700s). sccache shares rustc output
     # across worktrees, so warm runs finish well inside these — the larger caps only
-    # bite a genuinely cold cache. NOTE: the gated values are asserted in
-    # tests/infra/test_occt_flock_gate.sh (Test 17) — keep them in sync.
+    # bite a genuinely cold cache.
+    # Bumped 2026-06-09 (task #4447): debug outer_timeout 60m→90m to give the cold
+    # merge-gate `cargo nextest run --workspace` pass headroom after task-4421's
+    # consecutive_merge_thrash SIGKILL; debug gated_timeout 3600→5400 for consistency
+    # with the release 4800. NOTE: the gated values AND the outer timeout are asserted
+    # in tests/infra/test_occt_flock_gate.sh (Test 17) — keep them in sync.
     for profile in "${PROFILES[@]}"; do
         if [ "$profile" = "release" ]; then
             rel=" --release"; gated_timeout=4800; outer_timeout="75m"
         else
-            rel=""; gated_timeout=3600; outer_timeout="60m"
+            rel=""; gated_timeout=5400; outer_timeout="90m"
         fi
 
         if [ "$profile" = "release" ]; then
