@@ -1858,3 +1858,83 @@ mod auto_type_substitution_tests {
         assert_eq!(inner, pairs);
     }
 }
+
+#[cfg(test)]
+mod monomorph_collision_tests {
+    //! Unit tests for `monomorph_name_would_collide` (M-013 α, task 4431 step-9).
+    //!
+    //! The predicate is defined in step-10; these tests will fail to compile
+    //! (RED) until the function is added.
+    use super::{EntityKind, TopologyTemplate, Visibility, monomorph_name_would_collide};
+    use reify_core::ContentHash;
+    use std::collections::{HashMap, HashSet};
+
+    /// Construct a minimal `TopologyTemplate` with the given name and all
+    /// other fields empty / default.  The test only exercises name-based
+    /// predicates, so a full-fidelity template is not required.
+    fn minimal_template(name: &str) -> TopologyTemplate {
+        TopologyTemplate {
+            name: name.to_string(),
+            doc: None,
+            entity_kind: EntityKind::Structure,
+            visibility: Visibility::Private,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells: vec![],
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: HashSet::new(),
+            objective: None,
+            meta: HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+            assoc_fns: vec![],
+            assoc_types: vec![],
+        }
+    }
+
+    /// Pins the defensive collision-guard predicate added in step-10:
+    ///
+    /// Case 1 — a template named `Bearing$GasketSeal` exists in the slice but
+    /// is NOT in the `created` set → guard returns `true` (collision detected:
+    /// a pre-existing non-α template would be overwritten).
+    ///
+    /// Case 2 — same name IS in the `created` set → returns `false` (it is one
+    /// of α's own monomorphs, so no collision).
+    ///
+    /// Case 3 — the name does not exist in the slice at all → returns `false`
+    /// (nothing to collide with).
+    #[test]
+    fn monomorph_name_collision_is_detected() {
+        let templates = vec![minimal_template("Bearing$GasketSeal")];
+        let empty: HashSet<String> = HashSet::new();
+
+        // Case 1: template exists, NOT created by α → collision.
+        assert!(
+            monomorph_name_would_collide(&templates, &empty, "Bearing$GasketSeal"),
+            "should detect collision when template exists and was not created by α"
+        );
+
+        // Case 2: template exists AND was created by α → no collision.
+        let mut created = HashSet::new();
+        created.insert("Bearing$GasketSeal".to_string());
+        assert!(
+            !monomorph_name_would_collide(&templates, &created, "Bearing$GasketSeal"),
+            "should not report collision when template was created by α"
+        );
+
+        // Case 3: name does not appear in templates at all → no collision.
+        assert!(
+            !monomorph_name_would_collide(&templates, &empty, "Bearing$ORingSeal"),
+            "should not report collision for a name absent from the template list"
+        );
+    }
+}
