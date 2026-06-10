@@ -12,6 +12,12 @@ use reify_eval::TestStatus;
 // emitting a symbol reference into the rlib); the linker passes the rlib
 // unconditionally when the crate appears in `extern crate` position.
 extern crate reify_kernel_occt as _;
+// Ensure reify_kernel_manifold's object files are included in the link so its
+// unconditional `inventory::submit!` fires and populates the global kernel
+// registry with the Manifold entry.  Manifold's submit has no cfg gate (unlike
+// OCCT's cfg(has_occt)), so this extern crate reference is always active and
+// the "manifold" key is always present in the binary's registry.
+extern crate reify_kernel_manifold as _;
 
 mod cache;
 mod mcp_context;
@@ -716,28 +722,61 @@ fn cmd_test(args: &[String]) -> ExitCode {
 
 fn cmd_build(args: &[String]) -> ExitCode {
     if args.is_empty() {
-        eprintln!("Usage: reify build <file> -o <output>");
+        eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
         return ExitCode::FAILURE;
     }
 
-    let file = &args[0];
-    let output_path = match args.iter().position(|a| a == "-o") {
-        Some(i) if i + 1 < args.len() => &args[i + 1],
-        _ => {
-            eprintln!("Usage: reify build <file> -o <output>");
+    // Detect `--verbose` anywhere in the args.
+    let verbose = args.iter().any(|a| a == "--verbose");
+
+    // Pre-compute the index of the value that follows `-o` (if present and
+    // followed by an argument).  This is reused both to build `output_path`
+    // and to exclude the `-o` value from the positional-file scan below so
+    // that `reify build -o out.step file.ri` doesn't mistakenly treat
+    // `out.step` as the input file.
+    let o_value_pos: Option<usize> = args
+        .iter()
+        .position(|a| a == "-o")
+        .and_then(|i| if i + 1 < args.len() { Some(i + 1) } else { None });
+
+    // Pick the first positional token: not a flag (`-`-prefixed) and not the
+    // value following `-o`.  This makes flag ordering irrelevant, so both
+    // `reify build file.ri --verbose` and `reify build --verbose file.ri`
+    // correctly identify the input file.
+    let file = match args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with('-') && Some(*i) != o_value_pos)
+    {
+        Some((_, f)) => f,
+        None => {
+            eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
             return ExitCode::FAILURE;
         }
     };
 
-    let format = if output_path.ends_with(".step") || output_path.ends_with(".stp") {
-        ExportFormat::Step
-    } else if output_path.ends_with(".stl") {
-        ExportFormat::Stl
-    } else if output_path.ends_with(".3mf") {
-        ExportFormat::ThreeMF
-    } else {
-        eprintln!("Unknown output format, defaulting to STEP");
-        ExportFormat::Step
+    // Under `--verbose`, `-o` is optional (the full geometry build still runs
+    // and provenance is printed; the file is only written if `-o` is present).
+    // Without `--verbose`, `-o` is required (no behavior change).
+    let output_path: Option<&String> = match o_value_pos {
+        Some(i) => Some(&args[i]),
+        None if verbose => None,
+        None => {
+            eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let format = match output_path {
+        Some(p) if p.ends_with(".step") || p.ends_with(".stp") => ExportFormat::Step,
+        Some(p) if p.ends_with(".stl") => ExportFormat::Stl,
+        Some(p) if p.ends_with(".3mf") => ExportFormat::ThreeMF,
+        Some(_) => {
+            eprintln!("Unknown output format, defaulting to STEP");
+            ExportFormat::Step
+        }
+        // No -o under --verbose: still run the full geometry build as STEP.
+        None => ExportFormat::Step,
     };
 
     let compiled = match parse_and_compile(file) {
@@ -764,13 +803,28 @@ fn cmd_build(args: &[String]) -> ExitCode {
         &mut std::io::stderr(),
     );
 
+    // Under --verbose, print per-realization kernel provenance to stdout.
+    if verbose {
+        let provenance = engine.realization_kernel_provenance();
+        for entry in &provenance {
+            println!(
+                "  {}: kernel: {}, repr: {:?}",
+                entry.realization,
+                entry.kernel.as_registry_name(),
+                entry.repr,
+            );
+        }
+    }
+
     match result.geometry_output {
         Some(data) => {
-            if let Err(e) = std::fs::write(output_path, &data) {
-                eprintln!("Error writing {}: {}", output_path, e);
-                return ExitCode::FAILURE;
+            if let Some(path) = output_path {
+                if let Err(e) = std::fs::write(path, &data) {
+                    eprintln!("Error writing {}: {}", path, e);
+                    return ExitCode::FAILURE;
+                }
+                println!("Wrote {} ({} bytes)", path, data.len());
             }
-            println!("Wrote {} ({} bytes)", output_path, data.len());
             match outcome {
                 ConstraintOutcome::AllSatisfied => ExitCode::SUCCESS,
                 ConstraintOutcome::SomeIndeterminate(n) => {
@@ -1739,6 +1793,33 @@ mod tests {
             "should use id Display as fallback, got: {}",
             output
         );
+    }
+
+    /// Piece-1 force-link pin: asserts that `reify-kernel-manifold`'s
+    /// `inventory::submit!` fires inside this binary so the Manifold kernel
+    /// appears in the global registry.  This MUST be an in-`main.rs` unit test
+    /// because reify-cli is a `[[bin]]` crate — subprocess integration tests
+    /// can't observe the binary's link set.
+    ///
+    /// Manifold's `inventory::submit!` is unconditional (no `cfg(has_*)` gate),
+    /// so `"manifold"` is asserted without a runtime flag.  OCCT's submit is
+    /// `cfg(has_occt)`-gated, so we guard that assertion on
+    /// `reify_kernel_occt::OCCT_AVAILABLE`.
+    #[test]
+    fn manifold_kernel_is_force_linked_into_binary() {
+        let registry = reify_eval::collect_registry();
+        assert!(
+            registry.contains_key("manifold"),
+            "reify-kernel-manifold's inventory::submit! must land in this binary; \
+             \"manifold\" key is absent — check Cargo.toml dep + extern crate declaration",
+        );
+        if reify_kernel_occt::OCCT_AVAILABLE {
+            assert!(
+                registry.contains_key("occt"),
+                "OCCT_AVAILABLE is true but \"occt\" key missing from collect_registry() — \
+                 reify-kernel-occt inventory::submit! did not fire",
+            );
+        }
     }
 
     #[test]

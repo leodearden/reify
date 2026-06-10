@@ -1952,6 +1952,10 @@ impl Engine {
                     // snapshot graph node below via disjoint-field borrows
                     // of `self.geometry_kernels` vs. `self.eval_state`.
                     let mut produced_repr_out: Option<ReprKind> = None;
+                    // Task 4248 piece-3: capture step_handles length before
+                    // this realization to identify its terminal handle (mirrors
+                    // the handle_start bookkeeping in build() at ~:2299).
+                    let handle_start_snap = step_handles.len();
                     Engine::execute_realization_ops(
                         &mut self.geometry_kernels,
                         &registry_borrowed,
@@ -1994,12 +1998,22 @@ impl Engine {
                     // executor borrows above. On rollback / no-op the
                     // executor leaves the channel `None` and we skip the
                     // write so the construction-time default survives.
-                    if let Some(repr) = produced_repr_out
-                        && let Some(state) = self.eval_state.as_mut()
+                    //
+                    // Task 4248 piece-3: also write `produced_kernel` from the
+                    // terminal KernelHandle (step_handles grew ↔ ops executed).
+                    // Independent of produced_repr_out so cache-hit realizations
+                    // that set only one channel still record their kernel.
+                    if let Some(state) = self.eval_state.as_mut()
                         && let Some(node) =
                             state.snapshot.graph.realizations.get_mut(&realization.id)
                     {
-                        node.produced_repr = repr;
+                        if let Some(repr) = produced_repr_out {
+                            node.produced_repr = repr;
+                        }
+                        if step_handles.len() > handle_start_snap {
+                            node.produced_kernel =
+                                step_handles.last().map(|h| h.kernel);
+                        }
                     }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
@@ -2373,12 +2387,22 @@ impl Engine {
                     // `build_snapshot` mirror for the full rationale; both
                     // call sites use disjoint-field borrows of
                     // `self.geometry_kernels` vs. `self.eval_state`.
-                    if let Some(repr) = produced_repr_out
-                        && let Some(state) = self.eval_state.as_mut()
+                    //
+                    // Task 4248 piece-3: also write `produced_kernel` from the
+                    // terminal KernelHandle already bookmarked above via
+                    // `handle_start` / `terminal_handles[t_idx][r_idx]`.
+                    // Independent of produced_repr_out so cache-hit realizations
+                    // still record their kernel.
+                    if let Some(state) = self.eval_state.as_mut()
                         && let Some(node) =
                             state.snapshot.graph.realizations.get_mut(&realization.id)
                     {
-                        node.produced_repr = repr;
+                        if let Some(repr) = produced_repr_out {
+                            node.produced_repr = repr;
+                        }
+                        if step_handles.len() > handle_start {
+                            node.produced_kernel = step_handles.last().map(|h| h.kernel);
+                        }
                     }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one

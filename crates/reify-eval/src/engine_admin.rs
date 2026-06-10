@@ -356,12 +356,14 @@ impl Engine {
     /// (task 4050): return the terminal `KernelHandle` cached for a realization
     /// at `(entity, repr, tol, NO_OPTIONS)`, or `None` if no entry satisfies.
     ///
-    /// The terminal handle is not graph-observable (a `RealizationNodeData`
-    /// stores only `produced_repr: ReprKind`, not the originating `KernelId`),
-    /// so the cross-kernel-handoff test reads it back through the realization
-    /// cache to assert the terminal kernel is Manifold (gap-3 cross-kernel
-    /// routing). `KernelHandle` is `Copy`, so the borrowed cache entry is copied
-    /// out without disturbing the cache.
+    /// The terminal handle is now graph-observable via
+    /// [`Self::realization_kernel_provenance`] (task 4248): `RealizationNodeData`
+    /// carries `produced_kernel: Option<KernelId>` written at execution time.
+    /// This test-gated accessor provides direct cache access (by entity+repr+tol
+    /// key) for the cross-kernel-handoff test that needs to assert the terminal
+    /// kernel is Manifold (gap-3 cross-kernel routing).  `KernelHandle` is
+    /// `Copy`, so the borrowed cache entry is copied out without disturbing
+    /// the cache.
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn test_terminal_handle(
         &self,
@@ -372,6 +374,63 @@ impl Engine {
         self.realization_cache
             .lookup(entity, repr, tol, crate::NO_OPTIONS)
             .copied()
+    }
+
+    /// Return per-realization terminal-kernel provenance for the most recent
+    /// `build()` or `build_snapshot()` call (task 4248, piece 3).
+    ///
+    /// Reads the snapshot graph and returns one [`crate::graph::RealizationKernelProvenance`]
+    /// entry per realization whose `produced_kernel` is `Some` (i.e. has been
+    /// executed at least once).  Entries are sorted by `realization` id for
+    /// deterministic CLI output.
+    ///
+    /// Production counterpart to the `#[cfg(any(test, feature =
+    /// "test-instrumentation"))]`-gated [`Self::test_terminal_handle`]: where
+    /// that accessor reads the realization cache by entity+repr+tol key, this
+    /// one reads the graph node's `produced_kernel` field directly, making the
+    /// terminal kernel fully graph-observable without any test-only seam.
+    ///
+    /// Returns an empty `Vec` if no `build` / `build_snapshot` has been called
+    /// yet, or if no realization produced a kernel handle (e.g. all constraint-
+    /// only runs).
+    pub fn realization_kernel_provenance(
+        &self,
+    ) -> Vec<crate::graph::RealizationKernelProvenance> {
+        let Some(state) = self.eval_state.as_ref() else {
+            return Vec::new();
+        };
+        let mut entries: Vec<crate::graph::RealizationKernelProvenance> = state
+            .snapshot
+            .graph
+            .realizations
+            .values()
+            .filter_map(|node| {
+                node.produced_kernel.map(|kernel| {
+                    crate::graph::RealizationKernelProvenance {
+                        realization: node.id.to_string(),
+                        repr: node.produced_repr,
+                        kernel,
+                    }
+                })
+            })
+            .collect();
+        // Sort by (entity, numeric index) so entries appear in human-intuitive
+        // order (0, 1, 2, ..., 10) rather than lexicographic string order
+        // (which would give ..., [1], [10], [11], [2], ...).  The realization
+        // ID format is "EntityName#realization[N]"; we parse N as u32 and fall
+        // back to (whole_string, u32::MAX) for any unrecognised format so the
+        // sort remains total and deterministic for diff-stable CLI output.
+        entries.sort_by_key(|a| {
+            a.realization
+                .split_once("#realization[")
+                .and_then(|(entity, rest)| {
+                    rest.strip_suffix(']')
+                        .and_then(|idx| idx.parse::<u32>().ok())
+                        .map(|idx| (entity.to_owned(), idx))
+                })
+                .unwrap_or_else(|| (a.realization.clone(), u32::MAX))
+        });
+        entries
     }
 
     /// Return a reference to the feature-tag table populated by the most recent
