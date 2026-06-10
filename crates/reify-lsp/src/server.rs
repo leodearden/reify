@@ -529,22 +529,8 @@ impl LanguageServer for ReifyLanguageServer {
             let parsed = doc.parsed_module();
             let primary_source = doc.text.as_str();
             if let Some(root) = workspace_root {
-                let stdlib_root =
-                    stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
-                let resolver = reify_compiler::module_dag::ModuleResolver::new(root.clone(), stdlib_root);
-                // Build workspace_docs here (blocking context) so the disk walk
-                // for closed importers is off the async worker thread.  Open-buffer
-                // text overrides the on-disk copy for already-open files.
-                let workspace_docs = build_workspace_docs(&root, &open_docs);
-                let resolve_import = |import_path: &str| -> Option<(Url, String)> {
-                    let path = resolver.resolve_import_path(import_path).ok()?;
-                    let source = open_docs
-                        .get(&path)
-                        .cloned()
-                        .or_else(|| std::fs::read_to_string(&path).ok())?;
-                    let target_uri = Url::from_file_path(&path).ok()?;
-                    Some((target_uri, source))
-                };
+                let (workspace_docs, resolve_import) =
+                    build_cross_file_rig(&root, stdlib_path, open_docs);
                 crate::references::compute_rename_cross_file(
                     primary_source,
                     &parsed,
@@ -597,22 +583,8 @@ impl LanguageServer for ReifyLanguageServer {
             let parsed = doc.parsed_module();
             let primary_source = doc.text.as_str();
             if let Some(root) = workspace_root {
-                let stdlib_root =
-                    stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
-                let resolver = reify_compiler::module_dag::ModuleResolver::new(root.clone(), stdlib_root);
-                // Build workspace_docs here (blocking context) so the disk walk
-                // for closed importers is off the async worker thread.  Open-buffer
-                // text overrides the on-disk copy for already-open files.
-                let workspace_docs = build_workspace_docs(&root, &open_docs);
-                let resolve_import = |import_path: &str| -> Option<(Url, String)> {
-                    let path = resolver.resolve_import_path(import_path).ok()?;
-                    let source = open_docs
-                        .get(&path)
-                        .cloned()
-                        .or_else(|| std::fs::read_to_string(&path).ok())?;
-                    let target_uri = Url::from_file_path(&path).ok()?;
-                    Some((target_uri, source))
-                };
+                let (workspace_docs, resolve_import) =
+                    build_cross_file_rig(&root, stdlib_path, open_docs);
                 crate::references::compute_references_cross_file(
                     primary_source,
                     &parsed,
@@ -722,6 +694,43 @@ fn build_workspace_docs(root: &std::path::Path, open: &HashMap<PathBuf, String>)
         }
     }
     docs
+}
+
+/// Build the shared cross-file rig used by the `references` and `rename` handlers.
+///
+/// Returns `(workspace_docs, resolve_import)` where:
+/// - `workspace_docs` is the disk-walk result merged with the open-buffer snapshot
+///   (open text wins on path collision); see [`build_workspace_docs`].
+/// - `resolve_import` maps an import-path string to `(Url, source)`, preferring
+///   the in-memory buffer over the on-disk copy.
+///
+/// **Per-request cost:** called inside `spawn_blocking` so it does not stall the
+/// async worker, but the disk walk performs O(files) syscalls and reads every
+/// `*.ri` file from disk on every call.  Rename / references latency therefore
+/// scales linearly with project size and the read results are discarded after
+/// each request.  A persistent incremental index (keyed by mtime / dir-generation)
+/// is the documented follow-up optimisation.
+fn build_cross_file_rig(
+    root: &std::path::Path,
+    stdlib_path: Option<PathBuf>,
+    open_docs: HashMap<PathBuf, String>,
+) -> (
+    Vec<(Url, String)>,
+    impl Fn(&str) -> Option<(Url, String)>,
+) {
+    let stdlib_root = stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(root.to_path_buf(), stdlib_root);
+    let workspace_docs = build_workspace_docs(root, &open_docs);
+    let resolve_import = move |import_path: &str| -> Option<(Url, String)> {
+        let path = resolver.resolve_import_path(import_path).ok()?;
+        let source = open_docs
+            .get(&path)
+            .cloned()
+            .or_else(|| std::fs::read_to_string(&path).ok())?;
+        let target_uri = Url::from_file_path(&path).ok()?;
+        Some((target_uri, source))
+    };
+    (workspace_docs, resolve_import)
 }
 
 /// Recursively collect `*.ri` files from `dir` into `docs`.

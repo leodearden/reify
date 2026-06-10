@@ -340,7 +340,12 @@ export function Editor(props: EditorProps) {
             });
           // Invalidate cached EditorState so switching to this tab reloads from
           // the updated store content rather than the pre-rename CM snapshot.
-          fileStates.delete(uri);
+          // Use pathToUri(key) — the same decoded, non-percent-encoded form that
+          // fileStates entries are keyed by — rather than the raw WorkspaceEdit URI
+          // (which may be percent-encoded by Url::from_file_path on the backend).
+          // For ASCII-only paths both are equal; for paths with spaces/non-ASCII the
+          // raw URI would be a no-op delete and leave a stale EditorState in the map.
+          fileStates.delete(pathToUri(key));
         },
         applyClosed: (uri, edits) => {
           const path = normalizePath(uri);

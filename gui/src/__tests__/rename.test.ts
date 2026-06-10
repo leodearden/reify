@@ -156,10 +156,9 @@ describe('applyTextEditsToString', () => {
     const result = applyTextEditsToString(source, [
       { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 99 } }, newText: 'X' },
     ]);
-    // Clamped to include up to and including the newline (line.to = 3, before newline),
-    // or to end of 'abc' (char 3). Result should not throw and should replace 'abc'.
-    expect(result).not.toBeNull();
-    expect(result.startsWith('X')).toBe(true);
+    // character 99 clamps to end of 'abc' (char 3), so the whole 'abc' is replaced by 'X'
+    // and the trailing newline is preserved.  Exact expected string: 'X\n'.
+    expect(result).toBe('X\n');
   });
 });
 
