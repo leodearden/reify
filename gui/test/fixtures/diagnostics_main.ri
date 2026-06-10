@@ -1,0 +1,18 @@
+// diagnostics_main.ri — primary fixture for the diagnostics e2e smoke.
+//
+// This is the file opened at boot (MAIN fixture) in smoke_diagnostics_e2e.mjs.
+// It must be a small, VALID, parseable .ri structure — no spurious real compile
+// diagnostics so that the injected diagnostics are unambiguous.
+//
+// Injected line-tied diagnostic for in-file jump:
+//   file_path: <abs path of this file>
+//   line: 10  (1-based, the "let side = 20mm" line below)
+//   column: 7
+
+structure DiagnosticsMain {
+    param width: Length = 50mm
+    param height: Length = 40mm
+    let side = 20mm
+
+    let body = box(width, height, side)
+}

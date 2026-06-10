@@ -1,0 +1,19 @@
+// diagnostics_helper.ri — cross-file navigation target for the diagnostics e2e smoke.
+//
+// This is the HELPER fixture opened by click-navigate in smoke_diagnostics_e2e.mjs.
+// It is independent of diagnostics_main.ri — no import edge is needed because
+// navigateToDiagnostic opens files by file_path + disk-readability, not import graph.
+// It must be a small, VALID, parseable .ri structure.
+//
+// Injected line-tied diagnostic for cross-file jump:
+//   file_path: <abs path of this file>
+//   line: 10  (1-based, the "let depth = 15mm" line below)
+//   column: 7
+
+structure DiagnosticsHelper {
+    param radius: Length = 30mm
+    param height: Length = 60mm
+    let depth = 15mm
+
+    let body = box(radius, height, depth)
+}
