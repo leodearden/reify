@@ -14,8 +14,10 @@
 
 import { vi } from 'vitest';
 import { createRoot } from 'solid-js';
+import { render } from '@solidjs/testing-library';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import * as bridge from '../bridge';
 import type { DebugStores } from '../debug/types';
 import { createEditorStore } from '../stores/editorStore';
 import { createSelectionStore } from '../stores/selectionStore';
@@ -23,6 +25,7 @@ import { createEngineStore } from '../stores/engineStore';
 import { createLayoutStore } from '../stores/layoutStore';
 import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 import { initDebugBridge } from '../debug/bridge';
+import { Editor } from '../editor/Editor';
 
 // ── FIXTURE ───────────────────────────────────────────────────────────────────
 
@@ -202,31 +205,27 @@ export function createLspResponseFor(method: string, paramsJson: string): string
   }
 }
 
-// ── Store factory ─────────────────────────────────────────────────────────────
+// ── Affordance component rendering ───────────────────────────────────────────
 
 /**
- * Build a DebugStores object backed by real store factories.
+ * Renders the real Editor component with the harness editorStore.
  *
- * NOTE: must be called inside a Solid reactive root (or inside render()) so that
- * createSelectionStore's createEffect() has an owner and can be disposed cleanly.
+ * Must be called AFTER setupBridgeHarness() so that window.__REIFY_DEBUG__ is
+ * already set; Editor's onMount then immediately registers ctx.editorView.
+ *
+ * Spies on bridge.updateSource to avoid real Tauri IPC on the edit debounce.
+ * Returns the render result (for cleanup via @solidjs/testing-library cleanup()).
  */
-export function makeBaseStores(): DebugStores {
-  const editorStore = createEditorStore();
-  const selectionStore = createSelectionStore();
-  const engineStore = createEngineStore();
-  const layoutStore = createLayoutStore();
-  const viewState = makeViewStateStoreMock();
+export function renderEditorInHarness(
+  harness: HarnessSetup,
+): ReturnType<typeof render> {
+  // Prevent real Tauri IPC when the 300ms edit debounce fires after tests.
+  vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+  vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
 
-  return {
-    engine: engineStore as DebugStores['engine'],
-    editor: editorStore as DebugStores['editor'],
-    selection: selectionStore as DebugStores['selection'],
-    claude: {
-      state: { messages: [], sessionStatus: 'idle', currentMessageId: null },
-    },
-    viewState,
-    layout: layoutStore as DebugStores['layout'],
-  };
+  return render(() => (
+    <Editor store={harness.editorStore} />
+  ));
 }
 
 // ── dispatchCmd helper ────────────────────────────────────────────────────────
@@ -258,21 +257,36 @@ export async function dispatchCmd(
 
 // ── Harness setup ─────────────────────────────────────────────────────────────
 
+/** Full harness context returned by setupBridgeHarness(). */
+export interface HarnessSetup {
+  /** Captured debug-request handler — pass to dispatchCmd / makeDispatch. */
+  handler: DebugRequestHandler;
+  /** DebugStores for inspecting bridge state. */
+  stores: DebugStores;
+  /**
+   * Full editorStore (superset of DebugStores['editor']).
+   * Pass to Editor component so it has access to markDirty, canSave, etc.
+   */
+  editorStore: ReturnType<typeof createEditorStore>;
+  /**
+   * Full selectionStore (superset of DebugStores['selection']).
+   * Pass to DesignTree's onHover/hoveredEntity props.
+   */
+  selectionStore: ReturnType<typeof createSelectionStore>;
+  /** Recorder of all invoke('lsp_request', ...) calls made after bridge init. */
+  lspCalls: LspCall[];
+  /** Dispose the reactive root created for the stores. */
+  dispose: () => void;
+}
+
 /**
  * Initializes the debug bridge with real stores and sets up the invoke mock to route
  * lsp_request calls through the contract-faithful router.
  *
- * Returns the captured debug-request handler, the stores, and an lspCalls recorder.
- *
  * Call BEFORE render() so that initDebugBridge sets window.__REIFY_DEBUG__ and
  * component onMount hooks register into ctx (editorView, designTree, etc.).
  */
-export async function setupBridgeHarness(): Promise<{
-  handler: DebugRequestHandler;
-  stores: DebugStores;
-  lspCalls: LspCall[];
-  dispose: () => void;
-}> {
+export async function setupBridgeHarness(): Promise<HarnessSetup> {
   const lspCalls: LspCall[] = [];
 
   // Route invoke calls: lsp_request → router; others → undefined (debug_response, update_selection, etc.)
@@ -296,11 +310,25 @@ export async function setupBridgeHarness(): Promise<{
   });
 
   // Create stores inside a reactive root so createEffect (selectionStore) has an owner.
+  let editorStore!: ReturnType<typeof createEditorStore>;
+  let selectionStore!: ReturnType<typeof createSelectionStore>;
   let stores!: DebugStores;
   let dispose!: () => void;
   createRoot((d) => {
     dispose = d;
-    stores = makeBaseStores();
+    editorStore = createEditorStore();
+    selectionStore = createSelectionStore();
+    const engineStore = createEngineStore();
+    const layoutStore = createLayoutStore();
+    const viewState = makeViewStateStoreMock();
+    stores = {
+      engine: engineStore as DebugStores['engine'],
+      editor: editorStore as DebugStores['editor'],
+      selection: selectionStore as DebugStores['selection'],
+      claude: { state: { messages: [], sessionStatus: 'idle', currentMessageId: null } },
+      viewState,
+      layout: layoutStore as DebugStores['layout'],
+    };
   });
 
   await initDebugBridge(stores);
@@ -309,7 +337,7 @@ export async function setupBridgeHarness(): Promise<{
     throw new Error('initDebugBridge did not register a debug-request handler');
   }
 
-  return { handler: capturedHandler, stores, lspCalls, dispose };
+  return { handler: capturedHandler, stores, editorStore, selectionStore, lspCalls, dispose };
 }
 
 /**
