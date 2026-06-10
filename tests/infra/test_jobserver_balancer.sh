@@ -1103,4 +1103,39 @@ assert "Scenario B: idle-reset drives pools back to merge-favored baseline (merg
 
 _cleanup_balancer
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 12: env-var validation — EPSILON and IDLE_RESET_TICKS error paths (test-12)
+#   Spawns python3 with invalid env values; asserts exit code 1.
+#   Module-level guards run before main(), so the process exits immediately
+#   without creating or touching any FIFOs (hermetic by construction).
+#   Mirrors the TOKENS/POLL_INTERVAL validation discipline (α pattern).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 12: env-var validation — bad EPSILON + bad IDLE_RESET_TICKS ---"
+
+# REIFY_JOBSERVER_EPSILON=0 → below minimum (< 1), must exit 1
+_b12_eps0=0
+REIFY_JOBSERVER_EPSILON=0 python3 "$BALANCER" 2>/dev/null || _b12_eps0=$?
+assert "REIFY_JOBSERVER_EPSILON=0 exits 1 (below minimum)" \
+    test "$_b12_eps0" -eq 1
+
+# REIFY_JOBSERVER_EPSILON=abc → non-integer, must exit 1
+_b12_epsabc=0
+REIFY_JOBSERVER_EPSILON=abc python3 "$BALANCER" 2>/dev/null || _b12_epsabc=$?
+assert "REIFY_JOBSERVER_EPSILON=abc exits 1 (not an integer)" \
+    test "$_b12_epsabc" -eq 1
+
+# REIFY_JOBSERVER_IDLE_RESET_TICKS=0 → below minimum (< 1), must exit 1
+# (EPSILON defaults to 1, so validation reaches the IDLE_RESET_TICKS guard)
+_b12_irt0=0
+REIFY_JOBSERVER_IDLE_RESET_TICKS=0 python3 "$BALANCER" 2>/dev/null || _b12_irt0=$?
+assert "REIFY_JOBSERVER_IDLE_RESET_TICKS=0 exits 1 (below minimum)" \
+    test "$_b12_irt0" -eq 1
+
+# REIFY_JOBSERVER_IDLE_RESET_TICKS=abc → non-integer, must exit 1
+_b12_irtabc=0
+REIFY_JOBSERVER_IDLE_RESET_TICKS=abc python3 "$BALANCER" 2>/dev/null || _b12_irtabc=$?
+assert "REIFY_JOBSERVER_IDLE_RESET_TICKS=abc exits 1 (not an integer)" \
+    test "$_b12_irtabc" -eq 1
+
 test_summary
