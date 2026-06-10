@@ -658,6 +658,28 @@ pub(super) fn check_phase_pre_register_default_types(
         }
     }
 
+    // Pass 2 post-pass: register unannotated Let defaults that were skipped by Pass 2's
+    // `!structure_members.contains_key(name)` guard (conformer already declares the name).
+    // These names are absent from `inferred_let_exprs` and `pass2_compile_errors` because
+    // compilation was never attempted, and absent from `pass2_skipped` because
+    // `register_if_absent` was never called. Without this registration,
+    // `check_phase_build_available_defaults_map`'s debug_assert! at :802 fires:
+    //
+    //   cell_type.is_some() || inferred_let_exprs.contains_key(&key)
+    //
+    // Adding the name to `pass2_skipped` satisfies the guard at :777-778
+    // (`cell_type.is_none() && pass2_skipped.contains(name) → return None`),
+    // correctly excluding the default from the available_defaults advertisement map —
+    // there is nothing to advertise because the conformer member overrides it.
+    for default in &ctx.defaults {
+        if let Some(name) = &default.name
+            && structure_members.contains_key(name.as_str())
+            && let DefaultKind::Let { cell_type: None, .. } = &default.kind
+        {
+            pass2_skipped.insert(name.to_string());
+        }
+    }
+
     PreRegisterOutput {
         inferred_let_exprs,
         pass1_skipped,
