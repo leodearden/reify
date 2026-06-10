@@ -55,6 +55,7 @@ import {
   FIXTURE_PATH,
   setupBridgeHarness,
   renderEditorInHarness,
+  renderEditorWithFindUsesPanel,
   makeDispatch,
   type DebugRequestHandler,
   type LspCall,
@@ -156,9 +157,8 @@ describe('find-references (step-3 RED → step-4 GREEN)', () => {
     harness = await setupBridgeHarness();
     dispatch = makeDispatch(harness.handler);
 
-    // step-3 RED: renderEditorInHarness renders only Editor (no FindUsesPanel).
-    // step-4 GREEN: replace with renderEditorWithFindUsesPanel(harness).
-    renderEditorInHarness(harness);
+    // step-4 GREEN: render Editor + FindUsesPanel with onShowReferences wiring.
+    renderEditorWithFindUsesPanel(harness);
 
     // Open the two-structure fixture.
     await dispatch('open_file', { path: FIXTURE_PATH, content: FIXTURE });
@@ -194,7 +194,6 @@ describe('find-references (step-3 RED → step-4 GREEN)', () => {
     expect(refsParams.context.includeDeclaration).toBe(true);
 
     // (faces frontend) FindUsesPanel shows 2 rows — PartA.width ×2 (decl + use).
-    // step-3 RED: this assertion FAILS because FindUsesPanel is not rendered yet.
     const rows = document.querySelectorAll('[data-testid="find-use-row"]');
     expect(rows.length).toBe(2);
   });

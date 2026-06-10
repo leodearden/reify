@@ -13,7 +13,7 @@
  */
 
 import { vi } from 'vitest';
-import { createRoot } from 'solid-js';
+import { createRoot, createSignal } from 'solid-js';
 import { render } from '@solidjs/testing-library';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -26,6 +26,8 @@ import { createLayoutStore } from '../stores/layoutStore';
 import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 import { initDebugBridge } from '../debug/bridge';
 import { Editor } from '../editor/Editor';
+import { FindUsesPanel } from '../panels/FindUsesPanel';
+import type { ReferenceResult } from '../editor/references';
 
 // ── FIXTURE ───────────────────────────────────────────────────────────────────
 
@@ -226,6 +228,51 @@ export function renderEditorInHarness(
   return render(() => (
     <Editor store={harness.editorStore} />
   ));
+}
+
+/**
+ * Renders the real Editor + FindUsesPanel with the App-equivalent onShowReferences
+ * wiring (step-4 GREEN). Returns the render result and signal accessors so tests
+ * can inspect the panel state.
+ *
+ * Editor's onShowReferences callback feeds the results signal → FindUsesPanel
+ * re-renders reactively with the matched find-use-row elements.
+ *
+ * Must be called AFTER setupBridgeHarness() so window.__REIFY_DEBUG__ is set.
+ */
+export function renderEditorWithFindUsesPanel(
+  harness: HarnessSetup,
+): {
+  renderResult: ReturnType<typeof render>;
+  findUsesOpen: () => boolean;
+  findUsesResults: () => ReferenceResult[];
+  setFindUsesOpen: (v: boolean) => void;
+} {
+  vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+  vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+
+  const [findUsesOpen, setFindUsesOpen] = createSignal(false);
+  const [findUsesResults, setFindUsesResults] = createSignal<ReferenceResult[]>([]);
+
+  const renderResult = render(() => (
+    <div>
+      <Editor
+        store={harness.editorStore}
+        onShowReferences={(results) => {
+          setFindUsesResults(() => results);
+          setFindUsesOpen(true);
+        }}
+      />
+      <FindUsesPanel
+        open={findUsesOpen()}
+        results={findUsesResults()}
+        onClose={() => setFindUsesOpen(false)}
+        onNavigate={() => {}}
+      />
+    </div>
+  ));
+
+  return { renderResult, findUsesOpen, findUsesResults, setFindUsesOpen };
 }
 
 // ── dispatchCmd helper ────────────────────────────────────────────────────────
