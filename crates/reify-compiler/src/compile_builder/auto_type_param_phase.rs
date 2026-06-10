@@ -53,7 +53,10 @@ use crate::types::{
 /// provably falsified, matching the documented v0.1/v0.2 behaviour. When the
 /// v0.2 substitution pass (M-013) lands, this stub can be swapped for a real
 /// evaluator without touching the call-site signature.
-struct CompileTimeIndeterminateChecker;
+///
+/// Promoted to `pub(crate)` so `lib.rs`'s default-stub wrappers can construct
+/// `&CompileTimeIndeterminateChecker` without widening the public API.
+pub(crate) struct CompileTimeIndeterminateChecker;
 
 impl ConstraintChecker for CompileTimeIndeterminateChecker {
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
@@ -110,9 +113,14 @@ fn substitute_constraint_collection(
 /// Early-returns (leaving `ctx.auto_type_substitution` at its empty default)
 /// when no `auto:` type-args were declared — the load-bearing empty-substitution
 /// invariant that keeps `topology_fingerprint` stable for modules without `auto:`.
+///
+/// `checker` is threaded in from the caller: the public default entry points
+/// pass `&CompileTimeIndeterminateChecker`; callers that inject the real
+/// `SimpleConstraintChecker` use the `*_checked` entry point siblings in `lib.rs`.
 pub(crate) fn phase_auto_type_param_resolution(
     ctx: &mut CompilationCtx,
     prelude: &[&CompiledModule],
+    checker: &dyn ConstraintChecker,
 ) {
     // Empty-queue early-out: the common case (no `auto:` type-args anywhere).
     // Leaving `auto_type_substitution` at its empty default is load-bearing for
@@ -121,8 +129,6 @@ pub(crate) fn phase_auto_type_param_resolution(
     if ctx.pending_auto_resolutions.is_empty() {
         return;
     }
-
-    let checker = CompileTimeIndeterminateChecker;
     let requests = std::mem::take(&mut ctx.pending_auto_resolutions);
 
     // Pass 1 — resolve every request while holding immutable registry borrows.
@@ -203,7 +209,7 @@ pub(crate) fn phase_auto_type_param_resolution(
                 &template_registry,
                 &trait_registry,
                 target,
-                &checker,
+                checker,
                 functions,
                 reify_config::DEFAULT_AUTO_TYPE_PARAM_MAX_DEPTH,
                 reify_config::DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE,
