@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # Infrastructure guard for gui/test/visual/run_find_uses_smoke.sh (task 4456).
 #
-# Pins the readiness-race fix (reviewer finding: flaky_test_readiness_race):
-#   1. Structural — synchronous cargo build precedes the backgrounded launcher.
-#   2. Structural — that cargo-build line precedes the '&' background line.
-#   3. Structural — kill -0 liveness check + REIFY_SMOKE_WAIT_MS are present.
-#   4. Behavioral/hermetic — launcher-death aborts early (not at deadline).
+# Pins the readiness-race fix (reviewer finding: flaky_test_readiness_race)
+# *behaviorally*: it runs the real runner with a launcher stub that dies
+# immediately and asserts the liveness guard aborts early (non-zero, fast)
+# rather than blocking until the full readiness deadline.
+#
+# NOTE: deliberately NO source-text/grep assertions. Greppping the runner for
+# literal fragments (`kill -0`, `REIFY_SMOKE_WAIT_MS`, the `&` launcher line)
+# matches the runner's own header COMMENTS as well as its executable code, so a
+# regression that deletes the liveness logic but leaves the descriptive comment
+# would keep such contracts green — passing on the very failure they claim to
+# pin. The behavioral contract below is the only one that proves behavior.
 #
 # Auto-discovered by tests/infra/run_all.sh (matches test_*.sh pattern).
 
@@ -19,45 +25,14 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 RUNNER="$REPO_ROOT/gui/test/visual/run_find_uses_smoke.sh"
 
-echo "=== test_find_uses_smoke_runner: readiness-race-fix contracts ==="
-
-# -- Contract 1: synchronous 'cargo build -p reify-gui' present ---------------
-echo ""
-echo "--- Contract 1: runner invokes 'cargo build -p reify-gui' (synchronous pre-build) ---"
+echo "=== test_find_uses_smoke_runner: readiness-race-fix contract ==="
 
 assert "runner exists" \
     test -f "$RUNNER"
 
-assert "runner contains 'cargo build -p reify-gui'" \
-    grep -q 'cargo build -p reify-gui' "$RUNNER"
-
-# -- Contract 2: cargo-build line precedes the backgrounded launcher ('&') ----
+# -- Behavioral contract: launcher-death causes early abort -------------------
 echo ""
-echo "--- Contract 2: cargo build precedes the backgrounded launcher ('&') ---"
-
-assert "runner contains a backgrounded launcher line (ends with '&')" \
-    bash -c "grep -qE 'run-gui-dev\.sh.*[[:space:]]&[[:space:]]*$|LAUNCHER.*[[:space:]]&[[:space:]]*$|bash.*\\.sh.*[[:space:]]&[[:space:]]*$' '$RUNNER'"
-
-assert "cargo build line precedes the background-launcher line" \
-    bash -c "
-        cargo_line=\$(grep -n 'cargo build -p reify-gui' '$RUNNER' | head -1 | cut -d: -f1)
-        bg_line=\$(grep -nE '\\\$.*LAUNCHER.*[[:space:]]&[[:space:]]*$|\\\$.*LAUNCHER.*[[:space:]]&$|run-gui-dev\.sh.*[[:space:]]&[[:space:]]*$|run-gui-dev\.sh.*[[:space:]]&$' '$RUNNER' | head -1 | cut -d: -f1)
-        [ -n \"\$cargo_line\" ] && [ -n \"\$bg_line\" ] && [ \"\$cargo_line\" -lt \"\$bg_line\" ]
-    "
-
-# -- Contract 3: kill -0 liveness check + REIFY_SMOKE_WAIT_MS present --------
-echo ""
-echo "--- Contract 3: kill -0 liveness check and REIFY_SMOKE_WAIT_MS present ---"
-
-assert "runner contains 'kill -0' (launcher liveness guard)" \
-    grep -q 'kill -0' "$RUNNER"
-
-assert "runner reads REIFY_SMOKE_WAIT_MS (env-driven readiness budget)" \
-    grep -q 'REIFY_SMOKE_WAIT_MS' "$RUNNER"
-
-# -- Contract 4: behavioral — launcher-death causes early abort ---------------
-echo ""
-echo "--- Contract 4: launcher-death causes early non-zero exit (not a timeout hang) ---"
+echo "--- Contract: launcher-death causes early non-zero exit (not a timeout hang) ---"
 
 _t4_tmpdir=$(mktemp -d)
 # shellcheck disable=SC2064
