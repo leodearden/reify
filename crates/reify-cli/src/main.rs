@@ -1441,21 +1441,24 @@ fn constraint_display_label(entry: &reify_eval::ConstraintCheckEntry) -> String 
 /// "why" (inputs undefined), then one indented line per `Indeterminate` entry
 /// using [`constraint_display_label`]. Only `Indeterminate` entries are listed;
 /// `Satisfied` and `Violated` entries are silently skipped.
+///
+/// `n` is the already-computed indeterminate count from
+/// [`ConstraintOutcome::SomeIndeterminate`]; it is used directly in the header
+/// to avoid recomputing the same count independently of [`report_constraint_results`].
 fn report_indeterminate_detail(
+    n: usize,
     results: &[reify_eval::ConstraintCheckEntry],
     out: &mut impl std::io::Write,
 ) {
-    let indet: Vec<_> = results
-        .iter()
-        .filter(|e| e.satisfaction == reify_ir::Satisfaction::Indeterminate)
-        .collect();
-    let count = indet.len();
     let _ = writeln!(
         out,
-        "Strict check failed: {count} constraint(s) INDETERMINATE \
+        "Strict check failed: {n} constraint(s) INDETERMINATE \
          \u{2014} inputs undefined (e.g. auto-params unresolved or geometry did not realize):"
     );
-    for entry in indet {
+    for entry in results
+        .iter()
+        .filter(|e| e.satisfaction == reify_ir::Satisfaction::Indeterminate)
+    {
         let _ = writeln!(out, "  {}", constraint_display_label(entry));
     }
 }
@@ -1612,7 +1615,7 @@ fn finish_check(
         }
         ConstraintOutcome::SomeIndeterminate(n) => {
             if strict {
-                report_indeterminate_detail(results, out);
+                report_indeterminate_detail(*n, results, out);
             } else {
                 let _ = writeln!(out, "No constraints violated ({n} indeterminate).");
             }
@@ -2201,7 +2204,7 @@ mod tests {
             make_entry("Foo", 3, None, Satisfaction::Indeterminate),
         ];
         let mut buf = Vec::new();
-        report_indeterminate_detail(&entries, &mut buf);
+        report_indeterminate_detail(2, &entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
 
         // (a) Header names the count (2) and mentions undefined inputs.
@@ -2241,7 +2244,7 @@ mod tests {
             make_entry("Part", 0, Some("load"), Satisfaction::Indeterminate),
         ];
         let mut buf = Vec::new();
-        report_indeterminate_detail(&entries, &mut buf);
+        report_indeterminate_detail(1, &entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
 
         // Count is 1 and the labelled constraint is listed.
