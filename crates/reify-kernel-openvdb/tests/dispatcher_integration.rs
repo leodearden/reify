@@ -32,8 +32,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{DispatchPlan, dispatcher, kernel_registry};
 use reify_ir::{
-    CapabilityDescriptor, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, KernelId,
-    Operation, ReprKind,
+    CapabilityDescriptor, GeometryError, GeometryKernel, KernelId, Mesh, Operation, ReprKind,
 };
 use reify_kernel_openvdb::register::openvdb_capability_descriptor;
 use reify_kernel_openvdb::OpenVdbKernel;
@@ -194,32 +193,33 @@ fn openvdb_dispatches_two_stage_chain_brep_to_voxel() {
     assert_two_stage_brep_to_voxel_plan();
 }
 
-/// Pins the planning-vs-execution contract for the BRep→Mesh→Voxel two-stage chain.
+/// Pins the planning + execution contract for the BRep→Mesh→Voxel two-stage chain
+/// after task β lands the executor wiring (task 4422 step-5).
 ///
 /// # What this test pins
 ///
 /// - **PLANNING**: `dispatcher::dispatch` with a synthetic `{ "occt": (Convert{BRep},Mesh),
 ///   "openvdb": descriptor }` registry resolves `(BooleanUnion, Voxel)` from `{BRep}` to
-///   `kernel="openvdb", conversions=[("occt",BRep,Mesh),("openvdb",Mesh,Voxel)]` — pinning
-///   the exact two-stage chain the reviewer flagged.
-/// - **EXECUTION (graceful degradation)**: calling `GeometryKernel::execute` on a freshly
-///   constructed `OpenVdbKernel` with a `GeometryOp::Union` (dummy handle IDs — `execute`
-///   short-circuits before reading them) returns `Err(GeometryError::OperationFailed(_))`,
-///   NOT a panic and NOT `Ok(_)` (which would be silent-wrong-geometry).
+///   `kernel="openvdb", conversions=[("occt",BRep,Mesh),("openvdb",Mesh,Voxel)]` (delegated
+///   to [`assert_two_stage_brep_to_voxel_plan`]).
+/// - **EXECUTION**: calling `GeometryKernel::ingest_mesh` on a freshly constructed
+///   `OpenVdbKernel` with a valid closed cube mesh (the primitive the β executor drives
+///   for the Mesh→Voxel leg of the two-stage chain) returns:
+///   - `Ok(handle)` under `cfg(has_openvdb)` — the voxel grid is produced.
+///   - `Err(GeometryError::OperationFailed(_))` under `cfg(not(has_openvdb))` — the stub
+///     gracefully degrades.
 ///
 /// # Contract documented
 ///
-/// The `(Convert{from:Mesh}, Voxel)` descriptor edge is a **PLANNING** declaration that
-/// lets the dispatcher BFS reach Voxel. The executable Mesh→Voxel primitive is
-/// `OpenVdbKernel::realize_voxel_from_mesh_with_options` (task η steps 5-6). Trait-`execute()`
-/// of the planned terminal Voxel op intentionally degrades to a typed error until task ε wires
-/// engine dispatch (no `GeometryOp` Mesh-input variant exists, so trait-execute routing is
-/// structurally deferred). This test makes the graceful-degradation contract visible from green CI.
+/// β's executor drives `ingest_mesh` (not trait-`execute()`) to voxelise the interchange mesh
+/// into the OpenVDB kernel. This test makes that positive primitive contract visible from green
+/// CI. The graceful-degradation path for stub builds preserves the prior test's guarantee.
 ///
-/// cfg-agnostic: both the real `kernel_real.rs` and stub `kernel.rs` return
-/// `GeometryError::OperationFailed` from `execute()` — no `cfg(has_openvdb)` split needed.
+/// Renamed from `openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully` (stale pin
+/// asserting trait-execute degradation "until task ε") — replaced with the positive Mesh→Voxel
+/// primitive contract landed by task α and exercised by task β's executor wiring.
 #[test]
-fn openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully() {
+fn openvdb_two_stage_chain_voxelize_primitive_executes() {
     // -----------------------------------------------------------------------
     // PLANNING side — pin the two-stage BRep→Mesh→Voxel dispatch chain via
     // the shared helper (avoids duplicating registry setup + plan assertions).
@@ -227,25 +227,57 @@ fn openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully() {
     assert_two_stage_brep_to_voxel_plan();
 
     // -----------------------------------------------------------------------
-    // EXECUTION side — terminal Voxel op through trait degrades gracefully.
+    // EXECUTION side — β executor drives ingest_mesh, not trait-execute().
     // -----------------------------------------------------------------------
-    // Drive the planned final-stage op through the GeometryKernel trait.
-    // execute() short-circuits before reading the handle IDs, so dummy IDs
-    // need no real Voxel handles / FFI.
+    // Build a closed 2.0 mm box mesh centred at the origin (8 corners, 12
+    // outward-wound triangles — the canonical α test fixture, identical to
+    // `box_2mm()` in crates/reify-kernel-openvdb/tests/ingest_mesh_densify_tests.rs).
+    #[allow(clippy::approx_constant)]
+    let cube = Mesh {
+        vertices: vec![
+            -1.0_f32, -1.0, -1.0, // 0
+             1.0,     -1.0, -1.0, // 1
+             1.0,      1.0, -1.0, // 2
+            -1.0,      1.0, -1.0, // 3
+            -1.0,     -1.0,  1.0, // 4
+             1.0,     -1.0,  1.0, // 5
+             1.0,      1.0,  1.0, // 6
+            -1.0,      1.0,  1.0, // 7
+        ],
+        #[rustfmt::skip]
+        indices: vec![
+            // Bottom (-Z)
+            0, 2, 1,  0, 3, 2,
+            // Top (+Z)
+            4, 5, 6,  4, 6, 7,
+            // Front (-Y)
+            0, 1, 5,  0, 5, 4,
+            // Back (+Y)
+            2, 3, 7,  2, 7, 6,
+            // Left (-X)
+            0, 4, 7,  0, 7, 3,
+            // Right (+X)
+            1, 2, 6,  1, 6, 5,
+        ],
+        normals: None,
+    };
+
     let mut k = OpenVdbKernel::new();
-    let r = GeometryKernel::execute(
-        &mut k,
-        &GeometryOp::Union {
-            left: GeometryHandleId(0),
-            right: GeometryHandleId(1),
-        },
+    let r = GeometryKernel::ingest_mesh(&mut k, &cube);
+
+    // Under the real kernel: ingest_mesh must succeed (voxelises the closed mesh).
+    #[cfg(has_openvdb)]
+    assert!(
+        r.is_ok(),
+        "ingest_mesh must succeed for a valid closed box under cfg(has_openvdb), got {:?}",
+        r,
     );
 
-    // Must be a typed, intentional error — NOT a panic, NOT Ok(_).
+    // Under the stub kernel: ingest_mesh degrades gracefully (no FFI available).
+    #[cfg(not(has_openvdb))]
     assert!(
         matches!(r, Err(GeometryError::OperationFailed(_))),
-        "execute() for a terminal Voxel op must degrade to GeometryError::OperationFailed, \
-         got {:?}",
+        "ingest_mesh must degrade to OperationFailed on the stub kernel, got {:?}",
         r,
     );
 }
