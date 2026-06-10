@@ -551,7 +551,7 @@ fn tool_defs() -> Vec<ToolDef> {
         ToolDef {
             name: "resize_panes",
             description: "Resize one or more layout panes by setting their pixel dimensions. \
-                          All five dimensions are optional; omit any to leave them unchanged. \
+                          All dimensions are optional; omit any to leave them unchanged. \
                           Accepts non-negative finite numbers. Returns { ok, layout } on success.",
             input_schema: json!({
                 "type": "object",
@@ -560,8 +560,25 @@ fn tool_defs() -> Vec<ToolDef> {
                     "sideWidth":         { "type": "number", "description": "Width of the side panel in pixels." },
                     "designTreeHeight":  { "type": "number", "description": "Height of the design tree panel in pixels." },
                     "propertyHeight":    { "type": "number", "description": "Height of the property panel in pixels." },
-                    "constraintHeight":  { "type": "number", "description": "Height of the constraint panel in pixels." }
+                    "constraintHeight":  { "type": "number", "description": "Height of the constraint panel in pixels." },
+                    "problemsHeight":    { "type": "number", "description": "Height of the diagnostics/problems panel in pixels (task-4404 ε)." }
                 }
+            }),
+        },
+        // --- C2+: read-only localStorage accessor (task-4404 ε, persistence scenario 5) ---
+        ToolDef {
+            name: "get_local_storage",
+            description: "Read a localStorage key from the frontend. \
+                          Returns { key, value, present } where value is the raw stored string \
+                          (or null when absent) and present is a boolean. \
+                          Used to verify that layout changes survived the debounced persistence \
+                          write (e.g. 'reify-panel-layout') without requiring a webview reload.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The localStorage key to read." }
+                },
+                "required": ["key"]
             }),
         },
         ToolDef {

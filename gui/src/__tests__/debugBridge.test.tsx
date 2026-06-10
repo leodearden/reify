@@ -3443,13 +3443,18 @@ describe('debug bridge resize_panes problemsHeight + get_local_storage', () => {
     window.localStorage.clear();
   });
 
-  /** makeStores extended with problems-panel layout fields (task-4404). */
+  /** makeStores extended with problems-panel layout fields (task-4404).
+   *  Setters update state so that the layout-echo in resize_panes reflects the new value. */
   function makeStoresWithProblems() {
     const s = makeStores();
     (s.layout.state as any).problemsHeight = 160;
     (s.layout.state as any).problemsCollapsed = true;
-    (s.layout as any).setProblemsHeight = vi.fn();
-    (s.layout as any).setProblemsCollapsed = vi.fn();
+    (s.layout as any).setProblemsHeight = vi.fn((v: number) => {
+      (s.layout.state as any).problemsHeight = v;
+    });
+    (s.layout as any).setProblemsCollapsed = vi.fn((v: boolean) => {
+      (s.layout.state as any).problemsCollapsed = v;
+    });
     return s;
   }
 
