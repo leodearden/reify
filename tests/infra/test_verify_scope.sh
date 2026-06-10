@@ -735,4 +735,30 @@ git -C "$FIX_VS_NEG" branch -q -D task-branch
 assert "VS-neg: plan lacks test_verify_*.sh glob (reify-doc not in artifact map)" \
     bash -c '! printf "%s\n" "$1" | grep -qE "tests/infra/test_verify_\*\.sh"' _ "$PLAN_VS_NEG"
 
+# ---------------------------------------------------------------------------
+# Scenario VS-incl: verify.sh change WITH --include-infra -> wholesale run_all.sh
+# present, selective test_verify_*.sh loop ABSENT (no double-run).
+# RED until step-4: step-2 emits the selective loop regardless of INCLUDE_INFRA.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario VS-incl: verify.sh change + --include-infra -> run_all.sh present, no selective loop (RED until step-4) ---"
+
+# plan_for_vs_change_incl — like plan_for_vs_change but passes --include-infra.
+# Reuses FIX_VS (restored to main by plan_for_vs_change above).
+plan_for_vs_change_incl() {
+    git -C "$FIX_VS" checkout -q -b task-branch
+    echo "# task-4523 verify.sh-change simulation sentinel (incl)" >> "$FIX_VS/scripts/verify.sh"
+    git -C "$FIX_VS" add scripts/verify.sh
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+plan_for_vs_change_incl
+assert "VS-incl: wholesale run_all.sh present (--include-infra fires)" \
+    plan_has 'tests/infra/run_all\.sh'
+assert "VS-incl: selective test_verify_*.sh loop ABSENT (no double-run under --include-infra)" \
+    plan_lacks 'tests/infra/test_verify_\*\.sh'
+
 test_summary
