@@ -5,8 +5,10 @@ jobserver-balancer.py — dual-FIFO custodian daemon for the Reify cargo jobserv
 Replaces the single 32-token FIFO seeder (reify-jobserver.service) with a
 daemon that seeds TWO FIFOs (merge + task) to a merge-favored baseline
 partition of nproc, holds both O_RDWR for its lifetime (contract C5), and
-runs a single-threaded control loop implementing the TRANSFER PRIMITIVE and
-minimal DONATE-IDLE tick (PRD docs/prds/jobserver-merge-priority-balancer.md).
+runs a single-threaded control loop implementing the full C4 policy (β):
+  donate-idle + contention ratchet (absolute merge priority) + ε give-back
+  + idle baseline-reset
+(PRD docs/prds/jobserver-merge-priority-balancer.md §4 C4).
 
 Environment variables (all optional, with sensible defaults):
   REIFY_JOBSERVER_MERGE_FIFO   Path of the merge-pool FIFO
@@ -322,42 +324,61 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handler)
     signal.signal(signal.SIGINT,  _handler)
 
-    # ── Control loop: SENSE → DONATE-IDLE ────────────────────────────────────
+    # ── Control loop: SENSE → idle_ticks → decide() → execute (β / full C4) ──
     #
     # Each tick:
     #   1. SENSE both pools via FIONREAD (non-destructive).
-    #   2. Apply the minimal symmetric DONATE-IDLE rule:
-    #      if donor.free > 0 and recipient.free == 0:
-    #          transfer ONE token (donor → recipient) via TRANSFER PRIMITIVE.
-    #   3. Sleep POLL_INTERVAL.
+    #   2. Maintain idle_ticks counter:
+    #        sum_free == TOKENS → nobody holding → increment idle_ticks
+    #        else              → tokens held (demand active) → reset to 0
+    #   3. Call decide(free_merge, free_task, …) for the C4 policy action.
+    #   4. Execute the action via _transfer_burst (spin-grab, C1-safe):
+    #        "t2m" → _transfer_burst(task_fd, merge_fd, count)
+    #        "m2t" → _transfer_burst(merge_fd, task_fd, count)
+    #        "none" → no-op
+    #   5. Sleep POLL_INTERVAL.
     #
-    # TRANSFER PRIMITIVE (C1 no-drop guarantee):
-    #   - Non-blocking read 1 byte from the donor fd.
-    #   - If EAGAIN/BlockingIOError: return without transferring.
-    #   - Otherwise: IMMEDIATELY write that byte to the recipient fd
-    #     (retrying on BlockingIOError) before returning.  A token is only
-    #     ever in-transit inside one read→write pair, never dropped.
+    # C4 policy summary (full details in decide() docstring):
+    #   IDLE   → reset toward baseline after IDLE_RESET_TICKS idle ticks
+    #   MERGE-DEMANDED (free_merge=0, task spare) → burst task→merge (monotone)
+    #   TASK-DEMANDED  (free_task=0, merge>ε)     → burst merge→task, retain ε
+    #   otherwise → no-op
     #
-    # One token per tick prevents oscillation in the common case (multiple
-    # free tokens in the donor): after the first donation the recipient leaves
-    # 0-free and the donate-idle condition no longer holds — transfer stops.
-    # The edge case (exactly one free token in the pool) can still exhibit
-    # per-tick oscillation; full anti-oscillation policy (C4 hysteresis /
-    # contention ratchet) is β's scope (PRD §4).
-    #
-    # The recipient-at-0-free state IS the 'live demand' signal (GNU-make
-    # jobserver semantics: a pool empties only when consumers hold its tokens).
+    # C1 conservation: _transfer_burst wraps _transfer (one token in-flight per
+    # inner call, never dropped), so total tokens == TOKENS throughout.
+    # GNU-jobserver demand signal: a pool reaching 0-free means consumers hold
+    # all its tokens — the balancer observes this via FIONREAD (non-destructive).
+
+    idle_ticks: int = 0
 
     while not _stop[0]:
-        # SENSE
+        # ── SENSE ──────────────────────────────────────────────────────────
         free_merge = fionread(merge_fd)
         free_task  = fionread(task_fd)
 
-        # DONATE-IDLE: transfer donor's free tokens to the demanding recipient
-        if free_merge > 0 and free_task == 0:
-            _transfer(merge_fd, task_fd)
-        elif free_task > 0 and free_merge == 0:
-            _transfer(task_fd, merge_fd)
+        # ── Maintain idle_ticks counter ────────────────────────────────────
+        if free_merge + free_task == TOKENS:
+            idle_ticks += 1
+        else:
+            idle_ticks = 0
+
+        # ── Decide → Execute (C4 policy) ───────────────────────────────────
+        action, count = decide(
+            free_merge=free_merge,
+            free_task=free_task,
+            tokens=TOKENS,
+            baseline_merge=merge_baseline,
+            baseline_task=task_baseline,
+            epsilon=EPSILON,
+            idle_ticks=idle_ticks,
+            idle_threshold=IDLE_RESET_TICKS,
+        )
+
+        if action == "t2m":
+            _transfer_burst(task_fd, merge_fd, count)
+        elif action == "m2t":
+            _transfer_burst(merge_fd, task_fd, count)
+        # "none" → no-op
 
         time.sleep(POLL_INTERVAL)
 
