@@ -62,6 +62,7 @@ make_branch_fixture() {
     cp "$REPO_ROOT/scripts/release-scope-lib.sh"         "$dir/scripts/release-scope-lib.sh"
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh"       "$dir/scripts/affected-crates-lib.sh"
+    cp "$REPO_ROOT/scripts/lib_test_semaphore.sh"        "$dir/scripts/lib_test_semaphore.sh"
     chmod +x "$dir/scripts/verify.sh"
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
