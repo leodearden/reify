@@ -412,10 +412,10 @@ export function renderEditorWithDesignTree(harness: HarnessSetup): {
       <DesignTree
         tree={FIXTURE_TREE}
         viewStateStore={viewStateMock}
-        // step-11 RED: intentionally not wired — selectionStore.hoverEntity not called.
-        // step-12 GREEN: wire onHover → selectionStore.hoverEntity.
-        onHover={() => {}}
-        hoveredEntity={null}
+        // step-12 GREEN: wire onHover → selectionStore.hoverEntity so the store
+        // reflects hover and the row's data-hovered prop updates reactively.
+        onHover={(path) => harness.selectionStore.hoverEntity(path)}
+        hoveredEntity={harness.selectionStore.state.hoveredEntity}
       />
     </div>
   ));
