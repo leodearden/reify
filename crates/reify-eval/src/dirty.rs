@@ -352,20 +352,19 @@ pub(crate) fn check_dag_complete(
                 }
                 Some(&p_pos) => {
                     // BackwardEdge only applies to Realization consumers.
-                    if let NodeId::Realization(consumer_rid) = node {
-                        if let Some(&c_pos) = pos.get(consumer_rid) {
-                            if p_pos >= c_pos {
-                                return Err(DagViolation::BackwardEdge {
-                                    producer: producer.clone(),
-                                    consumer: consumer_rid.clone(),
-                                    producer_pos: p_pos,
-                                    consumer_pos: c_pos,
-                                });
-                            }
-                        }
-                        // If consumer is a Realization but absent from exec_order,
-                        // that is the caller's problem — skip ordering check.
+                    if let NodeId::Realization(consumer_rid) = node
+                        && let Some(&c_pos) = pos.get(consumer_rid)
+                        && p_pos >= c_pos
+                    {
+                        return Err(DagViolation::BackwardEdge {
+                            producer: producer.clone(),
+                            consumer: consumer_rid.clone(),
+                            producer_pos: p_pos,
+                            consumer_pos: c_pos,
+                        });
                     }
+                    // If consumer is a Realization but absent from exec_order,
+                    // that is the caller's problem — skip ordering check.
                 }
             }
         }
