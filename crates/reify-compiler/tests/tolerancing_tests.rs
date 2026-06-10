@@ -2132,7 +2132,36 @@ structure def Probe {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    // Eval must push at least one E_TolerancingOutOfEnvelope Severity::Error.
+    // (a) Sub-component was instantiated — distinguishes "diagnostic emitted via sub" from
+    // "sub was never resolved" (a different failure mode that the unit test cannot catch).
+    let probe_g_keys: Vec<_> = result
+        .values
+        .iter()
+        .filter(|(k, _)| k.entity == "Probe.g")
+        .collect();
+    assert!(
+        !probe_g_keys.is_empty(),
+        "Probe.g sub-component should have produced at least one value cell; \
+         got none — check sub-component resolution"
+    );
+
+    // (b) tolerance_value inside the sub-component is Undef (or absent — the evaluator
+    // may elide Undef cells; see iso_tolerance_grade_out_of_envelope_undef for context).
+    let cell_id = ValueCellId::new("Probe.g", "tolerance_value");
+    match result.values.get(&cell_id) {
+        Some(Value::Undef) | None => {
+            // Expected: grade 25 → Undef (cell present-as-Undef or elided by evaluator).
+        }
+        Some(other) => panic!(
+            "Probe.g.tolerance_value for grade 25 should be Undef or absent, got {:?}",
+            other
+        ),
+    }
+
+    // (c) Eval sink contains the E_TolerancingOutOfEnvelope Error that propagated from
+    // the sub-component evaluation through the full compile→eval pipeline.  This is
+    // the eval-pipeline realization of the `reify eval`→stderr user-observable signal
+    // (cmd_eval renders result.diagnostics to stderr).
     assert!(
         result.diagnostics.iter().any(|d| {
             d.severity == Severity::Error && d.message.contains("E_TolerancingOutOfEnvelope")

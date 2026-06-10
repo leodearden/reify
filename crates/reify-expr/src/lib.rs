@@ -7234,4 +7234,48 @@ mod tests {
             diags[0].message
         );
     }
+
+    #[test]
+    fn iso_it_tolerance_oversize_nominal_emits_tolerancing_error_into_sink() {
+        // Grade 6 is within IT5–IT18 (valid), but nmax = 700mm > 500mm is outside
+        // the ISO 286-1 size envelope → iso_it_tolerance returns Value::Undef and
+        // tolerancing_diagnose fires the iso_size_in_envelope branch (not the
+        // grade branch).  This pins the other half of the envelope predicate at
+        // the wiring layer, independently of the grade-out-of-range path exercised
+        // by iso_it_tolerance_out_of_envelope_emits_tolerancing_error_into_sink.
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(6),
+            mm_val(600.0), // 600mm nominal_min — grade valid, size oversize
+            mm_val(700.0), // 700mm nominal_max > 500mm → out-of-size-envelope
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Undef,
+            "oversize nominal (700mm > 500mm) with valid grade 6 should yield Undef"
+        );
+
+        let diags = sink.borrow();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one E_TolerancingOutOfEnvelope diagnostic for oversize nominal, \
+             got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            reify_core::Severity::Error,
+            "oversize nominal must emit Severity::Error"
+        );
+        assert!(
+            diags[0].message.contains("E_TolerancingOutOfEnvelope"),
+            "message must contain E_TolerancingOutOfEnvelope prefix: {}",
+            diags[0].message
+        );
+    }
 }
