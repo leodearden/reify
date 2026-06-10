@@ -331,6 +331,14 @@ for path_str, prepped in prepped_cache.items():
             # that is a module declaration, not a function call.
             if m.span() in mod_spans:
                 continue
+            # Skip `NAME::` path-qualifier references (module or type path), but
+            # preserve turbofish `NAME::<T>()` calls (`::` followed by `<`).
+            # v1 accepted limitation: whitespace between NAME and `::`, or a `::`
+            # split across lines, is not detected — same approximation posture as
+            # the rest of the script.
+            after = line[m.end():m.end() + 3]
+            if after.startswith("::") and not after.startswith("::<"):
+                continue
             hits[word][path_str] += 1
 
 results = []
