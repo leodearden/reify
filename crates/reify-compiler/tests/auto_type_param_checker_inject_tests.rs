@@ -18,6 +18,8 @@
 //! stub AND the real `SimpleConstraintChecker`. This is the sound premise
 //! documented at `auto_type_param_phase.rs:48-55`.
 
+use reify_compiler::cfg::CfgSet;
+use reify_compiler::module_dag::ModuleResolver;
 use reify_core::{ModulePath, Severity};
 use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction};
 
@@ -161,5 +163,57 @@ fn compile_with_prelude_context_checked_parity() {
         diag_tuples(&checked_result),
         diag_tuples(&stub_result),
         "compile_with_prelude_context_checked: diagnostics must match stub path"
+    );
+}
+
+// ─── compile_entry_with_stdlib_cfg_checked parity ─────────────────────────────
+
+/// Injecting `AlwaysIndeterminate` through `compile_entry_with_stdlib_cfg_checked`
+/// must produce byte-identical `auto_type_substitution` and diagnostics to the
+/// stub-default `compile_entry_with_stdlib_cfg`.
+///
+/// Uses an empty `CfgSet` and a resolver that points at a temporary directory
+/// with no user modules — the source has no user imports to follow, so the DAG
+/// walk is a no-op and the test exercises only the entry-compile path.
+///
+/// **RED state:** `compile_entry_with_stdlib_cfg_checked` does not yet exist.
+#[test]
+fn compile_entry_with_stdlib_cfg_checked_parity() {
+    let source = r#"
+        trait Seal {}
+        structure def GasketSeal : Seal { param d : Real = 2.0 }
+        structure def Bearing<T: Seal> { param seal : T }
+        structure def Assembly { sub b = Bearing<auto: Seal>() }
+    "#;
+
+    let parsed = reify_compiler::parse_with_stdlib(
+        source,
+        ModulePath::single("test_checker_inject_cfg"),
+    );
+
+    // Empty resolver: no user-import files on disk. The source has no import
+    // declarations, so the DAG walk never consults the resolver.
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let resolver = ModuleResolver::new(dir.path(), dir.path().join("stdlib"));
+    let cfg = CfgSet::default();
+
+    let stub_result =
+        reify_compiler::module_dag::compile_entry_with_stdlib_cfg(&parsed, &resolver, &cfg);
+    let checked_result = reify_compiler::module_dag::compile_entry_with_stdlib_cfg_checked(
+        &parsed,
+        &resolver,
+        &cfg,
+        &AlwaysIndeterminate,
+    );
+
+    assert_eq!(
+        checked_result.auto_type_substitution,
+        stub_result.auto_type_substitution,
+        "compile_entry_with_stdlib_cfg_checked: auto_type_substitution must match stub path"
+    );
+    assert_eq!(
+        diag_tuples(&checked_result),
+        diag_tuples(&stub_result),
+        "compile_entry_with_stdlib_cfg_checked: diagnostics must match stub path"
     );
 }
