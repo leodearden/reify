@@ -52,6 +52,36 @@ describe('createLspClient', () => {
     expect(result.capabilities.completionProvider).toBeDefined();
   });
 
+  it('initialize threads rootUri into the params when provided (activates cross-file resolution)', async () => {
+    // κ (task 4210): the backend sets workspace_root from the initialize params'
+    // rootUri, which is what activates cross-file references/rename. The client
+    // MUST forward rootUri so the live GUI is no longer dormant for cross-file.
+    mockInvoke.mockResolvedValue(JSON.stringify({ capabilities: {} }));
+
+    const client = createLspClient();
+    await client.initialize('file:///workspace');
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'initialize',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({ rootUri: 'file:///workspace', capabilities: {} });
+  });
+
+  it('initialize omits rootUri when called without one (single-file fallback unchanged)', async () => {
+    mockInvoke.mockResolvedValue(JSON.stringify({ capabilities: {} }));
+
+    const client = createLspClient();
+    await client.initialize();
+
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({ capabilities: {} });
+    expect(params).not.toHaveProperty('rootUri');
+  });
+
   it('didOpen sends textDocument/didOpen notification', async () => {
     mockInvoke.mockResolvedValue('null');
 
@@ -311,6 +341,49 @@ describe('createLspClient', () => {
     const result = await client.rename('file:///test.ri', 0, 0, 'girth');
 
     expect(result).toBeNull();
+  });
+
+  it('rename round-trips a multi-file WorkspaceEdit (changes keyed by two uris) unchanged', async () => {
+    // κ (task 4210): a cross-file rename returns edits keyed by MORE THAN ONE uri.
+    // The WorkspaceEdit type (changes?: { [uri]: TextEdit[] }) is already
+    // multi-file-keyed, so a two-file edit must pass through rename() intact — no
+    // type change is needed beyond threading rootUri (step-18).
+    const mockEdit = {
+      changes: {
+        'file:///parts.ri': [
+          {
+            range: { start: { line: 0, character: 10 }, end: { line: 0, character: 14 } },
+            newText: 'Bore',
+          },
+        ],
+        'file:///main.ri': [
+          {
+            range: { start: { line: 0, character: 13 }, end: { line: 0, character: 17 } },
+            newText: 'Bore',
+          },
+          {
+            range: { start: { line: 2, character: 15 }, end: { line: 2, character: 19 } },
+            newText: 'Bore',
+          },
+        ],
+      },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(mockEdit));
+
+    const client = createLspClient();
+    const result = await client.rename('file:///main.ri', 2, 15, 'Bore');
+
+    expect(result).not.toBeNull();
+    expect(result!.changes).toBeDefined();
+    // Both uris keyed, each carrying its own TextEdit[].
+    expect(Object.keys(result!.changes!).sort()).toEqual([
+      'file:///main.ri',
+      'file:///parts.ri',
+    ]);
+    expect(result!.changes!['file:///parts.ri']).toHaveLength(1);
+    expect(result!.changes!['file:///main.ri']).toHaveLength(2);
+    // The whole multi-file edit round-trips byte-for-byte (structure unchanged).
+    expect(result).toEqual(mockEdit);
   });
 
   // --- task 4204 δ: documentHighlight ---

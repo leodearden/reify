@@ -1,9 +1,9 @@
 use reify_ast::ImportKind;
-use reify_core::ModulePath;
+use reify_core::{ModulePath, SourceSpan};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::analysis::{enclosing_decl_at, find_named_member_span, module_name_from_uri};
-use crate::convert::{find_word_at_offset, offset_to_position, position_to_offset, span_to_range};
+use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
 ///
@@ -190,9 +190,29 @@ pub fn compute_goto_definition_cross_file_with_parsed(
 
 /// Find a top-level declaration by name in a source string and return its Location.
 ///
-/// Searches Structure, Occurrence, Function, Enum, Trait, and Field declarations
-/// for a matching name, returning the declaration's span as an LSP Location.
+/// Thin wrapper over [`find_declaration_name_span`] that pairs the located
+/// name-token span with `uri` as an LSP [`Location`].
 fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Location> {
+    let span = find_declaration_name_span(source, name)?;
+    Some(Location {
+        uri: uri.clone(),
+        range: span_to_range(source, span),
+    })
+}
+
+/// Find the **name-token span** of a top-level declaration named `name`.
+///
+/// Parses `source` (prelude-aware, for AST-shape consistency across reify-lsp;
+/// see task 2525), scans Structure / Occurrence / Function / Enum / Trait /
+/// Field declarations for a matching name, and returns the byte
+/// [`SourceSpan`] of just the NAME identifier (located via
+/// [`find_name_offset_in_decl`]). Returns `None` when no declaration matches.
+///
+/// Factored from [`find_declaration_in_source`] so the cross-file
+/// reference/rename collectors (task κ, 4210) can obtain a renamed structure's
+/// home declaration token uniformly as a `SourceSpan`, independent of the
+/// `Location`/`uri` packaging that goto-def needs.
+pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<SourceSpan> {
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_target"));
@@ -211,12 +231,7 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
             // Point to the name within the declaration, not the entire span.
             // Find the name's byte position within the declaration text.
             let name_offset = find_name_offset_in_decl(source, span.start, name);
-            let start = offset_to_position(source, name_offset);
-            let end = offset_to_position(source, name_offset + name.len() as u32);
-            return Some(Location {
-                uri: uri.clone(),
-                range: Range { start, end },
-            });
+            return Some(SourceSpan::new(name_offset, name_offset + name.len() as u32));
         }
     }
     None
