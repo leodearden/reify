@@ -64,7 +64,7 @@ make_fixture() {
             exit 1
         }
     done < <(grep -E 'source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
-                 | sed 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|' || true)
+                 | sed -n 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|p' || true)
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"
