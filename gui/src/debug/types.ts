@@ -20,6 +20,10 @@ export interface DebugStores {
       tessellationDiagnostics: DiagnosticInfo[];
     };
     initFromState: (guiState: GuiState) => void;
+    /** F1/inject_diagnostics + reset_app_state: inject synthetic compile diagnostics into the store. */
+    setCompileDiagnostics: (diags: DiagnosticInfo[]) => void;
+    /** F1/inject_diagnostics + reset_app_state: inject synthetic tessellation diagnostics into the store. */
+    setTessellationDiagnostics: (diags: DiagnosticInfo[]) => void;
   };
   editor: {
     state: {
@@ -30,6 +34,8 @@ export interface DebugStores {
       cursorPosition: { line: number; column: number } | null;
     };
     openFile: (file: FileData) => void;
+    /** F1/reset_app_state: close a file by path. */
+    closeFile: (path: string) => void;
   };
   selection: {
     state: {

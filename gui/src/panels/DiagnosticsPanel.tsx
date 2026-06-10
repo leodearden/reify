@@ -1,12 +1,9 @@
-import { type Component, Show, For, createSignal, createMemo, createEffect, onCleanup, untrack } from 'solid-js';
+import { type Component, Show, For, createSignal, createMemo } from 'solid-js';
 import type { DiagnosticInfo } from '../types';
 import styles from './DiagnosticsPanel.module.css';
 import {
   loadDiagnosticsLineWrap,
   saveDiagnosticsLineWrap,
-  loadDiagnosticsPanelSize,
-  saveDiagnosticsPanelSize,
-  computeDefaultDialogSize,
 } from '../hooks/diagnosticsPanelPersistence';
 import { filterDiagnostics, groupDiagnostics } from './diagnosticsView';
 import type { DiagnosticSource, GroupedDiagnostic } from './diagnosticsView';
@@ -20,9 +17,12 @@ export interface DiagnosticEntry extends DiagnosticInfo {
 }
 
 export interface DiagnosticsPanelProps {
-  open: boolean;
+  /** Whether the panel body is collapsed (only header bar visible). */
+  collapsed: boolean;
+  /** Height in pixels of the panel when expanded. Applied as inline style. */
+  height: number;
   diagnostics: DiagnosticEntry[];
-  onClose: () => void;
+  onToggleCollapsed: () => void;
   onNavigate: (d: DiagnosticEntry) => void;
 }
 
@@ -32,7 +32,7 @@ const ALL_SEVERITIES = ['Error', 'Warning', 'Info'];
 export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
   const [lineWrap, setLineWrap] = createSignal(loadDiagnosticsLineWrap() ?? false);
 
-  // Filter state — default all-selected so every diagnostic is visible on open.
+  // Filter state — default all-selected so every diagnostic is visible on expand.
   const [selectedSources, setSelectedSources] = createSignal<Set<DiagnosticSource>>(
     new Set(ALL_SOURCES)
   );
@@ -101,78 +101,6 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
     });
   }
 
-  let dialogRef: HTMLDivElement | undefined;
-
-  const dialogSize = createMemo(() => {
-    // Track props.open so the memo re-runs each time the panel opens,
-    // ensuring any user-resized size persisted to localStorage is applied.
-    // Without this, the cached value from the first render would be reused
-    // on every subsequent open, silently discarding the user's manual resize.
-    const _open = props.open;
-    // Everything below is wrapped in untrack() so that reads of props.diagnostics
-    // do NOT register as reactive dependencies of this memo. The default size is a
-    // one-shot choice made at mount or on a fresh open transition — never a reaction
-    // to diagnostics arriving mid-session. Matches the untrack() pattern used in
-    // App.tsx for the same "read a non-reactive snapshot inside a tracked scope" use case.
-    return untrack(() => {
-      const persisted = loadDiagnosticsPanelSize();
-      if (persisted) return persisted;
-      const longestChars = props.diagnostics.reduce(
-        (max, d) => Math.max(max, d.message?.length ?? 0),
-        0
-      );
-      return computeDefaultDialogSize({
-        longestMessageChars: longestChars,
-        viewportWidth: window.innerWidth,
-        viewportHeight: window.innerHeight,
-      });
-    });
-  });
-
-  // Attach Escape handler at document level so it fires regardless of which
-  // element has focus (the overlay div is unfocused on open, so an
-  // element-local onKeyDown would silently no-op for users who press Escape
-  // immediately after the panel appears).
-  createEffect(() => {
-    if (!props.open) return;
-    function handleDocumentKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        props.onClose();
-      }
-    }
-    document.addEventListener('keydown', handleDocumentKeyDown);
-    onCleanup(() => document.removeEventListener('keydown', handleDocumentKeyDown));
-  });
-
-  // Observe resize events and persist the new size to localStorage.
-  createEffect(() => {
-    if (!props.open) return;
-    if (typeof ResizeObserver === 'undefined') return;
-    if (!dialogRef) return;
-    const el = dialogRef;
-    // Skip the browser's synchronous initial fire on observe() so we don't
-    // persist the default-computed size and permanently bypass computeDefaultDialogSize.
-    // This is a best-effort heuristic, not a guarantee: a user-driven resize that
-    // lands in the same tick as observe() will be silently dropped. Comparing the
-    // reported size against the last-known computed default was considered to tighten
-    // this, but was rejected to keep the existing ResizeObserver test stable (which
-    // uses 640×480 mock dimensions that do not match the computed default).
-    let firstFire = true;
-    const observer = new ResizeObserver(() => {
-      if (firstFire) { firstFire = false; return; }
-      saveDiagnosticsPanelSize({ width: el.offsetWidth, height: el.offsetHeight });
-    });
-    observer.observe(el);
-    onCleanup(() => observer.disconnect());
-  });
-
-  function handleOverlayClick(e: MouseEvent) {
-    // Only close if clicking the overlay itself, not a child
-    if (e.target === e.currentTarget) {
-      props.onClose();
-    }
-  }
-
   function locationLabel(d: DiagnosticInfo): string {
     return `${d.file_path}:${d.line}:${d.column}`;
   }
@@ -193,156 +121,141 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
   }
 
   return (
-    <Show when={props.open}>
-      <div
-        class={styles.overlay}
-        data-testid="diagnostics-panel"
-        onClick={handleOverlayClick}
-      >
-        <div
-          ref={dialogRef}
-          data-testid="diagnostics-dialog"
-          class={`${styles.dialog}${lineWrap() ? ` ${styles.lineWrapOn}` : ''}`}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="diagnostics-panel-title"
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            width: `${dialogSize().width}px`,
-            height: `${dialogSize().height}px`,
-            resize: 'both',
-          }}
+    <div
+      data-testid="diagnostics-panel"
+      data-collapsed={props.collapsed ? 'true' : 'false'}
+      class={`${styles.dockedRegion}${lineWrap() ? ` ${styles.lineWrapOn}` : ''}`}
+      style={!props.collapsed ? { height: `${props.height}px` } : undefined}
+    >
+      {/* One-line header bar: always visible */}
+      <div class={styles.dockedHeader}>
+        <button
+          type="button"
+          data-testid="diagnostics-fold-toggle"
+          class={styles.foldToggle}
+          aria-expanded={!props.collapsed}
+          aria-label="Toggle diagnostics panel"
+          onClick={() => props.onToggleCollapsed()}
         >
-          <div class={styles.dialogHeader}>
-            <h2
-              id="diagnostics-panel-title"
-              data-testid="panel-title-diagnostics"
-              class={styles.title}
-            >
-              Diagnostics ({props.diagnostics.length})
-            </h2>
+          {props.collapsed ? '▶' : '▼'}
+        </button>
+        <span
+          data-testid="panel-title-diagnostics"
+          class={styles.dockedTitle}
+        >
+          Diagnostics ({props.diagnostics.length})
+        </span>
+      </div>
+
+      {/* Body: only visible when expanded */}
+      <Show when={!props.collapsed}>
+        <Show when={props.diagnostics.length > 0}>
+          <div class={styles.filterBar}>
+            <For each={availableSources()}>
+              {(source) => (
+                <button
+                  type="button"
+                  class={`${styles.filterChip}${selectedSources().has(source) ? ` ${styles.filterChipActive}` : ''}`}
+                  data-testid={`diagnostics-filter-source-${source}`}
+                  aria-pressed={selectedSources().has(source)}
+                  onClick={() => toggleSource(source)}
+                >
+                  {source}
+                </button>
+              )}
+            </For>
+            <For each={availableSeverities()}>
+              {(severity) => (
+                <button
+                  type="button"
+                  class={`${styles.filterChip}${selectedSeverities().has(severity) ? ` ${styles.filterChipActive}` : ''}`}
+                  data-testid={`diagnostics-filter-severity-${severity}`}
+                  aria-pressed={selectedSeverities().has(severity)}
+                  onClick={() => toggleSeverity(severity)}
+                >
+                  {severity}
+                </button>
+              )}
+            </For>
             <button
               type="button"
-              class={styles.headerCloseButton}
-              data-testid="diagnostics-header-close"
-              aria-label="Close diagnostics"
-              onClick={() => props.onClose()}
+              class={`${styles.filterChip}${grouping() ? ` ${styles.filterChipActive}` : ''}`}
+              data-testid="diagnostics-group-toggle"
+              aria-pressed={grouping()}
+              onClick={() => setGrouping(g => !g)}
             >
-              ×
+              Collapse repeated
             </button>
           </div>
+        </Show>
 
-          <Show when={props.diagnostics.length > 0}>
-            <div class={styles.filterBar}>
-              <For each={availableSources()}>
-                {(source) => (
-                  <button
-                    type="button"
-                    class={`${styles.filterChip}${selectedSources().has(source) ? ` ${styles.filterChipActive}` : ''}`}
-                    data-testid={`diagnostics-filter-source-${source}`}
-                    aria-pressed={selectedSources().has(source)}
-                    onClick={() => toggleSource(source)}
+        <Show
+          when={displayedGroups().length > 0}
+          fallback={
+            <span class={styles.emptyState}>
+              {props.diagnostics.length > 0
+                ? 'No diagnostics match the current filters'
+                : 'No diagnostics'}
+            </span>
+          }
+        >
+          <div class={styles.list}>
+            <For each={displayedGroups()}>
+              {(group) => (
+                <div
+                  class={styles.row}
+                  data-testid="diagnostic-row"
+                  onClick={() => props.onNavigate(group.diagnostic)}
+                  role="button"
+                  tabindex="0"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      props.onNavigate(group.diagnostic);
+                    }
+                  }}
+                >
+                  <span class={severityClass(group.diagnostic.severity)}>
+                    {group.diagnostic.severity}
+                  </span>
+                  <span
+                    data-testid="diagnostic-source-chip"
+                    class={sourceChipClass(group.diagnostic.source)}
                   >
-                    {source}
-                  </button>
-                )}
-              </For>
-              <For each={availableSeverities()}>
-                {(severity) => (
-                  <button
-                    type="button"
-                    class={`${styles.filterChip}${selectedSeverities().has(severity) ? ` ${styles.filterChipActive}` : ''}`}
-                    data-testid={`diagnostics-filter-severity-${severity}`}
-                    aria-pressed={selectedSeverities().has(severity)}
-                    onClick={() => toggleSeverity(severity)}
-                  >
-                    {severity}
-                  </button>
-                )}
-              </For>
-              <button
-                type="button"
-                class={`${styles.filterChip}${grouping() ? ` ${styles.filterChipActive}` : ''}`}
-                data-testid="diagnostics-group-toggle"
-                aria-pressed={grouping()}
-                onClick={() => setGrouping(g => !g)}
-              >
-                Collapse repeated
-              </button>
-            </div>
-          </Show>
-
-          <Show
-            when={displayedGroups().length > 0}
-            fallback={
-              <span class={styles.emptyState}>
-                {props.diagnostics.length > 0
-                  ? 'No diagnostics match the current filters'
-                  : 'No diagnostics'}
-              </span>
-            }
-          >
-            <div class={styles.list}>
-              <For each={displayedGroups()}>
-                {(group) => (
-                  <div
-                    class={styles.row}
-                    data-testid="diagnostic-row"
-                    onClick={() => props.onNavigate(group.diagnostic)}
-                    role="button"
-                    tabindex="0"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        props.onNavigate(group.diagnostic);
-                      }
-                    }}
-                  >
-                    <span class={severityClass(group.diagnostic.severity)}>
-                      {group.diagnostic.severity}
-                    </span>
+                    {group.diagnostic.source}
+                  </span>
+                  <span class={styles.location}>{locationLabel(group.diagnostic)}</span>
+                  <span class={styles.message}>{group.diagnostic.message}</span>
+                  <Show when={group.count > 1}>
                     <span
-                      data-testid="diagnostic-source-chip"
-                      class={sourceChipClass(group.diagnostic.source)}
+                      class={styles.repeatCount}
+                      data-testid="diagnostic-repeat-count"
                     >
-                      {group.diagnostic.source}
+                      x{group.count}
                     </span>
-                    <span class={styles.location}>{locationLabel(group.diagnostic)}</span>
-                    <span class={styles.message}>{group.diagnostic.message}</span>
-                    <Show when={group.count > 1}>
-                      <span
-                        class={styles.repeatCount}
-                        data-testid="diagnostic-repeat-count"
-                      >
-                        x{group.count}
-                      </span>
-                    </Show>
-                  </div>
-                )}
-              </For>
-            </div>
-          </Show>
-
-          <div class={styles.actions}>
-            <label class={styles.wrapLabel}>
-              <input
-                type="checkbox"
-                data-testid="diagnostics-line-wrap-toggle"
-                checked={lineWrap()}
-                onChange={(e) => {
-                  const checked = e.currentTarget.checked;
-                  setLineWrap(checked);
-                  saveDiagnosticsLineWrap(checked);
-                }}
-              />
-              {' '}Wrap lines
-            </label>
-            <button class={styles.closeButton} onClick={() => props.onClose()}>
-              Close
-            </button>
+                  </Show>
+                </div>
+              )}
+            </For>
           </div>
+        </Show>
+
+        <div class={styles.actions}>
+          <label class={styles.wrapLabel}>
+            <input
+              type="checkbox"
+              data-testid="diagnostics-line-wrap-toggle"
+              checked={lineWrap()}
+              onChange={(e) => {
+                const checked = e.currentTarget.checked;
+                setLineWrap(checked);
+                saveDiagnosticsLineWrap(checked);
+              }}
+            />
+            {' '}Wrap lines
+          </label>
         </div>
-      </div>
-    </Show>
+      </Show>
+    </div>
   );
 };

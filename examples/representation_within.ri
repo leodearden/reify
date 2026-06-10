@@ -1,0 +1,55 @@
+// Example: Determinacy γ — RepresentationWithin assertion (task-4199 γ)
+//
+// Demonstrates the three-valued `RepresentationWithin(subject, bound)` assertion
+// introduced by task γ.  The assertion is promoted from a budget-only extractor
+// (task 2650) to a post-realization assertion that compares the sampled mesh
+// chord-deviation against the declared bound.
+//
+// Setup:
+//   `CurvedBall` — a 1 m-radius sphere realized at `#precision(50mm)` (COARSE).
+//   At 50 mm deflection the sampled mesh facet-chord deviation on a 1 m sphere is
+//   on the order of centimetres — orders of magnitude above the 1 μm assertion
+//   bound declared in `CurvedBallCheck` below.
+//
+//   `CurvedBallCheck` carries the `RepresentationWithin(subject, 1um)` assertion.
+//   The `subject : CurvedBall` param is typed so that after
+//   `tessellate_realizations()` populates `achieved_repr_tol["CurvedBall#realization[0]"]`,
+//   the engine's type-name scan resolves the measured deviation against this bound.
+//
+// PRD §8.3 sampled-lower-bound semantics: the reported deviation is a sampled
+// lower bound on the true Hausdorff chord error (4 interior sample points per
+// facet).  `Satisfied` means "no sampled point exceeded the bound"; `Violated`
+// means at least one did; `Indeterminate` means the engine could not measure the
+// deviation (no OCCT kernel, or realization never ran).
+//
+// Usage:
+//   reify check examples/representation_within.ri
+//     → exit non-zero, "VIOLATED"
+//            (under OCCT — tessellation runs; sampled deviation ≫ 1 μm)
+//     → exit 0, "No constraints violated (1 indeterminate)."
+//            (without OCCT — achieved_repr_tol map stays empty → Indeterminate
+//             → graceful exit 0, C1)
+
+#precision(50mm)
+
+// CurvedBall: a 1 m-radius sphere — the curved subject for deviation measurement.
+//
+// At #precision(50mm) (5e-2 m deflection) the sampled facet-chord error on a
+// sphere of radius 1 m is approximately chord ≈ 2·sqrt(2·r·δ) ≈ 2·sqrt(2·1·0.05)
+// ≈ 0.32 m — four orders of magnitude above the 1 μm assertion bound below.
+structure CurvedBall {
+    let r = sphere(1000mm)
+}
+
+// CurvedBallCheck: declares the RepresentationWithin assertion.
+//
+// `param subject : CurvedBall` types the subject as StructureRef("CurvedBall"),
+// which is the type-name the engine uses to scan achieved_repr_tol for a matching
+// "CurvedBall#realization[*]" entry after tessellation.
+//
+// With #precision(50mm), the achieved deviation for CurvedBall#realization[0] is
+// far above the 1 μm bound → `reify check` reports VIOLATED under OCCT.
+structure CurvedBallCheck {
+    param subject : CurvedBall
+    constraint RepresentationWithin(subject, 1um)
+}

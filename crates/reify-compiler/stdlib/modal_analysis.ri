@@ -24,7 +24,7 @@
 // growing prelude for the future task that tightens trajectory.ri to consume
 // `ModalResult.modes` (kinematic-completion PRD; not yet landed).
 //
-// `trait Support` from the much-earlier `std.fea.multi_case` is already in
+// `trait Support` from the much-earlier `std.fea.types` is already in
 // the growing prelude at this point, so `List<Support>` resolves on both
 // `ModalResult.boundary_conditions` and `ModalOptions.boundary_conditions`.
 //
@@ -78,7 +78,7 @@
 // per-strategy fields; the trait exists only to give the `damping` param on
 // `ModalResult` / `ModalOptions` a single nominal type, so the eval-time
 // dispatch matches via the SIR-α nominal type-tag. Same pattern as
-// `trait Support { }` (fea_multi_case.ri:288) and `trait BoundaryCondition
+// `trait Support { }` (fea_types.ri) and `trait BoundaryCondition
 // { }` (trajectory.ri).
 trait DampingDescriptor { }
 
@@ -227,7 +227,7 @@ structure def Mode {
 //                          `List<StructureRef("Mode")>`.
 //   boundary_conditions  — the support set the solve was constrained with.
 //                          `Support` is the marker trait from
-//                          `std.fea.multi_case`, already in the growing
+//                          `std.fea.types`, already in the growing
 //                          prelude at modal-compile time, so this resolves
 //                          to `List<TraitObject("Support")>` (same shape as
 //                          trajectory's `List<BoundaryCondition>`).
@@ -279,7 +279,7 @@ structure def ModalResult {
 //                          `BucklingOptions.n_modes`.
 //   boundary_conditions — the support set constraining the eigenproblem.
 //                          `Support` is the marker trait from
-//                          `std.fea.multi_case`, in the growing prelude at
+//                          `std.fea.types`, in the growing prelude at
 //                          modal-compile time → `List<TraitObject("Support")>`.
 //                          Required at construction (no default).
 //   damping             — damping strategy (`NoDamping` for an undamped
@@ -422,7 +422,7 @@ structure def ModalOptions {
 // time and the eval-time dispatch matches via the SIR-α nominal type-tag.
 //
 // Same marker-trait pattern as `trait DampingDescriptor { }` (line 82) and
-// `trait Support { }` (fea_multi_case.ri:288).
+// `trait Support { }` (fea_types.ri).
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
 trait ForcingFunction { }

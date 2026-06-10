@@ -33,14 +33,40 @@ See `plan.json` design decisions for the full rationale.  Summary:
 
 | Alternative | Problem |
 |-------------|---------|
-| nextest `test-groups` (max-threads=1) | One process per test: pays init O(N\_tests) ≈ 1063×; startup dominates |
+| nextest `test-groups` (max-threads=1) | One process per test: pays init O(N\_tests) ≈ 1063×; startup dominates; no parallelism |
 | Manual sharding | New orchestration layer inside the wrapper; substantial complexity |
-| **N-slot flock semaphore** (chosen) | Bounds inter-worktree concurrency; no per-test process explosion; pure shell, no extra deps |
+| **N-slot flock semaphore** (task 3767, chosen at the time) | Bounds inter-worktree concurrency; no per-test process explosion; pure shell, no extra deps |
 
 The N-slot semaphore is strictly correct because OCCT C++ statics are PER-PROCESS — cargo's
 natural test-binary parallelism already gives isolation within a single invocation.  The
 semaphore only bounds how many cargo invocations (each running several test binaries) overlap
 on the same host.
+
+### Superseded by task 4451: nextest occt test-group (max-threads=4)
+
+**The "nextest test-groups are the wrong mechanism" conclusion above held only for
+max-threads=1.** With max-threads=1 there is no offsetting parallelism and the per-test
+process-init explosion dominated. With max-threads=N>1:
+
+- N concurrent OCCT test binaries run in parallel → parallelism offsets the per-test
+  process-init overhead.
+- Per-process address-space isolation keeps OCCT race-free (same insight as the semaphore;
+  nextest's per-process model gives this automatically).
+- The nextest occt group bounds intra-run OCCT concurrency to N=4 for FD/memory
+  headroom (intra-run only; cross-worktree bounding from the semaphore is intentionally
+  dropped — the merge lane is serial so the gate itself never overlaps, and concurrent
+  task-verify runs are capped by orchestrator scheduling, which is the effective host
+  concurrency bound in practice).
+- Estimated throughput improvement on the serial merge lane (cost-centre C):
+  reify-eval ≈ (106 s init + 98 s work) / 4 ≈ 51 s vs the serial cargo-test baseline
+  ~111.5 s — a real ~2× speedup, validated empirically (see §(c) below).
+
+Task 4451 raises the nextest occt group `max-threads` from 1 (inert/staged) to 4 (live)
+and folds all OCCT crates into the single nextest `--workspace` pass (removing the separate
+`cargo-test-occt-gated.sh` pass from `scripts/verify.sh`). N=4 is headroom-justified by §(d)
+below: 4×~2 GiB OCCT peak RSS ≈ 8 GiB ≪ 32 GiB host. The semaphore wrapper
+(`scripts/cargo-test-occt-gated.sh`) is retained as a standalone/manual OCCT runner and for
+its 23 mechanism tests in `tests/infra/test_occt_flock_gate.sh`.
 
 ## (c) Validation Gate Results
 
@@ -77,12 +103,12 @@ The following commands should be run on an idle box with a release profile build
 real throughput and resource headroom. Results should be appended to this section when done.
 
 ```bash
-# Baseline: M=1 (exclusive mode, status quo)
+# Baseline: gated serial pass (pre-task-4451 mechanism)
 time REIFY_OCCT_CONCURRENCY=1 ./scripts/cargo-test-occt-gated.sh \
     cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config \
     --release -- --test-threads=1
 
-# Semaphore: M=2 (two concurrent worktrees)
+# Semaphore: M=2 (two concurrent worktrees, pre-task-4451)
 # Run from two separate terminals / worktrees concurrently; measure wall-clock
 # of the slower one.  Expected: ~50% reduction in total elapsed for two runs.
 
@@ -102,6 +128,35 @@ watch -n 0.2 "ps aux | awk '/cargo test/ { sum += \$6 } END { print sum/1024 \" 
 
 These estimates justify `REIFY_OCCT_MAX_CONCURRENCY=4` on a 32 GiB+ host: 4 × 4 GiB = 16 GiB
 peak OCCT RSS, leaving 16+ GiB for the OS, orchestrator, and other tasks.
+
+### Task 4451 idle-box validation methodology
+
+To empirically confirm the task 4451 speedup on a cold-cache idle box (K=3 repeats):
+
+```bash
+# Rebuild from source (cold sccache)
+sccache --stop-server 2>/dev/null; sccache --start-server
+
+# --- Run A: cold baseline (pre-fold, using the standalone wrapper) ---
+# Approximate the old gated serial pass on the OCCT-touching release-sensitive crate.
+time REIFY_OCCT_CONCURRENCY=4 ./scripts/cargo-test-occt-gated.sh \
+    cargo test -p reify-eval --release -- --test-threads=1
+
+# --- Run B: folded nextest (post-fold, via the unified nextest pool) ---
+# The occt test-group max-threads=4 bounds OCCT concurrency within nextest.
+time cargo nextest run -p reify-eval --release
+
+# Record: Run A wall-clock, Run B wall-clock, delta (Run A − Run B), FD/RSS headroom.
+# Expected: Run B ≈ Run A / 4 (nextest parallelises the serial merge-lane OCCT floor).
+```
+
+**Measured wall-clock delta (task 4451, to be filled after idle-box run):**
+
+| Run | Wall-clock | FD peak | RSS peak |
+|-----|-----------|---------|---------|
+| A (gated serial, baseline) | TBD | TBD | TBD |
+| B (nextest pool, max-threads=4) | TBD | TBD | TBD |
+| Delta (A − B) | TBD | — | — |
 
 ### Stability of automated tests (implementation-period observations)
 

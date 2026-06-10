@@ -13,23 +13,21 @@
 # shared state. 2026-04-20 — fd-9-inheritance by sccache pinned the flock;
 # fixed by the `9<&-` invariant preserved here.
 #
-# Intended usage (two-pass pattern, from scripts/verify.sh):
+# Standalone/manual OCCT runner (task 4451):
+#   scripts/verify.sh no longer invokes this wrapper. Task 4451 folds all OCCT
+#   crates into the single nextest pool (via the `occt` test-group, max-threads=4
+#   in .config/nextest.toml). This script is retained as a manual runner and for
+#   its 23 mechanism tests in tests/infra/test_occt_flock_gate.sh.
 #
-#   # Pass 1 — gated: only OCCT-touching crates, bounded via this wrapper.
+#   Manual usage example (standalone OCCT run, not part of verify.sh):
 #   REIFY_OCCT_TEST_TIMEOUT=2700 \
 #     ./scripts/cargo-test-occt-gated.sh cargo test -p reify-kernel-occt \
 #       -p reify-eval -p reify-cli -p reify-config -- --test-threads=1
 #
-#   # Pass 2 — ungated: all other workspace crates, runs in parallel across
-#   # worktrees (no semaphore needed because they don't touch OCCT).
-#   timeout --kill-after=60 30m cargo test --workspace \
-#     --exclude reify-kernel-occt --exclude reify-eval --exclude reify-cli \
-#     --exclude reify-config -- --test-threads=1
-#
 # The authoritative list of OCCT-touching crates lives in:
 #   scripts/occt-touching-crates.txt
-# The infra test that validates this wrapper's scope and verify.sh consistency:
-#   tests/infra/test_occt_gated_scope.sh
+# The infra test that validates this wrapper's mechanism:
+#   tests/infra/test_occt_flock_gate.sh (Tests 1-9, 14-23)
 #
 # SEMAPHORE MECHANISM
 # ===================

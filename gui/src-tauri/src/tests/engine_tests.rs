@@ -8088,6 +8088,58 @@ fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path(
     }
 }
 
+// ── Production solver wiring test ────────────────────────────────────────────
+
+/// Production `EngineSession::with_registered_kernel` installs a working solver.
+///
+/// Constructs via the production boot path —
+/// `EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker))` —
+/// WITHOUT calling `with_solver_for_test`.
+/// Installs a `RecordingEmitter`, loads an inline source with one `auto` param and
+/// a `minimize` directive, then asserts the emitter fires
+/// `[Start, Iteration, Complete]`.
+///
+/// Combined with `production_registry_routes_geometric_to_solvespace` (step-1/step-2),
+/// this proves the production GUI engine carries a working dimensional solver and
+/// SolveSpaceSolver in its geometric slot.
+///
+/// RED today: `with_registered_kernel` delegates straight to `from_engine` which
+/// installs no solver → `resolved_params` is always empty → emitter never fires.
+#[test]
+fn with_registered_kernel_production_session_resolves_auto_param() {
+    use std::sync::Arc;
+
+    // Mirror auto_minimize.ri: one auto param + box constraints + minimize.
+    let source = r#"structure AutoMinimize {
+    param thickness: Scalar = auto
+    constraint thickness > 2mm
+    constraint thickness < 20mm
+    minimize thickness
+}"#;
+
+    let mut session = EngineSession::with_registered_kernel(Box::new(SimpleConstraintChecker));
+
+    let recorder = RecordingEmitter::new();
+    let events = Arc::clone(&recorder.events);
+    session.set_auto_resolve_emitter(Arc::new(recorder));
+
+    session
+        .load_from_source(source, "AutoMinimize")
+        .expect("load_from_source with auto-param source should succeed");
+
+    let events = events.lock().unwrap();
+    assert!(
+        !events.is_empty(),
+        "production GUI engine must have a solver installed: \
+         expected auto-resolve events, got none",
+    );
+    assert!(
+        matches!(events.last(), Some(EmitEvent::Complete)),
+        "expected Complete as the last event, got {:?}",
+        events.last()
+    );
+}
+
 // ── Structural lock-in test ──────────────────────────────────────────────────
 
 /// Structural lock-in test: verifies that `EngineSession` exposes `CoreState`
@@ -9053,9 +9105,14 @@ fn get_mechanism_descriptors_literal_then_param_bind_promotes_to_param_bound() {
 }
 
 /// Source for bind-on-fixed-joint test: a fixed joint j_f with a param bound
-/// to it via snapshot().  The binding should remain FixedNoMotion (structural
-/// default is authoritative for non-movable joints), while the flat field
-/// `driving_param_cell_id` is set anyway (best-effort, may diverge from binding).
+/// to it via snapshot().
+///
+/// After task β (mechanism β: joint_signatures.rs), `fixed()` resolves to
+/// `Type::StructureRef("Fixed")` at compile time.  The let-cell `j_f` therefore
+/// carries `StructureRef("Fixed")`, and γ's `check_expr_mechanism_joint_bound`
+/// fires via Path A when `bind(j_f, p)` is typechecked — producing a compile-time
+/// `E_MECHANISM_NONDRIVING_JOINT` error because `Fixed : Joint` but not
+/// `Fixed : DrivingJoint`.  The source never reaches eval.
 const SNAPSHOT_FIXED_JOINT_WITH_PARAM_SOURCE: &str = r#"
 structure Kinematic {
     param p: Length = 10mm
@@ -9066,42 +9123,31 @@ structure Kinematic {
 }
 "#;
 
-/// `bind(j_f, p)` on a fixed joint must NOT promote `binding` from `FixedNoMotion`
-/// to `ParamBound` — fixed joints are structurally immovable and the binding
-/// field is authoritative.
+/// `bind(j_f, p)` on a fixed joint is rejected at compile time.
 ///
-/// The flat `driving_param_cell_id` field may be populated anyway (best-effort,
-/// documented edge case): callers should treat `binding` as authoritative for
-/// non-LiteralBound joints and `driving_param_cell_id` as best-effort only.
+/// Before task β, `fixed()` returned a fallback (non-StructureRef) type so
+/// γ's DrivingJoint check could not identify the joint kind from the let-cell
+/// and the source would compile — but the binding kind would remain FixedNoMotion
+/// (structural overrides bind form).
+///
+/// After task β, `fixed()` resolves to `Type::StructureRef("Fixed")`, which lets
+/// γ's `check_expr_mechanism_joint_bound` detect the violation at compile time via
+/// Path A (`result_type == StructureRef`).  The source now fails to compile with
+/// `E_MECHANISM_NONDRIVING_JOINT` naming "Fixed".
+///
+/// This test documents that compile-time enforcement — `load_from_source` must
+/// return `Err` containing the DrivingJoint rejection message.
 #[test]
 fn get_mechanism_descriptors_bind_on_fixed_joint_does_not_promote_binding() {
     let mut session = make_session();
-    session
+    let err = session
         .load_from_source(SNAPSHOT_FIXED_JOINT_WITH_PARAM_SOURCE, "kinematic")
-        .expect("load fixed-joint-with-param source");
+        .expect_err("bind(fixed, param) must be rejected at compile time with E_MECHANISM_NONDRIVING_JOINT");
 
-    let descriptors = session.get_mechanism_descriptors();
-    let m1_desc = descriptors
-        .iter()
-        .find(|d| d.bodies_count == 1)
-        .expect("expected descriptor with bodies_count=1");
-
-    let fixed_joint = m1_desc
-        .joints
-        .iter()
-        .find(|j| j.kind == "fixed")
-        .expect("expected a fixed joint descriptor");
-
-    // Binding must remain FixedNoMotion — structural kind overrides bind() form.
-    assert_eq!(
-        fixed_joint.binding,
-        crate::types::JointBinding::FixedNoMotion,
-        "bind(fixed_j, param) must NOT promote binding to ParamBound; got {:?}",
-        fixed_joint.binding
+    assert!(
+        err.contains("DrivingJoint") || err.contains("Fixed"),
+        "compile error must mention DrivingJoint or Fixed; got: {err:?}"
     );
-    // Document expected flat-field behavior: best-effort, may be set for
-    // fixed joints even though binding is FixedNoMotion.
-    // (Not asserting a specific value here — the best-effort nature is the point.)
 }
 
 // ── T0b: tensegrity_wires extraction via build_gui_state ─────────────────────
@@ -11196,6 +11242,148 @@ structure Top {
         !inner_realization.default_visible,
         "Top.jig.inner#realization[0] must be default_visible == false \
          (aux_ancestor propagates through non-aux intermediate sub)"
+    );
+}
+
+// ── task 4079: solver-progress emit + cancel-wiring tests ────────────────────
+//
+// Depends on:
+//   (step-10) `EngineSession::set_solver_progress_sink` — public setter forwarding
+//             to `self.core.engine_mut().set_solver_progress_sink(sink)`.
+//   (step-10) `EngineSession::engine_active_solve_cancel_for_test` — `#[cfg(test)]
+//             pub(crate)` accessor exposing the engine's `active_solve_cancel()`.
+//   (step-10) `with_solve_slot` installs the published handle onto the engine via
+//             `engine_mut().set_active_solve_cancel(Some(handle.clone()))`.
+//
+// Both tests FAIL TO COMPILE on the base branch (RED):
+//   - `set_solver_progress_sink` does not yet exist on `EngineSession`.
+//   - `engine_active_solve_cancel_for_test` does not yet exist on `EngineSession`.
+
+/// Shared log of `(solver_kind, iter, residual)` triples recorded by
+/// [`RecordingSolverProgressSink`].
+type SolverProgressLog = std::sync::Arc<std::sync::Mutex<Vec<(String, u32, f64)>>>;
+
+/// Test double for `reify_eval::SolverProgressSink`.
+///
+/// Records every `(solver_kind, iter, residual)` triple received from the
+/// engine dispatch path.
+struct RecordingSolverProgressSink {
+    updates: SolverProgressLog,
+}
+
+impl RecordingSolverProgressSink {
+    fn new() -> (Self, SolverProgressLog) {
+        let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Self {
+                updates: std::sync::Arc::clone(&updates),
+            },
+            updates,
+        )
+    }
+}
+
+impl reify_eval::SolverProgressSink for RecordingSolverProgressSink {
+    fn on_iteration(&self, update: &reify_eval::SolverProgressUpdate) {
+        self.updates
+            .lock()
+            .unwrap()
+            .push((update.solver_kind.to_string(), update.iter, update.residual));
+    }
+}
+
+/// Installing a `RecordingSolverProgressSink` via `set_solver_progress_sink`
+/// and loading `fea_cantilever_smoke.ri` must emit ≥1 progress update with
+/// `iter ≥ 1`, a finite residual, and `solver_kind == "cg"`.
+///
+/// Proves that `EngineSession::set_solver_progress_sink` forwards the sink to
+/// the reify-eval `Engine` and that `run_compute_dispatch` installs it in the
+/// thread-local context visible to the trampoline.
+///
+/// RED: `set_solver_progress_sink` does not yet exist on `EngineSession`.
+#[test]
+fn set_solver_progress_sink_forwards_to_engine_and_emits_on_cantilever() {
+    use std::sync::Arc;
+
+    let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let (sink, captured_updates) = RecordingSolverProgressSink::new();
+    session.set_solver_progress_sink(Arc::new(sink));
+
+    session
+        .load_from_source(source, "FeaCantileverSmoke")
+        .expect("load_from_source must succeed for fea_cantilever_smoke.ri");
+
+    let updates = captured_updates.lock().unwrap();
+
+    assert!(
+        !updates.is_empty(),
+        "expected ≥1 SolverProgressUpdate after load_from_source; got 0"
+    );
+    for (kind, iter, residual) in updates.iter() {
+        assert!(*iter >= 1, "iter must be ≥ 1 (1-indexed), got {}", iter);
+        assert!(
+            residual.is_finite(),
+            "residual must be finite, got {}",
+            residual
+        );
+        assert_eq!(
+            kind.as_str(),
+            "cg",
+            "solver_kind must be \"cg\", got {:?}",
+            kind
+        );
+    }
+}
+
+/// After `with_solve_slot` wraps `load_from_source`, the engine's cancel slot
+/// must be **cleared** (`None`) when the solve window ends — so a stale
+/// cancelled handle from a prior cancelled solve cannot spuriously trigger
+/// `ComputeOutcome::Cancelled` on a future dispatch that bypasses
+/// `with_solve_slot`.
+///
+/// The same-Arc invariant (published handle == engine handle *during* the
+/// solve) is an auditable property of `with_solve_slot`'s source: the same
+/// `handle` local is both cloned into `solve_started` and installed via
+/// `set_active_solve_cancel(Some(handle))` before `f(self)` runs, ensuring
+/// `cancel_solve_impl` can interrupt the in-flight trampoline.
+#[test]
+fn with_solve_slot_wires_published_handle_to_engine() {
+    use std::sync::Arc;
+
+    let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let sink = RecordingSolveCancelSink::new();
+    let captured_events = Arc::clone(&sink.events);
+    session.set_solve_cancel_sink(Arc::new(sink));
+
+    session
+        .load_from_source(source, "FeaCantileverSmoke")
+        .expect("load_from_source must succeed for fea_cantilever_smoke.ri");
+
+    // The lifecycle sink must have received at least a Started event.
+    let events = captured_events.lock().unwrap();
+    assert!(
+        !events.is_empty(),
+        "expected at least one lifecycle event; got 0"
+    );
+    drop(events);
+
+    // After the solve window closes, the engine's cancel slot must be None.
+    // A stale cancelled handle here would spuriously abort the next dispatch
+    // that bypasses with_solve_slot (e.g. direct engine.eval() in tests).
+    assert!(
+        session.engine_active_solve_cancel_for_test().is_none(),
+        "engine's active_solve_cancel must be None after the solve window closes \
+         (with_solve_slot must clear the slot on return)"
     );
 }
 

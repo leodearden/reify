@@ -134,7 +134,7 @@ structure def Assembly : Physical + Locatable {
 
     // ── Auto params ───────────────────────────────────────────────────────
     param load_auto : Real   = auto
-    param load_free : Scalar = auto(free)
+    param load_free : Length = auto(free)
 
     // ── Meta access lets ──────────────────────────────────────────────────
     let proj_name = meta.project

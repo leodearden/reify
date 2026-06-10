@@ -7,6 +7,7 @@
 mod annotations;
 mod arg_check;
 pub mod auto_type_param;
+pub mod cfg;
 mod compile_builder;
 mod conformance;
 mod connect;
@@ -26,6 +27,7 @@ mod geometry_transform;
 mod guards;
 mod ice;
 mod list_helpers;
+mod joint_signatures;
 mod math_signatures;
 pub mod module_dag;
 mod module_pragmas;
@@ -67,6 +69,7 @@ pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
 pub(crate) use ice::*;
 pub(crate) use list_helpers::*;
+pub(crate) use joint_signatures::*;
 pub(crate) use math_signatures::*;
 pub(crate) use scope::*;
 #[allow(unused_imports)]

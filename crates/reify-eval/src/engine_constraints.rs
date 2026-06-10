@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, HashMap};
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
 use reify_core::{ConstraintNodeId, Diagnostic, Severity, ValueCellId};
 use reify_ir::{
-    CompiledExpr, CompiledFunction, ConstraintInput, ConstraintResult, DeterminacyState,
-    OptimizedImplInput, PersistentMap, Value, ValueMap,
+    CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
+    DeterminacyState, OptimizedImplInput, PersistentMap, Value, ValueMap,
 };
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
@@ -26,6 +26,19 @@ impl Engine {
     /// (targets are iterated via a `BTreeMap`) so that any side effects —
     /// logging, metrics, impls that share mutable state — are reproducible
     /// from run to run.
+    ///
+    /// ## RepresentationWithin interception (task-4199 γ)
+    ///
+    /// `RepresentationWithin(subject, bound)` entries are peeled off the batch
+    /// **before** bucketing and evaluated engine-side from
+    /// `self.achieved_repr_tol` + `values` via
+    /// [`crate::tolerance_combine::eval_representation_within`].  The
+    /// remaining entries are dispatched through the existing optimised /
+    /// language-level paths.  All results are woven back in caller (input)
+    /// order via a slot vector so that neither path needs to know about the
+    /// other.  The fast-path early-return (no registered impls, no
+    /// RepresentationWithin) is preserved so non-assertion modules incur zero
+    /// overhead (C2).
     pub(crate) fn dispatch_constraints<'a>(
         &self,
         entries: Vec<(ConstraintNodeId, &'a CompiledExpr, Option<&'a str>)>,
@@ -37,11 +50,16 @@ impl Engine {
             return (Vec::new(), Vec::new());
         }
 
-        // Fast path: when no optimized impls are registered every entry goes to
-        // the language-level fallback. Skip the BTreeMap/Option-Vec/unzip
-        // allocations and go directly to the checker — same code path as before
-        // Task 273 introduced the bucketing logic.
-        if self.optimization_registry.is_empty() {
+        // ── Fast path for non-assertion modules (C2) ──────────────────────────
+        // When `achieved_repr_tol` is empty (no tessellation has run) AND no
+        // optimised impls are registered, we know no entry can be a live
+        // `RepresentationWithin` assertion — skip the pre-pass entirely and use
+        // the original zero-allocation path.  This covers the universal
+        // non-assertion case: every `reify check` call on a module without
+        // `RepresentationWithin` constraints, where `cmd_check` never calls
+        // `set_capture_repr_tol` / `tessellate_realizations` and the map stays
+        // empty.
+        if self.achieved_repr_tol.is_empty() && self.optimization_registry.is_empty() {
             let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = entries
                 .into_iter()
                 .map(|(id, expr, _target)| (id, expr))
@@ -55,12 +73,116 @@ impl Engine {
             return (self.constraint_checker.check(&input), Vec::new());
         }
 
-        // Results in input order. We fill slots as each path completes.
-        let mut results: Vec<Option<ConstraintResult>> = (0..entries.len()).map(|_| None).collect();
+        // ── RepresentationWithin interception ─────────────────────────────────
+        // Reached only when `achieved_repr_tol` is non-empty (a tessellation
+        // ran) or an optimised impl is registered.  Peel RepresentationWithin
+        // entries off the batch before bucketing so that they never reach the
+        // language-level ConstraintChecker (which has no access to
+        // self.achieved_repr_tol).  Each matched entry is evaluated engine-side;
+        // unmatched entries go to the existing paths.
+        //
+        // Two-vector approach avoids a second allocation pass: we collect
+        // `rest` in-order so the original (id, expr, target) tuples remain
+        // borrow-valid for the bucketing step below.
+        let n = entries.len();
+        let mut rw_slots: Vec<Option<ConstraintResult>> = (0..n).map(|_| None).collect();
+        let mut rest: Vec<(usize, ConstraintNodeId, &'a CompiledExpr, Option<&'a str>)> =
+            Vec::with_capacity(n);
+        let mut any_rw = false;
+
+        for (i, (id, expr, target)) in entries.into_iter().enumerate() {
+            match crate::tolerance_combine::eval_representation_within(
+                &id,
+                expr,
+                values,
+                &self.achieved_repr_tol,
+            ) {
+                Some((satisfaction, diag_opt)) => {
+                    // Engine-side result from the achieved-repr-tol map.
+                    rw_slots[i] = Some(ConstraintResult {
+                        id,
+                        satisfaction,
+                        diagnostics: ConstraintDiagnostics {
+                            messages: diag_opt.into_iter().collect(),
+                        },
+                    });
+                    any_rw = true;
+                }
+                None => {
+                    // Not a RepresentationWithin shape — pass through.
+                    rest.push((i, id, expr, target));
+                }
+            }
+        }
+
+        // All entries were RepresentationWithin — skip bucketing entirely.
+        if rest.is_empty() {
+            let constraint_results = rw_slots
+                .into_iter()
+                .map(|r| r.expect("every RepresentationWithin slot must be filled"))
+                .collect();
+            return (constraint_results, Vec::new());
+        }
+
+        // No RepresentationWithin entries found in this batch (achieved_repr_tol
+        // is non-empty — tessellation ran — but no entry in this specific batch
+        // matched the shape) AND no registered impls.  Take the pass-through
+        // path.  Note: rw_slots and rest were allocated by the pre-pass above;
+        // the early fast path handles the universal non-assertion case without
+        // this overhead.
+        if !any_rw && self.optimization_registry.is_empty() {
+            let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = rest
+                .into_iter()
+                .map(|(_i, id, expr, _target)| (id, expr))
+                .collect();
+            let input = ConstraintInput {
+                constraints: Cow::Owned(constraints),
+                values,
+                functions,
+                determinacy,
+            };
+            return (self.constraint_checker.check(&input), Vec::new());
+        }
+
+        // Mixed batch (some RepresentationWithin + some pass-through) or
+        // optimised impls are registered: use the slot vector for order
+        // preservation.  Reuse rw_slots as the unified results vector.
+        let mut results = rw_slots;
 
         // Diagnostics emitted by this function (contract violations only —
         // per-constraint diagnostics remain inside ConstraintResult).
         let mut dispatch_diagnostics: Vec<Diagnostic> = Vec::new();
+
+        if self.optimization_registry.is_empty() {
+            // Fast path for the pass-through subset: no optimised groups.
+            let (indices, constraints): (Vec<usize>, Vec<(ConstraintNodeId, &'a CompiledExpr)>) =
+                rest.into_iter()
+                    .map(|(i, id, expr, _target)| (i, (id, expr)))
+                    .unzip();
+            let input = ConstraintInput {
+                constraints: Cow::Owned(constraints),
+                values,
+                functions,
+                determinacy,
+            };
+            let fallback_results = self.constraint_checker.check(&input);
+            assert_eq!(
+                fallback_results.len(),
+                indices.len(),
+                "ConstraintChecker returned {} results for {} non-RepresentationWithin \
+                 constraints",
+                fallback_results.len(),
+                indices.len(),
+            );
+            for (orig_idx, result) in indices.into_iter().zip(fallback_results) {
+                results[orig_idx] = Some(result);
+            }
+            let constraint_results = results
+                .into_iter()
+                .map(|r| r.expect("dispatch_constraints: every slot must be filled"))
+                .collect();
+            return (constraint_results, dispatch_diagnostics);
+        }
 
         // Bucket entries by registered target. Keys borrow from the entry's
         // `Option<&'a str>` — no allocation. A `BTreeMap` gives deterministic
@@ -76,7 +198,7 @@ impl Engine {
         type BucketEntry<'b> = (usize, (ConstraintNodeId, &'b CompiledExpr));
         let mut optimized_groups: BTreeMap<&'a str, Vec<BucketEntry<'a>>> = BTreeMap::new();
         let mut fallback: Vec<BucketEntry<'a>> = Vec::new();
-        for (i, (id, expr, target)) in entries.into_iter().enumerate() {
+        for (i, id, expr, target) in rest {
             match target {
                 Some(t) if self.optimization_registry.contains_key(t) => {
                     optimized_groups.entry(t).or_default().push((i, (id, expr)));
@@ -528,11 +650,27 @@ impl Engine {
     /// Checks top-level (unguarded) constraints unconditionally, plus
     /// guarded constraints whose guard is active (true→group.constraints,
     /// false→group.else_constraints, Undef→neither).
+    ///
+    /// ## RepresentationWithin ordering invariant (task-4199 γ / C1)
+    ///
+    /// `self.achieved_repr_tol` is populated by
+    /// [`tessellate_realizations`](crate::Engine::tessellate_realizations) and
+    /// is **not cleared** by `eval()` or by this function.  Callers that want
+    /// `RepresentationWithin` assertions to produce a `Satisfied`/`Violated`
+    /// verdict must call `set_capture_repr_tol(true)` followed by
+    /// `tessellate_realizations(&compiled)` **before** calling `check()`.
+    /// When the map is empty (no prior tessellation, or no OCCT kernel),
+    /// `dispatch_constraints` falls through to `Indeterminate` for every
+    /// `RepresentationWithin` entry — never a false `Violated` (C1).
     pub fn check(&mut self, module: &CompiledModule) -> CheckResult {
         let eval_result = self.eval(module);
         let mut diagnostics = eval_result.diagnostics;
 
         // After eval(), eval_state is always Some — unwrap is safe here.
+        // NOTE: eval() does NOT clear self.achieved_repr_tol — the map
+        // populated by tessellate_realizations() (before this check() call)
+        // remains available when dispatch_constraints() reads it for
+        // RepresentationWithin interception (type-name-scan fallback path).
         let det_values = &self.eval_state.as_ref().unwrap().snapshot.values;
         let (constraint_results, constraint_diags) =
             self.check_constraints_against_templates(module, &eval_result.values, Some(det_values));

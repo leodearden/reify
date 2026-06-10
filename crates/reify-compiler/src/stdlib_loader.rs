@@ -86,6 +86,17 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.constitutive",
                 include_str!("../stdlib/constitutive.ri"),
             ),
+            // `std.fea.types` declares the empty marker traits `Load` and
+            // `Support`.  It MUST precede `std.solver.elastic` so that
+            // `solve_elastic_static`'s `loads : List<Load>` / `supports :
+            // List<Support>` params can resolve in the growing prelude.
+            // Zero dependencies (empty marker traits) — placement is free.
+            // Mirrors the `std.constitutive` → `std.solver.elastic` pattern
+            // for `ConstitutiveLaw`.
+            (
+                "std.fea.types",
+                include_str!("../stdlib/fea_types.ri"),
+            ),
             (
                 "std.solver.elastic",
                 include_str!("../stdlib/solver_elastic.ri"),
@@ -178,10 +189,28 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.process",
                 include_str!("../stdlib/process.ri"),
             ),
-            // `std.dynamics` depends on `std.units` (Mass / Length / Time) and
-            // `std.trajectory` (for the `JointValue` alias used in TrajectorySample).
-            // Tail placement after `std.trajectory` satisfies both dependencies and
-            // keeps the v0.3 RBD cluster grouped. RBD-α task 3822.
+            // `std.kinematic` declares the DrivingJoint marker trait, per-kind
+            // joint structures (Prismatic/Revolute/Cylindrical/Planar/Spherical),
+            // non-conforming joints (Coupling/Fixed), and top-level container types
+            // (BodyId/Mechanism/Snapshot/SweepDim). Depends on std.trajectory
+            // (Vec3 and JointValue aliases) and std.units (Bool/Int/Real).
+            // Moved before std.dynamics (mechanism-β, task 4311) so that Mechanism
+            // and Snapshot are in scope when dynamics.ri's inverse_dynamics /
+            // inverse_dynamics_at_snapshot parameter types are compiled. No
+            // circular dependency: std.kinematic only requires std.trajectory +
+            // std.units, both of which are earlier in this sequence.
+            // KCC-ζ task 3845.
+            (
+                "std.kinematic",
+                include_str!("../stdlib/kinematic.ri"),
+            ),
+            // `std.dynamics` depends on `std.units` (Mass / Length / Time),
+            // `std.trajectory` (for the `JointValue` alias used in TrajectorySample),
+            // and `std.kinematic` (Mechanism / Snapshot nominal types used in
+            // inverse_dynamics / inverse_dynamics_at_snapshot parameter types —
+            // updated from Real placeholders by mechanism-β, task 4311).
+            // Placement after std.kinematic satisfies all three dependencies.
+            // RBD-α task 3822.
             (
                 "std.dynamics",
                 include_str!("../stdlib/dynamics.ri"),
@@ -195,18 +224,6 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             (
                 "std.stackup",
                 include_str!("../stdlib/stackup.ri"),
-            ),
-            // `std.kinematic` declares the DrivingJoint marker trait, per-kind
-            // joint structures (Prismatic/Revolute/Cylindrical/Planar/Spherical),
-            // non-conforming joints (Coupling/Fixed), and top-level container types
-            // (BodyId/Mechanism/Snapshot/SweepDim). Depends on std.trajectory
-            // (Vec3 and JointValue aliases) and std.units (Bool/Int/Real).
-            // Tail placement after std.trajectory satisfies both alias dependencies.
-            // Joints stay Value::Map per PRD §7.1 (esc-3845-91); units.rs/sweep.rs
-            // per-name hooks KEPT per esc-3845-91. KCC-ζ task 3845.
-            (
-                "std.kinematic",
-                include_str!("../stdlib/kinematic.ri"),
             ),
             // `std.ports` declares the Directionality enum and Port base trait.
             // No inter-module dependencies beyond built-in types.

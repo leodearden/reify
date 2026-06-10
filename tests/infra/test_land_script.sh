@@ -130,4 +130,40 @@ assert "main-gate log records the sanctioned move" \
 assert "happy path prints the landed SHA on stdout" \
     bash -c "printf '%s\n' \"\$1\" | grep -qE '[0-9a-f]{40}'" _ "$LAND_OUT"
 
+# -- darkened core.hooksPath -> re-assert (task 4380) --------------------------
+# Scenario: before the merge, core.hooksPath has been overwritten to the inert
+# .git/hooks samples dir (no reference-transaction hook) — mirroring the Claude
+# Code worktree bug.  land.sh must idempotently re-assert `core.hooksPath=hooks`
+# so the tripwire is live when refs/heads/main moves.
+echo ""
+echo "--- darkened core.hooksPath: land.sh must re-assert and fire the tripwire ---"
+R2=""; make_repo R2
+# DARKEN: point to the inert .git/hooks samples dir (no reference-transaction hook).
+git -C "$R2" config core.hooksPath "$R2/.git/hooks"
+rm -f "$R2/.git/reify-main-gate-ok" "$R2/.git/reify-main-gate.log"
+before2="$(git -C "$R2" rev-parse main)"
+land "$R2" task/foo
+after2="$(git -C "$R2" rev-parse main)"
+assert "darkened-gate: exits 0" test "$LAND_RC" -eq 0
+assert "darkened-gate: main advanced" bash -c "[ '$before2' != '$after2' ]"
+assert "darkened-gate: core.hooksPath re-asserted to relative 'hooks'" \
+    bash -c "[ \"\$(git -C '$R2' config --get core.hooksPath)\" = 'hooks' ]"
+assert "darkened-gate: tripwire fired and logged 'sanctioned main move'" \
+    bash -c "grep -q 'sanctioned main move' '$R2/.git/reify-main-gate.log'"
+
+# -- idempotency: core.hooksPath already 'hooks', land.sh leaves it intact -----
+# Scenario: core.hooksPath is already the correct relative value; the re-assert
+# line must be a true no-op (no behavior change, exit 0, value unchanged).
+echo ""
+echo "--- idempotency: core.hooksPath already 'hooks' -> no-op ---"
+R3=""; make_repo R3
+git -C "$R3" config core.hooksPath hooks
+before3="$(git -C "$R3" rev-parse main)"
+land "$R3" task/foo
+after3="$(git -C "$R3" rev-parse main)"
+assert "idempotency: exits 0" test "$LAND_RC" -eq 0
+assert "idempotency: main advanced" bash -c "[ '$before3' != '$after3' ]"
+assert "idempotency: core.hooksPath stays 'hooks'" \
+    bash -c "[ \"\$(git -C '$R3' config --get core.hooksPath)\" = 'hooks' ]"
+
 test_summary

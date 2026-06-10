@@ -40,6 +40,8 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
         tessellationDiagnostics: [],
       },
       initFromState: vi.fn(),
+      setCompileDiagnostics: vi.fn(),
+      setTessellationDiagnostics: vi.fn(),
     },
     editor: {
       state: {
@@ -50,6 +52,7 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
         cursorPosition: null,
       },
       openFile: vi.fn(),
+      closeFile: vi.fn(),
     },
     selection: {
       state: {

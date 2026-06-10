@@ -61,7 +61,7 @@ fn entity_kind_as_label() {
 #[test]
 fn compile_linear_pattern_produces_realization() {
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let pattern = linear_pattern(w, 1, 0, 0, 4, 20)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat"));
@@ -97,7 +97,7 @@ fn compile_linear_pattern_produces_realization() {
 #[test]
 fn compile_mirror_produces_realization() {
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let mirrored = mirror(w, 0, 0, 0, 1, 0, 0)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_mirror"));
@@ -131,7 +131,7 @@ fn compile_mirror_produces_realization() {
 #[test]
 fn compile_linear_pattern_2d_produces_realization() {
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20, 0, 1, 0, 4, 30)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat2d"));
@@ -176,7 +176,7 @@ fn compile_linear_pattern_2d_produces_realization() {
 #[test]
 fn compile_linear_pattern_2d_wrong_arity_produces_diagnostic() {
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat2d_err"));
@@ -196,7 +196,7 @@ fn compile_linear_pattern_2d_wrong_arity_produces_diagnostic() {
 fn compile_arbitrary_pattern_produces_realization() {
     // arbitrary_pattern(target, dx1, dy1, dz1, dx2, dy2, dz2) = 7 args = target + 2 triples
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let pattern = arbitrary_pattern(w, 10, 0, 0, 0, 20, 0)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arbpat"));
@@ -240,7 +240,7 @@ fn compile_arbitrary_pattern_produces_realization() {
 fn compile_arbitrary_pattern_too_few_args_produces_diagnostic() {
     // Needs at least 4 args (target + 1 triple)
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let pattern = arbitrary_pattern(w, 10, 0)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arbpat_err1"));
@@ -260,7 +260,7 @@ fn compile_arbitrary_pattern_too_few_args_produces_diagnostic() {
 fn compile_arbitrary_pattern_non_triple_args_produces_diagnostic() {
     // 6 args = target + 5 coords, but (6-1)%3 != 0
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let pattern = arbitrary_pattern(w, 10, 0, 0, 5, 0)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arbpat_err2"));
@@ -279,7 +279,7 @@ fn compile_arbitrary_pattern_non_triple_args_produces_diagnostic() {
 #[test]
 fn compile_loft_produces_realization() {
     let source = r#"structure S {
-    param r: Scalar = 10mm
+    param r: Length = 10mm
     let swept = loft(r, r)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_loft"));
@@ -313,7 +313,7 @@ fn compile_loft_produces_realization() {
 #[test]
 fn compile_shell_produces_realization() {
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let hollowed = shell(w, 1)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_shell"));
@@ -347,7 +347,7 @@ fn compile_shell_produces_realization() {
 #[test]
 fn compile_thicken_produces_realization() {
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let thickened = thicken(w, 2)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_thicken"));
@@ -381,7 +381,7 @@ fn compile_thicken_produces_realization() {
 #[test]
 fn compile_draft_produces_realization() {
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let drafted = draft(w, 0.1, w)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_draft"));
@@ -415,7 +415,7 @@ fn compile_draft_produces_realization() {
 #[test]
 fn compile_circular_pattern_produces_realization() {
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let pattern = circular_pattern(w, 0, 0, 0, 0, 0, 1, 6, 360)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_circpat"));
@@ -641,7 +641,7 @@ fn compile_union_non_geometry_arg_emits_diagnostic() {
     // The parser may reject bare number literals in function position,
     // so we use a param reference (Scalar param) which is a valid expr but not geometry.
     let source = r#"structure S {
-    param w: Scalar = 10mm
+    param w: Length = 10mm
     let r = union(w, box(10mm, 10mm, 10mm))
 }"#;
     let parsed = reify_syntax::parse(
@@ -916,7 +916,7 @@ fn compile_sweep_produces_sweep_kind() {
 fn compile_sweep_wrong_arg_count() {
     // sweep with 1 arg (should need 2)
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = sweep(p)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_sweep_bad"));
@@ -936,7 +936,7 @@ fn compile_sweep_wrong_arg_count() {
 fn compile_sweep_rejects_three_args() {
     // sweep with 3 args (should need exactly 2) — regression guard for over-count (task-383 S4d)
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = sweep(p, p, p)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_sweep_3args"));
@@ -1072,7 +1072,7 @@ fn compile_tube_produces_primitive_tube_kind() {
 fn compile_tube_wrong_arg_count() {
     // tube with 2 args (should need 3)
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let r = tube(p, p)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_tube_bad"));
@@ -1253,7 +1253,7 @@ fn compile_sweep_guided_emits_empty_args() {
 fn compile_pipe_wrong_arg_count() {
     // pipe with 1 arg (should need 2)
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let r = pipe(p)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_pipe_bad"));
@@ -1290,7 +1290,7 @@ fn user_function_shadowing_scale_no_realizations() {
 fn scale(x: Real, factor: Real) -> Real { x * factor }
 
 structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = scale(p, 2)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_shadow_scale"));
@@ -1311,7 +1311,7 @@ structure S {
 #[test]
 fn compile_translate_wrong_arg_count() {
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = translate(p, p)
 }"#;
     let parsed = reify_syntax::parse(
@@ -1337,7 +1337,7 @@ fn compile_translate_wrong_arg_count() {
 #[test]
 fn compile_rotate_wrong_arg_count() {
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = rotate(p, p)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_rotate_bad"));
@@ -1360,7 +1360,7 @@ fn compile_rotate_wrong_arg_count() {
 #[test]
 fn compile_scale_wrong_arg_count() {
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = scale(p, p, p)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_scale_bad"));
@@ -1383,7 +1383,7 @@ fn compile_scale_wrong_arg_count() {
 #[test]
 fn compile_rotate_around_wrong_arg_count() {
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = rotate_around(p, p, p)
 }"#;
     let parsed = reify_syntax::parse(
@@ -1409,7 +1409,7 @@ fn compile_rotate_around_wrong_arg_count() {
 #[test]
 fn compile_translate_arg_ordering() {
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = translate(p, p, p, p)
 }"#;
     let parsed = reify_syntax::parse(
@@ -1437,7 +1437,7 @@ fn compile_translate_arg_ordering() {
 #[test]
 fn compile_rotate_arg_ordering() {
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = rotate(p, p, p, p, p)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_rotate_args"));
@@ -1462,7 +1462,7 @@ fn compile_rotate_arg_ordering() {
 #[test]
 fn compile_scale_arg_ordering() {
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = scale(p, p)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_scale_args"));
@@ -1487,7 +1487,7 @@ fn compile_scale_arg_ordering() {
 #[test]
 fn compile_rotate_around_arg_ordering() {
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = rotate_around(p, p, p, p, p, p, p, p)
 }"#;
     let parsed = reify_syntax::parse(
@@ -1522,7 +1522,7 @@ fn loft_nested_in_union_correct_step_refs() {
     // Step(1) not Step(0).  p is a scalar param — not a geometry ref — so the
     // silent fallback fires and we can observe the corrected step index.
     let source = r#"structure S {
-    param p: Scalar = 5mm
+    param p: Length = 5mm
     let result = union(box(10mm, 10mm, 10mm), loft(p, p))
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_loft_union"));

@@ -1792,7 +1792,7 @@ pub(crate) fn try_eval_geometry_query(
 /// direct-dispatch path and to locate fold leaves in the nested path.
 /// `length` / `perimeter` are intentionally excluded (topology-selector path —
 /// see the module note above `try_eval_geometry_query`).
-fn is_geometry_query_call(expr: &reify_ir::CompiledExpr) -> bool {
+pub(crate) fn is_geometry_query_call(expr: &reify_ir::CompiledExpr) -> bool {
     matches!(
         &expr.kind,
         reify_ir::CompiledExprKind::FunctionCall { function, args }
@@ -2086,6 +2086,22 @@ pub(crate) fn try_eval_kinematic_query(
         _ => return None,
     };
 
+    // (1b) Swept flat_map branch: flat_map(snaps, |s| [kin_helper(s, a, b)]).
+    // Checked before the helper-name match (step 2) so the `flat_map` name
+    // does not fall through to the `_ => return None` arm. Non-kinematic
+    // flat_map lambdas (e.g. `center_of_mass`) return None from
+    // `try_eval_swept_kinematic_query`, preserving the pure-eval value.
+    if function.name == "flat_map" {
+        return try_eval_swept_kinematic_query(
+            args,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+            pose_cache,
+        );
+    }
+
     // (2) Must be one of the three recognised helper names.
     let helper = match function.name.as_str() {
         "interferes" => KinematicHelper::Interferes,
@@ -2121,6 +2137,49 @@ pub(crate) fn try_eval_kinematic_query(
         None
     };
 
+    // (5–7) Delegate the per-snapshot core (extract bodies → build id→handle
+    // with FK ApplyTransform → dispatch per-helper) to
+    // `eval_kinematic_on_snapshot`. The swept flat_map branch calls the same
+    // function for each element of the snapshot list (task 3844).
+    eval_kinematic_on_snapshot(
+        helper,
+        &function.name,
+        snapshot_value,
+        body_id_args,
+        named_steps,
+        kernel,
+        diagnostics,
+        pose_cache,
+    )
+}
+
+/// Per-snapshot kinematic dispatch: resolve bodies from a Snapshot Map, apply
+/// FK world_transforms via `GeometryOp::ApplyTransform`, and run the
+/// per-helper kernel probe (`interferes`, `interferes_with`, `min_clearance`).
+///
+/// Extracted from `try_eval_kinematic_query` so the swept flat_map branch
+/// (`try_eval_swept_kinematic_query`) can invoke the same per-snapshot logic
+/// for each element of a snapshot list (task 3844, KCC-epsilon).
+///
+/// `fn_name` is used only in Warning diagnostics; pass the stdlib function
+/// name (e.g. `"min_clearance"`) for readable messages.
+///
+/// Returns:
+///   `Some(Value)` on success — List / Bool / length Scalar per helper.
+///   `Some(Value::Undef)` when the snapshot Map is malformed or a kernel
+///     operation fails — the caller receives the per-snapshot Undef rather
+///     than collapsing the entire swept result.
+#[allow(clippy::too_many_arguments)]
+fn eval_kinematic_on_snapshot(
+    helper: KinematicHelper,
+    fn_name: &str,
+    snapshot_value: &reify_ir::Value,
+    body_id_args: Option<(i64, i64)>,
+    named_steps: &HashMap<String, KernelHandle>,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+    pose_cache: &mut HashMap<(GeometryHandleId, [u64; 4], [u64; 3]), GeometryHandleId>,
+) -> Option<reify_ir::Value> {
     // (5) Read the Snapshot's bodies list. Returns Some(Value::Undef) (not
     // None) when the cell value isn't a well-formed Snapshot — the stdlib
     // stub already validated this on the value-eval pass, so reaching here
@@ -2178,9 +2237,8 @@ pub(crate) fn try_eval_kinematic_query(
                         if rotation != [1.0, 0.0, 0.0, 0.0] || translation != [0.0, 0.0, 0.0] =>
                     {
                         // Cache posed handles for the duration of the build
-                        // pass: a typical structure calls interferes(s),
-                        // interferes_with(s,…) and min_clearance(s,…) on the
-                        // same snapshot, so without a cache each non-identity
+                        // pass: a typical structure calls interferes/interferes_with/min_clearance on
+                        // the same snapshot, so without a cache each non-identity
                         // body is re-posed once per query (3× the kernel ops
                         // for the same geometry). The key is (source handle,
                         // rotation bits, translation bits) — bit-exact to avoid
@@ -2211,8 +2269,7 @@ pub(crate) fn try_eval_kinematic_query(
                                     // kernel_distance error arm) so the failure
                                     // is visible rather than silently wrong.
                                     diagnostics.push(Diagnostic::warning(format!(
-                                        "{}: ApplyTransform failed for body '{}': {e}",
-                                        function.name, solid_name
+                                        "{fn_name}: ApplyTransform failed for body '{solid_name}': {e}",
                                     )));
                                     return Some(reify_ir::Value::Undef);
                                 }
@@ -2238,7 +2295,7 @@ pub(crate) fn try_eval_kinematic_query(
                 for j in (i + 1)..id_to_handle.len() {
                     let (id_a, handle_a) = id_to_handle[i];
                     let (id_b, handle_b) = id_to_handle[j];
-                    match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+                    match kernel_distance(kernel, handle_a, handle_b, diagnostics, fn_name) {
                         Some(d) if d <= 0.0 => {
                             pairs.push(make_pair_map(id_a, id_b));
                         }
@@ -2268,7 +2325,7 @@ pub(crate) fn try_eval_kinematic_query(
                 Some(h) => h,
                 None => return Some(reify_ir::Value::Undef),
             };
-            match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+            match kernel_distance(kernel, handle_a, handle_b, diagnostics, fn_name) {
                 Some(d) => Some(reify_ir::Value::Bool(d <= 0.0)),
                 None => Some(reify_ir::Value::Undef),
             }
@@ -2289,12 +2346,122 @@ pub(crate) fn try_eval_kinematic_query(
                 Some(h) => h,
                 None => return Some(reify_ir::Value::Undef),
             };
-            match kernel_distance(kernel, handle_a, handle_b, diagnostics, &function.name) {
+            match kernel_distance(kernel, handle_a, handle_b, diagnostics, fn_name) {
                 Some(d) => Some(reify_ir::Value::length(d)),
                 None => Some(reify_ir::Value::Undef),
             }
         }
     }
+}
+
+/// Swept kinematic-query dispatch for `flat_map(snaps, |s| [kin_helper(s, a, b)])`.
+///
+/// Called by `try_eval_kinematic_query` when the outer function name is
+/// `flat_map`. Validates that:
+///   - `args[0]` is a `ValueRef` to a `Value::List` of Snapshot Maps.
+///   - `args[1]` is a `Lambda { param_ids: [s_id], body: ListLiteral([inner]) }`.
+///   - `inner` is a binary kinematic helper call (`interferes_with` or
+///     `min_clearance`) with `args[0] == ValueRef(s_id)` (the lambda param)
+///     and `args[1..]` resolving to `Int` body ids in `values`.
+///
+/// On match: runs `eval_kinematic_on_snapshot` for each snapshot and returns
+/// `Some(Value::List(results))` — one result per snapshot (Undef on per-
+/// snapshot failure, rather than collapsing the whole list).
+///
+/// On any mismatch (non-kinematic inner, wrong shape, non-Int captures):
+/// returns `None` so the cell keeps the pure-eval value (e.g.
+/// `center_of_mass` swept cells computed by the regular eval pass).
+///
+/// The unary `interferes` swept form is intentionally not supported: it would
+/// concatenate pair-lists ambiguously. Falls through to None.
+fn try_eval_swept_kinematic_query(
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+    pose_cache: &mut HashMap<(GeometryHandleId, [u64; 4], [u64; 3]), GeometryHandleId>,
+) -> Option<reify_ir::Value> {
+    // flat_map must have exactly 2 args: (list_arg, lambda_arg).
+    if args.len() != 2 {
+        return None;
+    }
+
+    // args[0] must be a ValueRef to a list of Snapshots.
+    let list_id = match &args[0].kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    let snapshots = match values.get(list_id) {
+        Some(reify_ir::Value::List(snaps)) => snaps,
+        _ => return None,
+    };
+
+    // args[1] must be a Lambda with exactly one parameter (the snapshot `s`).
+    let (s_param_id, body) = match &args[1].kind {
+        reify_ir::CompiledExprKind::Lambda { param_ids, body, .. } if param_ids.len() == 1 => {
+            (&param_ids[0], body.as_ref())
+        }
+        _ => return None,
+    };
+
+    // Lambda body must be ListLiteral([inner]) — a single-element list.
+    let inner = match &body.kind {
+        reify_ir::CompiledExprKind::ListLiteral(elems) if elems.len() == 1 => &elems[0],
+        _ => return None,
+    };
+
+    // inner must be a binary kinematic helper call with 3 args.
+    let (inner_fn, inner_args) = match &inner.kind {
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => {
+            (function, args.as_slice())
+        }
+        _ => return None,
+    };
+    let helper = match inner_fn.name.as_str() {
+        "interferes_with" => KinematicHelper::InterferesWith,
+        "min_clearance" => KinematicHelper::MinClearance,
+        // Unary `interferes` and non-kinematic names (e.g. center_of_mass)
+        // → fall through so the pure-eval value is preserved.
+        _ => return None,
+    };
+    if inner_args.len() != 3 {
+        return None;
+    }
+
+    // inner_args[0] must be ValueRef to the lambda parameter (the snapshot `s`).
+    let arg0_ref = match &inner_args[0].kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        _ => return None,
+    };
+    if arg0_ref != s_param_id {
+        return None;
+    }
+
+    // inner_args[1] and [2] must be ValueRefs resolving to Int body ids.
+    let id_a = resolve_int_value_ref(&inner_args[1], values)?;
+    let id_b = resolve_int_value_ref(&inner_args[2], values)?;
+    let body_id_args = Some((id_a, id_b));
+
+    // For each snapshot in the list run the per-snapshot dispatch core and
+    // collect results. Per-snapshot failures (None) become Value::Undef so
+    // the list length is always equal to the snapshot count.
+    let fn_name = inner_fn.name.as_str();
+    let mut out: Vec<reify_ir::Value> = Vec::with_capacity(snapshots.len());
+    for snap in snapshots {
+        let result = eval_kinematic_on_snapshot(
+            helper,
+            fn_name,
+            snap,
+            body_id_args,
+            named_steps,
+            kernel,
+            diagnostics,
+            pose_cache,
+        );
+        out.push(result.unwrap_or(reify_ir::Value::Undef));
+    }
+    Some(reify_ir::Value::List(out))
 }
 
 #[derive(Clone, Copy)]
@@ -5617,6 +5784,18 @@ pub(crate) fn surface_subtree(
     meta_map: &HashMap<String, HashMap<String, String>>,
     meshes: &mut Vec<crate::MeshSurface>,
     diagnostics: &mut Vec<Diagnostic>,
+    // Determinacy β (task 4198): when `true`, call
+    // `kernel.measure_mesh_deviation` for each successfully tessellated
+    // occurrence and insert the result into `achieved_repr_tol`. `false`
+    // by default — zero overhead when γ assertions are not active.
+    capture_repr_tol: bool,
+    // Determinacy β (task 4198): per-build map from realized-occurrence name
+    // ("{entity}#realization[{index}]") to sampled max facet-chord deviation
+    // in SI metres. Populated here (the unique site holding kernel + placed_id
+    // + fresh mesh + entity_path simultaneously) when `capture_repr_tol` is
+    // true. Recording is skip-on-None and skip-on-empty-mesh so the map never
+    // contains misleading 0.0 entries (honest absence = missing key, B3).
+    achieved_repr_tol: &mut BTreeMap<String, f64>,
 ) {
     walk_placed_realizations(
         module,
@@ -5640,6 +5819,23 @@ pub(crate) fn surface_subtree(
             let budget = tessellation_budgets[t][r];
             match kernel.tessellate(placed_id, budget) {
                 Ok(mesh) => {
+                    // Determinacy β (task 4198): record the sampled max
+                    // facet-chord deviation BEFORE moving entity_path into
+                    // MeshSurface. Gated on `capture_repr_tol` so the hot
+                    // path pays zero overhead (no BRepExtrema projection,
+                    // no actor round-trip) when γ assertions are not active.
+                    // Only record for non-empty meshes — an empty mesh yields
+                    // honest absence (missing key), never 0.0.
+                    // measure_mesh_deviation returns None for non-OCCT kernels
+                    // (default-absent trait method, B3). Anti-circularity: the
+                    // metric takes no tolerance argument and measures actual
+                    // facet-chord error, NOT the configured deflection budget.
+                    if capture_repr_tol
+                        && !mesh.indices.is_empty()
+                        && let Some(dev) = kernel.measure_mesh_deviation(placed_id, &mesh)
+                    {
+                        achieved_repr_tol.insert(entity_path.clone(), dev);
+                    }
                     // step-6: hide iff any `aux` ancestor sub OR this realization's
                     // own `aux` let. aux bodies are still tessellated and shipped —
                     // only hidden by default.
@@ -10080,6 +10276,492 @@ mod tests {
             }
             other => panic!("expected ApplyTransform, got {:?}", other),
         }
+    }
+
+    /// Contract test (task 3844 KCC-ε): a `flat_map(snaps, |s| [center_of_mass(s)])`
+    /// cell must return `None` from `try_eval_kinematic_query` so the pure-eval value
+    /// (set by the regular eval pass) is preserved.
+    ///
+    /// The swept dispatch intercepts ALL `flat_map` calls in the kinematic post-process;
+    /// this test locks the fall-through contract for non-kinematic inner functions,
+    /// independent of OCCT availability.
+    #[test]
+    fn try_eval_swept_kinematic_query_non_kinematic_inner_falls_through_to_none() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // snaps cell → a single-element list.  The snapshot content is never
+        // accessed because the non-kinematic inner fn name triggers the
+        // fall-through before any snapshot body processing.
+        let snaps_cell = ValueCellId::new("Swept", "snaps");
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            snaps_cell.clone(),
+            reify_ir::Value::List(vec![reify_ir::Value::Undef]),
+        );
+
+        // Lambda param cell.
+        let s_param = ValueCellId::new("Swept", "s");
+
+        // Inner: FunctionCall("center_of_mass", [ValueRef(s_param)])
+        let s_ref = reify_ir::CompiledExpr::value_ref(s_param.clone(), Type::Geometry);
+        let inner = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "center_of_mass".to_string(),
+                    qualified_name: "center_of_mass".to_string(),
+                },
+                args: vec![s_ref],
+            },
+            result_type: Type::Real,
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        // Lambda body: ListLiteral([inner])
+        let lambda_body = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        // Lambda arg: Lambda { params, param_ids: [s_param], body, captures: [] }
+        let lambda_arg = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::Lambda {
+                params: vec![("s".to_string(), None)],
+                param_ids: vec![s_param],
+                body: Box::new(lambda_body),
+                captures: vec![],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        // flat_map(snaps, lambda_arg)
+        let snaps_ref =
+            reify_ir::CompiledExpr::value_ref(snaps_cell, Type::List(Box::new(Type::Geometry)));
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "flat_map".to_string(),
+                    qualified_name: "flat_map".to_string(),
+                },
+                args: vec![snaps_ref, lambda_arg],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+
+        let result = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+            &mut HashMap::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "flat_map with non-kinematic inner (center_of_mass) must return None \
+             so the pure-eval value is preserved; got {result:?}"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "fall-through must emit no diagnostics; got {diagnostics:?}"
+        );
+    }
+
+    /// Contract test (task 3844 KCC-ε): a well-formed
+    /// `flat_map(snaps, |s| [min_clearance(s, id_a, id_b)])` over a 2-element
+    /// snapshot list must return `Some(Value::List(len=2))` from
+    /// `try_eval_kinematic_query`.
+    ///
+    /// Uses identity world_transforms (no `ApplyTransform` ops emitted) so the
+    /// test can run without OCCT — only `MockGeometryKernel::with_distance_result`
+    /// is required.  Locks the happy-path list-length contract independent of OCCT
+    /// availability.
+    #[test]
+    fn try_eval_swept_kinematic_query_min_clearance_returns_list_of_correct_length() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let src_a = reify_ir::GeometryHandleId(10);
+        let src_b = reify_ir::GeometryHandleId(20);
+
+        // Identity world_transforms: no ApplyTransform ops, probe uses raw handles.
+        let mut kernel = MockGeometryKernel::new()
+            .with_distance_result(src_a, src_b, reify_ir::Value::Real(0.050)); // 50 mm
+
+        let make_transform_identity = || -> reify_ir::Value {
+            reify_ir::Value::Transform {
+                rotation: Box::new(reify_ir::Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+                translation: Box::new(reify_ir::Value::Vector(vec![
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ])),
+            }
+        };
+
+        let make_snapshot = |transform_a: reify_ir::Value,
+                              transform_b: reify_ir::Value|
+         -> reify_ir::Value {
+            let make_body = |id: i64, solid: &str, wt: reify_ir::Value| -> reify_ir::Value {
+                let mut m = std::collections::BTreeMap::new();
+                m.insert(
+                    reify_ir::Value::String("id".to_string()),
+                    reify_ir::Value::Int(id),
+                );
+                m.insert(
+                    reify_ir::Value::String("solid".to_string()),
+                    reify_ir::Value::String(solid.to_string()),
+                );
+                m.insert(reify_ir::Value::String("world_transform".to_string()), wt);
+                reify_ir::Value::Map(m)
+            };
+            let mut snap_map = std::collections::BTreeMap::new();
+            snap_map.insert(
+                reify_ir::Value::String("kind".to_string()),
+                reify_ir::Value::String("snapshot".to_string()),
+            );
+            snap_map.insert(
+                reify_ir::Value::String("bodies".to_string()),
+                reify_ir::Value::List(vec![
+                    make_body(1, "body_a", transform_a),
+                    make_body(2, "body_b", transform_b),
+                ]),
+            );
+            reify_ir::Value::Map(snap_map)
+        };
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "body_a".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_a,
+            },
+        );
+        named_steps.insert(
+            "body_b".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_b,
+            },
+        );
+
+        // Two snapshots, each with identity transforms.
+        let snaps_cell = ValueCellId::new("Swept", "snaps");
+        let id_a_cell = ValueCellId::new("Swept", "id_a");
+        let id_b_cell = ValueCellId::new("Swept", "id_b");
+        let s_param = ValueCellId::new("Swept", "s");
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            snaps_cell.clone(),
+            reify_ir::Value::List(vec![
+                make_snapshot(make_transform_identity(), make_transform_identity()),
+                make_snapshot(make_transform_identity(), make_transform_identity()),
+            ]),
+        );
+        values.insert(id_a_cell.clone(), reify_ir::Value::Int(1));
+        values.insert(id_b_cell.clone(), reify_ir::Value::Int(2));
+
+        // Build flat_map(snaps, |s| [min_clearance(s, id_a, id_b)])
+        let s_ref = reify_ir::CompiledExpr::value_ref(s_param.clone(), Type::Geometry);
+        let id_a_ref = reify_ir::CompiledExpr::value_ref(id_a_cell.clone(), Type::Int);
+        let id_b_ref = reify_ir::CompiledExpr::value_ref(id_b_cell.clone(), Type::Int);
+
+        let inner = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "min_clearance".to_string(),
+                    qualified_name: "min_clearance".to_string(),
+                },
+                args: vec![s_ref, id_a_ref, id_b_ref],
+            },
+            result_type: Type::Real,
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let lambda_body = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let lambda_arg = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::Lambda {
+                params: vec![("s".to_string(), None)],
+                param_ids: vec![s_param],
+                body: Box::new(lambda_body),
+                captures: vec![id_a_cell, id_b_cell],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let snaps_ref =
+            reify_ir::CompiledExpr::value_ref(snaps_cell, Type::List(Box::new(Type::Geometry)));
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "flat_map".to_string(),
+                    qualified_name: "flat_map".to_string(),
+                },
+                args: vec![snaps_ref, lambda_arg],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+            &mut HashMap::new(),
+        );
+
+        // Must return Some(Value::List) of length 2 (one result per snapshot).
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "swept min_clearance flat_map over a 2-snapshot list must return \
+                 Some(Value::List(len=2)), got {other:?}; diagnostics: {diagnostics:?}"
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            2,
+            "list length must equal snapshot count (2), got {}: {list:?}",
+            list.len()
+        );
+        // Each element must be a length Scalar with si_value ≈ 0.050 m.
+        // Without this check, a regression that returns Value::Undef or dispatches
+        // to the wrong helper would still pass the length-only assertion above.
+        for (i, elem) in list.iter().enumerate() {
+            match elem {
+                reify_ir::Value::Scalar { si_value, .. } => {
+                    let diff = (si_value - 0.050_f64).abs();
+                    assert!(
+                        diff < 1e-9,
+                        "clearances[{i}] expected ≈ 0.050 m, got {si_value:.9} m (delta {diff:.2e})"
+                    );
+                }
+                other => panic!(
+                    "clearances[{i}] expected Value::Scalar (length ≈ 0.050 m), got {other:?}"
+                ),
+            }
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+    }
+
+    /// Swept kinematic query: per-snapshot failures (malformed snapshot missing
+    /// `bodies`) become `Value::Undef` in the output list, while other snapshots
+    /// still resolve.  List length is always equal to the snapshot count.
+    ///
+    /// Pins the most subtle invariant documented in `try_eval_swept_kinematic_query`:
+    /// "Per-snapshot failures (None) become Value::Undef so the list length is
+    /// always equal to the snapshot count."
+    #[test]
+    fn try_eval_swept_kinematic_query_malformed_snapshot_yields_undef_element() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let src_a = reify_ir::GeometryHandleId(10);
+        let src_b = reify_ir::GeometryHandleId(20);
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_distance_result(src_a, src_b, reify_ir::Value::Real(0.030)); // 30 mm
+
+        // Well-formed snapshot with identity transforms.
+        let make_body = |id: i64, solid: &str| -> reify_ir::Value {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(
+                reify_ir::Value::String("id".to_string()),
+                reify_ir::Value::Int(id),
+            );
+            m.insert(
+                reify_ir::Value::String("solid".to_string()),
+                reify_ir::Value::String(solid.to_string()),
+            );
+            let identity_transform = reify_ir::Value::Transform {
+                rotation: Box::new(reify_ir::Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+                translation: Box::new(reify_ir::Value::Vector(vec![
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ])),
+            };
+            m.insert(
+                reify_ir::Value::String("world_transform".to_string()),
+                identity_transform,
+            );
+            reify_ir::Value::Map(m)
+        };
+
+        // snapshot_good: valid Snapshot Map with a `bodies` list.
+        let mut good_map = std::collections::BTreeMap::new();
+        good_map.insert(
+            reify_ir::Value::String("kind".to_string()),
+            reify_ir::Value::String("snapshot".to_string()),
+        );
+        good_map.insert(
+            reify_ir::Value::String("bodies".to_string()),
+            reify_ir::Value::List(vec![make_body(1, "body_a"), make_body(2, "body_b")]),
+        );
+        let snapshot_good = reify_ir::Value::Map(good_map);
+
+        // snapshot_malformed: Map has `kind="snapshot"` but is missing `bodies`.
+        // `extract_snapshot_bodies` returns None → `eval_kinematic_on_snapshot`
+        // returns Some(Value::Undef).
+        let mut bad_map = std::collections::BTreeMap::new();
+        bad_map.insert(
+            reify_ir::Value::String("kind".to_string()),
+            reify_ir::Value::String("snapshot".to_string()),
+        );
+        let snapshot_malformed = reify_ir::Value::Map(bad_map);
+
+        let snaps_cell = ValueCellId::new("Swept", "snaps");
+        let id_a_cell = ValueCellId::new("Swept", "id_a");
+        let id_b_cell = ValueCellId::new("Swept", "id_b");
+        let s_param = ValueCellId::new("Swept", "s");
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert(
+            "body_a".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_a,
+            },
+        );
+        named_steps.insert(
+            "body_b".to_string(),
+            reify_ir::KernelHandle {
+                kernel: reify_ir::KernelId::Occt,
+                id: src_b,
+            },
+        );
+
+        // List: [snapshot_good, snapshot_malformed].
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            snaps_cell.clone(),
+            reify_ir::Value::List(vec![snapshot_good, snapshot_malformed]),
+        );
+        values.insert(id_a_cell.clone(), reify_ir::Value::Int(1));
+        values.insert(id_b_cell.clone(), reify_ir::Value::Int(2));
+
+        // Build flat_map(snaps, |s| [min_clearance(s, id_a, id_b)])
+        let s_ref = reify_ir::CompiledExpr::value_ref(s_param.clone(), Type::Geometry);
+        let id_a_ref = reify_ir::CompiledExpr::value_ref(id_a_cell.clone(), Type::Int);
+        let id_b_ref = reify_ir::CompiledExpr::value_ref(id_b_cell.clone(), Type::Int);
+
+        let inner = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "min_clearance".to_string(),
+                    qualified_name: "min_clearance".to_string(),
+                },
+                args: vec![s_ref, id_a_ref, id_b_ref],
+            },
+            result_type: Type::Real,
+            content_hash: reify_core::ContentHash(0),
+        };
+        let lambda_body = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+        let lambda_arg = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::Lambda {
+                params: vec![("s".to_string(), None)],
+                param_ids: vec![s_param],
+                body: Box::new(lambda_body),
+                captures: vec![id_a_cell, id_b_cell],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+        let snaps_ref =
+            reify_ir::CompiledExpr::value_ref(snaps_cell, Type::List(Box::new(Type::Geometry)));
+        let expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "flat_map".to_string(),
+                    qualified_name: "flat_map".to_string(),
+                },
+                args: vec![snaps_ref, lambda_arg],
+            },
+            result_type: Type::List(Box::new(Type::Real)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::try_eval_kinematic_query(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+            &mut HashMap::new(),
+        );
+
+        // Must return Some(Value::List) of length 2 (one per snapshot, not one per resolution).
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "malformed-snapshot test must return Some(Value::List(len=2)), \
+                 got {other:?}; diagnostics: {diagnostics:?}"
+            ),
+        };
+        assert_eq!(
+            list.len(),
+            2,
+            "list length must equal snapshot count (2) even with a malformed element, \
+             got {}: {list:?}",
+            list.len()
+        );
+
+        // Element 0 (good snapshot): resolved to a length Scalar ≈ 0.030 m.
+        match &list[0] {
+            reify_ir::Value::Scalar { si_value, .. } => {
+                let diff = (si_value - 0.030_f64).abs();
+                assert!(
+                    diff < 1e-9,
+                    "list[0] (good snapshot) expected ≈ 0.030 m, got {si_value:.9} m"
+                );
+            }
+            other => panic!("list[0] (good snapshot) expected Value::Scalar, got {other:?}"),
+        }
+
+        // Element 1 (malformed snapshot): must be Value::Undef.
+        assert_eq!(
+            list[1],
+            reify_ir::Value::Undef,
+            "list[1] (malformed snapshot missing 'bodies') must be Value::Undef, got {:?}",
+            list[1]
+        );
     }
 
     /// Contract test (task 4142, Cluster B RED — topology/resolve_geometry_handle_arg leaf):

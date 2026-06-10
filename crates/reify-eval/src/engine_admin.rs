@@ -299,10 +299,21 @@ impl Engine {
             // for the matching cfg gates on the declaration and read site).
             #[cfg(any(test, feature = "test-instrumentation"))]
             panic_on_eval_cells: std::collections::HashSet::new(),
+            // Task #4079: progress sink and active cancel handle — both start
+            // unset; installed by the GUI before each solve via the setters.
+            solver_progress_sink: None,
+            active_solve_cancel: None,
             // undef-self-describing α (task 4321): capture disabled by default
             // to guarantee zero overhead on the hot path.
             capture_undef_causes: false,
             last_undef_causes: HashMap::new(),
+            // Task 4198 (Determinacy β): capture disabled by default so the
+            // hot path pays zero overhead (no BRepExtrema projection) when γ
+            // assertions are not active. Enable via set_capture_repr_tol(true).
+            capture_repr_tol: false,
+            // Task 4198 (Determinacy β): empty until tessellate_realizations()
+            // / tessellate_snapshot() populates it via measure_mesh_deviation.
+            achieved_repr_tol: BTreeMap::new(),
         }
     }
 
@@ -459,6 +470,36 @@ impl Engine {
     /// entry. Task 2982.
     pub fn swept_kind_table(&self) -> &crate::sweep_classifier::SweptKindTable {
         &self.swept_kind_table
+    }
+
+    /// Return the achieved representation tolerance (SI metres) for the given
+    /// realized-occurrence name, or `None` if the occurrence was never
+    /// tessellated, its mesh was empty, the kernel has no exact surface to
+    /// project onto (non-OCCT kernels — B3 honest absence), or
+    /// [`set_capture_repr_tol`](Self::set_capture_repr_tol) was not called with
+    /// `true` before `tessellate_realizations()` / `tessellate_snapshot()`.
+    ///
+    /// The key format is `"{entity}#realization[{index}]"` — the same
+    /// `MeshSurface.entity_path` the surfacing layer computes.
+    ///
+    /// Populated by `tessellate_realizations()` / `tessellate_snapshot()` only
+    /// when `capture_repr_tol` is `true`; cleared at the start of each call.
+    /// A missing key is never a stale value — it always means "not recorded
+    /// this build" (either flag-off or B3 absence).
+    ///
+    /// # Sampled lower bound
+    ///
+    /// The returned value is a **sampled lower bound** on the true
+    /// Hausdorff / chord deviation (4 interior points per triangle — centroid
+    /// and 3 edge midpoints).  A mesh whose true deviation exceeds a tolerance
+    /// can still produce a value below it if the sample points land close to
+    /// the surface.  Task γ (`RepresentationWithin`) should document this at
+    /// the assertion site.
+    ///
+    /// Task 4198 (Determinacy β) — γ (`RepresentationWithin` assertion) reads
+    /// this to compare the measured deviation against the demanded tolerance.
+    pub fn achieved_repr_tol(&self, occurrence: &str) -> Option<f64> {
+        self.achieved_repr_tol.get(occurrence).copied()
     }
 
     /// **Test-instrumentation only — not a stable public surface.**
@@ -889,6 +930,37 @@ impl Engine {
     /// See `docs/prds/v0_3/compute-node-contract.md` §4.
     pub fn compute_dispatch(&self, target: &str) -> Option<crate::engine_compute::ComputeFn> {
         self.compute_registry.fns.get(target).copied()
+    }
+
+    // ── Task #4079: solver-progress sink + active cancel handle ──────────────
+
+    /// Install a per-iteration progress sink.  The sink is cloned (via `Arc`)
+    /// into the thread-local `SolveDispatchContext` on each
+    /// `run_compute_dispatch` call, so the elastic-static trampoline can emit
+    /// `SolverProgressUpdate` events without changing the `ComputeFn` signature.
+    pub fn set_solver_progress_sink(
+        &mut self,
+        sink: std::sync::Arc<dyn crate::solver_progress::SolverProgressSink>,
+    ) {
+        self.solver_progress_sink = Some(sink);
+    }
+
+    /// Install (or clear) the in-flight cancellation handle for the current
+    /// solve.  `run_compute_dispatch` clones this handle into the thread-local
+    /// context before invoking the trampoline; a `None` clears the slot.
+    pub fn set_active_solve_cancel(
+        &mut self,
+        handle: Option<crate::graph::CancellationHandle>,
+    ) {
+        self.active_solve_cancel = handle;
+    }
+
+    /// Return a clone of the current active solve cancel handle, if any.
+    ///
+    /// Used by the GUI test suite to assert the shared `Arc<AtomicBool>` is
+    /// the same handle published via `with_solve_slot`.
+    pub fn active_solve_cancel(&self) -> Option<crate::graph::CancellationHandle> {
+        self.active_solve_cancel.clone()
     }
 
     /// Synchronous dispatch helper — invoke the trampoline registered for
@@ -1639,6 +1711,39 @@ impl Engine {
     /// `last_dispatch_count`).
     pub fn set_capture_undef_causes(&mut self, on: bool) {
         self.capture_undef_causes = on;
+    }
+
+    /// Enable or disable the achieved-representation-tolerance metric.
+    ///
+    /// When `true`, `tessellate_realizations()` / `tessellate_snapshot()` call
+    /// `kernel.measure_mesh_deviation` for each successfully tessellated
+    /// occurrence and record the result in [`Self::achieved_repr_tol`].
+    ///
+    /// Defaults to `false` — zero overhead on the hot path when γ assertions
+    /// (`RepresentationWithin`) are not active. Mirrors `set_capture_undef_causes`.
+    pub fn set_capture_repr_tol(&mut self, on: bool) {
+        self.capture_repr_tol = on;
+    }
+
+    /// **Test-instrumentation only — not a stable public surface.**
+    ///
+    /// Replace the engine's `achieved_repr_tol` map with the supplied
+    /// synthetic map, bypassing the normal `tessellate_realizations`
+    /// population path.
+    ///
+    /// Used by `representation_within_assertion.rs` non-OCCT tests to inject
+    /// known deviation values so that `dispatch_constraints`'s
+    /// `RepresentationWithin` interception can be exercised without a geometry
+    /// kernel.  Mirrors the gating pattern of `set_capture_repr_tol` and
+    /// `snapshot_mut`.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn set_achieved_repr_tol_for_test(
+        &mut self,
+        map: std::collections::BTreeMap<String, f64>,
+    ) {
+        self.achieved_repr_tol = map;
     }
 
     /// Returns the per-cell `UndefCause` map from the most recent `eval()` call.

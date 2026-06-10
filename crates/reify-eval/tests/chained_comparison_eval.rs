@@ -19,7 +19,7 @@ fn chain_range_satisfied() {
     let result = eval_source(
         r#"
 structure S {
-    param thickness : Scalar = 5mm
+    param thickness : Length = 5mm
     let result = 2mm < thickness < 10mm
 }
 "#,
@@ -46,7 +46,7 @@ fn chain_range_violated_below() {
     let result = eval_source(
         r#"
 structure S {
-    param thickness : Scalar = 1mm
+    param thickness : Length = 1mm
     let result = 2mm < thickness < 10mm
 }
 "#,
@@ -73,7 +73,7 @@ fn chain_range_violated_above() {
     let result = eval_source(
         r#"
 structure S {
-    param thickness : Scalar = 15mm
+    param thickness : Length = 15mm
     let result = 2mm < thickness < 10mm
 }
 "#,
@@ -100,7 +100,7 @@ fn chain_boundary_strict_lt_at_lower() {
     let result = eval_source(
         r#"
 structure S {
-    param thickness : Scalar = 2mm
+    param thickness : Length = 2mm
     let result = 2mm < thickness < 10mm
 }
 "#,
@@ -127,7 +127,7 @@ fn chain_boundary_strict_lt_at_upper() {
     let result = eval_source(
         r#"
 structure S {
-    param thickness : Scalar = 10mm
+    param thickness : Length = 10mm
     let result = 2mm < thickness < 10mm
 }
 "#,
@@ -330,7 +330,7 @@ fn desugaring_structure_verified() {
 
     let source = r#"
 structure S {
-    param thickness : Scalar = 5mm
+    param thickness : Length = 5mm
     let result = 2mm < thickness < 10mm
 }
 "#;

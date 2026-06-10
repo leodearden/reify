@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario } from "./assertions.js";
+import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario, KNOWN_DEBUG_TOOL_NAMES } from "./assertions.js";
 import type { Assertion, ValueScenario, ScenarioDeps } from "./assertions.js";
 import type { RpcResult } from "./rpc.js";
 import { resolveRepoRoot } from "./paths.js";
@@ -328,5 +328,136 @@ describe("runValueScenario", () => {
     const result = await runValueScenario(deps, scenario);
     expect(result.passed).toBe(false);
     expect(result.failures.some((f) => f.includes(scenario.tool))).toBe(true);
+  });
+
+  // task-4303 step-13 RED → step-14 GREEN: F1 setup pre-steps
+  it("(e) setup steps: callTool called for each setup step BEFORE asserted tool", async () => {
+    const callOrder: string[] = [];
+    const setupScenario: ValueScenario = {
+      name: "test_setup_order",
+      fixture: "small_cube",
+      tool: "store_state",
+      args: {},
+      assertions: [{ path: "ok", op: "exists" }],
+      setup: [
+        { tool: "load_fixture", args: { name: "all_severities" } },
+        { tool: "wait_for_idle", args: {} },
+      ],
+    } as ValueScenario;
+
+    const deps: ScenarioDeps = {
+      openFixture: async (_rel: string): Promise<RpcResult<unknown>> => ({ ok: true, value: null }),
+      callTool: async (tool: string, _args: Record<string, unknown>): Promise<RpcResult<unknown>> => {
+        callOrder.push(tool);
+        return { ok: true, value: { ok: true } };
+      },
+    };
+    const result = await runValueScenario(deps, setupScenario);
+
+    // setup tools called first, then asserted tool
+    expect(callOrder).toEqual(["load_fixture", "wait_for_idle", "store_state"]);
+    expect(result.passed).toBe(true);
+  });
+
+  it("(f) setup step returns ok:false → passed=false, failure names setup tool, asserted tool NOT called", async () => {
+    let assertedToolCalled = false;
+    const setupScenario: ValueScenario = {
+      name: "test_setup_fail",
+      fixture: "small_cube",
+      tool: "store_state",
+      args: {},
+      assertions: [{ path: "ok", op: "exists" }],
+      setup: [
+        { tool: "load_fixture", args: { name: "bogus" } },
+      ],
+    } as ValueScenario;
+
+    const deps: ScenarioDeps = {
+      openFixture: async (_rel: string): Promise<RpcResult<unknown>> => ({ ok: true, value: null }),
+      callTool: async (tool: string, _args: Record<string, unknown>): Promise<RpcResult<unknown>> => {
+        if (tool === "load_fixture") {
+          return { ok: false, error: "unknown fixture" };
+        }
+        assertedToolCalled = true;
+        return { ok: true, value: { ok: true } };
+      },
+    };
+    const result = await runValueScenario(deps, setupScenario);
+
+    expect(result.passed).toBe(false);
+    // Failure message names the failing setup tool
+    expect(result.failures.some((f) => f.includes("load_fixture"))).toBe(true);
+    // Asserted tool (store_state) was NOT called
+    expect(assertedToolCalled).toBe(false);
+  });
+});
+
+// task-4305 E1 step-7 RED → step-8 GREEN: I1 scroll e2e signal scenario
+// Existence + uniqueness only — the generic VALUE_SCENARIOS structural tests above
+// already validate fixture/tool/assertions shape. Detailed field pinning would
+// restate the config verbatim and break on harmless scenario data edits.
+describe("I1 VALUE_SCENARIO (task-4305 E1)", () => {
+  it("scroll_editor_large_assembly is present exactly once in VALUE_SCENARIOS", () => {
+    const matching = VALUE_SCENARIOS.filter((s) => s.name === "scroll_editor_large_assembly");
+    expect(matching.length, "scroll_editor_large_assembly should appear exactly once").toBe(1);
+  });
+});
+
+// task-4305 E1 step-5 RED → step-6 GREEN: C1 open_menu e2e signal scenario
+// Existence + uniqueness only — the generic VALUE_SCENARIOS structural tests above
+// already validate fixture/tool/assertions shape. Detailed field pinning would
+// restate the config verbatim and break on harmless scenario data edits.
+describe("C1 VALUE_SCENARIO (task-4305 E1)", () => {
+  it("open_menu_file is present exactly once in VALUE_SCENARIOS", () => {
+    const matching = VALUE_SCENARIOS.filter((s) => s.name === "open_menu_file");
+    expect(matching.length, "open_menu_file should appear exactly once").toBe(1);
+  });
+});
+
+// task-4305 E1 step-3 RED → step-4 GREEN: C2 resize_panes e2e signal scenario
+// Existence + uniqueness only — the generic VALUE_SCENARIOS structural tests above
+// already validate fixture/tool/assertions shape. Detailed field pinning would
+// restate the config verbatim and break on harmless scenario data edits.
+describe("C2 VALUE_SCENARIO (task-4305 E1)", () => {
+  it("resize_panes_editor_width is present exactly once in VALUE_SCENARIOS", () => {
+    const matching = VALUE_SCENARIOS.filter((s) => s.name === "resize_panes_editor_width");
+    expect(matching.length, "resize_panes_editor_width should appear exactly once").toBe(1);
+  });
+});
+
+// task-4303 step-13 RED → step-14 GREEN: F1 VALUE_SCENARIOS presence and structure
+describe("F1 VALUE_SCENARIOS (task-4303)", () => {
+  const F1_SCENARIO_NAMES = [
+    "load_fixture_core",
+    "load_fixture_get_diagnostics",
+    "inject_diagnostics_diagnostic_row",
+    "reset_app_state_baseline",
+    "inject_diagnostics_element_screenshot",
+  ];
+
+  // Derived from KNOWN_DEBUG_TOOL_NAMES (assertions.ts) so a renamed tool
+  // in bridge.ts/debug_server.rs only needs one update, not two.
+  const KNOWN_TOOLS = KNOWN_DEBUG_TOOL_NAMES;
+
+  it("all F1 scenario names are present and unique", () => {
+    const validFixtureKeys = Object.keys(FIXTURES);
+    for (const name of F1_SCENARIO_NAMES) {
+      const matching = VALUE_SCENARIOS.filter((s) => s.name === name);
+      expect(matching.length, `${name} should appear exactly once`).toBe(1);
+      const s = matching[0];
+      expect(validFixtureKeys, `${name}: fixture must be a valid FIXTURES key`).toContain(s.fixture);
+      expect(s.assertions.length, `${name}: assertions must be non-empty`).toBeGreaterThan(0);
+    }
+  });
+
+  it("every setup step in F1 scenarios uses a known tool name", () => {
+    for (const name of F1_SCENARIO_NAMES) {
+      const s = VALUE_SCENARIOS.find((sc) => sc.name === name);
+      if (!s) continue; // already caught by prior test
+      const steps = (s as ValueScenario & { setup?: { tool: string; args: Record<string, unknown> }[] }).setup ?? [];
+      for (const step of steps) {
+        expect(KNOWN_TOOLS.has(step.tool), `${name}: setup step tool '${step.tool}' is unknown`).toBe(true);
+      }
+    }
   });
 });

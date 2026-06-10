@@ -182,13 +182,14 @@ use reify_ir::{
 
 use crate::persistent_cache::ShellChannels;
 use reify_solver_elastic::{
-    AnisotropicMaterial, AssemblyElement, CgSolverOptions, CgWarmState,
+    AnisotropicMaterial, AssemblyElement, CgIterationControl, CgSolverOptions, CgWarmState,
     ConstantField, DirichletBc, ElementOrder, FaceOrder, GridSpec, IsotropicElastic,
     OrthotropicMaterial, StressElement, TransverseIsotropicMaterial,
     apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
     assemble_global_stiffness, element_stiffness, element_stiffness_p1_with_field,
     element_stress_p1, recover_nodal_stress_p1, resample_multi_nodal_to_grid,
-    resolve_execution_modes, solve_cg_with_warm_state, tet_volume_p1,
+    resolve_execution_modes, solve_cg_with_warm_state, solve_cg_with_warm_state_progress,
+    tet_volume_p1,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -255,6 +256,17 @@ pub(crate) struct CantileverFeaSolve {
     /// Number of element intervals along z (beam height axis).
     pub nz: usize,
 }
+
+// ── Progress-emit throttle ────────────────────────────────────────────────────
+
+/// Emit a `SolverProgressUpdate` on iteration 1 and every `PROGRESS_STRIDE`
+/// iterations thereafter, bounding IPC overhead for non-converging solves
+/// (e.g. max_iter=2000 → ≤200 sink calls rather than 2000).
+///
+/// Exposed `pub(crate)` so integration tests can assert cadence without
+/// duplicating the constant.  Re-exported via `#[doc(hidden)] pub use` in
+/// `lib.rs` for tests/ access.
+pub const PROGRESS_STRIDE: usize = 10;
 
 /// Trampoline for `solver::elastic_static`.
 ///
@@ -522,6 +534,45 @@ pub fn solve_elastic_static_trampoline(
 
     // ── (6) Delegate to shared FEA helper ────────────────────────────────────
     //
+    // Read the thread-local dispatch context installed by `run_compute_dispatch`
+    // (task 4079). When a `SolverProgressSink` or cancel handle is present, build
+    // a per-iteration closure that: (a) emits a `SolverProgressUpdate` to the sink
+    // (throttled — see PROGRESS_STRIDE), THEN (b) polls the externally-set cancel
+    // handle and returns `Cancel` if set.  The sink has no access to the cancel
+    // handle and cannot raise a cancel through `on_iteration`; the emit-then-poll
+    // ordering simply ensures each iteration is reported before cancellation is
+    // checked.  The cancel check is NOT throttled so interruption is responsive.
+    let ctx = crate::solver_progress::current_solve_dispatch_context();
+    let (ctx_sink, ctx_cancel) = match ctx {
+        Some((s, c)) => (s, c),
+        None => (None, None),
+    };
+    // Emit every PROGRESS_STRIDE iterations (and always on iter 1) to bound IPC
+    // overhead — a non-converging solve with max_iter=2000 fires at most
+    // ~200 emit calls rather than 2000.  The cancel poll is unaffected.
+    // (`PROGRESS_STRIDE` is the module-level pub(crate) const above.)
+    let mut progress_closure = |iter: usize, residual: f64| -> CgIterationControl {
+        if let Some(ref sink) = ctx_sink
+            && (iter == 1 || iter.is_multiple_of(PROGRESS_STRIDE))
+        {
+            sink.on_iteration(&crate::solver_progress::SolverProgressUpdate {
+                solver_kind: "cg",
+                iter: iter as u32,
+                residual,
+            });
+        }
+        if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            CgIterationControl::Cancel
+        } else {
+            CgIterationControl::Continue
+        }
+    };
+    let progress_opt: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl> =
+        if ctx_sink.is_some() || ctx_cancel.is_some() {
+            Some(&mut progress_closure)
+        } else {
+            None
+        };
     // Execution-mode knobs (task 2926): `ElasticOptions.deterministic` + `threads`
     // (value_inputs[6]) select the assembly/CG SolverMode inside the helper via
     // `resolve_execution_modes`. The flag is intentionally excluded from the FEA
@@ -529,7 +580,17 @@ pub fn solve_elastic_static_trampoline(
     let (deterministic, threads_opt) = extract_execution_params(&value_inputs[6]);
     let (fea, fresh_warm) = solve_cantilever_fea(
         &model, length, width, height, tip_force, prior_cg, &pressures, deterministic, threads_opt,
+        progress_opt,
     );
+
+    // ── (6b) Cancel check ─────────────────────────────────────────────────────
+    //
+    // After the solve, if the cancel handle was triggered, return `Cancelled`
+    // so that `run_compute_dispatch` leaves the output VC `Freshness::Pending`
+    // (per compute-node-contract §2 — no bogus partial result cached).
+    if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+        return ComputeOutcome::Cancelled;
+    }
 
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
     //
@@ -810,6 +871,7 @@ pub(crate) fn solve_cantilever_fea(
     pressures: &[PressureSpec],
     deterministic: bool,
     threads: Option<usize>,
+    progress: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl>,
 ) -> (CantileverFeaSolve, CgWarmState) {
     // ── Mesh ──────────────────────────────────────────────────────────────────
     //
@@ -1000,6 +1062,10 @@ pub(crate) fn solve_cantilever_fea(
         tolerance: 1e-6,
         max_iter: 2000,
     };
+    // Capture max_iter before `opts` is moved into the solve call (task 4366):
+    // the cancel short-circuit below needs it to distinguish cooperative cancel
+    // from max-iteration exhaustion without threading an extra parameter.
+    let max_iter = opts.max_iter;
     // Determinism contract (task 2926): bit-stability requires a *fixed* CG
     // starting vector. CG converges to the same solution from any initial guess,
     // but the iteration count — and thus the exact bit-pattern of the converged
@@ -1009,9 +1075,68 @@ pub(crate) fn solve_cantilever_fea(
     // deterministic solve discards any prior warm state and starts cold (zero
     // initial guess), trading a few extra CG iterations for reproducibility;
     // bit-stability then holds for warm- and cold-lineage solves alike.
+    //
+    // Task 4079: when a progress sink / cancel handle is installed, route through
+    // the progress variant so the per-iteration closure (emit + cancel poll) runs;
+    // otherwise take the plain no-callback path (byte-identical solve).
     let warm_start = if deterministic { None } else { prior_cg.as_ref() };
-    let (cg_result, fresh_warm) =
-        solve_cg_with_warm_state(&k, &f, warm_start, opts, solver_mode);
+    let (cg_result, fresh_warm) = if let Some(cb) = progress {
+        solve_cg_with_warm_state_progress(&k, &f, warm_start, opts, solver_mode, cb)
+    } else {
+        solve_cg_with_warm_state(&k, &f, warm_start, opts, solver_mode)
+    };
+
+    // ── Cancel short-circuit (task 4366) ──────────────────────────────────────
+    //
+    // Skip stress recovery entirely when the solve was cooperatively cancelled.
+    //
+    // Detection predicate: `!converged && iterations < max_iter`
+    //
+    // The cg_loop exit-condition contract (solver.rs:994-1045) maps to this
+    // predicate as follows:
+    //   - Convergence                          → converged = true       (predicate false)
+    //   - max_iter exhaustion                  → iterations == max_iter  (predicate false)
+    //   - Degenerate system                    → panics on p·Kp > 0     (never reaches here)
+    //   - Cooperative cancel at iter < max_iter → converged = false,
+    //                                             iterations < max_iter  (predicate TRUE)
+    //   - Cooperative cancel at iter == max_iter → converged = false,
+    //                                              iterations == max_iter (predicate false)
+    //
+    // The predicate is true for the overwhelmingly common cancel case.  A cancel
+    // firing on the exact final iteration (iter + 1 == max_iter) makes
+    // iterations == max_iter so the predicate is false — stress recovery runs
+    // on partial displacements, but the §6b post-solve cancel check
+    // (elastic_static.rs:~580) still returns ComputeOutcome::Cancelled so
+    // correctness is preserved.  The wasted stress-recovery work is accepted for
+    // this rare edge case; it does not affect the common-case latency improvement.
+    //
+    // The no-callback entry point (solve_cg_with_warm_state) can never cancel,
+    // so it only reaches non-converged at iterations == max_iter — predicate
+    // stays false there too, leaving the existing callers completely unaffected.
+    //
+    // On the cancelled path the trampoline's §6b post-solve cancel check
+    // (elastic_static.rs:~580) returns ComputeOutcome::Cancelled and never reads
+    // stress fields, so a stress-less struct is correct.
+    let converged = cg_result.converged;
+    let iterations = cg_result.iterations;
+    if !converged && iterations < max_iter {
+        return (
+            CantileverFeaSolve {
+                u: cg_result.into_shared_u(),
+                coords,
+                tip_nodes,
+                max_von_mises: 0.0,
+                converged,
+                iterations,
+                tet_connectivity,
+                nodal_stress: Vec::new(),
+                nx,
+                ny,
+                nz,
+            },
+            fresh_warm,
+        );
+    }
 
     // ── Stress recovery: max von Mises across all elements ────────────────────
     //
@@ -1103,11 +1228,8 @@ pub(crate) fn solve_cantilever_fea(
 
     let nodal_stress = recover_nodal_stress_p1(n_nodes, &se_refs);
 
-    // Hoist the Copy scalars before into_shared_u() consumes cg_result.
-    // Struct-literal fields evaluate top-to-bottom; moving cg_result at `u:`
-    // would invalidate the later converged/iterations reads without this hoist.
-    let converged = cg_result.converged;
-    let iterations = cg_result.iterations;
+    // `converged` and `iterations` were hoisted before the cancel short-circuit
+    // above (task 4366); no re-declaration needed here.
     let fea = CantileverFeaSolve {
         u: cg_result.into_shared_u(),
         coords,
@@ -1337,7 +1459,7 @@ fn real_field(data: &StructureInstanceData, key: &str) -> f64 {
 }
 
 /// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
-/// `youngs_modulus: Scalar(PRESSURE)` and `poisson_ratio: Real`.
+/// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`.
 fn extract_material(val: &Value) -> IsotropicElastic {
     let data = match val {
         Value::StructureInstance(d) => d,
@@ -1948,7 +2070,7 @@ mod tests {
 
         let (result, _warm) =
             solve_cantilever_fea(
-                &model, length, width, height, [0.0, 0.0, 0.0], None, &pressures, true, None,
+                &model, length, width, height, [0.0, 0.0, 0.0], None, &pressures, true, None, None,
             );
 
         assert!(result.converged, "FEA must converge under x_max pressure");
@@ -2018,6 +2140,7 @@ mod tests {
             None,
             &[],
             true,
+            None,
             None,
         );
 
@@ -2099,6 +2222,7 @@ mod tests {
             &[],
             true,
             None,
+            None,
         );
         // Solve with the anisotropic identity-frame lift path.
         let (aniso_result, _) = solve_cantilever_fea(
@@ -2110,6 +2234,7 @@ mod tests {
             None,
             &[],
             true,
+            None,
             None,
         );
 
@@ -2222,6 +2347,7 @@ mod tests {
             None,
             &[],
             true,
+            None,
             None,
         );
 
@@ -2382,6 +2508,7 @@ mod tests {
             None,
             &[],
             true,
+            None,
             None,
         );
 
@@ -2890,6 +3017,93 @@ mod tests {
         );
     }
 
+    // ── task 4366: cancel short-circuit + cadence ─────────────────────────────
+
+    /// step-1 RED (task 4366): when the progress closure returns
+    /// `CgIterationControl::Cancel` on its first call, `solve_cantilever_fea`
+    /// must NOT run the stress-recovery loop: `nodal_stress` must be empty and
+    /// `max_von_mises` must be 0.0.
+    ///
+    /// Contrast case: the same fixture solved with `None` progress (no cancel)
+    /// must converge, populate `nodal_stress`, and have `max_von_mises > 0`.
+    ///
+    /// RED on base: the cancel branch does not exist yet — stress recovery
+    /// always runs, so `nodal_stress.is_empty()` fails.
+    #[test]
+    fn solve_cantilever_fea_cancelled_skips_stress_recovery() {
+        let iso = IsotropicElastic { youngs_modulus: 200e9_f64, poisson_ratio: 0.3_f64 };
+        let model = MaterialModel::Isotropic(iso);
+        let length = 1.0_f64;
+        let width = 0.1_f64;
+        let height = 0.1_f64;
+        let tip_force = [0.0_f64, 0.0, -1000.0];
+
+        // ── Case 1: cancel on first iteration ──────────────────────────────────
+        let mut cancelled = false;
+        let (fea_cancelled, _) = solve_cantilever_fea(
+            &model,
+            length,
+            width,
+            height,
+            tip_force,
+            None,
+            &[],
+            true,
+            None,
+            Some(&mut |_iter: usize, _residual: f64| -> CgIterationControl {
+                cancelled = true;
+                CgIterationControl::Cancel
+            }),
+        );
+
+        assert!(cancelled, "progress closure must have been invoked at least once");
+        assert!(
+            !fea_cancelled.converged,
+            "cancelled solve must report converged=false"
+        );
+        assert!(
+            fea_cancelled.iterations >= 1,
+            "cancelled solve must report ≥1 iteration, got {}",
+            fea_cancelled.iterations
+        );
+        assert!(
+            fea_cancelled.nodal_stress.is_empty(),
+            "cancelled solve must skip stress recovery — nodal_stress must be empty, \
+             got {} entries",
+            fea_cancelled.nodal_stress.len()
+        );
+        assert_eq!(
+            fea_cancelled.max_von_mises,
+            0.0,
+            "cancelled solve must skip stress recovery — max_von_mises must be 0.0"
+        );
+
+        // ── Case 2: no cancel (None progress) → full stress recovery ───────────
+        let (fea_full, _) = solve_cantilever_fea(
+            &model,
+            length,
+            width,
+            height,
+            tip_force,
+            None,
+            &[],
+            true,
+            None,
+            None,
+        );
+
+        assert!(fea_full.converged, "uncancelled solve must converge");
+        assert!(
+            !fea_full.nodal_stress.is_empty(),
+            "uncancelled solve must populate nodal_stress"
+        );
+        assert!(
+            fea_full.max_von_mises > 0.0,
+            "uncancelled solve must have max_von_mises > 0, got {}",
+            fea_full.max_von_mises
+        );
+    }
+
     /// step-3 RED (task 4245): `solve_cantilever_fea` honours a -Y tip_force.
     ///
     /// tip_force = [0.0, -1000.0, 0.0] on a 1 m × 0.1 m × 0.1 m beam.
@@ -2907,7 +3121,7 @@ mod tests {
 
         let (result, _) =
             solve_cantilever_fea(
-                &model, 1.0, 0.1, 0.1, [0.0, -1000.0, 0.0], None, &[], true, None,
+                &model, 1.0, 0.1, 0.1, [0.0, -1000.0, 0.0], None, &[], true, None, None,
             );
 
         assert!(result.converged, "directional Y-load solve must converge");

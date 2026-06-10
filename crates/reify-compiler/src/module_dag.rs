@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 
 use indexmap::IndexSet;
 
-use reify_core::{Diagnostic, ModulePathParseError};
+use reify_core::{Diagnostic, DiagnosticLabel, ModulePathParseError, SourceSpan};
 
+use crate::cfg::{CfgSet, cfg_satisfied};
 use crate::CompiledModule;
 
 /// Resolves import dot-paths to filesystem paths.
@@ -105,6 +106,9 @@ pub struct ModuleDag {
     in_progress: IndexSet<String>,
     /// Source committed on the first `std.*` resolution (all-or-nothing invariant).
     stdlib_mode: Option<StdlibMode>,
+    /// Active compile-time configuration for evaluating `#cfg(...)` predicates.
+    /// `CfgSet::default()` means no cfg constraints — all imports are followed.
+    cfg: CfgSet,
 }
 
 /// Build an "invalid module path" [`Diagnostic`] vec.
@@ -254,12 +258,27 @@ impl ModuleDag {
             topo_order: Vec::new(),
             in_progress: IndexSet::new(),
             stdlib_mode: None,
+            cfg: CfgSet::default(),
+        }
+    }
+
+    /// Construct a `ModuleDag` with an active `CfgSet` for `#cfg(...)` gating.
+    ///
+    /// Imports whose predicates are unsatisfied against `cfg` are skipped (not
+    /// recursed into, not added to the DAG, not included in any prelude).
+    pub fn with_cfg(cfg: CfgSet) -> Self {
+        Self {
+            cfg,
+            ..Self::new()
         }
     }
 
     /// Compile a module and all its transitive dependencies.
     ///
     /// Performs DFS with cycle detection. Returns diagnostics on error.
+    ///
+    /// Imports with `#cfg(...)` predicates that are not satisfied by `self.cfg`
+    /// are skipped entirely (not recursed into, not included in the prelude).
     ///
     /// **Stdlib resolution precedence for `std.*` paths:**
     ///
@@ -442,9 +461,13 @@ impl ModuleDag {
             // Single pass: compile each import dependency and collect its path.
             // Merges the previous two-pass pattern (compile + collect_import_preludes)
             // into one iteration over parsed.declarations.
+            // Imports with unsatisfied `#cfg(...)` predicates are skipped entirely.
             let mut import_paths: Vec<String> = Vec::new();
             for decl in &parsed.declarations {
                 if let reify_ast::Declaration::Import(import) = decl {
+                    if !import_cfg_satisfied(import, &self.cfg) {
+                        continue;
+                    }
                     self.compile_module(&import.path, resolver)?;
                     import_paths.push(import.path.clone());
                 }
@@ -605,6 +628,20 @@ mod tests {
     }
 }
 
+/// Returns `true` iff all `#cfg(...)` predicates on `import` are satisfied by `cfg`.
+///
+/// An import with no `cfg_predicates` is vacuously satisfied (always followed).
+/// Stacked `#cfg` pragmas are ANDed: all must be satisfied (PRD D-1).
+///
+/// This is the canonical import-gating predicate. It is `pub` so the GUI's
+/// dirty-buffer bridge (`gui/src-tauri/src/engine.rs`) can gate its direct
+/// imports through the same definition instead of re-inlining
+/// `cfg_predicates.iter().all(cfg_satisfied)`, which could otherwise drift from
+/// this semantics.
+pub fn import_cfg_satisfied(import: &reify_ast::ImportDecl, cfg: &CfgSet) -> bool {
+    import.cfg_predicates.iter().all(|p| cfg_satisfied(p, cfg))
+}
+
 /// Compile a project starting from an entry file.
 ///
 /// Builds the full module DAG, detects cycles, and returns modules in
@@ -646,6 +683,25 @@ pub fn compile_project_with_entry_source(
     entry_source: &str,
     resolver: &ModuleResolver,
 ) -> Result<Vec<CompiledModule>, Vec<Diagnostic>> {
+    compile_project_with_entry_source_cfg(entry_path, entry_source, resolver, &CfgSet::default())
+}
+
+/// Compile a project using a caller-supplied in-memory string for the entry
+/// module's source, with an active `CfgSet` for `#cfg(...)` import gating.
+///
+/// Imports whose `#cfg(...)` predicates are unsatisfied against `cfg` are
+/// skipped entirely: not recursed into, not compiled, not included in the
+/// entry prelude. An empty `CfgSet` (the default) is vacuously satisfied
+/// for all imports, so behaviour is identical to `compile_project_with_entry_source`.
+///
+/// Returns modules in topological order (dependencies before dependents), or
+/// a non-empty `Vec<Diagnostic>` on parse / compile error.
+pub fn compile_project_with_entry_source_cfg(
+    entry_path: &Path,
+    entry_source: &str,
+    resolver: &ModuleResolver,
+    cfg: &CfgSet,
+) -> Result<Vec<CompiledModule>, Vec<Diagnostic>> {
     let entry_name = entry_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -661,11 +717,14 @@ pub fn compile_project_with_entry_source(
             .collect());
     }
 
-    let mut dag = ModuleDag::new();
+    let mut dag = ModuleDag::with_cfg(cfg.clone());
 
-    // Recursively compile all imports
+    // Recursively compile imports that satisfy the active cfg.
     for decl in &parsed.declarations {
         if let reify_ast::Declaration::Import(import) = decl {
+            if !import_cfg_satisfied(import, cfg) {
+                continue;
+            }
             dag.compile_module(&import.path, resolver)?;
         }
     }
@@ -674,11 +733,9 @@ pub fn compile_project_with_entry_source(
     // exported definitions) are visible in the entry module.
     // Block-scope the preludes so the shared borrows of dag.modules are
     // dropped before the mutable borrow in dag.modules.insert below.
+    // Only satisfied imports were compiled above, so the same gate is applied
+    // here to avoid a `.expect()` panic on an uncompiled (gated-out) import.
     let compiled_entry = {
-        // Collect only Import declarations, then look up each compiled module.
-        // All imports were recursively compiled above, so every lookup is infallible.
-        // Splitting the filter from the lookup lets .expect() make any violation
-        // loud in both debug and release builds.
         let preludes: Vec<&CompiledModule> = parsed
             .declarations
             .iter()
@@ -689,10 +746,11 @@ pub fn compile_project_with_entry_source(
                     None
                 }
             })
+            .filter(|import| import_cfg_satisfied(import, cfg))
             .map(|import| {
                 dag.modules
                     .get(&import.path)
-                    .expect("invariant: import compiled before entry prelude collection")
+                    .expect("invariant: satisfied import compiled before entry prelude collection")
             })
             .collect();
         crate::compile_with_prelude_refs(&parsed, &preludes)
@@ -714,4 +772,181 @@ pub fn compile_project_with_entry_source(
         .collect();
 
     Ok(modules)
+}
+
+/// `true` iff `path` addresses the standard library (`std` or `std.*`).
+///
+/// Such imports are skipped by [`compile_entry_with_stdlib_cfg`]: the full
+/// stdlib is already seeded into the prelude via `stdlib_loader::load_stdlib()`,
+/// so resolving `std.*` through the DAG would be redundant work.
+fn is_std_import_path(path: &str) -> bool {
+    path == "std" || path.starts_with("std.")
+}
+
+/// Merge the `pub` templates of already-compiled direct imports into `entry`'s
+/// own template list, **first-wins** with a `Warning` on every name collision.
+///
+/// This is the single home of the cross-import template-merge policy shared by
+/// [`compile_entry_with_stdlib_cfg`] (the CLI `reify check` bridge) and the
+/// GUI's `compile_entry_with_imports` (dirty-buffer bridge). Keeping the policy
+/// — the visibility filter, the first-wins de-dup, and the collision-warning
+/// wording — in one place ensures the two callers cannot drift (e.g. a fix to
+/// the collision logic landing in only one of them).
+///
+/// - `entry_origin` is the entry module's own path/name, used only to label
+///   entry-vs-import collisions in the warning message.
+/// - `imports` is the ordered list of `(import path, compiled module)` pairs for
+///   the **followed** (cfg-satisfied, non-`std`) direct imports. Callers own the
+///   gating; this function merges whatever it is given, in order.
+///
+/// Only `Visibility::Public` imported templates are merged — private imports
+/// must not leak, mirroring compile-time import semantics. A template name that
+/// already exists (declared by the entry or merged from an earlier import) is
+/// skipped and a `Severity::Warning` is pushed onto `entry.diagnostics` naming
+/// both declaring sides and the `first-wins` policy. The warning is phrased
+/// kind-neutrally ("imported pub template") because `templates` can hold
+/// non-structure template kinds.
+pub fn merge_imported_pub_templates(
+    entry: &mut CompiledModule,
+    entry_origin: &str,
+    imports: &[(&str, &CompiledModule)],
+) {
+    // `templates_origin` (template name → declaring module path) is pre-seeded
+    // with the entry's own templates so BOTH entry-vs-import and
+    // import-vs-import collisions emit a Warning naming both sides.
+    let mut templates_origin: HashMap<String, String> = HashMap::new();
+    for tmpl in &entry.templates {
+        templates_origin.insert(tmpl.name.clone(), entry_origin.to_string());
+    }
+    for &(import_path, imported_module) in imports {
+        for template in &imported_module.templates {
+            if template.visibility != crate::Visibility::Public {
+                continue;
+            }
+            if let Some(prior_origin) = templates_origin.get(&template.name) {
+                entry.diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "imported pub template '{}' declared in both '{}' and '{}'; first-wins",
+                        template.name, prior_origin, import_path
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        SourceSpan::prelude(),
+                        "cross-import collision",
+                    )),
+                );
+                continue;
+            }
+            entry.templates.push(template.clone());
+            templates_origin.insert(template.name.clone(), import_path.to_string());
+        }
+    }
+}
+
+/// Compile an entry module for `reify check` with the full stdlib prelude seeded
+/// **and** a `#cfg(...)`-gated user-import DAG.
+///
+/// This is the bridge `reify check` needs that neither existing compiler entry
+/// point provides alone:
+/// - [`crate::compile_with_stdlib`] seeds the stdlib prelude but follows no
+///   user-import DAG (single module only).
+/// - [`compile_project_with_entry_source_cfg`] gates imports by `#cfg(...)` but
+///   does **not** seed the stdlib prelude.
+///
+/// Mirrors the GUI's `compile_entry_with_imports` bridge — `load_stdlib()`
+/// chained with user-import refs → [`crate::PreludeContext`] →
+/// [`crate::compile_with_prelude_context`] — and layers Task γ's cfg gating on
+/// top: imports whose `#cfg(...)` predicates are unsatisfied against `cfg` are
+/// skipped entirely (not compiled, not added to the prelude). `std.*` imports
+/// are also skipped because the full stdlib is already present via
+/// `load_stdlib()`.
+///
+/// **Diagnostics-embedded contract.** A *satisfied* import that points at a
+/// missing or broken module surfaces its failure as `Error`-severity
+/// diagnostics on the returned [`CompiledModule`] rather than as an `Err`,
+/// matching [`crate::compile_with_stdlib`]'s contract so the CLI's "any Error
+/// diagnostic → exit non-zero" logic handles gated-DAG import failures
+/// uniformly. A *gated-out* import is inert (its module is never resolved), so
+/// it can never produce such an error (mirrors γ's
+/// `cfg_gating_unsatisfied_import_never_resolved`).
+pub fn compile_entry_with_stdlib_cfg(
+    parsed: &reify_ast::ParsedModule,
+    resolver: &ModuleResolver,
+    cfg: &CfgSet,
+) -> CompiledModule {
+    let mut dag = ModuleDag::with_cfg(cfg.clone());
+
+    // Compute the FOLLOWED direct imports once: non-`std` imports whose
+    // `#cfg(...)` predicates are satisfied by `cfg`. The compile loop, the
+    // prelude-refs collection, and the pub-template merge below all reuse this
+    // single list, so the gate cannot drift between them (and each import's cfg
+    // predicates are evaluated once rather than three times).
+    let followed_imports: Vec<&reify_ast::ImportDecl> = parsed
+        .declarations
+        .iter()
+        .filter_map(|decl| match decl {
+            reify_ast::Declaration::Import(import) => Some(import),
+            _ => None,
+        })
+        .filter(|import| !is_std_import_path(&import.path) && import_cfg_satisfied(import, cfg))
+        .collect();
+
+    // Compile each followed import. Collect — do NOT early-return on —
+    // import-compile errors so a broken import still lets the entry compile
+    // (with the failure surfaced as a diagnostic below).
+    let mut import_error_diags: Vec<Diagnostic> = Vec::new();
+    for import in &followed_imports {
+        if let Err(diags) = dag.compile_module(&import.path, resolver) {
+            import_error_diags.extend(diags);
+        }
+    }
+
+    // Build the prelude: the full stdlib (always seeded, target-independent)
+    // chained with the followed user imports that actually compiled. A
+    // satisfied-but-failed import is absent from `dag.modules`, so `filter_map`
+    // over `.get()` skips it (its error is already collected); an `.expect()`
+    // would panic on that path, which is why this differs from
+    // `compile_project_with_entry_source_cfg` (which early-returns on import
+    // error and so can assume presence).
+    let stdlib_modules = crate::stdlib_loader::load_stdlib();
+    let mut compiled = {
+        let user_import_refs: Vec<&CompiledModule> = followed_imports
+            .iter()
+            .filter_map(|import| dag.modules.get(&import.path))
+            .collect();
+
+        let prelude_refs: Vec<&CompiledModule> = stdlib_modules
+            .iter()
+            .chain(user_import_refs.iter().copied())
+            .collect();
+
+        crate::compile_with_prelude_context(parsed, &crate::PreludeContext::new(&prelude_refs))
+    };
+
+    // Enforce module-path declaration (spec §7.1/§7.2, task γ). The entry source
+    // is always a user module, so no stdlib exclusion is needed.
+    attach_module_path_diag(&mut compiled, parsed);
+
+    // Surface any import-compile failures as diagnostics on the entry module.
+    compiled.diagnostics.extend(import_error_diags);
+
+    // Merge `pub` templates from the followed direct imports into the entry's
+    // `compiled.templates` so cross-module entities (e.g. a `sub` whose
+    // structure is declared in a followed platform module) resolve for
+    // downstream eval. The first-wins merge policy + collision warning live in
+    // the shared `merge_imported_pub_templates` helper so this CLI bridge and
+    // the GUI's `compile_entry_with_imports` cannot drift. A
+    // satisfied-but-failed import is absent from `dag.modules`, so `filter_map`
+    // over `.get()` skips it (mirroring the prelude build above).
+    let entry_origin = compiled.path.0.join(".");
+    let merge_inputs: Vec<(&str, &CompiledModule)> = followed_imports
+        .iter()
+        .filter_map(|import| {
+            dag.modules
+                .get(&import.path)
+                .map(|module| (import.path.as_str(), module))
+        })
+        .collect();
+    merge_imported_pub_templates(&mut compiled, &entry_origin, &merge_inputs);
+
+    compiled
 }

@@ -1,5 +1,5 @@
 structure AutoKinds {
-    param width: Scalar = 80mm
-    param tolerance: Scalar = auto
-    param offset: Scalar = auto(free)
+    param width: Length = 80mm
+    param tolerance: Length = auto
+    param offset: Length = auto(free)
 }

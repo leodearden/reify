@@ -215,10 +215,13 @@ async function main(): Promise<HarnessExitCode> {
         continue;
       }
 
-      // Wait for the renderer to settle
+      // Wait for the renderer to settle.
+      // parseRpcResponse now surfaces in-band {error:...} as ok:false (task-4305 rpc.ts
+      // fix), so a stuck renderer/engine (timeout/engine_phase/engine_not_started) is
+      // correctly caught here rather than silently passing as ok:true.
       const idleResult = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
       if (!idleResult.ok) {
-        console.error(`  FAIL wait_for_idle: ${idleResult.error}`);
+        console.error(`  FAIL wait_for_idle (stuck renderer/engine?): ${idleResult.error}`);
         anyFailed = true;
         continue;
       }
@@ -323,8 +326,13 @@ async function runValueScenarios(): Promise<HarnessExitCode> {
       const absPath = path.join(REPO_ROOT, repoRelPath);
       const openResult = await rpc<unknown>("open_file", { path: absPath });
       if (!openResult.ok) return openResult;
+      // parseRpcResponse now surfaces in-band {error:...} as ok:false (task-4305 rpc.ts
+      // fix), so a stuck renderer/engine (timeout/engine_phase/engine_not_started) is
+      // correctly surfaced here instead of silently passing as ok:true.
       const idleResult = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
-      if (!idleResult.ok) return idleResult;
+      if (!idleResult.ok) {
+        return { ok: false, error: `wait_for_idle after open_file (stuck renderer/engine?): ${idleResult.error}` };
+      }
       return { ok: true, value: idleResult.value };
     }
 

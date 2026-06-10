@@ -385,10 +385,14 @@ pub(crate) fn affine_map_algebra_result_type(
 /// (`reify_eval::lib:196`), so the cell typechecks at compile-time and
 /// stays `Undef` at runtime.
 ///
-/// **`curvature` overload note**: only the `Curve`→`Scalar<Curvature>`
-/// overload is registered in Phase 1. The `Surface`→`Matrix<2,2,
-/// Curvature>` overload requires arg-type-aware dispatch and is deferred
-/// to a later phase.
+/// **`curvature` overload note**: the default `Curve`→`Scalar<Curvature>`
+/// overload is registered here.  The `Surface`→`Matrix<2,2,Curvature>`
+/// overload is handled by the arg-aware structural dispatcher
+/// [`geometry_query_arg_aware_result_type`] (task 4315): when the first
+/// compiled arg is an inline `faces(...)[i]` IndexAccess, that fn returns
+/// `Some(Matrix{2,2,Curvature})` before this table is consulted.  A
+/// curvature call whose surface arg arrives via a let-binding or parameter
+/// still falls through to this `Scalar<Curvature>` default.
 ///
 /// Call-site dispatch is in `expr.rs::infer_type` (the `else if
 /// is_geometry_query(name)` arm, immediately after the topology-selector
@@ -483,8 +487,9 @@ pub(crate) fn is_dynamics_query(name: &str) -> bool {
 /// - `intersects(a, b)`      → `Bool`
 /// - `geo_equiv(a, b)`       → `Bool`
 /// - `angle(a, b)`           → `Scalar<Angle>`
-/// - `curvature(curve, t)`   → `Scalar<Curvature>` (Curve overload only;
-///   Surface overload deferred — see [`GEOMETRY_QUERY_NAMES`])
+/// - `curvature(curve, t)`   → `Scalar<Curvature>` (default; Surface overload
+///   `curvature(faces(...)[i], pt)` → `Matrix<2,2,Curvature>` handled by
+///   [`geometry_query_arg_aware_result_type`] — task 4315)
 ///
 /// KGQ-ζ Phase 6 addition (task 3615):
 /// - `normal(surface, point)` → `Vector3<Dimensionless>` (`Type::vec3(Type::Real)`)
@@ -530,6 +535,96 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
         "normal" => Type::vec3(Type::Real),
         _ => return None,
     })
+}
+
+/// The set of face-producing topology-selector names: calling one returns a
+/// `List<Geometry>` of **surface** sub-handles.
+///
+/// This is the Surface-yielding subset of [`GEOMETRY_TOPOLOGY_SELECTOR_NAMES`]
+/// (edges / edges_by_length / edges_parallel_to / edges_at_height / shared_edges
+/// are excluded — they yield curve sub-handles). Used by the structural surface
+/// detector in [`geometry_query_arg_aware_result_type`].
+///
+/// **Invariant:** every entry here MUST also appear in
+/// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`; the converse need not hold (the curve
+/// selectors are legitimately absent). Structurally enforced by the
+/// `face_producing_selector_names_is_subset_of_geometry_topology_selector_names`
+/// test.
+const FACE_PRODUCING_SELECTOR_NAMES: &[&str] =
+    &["faces", "faces_by_area", "faces_by_normal", "adjacent_faces"];
+
+/// Returns `true` iff `arg.kind` is an `IndexAccess` whose `object` is a
+/// `FunctionCall` whose `function.name` is in [`FACE_PRODUCING_SELECTOR_NAMES`].
+///
+/// Structural surface detection — mirrors the `math_fn_result_type` precedent
+/// of inspecting the COMPILED-ARG STRUCTURE rather than the undifferentiated
+/// first-arg type (which would be `Type::Geometry` for both faces and edges
+/// after index access, offering no discrimination). Called by
+/// [`geometry_query_arg_aware_result_type`].
+fn is_surface_producing_arg(arg: &reify_ir::CompiledExpr) -> bool {
+    use reify_ir::CompiledExprKind;
+    if let CompiledExprKind::IndexAccess { object, .. } = &arg.kind
+        && let CompiledExprKind::FunctionCall { function, .. } = &object.kind
+    {
+        return FACE_PRODUCING_SELECTOR_NAMES.contains(&function.name.as_str());
+    }
+    false
+}
+
+/// Arg-aware return-type override for geometry-query functions.
+///
+/// Currently handles only the **curvature Surface→Matrix<2,2,Curvature>**
+/// overload: when `name == "curvature"` AND the first compiled arg is an
+/// inline `faces(...)[i]` form (detected via structural inspection by
+/// [`is_surface_producing_arg`]), returns
+/// `Some(Type::Matrix{m:2, n:2, quantity:Scalar<Curvature>})`.
+///
+/// For every other `(name, arg)` combination — including curvature with a
+/// let-bound solid, a curve IndexAccess, or no arg at all — returns `None`
+/// so the caller falls through to [`geometry_query_result_type`]'s default.
+///
+/// ## Design — why structural inspection?
+///
+/// There is no `Type`-level Surface/Curve distinction:
+/// `topology_selector_result_type` returns `Type::List(Geometry)` for BOTH
+/// `faces()` and `edges()`, so a type-based discriminator would see identical
+/// types for surface and curve sub-handles. The structural approach (checking
+/// which selector the IndexAccess wraps) is the only available signal at the
+/// `CompiledExpr` dispatch point, exactly as `math_fn_result_type` uses
+/// `CompiledExprKind::ListLiteral` length rather than the undifferentiated
+/// `Type::List` to recover the vector dimension.
+///
+/// ## Scope boundary
+///
+/// Only the **inline** `faces(...)[i]` form is detected. A curvature call
+/// whose surface arg arrives via a let-binding or parameter (a `ValueRef`)
+/// degrades to `Scalar<Curvature>`. Threading `Type::Surface` / `Type::Curve`
+/// through the type system is a large cross-cutting change deferred to a
+/// future task.
+///
+/// ## Wiring
+///
+/// Called in `expr.rs`'s `is_geometry_query` arm via
+/// `geometry_query_arg_aware_result_type(name, compiled_args.first())
+///     .or_else(|| geometry_query_result_type(name))`;
+/// [`geometry_query_result_type`] stays **unchanged** (preserving the
+/// maintenance-contract tests that iterate it).
+pub(crate) fn geometry_query_arg_aware_result_type(
+    name: &str,
+    first_arg: Option<&reify_ir::CompiledExpr>,
+) -> Option<reify_core::Type> {
+    use reify_core::{DimensionVector, Type};
+    if name == "curvature" && first_arg.is_some_and(is_surface_producing_arg) {
+        Some(Type::Matrix {
+            m: 2,
+            n: 2,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::CURVATURE,
+            }),
+        })
+    } else {
+        None
+    }
 }
 
 // --- Unit conversion ---
@@ -860,6 +955,11 @@ mod tests {
     // `crate::math_signatures`, imported here to pin disjointness from the five
     // geometry families, the dynamics-query family, AND the construction family.
     use crate::math_signatures::MATH_OPERATION_NAMES;
+    // §13 joint-constructor family (mechanism β, task 4311) — single source of
+    // truth in `crate::joint_signatures`, imported here to pin disjointness from
+    // all eight sibling families (regression-lock: catches any future colliding
+    // name added to EITHER the joint slice or a sibling slice).
+    use crate::joint_signatures::JOINT_TYPED_FN_NAMES;
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
@@ -2173,5 +2273,238 @@ mod tests {
     #[test]
     fn split_is_not_a_geometry_kinematic_query() {
         assert!(!is_geometry_kinematic_query("split"));
+    }
+
+    /// Disjointness regression-lock for the §13 joint-constructor family
+    /// (mechanism β, task 4311). Every `JOINT_TYPED_FN_NAMES` entry must be
+    /// absent from all eight sibling slices so a name satisfies at most one
+    /// classification predicate in `expr.rs::resolve_function_overload`'s
+    /// `NoUserFunctions` ladder.
+    ///
+    /// This test is GREEN on arrival — the 17 joint names are inherently
+    /// disjoint from the existing families. It acts as a regression lock:
+    /// adding a colliding name to EITHER the joint slice OR a sibling slice
+    /// triggers a failure, catching the bug at test time rather than at
+    /// production call-time.
+    ///
+    /// Mirrors `math_typed_fn_names_are_disjoint_from_other_families` and
+    /// `dynamics_query_names_are_disjoint_from_other_families`.
+    #[test]
+    fn joint_typed_fn_names_are_disjoint_from_other_families() {
+        for name in JOINT_TYPED_FN_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 4315 — geometry_query_arg_aware_result_type unit tests (step-1 RED)
+    // -----------------------------------------------------------------------
+    //
+    // Tests for geometry_query_arg_aware_result_type(name, first_arg):
+    //   curvature + inline faces(...)[i] → Some(Matrix{2,2,Curvature})
+    //   curvature + edges / ValueRef / bare-faces / None → None
+    //   non-curvature name → None
+    //   regression: geometry_query_result_type("curvature") unchanged
+    //
+    // Fixtures are hand-built CompiledExprs (mirroring math_signatures tests).
+    // These tests FAIL TO COMPILE until step-2 adds the function — that is the
+    // expected RED signal.
+
+    /// Build a bare FunctionCall CompiledExpr for `selector_name` with no args.
+    /// Represents the `faces(solid)` / `edges(solid)` / ... call before indexing.
+    fn make_selector_call(selector_name: &str) -> reify_ir::CompiledExpr {
+        use reify_core::hash::ContentHash;
+        use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction};
+        CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: selector_name.to_string(),
+                    qualified_name: format!("std::{}", selector_name),
+                },
+                args: vec![],
+            },
+            result_type: reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+            content_hash: ContentHash::of(selector_name.as_bytes()),
+        }
+    }
+
+    /// Wrap `object` in `IndexAccess { object, index: Literal(Int(0)) }`.
+    /// Result type is `Type::Geometry` (element of the selector's List<Geometry>).
+    fn index_0(object: reify_ir::CompiledExpr) -> reify_ir::CompiledExpr {
+        use reify_ir::{CompiledExpr, Value};
+        let idx = CompiledExpr::literal(Value::Int(0), reify_core::Type::Int);
+        CompiledExpr::index_access(object, idx, reify_core::Type::Geometry)
+    }
+
+    /// (a) curvature with inline faces(...)[0] → Some(Matrix{2,2,Curvature})
+    #[test]
+    fn curvature_faces_index_returns_matrix_2x2_curvature() {
+        use reify_core::{DimensionVector, Type};
+        let surface_arg = index_0(make_selector_call("faces"));
+        let expected = Type::Matrix {
+            m: 2,
+            n: 2,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::CURVATURE,
+            }),
+        };
+        assert_eq!(
+            geometry_query_arg_aware_result_type("curvature", Some(&surface_arg)),
+            Some(expected),
+            "curvature(faces(...)[i], pt) must compile-type as Matrix{{2,2,Curvature}}"
+        );
+    }
+
+    /// (a-ext) Other face-producing selectors: faces_by_area, faces_by_normal, adjacent_faces
+    #[test]
+    fn curvature_other_face_selectors_return_matrix_2x2_curvature() {
+        use reify_core::{DimensionVector, Type};
+        let expected = Type::Matrix {
+            m: 2,
+            n: 2,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::CURVATURE,
+            }),
+        };
+        for sel in ["faces_by_area", "faces_by_normal", "adjacent_faces"] {
+            let surface_arg = index_0(make_selector_call(sel));
+            assert_eq!(
+                geometry_query_arg_aware_result_type("curvature", Some(&surface_arg)),
+                Some(expected.clone()),
+                "curvature({sel}(...)[i], pt) must compile-type as Matrix{{2,2,Curvature}}"
+            );
+        }
+    }
+
+    /// (b) curvature with edges(...)[0] → None (curve selector, not surface)
+    #[test]
+    fn curvature_edges_index_returns_none() {
+        let edge_arg = index_0(make_selector_call("edges"));
+        assert_eq!(
+            geometry_query_arg_aware_result_type("curvature", Some(&edge_arg)),
+            None,
+            "curvature(edges(...)[i], pt) must return None (falls through to Scalar default)"
+        );
+    }
+
+    /// (c) curvature with a let-bound ValueRef arg → None
+    #[test]
+    fn curvature_value_ref_arg_returns_none() {
+        use reify_core::identity::ValueCellId;
+        use reify_ir::CompiledExpr;
+        let solid_arg = CompiledExpr::value_ref(
+            ValueCellId::new("S", "my_solid"),
+            reify_core::Type::Geometry,
+        );
+        assert_eq!(
+            geometry_query_arg_aware_result_type("curvature", Some(&solid_arg)),
+            None,
+            "curvature(let_bound_solid, pt) must return None (structural detector sees no inline faces(...)[i])"
+        );
+    }
+
+    /// (d) curvature with a bare faces() FunctionCall (not wrapped in IndexAccess) → None
+    #[test]
+    fn curvature_bare_faces_call_returns_none() {
+        let bare_faces = make_selector_call("faces");
+        assert_eq!(
+            geometry_query_arg_aware_result_type("curvature", Some(&bare_faces)),
+            None,
+            "curvature(faces(...), pt) without index must return None"
+        );
+    }
+
+    /// (e) Non-curvature name with an inline surface arg → None
+    #[test]
+    fn non_curvature_name_with_surface_arg_returns_none() {
+        let surface_arg = index_0(make_selector_call("faces"));
+        assert_eq!(
+            geometry_query_arg_aware_result_type("area", Some(&surface_arg)),
+            None,
+            "non-curvature name 'area' with surface arg must return None"
+        );
+    }
+
+    /// (f) curvature with no first arg → None
+    #[test]
+    fn curvature_no_arg_returns_none() {
+        use reify_ir::CompiledExpr;
+        assert_eq!(
+            geometry_query_arg_aware_result_type("curvature", None::<&CompiledExpr>),
+            None,
+            "curvature with no first arg must return None"
+        );
+    }
+
+    /// Regression pin: geometry_query_result_type("curvature") stays Scalar<Curvature>
+    /// (the arg-aware fn overrides it only for the inline-surface form; the table default
+    /// must remain unchanged so the .or_else fallthrough keeps working).
+    #[test]
+    fn geometry_query_result_type_curvature_unchanged() {
+        use reify_core::{DimensionVector, Type};
+        assert_eq!(
+            geometry_query_result_type("curvature"),
+            Some(Type::Scalar {
+                dimension: DimensionVector::CURVATURE,
+            }),
+            "geometry_query_result_type(\"curvature\") must remain Scalar<Curvature> (default table)"
+        );
+    }
+
+    /// Structural invariant: every name in FACE_PRODUCING_SELECTOR_NAMES must
+    /// also appear in GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+    ///
+    /// Enforces the documented subset relationship: if a future edit adds a
+    /// name to FACE_PRODUCING_SELECTOR_NAMES that is absent from
+    /// GEOMETRY_TOPOLOGY_SELECTOR_NAMES, this test fails immediately rather
+    /// than silently wiring the structural detector to an unregistered name.
+    #[test]
+    fn face_producing_selector_names_is_subset_of_geometry_topology_selector_names() {
+        for name in FACE_PRODUCING_SELECTOR_NAMES {
+            assert!(
+                GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "FACE_PRODUCING_SELECTOR_NAMES entry {name:?} must also appear in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (documented subset invariant)"
+            );
+        }
     }
 }

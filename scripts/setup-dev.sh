@@ -256,6 +256,58 @@ info "Building manifold prebuilt C++ libs (one-time; ~5-10 min cold, fast on re-
 "$(dirname "${BASH_SOURCE[0]}")/build-manifold-deps.sh"
 ok "manifold prebuilt libs ready at /opt/reify-deps/manifold/lib"
 
+# ---------- git-hooks gate: core.hooksPath flap immunity ----------
+#
+# The landing gate (hooks/reference-transaction tripwire + hooks/pre-commit
+# .task stripper + hooks/pre-merge-commit verify) is reached via
+# `core.hooksPath = hooks` (relative — dark-factory's create_worktree asserts
+# it). Two actors fight over that one key in the SHARED .git/config: dark-factory
+# writes `hooks`, while Claude Code's worktree feature rewrites it to the
+# absolute <repo>/.git/hooks (git's inert samples dir) on every worktree enter
+# and never restores it — silently darkening the gate until the next worktree
+# creation flips it back. Rather than police the value, make it irrelevant:
+# point the common .git/hooks at the versioned hooks/ dir, so BOTH `hooks`
+# (relative, per-worktree) and `<repo>/.git/hooks` (absolute) resolve to the
+# real gate. Idempotent. See CLAUDE.md "Landing on main".
+
+info "Wiring .git/hooks -> hooks/ (core.hooksPath flap immunity)..."
+if git rev-parse --git-common-dir &>/dev/null; then
+    _common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
+    _hooks_link="$_common_dir/hooks"
+    if [ -L "$_hooks_link" ] && [ "$(readlink "$_hooks_link")" = "../hooks" ]; then
+        ok ".git/hooks already linked to ../hooks"
+    else
+        if [ -L "$_hooks_link" ]; then
+            rm -f "$_hooks_link"
+        elif [ -d "$_hooks_link" ]; then
+            rm -rf "$_hooks_link.sample-bak"
+            mv "$_hooks_link" "$_hooks_link.sample-bak"
+        else
+            # Stray non-symlink, non-directory file (e.g. a plain file left behind).
+            # Remove it gracefully rather than letting ln fail and abort all of setup-dev.sh.
+            warn ".git/hooks is a stray non-symlink file — removing it to relink"
+            rm -f "$_hooks_link"
+        fi
+        ln -s ../hooks "$_hooks_link"
+        ok ".git/hooks -> ../hooks (gate immune to core.hooksPath value)"
+    fi
+    unset _common_dir _hooks_link
+else
+    warn "not a git work tree — skipping .git/hooks wiring"
+fi
+
+# ---------- main-gate worktree config isolation ----------
+#
+# Enables extensions.worktreeConfig and seeds this worktree's config.worktree
+# with core.hooksPath=hooks so the landing gate (hooks/reference-transaction,
+# hooks/pre-commit, hooks/pre-merge-commit) stays live even when Claude Code
+# rewrites the SHARED .git/config core.hooksPath on every worktree enter.
+# Idempotent. See CLAUDE.md "Landing on main" for rationale.
+
+info "Seeding per-worktree core.hooksPath via extensions.worktreeConfig..."
+"$(dirname "${BASH_SOURCE[0]}")/setup-main-gate-worktree-config.sh"
+ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
+
 # ---------- build-accelerator systemd --user services ----------
 #
 # Build infra installed as systemd --user units so it survives reboots and
@@ -290,19 +342,29 @@ install_build_services() {
 
     cat > "$unit_dir/sccache.service" <<EOF
 [Unit]
-Description=sccache build cache server (${size} cap) for reify verify/builds
+Description=sccache build cache server (${size} cap, systemd-monitored) for reify verify/builds
 Documentation=https://github.com/mozilla/sccache
 After=network.target
 Before=orchestrator-reify.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+# Type=simple + Restart=always: systemd OWNS the foreground server process, so a
+# crashed/OOM'd server is restarted BY SYSTEMD carrying this Environment (the ${size}
+# cap + no idle timeout) — NOT silently respawned at sccache's 10G default by the next
+# cargo client. That respawn-at-default was the 2026-06-08 regression: the old
+# Type=oneshot daemon died, a client started a replacement without SCCACHE_CACHE_SIZE,
+# and the cap sat at 10G for days (LRU-thrashing the debug+release working set).
+# SCCACHE_START_SERVER=1 + SCCACHE_NO_DAEMON=1 run the server in the FOREGROUND so
+# systemd can monitor it; a daemonized \`--start-server\` detaches and escapes Restart=.
+Type=simple
 Environment=SCCACHE_CACHE_SIZE=${size}
 Environment=SCCACHE_IDLE_TIMEOUT=0
+Environment=SCCACHE_START_SERVER=1
+Environment=SCCACHE_NO_DAEMON=1
 ExecStartPre=-${sccache_bin} --stop-server
-ExecStart=${sccache_bin} --start-server
-ExecStop=${sccache_bin} --stop-server
+ExecStart=${sccache_bin}
+Restart=always
+RestartSec=2
 
 [Install]
 WantedBy=default.target

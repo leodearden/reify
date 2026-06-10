@@ -11,6 +11,8 @@ export type PanelLayout = {
   designTreeHeight: number;
   propertyHeight: number;
   constraintHeight: number;
+  problemsHeight: number;
+  problemsCollapsed: boolean;
 };
 
 /** Load persisted panel layout from localStorage. Returns null if missing, invalid, or incomplete.
@@ -38,6 +40,8 @@ export function loadPanelLayout(): Partial<PanelLayout> | null {
     if (typeof parsed.designTreeHeight === 'number') out.designTreeHeight = parsed.designTreeHeight;
     if (typeof parsed.propertyHeight === 'number') out.propertyHeight = parsed.propertyHeight;
     if (typeof parsed.constraintHeight === 'number') out.constraintHeight = parsed.constraintHeight;
+    if (typeof parsed.problemsHeight === 'number') out.problemsHeight = parsed.problemsHeight;
+    if (typeof parsed.problemsCollapsed === 'boolean') out.problemsCollapsed = parsed.problemsCollapsed;
     return out;
   } catch {
     return null;
@@ -51,6 +55,32 @@ export function savePanelLayout(layout: PanelLayout): void {
   } catch {
     // Silently ignore — localStorage may be full or unavailable
   }
+}
+
+export type ProblemsClampOptions = {
+  minPanelHeight: number;
+  editorMinHeight: number;
+  splitterThickness: number;
+};
+
+/**
+ * Clamp the problems panel height so that the editor area keeps at least
+ * `editorMinHeight` and the splitter itself fits.
+ *
+ * available = containerHeight - editorMinHeight - splitterThickness
+ * Returns Math.max(minPanelHeight, Math.min(preferred, available)).
+ * When the container is too small (available < minPanelHeight), returns
+ * minPanelHeight — the parent CSS overflow:hidden will clip.
+ *
+ * Pure: no DOM, no signals.
+ */
+export function clampProblemsHeight(
+  preferred: number,
+  containerHeight: number,
+  opts: ProblemsClampOptions,
+): number {
+  const available = containerHeight - opts.editorMinHeight - opts.splitterThickness;
+  return Math.max(opts.minPanelHeight, Math.min(preferred, available));
 }
 
 export type SidePanelHeights = {

@@ -37,11 +37,12 @@
 // engine additionally inserts an upstream "shell-extract::extract" ComputeNode
 // (PRD §9 task δ graph contract).
 //
-// Type-coercion notes mirror examples/fea_cantilever_smoke.ri verbatim:
+// Type-coercion notes:
 //   - Material wrapped via ConstitutiveLawInput(law:) so member-access .law has
 //     compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
-//   - Loads / supports bundled via LoadCase so member-access .loads / .supports
-//     has compile-time type List<Real> (matching the placeholder fn param types).
+//   - Loads / supports passed as direct list literals [tip_load] / [mount] —
+//     `solve_elastic_static` now declares `loads: List<Load>` /
+//     `supports: List<Support>` (task 4093; no LoadCase bundle required).
 
 structure FeaShellFlexure {
     // Geometry: 50 mm long flexure with a 10 mm × 1 mm cross-section.
@@ -59,10 +60,6 @@ structure FeaShellFlexure {
     // Supports: fully clamped (fixed) at the flexure root.
     let mount = FixedSupport(target: "root")
 
-    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
-    // has compile-time type `List<Real>` (matching the fn param type).
-    let lc = LoadCase(name: "flexure", loads: [tip_load], supports: [mount])
-
     // Wrap material in ConstitutiveLawInput so that member-access .law has
     // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
     let ci = ConstitutiveLawInput(law: material)
@@ -71,11 +68,12 @@ structure FeaShellFlexure {
     // `solver::elastic_static` trampoline in
     //   crates/reify-eval/src/compute_targets/elastic_static.rs
     //
+    // Direct list literals type-check against List<Load> / List<Support> (task 4093).
     // Bare `ElasticOptions()` uses all solver defaults (shell_force=Auto,
     // shell_threshold=0.2); the 0.02 aspect ratio auto-classifies this as a
     // shell solve end-to-end.
     let result = solve_elastic_static(
-        ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
+        ci.law, length, width, height, [tip_load], [mount], ElasticOptions()
     )
 
     // Geometry realization: provides the surface mesh the GUI stress contour

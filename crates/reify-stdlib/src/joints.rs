@@ -14,7 +14,9 @@ use crate::orientation::normalize_quaternion;
 pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "prismatic" => {
-            if args.len() != 2 {
+            // Accept 2 args (axis, range) or 3 args (axis, range, pivot) — PRD §7.1.
+            // A positional 3rd pivot arg matches the couple/planar/cylindrical precedent.
+            if args.len() != 2 && args.len() != 3 {
                 return Some(Value::Undef);
             }
             if validate_axis(&args[0]).is_none() {
@@ -26,10 +28,20 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             // The axis is stored as the raw (potentially unnormalized) input.
             // `transform_at` normalizes it to unit length at evaluation time.
             // `joint_axis` returns this raw value — see its doc-comment.
-            make_joint("prismatic", args[0].clone(), args[1].clone())
+            let origin = if args.len() == 3 {
+                match pivot_to_origin(&args[2]) {
+                    Some(o) => Some(o),
+                    None => return Some(Value::Undef),
+                }
+            } else {
+                None
+            };
+            make_joint("prismatic", args[0].clone(), args[1].clone(), origin)
         }
         "revolute" => {
-            if args.len() != 2 {
+            // Accept 2 args (axis, range) or 3 args (axis, range, pivot) — PRD §7.1.
+            // A positional 3rd pivot arg matches the couple/planar/cylindrical precedent.
+            if args.len() != 2 && args.len() != 3 {
                 return Some(Value::Undef);
             }
             if validate_axis(&args[0]).is_none() {
@@ -41,7 +53,15 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             // The axis is stored as the raw (potentially unnormalized) input.
             // `transform_at` normalizes it to unit length at evaluation time.
             // `joint_axis` returns this raw value — see its doc-comment.
-            make_joint("revolute", args[0].clone(), args[1].clone())
+            let origin = if args.len() == 3 {
+                match pivot_to_origin(&args[2]) {
+                    Some(o) => Some(o),
+                    None => return Some(Value::Undef),
+                }
+            } else {
+                None
+            };
+            make_joint("revolute", args[0].clone(), args[1].clone(), origin)
         }
         // 3-DOF planar joint: two prismatic DOFs (along axis_x and axis_y) plus one
         // revolute DOF (about axis_x × axis_y). Per PRD v0_2/kinematic-constraints.md
@@ -196,7 +216,11 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     Value::Undef
                 });
             }
-            match kind {
+            // PRD §7.2: compute the per-kind motion transform first; apply origin ∘ motion
+            // ONCE below, outside all per-kind arms, so every consumer inherits the offset
+            // without duplicating the compose logic. Arms are unchanged — each produces a
+            // Value::Transform on success or escapes via `return Some(Value::Undef)` on error.
+            let motion = match kind {
                 "prismatic" | "revolute" => transform_at_simple_joint(kind, map, &args[1]),
                 // 0-DOF fixed joint: the canonical user form is now `transform_at(fixed_joint)`
                 // (1-arg, task 2688); this 2-arg arm is the chain-machinery path used by
@@ -466,6 +490,20 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     transform_at_simple_joint(parent_kind, parent_map, &coupled_value)
                 }
                 _ => Value::Undef,
+            };
+            // PRD §7.2: pre-compose origin ∘ motion uniformly, ONCE, outside all
+            // per-kind arms. None → return motion verbatim (byte-identical to pre-change,
+            // PRD §7.4). Some → origin ∘ motion via the typed compose_transforms helper
+            // (propagates Undef / dimension errors automatically).
+            match map.get(&Value::String("origin".to_string())) {
+                None => motion,
+                Some(origin) => {
+                    if motion.is_undef() {
+                        Value::Undef
+                    } else {
+                        crate::geometry::compose_transforms(origin, &motion)
+                    }
+                }
             }
         }
         "couple" => {
@@ -1531,9 +1569,54 @@ fn make_cylindrical_joint(axis: Value, translation_range: Value, rotation_range:
     Value::Map(m)
 }
 
-/// Build a joint `Value::Map` with the standard three-key layout:
-/// `"kind"`, `"axis"`, `"range"`.
-fn make_joint(kind: &str, axis: Value, range: Value) -> Value {
+/// Lift a pivot `Value::Point` or `Value::Vector` of exactly three LENGTH-dimensioned,
+/// finite components into a pure-translation SE(3) origin Transform.
+///
+/// Returns `None` if:
+/// - the value is not a `Value::Point` or `Value::Vector` with exactly 3 components,
+/// - any component is not a `Value::Scalar` with `dimension == LENGTH`, or
+/// - any component's `si_value` is non-finite (NaN / ±∞).
+///
+/// Resolves PRD §7.1 / §11 Q1 + Q3: positional 3rd pivot arg → "origin" key.
+/// Dimensionless pivots (bare `Real`) are rejected to avoid silently mis-scaling
+/// `point3(40,0,0)` as 40 m instead of the user's intended 40 mm (PRD B9 rationale).
+fn pivot_to_origin(pivot: &Value) -> Option<Value> {
+    let comps = match pivot {
+        Value::Point(c) if c.len() == 3 => c,
+        Value::Vector(c) if c.len() == 3 => c,
+        _ => return None,
+    };
+    let mut vals = [0.0f64; 3];
+    for (i, comp) in comps.iter().enumerate() {
+        match comp {
+            Value::Scalar { si_value, dimension } if *dimension == DimensionVector::LENGTH => {
+                if !si_value.is_finite() {
+                    return None;
+                }
+                vals[i] = *si_value;
+            }
+            _ => return None,
+        }
+    }
+    Some(Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(vals[0]),
+            Value::length(vals[1]),
+            Value::length(vals[2]),
+        ])),
+    })
+}
+
+/// Build a joint `Value::Map` with the standard layout: `"kind"`, `"axis"`, `"range"`,
+/// and optionally `"origin"` (PRD §7.1 — inserted only when `Some`, absent ⇒ byte-identical
+/// map to pre-change).
+fn make_joint(kind: &str, axis: Value, range: Value, origin: Option<Value>) -> Value {
     let mut m = BTreeMap::new();
     m.insert(
         Value::String("kind".to_string()),
@@ -1541,6 +1624,10 @@ fn make_joint(kind: &str, axis: Value, range: Value) -> Value {
     );
     m.insert(Value::String("axis".to_string()), axis);
     m.insert(Value::String("range".to_string()), range);
+    // Insert "origin" only when Some — absent origin leaves the map byte-identical to pre-change.
+    if let Some(o) = origin {
+        m.insert(Value::String("origin".to_string()), o);
+    }
     Value::Map(m)
 }
 
@@ -6760,6 +6847,395 @@ mod tests {
             map.get(&Value::String("joint".to_string())),
             Some(&fixed),
             "joint field must be the input fixed joint verbatim"
+        );
+    }
+
+    // ── transform_at: uniform origin threading (step-1: B1 + B2 + cross-kind) ──
+
+    /// Build a pure-translation origin Transform: identity rotation + (tx,ty,tz) in metres.
+    fn make_origin_transform(tx: f64, ty: f64, tz: f64) -> Value {
+        Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(tx),
+                Value::length(ty),
+                Value::length(tz),
+            ])),
+        }
+    }
+
+    /// Insert an `"origin"` key into a joint `Value::Map`.
+    fn with_origin(joint: Value, origin: Value) -> Value {
+        let mut m = match joint {
+            Value::Map(m) => m,
+            other => panic!("with_origin: expected Value::Map, got {:?}", other),
+        };
+        m.insert(Value::String("origin".to_string()), origin);
+        Value::Map(m)
+    }
+
+    /// Extract `(w, x, y, z)` rotation tuple from a `Value::Transform`.
+    fn extract_rotation_tuple(v: &Value) -> (f64, f64, f64, f64) {
+        match v {
+            Value::Transform { rotation, .. } => match rotation.as_ref() {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                other => panic!("extract_rotation_tuple: expected Orientation, got {:?}", other),
+            },
+            other => panic!("extract_rotation_tuple: expected Transform, got {:?}", other),
+        }
+    }
+
+    /// Extract `[tx, ty, tz]` (SI values) from a `Value::Transform`.
+    fn extract_translation_array(v: &Value) -> [f64; 3] {
+        match v {
+            Value::Transform { translation, .. } => match translation.as_ref() {
+                Value::Vector(comps) if comps.len() == 3 => [
+                    comps[0].as_f64().expect("extract_translation_array: t[0] not numeric"),
+                    comps[1].as_f64().expect("extract_translation_array: t[1] not numeric"),
+                    comps[2].as_f64().expect("extract_translation_array: t[2] not numeric"),
+                ],
+                other => panic!("extract_translation_array: expected Vector(3), got {:?}", other),
+            },
+            other => panic!("extract_translation_array: expected Transform, got {:?}", other),
+        }
+    }
+
+    /// B1: revolute-z joint with origin=(0.2,0,0) m.
+    ///
+    /// `transform_at(joint_with_origin, θ=π/3)` must equal
+    /// `compose_transforms(&origin, &bare_motion)` (PRD §7.2 identity).
+    /// Also asserts: translation == (0.2,0,0) m (invariant under θ), rotation == R_z(π/3).
+    ///
+    /// RED: fails today because transform_at ignores the "origin" key.
+    #[test]
+    fn transform_at_revolute_with_origin_equals_composed() {
+        let pi = std::f64::consts::PI;
+        let theta = pi / 3.0;
+
+        let base_joint = revolute_z_joint();
+        let origin = make_origin_transform(0.2, 0.0, 0.0);
+        let joint_with_origin = with_origin(base_joint.clone(), origin.clone());
+
+        // bare_motion: revolute-z at θ without origin key.
+        let bare_motion = eval_builtin("transform_at", &[base_joint, Value::angle(theta)]);
+        // Expected via the defining identity: origin ∘ bare_motion.
+        let expected = crate::geometry::compose_transforms(&origin, &bare_motion);
+        let exp_rot = extract_rotation_tuple(&expected);
+        let exp_trans = extract_translation_array(&expected);
+
+        let result = eval_builtin("transform_at", &[joint_with_origin, Value::angle(theta)]);
+
+        // --- Primary signal: concrete numeric invariants ---
+        // Translation must reflect the pivot, invariant under joint angle.
+        let [tx, ty, tz] = extract_translation_array(&result);
+        assert!(
+            (tx - 0.2).abs() < 1e-12,
+            "revolute-z with origin: tx should be 0.2 m, got {tx}",
+        );
+        assert!(ty.abs() < 1e-12, "revolute-z with origin: ty should be 0, got {ty}");
+        assert!(tz.abs() < 1e-12, "revolute-z with origin: tz should be 0, got {tz}");
+
+        // Rotation must be R_z(π/3) = (cos(π/6), 0, 0, sin(π/6)).
+        let (w, x, y, z) = extract_rotation_tuple(&result);
+        let qw = (theta / 2.0).cos();
+        let qz = (theta / 2.0).sin();
+        let matches_pos = (w - qw).abs() < 1e-12 && x.abs() < 1e-12
+            && y.abs() < 1e-12 && (z - qz).abs() < 1e-12;
+        let matches_neg = (w + qw).abs() < 1e-12 && x.abs() < 1e-12
+            && y.abs() < 1e-12 && (z + qz).abs() < 1e-12;
+        assert!(
+            matches_pos || matches_neg,
+            "revolute-z with origin: rotation should be R_z(π/3) ≈ ({qw},0,0,{qz}) up to sign, \
+             got ({w},{x},{y},{z})"
+        );
+
+        // --- Secondary consistency check: result == origin ∘ bare_motion ---
+        // NOTE: this assertion re-invokes the production helper, so it does not
+        // independently verify the SE(3) math — the concrete numeric assertions
+        // above are the real signal.  This check detects accidental divergence
+        // between the two call sites (i.e., transform_at and compose_transforms
+        // taking different branches).
+        assert_transform_approx(&result, exp_rot, exp_trans, 1e-12,
+            "revolute-z with origin=(0.2,0,0): transform_at should == origin∘bare_motion (secondary)");
+    }
+
+    /// Cross-kind: prismatic-x joint with origin=(0.2,0,0) m.
+    ///
+    /// Pre-compose must be OUTSIDE the per-kind match — not revolute-only.
+    ///
+    /// RED: fails today because transform_at ignores the "origin" key.
+    #[test]
+    fn transform_at_prismatic_with_origin_equals_composed() {
+        let base_joint = prismatic_x_joint();
+        let origin = make_origin_transform(0.2, 0.0, 0.0);
+        let joint_with_origin = with_origin(base_joint.clone(), origin.clone());
+
+        let bare_motion = eval_builtin("transform_at", &[base_joint, Value::length(0.5)]);
+        let expected = crate::geometry::compose_transforms(&origin, &bare_motion);
+        let exp_rot = extract_rotation_tuple(&expected);
+        let exp_trans = extract_translation_array(&expected);
+
+        let result = eval_builtin("transform_at", &[joint_with_origin, Value::length(0.5)]);
+
+        // origin=(0.2,0,0), bare=(0.5,0,0) → composed t = I*(0.5,0,0)+(0.2,0,0) = (0.7,0,0).
+        assert_transform_approx(&result, exp_rot, exp_trans, 1e-12,
+            "prismatic-x with origin=(0.2,0,0): transform_at should == origin∘bare_motion");
+    }
+
+    /// B2 byte-identity: revolute-z WITHOUT "origin" key yields the pre-change Transform verbatim.
+    ///
+    /// The absent-origin path must be byte-identical to pre-change (PRD §7.4).
+    #[test]
+    fn transform_at_revolute_without_origin_is_byte_identical() {
+        let pi = std::f64::consts::PI;
+        let theta = pi / 3.0;
+        let joint = revolute_z_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::angle(theta)]);
+
+        // Expected: zero-length translation + R_z(π/3) quaternion.
+        let qw = (theta / 2.0).cos();
+        let qz = (theta / 2.0).sin();
+        assert_transform_approx(
+            &result,
+            (qw, 0.0, 0.0, qz),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "revolute-z without origin: zero translation + R_z(π/3) quaternion",
+        );
+    }
+
+    /// B2 byte-identity: prismatic-x WITHOUT "origin" key yields the pre-change Transform verbatim.
+    ///
+    /// The absent-origin path must be byte-identical to pre-change (PRD §7.4).
+    #[test]
+    fn transform_at_prismatic_without_origin_is_byte_identical() {
+        let joint = prismatic_x_joint();
+        let result = eval_builtin("transform_at", &[joint, Value::length(0.5)]);
+
+        // Expected: translation (0.5,0,0) m + identity quaternion.
+        assert_transform_approx(
+            &result,
+            (1.0, 0.0, 0.0, 0.0),
+            [0.5, 0.0, 0.0],
+            1e-12,
+            "prismatic-x without origin: (0.5,0,0) m + identity rotation",
+        );
+    }
+
+    // ── step-3: translation-pivot authoring on revolute/prismatic (B9 + back-compat) ─
+
+    /// Helper: assert a Value::Transform has identity rotation and (tx,ty,tz) translation (m).
+    fn assert_origin_transform(origin: &Value, tx: f64, ty: f64, tz: f64, label: &str) {
+        let (rotation, translation) = match origin {
+            Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+            other => panic!("{label}: expected Transform, got {other:?}"),
+        };
+        match rotation {
+            Value::Orientation { w, x, y, z } => {
+                assert!((w - 1.0).abs() < 1e-12, "{label}: origin.w should be 1, got {w}");
+                assert!(x.abs() < 1e-12, "{label}: origin.x should be 0, got {x}");
+                assert!(y.abs() < 1e-12, "{label}: origin.y should be 0, got {y}");
+                assert!(z.abs() < 1e-12, "{label}: origin.z should be 0, got {z}");
+            }
+            other => panic!("{label}: origin rotation: expected Orientation, got {other:?}"),
+        }
+        match translation {
+            Value::Vector(comps) if comps.len() == 3 => {
+                let gx = comps[0].as_f64().expect("origin tx numeric");
+                let gy = comps[1].as_f64().expect("origin ty numeric");
+                let gz = comps[2].as_f64().expect("origin tz numeric");
+                assert!((gx - tx).abs() < 1e-12, "{label}: origin tx should be {tx}, got {gx}");
+                assert!((gy - ty).abs() < 1e-12, "{label}: origin ty should be {ty}, got {gy}");
+                assert!((gz - tz).abs() < 1e-12, "{label}: origin tz should be {tz}, got {gz}");
+            }
+            other => panic!("{label}: origin translation: expected Vector(3), got {other:?}"),
+        }
+    }
+
+    /// (a) revolute(axis_z, 0..π, point3(40mm,0mm,0mm)) → Map with "origin" key =
+    /// Transform{identity rotation, translation (0.04, 0, 0) m}.
+    /// kind/axis/range fields must still be present and unchanged.
+    ///
+    /// RED: fails today (3-arg revolute returns Undef — wrong arity).
+    #[test]
+    fn revolute_3arg_point3_pivot_has_origin_key() {
+        // 40 mm = 0.04 m.
+        let pivot = eval_builtin("point3", &[Value::length(0.04), Value::length(0.0), Value::length(0.0)]);
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi(), pivot]);
+
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("3-arg revolute: expected Map, got {other:?}"),
+        };
+
+        // kind/axis/range must still be present.
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("revolute".to_string())),
+            "kind should be 'revolute'"
+        );
+        assert!(map.contains_key(&Value::String("axis".to_string())), "axis key must be present");
+        assert!(map.contains_key(&Value::String("range".to_string())), "range key must be present");
+
+        // "origin" must be Transform{identity, (0.04, 0, 0)}.
+        let origin = map
+            .get(&Value::String("origin".to_string()))
+            .unwrap_or_else(|| panic!("3-arg revolute: 'origin' key must be present"));
+        assert_origin_transform(origin, 0.04, 0.0, 0.0, "revolute_3arg_point3");
+    }
+
+    /// (b) prismatic(axis_x, 0..1m, vec3(0mm,25mm,0mm)) → Map with "origin" key =
+    /// Transform{identity rotation, translation (0, 0.025, 0) m}.
+    ///
+    /// RED: fails today (3-arg prismatic returns Undef — wrong arity).
+    #[test]
+    fn prismatic_3arg_vec3_pivot_has_origin_key() {
+        // 25 mm = 0.025 m.
+        let pivot = eval_builtin("vec3", &[Value::length(0.0), Value::length(0.025), Value::length(0.0)]);
+        let result = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m(), pivot]);
+
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("3-arg prismatic: expected Map, got {other:?}"),
+        };
+
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("prismatic".to_string())),
+            "kind should be 'prismatic'"
+        );
+        assert!(map.contains_key(&Value::String("axis".to_string())), "axis key must be present");
+        assert!(map.contains_key(&Value::String("range".to_string())), "range key must be present");
+
+        let origin = map
+            .get(&Value::String("origin".to_string()))
+            .unwrap_or_else(|| panic!("3-arg prismatic: 'origin' key must be present"));
+        assert_origin_transform(origin, 0.0, 0.025, 0.0, "prismatic_3arg_vec3");
+    }
+
+    /// (c) Back-compat: 2-arg revolute Map has NO "origin" key (byte-identical to pre-change).
+    #[test]
+    fn revolute_2arg_has_no_origin_key() {
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("revolute 2-arg: expected Map, got {other:?}"),
+        };
+        assert!(
+            !map.contains_key(&Value::String("origin".to_string())),
+            "2-arg revolute must NOT have 'origin' key"
+        );
+    }
+
+    /// (c) Back-compat: 2-arg prismatic Map has NO "origin" key (byte-identical to pre-change).
+    #[test]
+    fn prismatic_2arg_has_no_origin_key() {
+        let result = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("prismatic 2-arg: expected Map, got {other:?}"),
+        };
+        assert!(
+            !map.contains_key(&Value::String("origin".to_string())),
+            "2-arg prismatic must NOT have 'origin' key"
+        );
+    }
+
+    /// (d) B9: non-finite (NaN) pivot component → Undef.
+    #[test]
+    fn revolute_3arg_nan_pivot_returns_undef() {
+        let pivot = Value::Point(vec![
+            Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi(), pivot]);
+        assert!(result.is_undef(), "NaN pivot component should give Undef, got {result:?}");
+    }
+
+    /// (d) B9: dimensionless pivot (point3(40,0,0) without units) → Undef.
+    #[test]
+    fn revolute_3arg_dimensionless_pivot_returns_undef() {
+        let pivot = Value::Point(vec![Value::Real(40.0), Value::Real(0.0), Value::Real(0.0)]);
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi(), pivot]);
+        assert!(result.is_undef(), "dimensionless pivot should give Undef, got {result:?}");
+    }
+
+    /// (d) B9: angle-dimensioned pivot component → Undef.
+    #[test]
+    fn revolute_3arg_angle_pivot_returns_undef() {
+        let pivot = Value::Point(vec![
+            Value::angle(1.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi(), pivot]);
+        assert!(result.is_undef(), "angle-dimensioned pivot component should give Undef, got {result:?}");
+    }
+
+    /// (d) B9: non-Point/Vector 3rd arg (a bare LENGTH Scalar) → Undef.
+    #[test]
+    fn revolute_3arg_scalar_pivot_returns_undef() {
+        let result = eval_builtin(
+            "revolute",
+            &[axis_z_unit(), angle_range_0_to_pi(), Value::length(0.04)],
+        );
+        assert!(result.is_undef(), "Scalar 3rd arg should give Undef, got {result:?}");
+    }
+
+    /// (d) B9: 2-component Vector pivot → Undef (needs exactly 3 components).
+    #[test]
+    fn revolute_3arg_2component_pivot_returns_undef() {
+        let pivot = Value::Vector(vec![Value::length(0.04), Value::length(0.0)]);
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi(), pivot]);
+        assert!(result.is_undef(), "2-component pivot should give Undef, got {result:?}");
+    }
+
+    /// (d) B9: 4-arg call (arity error) → Undef.
+    #[test]
+    fn revolute_4arg_returns_undef() {
+        let pivot = eval_builtin("point3", &[Value::length(0.04), Value::length(0.0), Value::length(0.0)]);
+        let result = eval_builtin(
+            "revolute",
+            &[axis_z_unit(), angle_range_0_to_pi(), pivot, Value::Real(0.0)],
+        );
+        assert!(result.is_undef(), "4-arg revolute should give Undef, got {result:?}");
+    }
+
+    // ── Prismatic B9: confirm the prismatic arm wires pivot_to_origin's None → Undef
+    //    symmetrically with revolute (suggestion #4).
+
+    /// (d) B9 prismatic: dimensionless pivot → Undef.
+    ///
+    /// Confirms the prismatic constructor propagates `pivot_to_origin` returning
+    /// `None` to `Some(Value::Undef)`, mirroring the revolute arm.
+    #[test]
+    fn prismatic_3arg_dimensionless_pivot_returns_undef() {
+        let pivot = Value::Point(vec![Value::Real(25.0), Value::Real(0.0), Value::Real(0.0)]);
+        let result = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m(), pivot]);
+        assert!(
+            result.is_undef(),
+            "prismatic 3-arg with dimensionless pivot should give Undef, got {result:?}"
+        );
+    }
+
+    /// (d) B9 prismatic: NaN pivot component → Undef.
+    #[test]
+    fn prismatic_3arg_nan_pivot_returns_undef() {
+        let pivot = Value::Vector(vec![
+            Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let result = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m(), pivot]);
+        assert!(
+            result.is_undef(),
+            "prismatic 3-arg with NaN pivot component should give Undef, got {result:?}"
         );
     }
 }

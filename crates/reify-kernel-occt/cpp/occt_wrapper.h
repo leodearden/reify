@@ -1327,4 +1327,20 @@ std::unique_ptr<OcctShape> deserialize_brep(const std::string& data);
 
 TessResult tessellate_shape(const OcctShape& shape, double tolerance);
 
+/// Sampled max facet-chord deviation (SI metres) of `mesh` from the exact
+/// BRep `shape` (task 4198, Determinacy β).
+///
+/// For each triangle in `mesh.indices` (groups of 3), computes 4 interior
+/// sample points in f64 — centroid + 3 edge midpoints (mesh vertices lie on
+/// the surface by construction and are useless as samples) — then projects
+/// each via `BRepBuilderAPI_MakeVertex` + `BRepExtrema_DistShapeShape` and
+/// tracks the global maximum `dist.Value()`.
+///
+/// Returns 0.0 for an empty `mesh.indices`.
+/// Throws `std::runtime_error` for out-of-range vertex indices.
+///
+/// No tolerance argument — the metric cannot echo the configured deflection
+/// (structural anti-circularity, PRD §8.3 / task CRITICAL).
+double measure_mesh_deviation(const OcctShape& shape, const TessResult& mesh);
+
 } // namespace occt

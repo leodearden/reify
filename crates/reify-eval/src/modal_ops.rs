@@ -1830,7 +1830,7 @@ fn read_scalar_si(val: &Value) -> f64 {
 }
 
 /// Extract `IsotropicElastic { youngs_modulus, poisson_ratio }` from the
-/// material StructureInstance (`youngs_modulus : Scalar(PRESSURE)`,
+/// material StructureInstance (`youngs_modulus : Scalar<Pressure>`,
 /// `poisson_ratio : Real`). Missing fields read as `0.0` via [`read_scalar_si`]
 /// (defensive; the type-checker guarantees presence for a real ElasticMaterial).
 fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
@@ -3137,8 +3137,8 @@ mod tests {
     /// Build a minimal `ElasticMaterial`-shaped `Value::StructureInstance` with
     /// the usual elastic fields, optionally carrying a `density` scalar. Mirrors
     /// the runtime material shape the trampoline reads (cf. buckling's
-    /// `extract_material`): `youngs_modulus : Scalar(PRESSURE)`,
-    /// `poisson_ratio : Real`, and (when `Some`) `density : Scalar(MASS_DENSITY)`.
+    /// `extract_material`): `youngs_modulus : Scalar<Pressure>`,
+    /// `poisson_ratio : Real`, and (when `Some`) `density : Scalar<MassDensity>`.
     fn material_with_density(density: Option<f64>) -> Value {
         let mut fields: Vec<(String, Value)> = vec![
             (

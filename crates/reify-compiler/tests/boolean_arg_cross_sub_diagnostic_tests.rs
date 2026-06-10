@@ -222,7 +222,7 @@ pub structure Rack {
 #[test]
 fn boolean_op_with_non_realization_scalar_member_falls_back_to_generic_diagnostic() {
     let source = r#"pub structure Inner {
-    param value : Scalar = 5mm
+    param value : Length = 5mm
 }
 pub structure Outer {
     sub inner = Inner()

@@ -13,13 +13,14 @@ max_per_module: 1
 lock_depth: 4
 # Verification commands — thin delegations to scripts/verify.sh, the single
 # source of truth shared with the git hooks (hooks/project-checks +
-# hooks/pre-merge-commit). All the logic lives in verify.sh: the OCCT flock gate
-# (scripts/cargo-test-occt-gated.sh) + --test-threads=1, the cargo-nextest
-# ungated tail (graceful fallback to `cargo test`), the sccache/jobserver/OCCT
-# LD_LIBRARY_PATH env, the per-invocation timeout budgets, the tree-sitter
-# generate prereq, and the npm/infra steps. `verify.sh --print-plan` emits the
-# exact ordered command list it will run; the infra drift tests assert against
-# that oracle. Authoritative OCCT crate list: scripts/occt-touching-crates.txt
+# hooks/pre-merge-commit). All the logic lives in verify.sh: a single
+# `cargo nextest run --workspace` pass (OCCT crates folded into the pool via
+# the nextest occt test-group max-threads=4; task 4451), the release-sensitive
+# crate nextest pass, the sccache/jobserver/OCCT LD_LIBRARY_PATH env, the
+# per-invocation timeout budgets, the tree-sitter generate prereq, and the
+# npm/infra steps. `verify.sh --print-plan` emits the exact ordered command
+# list it will run; the infra drift tests assert against that oracle.
+# Authoritative OCCT crate list: scripts/occt-touching-crates.txt
 # (shared via scripts/occt-scope-lib.sh). See `scripts/verify.sh --help`.
 #
 # --scope branch narrows per-task verification to files changed since
@@ -100,7 +101,6 @@ orch_daily_cost_ceiling_usd: 10000.0
 # When one account hits its cap, UsageGate rotates to the next in list order.
 usage_cap:
   enabled: true
-  pause_threshold: 0.96
   wait_for_reset: true
   probe_interval_secs: 300
   max_probe_interval_secs: 1800
@@ -127,6 +127,15 @@ git:
   branch_prefix: "task/"
   remote: "origin"
   worktree_dir: ".worktrees"
+  # Main-gate sanction handshake (task 4367 step 1; dark_factory:1678 wired the
+  # orchestrator side). advance_main runs main_gate_mark_command BEFORE its CAS
+  # update-ref, so the reify reference-transaction hook records the orchestrator
+  # merge worker's ~28 landings/day as `sanctioned` (not UNSANCTIONED) in
+  # reify-main-gate.log. The sentinel path matches hooks/main-gate-lib.sh.
+  # Enforcement stays OFF (warn-only) — this only populates the re-observe
+  # window (4367 step 3); the durable ENFORCE flip is 4367 step 4.
+  main_gate_mark_command: 'touch "$(git rev-parse --git-common-dir)/reify-main-gate-ok"'
+  main_gate_unmark_command: 'rm -f "$(git rev-parse --git-common-dir)/reify-main-gate-ok"'
 
 # Project root (absolute path)
 project_root: "/home/leo/src/reify"

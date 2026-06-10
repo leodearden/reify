@@ -77,12 +77,13 @@ describe('panels smoke integration', () => {
     expect(screen.getByTestId('menu-bar')).toBeTruthy();
   });
 
-  it('DiagnosticsPanel open=true renders diagnostics-panel and panel-title-diagnostics', () => {
+  it('DiagnosticsPanel collapsed=false renders diagnostics-panel and panel-title-diagnostics', () => {
     render(() => (
       <DiagnosticsPanel
-        open={true}
+        collapsed={false}
+        height={160}
         diagnostics={[]}
-        onClose={vi.fn()}
+        onToggleCollapsed={vi.fn()}
         onNavigate={vi.fn()}
       />
     ));

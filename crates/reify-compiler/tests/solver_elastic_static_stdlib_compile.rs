@@ -8,7 +8,7 @@
 //! These are RED tests for step-1. They fail until step-2 adds the declaration.
 
 use reify_compiler::*;
-use reify_core::Type;
+use reify_core::{DiagnosticCode, Severity, Type};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -112,5 +112,190 @@ fn solve_elastic_static_material_param_is_constitutive_law() {
         Type::TraitObject("ConstitutiveLaw".to_string()),
         "expected material param type to be TraitObject(\"ConstitutiveLaw\"), got {:?}",
         ty
+    );
+}
+
+/// Pin: `fn solve_elastic_static`'s fifth parameter (`loads`) must have
+/// type `Type::List(Box::new(Type::TraitObject("Load")))`.
+///
+/// RED before step-2 (param is still `List<Real>`);
+/// GREEN after step-2 changes the param annotation to `: List<Load>`.
+#[test]
+fn solve_elastic_static_loads_param_is_list_load() {
+    let f = find_fn();
+    let (name, ty) = &f.params[4];
+    assert_eq!(
+        name.as_str(),
+        "loads",
+        "expected params[4] to be 'loads', got {:?}",
+        name
+    );
+    assert_eq!(
+        *ty,
+        Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+        "expected loads param type to be List<TraitObject(\"Load\")>, got {:?}",
+        ty
+    );
+}
+
+/// Pin: `fn solve_elastic_static`'s sixth parameter (`supports`) must have
+/// type `Type::List(Box::new(Type::TraitObject("Support")))`.
+///
+/// RED before step-2 (param is still `List<Real>`);
+/// GREEN after step-2 changes the param annotation to `: List<Support>`.
+#[test]
+fn solve_elastic_static_supports_param_is_list_support() {
+    let f = find_fn();
+    let (name, ty) = &f.params[5];
+    assert_eq!(
+        name.as_str(),
+        "supports",
+        "expected params[5] to be 'supports', got {:?}",
+        name
+    );
+    assert_eq!(
+        *ty,
+        Type::List(Box::new(Type::TraitObject("Support".to_string()))),
+        "expected supports param type to be List<TraitObject(\"Support\")>, got {:?}",
+        ty
+    );
+}
+
+/// Caller-compile positive (PointLoad + FixedSupport):
+/// `solve_elastic_static(ci.law, ..., [PointLoad(...)], [FixedSupport(...)], ElasticOptions())`
+/// must compile with ZERO Error diagnostics once params are tightened.
+///
+/// RED before step-2: params are still `List<Real>`, so a
+/// `List<StructureRef("PointLoad")>` arg fails the overload resolver
+/// (no-matching-overload error).
+/// GREEN after step-2.
+#[test]
+fn solve_elastic_static_direct_point_load_compiles_clean() {
+    let src = r#"
+structure FEACantileverTest {
+    let ci = ConstitutiveLawInput(law: Steel_AISI_1045())
+    let result = solve_elastic_static(
+        ci.law, 1000mm, 100mm, 100mm,
+        [PointLoad(point: "tip", force: 1000.0)],
+        [FixedSupport(target: "root")],
+        ElasticOptions()
+    )
+}
+"#;
+    let module = reify_test_support::compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics for direct [PointLoad(...)]/[FixedSupport(...)] call, \
+         got {:?}",
+        errors
+    );
+}
+
+/// Caller-compile positive (PressureLoad + FixedSupport):
+/// `solve_elastic_static(ci.law, ..., [PressureLoad(...)], [FixedSupport(...)], ElasticOptions())`
+/// must compile with ZERO Error diagnostics once params are tightened.
+///
+/// RED before step-2: same no-matching-overload failure as the PointLoad variant.
+/// GREEN after step-2.
+#[test]
+fn solve_elastic_static_direct_pressure_load_compiles_clean() {
+    let src = r#"
+structure FEAPressureTest {
+    let ci = ConstitutiveLawInput(law: Steel_AISI_1045())
+    let result = solve_elastic_static(
+        ci.law, 1000mm, 100mm, 100mm,
+        [PressureLoad(magnitude: 1000000.0, face: "x_max", direction: "normal")],
+        [FixedSupport(target: "root")],
+        ElasticOptions()
+    )
+}
+"#;
+    let module = reify_test_support::compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics for direct [PressureLoad(...)]/[FixedSupport(...)] call, \
+         got {:?}",
+        errors
+    );
+}
+
+/// Caller-compile negative: passing a non-conforming list `[Steel_AISI_1045()]`
+/// as the `loads` argument must yield at least one Error diagnostic with code
+/// `DiagnosticCode::TypeNotConformingToTrait`.
+///
+/// RED before step-2: the error is `NoMatchingOverload` (or similar), not
+/// `TypeNotConformingToTrait` — wrong diagnostic code, so the assertion fails.
+/// GREEN after step-2 (the conformance pass fires).
+#[test]
+fn solve_elastic_static_non_conforming_loads_yields_type_not_conforming_to_trait() {
+    let src = r#"
+structure FEABadLoads {
+    let ci = ConstitutiveLawInput(law: Steel_AISI_1045())
+    let result = solve_elastic_static(
+        ci.law, 1000mm, 100mm, 100mm,
+        [Steel_AISI_1045()],
+        [FixedSupport(target: "root")],
+        ElasticOptions()
+    )
+}
+"#;
+    let module = reify_test_support::compile_source_with_stdlib(src);
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
+        })
+        .collect();
+    assert!(
+        !conformance_errors.is_empty(),
+        "expected at least one TypeNotConformingToTrait Error diagnostic for \
+         [Steel_AISI_1045()] as loads arg, got all diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
+/// Regression guard: `solve_load_cases` with a `LoadCase` bundle must still
+/// compile with ZERO Error diagnostics after the `solve_elastic_static`
+/// param tightening (the multi-case path is intentionally untouched).
+///
+/// Already GREEN before and after step-2.
+#[test]
+fn solve_load_cases_still_compiles_clean_after_tightening() {
+    let src = r#"
+structure FEAMultiCaseTest {
+    let ci = ConstitutiveLawInput(law: Steel_AISI_1045())
+    let result = solve_load_cases(
+        ci.law, 1000mm, 100mm, 100mm,
+        [LoadCase(
+            name: "c",
+            loads: [PointLoad(point: "tip", force: 1000.0)],
+            supports: [FixedSupport(target: "root")]
+        )],
+        ElasticOptions()
+    )
+}
+"#;
+    let module = reify_test_support::compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected zero Error diagnostics for solve_load_cases regression guard, got {:?}",
+        errors
     );
 }

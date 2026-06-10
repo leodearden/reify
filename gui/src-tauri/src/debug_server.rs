@@ -243,6 +243,70 @@ fn tool_defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "load_fixture",
+            description: "Load a named test fixture .ri file into the editor and engine. The name must be one of the catalogue keys: all_severities, small_cube, empty, broken_syntax, large_assembly, overflow. Resolves to gui/test/fixtures/{name}.ri relative to the repository root (cwd when the debug server launches).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Fixture name (catalogue key). One of: all_severities, small_cube, empty, broken_syntax, large_assembly, overflow."
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDef {
+            name: "element_screenshot",
+            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" }. Frontend-mediated (no Rust dispatch arm).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "testId": {
+                        "type": "string",
+                        "description": "Value of the data-testid attribute on the target element (e.g. \"diagnostics-dialog\")."
+                    }
+                },
+                "required": ["testId"]
+            }),
+        },
+        ToolDef {
+            name: "inject_diagnostics",
+            description: "Inject SYNTHETIC diagnostics into the engine store for testing the diagnostics UI in isolation. The honest acceptance signal is the rendered DiagnosticsPanel (query_selector_all diagnostic-row / element_screenshot), NOT 'the store was set'. Normalises only omitted positional fields; never alters caller-supplied message or severity. Routes to compile diagnostics by default, or tessellation diagnostics when source='tessellation'. diagnostics must be non-empty (minItems:1). Frontend-mediated.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "diagnostics": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "Non-empty array of diagnostic entries to inject. Each entry must have severity and message; positional fields (file_path, line, column, end_line, end_column, code) are optional and filled with defaults when omitted.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "severity": { "type": "string" },
+                                "message":  { "type": "string" }
+                            },
+                            "required": ["severity", "message"]
+                        }
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["compile", "tessellation"],
+                        "description": "Which diagnostic channel to populate. Defaults to 'compile' so the StatusBar badge appears immediately."
+                    }
+                },
+                "required": ["diagnostics"]
+            }),
+        },
+        ToolDef {
+            name: "reset_app_state",
+            description: "Reset app-level store state: close all open files, clear the selection, reset the camera view, clear any injected diagnostics (compile and tessellation), and reset layout pane dimensions to their defaults. Does NOT reset the OCCT engine process. Frontend-mediated.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
             name: "set_test_mode",
             description: "Freeze CSS animations and transitions for pixel-stable DOM screenshots. Does NOT pause JS-driven animations or the Three.js render loop. Returns { ok: true, test_mode: bool }.",
             input_schema: json!({
@@ -878,7 +942,7 @@ struct DebugServerState {
 }
 
 fn is_image_tool(name: &str) -> bool {
-    matches!(name, "screenshot" | "screenshot_window")
+    matches!(name, "screenshot" | "screenshot_window" | "element_screenshot")
 }
 
 // --- Tool dispatch ---
@@ -906,6 +970,7 @@ async fn dispatch_tool(
         "engine_state" => handle_engine_state(state).await,
         "mesh_stats" => handle_mesh_stats(state).await,
         "open_file" => handle_open_file(state, params).await,
+        "load_fixture" => handle_load_fixture(state, params).await,
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
         "wait_for" => handle_wait_for(state, params).await,
         "wait_for_selector" => handle_wait_for_selector(state, params).await,
@@ -1102,11 +1167,26 @@ async fn handle_mesh_morph_stats(params: Value) -> Result<Value, String> {
     Ok(obj)
 }
 
-async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
-    let raw_path = params["path"]
-        .as_str()
-        .ok_or_else(|| "path is required".to_string())?;
+/// Catalogue of allowed fixture names → repo-relative paths.
+/// Mirrors the TS FIXTURES keys in gui/test/visual/assertions.ts.
+/// The e2e harness launches reify-gui with cwd=REPO_ROOT, so these
+/// relative paths resolve correctly via canonicalize_debug_open_path.
+fn fixture_relpath(name: &str) -> Option<String> {
+    match name {
+        "all_severities" => Some("gui/test/fixtures/all_severities.ri".to_string()),
+        "small_cube"     => Some("gui/test/fixtures/small_cube.ri".to_string()),
+        "empty"          => Some("gui/test/fixtures/empty.ri".to_string()),
+        "broken_syntax"  => Some("gui/test/fixtures/broken_syntax.ri".to_string()),
+        "large_assembly" => Some("gui/test/fixtures/large_assembly.ri".to_string()),
+        "overflow"       => Some("gui/test/fixtures/overflow.ri".to_string()),
+        _                => None,
+    }
+}
 
+/// Shared file-open helper: canonicalise raw_path, read from disk, load into
+/// the engine on an OS thread (OCCT panics inside tokio), build GUI state, and
+/// tell the frontend to open the file.
+async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Result<Value, String> {
     // Canonicalise the path before reading so the frontend receives the same
     // absolute key regardless of whether the caller supplied a relative or
     // absolute spelling (fixes bug #3892: duplicate tabs via debug bridge).
@@ -1143,6 +1223,22 @@ async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Val
         .debug_bridge
         .query_frontend("open_file", file_data)
         .await
+}
+
+async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let raw_path = params["path"]
+        .as_str()
+        .ok_or_else(|| "path is required".to_string())?;
+    open_path_into_engine(state, raw_path).await
+}
+
+async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let name = params["name"]
+        .as_str()
+        .ok_or_else(|| "name is required".to_string())?;
+    let relpath = fixture_relpath(name)
+        .ok_or_else(|| format!("unknown fixture: {name}"))?;
+    open_path_into_engine(state, &relpath).await
 }
 
 // --- MCP Streamable HTTP handler ---
@@ -2472,5 +2568,195 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- F1: load_fixture ---
+
+    #[test]
+    fn tool_defs_registers_load_fixture() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|d| d.name == "load_fixture")
+            .expect("load_fixture must be present in tool_defs()");
+        let schema = &entry.input_schema;
+
+        // Non-empty description
+        assert!(
+            !entry.description.is_empty(),
+            "load_fixture: description must be non-empty"
+        );
+
+        // type == "object"
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "load_fixture: input_schema.type must be 'object'"
+        );
+
+        // "name" must be in required
+        let required = schema["required"]
+            .as_array()
+            .expect("load_fixture: input_schema.required must be an array");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("name")),
+            "load_fixture: 'name' must be listed in required; got {required:?}"
+        );
+
+        // "name" property must be a string
+        assert_eq!(
+            schema["properties"]["name"]["type"].as_str(),
+            Some("string"),
+            "load_fixture: properties.name.type must be 'string'"
+        );
+    }
+
+    #[test]
+    fn fixture_relpath_resolves_catalogue() {
+        // Known catalogue keys
+        let known = [
+            ("all_severities", "gui/test/fixtures/all_severities.ri"),
+            ("small_cube",     "gui/test/fixtures/small_cube.ri"),
+            ("empty",          "gui/test/fixtures/empty.ri"),
+            ("broken_syntax",  "gui/test/fixtures/broken_syntax.ri"),
+            ("large_assembly", "gui/test/fixtures/large_assembly.ri"),
+            ("overflow",       "gui/test/fixtures/overflow.ri"),
+        ];
+        for (name, expected_relpath) in known {
+            let result = fixture_relpath(name);
+            assert_eq!(
+                result.as_deref(),
+                Some(expected_relpath),
+                "fixture_relpath({name:?}) should return Some({expected_relpath:?}), got {result:?}"
+            );
+        }
+
+        // Unknown name must return None
+        let bogus = fixture_relpath("bogus_name");
+        assert_eq!(
+            bogus,
+            None,
+            "fixture_relpath(\"bogus_name\") should return None, got {bogus:?}"
+        );
+    }
+
+    // --- F1: element_screenshot ---
+
+    #[test]
+    fn tool_defs_registers_element_screenshot() {
+        let defs = tool_defs();
+        let entry = defs
+            .iter()
+            .find(|d| d.name == "element_screenshot")
+            .expect("element_screenshot must be present in tool_defs()");
+        let schema = &entry.input_schema;
+
+        // Non-empty description
+        assert!(
+            !entry.description.is_empty(),
+            "element_screenshot: description must be non-empty"
+        );
+
+        // type == "object"
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "element_screenshot: input_schema.type must be 'object'"
+        );
+
+        // "testId" must be in required
+        let required = schema["required"]
+            .as_array()
+            .expect("element_screenshot: input_schema.required must be an array");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("testId")),
+            "element_screenshot: 'testId' must be listed in required; got {required:?}"
+        );
+
+        // "testId" property must be a string
+        assert_eq!(
+            schema["properties"]["testId"]["type"].as_str(),
+            Some("string"),
+            "element_screenshot: properties.testId.type must be 'string'"
+        );
+    }
+
+    #[test]
+    fn is_image_tool_recognizes_element_screenshot() {
+        assert!(
+            is_image_tool("element_screenshot"),
+            "element_screenshot must be recognised as an image tool"
+        );
+        // Regression: existing variants still pass
+        assert!(is_image_tool("screenshot"));
+        assert!(is_image_tool("screenshot_window"));
+        // Non-image tools must not match
+        assert!(!is_image_tool("health"));
+        assert!(!is_image_tool(""));
+    }
+
+    // --- F1: inject_diagnostics + reset_app_state ---
+
+    #[test]
+    fn tool_defs_registers_inject_diagnostics_and_reset_app_state() {
+        let defs = tool_defs();
+
+        // --- inject_diagnostics ---
+        let inject = defs
+            .iter()
+            .find(|d| d.name == "inject_diagnostics")
+            .expect("inject_diagnostics must be present in tool_defs()");
+        let inject_schema = &inject.input_schema;
+
+        // Non-empty description
+        assert!(
+            !inject.description.is_empty(),
+            "inject_diagnostics: description must be non-empty"
+        );
+
+        // type == "object"
+        assert_eq!(
+            inject_schema["type"].as_str(),
+            Some("object"),
+            "inject_diagnostics: input_schema.type must be 'object'"
+        );
+
+        // "diagnostics" property must be an array type
+        assert_eq!(
+            inject_schema["properties"]["diagnostics"]["type"].as_str(),
+            Some("array"),
+            "inject_diagnostics: properties.diagnostics.type must be 'array'"
+        );
+
+        // --- reset_app_state ---
+        let reset = defs
+            .iter()
+            .find(|d| d.name == "reset_app_state")
+            .expect("reset_app_state must be present in tool_defs()");
+        let reset_schema = &reset.input_schema;
+
+        // Non-empty description
+        assert!(
+            !reset.description.is_empty(),
+            "reset_app_state: description must be non-empty"
+        );
+
+        // type == "object"
+        assert_eq!(
+            reset_schema["type"].as_str(),
+            Some("object"),
+            "reset_app_state: input_schema.type must be 'object'"
+        );
+
+        // required must be absent or empty (no required params)
+        let has_nonempty_required = reset_schema["required"]
+            .as_array()
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false);
+        assert!(
+            !has_nonempty_required,
+            "reset_app_state: required must be absent or empty; got {:?}",
+            reset_schema["required"]
+        );
     }
 }

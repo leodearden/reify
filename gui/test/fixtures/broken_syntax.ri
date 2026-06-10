@@ -5,5 +5,5 @@
 // Exact parse-error behavior pinned by downstream diagnostics tool-leaf tasks.
 
 structure BrokenSyntax {
-    param x: Scalar =
+    param x: Length =
     let body = box(

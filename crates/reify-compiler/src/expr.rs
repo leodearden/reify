@@ -562,6 +562,28 @@ pub(crate) fn extract_auto_free(expr: &reify_ast::Expr) -> Option<bool> {
     }
 }
 
+/// Map a determinacy-intrinsic name to its reflective member name.
+///
+/// Returns the `PurposeReflectiveAggregation` member name for the two
+/// compiler-sugar intrinsics (task-4197 α):
+///
+/// - `"AllParamsDetermined"`   → `Some("params")`
+/// - `"AllGeometryDetermined"` → `Some("geometric_params")`
+/// - anything else             → `None`
+///
+/// This is the **single source of truth** for the intrinsic→member mapping.
+/// It is consulted by:
+/// 1. `traits.rs::desugar_determinacy_intrinsic` — valid desugar in purpose bodies.
+/// 2. `expr.rs::compile_expr_guarded` FunctionCall arm — scope guard that fires
+///    for any intrinsic call that reaches `compile_expr` without desugaring.
+pub(crate) fn determinacy_intrinsic_member(name: &str) -> Option<&'static str> {
+    match name {
+        "AllParamsDetermined" => Some("params"),
+        "AllGeometryDetermined" => Some("geometric_params"),
+        _ => None,
+    }
+}
+
 pub(crate) fn compile_expr(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,
@@ -1327,6 +1349,31 @@ pub(crate) fn compile_expr_guarded(
                 return poison;
             }
 
+            // ── Determinacy intrinsic scope guard (det-α step-6) ──────────────────
+            // `AllParamsDetermined` / `AllGeometryDetermined` are COMPILER SUGAR that
+            // `compile_purpose` desugars into a reflective `forall` BEFORE
+            // `compile_expr` is ever called.  Any call that reaches this arm was NOT
+            // desugared — it was used outside a purpose-body top-level constraint
+            // (e.g. inside a structure or function body).  Emit
+            // `E_DETERMINACY_INTRINSIC_SCOPE` and return a non-cascading poison
+            // literal; do NOT fall through to overload resolution (invariant A3).
+            if determinacy_intrinsic_member(name).is_some() {
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "E_DETERMINACY_INTRINSIC_SCOPE: `{}` is a purpose-body \
+                         determinacy intrinsic and may only appear as a top-level \
+                         constraint inside a purpose body",
+                        name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        expr.span,
+                        "intrinsic used here",
+                    ))
+                    .with_code(DiagnosticCode::DeterminacyIntrinsicScope),
+                );
+            }
+
             // Intercept `some(expr)` before general function resolution.
             // some() is a language-level constructor, not a user-defined function.
             if name == "some" {
@@ -1456,7 +1503,70 @@ pub(crate) fn compile_expr_guarded(
                     if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                         emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                     }
-                    let result_type = matched_fn.return_type.clone();
+                    // Generic call (task 4231 β): infer type arguments by unifying
+                    // each declared param type against the concrete arg type, then
+                    // substitute the bound type parameters into the return type.
+                    // Non-generic fns (empty type_params) keep the exact
+                    // return_type.clone() path bit-for-bit unchanged (INV-6/D10).
+                    let result_type = if matched_fn.type_params.is_empty() {
+                        matched_fn.return_type.clone()
+                    } else {
+                        let mut subst: std::collections::HashMap<String, Type> =
+                            std::collections::HashMap::new();
+                        for ((_, declared), arg_ty) in
+                            matched_fn.params.iter().zip(arg_types.iter())
+                        {
+                            // A type-param double-binding to two different types is
+                            // a call-site type-argument conflict (PRD D2 / §4.2).
+                            // Emit E_FN_TYPE_ARG_CONFLICT and poison the call to
+                            // prevent a follow-on cascade (mirror the Ambiguous arm).
+                            if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst)
+                            {
+                                return make_poison_literal(
+                                    diagnostics,
+                                    Diagnostic::error(format!(
+                                        "conflicting type arguments for type parameter '{}' \
+                                         in call to '{}': {} vs {}",
+                                        conflict.param,
+                                        name,
+                                        conflict.existing,
+                                        conflict.incoming
+                                    ))
+                                    .with_code(DiagnosticCode::FnTypeArgConflict)
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "conflicting type argument",
+                                    )),
+                                );
+                            }
+                        }
+                        let substituted = type_resolution::substitute_type_params(
+                            &matched_fn.return_type,
+                            &subst,
+                        );
+                        // A BARE top-level unbound type-param means nothing pinned
+                        // the result type (e.g. `make<T>() -> T` called as `make()`):
+                        // the call yields a wholly-undetermined type → error + poison.
+                        // A NESTED unbound param (e.g. `Field<TypeParam(D), Real>`)
+                        // is TOLERATED — it is pinned by an enclosing call (B5,
+                        // PRD §8 / D3-decision).
+                        if matches!(substituted, Type::TypeParam(_)) {
+                            return make_poison_literal(
+                                diagnostics,
+                                Diagnostic::error(format!(
+                                    "cannot infer type argument(s) for generic call to '{}': \
+                                     result type is undetermined",
+                                    name
+                                ))
+                                .with_code(DiagnosticCode::FnTypeArgUnresolved)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "unresolved type argument",
+                                )),
+                            );
+                        }
+                        substituted
+                    };
                     build_user_function_call_expr(name, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
@@ -1647,23 +1757,33 @@ pub(crate) fn compile_expr_guarded(
                     } else if is_geometry_query(name) {
                         // volume / area / length / perimeter / centroid /
                         // bounding_box / distance / contains / intersects /
-                        // geo_equiv / angle / curvature: the GHR-α / PRD §1
-                        // Phase-1 geometry-query family (task 3603). The
-                        // per-name result type comes from
+                        // geo_equiv / angle / curvature / normal: the GHR-α /
+                        // PRD §1 Phase-1 geometry-query family (task 3603).
+                        //
+                        // curvature overload (task 4315): when the first
+                        // compiled arg is an inline `faces(...)[i]` form,
+                        // geometry_query_arg_aware_result_type returns
+                        // Some(Matrix{2,2,Curvature}); for a curve arg,
+                        // let-bound arg, or no arg it returns None and the
+                        // .or_else falls through to the default Scalar<Curvature>
+                        // below. All other names return None unconditionally.
+                        //
+                        // The per-name default table comes from
                         // `geometry_query_result_type`, which is the frozen
                         // PRD §1 table. Eval-time dispatch arrives in Phase 6
                         // (GHR-ζ); Phase 1 produces `Value::Undef` cells with
                         // the correct compile-time type so downstream
                         // user-asserted-constraint typing and trait conformance
-                        // (notably the spec-shape `Physical` trait's
-                        // `let mass = volume(geometry) * material.density`
-                        // and `let centroid = centroid(geometry)`) typecheck.
-                        // Falling through to the first-arg default would
-                        // mismatch — the first arg is a `Geometry` / `Solid` /
-                        // `Surface` / `Curve` handle, not the helper's actual
-                        // return type.
-                        geometry_query_result_type(name)
-                            .expect("is_geometry_query implies result type")
+                        // typecheck. Falling through to the first-arg default
+                        // would mismatch — the first arg is a `Geometry` /
+                        // `Solid` / `Surface` / `Curve` handle, not the
+                        // helper's actual return type.
+                        geometry_query_arg_aware_result_type(
+                            name,
+                            compiled_args.first(),
+                        )
+                        .or_else(|| geometry_query_result_type(name))
+                        .expect("is_geometry_query implies result type")
                     } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
                     } else if let Some(t) = infer_list_helper_return_type(name, &compiled_args) {
@@ -1744,6 +1864,27 @@ pub(crate) fn compile_expr_guarded(
                         // earlier `affine_map_algebra_result_type` arm above, so
                         // only Tensor/Matrix determinant args reach here.
                         math_fn_result_type(name, &compiled_args)
+                    } else if is_joint_typed_fn(name) {
+                        // §13 mechanism/joint constructor family (mechanism β,
+                        // task 4311). Set the cell type up-front to the nominal
+                        // StructureRef so the §13 tags become ENFORCED return
+                        // types consumed by γ's compile-time DrivingJoint-bound
+                        // check and by reify-lsp hover. Falling through to the
+                        // first-arg fallback would mis-type a joint as its
+                        // axis/parent arg's type (e.g. Real).
+                        //
+                        // Runtime: joints evaluate to Value::Map/Int/List
+                        // (esc-3845-91), NOT Value::Undef — but StructureRef is
+                        // a representable cell type (engine_eval.rs:122-124) and
+                        // value_type_kind_matches is not enforced on let-cells,
+                        // so the mismatch is safe. (Today these cells already
+                        // carry the first-arg Real mismatch; StructureRef is
+                        // strictly more correct.)
+                        //
+                        // The family is pinned disjoint from all sibling
+                        // families by the units.rs disjointness test, so this
+                        // arm's position in the ladder is unobservable.
+                        joint_ctor_result_type(name, &compiled_args)
                     } else {
                         compiled_args
                             .first()
@@ -4601,6 +4742,62 @@ pub structure Rack {
              fallback); got {:?}",
             result.result_type
         );
+    }
+
+    /// End-to-end cell-type test for the §13 joint-constructor family (mechanism
+    /// β, task 4311). With an empty template registry (so the lowercase builtins
+    /// are NOT structure-def ctors) and empty user functions (so resolution lands
+    /// in `NoUserFunctions`), each joint-constructor call must lower to a
+    /// `CompiledExprKind::FunctionCall` whose `result_type` is the nominal
+    /// `Type::StructureRef(...)` — NOT the first-arg fallback (e.g. Real).
+    ///
+    /// Tests four names for cross-arm coverage:
+    /// - `prismatic` (driving kind) → StructureRef("Prismatic")
+    /// - `couple` (coupling kind) → StructureRef("Coupling")
+    /// - `bind` (JointBinding) → StructureRef("JointBinding")
+    /// - `joint_jacobian` (Twist) → StructureRef("Twist")
+    ///
+    /// Mirrors `body_mass_props_resolves_to_function_call_returning_mass_properties`.
+    /// RED until step-6 wires the `is_joint_typed_fn` arm into the ladder.
+    #[test]
+    fn joint_ctor_calls_resolve_to_function_calls_returning_nominal_struct_types() {
+        // Empty template registry → joint names are not structure-defs → FunctionCall.
+        let registry: std::collections::HashMap<String, &crate::types::TopologyTemplate> =
+            std::collections::HashMap::new();
+        let mut scope = CompilationScope::new("Host");
+        scope.is_entity_scope = true;
+        scope.set_template_registry(&registry);
+
+        // Helper: compile a call and assert the result type.
+        let check = |name: &str, n_args: usize, expected_type: Type| {
+            let args: Vec<reify_ast::Expr> = (0..n_args).map(|_| num_expr(1.0)).collect();
+            let mut diags: Vec<Diagnostic> = vec![];
+            let result = compile_expr(&call_expr(name, args), &scope, &[], &[], &mut diags);
+            match &result.kind {
+                CompiledExprKind::FunctionCall { function, .. } => {
+                    assert_eq!(
+                        function.name, name,
+                        "{name} must lower to a FunctionCall named {name}"
+                    );
+                }
+                other => panic!("{name} must lower to a stdlib FunctionCall, got {other:?}"),
+            }
+            assert_eq!(
+                result.result_type,
+                expected_type,
+                "{name} result_type must be {expected_type:?} (joint β arm), got {:?}",
+                result.result_type
+            );
+        };
+
+        // Driving kind → named kind type.
+        check("prismatic", 1, Type::StructureRef("Prismatic".to_string()));
+        // Coupling kind → Coupling.
+        check("couple", 1, Type::StructureRef("Coupling".to_string()));
+        // JointBinding → JointBinding.
+        check("bind", 2, Type::StructureRef("JointBinding".to_string()));
+        // Twist / joint Jacobian → Twist.
+        check("joint_jacobian", 1, Type::StructureRef("Twist".to_string()));
     }
 
     /// `TraitStaticCall` dispatch arm (task η 3945) — after the placeholder is

@@ -2575,6 +2575,40 @@ pub trait GeometryKernel: Send + Sync {
     fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
         None
     }
+
+    /// Returns the sampled max facet-chord deviation (SI metres) of `mesh` from
+    /// the exact representation of `handle`, or `None` for kernels without an
+    /// exact surface to project onto (non-OCCT kernels: mocks, stubs, Fidget,
+    /// OpenVDB, Manifold).
+    ///
+    /// The metric samples 4 interior points per triangle (centroid + 3 edge
+    /// midpoints) and projects each onto the exact BRep via
+    /// `BRepExtrema_DistShapeShape`, returning the global maximum distance.
+    /// Mesh vertices lie on the surface by construction and are excluded; only
+    /// interior samples reveal chord error.
+    ///
+    /// # Sampled lower bound — implication for γ (`RepresentationWithin`)
+    ///
+    /// With 4 samples per triangle the returned value is a **sampled lower
+    /// bound** on the true Hausdorff / chord deviation.  A mesh that actually
+    /// exceeds a tolerance can still pass if all 4 per-facet sample points
+    /// happen to land close to the surface.  Task γ consumers of this value
+    /// should document this limitation at the assertion site and, if tighter
+    /// guarantees are required, request denser sampling (deferred).
+    ///
+    /// This is the B3 honest-absence default: non-OCCT kernels inherit `None`
+    /// with zero per-impl edits, mirroring the established
+    /// `extract_edges`/`make_compound`/`ingest_mesh` default-absent pattern.
+    /// The absence of an override IS the "not supported" contract.
+    ///
+    /// `&self` (read-only): only a projection query is needed, no shape mutation.
+    fn measure_mesh_deviation(
+        &self,
+        _handle: GeometryHandleId,
+        _mesh: &Mesh,
+    ) -> Option<f64> {
+        None
+    }
 }
 
 /// Debug-build invariant check for kernel implementors that override
@@ -2673,6 +2707,20 @@ impl FeatureTagTable {
     /// Look up the tag for a given geometry handle, if any.
     pub fn lookup(&self, id: GeometryHandleId) -> Option<&FeatureTag> {
         self.entries.get(&id)
+    }
+
+    /// Remove the entry for `id`, returning it if present.
+    ///
+    /// Used by the cache-hit short-circuit in `Engine::execute_realization_ops`
+    /// to evict any cross-kernel colliding entry at `id` before pushing the
+    /// cached handle — so a subsequent `lookup(id)` correctly returns `None`
+    /// (the #3226 spec: a cache-served handle has no entries in the tag table
+    /// on the second build).
+    ///
+    /// Returns `None` silently when `id` is absent (no-op in the common
+    /// single-kernel case where the per-build reset already cleared the table).
+    pub fn remove(&mut self, id: GeometryHandleId) -> Option<FeatureTag> {
+        self.entries.remove(&id)
     }
 
     /// Number of entries currently in the table.
@@ -2967,6 +3015,20 @@ impl TopologyAttributeTable {
     /// Returns `true` if the table has no entries.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Remove the entry for `id`, returning it if present.
+    ///
+    /// Used by the cache-hit short-circuit in `Engine::execute_realization_ops`
+    /// to evict any cross-kernel colliding entry at `id` before pushing the
+    /// cached handle — so a subsequent `lookup(id)` correctly returns `None`
+    /// (the #3226 spec: a cache-served handle has no entries in the attribute
+    /// table on the second build).
+    ///
+    /// Returns `None` silently when `id` is absent (no-op in the common
+    /// single-kernel case where the per-build reset already cleared the table).
+    pub fn remove(&mut self, id: GeometryHandleId) -> Option<TopologyAttribute> {
+        self.entries.remove(&id)
     }
 
     /// Iterate over all `(GeometryHandleId, &TopologyAttribute)` pairs in the table.
@@ -7357,5 +7419,64 @@ mod tests {
             assert!(warnings.is_empty(),
                 "default ThreeMfOptions (both flags false) must produce no warnings");
         }
+    }
+
+    // ── FeatureTagTable::remove unit tests (task 4349) ────────────────────────
+
+    /// `remove` returns `Some(tag)` after a `record` and the entry is gone.
+    #[test]
+    fn feature_tag_table_remove_returns_some_and_empties_entry() {
+        let mut table = FeatureTagTable::default();
+        let id = GeometryHandleId(1);
+        let tag = FeatureTag {
+            source_span: reify_core::diagnostics::SourceSpan::new(0, 0),
+            step_kind: StepKind::Primitive,
+            sub_index: 0,
+        };
+        table.record(id, tag);
+        let removed = table.remove(id);
+        assert!(removed.is_some(), "remove must return Some after record");
+        assert!(table.lookup(id).is_none(), "entry must be gone after remove");
+        assert!(table.is_empty(), "table must be empty after removing the only entry");
+    }
+
+    /// `remove` returns `None` when the id was never recorded.
+    #[test]
+    fn feature_tag_table_remove_absent_returns_none() {
+        let mut table = FeatureTagTable::default();
+        let removed = table.remove(GeometryHandleId(99));
+        assert!(removed.is_none(), "remove of absent id must return None");
+    }
+
+    // ── TopologyAttributeTable::remove unit tests (task 4349) ─────────────────
+
+    fn make_topology_attribute() -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: FeatureId::new("test_entity"),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: Vec::new(),
+        }
+    }
+
+    /// `remove` returns `Some(attr)` after a `record` and the entry is gone.
+    #[test]
+    fn topology_attribute_table_remove_returns_some_and_empties_entry() {
+        let mut table = TopologyAttributeTable::default();
+        let id = GeometryHandleId(1);
+        table.record(id, make_topology_attribute());
+        let removed = table.remove(id);
+        assert!(removed.is_some(), "remove must return Some after record");
+        assert!(table.lookup(id).is_none(), "entry must be gone after remove");
+        assert!(table.is_empty(), "table must be empty after removing the only entry");
+    }
+
+    /// `remove` returns `None` when the id was never recorded.
+    #[test]
+    fn topology_attribute_table_remove_absent_returns_none() {
+        let mut table = TopologyAttributeTable::default();
+        let removed = table.remove(GeometryHandleId(99));
+        assert!(removed.is_none(), "remove of absent id must return None");
     }
 }

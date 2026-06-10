@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use reify_compiler::cfg::CfgSet;
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::TestStatus;
 
@@ -187,6 +188,75 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
     Ok(compiled)
 }
 
+/// Like [`parse_and_compile`], but seeds the active [`CfgSet`] and walks a
+/// `#cfg(...)`-gated user-import DAG via
+/// [`reify_compiler::module_dag::compile_entry_with_stdlib_cfg`].
+///
+/// Used only by `reify check`. It preserves single-file behavior — the full
+/// stdlib prelude is still seeded, so every existing `reify check` input keeps
+/// resolving stdlib names — while additionally following the entry's
+/// cfg-satisfied user imports, so `--cfg target=...` selects which platform
+/// modules resolve (task δ's user-observable signal).
+///
+/// The module-path declaration check (spec §7.1/§7.2, task γ) is performed
+/// *inside* `compile_entry_with_stdlib_cfg` (via `attach_module_path_diag`), so
+/// — unlike [`parse_and_compile`] — this function must NOT re-run it, else the
+/// diagnostic would be emitted twice.
+fn parse_and_compile_with_cfg(
+    path: &str,
+    cfg: &CfgSet,
+) -> Result<reify_compiler::CompiledModule, ExitCode> {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return Err(ExitCode::FAILURE);
+        }
+    };
+
+    // file_stem() strips only the last extension — same module-name derivation
+    // as parse_and_compile (see its comment for the dotted-stem limitation).
+    let module_name = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unnamed");
+
+    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
+
+    if !parsed.errors.is_empty() {
+        for err in &parsed.errors {
+            eprintln!("Parse error: {}", err.message);
+        }
+        return Err(ExitCode::FAILURE);
+    }
+
+    // Resolve sibling user imports relative to the entry file's parent dir.
+    //
+    // `stdlib_root` is INERT on this code path: `compile_entry_with_stdlib_cfg`
+    // skips every `std.*` import (the full stdlib is seeded into the prelude via
+    // `load_stdlib()` instead), so the resolver's stdlib_root is never consulted
+    // for a `reify check`. We still pass the GUI/LSP-heuristic path
+    // (parent/crates/reify-compiler/stdlib) rather than a bogus sentinel so the
+    // resolver is constructed identically to that bridge; its value has no
+    // observable effect here.
+    let parent_dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(
+        parent_dir,
+        parent_dir.join("crates/reify-compiler/stdlib"),
+    );
+
+    let compiled =
+        reify_compiler::module_dag::compile_entry_with_stdlib_cfg(&parsed, &resolver, cfg);
+
+    for diag in &compiled.diagnostics {
+        eprintln!("{}: {}", diag.severity, diag.message);
+    }
+
+    Ok(compiled)
+}
+
 /// One per-param binding parsed from a `--purpose` flag value.
 ///
 /// `param` is the per-param name in the multi-pair form (`p:A`), or `None`
@@ -273,14 +343,85 @@ fn parse_purpose_flag(value: &str) -> Result<PurposeActivation, String> {
     })
 }
 
+/// One parsed `--cfg <value>` argument.
+///
+/// - `Flag(name)` — a bare boolean flag (`--cfg debug`).
+/// - `KeyValue { key, value }` — a `key=value` entry (`--cfg target=wasm`,
+///   `--cfg feature=x`). An empty `value` is permitted (`--cfg target=`),
+///   matching `CfgSet`'s kv empty-string semantics.
+#[derive(Debug, PartialEq)]
+enum CfgArg {
+    Flag(String),
+    KeyValue { key: String, value: String },
+}
+
+/// Parse a single `--cfg <value>` flag value into a [`CfgArg`].
+///
+/// Grammar:
+/// - no `=` → bare flag; the value must be non-empty (`""` is an error).
+/// - `key=value` → key/value entry; the key must be non-empty (`=v` is an
+///   error). The value may be empty (`target=` yields an empty-string value).
+///
+/// Mirrors [`parse_purpose_flag`]'s error-message style.
+fn parse_cfg_flag(value: &str) -> Result<CfgArg, String> {
+    match value.split_once('=') {
+        None => {
+            if value.is_empty() {
+                return Err("--cfg value is empty".to_string());
+            }
+            Ok(CfgArg::Flag(value.to_string()))
+        }
+        Some((key, val)) => {
+            if key.is_empty() {
+                return Err(format!("--cfg value '{}' has an empty key", value));
+            }
+            Ok(CfgArg::KeyValue {
+                key: key.to_string(),
+                value: val.to_string(),
+            })
+        }
+    }
+}
+
+/// Build the active [`CfgSet`] from the repeated `--cfg <value>` arguments.
+///
+/// Starts from [`CfgSet::host_default`] (target = the compiling host's platform)
+/// and folds each parsed [`CfgArg`] in order:
+/// - `target=<v>` overrides the target;
+/// - any other `key=value` is inserted into `kv`;
+/// - a bare flag is inserted into `flags`.
+///
+/// Per PRD §4 D-2, `target` is host-defaulted and overridable ONLY by an explicit
+/// `--cfg target=<v>`; bare flags and non-`target` key/values never clear it, so
+/// passing a feature flag cannot silently disable platform gating.
+fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
+    let mut cfg = CfgSet::host_default();
+    for value in values {
+        match parse_cfg_flag(value)? {
+            CfgArg::KeyValue { key, value } if key == "target" => {
+                cfg.target = Some(value);
+            }
+            CfgArg::KeyValue { key, value } => {
+                cfg.kv.insert(key, value);
+            }
+            CfgArg::Flag(flag) => {
+                cfg.flags.insert(flag);
+            }
+        }
+    }
+    Ok(cfg)
+}
+
 /// Usage line printed to stderr for any `reify check` usage error.
-const CHECK_USAGE: &str = "Usage: reify check [--purpose <name>=<binding>]... <file>";
+const CHECK_USAGE: &str =
+    "Usage: reify check [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
     // `--purpouse` fails loud instead of being silently treated as a file path.
     let mut purpose_values: Vec<String> = Vec::new();
+    let mut cfg_values: Vec<String> = Vec::new();
     let mut file: Option<&str> = None;
     let mut i = 0;
     while i < args.len() {
@@ -293,6 +434,15 @@ fn cmd_check(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
                 purpose_values.push(args[i + 1].clone());
+                i += 2;
+            }
+            "--cfg" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --cfg requires a value");
+                    eprintln!("{}", CHECK_USAGE);
+                    return ExitCode::FAILURE;
+                }
+                cfg_values.push(args[i + 1].clone());
                 i += 2;
             }
             flag if flag.starts_with("--") => {
@@ -317,7 +467,17 @@ fn cmd_check(args: &[String]) -> ExitCode {
         }
     };
 
-    let compiled = match parse_and_compile(file) {
+    // Build the active cfg from the repeated `--cfg` values: target is
+    // host-defaulted and overridable only by `--cfg target=<v>` (PRD §4 D-2).
+    let cfg = match build_cfg_set(&cfg_values) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let compiled = match parse_and_compile_with_cfg(file, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -331,10 +491,37 @@ fn cmd_check(args: &[String]) -> ExitCode {
     }
 
     if purpose_values.is_empty() {
-        // No --purpose flag: existing engine.check() path, byte-for-byte.
+        // No --purpose flag: route through the appropriate check path.
+        //
+        // When the module carries a `RepresentationWithin` assertion (detected
+        // by `module_has_representation_within`), use the kernel-backed path:
+        //   1. `set_capture_repr_tol(true)` — record deviation during tessellation.
+        //   2. `tessellate_realizations(&compiled)` — populate `achieved_repr_tol`.
+        //   3. `engine.check(&compiled)` — `dispatch_constraints` intercepts
+        //      `RepresentationWithin` entries and reads from the populated map
+        //      (type-name-scan fallback resolves the key; absent key → Indeterminate).
+        //
+        // This satisfies C1 ordering (tessellate-before-check) and C1 graceful
+        // degradation (no OCCT kernel → `with_registered_kernel` returns a
+        // None-kernel engine → tessellation skips → map stays empty →
+        // Indeterminate → exit 0).
+        //
+        // When the module has NO `RepresentationWithin` constraints, keep the
+        // existing `Engine::new(None)+check()` path verbatim (C2 — byte-identical
+        // behavior and exit codes for all existing `reify check` inputs).
         let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-        let result = engine.check(&compiled);
+        let result = if module_has_representation_within(&compiled) {
+            // Kernel-backed path for RepresentationWithin assertions (task-4199 γ).
+            let mut engine =
+                reify_eval::Engine::with_registered_kernel(Box::new(checker));
+            engine.set_capture_repr_tol(true);
+            engine.tessellate_realizations(&compiled);
+            engine.check(&compiled)
+        } else {
+            // Existing lightweight path: no kernel, no tessellation (C2).
+            let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+            engine.check(&compiled)
+        };
 
         let outcome = report_eval_output(
             &result.constraint_results,
@@ -658,8 +845,14 @@ fn cmd_build(args: &[String]) -> ExitCode {
 }
 
 /// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
-/// wire the [`reify_constraints::DimensionalSolver`] and register all compute
-/// trampolines so `@optimized` targets dispatch correctly.
+/// wire the production [`reify_constraints::SolverRegistry`] and register all
+/// compute trampolines so `@optimized` targets dispatch correctly.
+///
+/// The production registry installs `DimensionalSolver` (dimensional constraints)
+/// and `SolveSpaceSolver` (geometric constraints: `std::distance`,
+/// `std::angle_between`, `std::parallel`, `std::tangent`, `std::geo::*`).
+/// This mirrors the GUI's `EngineSession::with_registered_kernel` solver so that
+/// CLI and GUI resolve auto-params identically.
 ///
 /// Both the geometry branch (`with_registered_kernel + build()`) and the plain
 /// branch (`Engine::new(None) + eval()`) share this setup; only the constructor
@@ -675,7 +868,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// emit a misleading "falling back to tet meshing" warning even though the FEA
 /// trampoline independently re-classifies and runs the correct shell solve.
 fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
-    let mut engine = engine.with_solver(Box::new(reify_constraints::DimensionalSolver));
+    let mut engine = engine.with_solver(Box::new(reify_constraints::SolverRegistry::production()));
     reify_eval::compute_targets::register_compute_fns(&mut engine);
     reify_eval::register_shell_extract_compute_fns(&mut engine);
     engine
@@ -1319,6 +1512,45 @@ fn module_has_geometry(module: &reify_compiler::CompiledModule) -> bool {
     })
 }
 
+/// Returns `true` when any template in the module carries at least one
+/// `RepresentationWithin(subject, bound)` constraint.
+///
+/// Used by [`cmd_check`] to decide whether to route through the kernel-backed
+/// `set_capture_repr_tol(true)` → `tessellate_realizations` → `check` path
+/// (so that `dispatch_constraints` can evaluate the assertion against the
+/// populated `achieved_repr_tol` map) or to stay on the existing lightweight
+/// `Engine::new(None)+check()` path for modules with no such assertion.
+///
+/// Reuses [`reify_eval::tolerance_combine::recognize_representation_within`]
+/// so the recognition gate (UFC name + arity + arg0 ValueRef:StructureRef +
+/// arg1 Literal Scalar LENGTH finite≥0) is the same canonical matcher used by
+/// the engine's dispatch interception — a single gate implementation that
+/// cannot drift (retiring the drift risk that lived in the extractor's TODO
+/// before task 4199 γ).
+///
+/// Non-assertion modules: this function returns `false` and `cmd_check` keeps
+/// the existing path verbatim (C2 — byte-identical behavior for all existing
+/// `reify check` inputs).
+fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        // Check direct template constraints first (the common case).
+        let direct = t.constraints.iter().any(|c| {
+            reify_eval::tolerance_combine::recognize_representation_within(&c.expr).is_some()
+        });
+        if direct {
+            return true;
+        }
+        // Also check guarded-group constraints (true-branch + else-branch)
+        // so a RepresentationWithin inside a `when ... { constraint ... }` block
+        // is also detected.
+        t.guarded_groups.iter().any(|g| {
+            g.constraints.iter().chain(g.else_constraints.iter()).any(|c| {
+                reify_eval::tolerance_combine::recognize_representation_within(&c.expr).is_some()
+            })
+        })
+    })
+}
+
 /// Report constraint results and eval diagnostics in a consistent order.
 ///
 /// Writes constraint status lines to `out` (via [`report_constraint_results`]),
@@ -1733,6 +1965,104 @@ mod tests {
     }
 
     #[test]
+    fn parse_cfg_flag_parses_target_key_value() {
+        // `target=wasm` is the key=value form: an explicit platform override.
+        assert_eq!(
+            parse_cfg_flag("target=wasm"),
+            Ok(CfgArg::KeyValue {
+                key: "target".to_string(),
+                value: "wasm".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_parses_bare_flag() {
+        // A value with no `=` is a bare boolean flag.
+        assert_eq!(
+            parse_cfg_flag("linux"),
+            Ok(CfgArg::Flag("linux".to_string())),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_parses_non_target_key_value() {
+        // Any `key=value` (not just `target=`) is a key/value cfg entry.
+        assert_eq!(
+            parse_cfg_flag("feature=x"),
+            Ok(CfgArg::KeyValue {
+                key: "feature".to_string(),
+                value: "x".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_allows_empty_value() {
+        // `target=` is the explicit empty-value form: the key is present and the
+        // value is the empty string, matching cfg.rs's kv empty-string semantics.
+        assert_eq!(
+            parse_cfg_flag("target="),
+            Ok(CfgArg::KeyValue {
+                key: "target".to_string(),
+                value: String::new(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_rejects_empty_key() {
+        // `=v` has an empty key — there is no cfg name to set.
+        assert!(parse_cfg_flag("=v").is_err());
+    }
+
+    #[test]
+    fn parse_cfg_flag_rejects_empty_input() {
+        // An empty value is neither a flag nor a `key=value` — rejected.
+        assert!(parse_cfg_flag("").is_err());
+    }
+
+    #[test]
+    fn build_cfg_set_empty_is_host_default() {
+        // No `--cfg` args ⇒ the host-default active cfg (target = host platform,
+        // empty flags/kv), identical to CfgSet::host_default (PRD §4 D-2).
+        assert_eq!(
+            build_cfg_set(&[]),
+            Ok(reify_compiler::cfg::CfgSet::host_default()),
+        );
+    }
+
+    #[test]
+    fn build_cfg_set_target_override_replaces_host() {
+        // `--cfg target=wasm` overrides the host-default target.
+        let cfg = build_cfg_set(&["target=wasm".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.target.as_deref(), Some("wasm"));
+    }
+
+    #[test]
+    fn build_cfg_set_flag_keeps_host_target() {
+        // A bare flag must NOT clear the host-default target (D-2 robustness): a
+        // feature flag should never silently disable platform gating.
+        let cfg = build_cfg_set(&["feat".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.target.as_deref(), Some(std::env::consts::OS));
+        assert!(cfg.flags.contains("feat"));
+    }
+
+    #[test]
+    fn build_cfg_set_non_target_kv_keeps_host_target() {
+        // A non-`target` key=value lands in `kv` and leaves the host target intact.
+        let cfg = build_cfg_set(&["k=v".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.kv.get("k").map(String::as_str), Some("v"));
+        assert_eq!(cfg.target.as_deref(), Some(std::env::consts::OS));
+    }
+
+    #[test]
+    fn build_cfg_set_rejects_malformed_value() {
+        // A malformed `--cfg` value (empty key) propagates parse_cfg_flag's error.
+        assert!(build_cfg_set(&["=bad".to_string()]).is_err());
+    }
+
+    #[test]
     fn report_eval_output_returns_correct_outcome_variants() {
         let no_diags: Vec<reify_core::Diagnostic> = vec![];
 
@@ -1840,6 +2170,68 @@ structure def Plain {
             module_has_geometry(&geo_cell_only),
             "Module with a Type::Geometry value cell (no realization ops) should be \
              detected as geometry (clause (b) of module_has_geometry)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod representation_within_gate_tests {
+    use super::module_has_representation_within;
+
+    /// Non-OCCT routing gate test: `module_has_representation_within` must
+    /// correctly detect a `RepresentationWithin` constraint in real compiled
+    /// IR, and must return `false` for a plain module without one.
+    ///
+    /// This test is always-running (no OCCT guard) so that a regression in
+    /// template-level recognition (e.g. if the compiler changes the IR shape
+    /// for resolved stdlib calls) fails CI independently of OCCT availability.
+    /// Without this test, the OCCT-gated CLI test would silently pass even if
+    /// routing is broken: in stub mode `cmd_check` exits 0 regardless of
+    /// whether it took the kernel-backed path or the lightweight path.
+    ///
+    /// Uses `parse_and_compile` (no stdlib) because `mm` is a built-in length
+    /// unit, mirroring the INTERCEPTION_SOURCE fixture used by the engine-level
+    /// interception tests in `representation_within_assertion.rs`.
+    #[test]
+    fn module_has_representation_within_detects_assertion_vs_plain() {
+        // Assertion module: Checker carries a `RepresentationWithin(subject, 1mm)`
+        // template constraint — must be detected (returns `true`) so that
+        // `cmd_check` routes through the kernel-backed
+        // `set_capture_repr_tol(true)` → `tessellate_realizations` → `check`
+        // path.
+        let assertion_source = r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure Checker {
+    param subject : MyGeom
+    param w : Real = 5.0
+    constraint RepresentationWithin(subject, 1mm)
+    constraint w > 0.0
+}
+"#;
+        let compiled_assertion = reify_test_support::parse_and_compile(assertion_source);
+        assert!(
+            module_has_representation_within(&compiled_assertion),
+            "module with a RepresentationWithin template constraint should be \
+             detected (routing gate must return true)"
+        );
+
+        // Plain module: no RepresentationWithin constraints anywhere — must NOT
+        // be detected (returns `false`) so that `cmd_check` keeps the existing
+        // lightweight `Engine::new(None)+check()` path (C2).
+        let plain_source = r#"
+structure Plain {
+    param x : Real = 1.0
+    constraint x > 0.0
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile(plain_source);
+        assert!(
+            !module_has_representation_within(&compiled_plain),
+            "module without RepresentationWithin constraints must NOT be detected \
+             (routing gate must return false — C2 path preserved)"
         );
     }
 }

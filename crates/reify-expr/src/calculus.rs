@@ -737,7 +737,7 @@ pub(crate) fn compute_numerical_gradient_at_point(
     // codomain_type is now the gradient field's codomain (already R/Q-divided by
     // compute_gradient), so no further division is needed here:
     //   - 1D field  → Scalar { dimension } or Real
-    //   - nD field  → Vector { n, quantity: Scalar { dimension } } or Vector { n, quantity: Real }
+    //   - nD field  → Vector { n, quantity: Length { dimension } } or Vector { n, quantity: Real }
     let result_dim = match codomain_type {
         Type::Vector { quantity, .. } => match quantity.as_ref() {
             Type::Scalar { dimension } => *dimension,

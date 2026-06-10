@@ -1,9 +1,9 @@
 structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
-    param clearance: Scalar = auto
-    param tolerance: Scalar = auto
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
+    param clearance: Length = auto
+    param tolerance: Length = auto
 
     constraint clearance > 1mm
     constraint tolerance > 0.1mm

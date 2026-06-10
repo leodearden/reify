@@ -34,8 +34,8 @@ export TEST_PLAN_SEGS LINT_PLAN_SEGS
 echo ""
 echo "--- Test 1: release workspace test pass present in the plan ---"
 
-assert "plan contains a 'cargo (test|nextest run) --workspace … --release' pass" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo (test|nextest run) --workspace.*--release'"
+assert "plan contains a release test pass with -p-scoped crates (sensitivity-scoped, no --workspace)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -v 'cargo-test-occt-gated\.sh' | grep -qE 'cargo (test|nextest run).*--release'"
 
 # -- Test 2: debug pass preserved ----------------------------------------------
 echo ""
@@ -44,14 +44,15 @@ echo "--- Test 2: debug (non-release) workspace test pass preserved ---"
 assert "plan contains a non-release 'cargo (test|nextest run) --workspace' pass" \
     bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -E 'cargo (test|nextest run) --workspace' | grep -vq -- '--release'"
 
-# -- Test 3: release OCCT pass uses --test-threads=1 ---------------------------
+# -- Test 3: no gated OCCT pass (OCCT serialization via nextest occt group) ----
 echo ""
-echo "--- Test 3: gated release pass runs single-threaded (--test-threads=1) ---"
+echo "--- Test 3: no gated OCCT pass (task 4451: OCCT folded into nextest pool, serialized by occt group max-threads=4) ---"
 
-# Single-threaded release matters for the OCCT-touching crates (shared C++
-# global state); that pass is the flock-gated `cargo test … --release`.
-assert "plan's gated release pass uses '--release -- --test-threads=1'" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep 'cargo-test-occt-gated\.sh' | grep -- '--release' | grep -qE -- '--release -- --test-threads=1'"
+# Task 4451 folds OCCT into the nextest pool; the nextest occt test-group
+# (max-threads=4) bounds intra-run OCCT concurrency for memory/FD headroom.
+# There is no longer a flock-gated `cargo test ... --release -- --test-threads=1`.
+assert "plan: no cargo-test-occt-gated.sh invocation (OCCT folded into nextest pool, task 4451)" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'cargo-test-occt-gated\.sh'"
 
 # -- Test 4: ordering (release AFTER debug) ------------------------------------
 echo ""
@@ -60,7 +61,7 @@ echo "--- Test 4: release pass appears after debug pass in the plan ---"
 assert "ungated release pass appears after the ungated debug pass" \
     bash -c "
         DEBUG_IDX=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -nE 'cargo (test|nextest run) --workspace' | grep -v -- '--release' | head -1 | cut -d: -f1)
-        RELEASE_IDX=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -nE 'cargo (test|nextest run) --workspace' | grep -- '--release' | head -1 | cut -d: -f1)
+        RELEASE_IDX=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -nE 'cargo (test|nextest run)' | grep -v 'cargo-test-occt-gated\.sh' | grep -- '--release' | head -1 | cut -d: -f1)
         [ -n \"\$DEBUG_IDX\" ] && [ -n \"\$RELEASE_IDX\" ] && [ \"\$RELEASE_IDX\" -gt \"\$DEBUG_IDX\" ]
     "
 

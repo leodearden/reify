@@ -36,8 +36,13 @@ SENTINEL="$FIX/.git/reify-main-gate-ok"
 LOG="$FIX/.git/reify-main-gate.log"
 ZERO="0000000000000000000000000000000000000000"
 ONE="1111111111111111111111111111111111111111"
-MAIN_LINE="$ZERO $ONE refs/heads/main"
-BRANCH_LINE="$ZERO $ONE refs/heads/task/foo"
+TWO="2222222222222222222222222222222222222222"
+# A GENUINE advance: existing main (ONE) -> a DIFFERENT existing commit (TWO).
+# Both oids nonzero and distinct, so it passes the genuine-advance filter and IS
+# gated. (Housekeeping shapes — no-op / create / delete — are exercised separately
+# in scenarios g/h/i below and must NEVER be gated.)
+MAIN_LINE="$ONE $TWO refs/heads/main"
+BRANCH_LINE="$ONE $TWO refs/heads/task/foo"
 
 # drive <state> <stdin-line> [ENV=VAL ...] — run the hook in the fixture; sets DRIVE_RC.
 drive() {
@@ -102,5 +107,111 @@ rm -f "$SENTINEL" "$LOG"
 drive committed "$MAIN_LINE" REIFY_MAIN_GATE_ENFORCE=1
 assert "(f) committed state never aborts (exit 0)" test "$DRIVE_RC" -eq 0
 assert "(f) committed state leaves no log" bash -c "! test -f '$LOG'"
+
+# ===========================================================================
+# Genuine-advance filter (the advance-filter change): only old!=new AND both
+# nonzero is a landing. Housekeeping transactions on refs/heads/main — no-op
+# (X->X), creation (0000->X), deletion (X->0000) — must ALWAYS be allowed and
+# never logged, even under ENFORCE, so that `git gc` / `git pack-refs` /
+# `git fetch` are never aborted. These are the cases the 4-day warn-only window
+# showed (~48 events) that would otherwise wedge the repo when enforcing.
+# ===========================================================================
+
+# -- (g) no-op self-move (old==new) -> allowed + silent, even under ENFORCE ----
+echo ""
+echo "--- (g) no-op main move (X->X) -> exit 0, NOT gated, even under ENFORCE ---"
+rm -f "$SENTINEL" "$LOG"
+drive prepared "$ONE $ONE refs/heads/main" REIFY_MAIN_GATE_ENFORCE=1
+assert "(g) no-op move never aborts even under ENFORCE (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(g) no-op move leaves no log (housekeeping, not a landing)" bash -c "! test -f '$LOG'"
+
+# -- (h) ref creation (old all-zero) -> allowed + silent, even under ENFORCE ---
+echo ""
+echo "--- (h) main ref creation (0000->X) -> exit 0, NOT gated, even under ENFORCE ---"
+rm -f "$SENTINEL" "$LOG"
+drive prepared "$ZERO $ONE refs/heads/main" REIFY_MAIN_GATE_ENFORCE=1
+assert "(h) creation never aborts even under ENFORCE (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(h) creation leaves no log (pack-refs/gc churn, not a landing)" bash -c "! test -f '$LOG'"
+
+# -- (i) ref deletion (new all-zero) -> allowed + silent, even under ENFORCE ---
+echo ""
+echo "--- (i) main ref deletion (X->0000) -> exit 0, NOT gated, even under ENFORCE ---"
+rm -f "$SENTINEL" "$LOG"
+drive prepared "$ONE $ZERO refs/heads/main" REIFY_MAIN_GATE_ENFORCE=1
+assert "(i) deletion never aborts even under ENFORCE (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(i) deletion leaves no log (pack-refs/gc churn, not a landing)" bash -c "! test -f '$LOG'"
+
+# -- (j) a housekeeping move does NOT consume a pending sentinel ---------------
+# A real advance is gated and consumes the sentinel; a housekeeping move must
+# leave the sentinel intact so the next GENUINE advance is still recognised as
+# sanctioned (the filter short-circuits before the consume step).
+echo ""
+echo "--- (j) housekeeping move leaves a pending sentinel intact ---"
+rm -f "$LOG"; : > "$SENTINEL"
+drive prepared "$ONE $ONE refs/heads/main"
+assert "(j) no-op move exits 0" test "$DRIVE_RC" -eq 0
+assert "(j) no-op move does NOT consume the sentinel" bash -c "test -e '$SENTINEL'"
+# ...and the subsequent genuine advance then consumes it (sanctioned).
+drive prepared "$ONE $TWO refs/heads/main"
+assert "(j) following genuine advance consumes the sentinel" bash -c "! test -e '$SENTINEL'"
+assert "(j) following genuine advance logged sanctioned" bash -c "grep -q 'sanctioned main move' '$LOG'"
+
+# ===========================================================================
+# Durable ENFORCE/BYPASS switch (task 4367 step 2): the policy must survive
+# WITHOUT an env var — the long-lived orchestrator merge worker cannot pass one
+# to the update-ref subprocess that fires this hook. main_gate_{enforce,bypass}_on
+# resolve, in precedence order: env var (override) -> git config
+# reify.mainGate.{enforce,bypass} -> flag file <git-common-dir>/reify-main-gate-{enforce,bypass}.
+# (Common git dir of the fixture is $FIX/.git, same place SENTINEL lives.)
+# ===========================================================================
+ENFORCE_FLAG="$FIX/.git/reify-main-gate-enforce"
+BYPASS_FLAG="$FIX/.git/reify-main-gate-bypass"
+reset_durable() {
+    git -C "$FIX" config --unset reify.mainGate.enforce 2>/dev/null || true
+    git -C "$FIX" config --unset reify.mainGate.bypass  2>/dev/null || true
+    rm -f "$ENFORCE_FLAG" "$BYPASS_FLAG"
+}
+
+# -- (k) durable enforce via git config, NO env var -> exit 1 (abort) ----------
+echo ""
+echo "--- (k) durable enforce (git config reify.mainGate.enforce), no env -> exit 1 ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"
+git -C "$FIX" config reify.mainGate.enforce true
+drive prepared "$MAIN_LINE"
+assert "(k) git-config enforce aborts with no env var (exit 1)" test "$DRIVE_RC" -eq 1
+assert "(k) UNSANCTIONED logged before abort" bash -c "grep -q 'UNSANCTIONED main move' '$LOG'"
+reset_durable
+
+# -- (l) durable enforce via flag file, NO env var -> exit 1 (abort) -----------
+echo ""
+echo "--- (l) durable enforce (flag file), no env -> exit 1 ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"
+: > "$ENFORCE_FLAG"
+drive prepared "$MAIN_LINE"
+assert "(l) flag-file enforce aborts with no env var (exit 1)" test "$DRIVE_RC" -eq 1
+reset_durable
+
+# -- (m) env var OVERRIDES a durable enforce-on -> exit 0 (warn-only) ----------
+# REIFY_MAIN_GATE_ENFORCE set to a non-1 value forces enforcement OFF even when a
+# durable source says on — the env var is the authoritative override.
+echo ""
+echo "--- (m) env REIFY_MAIN_GATE_ENFORCE=0 overrides durable enforce-on -> exit 0 ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"
+git -C "$FIX" config reify.mainGate.enforce true
+drive prepared "$MAIN_LINE" REIFY_MAIN_GATE_ENFORCE=0
+assert "(m) env=0 overrides durable enforce-on (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(m) still logged UNSANCTIONED (warn-only)" bash -c "grep -q 'UNSANCTIONED main move' '$LOG'"
+reset_durable
+
+# -- (n) durable bypass (git config) wins even under durable enforce -> exit 0 -
+echo ""
+echo "--- (n) durable bypass (git config) + durable enforce -> exit 0 (allowed) ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"
+git -C "$FIX" config reify.mainGate.enforce true
+git -C "$FIX" config reify.mainGate.bypass true
+drive prepared "$MAIN_LINE"
+assert "(n) durable bypass allows even with durable enforce (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(n) bypass logged" bash -c "grep -q 'bypass' '$LOG'"
+reset_durable
 
 test_summary

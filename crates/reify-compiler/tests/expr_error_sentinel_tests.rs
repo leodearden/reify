@@ -410,7 +410,7 @@ structure S { let f = |x: UnknownType| x + 1.0 }
 #[test]
 fn coll_index_unknown_member_no_cascade() {
     let source = r#"
-structure Inner { param x : Scalar = 0mm }
+structure Inner { param x : Length = 0mm }
 structure S {
     sub bolts : List<Inner>
     let broken = bolts[0].nonexistent + 5.0
@@ -445,7 +445,7 @@ structure S {
 #[test]
 fn collection_sub_self_indexed_unknown_member_no_cascade() {
     let source = r#"
-structure Inner { param x : Scalar = 0mm }
+structure Inner { param x : Length = 0mm }
 structure S {
     sub insts : List<Inner>
     let broken = self.insts[0].nonexistent + 5.0
@@ -483,7 +483,7 @@ structure S {
 #[test]
 fn self_collection_sub_unknown_member_no_cascade() {
     let source = r#"
-structure Inner { param x : Scalar = 0mm }
+structure Inner { param x : Length = 0mm }
 structure Outer {
     sub bolts : List<Inner>
     let broken = self.bolts.nonexistent + 5.0
@@ -537,7 +537,7 @@ structure Outer {
 #[test]
 fn self_collection_sub_count_aggregation_pins_int_fallback() {
     let source = r#"
-structure Inner { param x : Scalar = 0mm }
+structure Inner { param x : Length = 0mm }
 structure Outer {
     sub bolts : List<Inner>
     let broken = self.bolts.count + 5
@@ -589,7 +589,7 @@ fn self_collection_sub_sum_keys_values_aggregation_pins_real_fallback() {
     for member in ["sum", "keys", "values"] {
         let source = format!(
             r#"
-structure Inner {{ param x : Scalar = 0mm }}
+structure Inner {{ param x : Length = 0mm }}
 structure Outer {{
     sub bolts : List<Inner>
     let broken = self.bolts.{member} + 5

@@ -6,7 +6,7 @@
 //   - c     : propagated    (let c = a + b — undef solely due to undef inputs; records
 //                             nothing per A3 transparency)
 //   - u     : UserUndef     (param u: Real = undef — literal undef default)
-//   - k     : AwaitingSolve (param k: Scalar = auto, no solver attached to engine)
+//   - k     : AwaitingSolve (param k: Length = auto, no solver attached to engine)
 //
 // Compiles clean under parse_and_compile_with_stdlib (no Error diagnostics).
 structure UndefDemo {
@@ -14,5 +14,5 @@ structure UndefDemo {
     param b: Length
     let c = a + b
     param u: Real = undef
-    param k: Scalar = auto
+    param k: Length = auto
 }

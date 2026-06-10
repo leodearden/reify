@@ -1049,5 +1049,23 @@ pub mod ffi {
         // --- Tessellation ---
         fn tessellate_shape(shape: &OcctShape, tolerance: f64) -> Result<TessResult>;
 
+        /// Sampled max facet-chord deviation (SI metres) of `mesh` from the
+        /// exact BRep `shape`.
+        ///
+        /// Samples 4 interior points per triangle (centroid + 3 edge midpoints)
+        /// and projects each onto `shape` via `BRepExtrema_DistShapeShape`,
+        /// returning the global maximum `dist.Value()` (metres).
+        ///
+        /// Mesh vertices lie on the surface by construction (deviation 0) and
+        /// are excluded; only interior samples reveal chord error.  This is a
+        /// sampled lower bound on the true Hausdorff distance (PRD §8.3).
+        ///
+        /// Returns `Ok(0.0)` for an empty `mesh.indices`.
+        /// Returns `Err` for out-of-range vertex indices or projection failure.
+        ///
+        /// No tolerance argument — the metric cannot echo the configured
+        /// deflection (structural anti-circularity, PRD §8.3 CRITICAL).
+        fn measure_mesh_deviation(shape: &OcctShape, mesh: &TessResult) -> Result<f64>;
+
     }
 }

@@ -44,24 +44,13 @@
 //     TODO(trait-coerce): remove the ConstitutiveLawInput wrapper once trait
 //     subtype coercion is supported at fn call sites.
 //
-//   Loads / supports:
-//     `solve_elastic_static` declares `loads: List<Real>` and `supports: List<Real>`
-//     as placeholder types (see solver_elastic.ri header note, esc-3851-32 /
-//     TODO(load-trait)). The Reify overload resolver requires an exact type match
-//     for fn-call arguments; `[tip_load]` (typed `List<PointLoad>`) does not match
-//     `List<Real>` directly.
-//
-//     The idiomatic workaround is to bundle loads + supports via a `LoadCase` ctor
-//     (whose params are also `List<Real>` placeholders — fea_multi_case.ri note 1).
-//     Member-access on the resulting StructureInstance resolves to the declared
-//     param type `List<Real>`, satisfying the overload resolver.  The runtime
-//     values remain the original StructureInstances — the trampoline reads them
-//     via `Value::StructureInstance` pattern-matching.
-//
-//     TODO(load-trait): once trait declarations are moved earlier in the stdlib
-//     load order, `solve_elastic_static` can be tightened to
-//     `loads: List<Load>, supports: List<Support>` and the LoadCase bundle below
-//     can be removed.
+//   Loads / supports (tightened task 4093):
+//     `solve_elastic_static` now declares `loads: List<Load>` and
+//     `supports: List<Support>`.  The `Load` / `Support` marker traits are
+//     in `std.fea.types` (loaded before `std.solver.elastic`).  Direct list
+//     literals `[tip_load]` / `[mount]` type-check via the resolver's
+//     `List<Trait>` wildcard + per-element conformance pass — no LoadCase
+//     bundle is required.
 
 structure FeaCantileverSmoke {
     // Geometry: 1 m long beam with 100 mm × 100 mm square cross-section.
@@ -78,12 +67,6 @@ structure FeaCantileverSmoke {
     // Supports: fully clamped (fixed) at the beam root.
     let mount = FixedSupport(target: "root")
 
-    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
-    // has compile-time type `List<Real>` (matching the fn param type).
-    // At runtime the list values are still Value::StructureInstance items —
-    // the trampoline reads them via pattern-matching on their fields.
-    let lc = LoadCase(name: "cantilever", loads: [tip_load], supports: [mount])
-
     // Wrap material in ConstitutiveLawInput so that member-access .law has
     // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
     // Structure ctors accept any value — no call-site type check — so
@@ -95,12 +78,15 @@ structure FeaCantileverSmoke {
     // `solver::elastic_static` trampoline in
     //   crates/reify-eval/src/compute_targets/elastic_static.rs
     //
+    // Direct list literals [tip_load] / [mount] type-check against the
+    // `List<Load>` / `List<Support>` params via the resolver's wildcard +
+    // per-element conformance pass (task 4093 — no LoadCase bundle needed).
     // `options` is passed explicitly — fn-param defaults for same-module
     // structure ctors are not yet supported (esc-3851-32 / TODO(phase-order)
     // in solver_elastic.ri).  Bare `ElasticOptions()` uses all solver defaults
     // (P1 elements, max_iter=1000, tolerance=1e-6, …).
     let result = solve_elastic_static(
-        ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
+        ci.law, length, width, height, [tip_load], [mount], ElasticOptions()
     )
 
     // Geometry realization: provides the surface mesh that task δ (4087) renders

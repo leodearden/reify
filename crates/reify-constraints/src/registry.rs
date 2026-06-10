@@ -44,6 +44,28 @@ impl SolverRegistry {
         }
     }
 
+    /// Production solver set: Dimensional + geometric SolveSpace.
+    ///
+    /// This is the **single source of truth** for the constraint solver set
+    /// installed by the CLI and GUI engines.  Both binaries call this factory
+    /// rather than constructing their own registry, which prevents CLI/GUI
+    /// solver-set drift.
+    ///
+    /// Slot assignments:
+    /// - Dimensional: `DimensionalSolver` (Nelder-Mead; handles length/angle/scalar)
+    /// - Geometric: `SolveSpaceSolver` (SolveSpace; handles `std::distance`,
+    ///   `std::angle_between`, `std::parallel`, `std::tangent`, `std::geo::*`)
+    /// - Logical: `None` — falls back to `DimensionalSolver`
+    /// - CrossDomain fallback: `None` — falls back to `DimensionalSolver`
+    pub fn production() -> Self {
+        Self::with_solvers(
+            Box::new(crate::DimensionalSolver),
+            Some(Box::new(crate::SolveSpaceSolver)),
+            None,
+            None,
+        )
+    }
+
     /// Create a new solver registry with explicit solvers for each domain.
     pub fn with_solvers(
         dimensional: Box<dyn ConstraintSolver>,

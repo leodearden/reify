@@ -2983,6 +2983,10 @@ impl Engine {
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
+        // Determinacy β (task 4198): clear the achieved-tol map at the start
+        // of each tessellate_realizations call so stale entries from a prior
+        // call do not leak into the new result.
+        self.achieved_repr_tol.clear();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -2999,6 +3003,8 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            self.capture_repr_tol,
+            &mut self.achieved_repr_tol,
         );
 
         TessellateResult {
@@ -3338,6 +3344,18 @@ impl Engine {
         // fn's signature mirrors the disjoint-field-borrow shape already in
         // use for the other &mut params.
         dispatch_count: &mut usize,
+        // Determinacy β (task 4198): when `true`, `surface_subtree` calls
+        // `kernel.measure_mesh_deviation` and populates `achieved_repr_tol`.
+        // `false` by default — zero hot-path overhead when γ assertions
+        // (`RepresentationWithin`) are not active.  Mirrors `capture_undef_causes`.
+        capture_repr_tol: bool,
+        // Determinacy β (task 4198): cleared at entry to each
+        // `tessellate_realizations` / `tessellate_snapshot` call by the
+        // caller; populated inside `surface_subtree` after each successful
+        // tessellation when `capture_repr_tol` is true. Threaded here as a
+        // sibling of the other &mut tables (feature_tag_table /
+        // topology_attribute_table / swept_kind_table).
+        achieved_repr_tol: &mut std::collections::BTreeMap<String, f64>,
     ) -> Vec<MeshSurface> {
         let mut meshes = Vec::new();
 
@@ -3582,6 +3600,8 @@ impl Engine {
                 meta_map,
                 &mut meshes,
                 diagnostics,
+                capture_repr_tol,
+                achieved_repr_tol,
             );
         }
 
@@ -3617,6 +3637,8 @@ impl Engine {
                 meta_map,
                 &mut meshes,
                 diagnostics,
+                capture_repr_tol,
+                achieved_repr_tol,
             );
             covered.extend(crate::geometry_ops::reachable_template_indices(
                 module,
@@ -3722,18 +3744,20 @@ impl Engine {
     /// follow-up task can either cache the table entries alongside the
     /// handle or skip the table reset for engines with non-empty cache.
     ///
-    /// **Internal-consistency invariant** (amendment): on cache-hit the
-    /// helper `debug_assert!`s that neither `feature_tag_table` nor
-    /// `topology_attribute_table` already carries an entry for the cached
-    /// handle. Under the per-build reset contract above, that assertion
-    /// must always hold (the table was just reset and only earlier
-    /// realizations in the same build could have touched a different
-    /// handle). The assertion fires loudly during development if a future
-    /// refactor weakens the per-build reset or routes a cache-served
-    /// handle through a path that ALSO populates the tables — both of
-    /// which would silently regress attribute-query results for a cached
-    /// handle. Production builds skip the check entirely
-    /// (`debug_assertions` cfg).
+    /// **Cross-kernel collision guard** (task 4349): on cache-hit the helper
+    /// calls `feature_tag_table.remove(cached_handle.id)` (and analogously for
+    /// `topology_attribute_table`) to evict any entry that a cross-kernel
+    /// sibling op may have recorded at the same bare `GeometryHandleId`. Both
+    /// tables are keyed by `GeometryHandleId` only (not the full `KernelHandle`),
+    /// and each kernel's counter starts at 1 — so OCCT and Manifold independently
+    /// produce `GeometryHandleId(1)`. A Manifold op earlier in the same build may
+    /// have written `feature_tag_table.record(GeometryHandleId(1), tag)` before
+    /// this cache-hit returns `{Occt, GeometryHandleId(1)}` from a prior build,
+    /// collapsing two distinct `KernelHandle`s onto one key. The `remove` is a
+    /// no-op in the common single-kernel case (the per-build reset already cleared
+    /// the table) and enforces the #3226 spec ("cache-served handle has no entries
+    /// in those tables") in the cross-kernel case. The principled re-key of both
+    /// tables to `KernelHandle` is deferred to follow-up task #4351.
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
@@ -3860,29 +3884,38 @@ impl Engine {
                     }
                 });
             if let Some((cached_handle, resolved_repr)) = cache_probe {
-                // Internal-consistency invariant (amendment): the per-build
-                // reset of `feature_tag_table` / `topology_attribute_table` at
-                // the top of build() / build_snapshot() / tessellate_*()
-                // guarantees neither table can already carry an entry for the
-                // cached handle on a clean cache-hit path. If a future refactor
-                // weakens the reset or routes the cached handle through a path
-                // that ALSO populates the tables, this debug_assert fires loudly
-                // during development rather than silently regressing attribute-
-                // query results for cached handles.
-                debug_assert!(
-                    feature_tag_table.lookup(cached_handle.id).is_none(),
-                    "feature_tag_table already has an entry for cached handle \
-                     {:?} on cache-hit short-circuit — per-build reset invariant \
-                     violated",
-                    cached_handle,
-                );
-                debug_assert!(
-                    topology_attribute_table.lookup(cached_handle.id).is_none(),
-                    "topology_attribute_table already has an entry for cached \
-                     handle {:?} on cache-hit short-circuit — per-build reset \
-                     invariant violated",
-                    cached_handle,
-                );
+                // Cross-kernel collision guard (task 4349): `FeatureTagTable`
+                // and `TopologyAttributeTable` are keyed by bare
+                // `GeometryHandleId` — NOT by the full `KernelHandle`. Each
+                // kernel's handle-id counter starts at 1, so OCCT and Manifold
+                // independently produce `GeometryHandleId(1)` for their first
+                // handle. Within one build a Manifold op may record
+                // `feature_tag_table.record(GeometryHandleId(1), tag)` before
+                // this cache-hit short-circuit returns the cached
+                // `{Occt, GeometryHandleId(1)}` from a prior build — two
+                // distinct `KernelHandle`s collapsing onto the same numeric key.
+                //
+                // Rather than asserting the table is empty at the cached key
+                // (which fails under cross-kernel collision even though the
+                // per-build reset is unconditional), we defensively remove any
+                // entry at `cached_handle.id` from both tables. This is a no-op
+                // in the common single-kernel case (the per-build reset already
+                // cleared the table) and enforces the #3226 spec ("a cache-served
+                // handle has no entries in those tables on the second build") in
+                // the cross-kernel case by evicting the colliding sibling entry.
+                //
+                // Trade-off: before this change the SIBLING handle (e.g.
+                // Manifold's `GeometryHandleId(1)`) was the last writer and
+                // therefore returned its correct tag on `lookup(1)` — only the
+                // cache-served handle read the wrong (foreign) value.  After
+                // `remove()`, the sibling's `lookup(1)` also returns `None`,
+                // regressing it from correct to absent.  This is the accepted
+                // interim cost of enforcing the #3226 spec on the cached handle;
+                // only follow-up task #4351's `KernelHandle` re-key will
+                // preserve both entries independently and eliminate the
+                // regression.
+                feature_tag_table.remove(cached_handle.id);
+                topology_attribute_table.remove(cached_handle.id);
                 step_handles.push(cached_handle);
                 named_steps.insert(name.to_string(), cached_handle);
                 // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
@@ -5593,6 +5626,9 @@ impl Engine {
         self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
+        // Determinacy β (task 4198): clear the achieved-tol map at the start
+        // of each tessellate_snapshot call (mirrors tessellate_realizations).
+        self.achieved_repr_tol.clear();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -5609,6 +5645,8 @@ impl Engine {
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
+            self.capture_repr_tol,
+            &mut self.achieved_repr_tol,
         );
 
         Some(TessellateResult {
@@ -10271,6 +10309,7 @@ mod tests {
         let desc = dispatch_test_descriptor_all_brep();
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
         registry.insert(Engine::DEFAULT_KERNEL_NAME.to_string(), &desc);
+        let mut achieved_repr_tol = std::collections::BTreeMap::new();
         Engine::tessellate_from_values(
             &mut geometry_kernels,
             &registry,
@@ -10287,6 +10326,8 @@ mod tests {
             &[],               // ← OOB: empty demanded_tols
             &[vec![1e-4_f64]], // correctly shaped tessellation_budgets
             &mut 0usize,
+            false,
+            &mut achieved_repr_tol,
         );
     }
 
@@ -10330,6 +10371,7 @@ mod tests {
         let desc = dispatch_test_descriptor_all_brep();
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
         registry.insert(Engine::DEFAULT_KERNEL_NAME.to_string(), &desc);
+        let mut achieved_repr_tol = std::collections::BTreeMap::new();
         Engine::tessellate_from_values(
             &mut geometry_kernels,
             &registry,
@@ -10346,6 +10388,8 @@ mod tests {
             &[vec![None]], // correctly shaped demanded_tols
             &[],           // ← OOB: empty tessellation_budgets
             &mut 0usize,
+            false,
+            &mut achieved_repr_tol,
         );
     }
 
@@ -10640,6 +10684,243 @@ mod tests {
                 .contains("local_index_reassignment_centroid"),
             "parse-fail first-error must name the query label, got: {}",
             parse_warn.message
+        );
+    }
+
+    // ── Task 4349: cross-kernel GeometryHandleId collision regression tests ─────
+
+    /// Shared scaffolding for the two cross-kernel `GeometryHandleId` collision
+    /// regression tests (task 4349).
+    ///
+    /// Builds `DispatchTestState`, pre-seeds the realization cache with
+    /// `{Occt, GeometryHandleId(1)}`, calls the `pre_seed` closure (so each
+    /// test can populate its own table at `GeometryHandleId(1)` to simulate the
+    /// colliding sibling op), then drives the cache-hit short-circuit via
+    /// `state.run_demand` with `operations=&[]`. Returns the state after the
+    /// call for post-condition assertions.
+    fn run_cross_kernel_cache_hit_short_circuit(
+        entity_name: &str,
+        pre_seed: impl FnOnce(&mut DispatchTestState, &RealizationNodeId),
+    ) -> DispatchTestState {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let realization_id = RealizationNodeId::new(entity_name, 0);
+        let tol = 1e-4_f64;
+
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let registry = dispatch_test_single_default_registry(&desc);
+
+        let mut state = DispatchTestState::default();
+
+        // Pre-seed the cache: the prior build stored {Occt, GeometryHandleId(1)}
+        // as the terminal handle for this entity.
+        state.realization_cache.insert(
+            &realization_id.entity,
+            ReprKind::BRep,
+            tol,
+            NO_OPTIONS,
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+        );
+
+        // Allow each test to pre-seed its specific table before the run.
+        pre_seed(&mut state, &realization_id);
+
+        // Drive the cache-hit short-circuit: operations=&[] ensures the function
+        // returns BEFORE the op loop. demanded_tol=Some(tol) and
+        // realization_name=Some("part") together enable the cache probe path.
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "default",
+            &[], // empty ops — cache-hit fires before the op loop
+            &realization_id,
+            Some("part"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+        );
+
+        state
+    }
+
+    /// Regression test for cross-kernel `GeometryHandleId` collision at the
+    /// cache-hit short-circuit — `feature_tag_table` path (task 4349).
+    ///
+    /// # Background
+    ///
+    /// OCCT and Manifold both mint `GeometryHandleId(1)` for their first
+    /// geometry handle (each kernel's counter starts at 1). Within a single
+    /// build a Manifold op can record
+    /// `feature_tag_table.record(GeometryHandleId(1), tag)` while a later
+    /// cache-hit short-circuit returns the cached `{Occt, GeometryHandleId(1)}`
+    /// from a prior build. The former
+    /// `debug_assert!(feature_tag_table.lookup(cached_handle.id).is_none())`
+    /// fires because key `GeometryHandleId(1)` is occupied by the Manifold
+    /// entry — two distinct `KernelHandle`s collapsing onto one kernel-blind key.
+    ///
+    /// After the fix the assert is replaced with
+    /// `feature_tag_table.remove(cached_handle.id)`, so the cached handle reads
+    /// `None` from the table — satisfying the #3226 spec ("a cache-served handle
+    /// has no entries in those tables on the second build") even when a
+    /// cross-kernel sibling left a colliding numeric id.
+    ///
+    /// # Invariant (build-mode independent)
+    ///
+    /// After the cache-hit short-circuit, `feature_tag_table.lookup(id)` for
+    /// the cached handle must return `None` — regardless of whether the build
+    /// is debug or release.  In debug builds the former `debug_assert!` also
+    /// panicked before the fix, but the meaningful guarantee is the `None`
+    /// post-condition, which holds in both build modes.
+    #[test]
+    fn cache_hit_short_circuit_tolerates_cross_kernel_feature_tag_id_collision() {
+        use reify_ir::StepKind;
+
+        let state =
+            run_cross_kernel_cache_hit_short_circuit("CrossKernelEntity", |state, _| {
+                // Pre-seed feature_tag_table with a colliding entry at GeometryHandleId(1),
+                // simulating a cross-kernel sibling op (e.g. Manifold) that recorded its
+                // first handle's tag earlier in this same build.
+                state.feature_tag_table.record(
+                    GeometryHandleId(1),
+                    FeatureTag {
+                        source_span: SourceSpan::new(0, 0),
+                        step_kind: StepKind::Primitive,
+                        sub_index: 0,
+                    },
+                );
+            });
+
+        // Post-condition: the cached handle must read None from feature_tag_table
+        // (#3226 spec: a cache-served handle has no entries in those tables).
+        assert!(
+            state.feature_tag_table.lookup(GeometryHandleId(1)).is_none(),
+            "feature_tag_table must have no entry for the cached handle id after \
+             cache-hit short-circuit: cross-kernel sibling's colliding entry must \
+             be removed (not left behind as a foreign kernel's tag)"
+        );
+    }
+
+    /// Regression test for cross-kernel `GeometryHandleId` collision at the
+    /// cache-hit short-circuit — `topology_attribute_table` path (task 4349).
+    ///
+    /// Symmetric to `cache_hit_short_circuit_tolerates_cross_kernel_feature_tag_id_collision`
+    /// but pre-seeds ONLY `topology_attribute_table` (leaving `feature_tag_table`
+    /// empty). After step-2's fix the first check (`feature_tag_table.remove`)
+    /// is a no-op on the empty table and execution reaches the SECOND
+    /// `debug_assert!(topology_attribute_table.lookup(cached_handle.id).is_none())`
+    /// which then fires because `GeometryHandleId(1)` is occupied by the
+    /// sibling attribute entry.
+    ///
+    /// # Invariant (build-mode independent)
+    ///
+    /// After the cache-hit short-circuit, `topology_attribute_table.lookup(id)`
+    /// for the cached handle must return `None` — regardless of debug vs release
+    /// build mode.  The `None` post-condition is the meaningful guarantee; in
+    /// debug builds the former `debug_assert!` also fired before the fix, but
+    /// the test's value is not limited to that panic path.
+    #[test]
+    fn cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision() {
+        use reify_ir::{FeatureId, Role};
+
+        let state = run_cross_kernel_cache_hit_short_circuit(
+            "CrossKernelEntity2",
+            |state, realization_id| {
+                // Pre-seed ONLY topology_attribute_table (not feature_tag_table) at
+                // GeometryHandleId(1), simulating a cross-kernel sibling Mesh op that
+                // recorded its first handle's attribute earlier in this same build.
+                // feature_tag_table stays empty → the first check (now a remove, step-2)
+                // is a no-op and execution reaches the SECOND assert for topology.
+                state.topology_attribute_table.record(
+                    GeometryHandleId(1),
+                    TopologyAttribute {
+                        feature_id: FeatureId::from(realization_id),
+                        role: Role::Side,
+                        local_index: 0,
+                        user_label: None,
+                        mod_history: Vec::new(),
+                    },
+                );
+            },
+        );
+
+        // Post-condition: the cached handle must read None from topology_attribute_table.
+        assert!(
+            state
+                .topology_attribute_table
+                .lookup(GeometryHandleId(1))
+                .is_none(),
+            "topology_attribute_table must have no entry for the cached handle id \
+             after cache-hit short-circuit: cross-kernel sibling's colliding entry \
+             must be removed (not left behind as a foreign kernel's attribute)"
+        );
+    }
+
+    /// Regression test for cross-kernel `GeometryHandleId` collision at the
+    /// cache-hit short-circuit — both tables seeded simultaneously (task 4349).
+    ///
+    /// # Background
+    ///
+    /// In a realistic cross-kernel build a sibling op typically records BOTH a
+    /// feature tag and a topology attribute for its handle.  This test seeds
+    /// both `feature_tag_table` and `topology_attribute_table` at
+    /// `GeometryHandleId(1)` before the cache-hit short-circuit fires, ensuring
+    /// that neither eviction is accidentally gated on the other: both `remove`
+    /// calls are independent and both must leave `None` at the colliding id.
+    ///
+    /// # Invariant (build-mode independent)
+    ///
+    /// After the cache-hit short-circuit, both
+    /// `feature_tag_table.lookup(GeometryHandleId(1))` and
+    /// `topology_attribute_table.lookup(GeometryHandleId(1))` must return
+    /// `None`.  This holds in debug and release builds alike.
+    #[test]
+    fn cache_hit_short_circuit_tolerates_cross_kernel_both_tables_id_collision() {
+        use reify_ir::{FeatureId, Role, StepKind};
+
+        let state = run_cross_kernel_cache_hit_short_circuit(
+            "CrossKernelEntityBoth",
+            |state, realization_id| {
+                // Pre-seed BOTH tables at GeometryHandleId(1) simultaneously,
+                // simulating a sibling op that recorded both a feature tag and a
+                // topology attribute for its first handle in the same build.
+                state.feature_tag_table.record(
+                    GeometryHandleId(1),
+                    FeatureTag {
+                        source_span: SourceSpan::new(0, 0),
+                        step_kind: StepKind::Primitive,
+                        sub_index: 0,
+                    },
+                );
+                state.topology_attribute_table.record(
+                    GeometryHandleId(1),
+                    TopologyAttribute {
+                        feature_id: FeatureId::from(realization_id),
+                        role: Role::Side,
+                        local_index: 0,
+                        user_label: None,
+                        mod_history: Vec::new(),
+                    },
+                );
+            },
+        );
+
+        // Both evictions are independent: neither is gated on the other.
+        assert!(
+            state.feature_tag_table.lookup(GeometryHandleId(1)).is_none(),
+            "feature_tag_table must have no entry for the cached handle id after \
+             cache-hit short-circuit (both-tables case)"
+        );
+        assert!(
+            state
+                .topology_attribute_table
+                .lookup(GeometryHandleId(1))
+                .is_none(),
+            "topology_attribute_table must have no entry for the cached handle id \
+             after cache-hit short-circuit (both-tables case)"
         );
     }
 }

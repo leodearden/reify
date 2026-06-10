@@ -14,7 +14,7 @@ fn collection_member_typo_produces_diagnostic() {
     // to Type::Real.
     let source = r#"
         structure Bolt {
-            param diameter : Scalar = 10mm
+            param diameter : Length = 10mm
         }
         structure Assembly {
             sub bolts : List<Bolt>
@@ -57,8 +57,8 @@ fn duplicate_function_signature_diagnostic_has_context() {
     // Two functions with the same name and param types should produce a
     // diagnostic that includes the function name and parameter types.
     let source = r#"
-        fn add(a: Scalar, b: Scalar) -> Scalar { a + b }
-        fn add(a: Scalar, b: Scalar) -> Scalar { a - b }
+        fn add(a: Length, b: Length) -> Scalar { a + b }
+        fn add(a: Length, b: Length) -> Scalar { a - b }
     "#;
     let module = compile_source(source);
     let errors = errors_only(&module);

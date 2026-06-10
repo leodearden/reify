@@ -357,6 +357,141 @@ pub(crate) fn compile_trait(
     }
 }
 
+/// Desugar a determinacy intrinsic call to its reflective `forall` form (task-4197 α).
+///
+/// When a purpose-body constraint expression is a `FunctionCall` whose name is a
+/// recognized determinacy intrinsic (`determinacy_intrinsic_member(name).is_some()`)
+/// AND the single argument is a bare `Ident` that resolves to a registered purpose
+/// parameter via `scope.purpose_param_root`, this function rewrites the call to the
+/// equivalent `forall __p in <param>.<member>: determined(__p)` AST.
+///
+/// ## Return value
+///
+/// - `None` — the expression is **not** a determinacy intrinsic call at all;
+///   the caller should compile it via the normal `compile_expr` path.
+/// - `Some(Ok(rewritten))` — the call desugared successfully; compile `rewritten`.
+/// - `Some(Err(()))` — the call **is** a recognized intrinsic but has bad args
+///   (wrong arity, non-ident arg, or an ident that is not a registered purpose param).
+///   A `DeterminacyIntrinsicArg` (`E_DETERMINACY_INTRINSIC_ARG`) diagnostic was
+///   pushed into `diagnostics`; the caller should emit a poison constraint without
+///   calling `compile_expr` (to avoid cascading into the scope guard).
+///
+/// All spans in the synthesized AST are copied from the original call's span so that
+/// any downstream diagnostic labels point at the right source location.
+///
+/// Invariant: the rewritten AST is byte-identical to what the parser produces for
+/// the hand-written reflective form (same name/param/var → identical `content_hash`).
+fn try_desugar_determinacy_intrinsic(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Result<reify_ast::Expr, ()>> {
+    let reify_ast::ExprKind::FunctionCall { name, args } = &expr.kind else {
+        return None;
+    };
+    let member = determinacy_intrinsic_member(name.as_str())?;
+
+    // ── Arg/arity validation (step-8) ─────────────────────────────────────────
+    // From here on the name is a recognized intrinsic. Any mismatch emits
+    // E_DETERMINACY_INTRINSIC_ARG and returns Some(Err(())) so the caller can
+    // push a poison constraint without falling through to compile_expr (which
+    // would cascade into the scope guard — a different, less informative error).
+    let mut arg_error = |msg: String| -> Option<Result<reify_ast::Expr, ()>> {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "E_DETERMINACY_INTRINSIC_ARG: {msg}"
+            ))
+            .with_label(DiagnosticLabel::new(expr.span, "intrinsic call here"))
+            .with_code(DiagnosticCode::DeterminacyIntrinsicArg),
+        );
+        Some(Err(()))
+    };
+
+    if args.len() != 1 {
+        return arg_error(format!(
+            "`{}` expects exactly one purpose-parameter (entity reference) argument, \
+             got {}",
+            name,
+            args.len()
+        ));
+    }
+    let reify_ast::ExprKind::Ident(param_name) = &args[0].kind else {
+        return arg_error(format!(
+            "`{}` expects a bare purpose-parameter name as its argument, \
+             not a complex expression",
+            name
+        ));
+    };
+    if scope.purpose_param_root(param_name).is_none() {
+        return arg_error(format!(
+            "`{}` argument `{}` is not a registered purpose parameter; \
+             pass the purpose's entity-reference parameter directly",
+            name, param_name
+        ));
+    }
+
+    let span = expr.span;
+
+    // Synthesize: forall __p in <param>.<member>: determined(__p)
+    Some(Ok(reify_ast::Expr {
+        kind: reify_ast::ExprKind::Quantifier {
+            kind: reify_ast::QuantifierKind::ForAll,
+            variable: "__p".to_string(),
+            collection: Box::new(reify_ast::Expr {
+                kind: reify_ast::ExprKind::MemberAccess {
+                    object: Box::new(reify_ast::Expr {
+                        kind: reify_ast::ExprKind::Ident(param_name.clone()),
+                        span,
+                    }),
+                    member: member.to_string(),
+                },
+                span,
+            }),
+            predicate: Box::new(reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "determined".to_string(),
+                    args: vec![reify_ast::Expr {
+                        kind: reify_ast::ExprKind::Ident("__p".to_string()),
+                        span,
+                    }],
+                },
+                span,
+            }),
+        },
+        span,
+    }))
+}
+
+/// Compile a purpose constraint expression, desugaring determinacy intrinsics first.
+///
+/// Encapsulates the `try_desugar_determinacy_intrinsic` → `compile_expr` dispatch
+/// used at every constraint position inside a purpose body (top-level and guarded).
+/// Avoids duplicating the three-arm match at each call site.
+///
+/// - If `expr` is a recognised intrinsic with a valid argument, the rewritten
+///   AST is compiled and returned.
+/// - If the intrinsic argument is invalid, a diagnostic has already been pushed
+///   by `try_desugar_determinacy_intrinsic` and a poison expr is returned so
+///   constraint indices remain stable without cascading.
+/// - Otherwise, `expr` is compiled as-is via `compile_expr`.
+fn compile_constraint_expr_desugared(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    match try_desugar_determinacy_intrinsic(expr, scope, diagnostics) {
+        Some(Ok(ref rewritten)) => compile_expr(rewritten, scope, enum_defs, functions, diagnostics),
+        Some(Err(())) => {
+            // Arg error — diagnostic already pushed; emit poison to keep
+            // constraint indices stable and suppress cascading errors.
+            CompiledExpr::literal(Value::Undef, Type::Error)
+        }
+        None => compile_expr(expr, scope, enum_defs, functions, diagnostics),
+    }
+}
+
 /// Compile a parsed purpose declaration into a CompiledPurpose.
 pub(crate) fn compile_purpose(
     purpose_def: &reify_ast::PurposeDef,
@@ -405,8 +540,18 @@ pub(crate) fn compile_purpose(
     for member in &purpose_def.members {
         match member {
             reify_ast::MemberDecl::Constraint(constraint) => {
-                let compiled_expr =
-                    compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
+                // Desugar determinacy intrinsics before compiling (task-4197 α).
+                // If the constraint is AllParamsDetermined(X) or AllGeometryDetermined(X)
+                // with a valid purpose-param arg, rewrite to the reflective forall form.
+                // If the intrinsic is recognised but args are bad, use a poison expr
+                // and skip compile_expr (to avoid cascading into the scope guard).
+                let compiled_expr = compile_constraint_expr_desugared(
+                    &constraint.expr,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                );
                 let id = ConstraintNodeId::new(purpose_name, constraint_index);
                 constraints.push(CompiledConstraint {
                     id,
@@ -511,7 +656,9 @@ pub(crate) fn compile_purpose(
                                 } else {
                                     cond.clone()
                                 };
-                                let body = compile_expr(
+                                // Desugar determinacy intrinsics in guarded constraints too
+                                // (task-4197 α): same desugar as the top-level arm.
+                                let body = compile_constraint_expr_desugared(
                                     &c.expr,
                                     &scope,
                                     enum_defs,

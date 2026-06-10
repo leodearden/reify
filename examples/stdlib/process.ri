@@ -24,8 +24,11 @@ structure def MilledPart : Subtracting {
 // A DFM rule that checks minimum wall thickness for milled parts.
 // applies_to uses a MilledPart() constructor as the process-applicability
 // value — mirrors fdm.ri `material : ElasticMaterial = ABS_Plastic()`.
+// subject is the geometry handle the rule measures (box placeholder; the
+// overhang auto-measurement pass (γ) realizes it to a live geometry handle).
 structure def MinWallThicknessRule : DFMRule {
-    param rule_name : String = "min_wall_thickness"
-    param severity : DFMSeverity = DFMSeverity.Warning
-    param applies_to : Process = MilledPart()
+    param rule_name  : String      = "min_wall_thickness"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = MilledPart()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
 }

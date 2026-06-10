@@ -23,6 +23,8 @@ pub use engine_compute::{
 };
 pub use graph::CancellationHandle;
 pub use graph::RealizationKernelProvenance;
+pub mod solver_progress;
+pub use solver_progress::{SolverProgressSink, SolverProgressUpdate};
 pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;
@@ -37,6 +39,10 @@ pub mod kernel_registry;
 pub use engine_eval::ASSERT_MSG_PREFIX;
 #[doc(hidden)]
 pub use engine_eval::is_representable_cell_type;
+/// Re-exported for integration tests that need to assert against the progress
+/// throttle cadence without duplicating the constant.  Hidden from public docs.
+#[doc(hidden)]
+pub use compute_targets::elastic_static::PROGRESS_STRIDE;
 mod engine_purposes;
 mod engine_tolerance;
 mod geometry_ops;
@@ -305,9 +311,15 @@ fn value_type_kind_matches(
         // step-6 so Geometry cells are accepted.
         Value::GeometryHandle { .. } => matches!(ty, Type::Geometry),
         Value::AffineMap { .. } => matches!(ty, Type::AffineMap(_)), // task 3958 / α
-        // Topology-selector value (task 4116 / α): kind must match exactly.
-        // PRD §4.4/§9: this is the β behavior, satisfied here because exhaustiveness forces it.
-        Value::Selector(sv) => matches!(ty, Type::Selector(k) if *k == sv.kind),
+        // Topology-selector value (task 4116 / α): kind must match exactly for
+        // single-kind typed cells (PRD §4.4/§9).
+        // PRD §4.2/§11.1 (task 4369/A2): a kind-agnostic `AnySelector` cell also
+        // accepts any concrete selector value — the type carries no kind constraint,
+        // so all three concrete selector kinds satisfy it.
+        Value::Selector(sv) => {
+            matches!(ty, Type::AnySelector)
+                || matches!(ty, Type::Selector(k) if *k == sv.kind)
+        }
         // If a future `Value::TraitObjectInstance` variant is added, add a
         // matching arm here AND relax the runtime assertion so the compiler
         // enforces completeness.
@@ -817,6 +829,22 @@ pub struct Engine {
     /// but the test hook will be silently absent there too.
     #[cfg(any(test, feature = "test-instrumentation"))]
     panic_on_eval_cells: std::collections::HashSet<ValueCellId>,
+    /// Per-iteration solver-progress sink (task #4079).
+    ///
+    /// When `Some`, `run_compute_dispatch` installs this sink into the
+    /// thread-local `SolveDispatchContext` before invoking the trampoline, so
+    /// the elastic-static trampoline can emit `SolverProgressUpdate` events
+    /// without changing the fixed `ComputeFn` fn-pointer signature.
+    ///
+    /// Set by `set_solver_progress_sink`; cleared by setting to `None`.
+    solver_progress_sink: Option<std::sync::Arc<dyn crate::solver_progress::SolverProgressSink>>,
+    /// In-flight cancellation handle for the current solve (task #4079).
+    ///
+    /// Published by the GUI `with_solve_slot` before each `engine.check()` call
+    /// (same `Arc<AtomicBool>` as `pending_solve_cancel`) so that
+    /// `cancel_solve_impl`'s `.cancel()` propagates into the trampoline's
+    /// per-iteration poll via the thread-local context.
+    active_solve_cancel: Option<crate::graph::CancellationHandle>,
     // ── undef-self-describing α (task 4321) ──────────────────────────────────
     /// When `true`, `eval()` runs the post-eval `classify_undef_origins` pass
     /// and stores the result in `last_undef_causes`.  Defaults to `false` so
@@ -830,6 +858,18 @@ pub struct Engine {
     /// always-present, writer site in `engine_eval.rs`, accessor in
     /// `engine_admin.rs`).
     capture_undef_causes: bool,
+    /// When `true`, `tessellate_realizations()` / `tessellate_snapshot()` call
+    /// `kernel.measure_mesh_deviation(placed_id, &mesh)` for each successfully
+    /// tessellated occurrence and record the result in [`Self::achieved_repr_tol`].
+    /// Defaults to `false` so the hot path pays zero overhead (no BRepExtrema
+    /// projection, no channel round-trip) when γ assertions are not active.
+    ///
+    /// Set via `Engine::set_capture_repr_tol(bool)`.
+    /// Read via `Engine::achieved_repr_tol()`.
+    ///
+    /// Mirrors the `capture_undef_causes` / `set_capture_undef_causes` pattern:
+    /// default-false, always-present field, setter in `engine_admin.rs`.
+    capture_repr_tol: bool,
     /// Per-cell `UndefCause` map from the most recent `eval()` call.
     ///
     /// Rebuilt from scratch on each `eval()` call when `capture_undef_causes`
@@ -840,6 +880,29 @@ pub struct Engine {
     /// a cause).  Exposed as `&HashMap<ValueCellId, UndefCause>` via
     /// `Engine::undef_causes()`.
     last_undef_causes: HashMap<ValueCellId, reify_ir::UndefCause>,
+    /// Per-build achieved representation tolerance, keyed by realized-occurrence
+    /// name (`"{entity}#realization[{index}]"`).
+    ///
+    /// Populated by the per-output tessellation closure in `geometry_ops.rs`
+    /// (`surface_subtree` / `walk_placed_realizations`) after a successful
+    /// `kernel.tessellate(placed_id, budget)` call on a non-empty mesh: the
+    /// sampled max facet-chord deviation (SI metres) returned by
+    /// `kernel.measure_mesh_deviation(placed_id, &mesh)` is inserted under the
+    /// occurrence's `entity_path`.
+    ///
+    /// Cleared at the start of each `tessellate_realizations()` /
+    /// `tessellate_snapshot()` call, mirroring the
+    /// `feature_tag_table` / `topology_attribute_table` / `swept_kind_table`
+    /// reset-at-entry pattern.
+    ///
+    /// A missing key means the occurrence was never realized / tessellated, or
+    /// its mesh was empty, or the kernel returned `None` (non-OCCT) — this is
+    /// the B3 honest-absence contract.  The accessor returns `None` for absent
+    /// keys; it never returns `Some(0.0)` for unrealized subjects.
+    ///
+    /// Task 4198 (Determinacy β) — γ reads this to assert `RepresentationWithin`
+    /// bounds.
+    achieved_repr_tol: BTreeMap<String, f64>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -1325,6 +1388,85 @@ mod tests {
         assert!(
             !value_type_kind_matches(&face_selector, &Type::Geometry, None),
             "Value::Selector against Type::Geometry must be false (different outer variant)"
+        );
+    }
+
+    // ── value_type_kind_matches: Type::AnySelector acceptance (task 4369/A2) ──────────────
+
+    /// A concrete `Value::Selector` of any kind satisfies a `Type::AnySelector` cell;
+    /// non-selector values do not; exact-kind enforcement for `Type::Selector(k)` is
+    /// unchanged (regression guard).
+    ///
+    /// Step-5 contract (RED until step-6):
+    /// (a) Face-kind selector against Type::AnySelector → true
+    /// (b) Edge-kind selector against Type::AnySelector → true
+    /// (c) Body-kind selector against Type::AnySelector → true
+    /// (d) Value::Real(1.0) against Type::AnySelector → false (non-selector rejected)
+    /// (e) regression: Face-kind selector against Type::Selector(Edge) → false
+    #[test]
+    fn value_type_kind_matches_any_selector_acceptance() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::{RealizationNodeId, Type};
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+        use reify_ir::{GeometryHandleId, Value};
+
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestPart", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+
+        // Face selector — uses ByNormal (Face-only query, must pair with Face kind).
+        let face_sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target.clone(),
+            LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 },
+        )
+        .expect("face SelectorValue must construct");
+        let face_val = Value::Selector(face_sv.clone());
+
+        // Edge selector — uses LeafQuery::All (kind-agnostic query, pairs with any kind).
+        let edge_sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target.clone(),
+            LeafQuery::All,
+        )
+        .expect("edge SelectorValue must construct");
+        let edge_val = Value::Selector(edge_sv);
+
+        // Body selector — uses LeafQuery::All (kind-agnostic).
+        let body_sv = SelectorValue::leaf(
+            SelectorKind::Body,
+            target.clone(),
+            LeafQuery::All,
+        )
+        .expect("body SelectorValue must construct");
+        let body_val = Value::Selector(body_sv);
+
+        // (a) Face-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&face_val, &Type::AnySelector, None),
+            "Value::Selector(Face) against Type::AnySelector must be true (a)"
+        );
+        // (b) Edge-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&edge_val, &Type::AnySelector, None),
+            "Value::Selector(Edge) against Type::AnySelector must be true (b)"
+        );
+        // (c) Body-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&body_val, &Type::AnySelector, None),
+            "Value::Selector(Body) against Type::AnySelector must be true (c)"
+        );
+        // (d) Non-selector value is rejected by Type::AnySelector.
+        assert!(
+            !value_type_kind_matches(&Value::Real(1.0), &Type::AnySelector, None),
+            "Value::Real against Type::AnySelector must be false (d)"
+        );
+        // (e) Regression: single-kind exact match still enforced (unchanged by task 4369).
+        assert!(
+            !value_type_kind_matches(&face_val, &Type::Selector(SelectorKind::Edge), None),
+            "Value::Selector(Face) against Type::Selector(Edge) must be false (e)"
         );
     }
 

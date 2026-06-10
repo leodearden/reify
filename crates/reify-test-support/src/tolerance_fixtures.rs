@@ -253,7 +253,7 @@ mod tests {
             "arg[0] result_type must be StructureRef(\"Structure\")"
         );
 
-        // arg[1]: Scalar literal si=1e-6 dim=LENGTH
+        // arg[1]: Length literal si=1e-6 dim=LENGTH
         let arg1 = &args[1];
         let CompiledExprKind::Literal(Value::Scalar {
             si_value,
@@ -438,7 +438,7 @@ mod tests {
             Type::StructureRef("Structure".to_string())
         );
 
-        // arg[1]: Scalar literal si=1e-6 dim=LENGTH
+        // arg[1]: Length literal si=1e-6 dim=LENGTH
         let CompiledExprKind::Literal(Value::Scalar {
             si_value,
             dimension,
@@ -508,7 +508,7 @@ mod tests {
             "arg[0] result_type must be StructureRef(\"Bracket\"), NOT StructureRef(\"Structure\")"
         );
 
-        // arg[1]: Scalar literal si=1e-6 dim=LENGTH
+        // arg[1]: Length literal si=1e-6 dim=LENGTH
         let CompiledExprKind::Literal(Value::Scalar {
             si_value,
             dimension,

@@ -570,6 +570,13 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "FaceSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Face)),
         "EdgeSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Edge)),
         "BodySelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
+        // Kind-agnostic selector param annotation (PRD §4.2/§11.1, task 4369/A2).
+        // Bare "Selector" resolves to Type::AnySelector so a param declared as
+        // `target : Selector` accepts a Selector value of ANY concrete kind
+        // (Face/Edge/Body), while single-kind params (FaceSelector etc.) keep
+        // exact-kind checking.  resolve_type_with_aliases inherits this arm
+        // automatically since it delegates to resolve_type_name for builtin names.
+        "Selector" => Some(Type::AnySelector),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::Real),
@@ -1142,6 +1149,105 @@ pub(crate) fn resolve_parameterized_alias(
     // Apply substitution to alias body
     let body = alias_entry.type_expr.as_ref()?;
     resolve_type_alias_expr_with_subst(body, alias_registry, &subst, diagnostics, depth + 1)
+}
+
+/// Substitute resolved type parameters in a `Type` from a name→`Type` map.
+///
+/// Walks a fully-resolved `Type` and rewrites every `Type::TypeParam(name)`
+/// leaf to `subst[name]` when bound, leaving unbound type-params unchanged
+/// (passthrough). This is the resolved-`Type`-walk analog of the AST-expr
+/// substitution in [`resolve_type_alias_expr_with_subst`] (PRD D3).
+///
+/// Used at generic-call sites (task 4231 β) to substitute the matched
+/// function's return type once `unify` has bound the type parameters from the
+/// argument types.
+///
+/// The `match` is intentionally exhaustive (no `_` wildcard) so that any future
+/// `Type` variant forces a compile error here rather than silently passing
+/// through unsubstituted — important for a recursive type walk.
+pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -> Type {
+    match ty {
+        // Type-parameter leaf: substitute when bound, else pass through.
+        Type::TypeParam(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
+
+        // Single-inner-Type wrappers: recurse and rebuild.
+        Type::List(inner) => Type::List(Box::new(substitute_type_params(inner, subst))),
+        Type::Set(inner) => Type::Set(Box::new(substitute_type_params(inner, subst))),
+        Type::Keyed(inner) => Type::Keyed(Box::new(substitute_type_params(inner, subst))),
+        Type::Option(inner) => Type::Option(Box::new(substitute_type_params(inner, subst))),
+        Type::Complex(inner) => Type::Complex(Box::new(substitute_type_params(inner, subst))),
+        Type::Range(inner) => Type::Range(Box::new(substitute_type_params(inner, subst))),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => Type::Map(
+            Box::new(substitute_type_params(key, subst)),
+            Box::new(substitute_type_params(val, subst)),
+        ),
+        Type::Field { domain, codomain } => Type::Field {
+            domain: Box::new(substitute_type_params(domain, subst)),
+            codomain: Box::new(substitute_type_params(codomain, subst)),
+        },
+
+        // Function: substitute each param + the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| substitute_type_params(p, subst))
+                .collect(),
+            return_type: Box::new(substitute_type_params(return_type, subst)),
+        },
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { n, quantity } => Type::Point {
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+        Type::Vector { n, quantity } => Type::Vector {
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+        Type::Tensor { rank, n, quantity } => Type::Tensor {
+            rank: *rank,
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+        Type::Matrix { m, n, quantity } => Type::Matrix {
+            m: *m,
+            n: *n,
+            quantity: Box::new(substitute_type_params(quantity, subst)),
+        },
+
+        // Union: substitute each arm.
+        Type::Union(arms) => Type::Union(
+            arms.iter()
+                .map(|a| substitute_type_params(a, subst))
+                .collect(),
+        ),
+
+        // All remaining leaves carry no inner `Type` to substitute.
+        Type::Bool
+        | Type::Int
+        | Type::Real
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
+        | Type::Error => ty.clone(),
+    }
 }
 
 /// Resolve a type alias body TypeExpr with parameter substitutions applied.
@@ -2294,6 +2400,63 @@ mod tests {
         );
     }
 
+    // ── AnySelector type-name resolution (task 4369 / A2) ────────────────────
+    //
+    // The bare `Selector` spelling (no kind qualifier) must resolve to
+    // `Type::AnySelector` so that param annotations like `target : Selector`
+    // accept any concrete selector kind at the type-compat level.
+    //
+    // Tests (a) and (b) are RED until step-2 adds the resolver arm.
+    // Test (c) is GREEN from pre-1's Display arm (documents the
+    // resolver<->Display round-trip contract).
+
+    /// (a) `resolve_type_name("Selector")` must return `Type::AnySelector`.
+    ///
+    /// RED until step-2 adds `"Selector" => Some(Type::AnySelector)` to
+    /// `resolve_type_name`.
+    #[test]
+    fn resolve_type_name_recognises_any_selector() {
+        assert_eq!(
+            resolve_type_name("Selector"),
+            Some(Type::AnySelector),
+            "\"Selector\" should resolve to Type::AnySelector"
+        );
+    }
+
+    /// (b) `resolve_type_with_aliases("Selector", …)` must return
+    /// `Type::AnySelector` — it inherits the builtin arm automatically.
+    ///
+    /// RED until step-2 adds the arm to `resolve_type_name`.
+    #[test]
+    fn resolve_type_with_aliases_inherits_any_selector() {
+        let reg = TypeAliasRegistry::new();
+        let result = resolve_type_with_aliases(
+            "Selector",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::AnySelector),
+            "resolve_type_with_aliases(\"Selector\", …) should return Type::AnySelector"
+        );
+    }
+
+    /// (c) Display round-trip: `Type::AnySelector` formats as `"Selector"`,
+    /// which is the same spelling the resolver accepts (task 4369/A2 §11.1).
+    ///
+    /// GREEN from pre-1's Display arm.
+    #[test]
+    fn any_selector_display_matches_resolver_spelling() {
+        assert_eq!(
+            format!("{}", Type::AnySelector),
+            "Selector",
+            "Type::AnySelector should display as \"Selector\" to match the resolver spelling"
+        );
+    }
+
     // ── Keyed<T> parameterized resolution (step-3 RED / task 3930 β) ──────────
     // `Keyed<Vent>` must resolve to the keyed-collection kind, distinct from the
     // `Map`/`List` resolutions of the same arg. Mirrors the List/Map resolver arms.
@@ -2547,5 +2710,136 @@ mod tests {
             Some(Type::Geometry),
             "\"DatumRef\" should resolve to Type::Geometry (datum-reference handle aliases the geometry-handle type)"
         );
+    }
+
+    // ── task 4231 β: substitute_type_params (return-type substitution) ──────
+    //
+    // Pure-function unit tests for the resolved-`Type`-walk that rewrites
+    // `Type::TypeParam` leaves from a name→Type substitution map (PRD D3).
+
+    /// Build a substitution map from (name, Type) pairs.
+    fn subst_of(pairs: &[(&str, Type)]) -> HashMap<String, Type> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn substitute_bare_type_param_bound() {
+        // (a) bare TypeParam("T") with {T: Real} → Real.
+        let subst = subst_of(&[("T", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(&Type::TypeParam("T".to_string()), &subst),
+            Type::Real
+        );
+    }
+
+    #[test]
+    fn substitute_unbound_type_param_passthrough() {
+        // (b) unbound TypeParam("D") with {C: Real} → TypeParam("D") unchanged.
+        let subst = subst_of(&[("C", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(&Type::TypeParam("D".to_string()), &subst),
+            Type::TypeParam("D".to_string())
+        );
+    }
+
+    #[test]
+    fn substitute_inside_list() {
+        // (c) List(TypeParam("T")) with {T: Int} → List(Int).
+        let subst = subst_of(&[("T", Type::Int)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::List(Box::new(Type::TypeParam("T".to_string()))),
+                &subst
+            ),
+            Type::List(Box::new(Type::Int))
+        );
+    }
+
+    #[test]
+    fn substitute_field_partial() {
+        // (d) Field{domain: TypeParam("D"), codomain: TypeParam("C")} with
+        //     {C: Real} → Field{domain: TypeParam("D"), codomain: Real}.
+        //     D stays unbound (nested partial substitution).
+        let subst = subst_of(&[("C", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Field {
+                    domain: Box::new(Type::TypeParam("D".to_string())),
+                    codomain: Box::new(Type::TypeParam("C".to_string())),
+                },
+                &subst
+            ),
+            Type::Field {
+                domain: Box::new(Type::TypeParam("D".to_string())),
+                codomain: Box::new(Type::Real),
+            }
+        );
+    }
+
+    #[test]
+    fn substitute_map_both_bound() {
+        // (e) Map(TypeParam("K"), TypeParam("V")) both bound → Map of concretes.
+        let subst = subst_of(&[("K", Type::String), ("V", Type::Int)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Map(
+                    Box::new(Type::TypeParam("K".to_string())),
+                    Box::new(Type::TypeParam("V".to_string())),
+                ),
+                &subst
+            ),
+            Type::Map(Box::new(Type::String), Box::new(Type::Int))
+        );
+    }
+
+    #[test]
+    fn substitute_function_params_and_return() {
+        // (f) Function{params:[TypeParam("T")], return_type: List(TypeParam("T"))}
+        //     with {T: Real} → both positions substituted.
+        let subst = subst_of(&[("T", Type::Real)]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Function {
+                    params: vec![Type::TypeParam("T".to_string())],
+                    return_type: Box::new(Type::List(Box::new(Type::TypeParam("T".to_string())))),
+                },
+                &subst
+            ),
+            Type::Function {
+                params: vec![Type::Real],
+                return_type: Box::new(Type::List(Box::new(Type::Real))),
+            }
+        );
+    }
+
+    #[test]
+    fn substitute_recurses_into_quantity() {
+        // (g) Tensor{rank, n, quantity: TypeParam("Q")} recurses into quantity.
+        let subst = subst_of(&[("Q", Type::length())]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Tensor {
+                    rank: 2,
+                    n: 3,
+                    quantity: Box::new(Type::TypeParam("Q".to_string())),
+                },
+                &subst
+            ),
+            Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::length()),
+            }
+        );
+    }
+
+    #[test]
+    fn substitute_non_typeparam_leaf_identity() {
+        // (h) non-typeparam leaf (Int) with empty subst → identity.
+        let subst = subst_of(&[]);
+        assert_eq!(substitute_type_params(&Type::Int, &subst), Type::Int);
     }
 }

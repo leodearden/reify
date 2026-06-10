@@ -501,17 +501,18 @@ pub structure def ConstitutiveLawInput {
 //     Heterogeneous `Field<Point3<Length>, AnisotropicMaterial>` call-surface
 //     deferred to task ε.
 //
-//   `loads : List<Real>` and `supports : List<Real>`:
-//     Placeholder types for `List<Load>` and `List<Support>`. The `Load` and
-//     `Support` marker traits are declared in `std.fea.multi_case` which is
-//     compiled AFTER this module in the sequential prelude build (stdlib_loader.rs).
-//     The runtime value is a `Value::List` of `Value::StructureInstance` items
-//     regardless of the compile-time element-type annotation; the trampoline
-//     reads them correctly. Matches the same placeholder convention used by
-//     `LoadCase.loads : List<Real>` and `LoadCase.supports : List<Real>` in
-//     `std.fea.multi_case` (see that module's header note 1).
-//     TODO(load-trait): tighten to `List<Load>` and `List<Support>` when the
-//     trait declarations are moved to an earlier stdlib module.
+//   `loads : List<Load>` and `supports : List<Support>`:
+//     The `Load` and `Support` marker traits are declared in `std.fea.types`
+//     (loaded immediately before this module in `stdlib_loader.rs`), so they
+//     are in the growing prelude when this function compiles.
+//     The overload resolver treats a `List<Trait>` param as a WILDCARD (matches
+//     any list argument regardless of element type), then a post-resolution
+//     conformance pass (`phase_fn_arg_conformance` → conformance/mod.rs) checks
+//     each concrete list element against the trait.  Direct typed list literals
+//     `[PointLoad(...)]` / `[PressureLoad(...)]` / `[FixedSupport(...)]`
+//     type-check directly — no LoadCase bundle required.
+//     `LoadCase.loads : List<Real>` remains `List<Real>` (tightening LoadCase
+//     is a clean follow-up; see `std.fea.multi_case` header note 1).
 //
 //   `options : ElasticOptions` (no default):
 //     `phase_functions` runs before `phase_entities` in the Reify compiler, so
@@ -528,8 +529,8 @@ pub fn solve_elastic_static(
     length    : Length,
     width     : Length,
     height    : Length,
-    loads     : List<Real>,
-    supports  : List<Real>,
+    loads     : List<Load>,
+    supports  : List<Support>,
     options   : ElasticOptions
 ) -> ElasticResult {
     ElasticResult()
