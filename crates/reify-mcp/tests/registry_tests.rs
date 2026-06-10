@@ -103,6 +103,7 @@ fn diagnostic_info_partial_eq() {
         severity: "error".to_string(),
         message: "bad".to_string(),
         code: None,
+        has_location: true,
     };
     let b = DiagnosticInfo {
         file_path: "a.ri".to_string(),
@@ -113,6 +114,7 @@ fn diagnostic_info_partial_eq() {
         severity: "error".to_string(),
         message: "bad".to_string(),
         code: None,
+        has_location: true,
     };
     assert_eq!(a, b);
 }

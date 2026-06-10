@@ -186,6 +186,20 @@ export interface DiagnosticInfo {
   severity: string;
   message: string;
   code: string | null;
+  /**
+   * Whether this diagnostic carries a real, line-tied source span.
+   *
+   * `false` means the `line`/`column` positions are synthetic (hardcoded 1/1)
+   * and do NOT point at a meaningful source location — e.g. module-level
+   * hot-reload staleness errors where no span is available. Consumers use this
+   * flag to avoid jumping the editor to a fake line 1:
+   *   - β (span-less render): task #4402 — greyed non-interactive row in DiagnosticsPanel
+   *   - γ (span-less navigation refusal): task #4403 — handleNavigateToDiagnostic guard in App.tsx
+   *
+   * Absent or `true` means line-tied (backward-compat: older payloads that omit
+   * the field are treated as having a real span).
+   */
+  has_location?: boolean;
 }
 
 /** A location span in source code. */
