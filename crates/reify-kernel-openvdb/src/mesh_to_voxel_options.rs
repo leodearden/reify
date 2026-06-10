@@ -16,6 +16,7 @@
 //! Pinned by the unit test `default_content_hash_is_not_no_options_sentinel`.
 
 use reify_core::ContentHash;
+use reify_ir::Mesh;
 
 /// OpenVDB Mesh→Voxel conversion options.
 ///
@@ -49,7 +50,109 @@ impl Default for MeshToVoxelOptions {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Honest-floor resolution constants (PRD §3b + §6 D7 — tunable)
+// ---------------------------------------------------------------------------
+
+/// Number of voxels along the longest bounding-box axis.
+///
+/// `voxel_size = h = longest_extent / VOXELS_PER_LONGEST_AXIS`.
+///
+/// Tunable per PRD §6 D7 ("measure first, then tune"). The value 64.0 is the
+/// v0.1 conservative default — it resolves a 100 mm part at ~1.6 mm/voxel,
+/// which is coarser than a final-quality mesh but correct for α/β/γ
+/// thickness-DFM prototype development.
+///
+/// Increasing N increases memory quadratically in the interior-covering band;
+/// decreasing N lowers resolution.  Both `honest_floor` tests and the δ medial
+/// walk read this constant so tuning is a single-line change.
+pub const VOXELS_PER_LONGEST_AXIS: f64 = 64.0;
+
+/// Extra voxels added to the band half-width beyond the minimum needed to
+/// cover the part interior.
+///
+/// `narrow_band = VOXELS_PER_LONGEST_AXIS / 2 + BAND_MARGIN_VOXELS`
+///
+/// The extra margin ensures the band covers the deepest interior point even
+/// after floating-point rounding in `meshToLevelSet`'s half_width_voxels
+/// parameter.  2.0 extra voxels is the PRD §6 D7 conservative default.
+pub const BAND_MARGIN_VOXELS: f64 = 2.0;
+
 impl MeshToVoxelOptions {
+    /// Derive honest-floor resolution options from the mesh bounding box.
+    ///
+    /// # Resolution policy (PRD §3b honest-floor)
+    ///
+    /// `voxel_size = h = longest_extent / VOXELS_PER_LONGEST_AXIS`
+    ///
+    /// The voxel size scales with the part so a 2 mm cube and a 200 mm part
+    /// both get `VOXELS_PER_LONGEST_AXIS` voxels across their longest axis —
+    /// a fixed `voxel_size` (e.g. the struct default 0.1) would be meaningless
+    /// across unit systems.
+    ///
+    /// # Band-covers-interior invariant (critical for densify correctness)
+    ///
+    /// `narrow_band = VOXELS_PER_LONGEST_AXIS / 2 + BAND_MARGIN_VOXELS`
+    ///
+    /// `openvdb::tools::meshToLevelSet` builds a NARROW-BAND level set:
+    /// voxels BEYOND `±narrow_band` from the surface are saturated to
+    /// `±(narrow_band × voxel_size)`.  After densification deep-interior
+    /// voxels read the saturated background rather than the true SDF value.
+    /// Setting `narrow_band × h ≥ longest_extent/2 ≥ deepest interior point`
+    /// ensures the band reaches every interior point, making φ(centre) the
+    /// true geometric distance (not a saturated sentinel).  This is also
+    /// required by δ's min-wall medial walk — saturated interior SDF values
+    /// would produce garbage wall-thickness estimates.
+    ///
+    /// # Returns
+    ///
+    /// - `Some(opts)` for a valid mesh with at least one vertex and a
+    ///   positive, finite bounding-box extent on every axis.
+    /// - `None` for an empty mesh (`vertices` is empty), a mesh where all
+    ///   vertices are coincident (zero extent on every axis), or a mesh with
+    ///   non-finite vertex coordinates.
+    pub fn honest_floor(mesh: &Mesh) -> Option<Self> {
+        if mesh.vertices.is_empty() {
+            return None;
+        }
+
+        // Compute per-axis min/max over flat xyz triplets.
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for chunk in mesh.vertices.chunks_exact(3) {
+            for axis in 0..3 {
+                let v = chunk[axis];
+                if v < min[axis] { min[axis] = v; }
+                if v > max[axis] { max[axis] = v; }
+            }
+        }
+
+        // All extents must be finite and positive.
+        let extents = [
+            (max[0] - min[0]) as f64,
+            (max[1] - min[1]) as f64,
+            (max[2] - min[2]) as f64,
+        ];
+        for &e in &extents {
+            if !e.is_finite() {
+                return None;
+            }
+        }
+        let longest = extents[0].max(extents[1]).max(extents[2]);
+        if !(longest > 0.0) {
+            return None;
+        }
+
+        let voxel_size = longest / VOXELS_PER_LONGEST_AXIS;
+        // narrow_band × h ≥ longest/2 ≥ any interior point:
+        //   narrow_band = N/2 + margin  →  depth = narrow_band × h
+        //               = (N/2 + margin) × (longest/N)
+        //               = longest/2 + margin × longest/N
+        //               ≥ longest/2  ✓
+        let narrow_band = VOXELS_PER_LONGEST_AXIS / 2.0 + BAND_MARGIN_VOXELS;
+        Some(Self { voxel_size, narrow_band })
+    }
+
     /// Produce a [`ContentHash`] of the conversion parameters.
     ///
     /// # Wire-format invariant
