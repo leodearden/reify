@@ -347,7 +347,7 @@ pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
             let mut diags = Vec::new();
             if let Value::List(items) = result {
                 // Element 0: draft violation (honors rule severity).
-                if let Some(Value::Bool(true)) = items.get(0) {
+                if let Some(Value::Bool(true)) = items.first() {
                     diags.push(draft_violation(rule_severity(args)));
                 }
                 // Element 1: undercut — always Error, independent of the rule tag.
