@@ -374,6 +374,34 @@ pub(crate) fn check_dag_complete(
     Ok(())
 }
 
+/// Debug-only wrapper: build the complete forward dependency trace map from
+/// `graph` and `fields`, then assert that `exec_order` is a linear extension
+/// of the realization-edge partial order.
+///
+/// Panics with a human-readable [`DagViolation::describe`] message when any
+/// producer→consumer edge is missing or reversed in `exec_order`.
+///
+/// This is a no-op in release builds (the function body is empty when
+/// `debug_assertions` are disabled — callers should gate the call with
+/// `#[cfg(debug_assertions)]` so the exec_order allocation also disappears).
+///
+/// # Panics
+///
+/// Panics if `check_dag_complete` returns `Err(_)`.  The panic message always
+/// contains `"assert_dag_complete"` so that `#[should_panic(expected =
+/// "assert_dag_complete")]` tests reliably match it.
+#[cfg(debug_assertions)]
+pub(crate) fn assert_dag_complete_from_graph(
+    graph: &crate::graph::EvaluationGraph,
+    fields: &[reify_compiler::CompiledField],
+    exec_order: &[RealizationNodeId],
+) {
+    let traces = crate::deps::build_trace_map_and_fields(graph, fields);
+    if let Err(violation) = check_dag_complete(&traces, exec_order) {
+        panic!("{}", violation.describe());
+    }
+}
+
 /// Wrapper for NodeId that implements Ord based on Debug representation.
 /// Used for deterministic tie-breaking in topological sort.
 #[derive(Debug, Clone, PartialEq, Eq)]
