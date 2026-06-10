@@ -183,7 +183,13 @@ structure def TotalRunout : GeometricTolerance {
     param datum_refs : DatumRef
 }
 
-// ── Profile Tolerances (2 types) ─────────────────────────────────────────────
+// ── Profile Tolerances (2 datum-less + 2 …Related datum-referenced) ───────────
+// Profile tolerances split by datum reference:
+//   ProfileOfSurface / ProfileOfLine        — datum-less (form-only) profile.
+//   ProfileOfSurfaceRelated / ProfileOfLineRelated — datum-referenced profile,
+//     carrying a required `datum_refs` (no default). The split avoids an
+//     optional-Geometry default with no clean value (per design D2): a profile
+//     either has no datum, or its datum is mandatory.
 
 structure def ProfileOfSurface : GeometricTolerance {
     param tolerance_value : Length = 0mm
@@ -195,6 +201,20 @@ structure def ProfileOfLine : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+structure def ProfileOfSurfaceRelated : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Geometry
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    param datum_refs : DatumRef
+}
+
+structure def ProfileOfLineRelated : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Geometry
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    param datum_refs : DatumRef
 }
 
 // ── Datum ─────────────────────────────────────────────────────────────────────
