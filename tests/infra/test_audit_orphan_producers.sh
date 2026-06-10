@@ -45,15 +45,20 @@ trap cleanup EXIT
 git -C "$FIXTURE" init -q
 mkdir -p "$FIXTURE/crates/reify-fixture/src"
 
-# lib.rs — mod declarations and a private driver for wired() so the bare
-# `wired()` token is counted as an external caller.  The driver is private
-# (fn, not pub fn) so it does not become a candidate itself.
+# lib.rs — mod declarations and private drivers.  All drivers are private
+# (fn, not pub fn) so they do not become candidates themselves.
 cat > "$FIXTURE/crates/reify-fixture/src/lib.rs" <<'RUST'
 pub mod collide_mod;
 pub mod wired;
+pub mod collide_path;
+pub mod turbo;
 
 // Private driver — provides a genuine bare-call token for `wired`.
 fn drive_wired() -> i32 { wired() }
+// Private driver — references collide_path only via a NAME::Item path-qualifier.
+fn refer_path() -> u32 { collide_path::HELPER }
+// Private driver — calls turbo only via turbofish NAME::<T>().
+fn drive_turbo() { turbo::<i32>(); }
 RUST
 
 # collide_mod.rs — fn name collides with its own module name.
@@ -73,6 +78,20 @@ RUST
 # Genuinely called from drive_wired() in lib.rs (bare token `wired()`).
 cat > "$FIXTURE/crates/reify-fixture/src/wired.rs" <<'RUST'
 pub fn wired() -> i32 { 3 }
+RUST
+
+# collide_path.rs — fn name collides with its module name.
+# The only reference to the fn (outside cfg(test)) is the path-qualifier
+# `collide_path::HELPER` in refer_path() — never a direct bare call.
+cat > "$FIXTURE/crates/reify-fixture/src/collide_path.rs" <<'RUST'
+pub const HELPER: u32 = 7;
+pub fn collide_path() -> i32 { 2 }
+RUST
+
+# turbo.rs — generic fn called only via turbofish `turbo::<i32>()`.
+# The `::` is followed by `<`, so it must be preserved as a real call.
+cat > "$FIXTURE/crates/reify-fixture/src/turbo.rs" <<'RUST'
+pub fn turbo<T>() {}
 RUST
 
 # ---------------------------------------------------------------------------
@@ -129,6 +148,18 @@ assert "collide_mod (name==module, mod-decl-only ref) is flagged orphan" \
 
 assert "wired (genuine bare caller) is not orphan" \
     assert_not_orphan wired
+
+# ---------------------------------------------------------------------------
+# step-3 / step-4: path-qualifier collision + turbofish preservation
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- step-3/step-4: path-qualifier collision + turbofish preservation ---"
+
+assert "collide_path (referenced only via NAME::Item path qualifier) is flagged orphan" \
+    assert_orphan collide_path
+
+assert "turbo (called only via turbofish NAME::<T>()) is not orphan" \
+    assert_not_orphan turbo
 
 # ---------------------------------------------------------------------------
 test_summary
