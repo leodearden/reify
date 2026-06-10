@@ -447,4 +447,33 @@ assert "Restart=on-failure is retained" \
 assert "chmod +x line includes jobserver-balancer.py" \
     bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'jobserver-balancer.py'"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 6: canary timer neutralized in setup-dev.sh (test-6)
+#   Grep-the-source, hermetic — no systemctl.  Mirrors the test-5 pattern.
+#
+#   After alpha, the daemon only creates /tmp/reify-jobserver-{merge,task}.
+#   The legacy reify-jobserver-canary.timer still targets /tmp/reify-jobserver
+#   (single FIFO), so each 5-min tick would hit the "FIFO absent → reseed →
+#   unconditional restart" path, SIGKILLing in-flight rustc and leaking tokens.
+#   Neutralizing it here prevents that restart-loop regression until the gamma
+#   task rewrites the canary for the dual-FIFO pools.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 6: canary timer neutralized in setup-dev.sh (grep-the-source) ---"
+
+# 6a: NO uncommented 'enable --now' line still lists reify-jobserver-canary.timer
+assert "reify-jobserver-canary.timer NOT in 'enable --now' (broken timer removed)" \
+    bash -c "! ( grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'enable --now' | grep -qF 'reify-jobserver-canary.timer' )"
+
+# 6b: An uncommented line actively disables the timer (stops already-running timers
+#     on hosts provisioned before alpha; a plain drop from 'enable --now' would not
+#     stop an already-running timer)
+assert "uncommented 'disable --now reify-jobserver-canary.timer' line present" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'disable --now reify-jobserver-canary.timer'"
+
+# 6c: GUARD — the dual-pool daemon is still auto-enabled (only the canary timer
+#     was removed, not the daemon itself)
+assert "reify-jobserver.service still in 'enable --now' (daemon remains enabled)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'enable --now' | grep -qF 'reify-jobserver.service'"
+
 test_summary
