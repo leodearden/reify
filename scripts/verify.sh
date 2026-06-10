@@ -554,7 +554,7 @@ decide_scope
 # Design notes (see task 4523 decisions):
 #   • Map is read inline (NOT via a sourced lib) so the throughput/gui_feature
 #     auto-discovery greps don't flag it.  _VP_INFRA_MAP uses a variable
-#     assignment; the token `source "$SCRIPT_DIR/' never appears here.
+#     assignment; no 'source' directive for this map — fixture-check greps skip it.
 #   • [ -f ] guard degrades gracefully in fixtures that omit the map.
 #   • GLOB (not explicit names) so future test_verify_*.sh guards are
 #     auto-covered without a map edit.
