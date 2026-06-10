@@ -544,6 +544,7 @@ mod tests {
                 operations: r0_ops,
                 content_hash: ContentHash::of_str("r0"),
                 produced_repr: ReprKind::BRep,
+                produced_kernel: None,
             },
         );
 

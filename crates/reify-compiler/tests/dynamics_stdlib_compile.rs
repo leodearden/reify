@@ -11,6 +11,7 @@
 use reify_compiler::*;
 use reify_core::*;
 use reify_ir::{BinOp, CompiledExprKind, Value};
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -412,4 +413,100 @@ fn motion_trajectory_has_mechanism_and_samples_params() {
         Type::List(Box::new(Type::StructureRef("TrajectorySample".to_string()))),
         "MotionTrajectory.samples should be Type::List(StructureRef(\"TrajectorySample\"))"
     );
+}
+
+// ─── Task 4278 — dynamics-constructor compile-typing (step-9 RED) ────────────
+
+/// Task 4278 step-9 (RED). `point_mass(mass)` and
+/// `mass_properties(mass, com, inertia)` are dynamics-constructor builtins
+/// (task 4278, DYNAMICS_CONSTRUCTOR_NAMES family). A `.ri` let cell assigned
+/// from either call must type as `Type::StructureRef("MassProperties")`, NOT
+/// the first-arg fallback — `Scalar<Mass>` for `point_mass(2.5kg)` — which
+/// would trip `value_type_kind_matches` at eval time. RED until step-10 adds
+/// `DYNAMICS_CONSTRUCTOR_NAMES`, `is_dynamics_constructor`, and the
+/// `is_dynamics_constructor` arm in the `NoUserFunctions` ladder of
+/// `expr.rs::infer_type`. Mirrors
+/// `body_mass_props_resolves_to_function_call_returning_mass_properties`
+/// (expr.rs unit test) for the ctor-family names.
+#[test]
+fn point_mass_and_mass_properties_ctors_type_as_mass_properties_struct_ref() {
+    // ── point_mass(mass) → StructureRef("MassProperties") ──────────────────
+    {
+        let source = r#"
+structure def Probe {
+    let pm = point_mass(2.5kg)
+}
+"#;
+        let compiled = compile_source_with_stdlib(source);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "point_mass Probe should compile without errors; got: {:?}",
+            errors
+        );
+
+        let probe = compiled
+            .templates
+            .iter()
+            .find(|t| t.name == "Probe")
+            .expect("Probe template should be present in compiled module");
+
+        let pm = probe
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "pm")
+            .expect("Probe.pm cell should exist");
+
+        assert_eq!(
+            pm.cell_type,
+            Type::StructureRef("MassProperties".to_string()),
+            "point_mass(2.5kg) cell should type as StructureRef(\"MassProperties\"), \
+             NOT the first-arg fallback Scalar<Mass>; got {:?}",
+            pm.cell_type
+        );
+    }
+
+    // ── mass_properties(mass, com, inertia) → StructureRef("MassProperties") ─
+    {
+        let source = r#"
+structure def Probe {
+    let mp = mass_properties(2.5kg, [0m, 0m, 0m], [[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+}
+"#;
+        let compiled = compile_source_with_stdlib(source);
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "mass_properties Probe should compile without errors; got: {:?}",
+            errors
+        );
+
+        let probe = compiled
+            .templates
+            .iter()
+            .find(|t| t.name == "Probe")
+            .expect("Probe template should be present in compiled module");
+
+        let mp = probe
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "mp")
+            .expect("Probe.mp cell should exist");
+
+        assert_eq!(
+            mp.cell_type,
+            Type::StructureRef("MassProperties".to_string()),
+            "mass_properties(...) cell should type as StructureRef(\"MassProperties\"), \
+             NOT the first-arg fallback; got {:?}",
+            mp.cell_type
+        );
+    }
 }

@@ -1177,11 +1177,11 @@ structure S {
 
     /// Shared setup for the two param-override emitter tests.
     ///
-    /// Parses and compiles `"structure S { param width: Scalar = 100mm }"`, does an initial
+    /// Parses and compiles `"structure S { param width: Length = 100mm }"`, does an initial
     /// eval to warm the engine state, then overrides `width` with `override_value` and returns
     /// the diagnostics from the second eval.
     fn build_param_override_diags(override_value: Value) -> Vec<Diagnostic> {
-        let source = "structure S { param width: Scalar = 100mm }";
+        let source = "structure S { param width: Length = 100mm }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
@@ -1198,7 +1198,7 @@ structure S {
     fn run_solver_on_constrained_auto_param(
         solver: MockConstraintSolver,
     ) -> (Arc<AtomicUsize>, Vec<Diagnostic>) {
-        let source = "structure S {\n    param x: Scalar = auto\n    constraint x > 1mm\n}";
+        let source = "structure S {\n    param x: Length = auto\n    constraint x > 1mm\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let counter = solver.counter_handle();

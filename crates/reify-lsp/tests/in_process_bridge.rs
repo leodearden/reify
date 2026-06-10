@@ -347,7 +347,7 @@ async fn hover_on_documented_structure_shows_doc_via_bridge() {
     hang_guard!(async {
         let lsp = initialized_lsp().await;
 
-        let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let source = "/// A bracket.\nstructure Bracket {\n    param width: Length = 80mm\n}";
         lsp.handle_request(
             "textDocument/didOpen",
             did_open_params("file:///test.ri", source),

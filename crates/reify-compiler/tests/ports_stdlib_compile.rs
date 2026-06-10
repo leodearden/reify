@@ -342,7 +342,7 @@ fn std_ports_module_cardinality_locked() {
 
 /// std/ports should contain a `structure def Frame3` with exactly 4 Param-kind
 /// value cells (origin, x_axis, y_axis, z_axis), each resolving to
-/// `Type::Vector { n: 3, quantity: Scalar[LENGTH] }`.
+/// `Type::Vector { n: 3, quantity: Length[LENGTH] }`.
 ///
 /// Frame3 is the port-frame structure added by task α, step-4.
 /// RED on current main (no Frame3 in std/ports → template lookup fails).
@@ -399,7 +399,7 @@ fn frame3_structure_surface() {
         assert_eq!(
             cell.cell_type,
             expected_type,
-            "Frame3.{} must be Type::Vector{{n:3, quantity:Scalar[LENGTH]}}, got {:?}",
+            "Frame3.{} must be Type::Vector{{n:3, quantity:Length[LENGTH]}}, got {:?}",
             expected_name,
             cell.cell_type
         );

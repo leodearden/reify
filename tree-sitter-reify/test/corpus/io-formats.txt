@@ -1,0 +1,102 @@
+; NOTE: This corpus is developer documentation for the CST shape of the
+; std.io.formats occurrence surface added in task 4284.  orchestrator.yaml does
+; not run `tree-sitter test`, so these tests are NOT validated by CI.  The
+; canonical CI regression signal is:
+;   - crates/reify-cli/tests/cli_check.rs::check_io_formats_exits_success_no_unresolved
+;     (runs the real `reify check` binary on examples/io_formats.ri)
+;   - crates/reify-compiler/tests/examples_smoke.rs::all_examples_parse_and_compile_with_stdlib
+;     (auto-discovers examples/**/*.ri and fails on any Error-severity diagnostic)
+;
+; Run `tree-sitter test` locally from tree-sitter-reify/ to validate these shapes.
+
+================================================================================
+enum STEPVersion — three-variant STEP protocol enum
+================================================================================
+
+enum STEPVersion { AP203, AP214, AP242 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (enum_declaration
+    name: (identifier)
+    (enum_variant
+      name: (identifier))
+    (enum_variant
+      name: (identifier))
+    (enum_variant
+      name: (identifier))))
+
+================================================================================
+structure def DisplayStyle — two params with concrete defaults
+================================================================================
+
+structure def DisplayStyle {
+    param opacity : Real = 1.0
+    param wireframe : Bool = false
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (number_literal))
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (bool_literal))))
+
+================================================================================
+occurrence def STLOutput : Output — trait-bound with subject, path, constraint
+================================================================================
+
+occurrence def STLOutput : Output {
+    param subject : Solid
+    param path : String
+    param resolution : Length = 0.1mm
+    param format : OutputFormat = OutputFormat.STL
+    constraint determined(subject)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (occurrence_definition
+    name: (identifier)
+    (trait_bound_list
+      (trait_bound_entry
+        name: (identifier)))
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier)))
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier)))
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (member_access
+        object: (identifier)
+        member: (identifier)))
+    (constraint_declaration
+      expr: (function_call
+        name: (identifier)
+        (argument_list
+          (identifier))))))

@@ -245,11 +245,11 @@ fn lsp_full_interactive_loop_through_binary() {
 
     // 2) didOpen with valid bracket source
     let valid_source = r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
-    param fillet_radius: Scalar = 3mm
-    param hole_diameter: Scalar = 6mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
+    param fillet_radius: Length = 3mm
+    param hole_diameter: Length = 6mm
 
     let volume = width * height * thickness
 
@@ -279,8 +279,8 @@ fn lsp_full_interactive_loop_through_binary() {
 
     // 3) didChange with violating source (thickness=1mm violates thickness > 2mm)
     let violating_source = valid_source.replace(
-        "param thickness: Scalar = 5mm",
-        "param thickness: Scalar = 1mm",
+        "param thickness: Length = 5mm",
+        "param thickness: Length = 1mm",
     );
     let did_change_violating = serde_json::json!({
         "jsonrpc": "2.0",

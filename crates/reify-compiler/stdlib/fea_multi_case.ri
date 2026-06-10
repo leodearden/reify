@@ -423,6 +423,40 @@ structure def BodyForce : Load {
     param force_density : Real   = 0.0
 }
 
+// Gravity — typed home for self-weight (body-gravity) loads (typed-fea-authoring α,
+// docs/prds/v0_6/typed-fea-authoring-surface.md §4.1).
+//
+// Shape mirrors PointLoad: scalar dimensional magnitude + dimensionless
+// `direction : List<Real>`.  NOT `Vector3<Acceleration>` — `vec3(0 m/s^2, …)`
+// fails to parse (acceleration has no compound m/s² literal; only the
+// `1m/(1s*1s)` build form works).  The scalar form composes cleanly with
+// `STANDARD_GRAVITY()` / `5 * STANDARD_GRAVITY()` and keeps `direction`
+// general (centrifuge, lateral-g).
+//
+//   `magnitude`  — gravitational acceleration applied to the body.
+//                  `Acceleration` resolves to the built-in `DimensionVector::ACCELERATION`
+//                  (crates/reify-core/src/dimension.rs:508).  Defaults to
+//                  `STANDARD_GRAVITY()` (units.ri:133) = 9.80665 m/s²
+//                  (standard Earth surface gravity, ISO 80000-3).
+//                  Override with e.g. `5 * STANDARD_GRAVITY()` for 5 g loads.
+//   `direction`  — unit vector pointing in the direction gravity acts.
+//                  `List<Real>` is a placeholder for `Vec3` until a real
+//                  dimensionless 3-vector type is available (TODO(vec3-type)).
+//                  Default [0, 0, -1] = −Z (canonical downward direction).
+//                  Caller is responsible for supplying a unit vector; non-unit
+//                  vectors silently scale effective gravity by |direction|.
+//                  `direction` is declared LAST (same rationale as PointLoad:
+//                  positional binding preserves existing callers that omit it).
+//
+// Future solver bridge (leaf β): body force contribution = ρ · magnitude · direction
+// component-wise per integration point (see docs/prds/v0_6 §4.2).
+//
+// PRD: docs/prds/v0_6/typed-fea-authoring-surface.md §4.1 task α.
+structure def Gravity : Load {
+    param magnitude : Acceleration = STANDARD_GRAVITY()
+    param direction : List<Real>   = [0.0, 0.0, -1.0]
+}
+
 // ── SIR-β-mlcfea wave-2 closure ──────────────────────────────────────────────
 //
 // task 3549 (SIR-β-mlcfea) pins `LoadCase` and `MultiCaseResult` as

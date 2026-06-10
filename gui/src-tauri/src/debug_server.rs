@@ -756,6 +756,21 @@ fn tool_defs() -> Vec<ToolDef> {
                 "required": ["testId"]
             }),
         },
+        // task-4202: focus the CodeMirror editor view directly (bypasses
+        // focus-requires-trusted-event limitation of click_at).  Used by
+        // smoke_find_uses.mjs after open_file to enable Shift+F12 dispatch.
+        ToolDef {
+            name: "focus_editor",
+            description: "Focus the CodeMirror editor view directly by calling editorView.focus(). \
+                          This bypasses the trusted-event limitation of click_at and is the \
+                          recommended way to give the editor keyboard focus in smoke tests. \
+                          Returns {ok: true} or {error: 'editor view not ready'} if the view \
+                          is not yet initialised.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
         ToolDef {
             name: "scroll",
             description: "Scroll a DOM element or the CodeMirror editor. \

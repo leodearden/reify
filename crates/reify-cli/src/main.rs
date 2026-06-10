@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use reify_compiler::cfg::CfgSet;
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::TestStatus;
 
@@ -11,6 +12,12 @@ use reify_eval::TestStatus;
 // emitting a symbol reference into the rlib); the linker passes the rlib
 // unconditionally when the crate appears in `extern crate` position.
 extern crate reify_kernel_occt as _;
+// Ensure reify_kernel_manifold's object files are included in the link so its
+// unconditional `inventory::submit!` fires and populates the global kernel
+// registry with the Manifold entry.  Manifold's submit has no cfg gate (unlike
+// OCCT's cfg(has_occt)), so this extern crate reference is always active and
+// the "manifold" key is always present in the binary's registry.
+extern crate reify_kernel_manifold as _;
 
 mod cache;
 mod mcp_context;
@@ -181,6 +188,75 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
     Ok(compiled)
 }
 
+/// Like [`parse_and_compile`], but seeds the active [`CfgSet`] and walks a
+/// `#cfg(...)`-gated user-import DAG via
+/// [`reify_compiler::module_dag::compile_entry_with_stdlib_cfg`].
+///
+/// Used only by `reify check`. It preserves single-file behavior — the full
+/// stdlib prelude is still seeded, so every existing `reify check` input keeps
+/// resolving stdlib names — while additionally following the entry's
+/// cfg-satisfied user imports, so `--cfg target=...` selects which platform
+/// modules resolve (task δ's user-observable signal).
+///
+/// The module-path declaration check (spec §7.1/§7.2, task γ) is performed
+/// *inside* `compile_entry_with_stdlib_cfg` (via `attach_module_path_diag`), so
+/// — unlike [`parse_and_compile`] — this function must NOT re-run it, else the
+/// diagnostic would be emitted twice.
+fn parse_and_compile_with_cfg(
+    path: &str,
+    cfg: &CfgSet,
+) -> Result<reify_compiler::CompiledModule, ExitCode> {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            return Err(ExitCode::FAILURE);
+        }
+    };
+
+    // file_stem() strips only the last extension — same module-name derivation
+    // as parse_and_compile (see its comment for the dotted-stem limitation).
+    let module_name = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unnamed");
+
+    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
+
+    if !parsed.errors.is_empty() {
+        for err in &parsed.errors {
+            eprintln!("Parse error: {}", err.message);
+        }
+        return Err(ExitCode::FAILURE);
+    }
+
+    // Resolve sibling user imports relative to the entry file's parent dir.
+    //
+    // `stdlib_root` is INERT on this code path: `compile_entry_with_stdlib_cfg`
+    // skips every `std.*` import (the full stdlib is seeded into the prelude via
+    // `load_stdlib()` instead), so the resolver's stdlib_root is never consulted
+    // for a `reify check`. We still pass the GUI/LSP-heuristic path
+    // (parent/crates/reify-compiler/stdlib) rather than a bogus sentinel so the
+    // resolver is constructed identically to that bridge; its value has no
+    // observable effect here.
+    let parent_dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let resolver = reify_compiler::module_dag::ModuleResolver::new(
+        parent_dir,
+        parent_dir.join("crates/reify-compiler/stdlib"),
+    );
+
+    let compiled =
+        reify_compiler::module_dag::compile_entry_with_stdlib_cfg(&parsed, &resolver, cfg);
+
+    for diag in &compiled.diagnostics {
+        eprintln!("{}: {}", diag.severity, diag.message);
+    }
+
+    Ok(compiled)
+}
+
 /// One per-param binding parsed from a `--purpose` flag value.
 ///
 /// `param` is the per-param name in the multi-pair form (`p:A`), or `None`
@@ -267,14 +343,85 @@ fn parse_purpose_flag(value: &str) -> Result<PurposeActivation, String> {
     })
 }
 
+/// One parsed `--cfg <value>` argument.
+///
+/// - `Flag(name)` — a bare boolean flag (`--cfg debug`).
+/// - `KeyValue { key, value }` — a `key=value` entry (`--cfg target=wasm`,
+///   `--cfg feature=x`). An empty `value` is permitted (`--cfg target=`),
+///   matching `CfgSet`'s kv empty-string semantics.
+#[derive(Debug, PartialEq)]
+enum CfgArg {
+    Flag(String),
+    KeyValue { key: String, value: String },
+}
+
+/// Parse a single `--cfg <value>` flag value into a [`CfgArg`].
+///
+/// Grammar:
+/// - no `=` → bare flag; the value must be non-empty (`""` is an error).
+/// - `key=value` → key/value entry; the key must be non-empty (`=v` is an
+///   error). The value may be empty (`target=` yields an empty-string value).
+///
+/// Mirrors [`parse_purpose_flag`]'s error-message style.
+fn parse_cfg_flag(value: &str) -> Result<CfgArg, String> {
+    match value.split_once('=') {
+        None => {
+            if value.is_empty() {
+                return Err("--cfg value is empty".to_string());
+            }
+            Ok(CfgArg::Flag(value.to_string()))
+        }
+        Some((key, val)) => {
+            if key.is_empty() {
+                return Err(format!("--cfg value '{}' has an empty key", value));
+            }
+            Ok(CfgArg::KeyValue {
+                key: key.to_string(),
+                value: val.to_string(),
+            })
+        }
+    }
+}
+
+/// Build the active [`CfgSet`] from the repeated `--cfg <value>` arguments.
+///
+/// Starts from [`CfgSet::host_default`] (target = the compiling host's platform)
+/// and folds each parsed [`CfgArg`] in order:
+/// - `target=<v>` overrides the target;
+/// - any other `key=value` is inserted into `kv`;
+/// - a bare flag is inserted into `flags`.
+///
+/// Per PRD §4 D-2, `target` is host-defaulted and overridable ONLY by an explicit
+/// `--cfg target=<v>`; bare flags and non-`target` key/values never clear it, so
+/// passing a feature flag cannot silently disable platform gating.
+fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
+    let mut cfg = CfgSet::host_default();
+    for value in values {
+        match parse_cfg_flag(value)? {
+            CfgArg::KeyValue { key, value } if key == "target" => {
+                cfg.target = Some(value);
+            }
+            CfgArg::KeyValue { key, value } => {
+                cfg.kv.insert(key, value);
+            }
+            CfgArg::Flag(flag) => {
+                cfg.flags.insert(flag);
+            }
+        }
+    }
+    Ok(cfg)
+}
+
 /// Usage line printed to stderr for any `reify check` usage error.
-const CHECK_USAGE: &str = "Usage: reify check [--purpose <name>=<binding>]... <file>";
+const CHECK_USAGE: &str =
+    "Usage: reify check [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
     // `--purpouse` fails loud instead of being silently treated as a file path.
     let mut purpose_values: Vec<String> = Vec::new();
+    let mut cfg_values: Vec<String> = Vec::new();
     let mut file: Option<&str> = None;
     let mut i = 0;
     while i < args.len() {
@@ -287,6 +434,15 @@ fn cmd_check(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
                 purpose_values.push(args[i + 1].clone());
+                i += 2;
+            }
+            "--cfg" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --cfg requires a value");
+                    eprintln!("{}", CHECK_USAGE);
+                    return ExitCode::FAILURE;
+                }
+                cfg_values.push(args[i + 1].clone());
                 i += 2;
             }
             flag if flag.starts_with("--") => {
@@ -311,7 +467,17 @@ fn cmd_check(args: &[String]) -> ExitCode {
         }
     };
 
-    let compiled = match parse_and_compile(file) {
+    // Build the active cfg from the repeated `--cfg` values: target is
+    // host-defaulted and overridable only by `--cfg target=<v>` (PRD §4 D-2).
+    let cfg = match build_cfg_set(&cfg_values) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let compiled = match parse_and_compile_with_cfg(file, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -556,28 +722,61 @@ fn cmd_test(args: &[String]) -> ExitCode {
 
 fn cmd_build(args: &[String]) -> ExitCode {
     if args.is_empty() {
-        eprintln!("Usage: reify build <file> -o <output>");
+        eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
         return ExitCode::FAILURE;
     }
 
-    let file = &args[0];
-    let output_path = match args.iter().position(|a| a == "-o") {
-        Some(i) if i + 1 < args.len() => &args[i + 1],
-        _ => {
-            eprintln!("Usage: reify build <file> -o <output>");
+    // Detect `--verbose` anywhere in the args.
+    let verbose = args.iter().any(|a| a == "--verbose");
+
+    // Pre-compute the index of the value that follows `-o` (if present and
+    // followed by an argument).  This is reused both to build `output_path`
+    // and to exclude the `-o` value from the positional-file scan below so
+    // that `reify build -o out.step file.ri` doesn't mistakenly treat
+    // `out.step` as the input file.
+    let o_value_pos: Option<usize> = args
+        .iter()
+        .position(|a| a == "-o")
+        .and_then(|i| if i + 1 < args.len() { Some(i + 1) } else { None });
+
+    // Pick the first positional token: not a flag (`-`-prefixed) and not the
+    // value following `-o`.  This makes flag ordering irrelevant, so both
+    // `reify build file.ri --verbose` and `reify build --verbose file.ri`
+    // correctly identify the input file.
+    let file = match args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with('-') && Some(*i) != o_value_pos)
+    {
+        Some((_, f)) => f,
+        None => {
+            eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
             return ExitCode::FAILURE;
         }
     };
 
-    let format = if output_path.ends_with(".step") || output_path.ends_with(".stp") {
-        ExportFormat::Step
-    } else if output_path.ends_with(".stl") {
-        ExportFormat::Stl
-    } else if output_path.ends_with(".3mf") {
-        ExportFormat::ThreeMF
-    } else {
-        eprintln!("Unknown output format, defaulting to STEP");
-        ExportFormat::Step
+    // Under `--verbose`, `-o` is optional (the full geometry build still runs
+    // and provenance is printed; the file is only written if `-o` is present).
+    // Without `--verbose`, `-o` is required (no behavior change).
+    let output_path: Option<&String> = match o_value_pos {
+        Some(i) => Some(&args[i]),
+        None if verbose => None,
+        None => {
+            eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let format = match output_path {
+        Some(p) if p.ends_with(".step") || p.ends_with(".stp") => ExportFormat::Step,
+        Some(p) if p.ends_with(".stl") => ExportFormat::Stl,
+        Some(p) if p.ends_with(".3mf") => ExportFormat::ThreeMF,
+        Some(_) => {
+            eprintln!("Unknown output format, defaulting to STEP");
+            ExportFormat::Step
+        }
+        // No -o under --verbose: still run the full geometry build as STEP.
+        None => ExportFormat::Step,
     };
 
     let compiled = match parse_and_compile(file) {
@@ -604,13 +803,28 @@ fn cmd_build(args: &[String]) -> ExitCode {
         &mut std::io::stderr(),
     );
 
+    // Under --verbose, print per-realization kernel provenance to stdout.
+    if verbose {
+        let provenance = engine.realization_kernel_provenance();
+        for entry in &provenance {
+            println!(
+                "  {}: kernel: {}, repr: {:?}",
+                entry.realization,
+                entry.kernel.as_registry_name(),
+                entry.repr,
+            );
+        }
+    }
+
     match result.geometry_output {
         Some(data) => {
-            if let Err(e) = std::fs::write(output_path, &data) {
-                eprintln!("Error writing {}: {}", output_path, e);
-                return ExitCode::FAILURE;
+            if let Some(path) = output_path {
+                if let Err(e) = std::fs::write(path, &data) {
+                    eprintln!("Error writing {}: {}", path, e);
+                    return ExitCode::FAILURE;
+                }
+                println!("Wrote {} ({} bytes)", path, data.len());
             }
-            println!("Wrote {} ({} bytes)", output_path, data.len());
             match outcome {
                 ConstraintOutcome::AllSatisfied => ExitCode::SUCCESS,
                 ConstraintOutcome::SomeIndeterminate(n) => {
@@ -1581,6 +1795,33 @@ mod tests {
         );
     }
 
+    /// Piece-1 force-link pin: asserts that `reify-kernel-manifold`'s
+    /// `inventory::submit!` fires inside this binary so the Manifold kernel
+    /// appears in the global registry.  This MUST be an in-`main.rs` unit test
+    /// because reify-cli is a `[[bin]]` crate — subprocess integration tests
+    /// can't observe the binary's link set.
+    ///
+    /// Manifold's `inventory::submit!` is unconditional (no `cfg(has_*)` gate),
+    /// so `"manifold"` is asserted without a runtime flag.  OCCT's submit is
+    /// `cfg(has_occt)`-gated, so we guard that assertion on
+    /// `reify_kernel_occt::OCCT_AVAILABLE`.
+    #[test]
+    fn manifold_kernel_is_force_linked_into_binary() {
+        let registry = reify_eval::collect_registry();
+        assert!(
+            registry.contains_key("manifold"),
+            "reify-kernel-manifold's inventory::submit! must land in this binary; \
+             \"manifold\" key is absent — check Cargo.toml dep + extern crate declaration",
+        );
+        if reify_kernel_occt::OCCT_AVAILABLE {
+            assert!(
+                registry.contains_key("occt"),
+                "OCCT_AVAILABLE is true but \"occt\" key missing from collect_registry() — \
+                 reify-kernel-occt inventory::submit! did not fire",
+            );
+        }
+    }
+
     #[test]
     fn uses_label_when_present() {
         let entries = vec![make_entry(
@@ -1721,6 +1962,104 @@ mod tests {
         assert!(parse_purpose_flag("mfg_ready=").is_err());
         // Trailing empty segment after a comma (`p=a,`).
         assert!(parse_purpose_flag("p=a,").is_err());
+    }
+
+    #[test]
+    fn parse_cfg_flag_parses_target_key_value() {
+        // `target=wasm` is the key=value form: an explicit platform override.
+        assert_eq!(
+            parse_cfg_flag("target=wasm"),
+            Ok(CfgArg::KeyValue {
+                key: "target".to_string(),
+                value: "wasm".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_parses_bare_flag() {
+        // A value with no `=` is a bare boolean flag.
+        assert_eq!(
+            parse_cfg_flag("linux"),
+            Ok(CfgArg::Flag("linux".to_string())),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_parses_non_target_key_value() {
+        // Any `key=value` (not just `target=`) is a key/value cfg entry.
+        assert_eq!(
+            parse_cfg_flag("feature=x"),
+            Ok(CfgArg::KeyValue {
+                key: "feature".to_string(),
+                value: "x".to_string(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_allows_empty_value() {
+        // `target=` is the explicit empty-value form: the key is present and the
+        // value is the empty string, matching cfg.rs's kv empty-string semantics.
+        assert_eq!(
+            parse_cfg_flag("target="),
+            Ok(CfgArg::KeyValue {
+                key: "target".to_string(),
+                value: String::new(),
+            }),
+        );
+    }
+
+    #[test]
+    fn parse_cfg_flag_rejects_empty_key() {
+        // `=v` has an empty key — there is no cfg name to set.
+        assert!(parse_cfg_flag("=v").is_err());
+    }
+
+    #[test]
+    fn parse_cfg_flag_rejects_empty_input() {
+        // An empty value is neither a flag nor a `key=value` — rejected.
+        assert!(parse_cfg_flag("").is_err());
+    }
+
+    #[test]
+    fn build_cfg_set_empty_is_host_default() {
+        // No `--cfg` args ⇒ the host-default active cfg (target = host platform,
+        // empty flags/kv), identical to CfgSet::host_default (PRD §4 D-2).
+        assert_eq!(
+            build_cfg_set(&[]),
+            Ok(reify_compiler::cfg::CfgSet::host_default()),
+        );
+    }
+
+    #[test]
+    fn build_cfg_set_target_override_replaces_host() {
+        // `--cfg target=wasm` overrides the host-default target.
+        let cfg = build_cfg_set(&["target=wasm".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.target.as_deref(), Some("wasm"));
+    }
+
+    #[test]
+    fn build_cfg_set_flag_keeps_host_target() {
+        // A bare flag must NOT clear the host-default target (D-2 robustness): a
+        // feature flag should never silently disable platform gating.
+        let cfg = build_cfg_set(&["feat".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.target.as_deref(), Some(std::env::consts::OS));
+        assert!(cfg.flags.contains("feat"));
+    }
+
+    #[test]
+    fn build_cfg_set_non_target_kv_keeps_host_target() {
+        // A non-`target` key=value lands in `kv` and leaves the host target intact.
+        let cfg = build_cfg_set(&["k=v".to_string()]).expect("valid cfg");
+        assert_eq!(cfg.kv.get("k").map(String::as_str), Some("v"));
+        assert_eq!(cfg.target.as_deref(), Some(std::env::consts::OS));
+    }
+
+    #[test]
+    fn build_cfg_set_rejects_malformed_value() {
+        // A malformed `--cfg` value (empty key) propagates parse_cfg_flag's error.
+        assert!(build_cfg_set(&["=bad".to_string()]).is_err());
     }
 
     #[test]

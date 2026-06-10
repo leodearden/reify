@@ -192,7 +192,7 @@ pub struct WhereClause {
     pub span: SourceSpan,
 }
 
-/// `param width: Scalar = 80mm`
+/// `param width: Length = 80mm`
 #[derive(Debug, Clone)]
 pub struct ParamDecl {
     pub name: String,
@@ -734,7 +734,7 @@ pub struct EnumDecl {
     pub annotations: Vec<Annotation>,
 }
 
-/// `fn area(w: Scalar, h: Scalar) -> Scalar { w * h }`
+/// `fn area(w: Length, h: Length) -> Scalar { w * h }`
 #[derive(Debug, Clone)]
 pub struct FnDef {
     pub name: String,
@@ -919,7 +919,7 @@ pub struct TypeParamDecl {
     pub span: SourceSpan,
 }
 
-/// A function parameter: `w: Scalar` or `w: Scalar = default_expr`
+/// A function parameter: `w: Length` or `w: Length = default_expr`
 #[derive(Debug, Clone)]
 pub struct FnParam {
     pub name: String,

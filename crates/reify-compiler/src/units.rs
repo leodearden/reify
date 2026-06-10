@@ -464,6 +464,33 @@ pub(crate) fn is_dynamics_query(name: &str) -> bool {
     DYNAMICS_QUERY_NAMES.contains(&name)
 }
 
+/// Dynamics-constructor builtins: `point_mass(mass)` and
+/// `mass_properties(mass, com, inertia)` (task 4278, v0.3 flexures
+/// uniform-mass substrate).
+///
+/// These are name-recognised eval-builtins dispatched in
+/// `reify_stdlib::dynamics::eval_dynamics` — NOT `.ri` declarations
+/// (body_mass_props / DYNAMICS_QUERY_NAMES precedent). The
+/// `is_dynamics_constructor` arm in `expr.rs::infer_type`'s
+/// `NoUserFunctions` ladder sets the result type to
+/// `Type::StructureRef("MassProperties")` **up-front**, which is
+/// LOAD-BEARING: without it the first-arg fallback would infer
+/// `Scalar<Mass>` for `point_mass(2.5kg)`, tripping
+/// `value_type_kind_matches` at eval time. Uniform `StructureRef`
+/// result type — no per-name table (mirrors DYNAMICS_QUERY_NAMES).
+///
+/// **Disjointness contract**: every entry must be absent from every
+/// other classification family; pinned by
+/// `dynamics_constructor_names_are_disjoint_from_other_families` (and
+/// the converse asserts added to the sibling disjointness tests).
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const DYNAMICS_CONSTRUCTOR_NAMES: &[&str] = &["mass_properties", "point_mass"];
+
+pub(crate) fn is_dynamics_constructor(name: &str) -> bool {
+    DYNAMICS_CONSTRUCTOR_NAMES.contains(&name)
+}
+
 /// Result type per geometry-query helper. Sets the cell's `result_type` so
 /// that downstream `value_type_kind_matches` accepts the post-process
 /// `Value` (which is `Value::Undef` until GHR-ζ Phase 6 wires kernel
@@ -1527,6 +1554,11 @@ mod tests {
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
             );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
         }
     }
 
@@ -1578,6 +1610,11 @@ mod tests {
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
                  MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ — \
                  constructors and operations are disjoint slices)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
             );
         }
     }
@@ -1676,6 +1713,11 @@ mod tests {
                 "MATH_OPERATION_NAMES entry {name:?} must NOT also be a list-helper \
                  (`single` / `flat_map` — earlier arm in the NoUserFunctions ladder \
                  would shadow it)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
             );
         }
     }
@@ -2332,6 +2374,11 @@ mod tests {
                 "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
                  MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
             );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
         }
     }
 
@@ -2504,6 +2551,115 @@ mod tests {
                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
                 "FACE_PRODUCING_SELECTOR_NAMES entry {name:?} must also appear in \
                  GEOMETRY_TOPOLOGY_SELECTOR_NAMES (documented subset invariant)"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 4278 — DYNAMICS_CONSTRUCTOR_NAMES / is_dynamics_constructor (step-9 RED)
+    // -----------------------------------------------------------------------
+    //
+    // Tests for the new DYNAMICS_CONSTRUCTOR_NAMES family and is_dynamics_constructor
+    // predicate:
+    //   is_dynamics_constructor("point_mass") → true
+    //   is_dynamics_constructor("mass_properties") → true
+    //   unrelated names → false
+    //   disjointness: every DYNAMICS_CONSTRUCTOR_NAMES entry absent from every
+    //     other classification family
+    //
+    // These tests FAIL TO COMPILE until step-10 adds `DYNAMICS_CONSTRUCTOR_NAMES`
+    // and `is_dynamics_constructor` — that is the expected RED signal.
+
+    /// Task 4278 step-9 (RED). `is_dynamics_constructor("point_mass")` and
+    /// `is_dynamics_constructor("mass_properties")` must return true. Unrelated
+    /// names — "box" (geometry constructor), "body_mass_props" (DYNAMICS_QUERY_NAMES),
+    /// and "sqrt" (math-op) — must return false.
+    /// RED until step-10 adds `DYNAMICS_CONSTRUCTOR_NAMES` and
+    /// `is_dynamics_constructor`.
+    #[test]
+    fn dynamics_constructor_predicate_recognizes_ctor_names() {
+        assert!(
+            is_dynamics_constructor("point_mass"),
+            "is_dynamics_constructor must recognize 'point_mass' (task 4278)"
+        );
+        assert!(
+            is_dynamics_constructor("mass_properties"),
+            "is_dynamics_constructor must recognize 'mass_properties' (task 4278)"
+        );
+        assert!(
+            !is_dynamics_constructor("box"),
+            "is_dynamics_constructor must reject geometry name 'box'"
+        );
+        assert!(
+            !is_dynamics_constructor("body_mass_props"),
+            "is_dynamics_constructor must reject dynamics-query name 'body_mass_props' \
+             (DYNAMICS_QUERY_NAMES is a separate family)"
+        );
+        assert!(
+            !is_dynamics_constructor("sqrt"),
+            "is_dynamics_constructor must reject math-op name 'sqrt'"
+        );
+    }
+
+    /// Task 4278 step-9 (RED). Disjointness invariant for the dynamics-constructor
+    /// family. Every `DYNAMICS_CONSTRUCTOR_NAMES` entry (`point_mass` /
+    /// `mass_properties`) must be absent from all sibling classification families so
+    /// a name can satisfy at most one predicate in `expr.rs::infer_type`'s
+    /// `NoUserFunctions` ladder. Sibling to
+    /// `dynamics_query_names_are_disjoint_from_other_families` (units.rs).
+    /// RED until step-10 adds `DYNAMICS_CONSTRUCTOR_NAMES`.
+    #[test]
+    fn dynamics_constructor_names_are_disjoint_from_other_families() {
+        for name in DYNAMICS_CONSTRUCTOR_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family — separate slice)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (joint-constructor family, mechanism β task 4311)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine-map constructor family)"
             );
         }
     }

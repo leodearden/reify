@@ -1459,7 +1459,7 @@ fn real_field(data: &StructureInstanceData, key: &str) -> f64 {
 }
 
 /// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
-/// `youngs_modulus: Scalar(PRESSURE)` and `poisson_ratio: Real`.
+/// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`.
 fn extract_material(val: &Value) -> IsotropicElastic {
     let data = match val {
         Value::StructureInstance(d) => d,

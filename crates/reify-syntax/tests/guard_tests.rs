@@ -17,11 +17,11 @@ fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
 
 // ── Step 1: param and let with where clause ──────────────────────
 
-/// Parse `param x : Scalar where needs_cooling` — expects ParamDecl with WhereClause.
+/// Parse `param x : Length where needs_cooling` — expects ParamDecl with WhereClause.
 #[test]
 fn parse_param_with_where_clause() {
     let source = r#"structure S {
-    param x : Scalar where needs_cooling
+    param x : Length where needs_cooling
 }"#;
     let (members, errors) = parse_members(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
@@ -44,7 +44,7 @@ fn parse_param_with_where_clause() {
 #[test]
 fn parse_let_with_where_clause() {
     let source = r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     let y = x * 2 where active
 }"#;
     let (members, errors) = parse_members(source);
@@ -73,7 +73,7 @@ fn parse_let_with_where_clause() {
 #[test]
 fn parse_constraint_with_where_clause() {
     let source = r#"structure S {
-    param thickness : Scalar = 5mm
+    param thickness : Length = 5mm
     constraint thickness > 2mm where active
 }"#;
     let (members, errors) = parse_members(source);
@@ -125,7 +125,7 @@ fn parse_sub_with_where_clause() {
 fn parse_guarded_block_basic() {
     let source = r#"structure S {
     where needs_cooling {
-        param fan_size : Scalar = 50mm
+        param fan_size : Length = 50mm
     }
 }"#;
     let (members, errors) = parse_members(source);
@@ -157,9 +157,9 @@ fn parse_guarded_block_basic() {
 fn parse_guarded_block_with_else() {
     let source = r#"structure S {
     where cond {
-        param a : Scalar = 1mm
+        param a : Length = 1mm
     } else {
-        param b : Scalar = 2mm
+        param b : Length = 2mm
     }
 }"#;
     let (members, errors) = parse_members(source);
@@ -197,7 +197,7 @@ fn parse_nested_guards() {
     let source = r#"structure S {
     where a {
         where b {
-            param x : Scalar = 1mm
+            param x : Length = 1mm
         }
     }
 }"#;
@@ -237,7 +237,7 @@ fn parse_nested_guards() {
 #[test]
 fn parse_complex_guard_expression() {
     let source = r#"structure S {
-    param fan : Scalar = 50mm where x > 5mm && active
+    param fan : Length = 50mm where x > 5mm && active
 }"#;
     let (members, errors) = parse_members(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
@@ -272,7 +272,7 @@ fn parse_complex_guard_expression() {
 fn parse_guarded_block_complex_expression() {
     let source = r#"structure S {
     where needs_cooling || override_flag {
-        param fan : Scalar = 50mm
+        param fan : Length = 50mm
     }
 }"#;
     let (members, errors) = parse_members(source);

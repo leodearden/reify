@@ -28,7 +28,8 @@ use reify_ast::{
 };
 use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{
-    DocumentHighlight, DocumentHighlightKind, Position, Range, TextEdit, Url, WorkspaceEdit,
+    DocumentHighlight, DocumentHighlightKind, Location, Position, Range, TextEdit, Url,
+    WorkspaceEdit,
 };
 
 use crate::analysis::{enclosing_decl_at, name_token_span};
@@ -100,6 +101,38 @@ pub fn collect_references(
     let offset = position_to_offset(source, pos);
     let (_word_start, word) = find_word_at_offset(source, offset)?;
     collect_references_at(source, parsed, offset, word, include_declaration)
+}
+
+/// Map the [`ReferenceSet`] under the cursor to LSP [`Location`]s in `uri`.
+///
+/// The thin LSP-facing wrapper over [`collect_references`] (task β, 4202). It
+/// takes an **already-resolved** [`ParsedModule`] — fed by the handler from the
+/// per-document parse cache (`DocumentState::parsed_module`, one parse per edit),
+/// mirroring [`compute_document_highlights`] — runs the scope-aware collection,
+/// then maps each name-token [`SourceSpan`] to a [`Location`] via
+/// [`span_to_range`], paired with the document `uri`. Returns `None` when the
+/// cursor is not on an identifier that resolves to a local value-member binding
+/// (propagated from [`collect_references`]). The LSP `context.include_declaration`
+/// flag is passed straight through. Single-file: no spawn_blocking, no cross-file
+/// FS I/O.
+pub fn compute_references(
+    source: &str,
+    parsed: &ParsedModule,
+    uri: &Url,
+    pos: Position,
+    include_declaration: bool,
+) -> Option<Vec<Location>> {
+    let refset = collect_references(source, parsed, pos, include_declaration)?;
+    Some(
+        refset
+            .references
+            .iter()
+            .map(|&span| Location {
+                uri: uri.clone(),
+                range: span_to_range(source, span),
+            })
+            .collect(),
+    )
 }
 
 /// Reference collection from an **already-resolved** cursor (`offset` + the
@@ -1312,11 +1345,11 @@ mod tests {
         // boundary).
         let source = "\
 structure A {
-    param width: Scalar = 1mm
+    param width: Length = 1mm
     let a = width
 }
 structure B {
-    param width: Scalar = 2mm
+    param width: Length = 2mm
     let b = width
 }";
         let parsed = reify_syntax::parse(source, ModulePath::single("iso"));
@@ -1388,7 +1421,7 @@ structure B {
         // Every use of `x` therefore binds to the `let`, not the `param`.
         let source = "\
 structure S {
-    param x: Scalar = 1mm
+    param x: Length = 1mm
     let x = 2mm
     let uses = x + x
 }";
@@ -1451,7 +1484,7 @@ structure S {
         // uses); this test pins it so the behavior is intentional and locked.
         let source = "\
 structure S {
-    param x: Scalar = 1mm
+    param x: Length = 1mm
     let x = 2mm
     let uses = x + x
 }";
@@ -1539,9 +1572,9 @@ structure S {
         let source = "\
 structure S {
     param cond: Bool = true
-    param x: Scalar = 1mm
+    param x: Length = 1mm
     where cond {
-        param x: Scalar = 2mm
+        param x: Length = 2mm
         let inner = x
     }
     let outer = x
@@ -1628,7 +1661,7 @@ structure S {
         // substrings of one another so `occurrences`/`find` stay exact.
         let source = "\
 structure S {
-    param plain: Scalar = 1mm
+    param plain: Length = 1mm
     let derived = 2mm
     param bore: Length = auto
     sub widget = Hole(diameter: 6mm)
@@ -1766,8 +1799,8 @@ structure S {
             "builtin/function `box` is not renameable"
         );
         assert!(
-            refuses("Scalar").is_none(),
-            "type name `Scalar` is not renameable"
+            refuses("Length").is_none(),
+            "type name `Length` is not renameable"
         );
         assert!(
             refuses("Bracket").is_none(),
@@ -1851,12 +1884,12 @@ structure S {
             );
         }
 
-        // Where prepare_rename refuses (cursor on the type name `Scalar`),
+        // Where prepare_rename refuses (cursor on the type name `Length`),
         // compute_rename returns None too.
-        let scalar_off = source.find("Scalar").expect("Scalar present");
-        let scalar_pos = offset_to_position(source, scalar_off as u32);
+        let type_off = source.find("Length").expect("Length type present");
+        let type_pos = offset_to_position(source, type_off as u32);
         assert!(
-            compute_rename(source, &parsed, &uri, scalar_pos, "span").is_none(),
+            compute_rename(source, &parsed, &uri, type_pos, "span").is_none(),
             "compute_rename must refuse where prepare_rename refuses"
         );
     }
@@ -2022,9 +2055,9 @@ structure S {
         // — including the guarded-branch and port-body uses — resolves to it.
         let source = "\
 structure Probe {
-    param tracked: Scalar = 1mm
+    param tracked: Length = 1mm
     param enabled: Bool = true
-    param derived: Scalar = tracked * 2
+    param derived: Length = tracked * 2
     let scaled = tracked + 3mm
     constraint tracked > 0mm
     constraint tracked < 50mm
@@ -2035,7 +2068,7 @@ structure Probe {
         let inner = tracked
     }
     port mount : Flange {
-        param d: Scalar = tracked
+        param d: Length = tracked
     }
 }";
         let parsed = reify_syntax::parse(source, ModulePath::single("probe"));
@@ -2115,11 +2148,11 @@ structure Probe {
         // across the port boundary (Invariant 1 for nested scopes).
         let source = "\
 structure S {
-    param width: Scalar = 1mm
-    param outer: Scalar = width
+    param width: Length = 1mm
+    param outer: Length = width
     port mount : Flange {
-        param width: Scalar = 2mm
-        param inner: Scalar = width
+        param width: Length = 2mm
+        param inner: Length = width
     }
 }";
         let parsed = reify_syntax::parse(source, ModulePath::single("portredec"));
@@ -2221,10 +2254,10 @@ structure S {
         // falls inside the depth-0 entity region and resolves to the outer binding.
         let source = "\
 structure S {
-    param tracked: Scalar = 1mm
+    param tracked: Length = 1mm
     param enabled: Bool = true
     where enabled {
-        param tracked: Scalar = 2mm
+        param tracked: Length = 2mm
     }
     forall v in tracked: constraint v > 0mm
 }";
@@ -2333,12 +2366,12 @@ structure S {
         }
 
         // --- A non-resolvable cursor position yields None. ---
-        // A type-name token (`Scalar`) does not resolve to a local value-member
+        // A type-name token (`Length`) does not resolve to a local value-member
         // binding, so collect_references → None → producer → None.
-        let scalar_off = source.find("Scalar").expect("Scalar present");
-        let scalar_pos = offset_to_position(source, scalar_off as u32);
+        let type_off = source.find("Length").expect("Length type present");
+        let type_pos = offset_to_position(source, type_off as u32);
         assert!(
-            compute_document_highlights(source, &parsed, scalar_pos).is_none(),
+            compute_document_highlights(source, &parsed, type_pos).is_none(),
             "a type-name token is not resolvable, so it produces no highlights"
         );
         // A keyword (`structure`) is likewise non-resolvable.
@@ -2360,7 +2393,7 @@ structure S {
         // nested-scope descent (step-4). This part is RED after step-2.
         let source_nested = "\
 structure S {
-    param diameter: Scalar = 5mm
+    param diameter: Length = 5mm
     param enabled: Bool = true
     sub h = Hole(bore: 3mm)
     where enabled {
@@ -2453,10 +2486,10 @@ structure S {
         // is the closest parser-reachable sibling to cover the child-scope descent.
         let source = "\
 structure S {
-    param diameter: Scalar = 5mm
+    param diameter: Length = 5mm
     sub h = Hole(bore: 3mm)
     port out : Flange {
-        param width: Scalar = h.diameter
+        param width: Length = h.diameter
     }
 }";
         let parsed = reify_syntax::parse(source, ModulePath::single("portbody"));
@@ -2511,7 +2544,7 @@ structure S {
         // mis-resolve to the unrelated `param diameter` binding.
         let source = "\
 structure S {
-    param diameter: Scalar = 5mm
+    param diameter: Length = 5mm
     sub h = Hole(bore: 3mm)
     let x = h.diameter
 }";
@@ -2573,6 +2606,82 @@ structure S {
         assert_eq!(
             prepare_decl.placeholder, "diameter",
             "prepare_rename placeholder is `diameter` when on the decl"
+        );
+    }
+
+    // --- step-1 (β, task 4202): compute_references maps a ReferenceSet to LSP Locations ---
+
+    #[test]
+    fn compute_references_maps_referenceset_to_locations() {
+        // A single structure where one value-member binding (`base`) is used
+        // multiple times. compute_references is the thin LSP wrapper over
+        // collect_references: it must map each name-token SourceSpan in the
+        // ReferenceSet to a Location { uri, range } via span_to_range, preserving
+        // count and ascending order. collect_references already proves the
+        // underlying counts (collect_references_basic_single_binding_width /
+        // _include_declaration_toggle), so this pins only the span→Location mapping.
+        let source = "\
+structure S {
+    param base: Length = 1mm
+    let a = base
+    let b = base
+}";
+        let uri = Url::parse("file:///refs.ri").unwrap();
+        let parsed = reify_syntax::parse(source, ModulePath::single("refs"));
+        let base = occurrences(source, "base");
+        assert_eq!(base.len(), 3, "1 decl + 2 uses of base");
+        // base[0]=param decl token, base[1]/base[2]=uses.
+
+        // Cursor on the first USE of base (in `let a = base`).
+        let pos = offset_to_position(source, base[1] as u32);
+
+        // include_declaration=true → declaration ∪ uses = 3 Locations, ascending.
+        let with = compute_references(source, &parsed, &uri, pos, true)
+            .expect("cursor on a base use must resolve to Locations");
+        let expected: Vec<Location> = base
+            .iter()
+            .map(|&off| Location {
+                uri: uri.clone(),
+                range: span_to_range(source, span_of(off, "base")),
+            })
+            .collect();
+        assert_eq!(
+            with, expected,
+            "each Location.range must equal span_to_range of the name-token span, ascending"
+        );
+        // Every Location carries the document uri.
+        assert!(
+            with.iter().all(|l| l.uri == uri),
+            "every Location.uri must equal the document uri"
+        );
+
+        // include_declaration=false → the declaration token drops; count is N-1.
+        let without = compute_references(source, &parsed, &uri, pos, false)
+            .expect("cursor on a base use resolves (exclude declaration)");
+        assert_eq!(
+            without.len(),
+            with.len() - 1,
+            "include_declaration=false drops exactly the declaration token"
+        );
+        let expected_uses: Vec<Location> = base
+            .iter()
+            .skip(1)
+            .map(|&off| Location {
+                uri: uri.clone(),
+                range: span_to_range(source, span_of(off, "base")),
+            })
+            .collect();
+        assert_eq!(
+            without, expected_uses,
+            "uses-only set, declaration token excluded"
+        );
+
+        // A cursor on a non-identifier byte (the `=` sign) resolves to nothing.
+        let eq_off = source.find('=').expect("source contains an '='");
+        let eq_pos = offset_to_position(source, eq_off as u32);
+        assert!(
+            compute_references(source, &parsed, &uri, eq_pos, true).is_none(),
+            "a cursor off any identifier must return None"
         );
     }
 }

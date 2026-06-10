@@ -121,35 +121,36 @@ TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scop
 export TEST_PLAN_SEGS
 
 echo ""
-echo "--- Test 10: debug pass is gated by cargo-test-occt-gated.sh ---"
+echo "--- Test 10: plan has NO cargo-test-occt-gated.sh invocation (task 4451: OCCT folded into nextest pool) ---"
 
-assert "plan contains gated debug pass with -p reify-kernel-occt" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE './scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt -p reify-eval -p reify-cli -p reify-config -- --test-threads=1'"
-
-echo ""
-echo "--- Test 11: release pass is gated by cargo-test-occt-gated.sh (sensitivity-scoped to reify-eval) ---"
-
-# Release is sensitivity-scoped: only reify-eval (OCCT ∩ release-sensitive) stays
-# flock-gated. The other 3 OCCT crates have zero release-sensitive tests.
-assert "plan contains gated release pass with -p reify-eval --release (sensitivity-scoped)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE './scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-eval --release -- --test-threads=1'"
+# Task 4451 folds OCCT crates into the nextest pool (occt test-group max-threads=4).
+# The flock-gated debug pass is gone; cargo-test-occt-gated.sh is retained only as
+# a standalone/manual runner.
+assert "plan contains NO cargo-test-occt-gated.sh invocation (gated pass dropped, task 4451)" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q './scripts/cargo-test-occt-gated\.sh'"
 
 echo ""
-echo "--- Test 12: no bare ungated workspace pass (every --workspace leaf has --exclude) ---"
+echo "--- Test 11: nextest release pass includes -p reify-eval (sensitivity-scoped, folded, task 4451) ---"
 
-# Allowed forms:
-#   (a) Gated:   cargo-test-occt-gated.sh cargo test -p ...  (no --workspace)
-#   (b) Ungated: cargo (test|nextest run) --workspace --exclude ... (intentional)
-# Forbidden: a bare workspace pass without any --exclude flags. Accept both
-# runner spellings so the assertion is valid whether or not nextest is installed.
-assert "no bare workspace test pass without --exclude in the plan" \
-    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -E 'cargo (test|nextest run) --workspace' | grep -vq -- '--exclude'"
+# Release is sensitivity-scoped: only reify-eval (OCCT ∩ release-sensitive) appears
+# in the release nextest pass. No flock wrapper — the nextest occt group handles it.
+assert "plan contains nextest release pass with -p reify-eval (folded, no gated wrapper)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -v 'cargo-test-occt-gated\.sh' | grep -qE 'cargo (test|nextest run).*-p reify-eval.*--release|cargo (test|nextest run).*--release.*-p reify-eval'"
 
 echo ""
-echo "--- Test 13: --workspace flag preserved under gate (coverage assertion) ---"
+echo "--- Test 12: nextest --workspace pass has NO --exclude (OCCT folded in, task 4451) ---"
 
-assert "gated debug invocation contains '-p reify-kernel-occt'" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt'"
+# After the fold the full-workspace debug nextest pass covers ALL crates including
+# OCCT ones. The nextest occt test-group (max-threads=4) bounds their concurrency.
+# A bare --workspace pass WITHOUT --exclude is now the CORRECT form.
+assert "full-workspace nextest pass does NOT have --exclude (OCCT no longer excluded, task 4451)" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -E 'cargo (test|nextest run) --workspace' | grep -q -- '--exclude'"
+
+echo ""
+echo "--- Test 13: nextest --workspace pass present and OCCT not excluded (coverage, task 4451) ---"
+
+assert "plan contains 'cargo (test|nextest run) --workspace' (OCCT folded into the pool, not excluded)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'cargo (test|nextest run) --workspace'"
 
 # -- Test 14: bounded lock-wait exits non-zero with clear message ---------------
 echo ""
@@ -242,21 +243,20 @@ assert "Test 16: stderr contains log line with 'acquired', 'OCCT lock', and nume
 
 rm -f "$_LOCK16" "$_ERR16"
 
-# -- Test 17: gated invocations delegate the timeout to the wrapper -------------
+# -- Test 17: no gated invocations in plan; workspace pass uses 90m outer timeout --
 echo ""
-echo "--- Test 17: plan delegates timeout to wrapper via REIFY_OCCT_TEST_TIMEOUT (no outer timeout on gated) ---"
+echo "--- Test 17: no REIFY_OCCT_TEST_TIMEOUT in plan; workspace nextest pass uses 90m timeout (task 4451) ---"
 
-assert "Test 17: no outer 'timeout --kill-after=N Nm ./scripts/cargo-test-occt-gated' in the plan" \
-    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout[[:space:]]+--kill-after=[0-9]+[[:space:]]+[0-9]+[smhd][[:space:]]+[./]*scripts/cargo-test-occt-gated'"
+# Task 4451 drops the gated passes: REIFY_OCCT_TEST_TIMEOUT= no longer appears.
+# The full-workspace nextest pass retains its 90m outer timeout.
+assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= does NOT appear in the plan (no gated pass, task 4451)" \
+    bash -c "[ \"\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -oF 'REIFY_OCCT_TEST_TIMEOUT=' | wc -l | tr -d ' ')\" -eq 0 ]"
 
-assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= appears exactly twice in the plan (once per gated invocation)" \
-    bash -c "[ \"\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -oF 'REIFY_OCCT_TEST_TIMEOUT=' | wc -l | tr -d ' ')\" -eq 2 ]"
+assert "Test 17: no ./scripts/cargo-test-occt-gated in the plan at all (folded into nextest, task 4451)" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q './scripts/cargo-test-occt-gated'"
 
-assert "Test 17: debug invocation sets REIFY_OCCT_TEST_TIMEOUT=3600" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'REIFY_OCCT_TEST_TIMEOUT=3600 ./scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-kernel-occt'"
-
-assert "Test 17: release invocation sets REIFY_OCCT_TEST_TIMEOUT=4800 (sensitivity-scoped to -p reify-eval)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'REIFY_OCCT_TEST_TIMEOUT=4800 ./scripts/cargo-test-occt-gated\.sh.*cargo test -p reify-eval --release'"
+assert "Test 17: debug full-workspace nextest pass uses 90m outer timeout (retained)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run --workspace'"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a

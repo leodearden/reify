@@ -79,11 +79,13 @@ MERGE_ALL_PLAN="$(printf '%s\n' "$MERGE_ALL_PLAN_FULL" | grep -v '^#')"
 
 # --- task / test / all ---
 
-# Sanity: at least 2 cargo command lines in the plan.
+# Sanity: at least 1 cargo command line in the plan.
+# Task 4451 folds the two-pass (gated+ungated) into a single nextest pass, so
+# the test action plan has one cargo line (debug nextest run --workspace).
 # '(^| )cargo ' matches the real cargo token; 'cargo-test-occt-gated.sh' has a
 # hyphen so it doesn't match the wrapper script name, only the 'cargo test' arg.
-assert "task/test/all: at least 2 cargo command lines (sanity)" \
-    bash -c '[ "$(printf "%s\n" "$1" | grep -cE "(^| )cargo " || echo 0)" -ge 2 ]' \
+assert "task/test/all: at least 1 cargo command line (sanity, task 4451: single nextest pass)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -cE "(^| )cargo " || echo 0)" -ge 1 ]' \
     _ "$TASK_TEST_PLAN"
 
 # All cargo lines must carry the task prefix (zero unprefixed lines).

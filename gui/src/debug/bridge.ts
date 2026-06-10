@@ -803,6 +803,18 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       return { ok: true };
     },
 
+    // Focus the CodeMirror editor so subsequent keyboard() calls reach it.
+    // Calls ctx.editorView.focus() which focuses the CM contentDOM directly,
+    // bypassing the focus-requires-trusted-event limitation of click_at.
+    // Used by the find-uses smoke test (smoke_find_uses.mjs step 4a) after
+    // open_file to enable keyboard navigation + Shift+F12.
+    focus_editor: () => {
+      const view = ctx.editorView;
+      if (!view) return { error: 'editor view not ready' };
+      view.focus();
+      return { ok: true };
+    },
+
     scroll: (params) => {
       if (params.target === 'editor') {
         // Editor mode: scroll the CodeMirror EditorView's scrollDOM.

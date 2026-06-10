@@ -168,7 +168,7 @@ fn von_mises_field_returns_field_with_von_mises_source() {
         "domain should be Point3(Real)"
     );
 
-    // Codomain: Scalar with PRESSURE dimension (same as tensor elements)
+    // Codomain: Length with PRESSURE dimension (same as tensor elements)
     assert_eq!(
         *codomain_type,
         pressure_scalar_type(),

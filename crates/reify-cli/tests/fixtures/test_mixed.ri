@@ -15,6 +15,6 @@
 }
 
 @test structure TestIndet {
-    param z: Scalar = auto
+    param z: Length = auto
     constraint z > 0
 }

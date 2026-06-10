@@ -231,7 +231,7 @@ fn run_tests_with_constraint_def_reference_violated_returns_fail() {
 #[test]
 fn run_tests_with_auto_param_returns_indeterminate() {
     let compiled = parse_and_compile(
-        "@test structure TestAuto { param x : Scalar = auto\n constraint x > 0 }",
+        "@test structure TestAuto { param x : Length = auto\n constraint x > 0 }",
     );
     let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
     assert_eq!(results.len(), 1);
@@ -246,7 +246,7 @@ fn run_tests_with_auto_param_returns_indeterminate() {
 // Step 4: @test with multiple sub-structure fixtures — both pass
 #[test]
 fn run_tests_with_multiple_sub_structures_returns_pass() {
-    let source = "structure def Widget { param size : Length = 10mm }\nstructure def Gadget { param weight : Scalar = 2 }\n@test structure TestAssembly {\n  sub w = Widget()\n  sub g = Gadget()\n  constraint self.w.size > 0mm\n  constraint self.g.weight > 0\n}";
+    let source = "structure def Widget { param size : Length = 10mm }\nstructure def Gadget { param weight : Length = 2 }\n@test structure TestAssembly {\n  sub w = Widget()\n  sub g = Gadget()\n  constraint self.w.size > 0mm\n  constraint self.g.weight > 0\n}";
     let compiled = parse_and_compile(source);
     let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
     assert_eq!(results.len(), 1);

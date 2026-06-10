@@ -2223,7 +2223,7 @@ fn divergence_sample_dimensional_correctness_returns_scalar() {
     let div_result = eval_field_op("divergence", domain.clone(), codomain);
     let sampled = sample_field(div_result, domain);
 
-    // Expected: Scalar[Velocity/Length = 1/Time], si_value ≈ 3.0.
+    // Expected: Length[Velocity/Length = 1/Time], si_value ≈ 3.0.
     // The identity body `vec3(x, y, z)` from eval_field_op has divergence
     // ∂x/∂x + ∂y/∂y + ∂z/∂z = 1 + 1 + 1 = 3.0 (exact analytical value).
     let one_over_time = velocity_dim.div(&DimensionVector::LENGTH);
@@ -2286,7 +2286,7 @@ fn divergence_sample_mixed_length_to_real_placeholder() {
     let div_result = eval_field_op("divergence", domain.clone(), codomain);
     let sampled = sample_field(div_result, domain);
 
-    // Desired: Scalar[1/Length, si_value ≈ 3.0]
+    // Desired: Length[1/Length, si_value ≈ 3.0]
     // (identity body ∂x/∂x+∂y/∂y+∂z/∂z = 3.0, result dimension = 1/Length)
     let one_over_length = DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH);
     match sampled {
@@ -2344,7 +2344,7 @@ fn divergence_sample_mixed_real_to_velocity_returns_scalar() {
     let div_result = eval_field_op("divergence", domain.clone(), codomain);
     let sampled = sample_field(div_result, domain);
 
-    // Expected: Scalar[Velocity, si_value ≈ 3.0]
+    // Expected: Length[Velocity, si_value ≈ 3.0]
     // (identity body ∂x/∂x+∂y/∂y+∂z/∂z = 3.0; Velocity / dimensionless = Velocity)
     match sampled {
         Value::Scalar {
@@ -2450,7 +2450,7 @@ fn laplacian_sample_dimensional_correctness_returns_scalar() {
     let lap_result = eval_field_op("laplacian", domain.clone(), codomain);
     let sampled = sample_field(lap_result, domain);
 
-    // Expected: Scalar[Temperature/Length²]
+    // Expected: Length[Temperature/Length²]
     let temp_per_len_sq = DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2));
     match sampled {
         Value::Scalar { dimension, .. } => {
@@ -2538,7 +2538,7 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
 
     let sampled = sample_field(lap_result, domain);
 
-    // Expected: Scalar[Temperature/Length², si_value ≈ 6.0].
+    // Expected: Length[Temperature/Length², si_value ≈ 6.0].
     let temp_per_len_sq = DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2));
     match sampled {
         Value::Scalar {
@@ -2599,7 +2599,7 @@ fn laplacian_sample_mixed_length_to_real_placeholder() {
     let lap_result = eval_field_op("laplacian", domain.clone(), codomain);
     let sampled = sample_field(lap_result, domain);
 
-    // Desired: Scalar[1/Length², si_value ≈ 0.0]
+    // Desired: Length[1/Length², si_value ≈ 0.0]
     // (linear body `x+y+z`, ∇²(linear) = 0; result dimension = 1/Length²)
     let one_over_length_sq = DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH.pow(2));
     match sampled {
@@ -2656,7 +2656,7 @@ fn laplacian_sample_mixed_real_to_temperature_returns_scalar() {
     let lap_result = eval_field_op("laplacian", domain.clone(), codomain);
     let sampled = sample_field(lap_result, domain);
 
-    // Expected: Scalar[Temperature, si_value ≈ 0.0]
+    // Expected: Length[Temperature, si_value ≈ 0.0]
     // (linear body `x+y+z`, ∇²(linear) = 0; Temperature / dimensionless = Temperature)
     match sampled {
         Value::Scalar {
@@ -4093,7 +4093,7 @@ fn divergence_dimensional_correctness_composed_source() {
     );
 }
 
-// ── Step 13: Scalar{DIMENSIONLESS} codomain downgrade coverage (Task 1291) ───────
+// ── Step 13: Length{DIMENSIONLESS} codomain downgrade coverage (Task 1291) ───────
 
 /// Exercises the explicit `Scalar{DIMENSIONLESS} → Real` fallback arm in
 /// `compute_divergence` (calculus.rs:229-231).

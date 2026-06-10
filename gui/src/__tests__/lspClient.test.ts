@@ -451,4 +451,78 @@ describe('extractHoverMarkdown', () => {
   it('returns empty string for an array containing only malformed elements', () => {
     expect(extractHoverMarkdown([{ malformed: true }, { alsoMalformed: 42 }])).toBe('');
   });
+
+  it('createLspClient() exposes a references function', () => {
+    const client = createLspClient();
+    expect(typeof client.references).toBe('function');
+  });
+
+  it('references sends textDocument/references with position and includeDeclaration context', async () => {
+    mockInvoke.mockResolvedValue('[]');
+
+    const client = createLspClient();
+    await client.references('file:///test.ri', 9, 15, true);
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'textDocument/references',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({
+      textDocument: { uri: 'file:///test.ri' },
+      position: { line: 9, character: 15 },
+      context: { includeDeclaration: true },
+    });
+  });
+
+  it('references returns a Location[] from an array response', async () => {
+    const mockLocations = [
+      {
+        uri: 'file:///test.ri',
+        range: { start: { line: 2, character: 4 }, end: { line: 2, character: 9 } },
+      },
+      {
+        uri: 'file:///test.ri',
+        range: { start: { line: 5, character: 8 }, end: { line: 5, character: 13 } },
+      },
+    ];
+    mockInvoke.mockResolvedValue(JSON.stringify(mockLocations));
+
+    const client = createLspClient();
+    const result = await client.references('file:///test.ri', 5, 8, true);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].uri).toBe('file:///test.ri');
+    expect(result[0].range.start).toEqual({ line: 2, character: 4 });
+  });
+
+  it('references returns [] when the response is null (unknown URI / no identifier -> Ok(None))', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    const result = await client.references('file:///unknown.ri', 0, 0, true);
+
+    expect(result).toEqual([]);
+  });
+
+  it('references returns [] when the response is not an array', async () => {
+    mockInvoke.mockResolvedValue(JSON.stringify({ unexpected: 'shape' }));
+
+    const client = createLspClient();
+    const result = await client.references('file:///test.ri', 1, 2, true);
+
+    expect(result).toEqual([]);
+  });
+
+  it('references passes includeDeclaration=false through to context', async () => {
+    mockInvoke.mockResolvedValue('[]');
+
+    const client = createLspClient();
+    await client.references('file:///test.ri', 1, 2, false);
+
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params.context).toEqual({ includeDeclaration: false });
+  });
 });

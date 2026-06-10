@@ -175,8 +175,8 @@ fn e2e_parse_compile_eval_auto_param() {
     use reify_ir::{DeterminacyState, Satisfaction};
 
     let source = r#"structure S {
-    param x : Scalar = auto
-    param y : Scalar = 5mm
+    param x : Length = auto
+    param y : Length = 5mm
     let z = y * 2
     constraint x > 2mm
 }"#;
@@ -694,8 +694,8 @@ fn engine_eval_stdlib_function_in_let() {
     use reify_core::{ModulePath, ValueCellId};
 
     let source = r#"structure S {
-    param w: Scalar = 80mm
-    param h: Scalar = 100mm
+    param w: Length = 80mm
+    param h: Length = 100mm
     let diag = sqrt(w * w + h * h)
 }"#;
     let parsed = reify_syntax::parse(source, ModulePath::single("stdlib_test"));
@@ -773,12 +773,12 @@ fn e2e_all_three_features_through_engine() {
     let source = r#"import std.math
 
 structure Child {
-    param size: Scalar = 10mm
+    param size: Length = 10mm
     let half = size / 2
 }
 
 structure Parent {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
     let diag = sqrt(w * w)
     sub part = Child(size: w / 2)
     constraint diag > 0mm

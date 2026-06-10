@@ -710,7 +710,7 @@ fn real_add_dimensioned_complex_undef() {
     assert!(result.is_undef());
 }
 
-/// Regression guard: Scalar{0.005,LENGTH}(=5mm) + Complex{0,4.1,DIMENSIONLESS} → Undef.
+/// Regression guard: Length{0.005,LENGTH}(=5mm) + Complex{0,4.1,DIMENSIONLESS} → Undef.
 /// Dimensioned Scalar does not match the new Real/Int arms; falls through to `_ => Undef`.
 #[test]
 fn scalar_add_complex_dimensionless_undef() {
@@ -799,7 +799,7 @@ fn real_sub_dimensioned_complex_undef() {
     assert!(result.is_undef());
 }
 
-/// Regression guard: Scalar{0.005,LENGTH}(=5mm) - Complex{0,4.1,DIMENSIONLESS} → Undef.
+/// Regression guard: Length{0.005,LENGTH}(=5mm) - Complex{0,4.1,DIMENSIONLESS} → Undef.
 /// Dimensioned Scalar does not match the new Real/Int arms; falls through to `_ => Undef`.
 #[test]
 fn scalar_sub_complex_dimensionless_undef() {

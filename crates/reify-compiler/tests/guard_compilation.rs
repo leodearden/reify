@@ -83,14 +83,14 @@ structure def S {
     );
 }
 
-/// Parse `param x : Scalar = 5mm where active` — the per-declaration where clause
+/// Parse `param x : Length = 5mm where active` — the per-declaration where clause
 /// should compile into a CompiledGuardedGroup with x as a guarded member.
 #[test]
 fn compile_param_with_where_clause() {
     let source = r#"
 structure S {
     param active : Bool = true
-    param x : Scalar = 5mm where active
+    param x : Length = 5mm where active
 }
 "#;
 
@@ -146,8 +146,8 @@ fn compile_block_guard() {
 structure S {
     param active : Bool = true
     where active {
-        param x : Scalar = 5mm
-        param y : Scalar = 10mm
+        param x : Length = 5mm
+        param y : Length = 10mm
         constraint x > 2mm
     }
 }
@@ -217,7 +217,7 @@ structure S {
     );
 }
 
-/// Nested guards: `where a { where b { param x : Scalar = 1mm } }`
+/// Nested guards: `where a { where b { param x : Length = 1mm } }`
 /// should produce 2 guarded groups. The inner guard_expr should be
 /// AND(ValueRef(outer_guard), ValueRef(b)).
 #[test]
@@ -228,7 +228,7 @@ structure S {
     param b : Bool = true
     where a {
         where b {
-            param x : Scalar = 1mm
+            param x : Length = 1mm
         }
     }
 }
@@ -280,9 +280,9 @@ fn compile_else_block() {
 structure S {
     param cond : Bool = true
     where cond {
-        param a : Scalar = 1mm
+        param a : Length = 1mm
     } else {
-        param b : Scalar = 2mm
+        param b : Length = 2mm
     }
 }
 "#;
@@ -329,7 +329,7 @@ fn reference_safety_unguarded_to_guarded_error() {
     let source = r#"
 structure S {
     param active : Bool = true
-    param x : Scalar = 5mm where active
+    param x : Length = 5mm where active
     let y = x
 }
 "#;
@@ -359,7 +359,7 @@ fn reference_safety_same_guard_ok() {
 structure S {
     param active : Bool = true
     where active {
-        param x : Scalar = 5mm
+        param x : Length = 5mm
         let y = x
     }
 }
@@ -391,13 +391,13 @@ fn content_hash_includes_guarded_member_exprs() {
     let source_a = r#"
 structure S {
     param active : Bool = true
-    param x : Scalar = 5mm where active
+    param x : Length = 5mm where active
 }
 "#;
     let source_b = r#"
 structure S {
     param active : Bool = true
-    param x : Scalar = 10mm where active
+    param x : Length = 10mm where active
 }
 "#;
 
@@ -422,7 +422,7 @@ fn content_hash_includes_guarded_constraint_exprs() {
 structure S {
     param active : Bool = true
     where active {
-        param x : Scalar = 5mm
+        param x : Length = 5mm
         constraint x > 2mm
     }
 }
@@ -431,7 +431,7 @@ structure S {
 structure S {
     param active : Bool = true
     where active {
-        param x : Scalar = 5mm
+        param x : Length = 5mm
         constraint x > 3mm
     }
 }
@@ -459,7 +459,7 @@ structure S {
     param a : Bool = true
     param b : Bool = true
     where a {
-        param x : Scalar = 5mm
+        param x : Length = 5mm
     }
     where b {
     } else {
@@ -531,7 +531,7 @@ fn minimize_in_block_guard_emits_unsupported_error() {
     let source = r#"
 structure S {
     param active : Bool = true
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     where active {
         minimize x
     }
@@ -567,7 +567,7 @@ fn maximize_in_block_guard_emits_unsupported_error() {
     let source = r#"
 structure S {
     param active : Bool = true
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     where active {
         maximize x
     }
@@ -606,12 +606,12 @@ structure S {
 fn constraint_inst_in_block_guard_silently_ignored() {
     let source = r#"
 constraint def NonNeg {
-    param x : Scalar
+    param x : Length
     x >= 0
 }
 structure S {
     param active : Bool = true
-    param y : Scalar = 5mm
+    param y : Length = 5mm
     where active {
         constraint NonNeg(x: y)
     }
@@ -795,7 +795,7 @@ fn reference_safety_toplevel_constraint_to_guarded() {
     let source = r#"
 structure S {
     param active : Bool = true
-    param x : Scalar = 5mm where active
+    param x : Length = 5mm where active
     constraint x > 2mm
 }
 "#;
@@ -829,7 +829,7 @@ structure S {
     param a : Bool = true
     param b : Bool = true
     where a {
-        param x : Scalar = 5mm
+        param x : Length = 5mm
     }
     where b {
     } else {
@@ -858,7 +858,7 @@ structure S {
     param a : Bool = true
     param b : Bool = true
     where a {
-        param x : Scalar = 5mm
+        param x : Length = 5mm
     }
     where b {
         constraint x > 0mm
@@ -893,7 +893,7 @@ structure S {
     param a : Bool = true
     param b : Bool = true
     where a {
-        param x : Scalar = 1mm
+        param x : Length = 1mm
         where b {
             let y = x
         }

@@ -1,29 +1,29 @@
 # cargo-nextest configuration for Reify.
 #
-# scripts/verify.sh runs the NON-OCCT workspace tail through nextest
-# (`cargo nextest run --workspace --exclude <occt crates>`), which collapses
-# the hundreds of per-binary `cargo test` processes into a single scheduler
-# with one global thread pool.
+# LIVE (task 4451): scripts/verify.sh folds the OCCT-touching crates into the
+# single nextest pool (`cargo nextest run --workspace`, no --exclude). This
+# group bounds intra-run OCCT concurrency to N=4 for FD/memory headroom while
+# per-process address-space isolation keeps OCCT execution race-free (each
+# nextest test process gets its own OCCT C++ static state — no sharing).
+#
+# Headroom basis: docs/notes/multi-process-occt-bench.md §d — each release
+# OCCT test process peaks ~1-2 GiB RSS, so 4 concurrent ≈ 4-8 GiB ≪ 32 GiB
+# host, leaving plenty of room for OS + orchestrator overhead.
 #
 # The OCCT-touching crates (reify-kernel-occt, reify-eval, reify-cli,
 # reify-config — authoritative list: scripts/occt-touching-crates.txt) are
-# EXCLUDED from that nextest pass and instead run via the cross-process flock
-# wrapper (scripts/cargo-test-occt-gated.sh) as a plain `cargo test`. So the
-# test-group below has NO effect on verification today: the ungated pass never
-# includes these packages, and the gated pass does not use nextest.
-#
-# It is staged here for Stage 2 (task 3767, bounded multi-process OCCT
-# concurrency): when OCCT tests move into the nextest pool, pinning them to a
-# single-threaded test-group keeps intra-process OCCT execution serialized while
-# the rest of the workspace runs at full concurrency.
+# routed through this group by the [[profile.default.overrides]] filter below.
+# scripts/cargo-test-occt-gated.sh is kept as a standalone/manual OCCT runner
+# but is NO LONGER invoked by verify.sh.
 
 [test-groups]
-occt = { max-threads = 1 }
+occt = { max-threads = 4 }
 
-# Pin the OCCT-touching packages to the single-threaded `occt` group. Kept in
-# sync with scripts/occt-touching-crates.txt by hand (these are config literals,
-# not shell). A drift here is harmless today (the packages are excluded from the
-# nextest pass) but must be revisited when Stage 2 folds them in.
+# Pin the OCCT-touching packages to the `occt` group (max-threads = 4).
+# Kept in sync with scripts/occt-touching-crates.txt by hand (these are config
+# literals, not shell). A drift here would let a crate escape the max-threads
+# cap and run unbounded in the nextest pool — the drift-catcher in
+# tests/infra/test_occt_gated_scope.sh catches this.
 [[profile.default.overrides]]
 filter = 'package(reify-kernel-occt) | package(reify-eval) | package(reify-cli) | package(reify-config)'
 test-group = 'occt'

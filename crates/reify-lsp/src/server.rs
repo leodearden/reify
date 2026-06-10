@@ -165,6 +165,7 @@ impl LanguageServer for ReifyLanguageServer {
                     prepare_provider: Some(true),
                     work_done_progress_options: Default::default(),
                 })),
+                references_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -488,6 +489,36 @@ impl LanguageServer for ReifyLanguageServer {
         // invalid names, so the handler is a thin forwarder.
         Ok(crate::references::compute_rename(
             &text, &parsed, &uri, position, &new_name,
+        ))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let include_declaration = params.context.include_declaration;
+
+        // Brief read lock: snapshot the document, then release before the
+        // (pure, CPU-only, single-file) reference walk — mirrors document_symbol.
+        // β is single-file: no spawn_blocking and no cross-file/filesystem
+        // resolution (unlike goto_definition); collect_references is a cheap
+        // in-memory AST walk scoped to one entity body.
+        let state = self.state.read().await;
+        let doc = match state.documents.get(&uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+        drop(state);
+
+        // Reuse the per-document cached parse (one parse per edit).
+        let text = doc.text.clone();
+        let parsed = doc.parsed_module();
+
+        Ok(crate::references::compute_references(
+            &text,
+            &parsed,
+            &uri,
+            position,
+            include_declaration,
         ))
     }
 
@@ -865,6 +896,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initialize_advertises_references_provider() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let init_result = server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+
+        assert!(
+            init_result.capabilities.references_provider.is_some(),
+            "should advertise references_provider (task 4202 β)"
+        );
+    }
+
+    #[tokio::test]
     async fn did_open_stores_document_and_runs_pipeline() {
         let (service, _socket) = test_service();
         let server = service.inner();
@@ -1140,7 +1186,7 @@ mod tests {
         // Edit (did_change) to a different valid source bumps the version and
         // structurally invalidates the cache: the new document owns a fresh,
         // empty cache, so its parse is a DIFFERENT Arc reflecting the new text.
-        let v2 = "structure A {\n    param x: Scalar = 1mm\n}\nstructure B {\n    param y: Scalar = 2mm\n}";
+        let v2 = "structure A {\n    param x: Length = 1mm\n}\nstructure B {\n    param y: Length = 2mm\n}";
         server
             .did_change(DidChangeTextDocumentParams {
                 text_document: VersionedTextDocumentIdentifier {
@@ -1285,7 +1331,7 @@ mod tests {
     //
     // Positions reference the canonical bracket fixture (0-based):
     //   line 0: `structure Bracket {`
-    //   line 1: `    param width: Scalar = 80mm`   (Scalar type at col 17)
+    //   line 1: `    param width: Length = 80mm`   (Scalar type at col 17)
     //   line 7: `    let volume = width * height * thickness`  (width use at col 17)
 
     #[tokio::test]
@@ -1575,6 +1621,84 @@ mod tests {
         );
     }
 
+    // --- task 4202 β: references handler tests ---
+
+    /// Build a ReferenceParams at `pos` in `uri` with the given declaration flag.
+    fn ref_params(uri: Url, pos: Position, include_declaration: bool) -> ReferenceParams {
+        ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: pos,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: ReferenceContext {
+                include_declaration,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn references_handler_returns_locations_for_member() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+
+        // `width` in bracket_source is used 3× (declaration + 3 uses = 4 spans).
+        // Cursor on the `width` token at line 1, char 10 — the same position the
+        // hover handler test uses for 'width'.
+        let with_decl = server
+            .references(ref_params(uri.clone(), Position::new(1, 10), true))
+            .await
+            .unwrap()
+            .expect("references should resolve for the width member");
+        assert_eq!(
+            with_decl.len(),
+            4,
+            "declaration ∪ 3 uses of width = 4 Locations"
+        );
+        assert!(
+            with_decl.iter().all(|l| l.uri == uri),
+            "every Location must carry the document uri"
+        );
+
+        // include_declaration=false drops the declaration token → the 3 use spans.
+        let without_decl = server
+            .references(ref_params(uri.clone(), Position::new(1, 10), false))
+            .await
+            .unwrap()
+            .expect("references resolve without the declaration");
+        assert_eq!(
+            without_decl.len(),
+            3,
+            "include_declaration=false yields the 3 use spans"
+        );
+
+        // A position off any identifier (column 0 = indentation whitespace) → None.
+        let off_ident = server
+            .references(ref_params(uri.clone(), Position::new(1, 0), true))
+            .await
+            .unwrap();
+        assert!(
+            off_ident.is_none(),
+            "a position off any identifier must return Ok(None)"
+        );
+
+        // An unknown URI → Ok(None) (mirrors document_symbol_unknown_uri_returns_none).
+        let unknown = server
+            .references(ref_params(
+                Url::parse("file:///never_opened.ri").unwrap(),
+                Position::new(1, 10),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            unknown.is_none(),
+            "references for an unknown URI must return Ok(None)"
+        );
+    }
+
     #[tokio::test]
     async fn server_captures_published_diagnostics() {
         let (service, _socket) = test_service();
@@ -1746,7 +1870,7 @@ mod tests {
         // Write a module in the custom stdlib
         std::fs::write(
             custom_stdlib.join("mymod.ri"),
-            "structure Widget {\n    param size: Scalar = 5mm\n}",
+            "structure Widget {\n    param size: Length = 5mm\n}",
         )
         .unwrap();
 
@@ -1823,7 +1947,7 @@ mod tests {
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
         // Write the target file: parts.ri
-        let parts_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         std::fs::write(tmp_dir.join("parts.ri"), parts_source).unwrap();
 
         // Initialize with workspace root
@@ -1899,17 +2023,17 @@ mod tests {
         // Write three target files
         std::fs::write(
             tmp_dir.join("parts.ri"),
-            "structure Hole {\n    param diameter: Scalar = 10mm\n}",
+            "structure Hole {\n    param diameter: Length = 10mm\n}",
         )
         .unwrap();
         std::fs::write(
             tmp_dir.join("fasteners.ri"),
-            "structure Bolt {\n    param length: Scalar = 20mm\n}",
+            "structure Bolt {\n    param length: Length = 20mm\n}",
         )
         .unwrap();
         std::fs::write(
             tmp_dir.join("utils.ri"),
-            "structure Helper {\n    param size: Scalar = 5mm\n}",
+            "structure Helper {\n    param size: Length = 5mm\n}",
         )
         .unwrap();
 
@@ -2116,7 +2240,7 @@ structure Assembly {
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
         // Write parts.ri on disk with ONLY Hole (no Plate)
-        let disk_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let disk_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
         std::fs::write(tmp_dir.join("parts.ri"), disk_source).unwrap();
 
         // Initialize with workspace root
@@ -2131,7 +2255,7 @@ structure Assembly {
 
         // Open parts.ri in the editor with MODIFIED content that adds Plate on line 0.
         // The editor version differs from disk — Plate only exists in the editor buffer.
-        let editor_source = "structure Plate {\n    param width: Scalar = 5mm\n}\nstructure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let editor_source = "structure Plate {\n    param width: Length = 5mm\n}\nstructure Hole {\n    param diameter: Length = 10mm\n}";
         let parts_uri = Url::from_file_path(tmp_dir.join("parts.ri")).unwrap();
         server
             .did_open(DidOpenTextDocumentParams {

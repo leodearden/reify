@@ -28,7 +28,7 @@ trait HasMaterial {
     type Material
 }
 structure def Beam : HasMaterial {
-    param w : Scalar = 1
+    param w : Length = 1
 }
 "#;
     let module = compile_source(source);
@@ -73,7 +73,7 @@ trait HasMaterial {
     type Material = Steel
 }
 structure def Bar : HasMaterial {
-    param w : Scalar = 1
+    param w : Length = 1
 }
 "#;
     let module = compile_source(source);
@@ -107,7 +107,7 @@ trait HasMaterial {
 }
 structure def Beam : HasMaterial {
     type Material = Aluminum
-    param w : Scalar = 1
+    param w : Length = 1
 }
 "#;
     let module = compile_source(source);
@@ -163,7 +163,7 @@ trait HasMaterial {
     type Material = Steel
 }
 structure def Bar : HasMaterial {
-    param w : Scalar = 1
+    param w : Length = 1
 }
 "#;
     let module = compile_source(source);
@@ -221,7 +221,7 @@ trait HasMaterial {
 }
 structure def Beam : HasMaterial {
     type Material = Typo
-    param w : Scalar = 1
+    param w : Length = 1
 }
 "#;
     let module = compile_source(source);

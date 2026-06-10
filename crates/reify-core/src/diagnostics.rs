@@ -1572,6 +1572,22 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_DynamicsBodyMassPropsArity`
     /// (severity convention: `E_*` → Error). Registered in task 3829 (RBD-β).
     DynamicsBodyMassPropsArity,
+    /// Origin: `crates/reify-stdlib/src/dynamics/eval.rs` (`diagnose` hook,
+    /// wired into `reify-expr::emit_undef_builtin_diagnostics`).
+    ///
+    /// Emitted as a `Severity::Error` when an `inverse_dynamics` call returns
+    /// `Value::Undef` because at least one body in the spanning tree has no
+    /// resolvable mass — i.e. `body.solid` is neither a `MassProperties`
+    /// `Value::StructureInstance` nor a real-geometry solid with density (the
+    /// derived rung is a stub until task 3620). The diagnostic names the
+    /// first unresolvable body.
+    ///
+    /// Canonical message form:
+    /// `"inverse_dynamics: body '<id>' has no resolvable mass (no MassProperties on body.solid)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DynamicsBodyMassUnresolved`.
+    /// Registered in task 4278 (v0.3 flexures uniform-mass substrate).
+    DynamicsBodyMassUnresolved,
     /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
     /// phase) and `crates/reify-compiler/src/trait_requirements.rs`.
     ///

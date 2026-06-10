@@ -109,6 +109,8 @@ const _SHORTCUTS_DEF = [
   // Display-only: dispatch is owned by the F2 keymap in Editor.tsx (same pattern as
   // the nav entries above). prepareRename gates the rename, so this never edits unsafely.
   { id: 'rename',         key: 'F2',    description: 'Rename symbol',    category: 'Editor' },
+  // Display-only: dispatch owned by the Shift-F12 keymap in Editor.tsx (β, task 4202).
+  { id: 'findUses',       key: 'Shift+F12', description: 'Find all uses (references)', category: 'Editor' },
   // Command palette and symbol-jump — global actions exempt from the typing-context
   // guard in useKeyboardShortcuts so they open from any focus state (including the CM editor).
   { id: 'commandPalette',     key: 'Ctrl+Shift+P', description: 'Command palette',         category: 'View', bind: { key: 'p', ctrl: true, shift: true } },

@@ -17,11 +17,13 @@ import {
   ViewManageModal,
   MechanismPanel,
   DiagnosticsPanel,
+  FindUsesPanel,
   AutoResolvePanel,
   SolverProgressOverlay,
   BucklingPanel,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
+import type { ReferenceResult } from './editor/references';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
@@ -480,6 +482,11 @@ const App: Component = () => {
   const [viewManageOpen, setViewManageOpen] = createSignal(false);
 
   // Diagnostics panel state lives in layoutStore (problemsCollapsed / problemsHeight).
+  // Find-uses panel state (Shift+F12 references provider, task 4202 β). Results
+  // are held in native LSP (0-based) coordinates; onNavigate converts to the
+  // 1-based SourceLocation when driving setScrollToLocation.
+  const [findUsesOpen, setFindUsesOpen] = createSignal(false);
+  const [findUsesResults, setFindUsesResults] = createSignal<ReferenceResult[]>([]);
   // Both compile and tessellation diagnostics share the DiagnosticInfo schema, so the
   // panel renders them as a single merged list — no schema change or extra state needed.
   // The two pipelines are disjoint by construction: compile errors come from the static
@@ -1553,7 +1560,7 @@ const App: Component = () => {
                 onFileClick={handleFileClick}
               />
               <FileTabs store={editorStore} />
-              <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} compileDiagnostics={engineStore.state.compileDiagnostics} liveContentRef={(fn) => { getLiveEditorContent = fn; }} />
+              <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} compileDiagnostics={engineStore.state.compileDiagnostics} liveContentRef={(fn) => { getLiveEditorContent = fn; }} onShowReferences={(results) => { setFindUsesResults(results); setFindUsesOpen(true); }} />
               {/* Horizontal splitter — shown only when diagnostics panel is expanded */}
               <Show when={!layoutStore.state.problemsCollapsed}>
                 <Splitter orientation="horizontal" data-testid="splitter-problems" onResize={handleProblemsResize} />
@@ -1703,6 +1710,25 @@ const App: Component = () => {
             onClose={() => setShowExportDialog(false)}
           />
           {/* DiagnosticsPanel relocated to .editorPanel (docked) — see below */}
+          <FindUsesPanel
+            open={findUsesOpen()}
+            results={findUsesResults()}
+            onClose={() => setFindUsesOpen(false)}
+            onNavigate={(r) => {
+              // LSP positions are 0-based; SourceLocation/cursor is 1-based (+1).
+              // Reuses the diagnostics setScrollToLocation path, which moves the
+              // cursor AND records the ζ same-file nav-history entry (Editor.tsx
+              // scrollToLocation effect) — so nav-history needs zero new plumbing.
+              setScrollToLocation({
+                file_path: r.uri,
+                line: r.line + 1,
+                column: r.character + 1,
+                end_line: r.endLine + 1,
+                end_column: r.endCharacter + 1,
+              });
+              setFindUsesOpen(false);
+            }}
+          />
           <ViewManageModal
             open={viewManageOpen()}
             store={viewStateStore}

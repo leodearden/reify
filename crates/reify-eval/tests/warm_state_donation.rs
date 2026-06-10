@@ -49,9 +49,9 @@ fn fresh_engine() -> Engine {
 /// let between module_a and module_b without touching params or constraints.
 fn bracket_with_volume_let() -> &'static str {
     r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     let volume = width * height * thickness
 
@@ -63,9 +63,9 @@ fn bracket_with_volume_let() -> &'static str {
 /// the removal scenarios. Same params and constraint as `bracket_with_volume_let`.
 fn bracket_without_volume_let() -> &'static str {
     r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
 
     constraint thickness > 2mm
 }"#
