@@ -92,6 +92,53 @@ apply_hermetic_env() {
     export REIFY_TEST_SEMAPHORE_WAIT="$wait"
 }
 
+# drive_two_concurrent_task_runs
+# Spawn two concurrent DF_VERIFY_ROLE=task verify.sh runs with REIFY_E2E_CARGO_SLEEP=2
+# and N=1 (shared slot), wait for both, and set MS to the total elapsed milliseconds.
+# The slot is held for the full stub-cargo sleep duration on each run, so the second
+# run's slot-acquire blocks until the first releases — i.e. true HOLD-serialization.
+drive_two_concurrent_task_runs() {
+    local _tmpdir _stubdir _lock
+    _tmpdir="$(mktemp -d)"
+    _TMPDIRS+=("$_tmpdir")
+    _stubdir="$_tmpdir/stubs"
+    _lock="$_tmpdir/sem.lock"
+    mkdir -p "$_stubdir"
+    make_stub_bin "$_stubdir"
+
+    local _start_ns _end_ns
+    _start_ns="$(date +%s%N)"
+
+    local _pid1 _pid2
+    # First concurrent task run.
+    (
+        apply_hermetic_env "$_stubdir" "$_lock"
+        export REIFY_E2E_CARGO_SLEEP=2
+        DF_VERIFY_ROLE=task bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+    ) &
+    _pid1=$!
+
+    # Second concurrent task run — same lock base so both compete for the single slot.
+    (
+        apply_hermetic_env "$_stubdir" "$_lock"
+        export REIFY_E2E_CARGO_SLEEP=2
+        DF_VERIFY_ROLE=task bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+    ) &
+    _pid2=$!
+
+    # Capture exit codes without letting set -e abort on non-zero child.
+    local _rc1=0 _rc2=0
+    wait "$_pid1" || _rc1=$?
+    wait "$_pid2" || _rc2=$?
+
+    _end_ns="$(date +%s%N)"
+    MS=$(( (_end_ns - _start_ns) / 1000000 ))
+    echo "  [A] two concurrent task runs elapsed: ${MS}ms (rc1=$_rc1 rc2=$_rc2)" >&2
+
+    # Clean up slot file left by the semaphore.
+    rm -f "${_lock}.slot-1"
+}
+
 # ===========================================================================
 # Section A: held-slot serialization (execute mode)
 # ===========================================================================
