@@ -4245,7 +4245,15 @@ impl Engine {
                                 // - Voxelize: realised by ingest_mesh on plan.kernel
                                 //   below; no separate action needed here.
                                 // Unknown stage → graceful degradation.
+                                // Contiguity is also validated: each stage's `from`
+                                // must equal the prior stage's `to`.  Out-of-order
+                                // chains (e.g. Mesh→Voxel before BRep→Mesh) would
+                                // silently mis-key the intermediate cache under the
+                                // single-recipe executor.
                                 let mut tessellate_source: Option<&'static str> = None;
+                                // prev_to tracks the prior stage's output repr for
+                                // the contiguity check below.
+                                let mut prev_to: Option<ReprKind> = None;
                                 // Terminal `to` drives the intermediate cache key
                                 // (Mesh for 1-stage BRep→Mesh, Voxel for 2-stage).
                                 // Safe: this arm is only reached for non-empty chains.
@@ -4255,6 +4263,24 @@ impl Engine {
                                     .map(|(_, _, to)| *to)
                                     .unwrap_or(ReprKind::Mesh);
                                 for (stage_kernel, from, to) in &plan.conversions {
+                                    // Contiguity assertion: each stage's `from` must
+                                    // equal the prior stage's `to`.  Detects
+                                    // out-of-order chains a future dispatcher change
+                                    // could accidentally produce.
+                                    if let Some(expected) = prev_to {
+                                        if *from != expected {
+                                            conversion_error = Some(format!(
+                                                "internal error: conversion chain for op \
+                                                 '{operation:?}' is non-contiguous: stage \
+                                                 {from:?}→{to:?} follows a stage that \
+                                                 produced {expected:?}; chain must be ordered \
+                                                 (e.g. BRep→Mesh then Mesh→Voxel)",
+                                            ));
+                                            break;
+                                        }
+                                    }
+                                    prev_to = Some(*to);
+
                                     use crate::dispatcher::{
                                         ConversionProjection, v03_conversion_projection,
                                     };
@@ -8327,6 +8353,21 @@ mod tests {
             "an unsupported BRep→Voxel crossing must emit an Error diagnostic, \
              got no errors (diagnostics: {:?})",
             state.diagnostics,
+        );
+        // Pin that the error originated from the Phase-1 classification gate
+        // (v03_conversion_projection(BRep,Voxel) = None), not from a None
+        // dispatch plan or some other unrelated code path.  The gate message
+        // always contains "not executable in v0.3-β"; if the error comes from
+        // elsewhere (e.g. dispatch returns None / NoKernelChain path) the test
+        // would still pass the non-empty check above, but for the wrong reason.
+        assert!(
+            errors
+                .iter()
+                .any(|d| d.message.contains("not executable in v0.3-\u{03b2}")),
+            "the Error diagnostic must originate from the Phase-1 classification \
+             gate (message must contain 'not executable in v0.3-β'); \
+             got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>(),
         );
 
         // No kernel work must have been performed after the Phase-1 error.
