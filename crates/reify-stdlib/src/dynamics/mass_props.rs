@@ -126,6 +126,79 @@ mod tests {
         assert_eq!(src, DensitySource::DefaultWater);
     }
 
+    // ── resolve_density_strict — strict (None) tail ──────────────────────────
+
+    #[test]
+    fn strict_explicit_density_wins_over_material() {
+        // (a) explicit Some(2700) beats material Some(7850): the explicit
+        // `density` arg is the highest ladder rung.
+        let result = resolve_density_strict(Some(2700.0), Some(7850.0));
+        assert_eq!(
+            result,
+            Some((2700.0, DensitySource::Explicit)),
+            "explicit rung must win verbatim"
+        );
+    }
+
+    #[test]
+    fn strict_material_density_used_when_no_explicit() {
+        // (b) explicit None, material Some(7850) -> Material rung.
+        let result = resolve_density_strict(None, Some(7850.0));
+        assert_eq!(
+            result,
+            Some((7850.0, DensitySource::Material)),
+            "material rung must be used when no explicit arg"
+        );
+    }
+
+    #[test]
+    fn strict_returns_none_when_neither_present() {
+        // (c) explicit None, material None -> STRICT tail: no water fallback.
+        let result = resolve_density_strict(None, None);
+        assert_eq!(result, None, "strict tail must return None, not water");
+    }
+
+    #[test]
+    fn strict_shared_rung_walk_invariant() {
+        // (d) Invariant: for the explicit and material rungs,
+        //     resolve_density_strict(e, m) == Some(resolve_density(e, m)).
+        //     At the empty tail the two functions diverge by design:
+        //     resolve_density(None,None) == (1000.0, DefaultWater)
+        //     resolve_density_strict(None,None) == None.
+
+        // explicit rung — both agree
+        let strict_e = resolve_density_strict(Some(2700.0), Some(7850.0));
+        let water_e = resolve_density(Some(2700.0), Some(7850.0));
+        assert_eq!(
+            strict_e,
+            Some(water_e),
+            "on the explicit rung strict and water wrappers must agree"
+        );
+
+        // material rung — both agree
+        let strict_m = resolve_density_strict(None, Some(7850.0));
+        let water_m = resolve_density(None, Some(7850.0));
+        assert_eq!(
+            strict_m,
+            Some(water_m),
+            "on the material rung strict and water wrappers must agree"
+        );
+
+        // empty tail — intentional divergence
+        let strict_none = resolve_density_strict(None, None);
+        let (water_rho, water_src) = resolve_density(None, None);
+        assert_eq!(strict_none, None, "strict tail must be None");
+        assert_eq!(
+            water_rho, 1000.0,
+            "water wrapper must fall back to 1000 kg/m³"
+        );
+        assert_eq!(
+            water_src,
+            DensitySource::DefaultWater,
+            "water wrapper must report DefaultWater"
+        );
+    }
+
     // ── uniform_box_inertia analytic ground truth ────────────────────────────
 
     #[test]
