@@ -36,7 +36,7 @@ echo ""
 echo "--- Contract 2: cargo build precedes the backgrounded launcher ('&') ---"
 
 assert "runner contains a backgrounded launcher line (ends with '&')" \
-    bash -c "grep -qE 'run-gui-dev.sh.*&$|run-gui-dev.sh.*& *$|\\\$\\{?REIFY_SMOKE_LAUNCHER.*&' '$RUNNER'"
+    bash -c "grep -qE 'run-gui-dev\.sh.*[[:space:]]&[[:space:]]*$|LAUNCHER.*[[:space:]]&[[:space:]]*$|bash.*\\.sh.*[[:space:]]&[[:space:]]*$' '$RUNNER'"
 
 assert "cargo build line precedes the background-launcher line" \
     bash -c "
