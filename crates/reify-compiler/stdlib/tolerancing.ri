@@ -122,6 +122,9 @@ structure def Parallelism : OrientationTolerance {
     param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
     param datum_refs : DatumRef
+    // Surface orientation zone defaults to two-parallel-planes (Width); a caller
+    // sets Cylindrical to opt a FOS axis into the MMC-eligible Ø zone (β-gated).
+    param zone_shape : ZoneShape = ZoneShape.Width
 }
 
 structure def Perpendicularity : OrientationTolerance {
@@ -129,6 +132,9 @@ structure def Perpendicularity : OrientationTolerance {
     param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
     param datum_refs : DatumRef
+    // Surface orientation zone defaults to two-parallel-planes (Width); a caller
+    // sets Cylindrical to opt a FOS axis into the MMC-eligible Ø zone (β-gated).
+    param zone_shape : ZoneShape = ZoneShape.Width
 }
 
 // Angularity adds a nominal_angle param specifying the target angle.
@@ -137,6 +143,9 @@ structure def Angularity : OrientationTolerance {
     param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
     param datum_refs : DatumRef
+    // Surface orientation zone defaults to two-parallel-planes (Width); a caller
+    // sets Cylindrical to opt a FOS axis into the MMC-eligible Ø zone (β-gated).
+    param zone_shape : ZoneShape = ZoneShape.Width
     param nominal_angle : Angle = 0deg
 }
 
@@ -147,6 +156,9 @@ structure def Position : LocationTolerance {
     param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
     param datum_refs : DatumRef
+    // True-position zone is a Ø cylindrical zone by default — this is the FOS
+    // form β permits MMC/LMC on (default Cylindrical keeps an MMC Position legal).
+    param zone_shape : ZoneShape = ZoneShape.Cylindrical
 }
 
 structure def Concentricity : LocationTolerance {
