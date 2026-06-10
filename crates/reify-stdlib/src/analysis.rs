@@ -3,6 +3,20 @@
 
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
+/// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
+///
+/// The `eval_builtin` path has no `StructureRegistry`, so result instances
+/// are minted with the nominal `type_name` as the authoritative source of
+/// truth for downstream consumers.  This mirrors the identical constant in
+/// `crates/reify-eval/src/dynamics_ops.rs:41` and
+/// `crates/reify-stdlib/src/dynamics/eval.rs:51`.
+///
+/// **Single-source-of-truth note**: all four occurrences of this sentinel
+/// across the codebase use `StructureTypeId(u32::MAX)` directly.  A full
+/// cross-crate dedup (hoisting to `reify-ir` or a shared `reify-stdlib` helper)
+/// is deferred beyond task 2884's scope.
+const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
+
 use crate::helpers::{binary, sanitize_value, unary};
 use crate::matrix::matrix_components_f64;
 
@@ -253,7 +267,18 @@ fn safety_factor(args: &[Value]) -> Value {
 ///                         d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
 ///                         d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
 ///
-/// Mirrors the `debug_assert!` symmetry/len guards of sibling kernels.
+/// ## Symmetry convention
+///
+/// Only upper-triangle entries (`d[1]`, `d[2]`, `d[5]`) are read; the
+/// lower-triangle (`d[3]`, `d[6]`, `d[7]`) is ignored.  In debug/test builds,
+/// a `debug_assert!` checks near-symmetry (same tolerance as the sibling
+/// kernels `compute_von_mises_3x3` and `compute_eigenvalues_3x3`) so
+/// programmer errors and asymmetric inputs are caught early.
+///
+/// A user passing a genuinely asymmetric 3×3 `.ri` matrix will panic in debug
+/// builds (same as the sibling kernels) rather than producing silently wrong
+/// results.  This matches the established convention for all 3×3 stress kernels
+/// in this module.
 pub(crate) fn compute_stress_invariants_3x3(d: &[f64]) -> [f64; 3] {
     debug_assert!(
         d.len() >= 9,
@@ -308,9 +333,6 @@ fn stress_invariants(args: &[Value]) -> Value {
         let dim2 = dim.mul(&dim);
         let dim3 = dim2.mul(&dim);
 
-        // Sentinel type_id for registry-free (engine-side) instances — mirrors
-        // `REGISTRY_FREE_TYPE_ID` in dynamics/eval.rs; the type_name string is the
-        // authoritative key for downstream consumers.
         let fields: PersistentMap<String, Value> = [
             (
                 "i1".to_string(),
@@ -329,7 +351,7 @@ fn stress_invariants(args: &[Value]) -> Value {
         .collect();
 
         Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
+            type_id: REGISTRY_FREE_TYPE_ID,
             type_name: "StressInvariants".to_string(),
             version: 1,
             fields,

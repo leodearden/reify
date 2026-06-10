@@ -25,6 +25,8 @@
 use reify_core::{DimensionVector, Type};
 use reify_ir::CompiledExpr;
 
+use crate::signatures_common::scalar_or_real;
+
 /// The complete set of FEA stress-analysis reduction builtin names recognised
 /// by the compiler. Single source of truth — imported into the `units.rs` test
 /// module to pin disjointness from all sibling families.
@@ -105,18 +107,8 @@ fn tensor_quantity(args: &[CompiledExpr], i: usize) -> DimensionVector {
     }
 }
 
-/// Route the dimensionless case to `Type::Real` (NOT `Scalar{DIMENSIONLESS}`).
-///
-/// This matches the eval boundary: a dimensionless result produces
-/// `Value::Real`, and `value_type_kind_matches(Value::Real, Scalar{DIMENSIONLESS})`
-/// is false — so a dimensionless arm MUST return `Type::Real`.
-fn scalar_or_real(dim: DimensionVector) -> Type {
-    if dim.is_dimensionless() {
-        Type::Real
-    } else {
-        Type::Scalar { dimension: dim }
-    }
-}
+// `scalar_or_real` is defined in `crate::signatures_common` and re-exported
+// into this module via `use crate::signatures_common::scalar_or_real` above.
 
 #[cfg(test)]
 mod tests {
