@@ -3340,5 +3340,122 @@ structure Assembly {
             "aliased import contributes only the entity token `Hole`, not the alias or its uses"
         );
     }
+
+    // --- κ step-7 (task 4210): cross-file prepare_rename lifts the refusal ---
+
+    /// The `RenameTarget` for the whole-word `text` token starting at byte
+    /// `start` in `source`: range over the token, placeholder = `text`.
+    fn rename_target_at(source: &str, start: usize, text: &str) -> RenameTarget {
+        RenameTarget {
+            range: span_to_range(source, span_of(start, text)),
+            placeholder: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn prepare_rename_cross_file_lifts_cross_module_refusal() {
+        // κ lifts the single-file cross-module refusal (is_renameable returns
+        // None for structure/imported names): prepare_rename over the import
+        // graph returns a rename target — range over the cursor token,
+        // placeholder = current name — for a structure home reached from ANY of
+        // the three signal cursors: the parts.ri decl token, the main.ri
+        // `sub hole = Hole()` construction site, and the `import parts.Hole`
+        // entity token.
+        let (_docs, resolver) = canonical_workspace();
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+        let parsed_main = reify_syntax::parse(MAIN_SRC, ModulePath::single("main"));
+
+        // (a) parts.ri `structure Hole` declaration token.
+        let parts_decl = occurrences(PARTS_SRC, "Hole")[0];
+        let got_a = prepare_rename_cross_file(
+            PARTS_SRC,
+            &parsed_parts,
+            &parts_uri(),
+            offset_to_position(PARTS_SRC, parts_decl as u32),
+            &resolver,
+        )
+        .expect("(a) cross-module refusal lifted on the home declaration token");
+        assert_eq!(got_a, rename_target_at(PARTS_SRC, parts_decl, "Hole"), "(a)");
+
+        // (b) main.ri `sub hole = Hole()` construction-site use.
+        let main_use = occurrences(MAIN_SRC, "Hole")[1];
+        let got_b = prepare_rename_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            offset_to_position(MAIN_SRC, main_use as u32),
+            &resolver,
+        )
+        .expect("(b) cross-module refusal lifted on the imported sub use");
+        assert_eq!(got_b, rename_target_at(MAIN_SRC, main_use, "Hole"), "(b)");
+
+        // (c) main.ri `import parts.Hole` entity token.
+        let main_import = occurrences(MAIN_SRC, "Hole")[0];
+        let got_c = prepare_rename_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            offset_to_position(MAIN_SRC, main_import as u32),
+            &resolver,
+        )
+        .expect("(c) cross-module refusal lifted on the import entity token");
+        assert_eq!(got_c, rename_target_at(MAIN_SRC, main_import, "Hole"), "(c)");
+    }
+
+    #[test]
+    fn prepare_rename_cross_file_refuses_keyword_type_and_unresolved() {
+        // The cross-file producer keeps the single-file refusals: a keyword, a
+        // type-annotation position (OUT of κ scope), and a word that resolves to
+        // neither a local binding nor a resolvable structure all return None.
+        let (_docs, resolver) = canonical_workspace();
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+
+        // (a) keyword `structure` — never a rename target.
+        let kw = occurrences(PARTS_SRC, "structure")[0];
+        assert!(
+            prepare_rename_cross_file(
+                PARTS_SRC,
+                &parsed_parts,
+                &parts_uri(),
+                offset_to_position(PARTS_SRC, kw as u32),
+                &resolver,
+            )
+            .is_none(),
+            "(a) keyword `structure` is not renameable"
+        );
+
+        // (b) type-annotation position `Length` — type positions are OUT of κ.
+        let ty = occurrences(PARTS_SRC, "Length")[0];
+        assert!(
+            prepare_rename_cross_file(
+                PARTS_SRC,
+                &parsed_parts,
+                &parts_uri(),
+                offset_to_position(PARTS_SRC, ty as u32),
+                &resolver,
+            )
+            .is_none(),
+            "(b) a type-annotation position (`Length`) is not a κ rename target"
+        );
+
+        // (c) an imported structure use whose import does NOT resolve (the
+        //     canonical resolver maps only `parts`, not `ghost`) → neither a
+        //     local binding nor a resolvable structure.
+        let ghost_src = "import ghost.Widget\nstructure Z {\n    sub w = Widget()\n}";
+        let parsed_ghost = reify_syntax::parse(ghost_src, ModulePath::single("ghost_user"));
+        let ghost_uri = Url::parse("file:///proj/ghost_user.ri").unwrap();
+        let widget_use = occurrences(ghost_src, "Widget")[1]; // `sub w = Widget()`
+        assert!(
+            prepare_rename_cross_file(
+                ghost_src,
+                &parsed_ghost,
+                &ghost_uri,
+                offset_to_position(ghost_src, widget_use as u32),
+                &resolver,
+            )
+            .is_none(),
+            "(c) an unresolvable imported structure use is not renameable"
+        );
+    }
 }
 
