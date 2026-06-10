@@ -72,22 +72,28 @@ fn eval_std_tolerancing_surface_example_succeeds() {
     );
 
     // ── α new-type exercises: nominal_zone reads off the new GD&T types ────────
-    // Value-agnostic name-substring anchors (same style as it7_width / fit_maxc):
-    // nominal_zone materialises a real scalar for each, so the cell prints.
-    //   soa_zone    — StraightnessOfAxis (FOS axis form variant, MMC-eligible)
-    //   runout_zone — CircularRunout with a required datum_refs
-    //   prof_zone   — ProfileOfSurfaceRelated with a required datum_refs
+    // VALUE-pinning anchors (mirror the conforms_mmc / finish_ok style, NOT the
+    // value-agnostic it7_width style): each nominal_zone must materialise its real
+    // scalar, so we pin the exact printed value.  A name-only `contains("soa_zone")`
+    // substring would still pass if nominal_zone regressed to `undef` — the eval
+    // printer prints the cell name either way — which is the very thing these
+    // exercises claim to cover.  These are zero-departure nominal zones, so
+    // efz(tol, condition, 0mm) == tol exactly (clean pass-through, no float drift),
+    // printed by the eval engine in metres:
+    //   soa_zone    = 0.05mm → 0.00005 m  — StraightnessOfAxis (FOS axis form variant)
+    //   runout_zone = 0.02mm → 0.00002 m  — CircularRunout with a required datum_refs
+    //   prof_zone   = 0.03mm → 0.00003 m  — ProfileOfSurfaceRelated with a required datum_refs
     assert!(
-        stdout.contains("soa_zone"),
-        "stdout should contain 'soa_zone' (StraightnessOfAxis.nominal_zone);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("soa_zone = 0.00005 m"),
+        "stdout should contain 'soa_zone = 0.00005 m' (StraightnessOfAxis.nominal_zone = 0.05mm, not undef);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.contains("runout_zone"),
-        "stdout should contain 'runout_zone' (CircularRunout.nominal_zone w/ datum_refs);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("runout_zone = 0.00002 m"),
+        "stdout should contain 'runout_zone = 0.00002 m' (CircularRunout.nominal_zone = 0.02mm w/ datum_refs, not undef);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.contains("prof_zone"),
-        "stdout should contain 'prof_zone' (ProfileOfSurfaceRelated.nominal_zone w/ datum_refs);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("prof_zone = 0.00003 m"),
+        "stdout should contain 'prof_zone = 0.00003 m' (ProfileOfSurfaceRelated.nominal_zone = 0.03mm w/ datum_refs, not undef);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 

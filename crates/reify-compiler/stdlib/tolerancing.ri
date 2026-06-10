@@ -180,19 +180,28 @@ structure def Symmetry : LocationTolerance {
 // surface as the part is rotated about a datum axis). The datum reference is
 // therefore MANDATORY: `datum_refs` has NO default, so callers must supply a
 // datum. (DatumRef aliases Geometry per #3116.)
+//
+// PARAM-ORDER NOTE: `datum_refs` is declared immediately BEFORE the re-declared
+// `material_condition` — a deliberate eval-engine workaround, not stylistic. A
+// structure param declared *beyond* its refined trait (here GeometricTolerance
+// does not declare datum_refs) is misbound by the eval engine's named-argument
+// binder when it FOLLOWS material_condition, which silently drives the inherited
+// `nominal_zone` let to undef. Placing datum_refs before material_condition keeps
+// nominal_zone materialising a real scalar (verified via `reify eval`). Do NOT
+// reorder these back without re-checking the std_tolerancing_surface CI gate.
 
 structure def CircularRunout : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
+    param datum_refs : DatumRef   // before material_condition — see PARAM-ORDER NOTE
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs : DatumRef
 }
 
 structure def TotalRunout : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
+    param datum_refs : DatumRef   // before material_condition — see PARAM-ORDER NOTE
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs : DatumRef
 }
 
 // ── Profile Tolerances (2 datum-less + 2 …Related datum-referenced) ───────────
@@ -202,6 +211,13 @@ structure def TotalRunout : GeometricTolerance {
 //     carrying a required `datum_refs` (no default). The split avoids an
 //     optional-Geometry default with no clean value (per design D2): a profile
 //     either has no datum, or its datum is mandatory.
+//
+// PARAM-ORDER NOTE (…Related variants): `datum_refs` is declared immediately
+// BEFORE the re-declared `material_condition` — same eval-engine workaround as the
+// Runout section. A structure param declared beyond its refined trait is misbound
+// by the named-argument binder when it follows material_condition, forcing the
+// inherited `nominal_zone` let to undef. The before-material_condition ordering
+// keeps nominal_zone materialising (verified via `reify eval`).
 
 structure def ProfileOfSurface : GeometricTolerance {
     param tolerance_value : Length = 0mm
@@ -218,15 +234,15 @@ structure def ProfileOfLine : GeometricTolerance {
 structure def ProfileOfSurfaceRelated : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
+    param datum_refs : DatumRef   // before material_condition — see PARAM-ORDER NOTE
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs : DatumRef
 }
 
 structure def ProfileOfLineRelated : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
+    param datum_refs : DatumRef   // before material_condition — see PARAM-ORDER NOTE
     param material_condition : MaterialCondition = MaterialCondition.RFS
-    param datum_refs : DatumRef
 }
 
 // ── Datum ─────────────────────────────────────────────────────────────────────
