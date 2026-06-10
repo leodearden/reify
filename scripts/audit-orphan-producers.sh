@@ -308,16 +308,54 @@ for path_str, (lines, masked) in masked_cache.items():
 # Single pass over corpus: tokenize each prepped line and increment
 # per-name per-file hit counters when a token matches a candidate name.
 WORD_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+# USE_RE strips `use`/`pub use` lines but NOT `mod`/`pub mod` declarations.
+# A fn whose name collides with its module name would otherwise see the
+# `pub mod NAME;` declaration as a phantom caller.  MOD_DECL_RE identifies
+# the NAME span inside those declarations so it can be skipped.
+MOD_DECL_RE = re.compile(r'\bmod\s+([A-Za-z_][A-Za-z0-9_]*)')
 all_names = set(by_name.keys())
 hits = defaultdict(lambda: defaultdict(int))  # name -> path -> count
+
+# Build the set of names that actually appear as module declarations in the
+# corpus.  The `NAME::` path-qualifier skip (below) is scoped to this set so
+# that a future fn whose name coincidentally matches an unrelated type's
+# path-prefix is never incorrectly excluded.
+mod_decl_names = {
+    m.group(1)
+    for prepped in prepped_cache.values()
+    for line in prepped
+    if line
+    for m in MOD_DECL_RE.finditer(line)
+}
 
 for path_str, prepped in prepped_cache.items():
     for line in prepped:
         if not line:
             continue
-        for word in WORD_RE.findall(line):
-            if word in all_names:
-                hits[word][path_str] += 1
+        # Precompute span set of NAME positions in `mod NAME` / `pub mod NAME`
+        # declarations so they can be excluded without misidentifying real calls.
+        mod_spans = {m.span(1) for m in MOD_DECL_RE.finditer(line)}
+        for m in WORD_RE.finditer(line):
+            word = m.group(0)
+            if word not in all_names:
+                continue
+            # Skip the NAME token of a `mod NAME` / `pub mod NAME` declaration;
+            # that is a module declaration, not a function call.
+            if m.span() in mod_spans:
+                continue
+            # Skip `NAME::` path-qualifier references (module or type path), but
+            # only when NAME is known to be a module (appears in mod_decl_names).
+            # This prevents a fn whose name coincidentally matches an unrelated
+            # path-prefix from being silently dropped.  Turbofish `NAME::<T>()`
+            # calls (`::` followed by `<`) are preserved as real calls.
+            # v1 accepted limitation: whitespace between NAME and `::`, or a `::`
+            # split across lines, is not detected — same approximation posture as
+            # the rest of the script.
+            if word in mod_decl_names:
+                after = line[m.end():m.end() + 3]
+                if after.startswith("::") and not after.startswith("::<"):
+                    continue
+            hits[word][path_str] += 1
 
 results = []
 for name, cands in by_name.items():
