@@ -518,4 +518,109 @@ assert "uncommented 'disable --now reify-jobserver-canary.timer' line present" \
 assert "reify-jobserver.service still in 'enable --now' (daemon remains enabled)" \
     bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'enable --now' | grep -qF 'reify-jobserver.service'"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 7: _transfer_burst unit-tests via importlib heredoc (test-7)
+#   Loads jobserver-balancer.py (hyphenated → not importable by name) via
+#   importlib.util.spec_from_file_location.  exec_module runs only module-level
+#   config (safe defaults), not main().
+#
+#   Hermetic mktemp FIFOs opened O_RDWR, pre-seeded with known token counts.
+#   Each sub-test checks:
+#     (a) max_count >= available → all tokens moved, donor empty (stops at EAGAIN)
+#     (b) max_count < available  → exactly max_count tokens moved
+#     (c) C1 conservation: donor_after + recipient_after == donor_before + recipient_before
+#
+#   RED before impl: _transfer_burst does not exist → AttributeError → exit 1.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 7: _transfer_burst unit-test ---"
+
+_b7_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys, struct, fcntl, termios, tempfile
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)   # runs module-level config only, not main()
+
+def fionread(fd):
+    buf = struct.pack('i', 0)
+    return struct.unpack('i', fcntl.ioctl(fd, termios.FIONREAD, buf))[0]
+
+def open_pair():
+    """Return (donor_fd, recv_fd, path_a, path_b) using hermetic mktemp FIFOs."""
+    pa = tempfile.mktemp(prefix="/tmp/test-burst-a-")
+    pb = tempfile.mktemp(prefix="/tmp/test-burst-b-")
+    os.mkfifo(pa); os.mkfifo(pb)
+    fda = os.open(pa, os.O_RDWR | os.O_NONBLOCK)
+    fdb = os.open(pb, os.O_RDWR | os.O_NONBLOCK)
+    return fda, fdb, pa, pb
+
+def close_pair(fda, fdb, pa, pb):
+    os.close(fda); os.close(fdb)
+    os.unlink(pa); os.unlink(pb)
+
+errors = []
+
+# ── (a) max_count >= available: all tokens moved, donor empty ──────────────
+fda, fdb, pa, pb = open_pair()
+AVAIL_A = 5
+os.write(fda, b'+' * AVAIL_A)
+before_d = fionread(fda); before_r = fionread(fdb)
+moved_a = mod._transfer_burst(fda, fdb, AVAIL_A + 4)  # max_count > available
+after_d = fionread(fda);  after_r  = fionread(fdb)
+if moved_a != AVAIL_A:
+    errors.append(f"(a) moved={moved_a}, want {AVAIL_A}")
+if after_d != 0:
+    errors.append(f"(a) donor not empty: {after_d}")
+if after_r != AVAIL_A:
+    errors.append(f"(a) recipient has {after_r}, want {AVAIL_A}")
+if before_d + before_r != after_d + after_r:
+    errors.append(f"(a) C1: {before_d}+{before_r} != {after_d}+{after_r}")
+close_pair(fda, fdb, pa, pb)
+
+# ── (b) max_count < available: exactly max_count tokens moved ─────────────
+fda, fdb, pa, pb = open_pair()
+AVAIL_B = 6; MAX_B = 3
+os.write(fda, b'+' * AVAIL_B)
+before_d = fionread(fda); before_r = fionread(fdb)
+moved_b = mod._transfer_burst(fda, fdb, MAX_B)
+after_d = fionread(fda);  after_r  = fionread(fdb)
+if moved_b != MAX_B:
+    errors.append(f"(b) moved={moved_b}, want {MAX_B}")
+if after_d != AVAIL_B - MAX_B:
+    errors.append(f"(b) donor has {after_d}, want {AVAIL_B - MAX_B}")
+if after_r != MAX_B:
+    errors.append(f"(b) recipient has {after_r}, want {MAX_B}")
+if before_d + before_r != after_d + after_r:
+    errors.append(f"(b) C1: {before_d}+{before_r} != {after_d}+{after_r}")
+close_pair(fda, fdb, pa, pb)
+
+# ── (c) C1 across two successive bursts ──────────────────────────────────
+fda, fdb, pa, pb = open_pair()
+AVAIL_C = 4
+os.write(fda, b'+' * AVAIL_C)
+moved_c1 = mod._transfer_burst(fda, fdb, 2)
+moved_c2 = mod._transfer_burst(fda, fdb, 2)
+final_d  = fionread(fda); final_r = fionread(fdb)
+if final_d + final_r != AVAIL_C:
+    errors.append(f"(c) C1 across two bursts: {final_d}+{final_r} != {AVAIL_C}")
+if moved_c1 + moved_c2 != AVAIL_C:
+    errors.append(f"(c) total moved {moved_c1+moved_c2}, want {AVAIL_C}")
+close_pair(fda, fdb, pa, pb)
+
+if errors:
+    sys.stderr.write("FAIL _transfer_burst:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: _transfer_burst")
+PY
+} || _b7_exit=$?
+assert "_transfer_burst: (a) full burst moves all tokens, donor empty" \
+    test "$_b7_exit" -eq 0
+assert "_transfer_burst: (b) capped burst moves exactly max_count" \
+    test "$_b7_exit" -eq 0
+assert "_transfer_burst: (c) C1 conservation holds across all cases" \
+    test "$_b7_exit" -eq 0
+
 test_summary
