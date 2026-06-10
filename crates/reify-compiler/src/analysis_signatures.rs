@@ -60,16 +60,35 @@ pub(crate) fn is_analysis_typed_fn(name: &str) -> bool {
 /// - `stress_invariants` → `Type::StructureRef("StressInvariants")` (the
 ///   struct def in `std.fea`). Mirrors `is_dynamics_query` → `MassProperties`.
 ///
-/// **STUB** (pre-2): returns `Type::Real` for every arm so step-1's unit tests
-/// are a clean RED (compile, assert-fail) rather than a build failure. Replaced
-/// by the correct arms in step-2.
-///
 /// Only reached for names in [`ANALYSIS_FN_NAMES`] (the caller gates on
 /// [`is_analysis_typed_fn`]); the `_` arm is therefore unreachable in practice
 /// and returns a harmless `Type::Real`.
 pub(crate) fn analysis_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
-    let _ = (name, args);
-    Type::Real // STUB — replaced in step-2
+    match name {
+        // von_mises / max_shear: scalar reduction of the tensor quantity.
+        // Scalar<Pressure> for a Pressure tensor; Real for dimensionless.
+        // Mirrors `trace`/`magnitude` in math_fn_result_type.
+        "von_mises" | "max_shear" => scalar_or_real(tensor_quantity(args, 0)),
+
+        // principal_stresses: eigenvalues of the stress tensor.
+        // Returns a List whose element type carries the tensor's quantity.
+        // Mirrors the `eigenvalues` arm in math_fn_result_type.
+        "principal_stresses" => {
+            Type::List(Box::new(scalar_or_real(tensor_quantity(args, 0))))
+        }
+
+        // safety_factor: yield / von_mises → dimensionless Real regardless of
+        // input dimensions (pressure cancels).
+        "safety_factor" => Type::Real,
+
+        // stress_invariants: returns a StressInvariants StructureInstance.
+        // The struct def lives in std.fea (`crates/reify-compiler/stdlib/fea.ri`).
+        // Mirrors `is_dynamics_query` → `StructureRef("MassProperties")`.
+        "stress_invariants" => Type::StructureRef("StressInvariants".to_string()),
+
+        // Unreachable in practice — the caller gates on is_analysis_typed_fn.
+        _ => Type::Real,
+    }
 }
 
 /// The quantity dimension carried by a `Tensor` / `Matrix` arg at position
