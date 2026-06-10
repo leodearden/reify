@@ -85,3 +85,87 @@ fn realization_kernel_provenance_reports_occt_brep_for_box_build() {
         "realization id string must be non-empty"
     );
 }
+
+/// Two-build-within-one-engine test: first build seeds the realization cache;
+/// second build hits the cache.  Asserts that `realization_kernel_provenance()`
+/// still returns the correct kernel after the second build, pinning the
+/// invariant that cache-hit paths push the terminal handle onto `step_handles`
+/// (the condition `step_handles.len() > handle_start` relied on by the
+/// `produced_kernel` write in `engine_build.rs`).
+#[test]
+fn realization_kernel_provenance_survives_cache_hit_rebuild() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping realization_kernel_provenance_survives_cache_hit_rebuild: \
+             OCCT unavailable (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let source = r#"structure S {
+    let b = box(10mm, 10mm, 10mm)
+}"#;
+
+    let parsed = reify_syntax::parse(source, ModulePath::single("cache_hit_provenance_box"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+
+    // First build — seeds the realization cache.
+    let result1 = engine.build(&compiled, ExportFormat::Step);
+    assert!(
+        result1.geometry_output.is_some(),
+        "first build: expected geometry output; diagnostics: {:?}",
+        result1.diagnostics
+    );
+
+    // Second build on the same engine — should hit the realization cache.
+    // The produced_kernel field in the graph node must still be populated
+    // correctly after this build.
+    let result2 = engine.build(&compiled, ExportFormat::Step);
+    assert!(
+        result2.geometry_output.is_some(),
+        "second build (cache hit): expected geometry output; diagnostics: {:?}",
+        result2.diagnostics
+    );
+
+    let provenance = engine.realization_kernel_provenance();
+    assert_eq!(
+        provenance.len(),
+        1,
+        "second build: expected exactly one realization entry; got {}: {:?}",
+        provenance.len(),
+        provenance.iter().map(|p| &p.realization).collect::<Vec<_>>()
+    );
+
+    let entry = &provenance[0];
+    assert_eq!(
+        entry.kernel,
+        reify_core::KernelId::Occt,
+        "second build (cache hit): expected terminal kernel Occt, got {:?}",
+        entry.kernel
+    );
+    assert_eq!(
+        entry.repr,
+        ReprKind::BRep,
+        "second build (cache hit): expected repr BRep, got {:?}",
+        entry.repr
+    );
+    assert!(
+        !entry.realization.is_empty(),
+        "second build (cache hit): realization id string must be non-empty"
+    );
+}

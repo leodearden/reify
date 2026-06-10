@@ -535,23 +535,47 @@ fn cmd_test(args: &[String]) -> ExitCode {
 
 fn cmd_build(args: &[String]) -> ExitCode {
     if args.is_empty() {
-        eprintln!("Usage: reify build <file> -o <output>");
+        eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
         return ExitCode::FAILURE;
     }
 
     // Detect `--verbose` anywhere in the args.
     let verbose = args.iter().any(|a| a == "--verbose");
 
-    let file = &args[0];
+    // Pre-compute the index of the value that follows `-o` (if present and
+    // followed by an argument).  This is reused both to build `output_path`
+    // and to exclude the `-o` value from the positional-file scan below so
+    // that `reify build -o out.step file.ri` doesn't mistakenly treat
+    // `out.step` as the input file.
+    let o_value_pos: Option<usize> = args
+        .iter()
+        .position(|a| a == "-o")
+        .and_then(|i| if i + 1 < args.len() { Some(i + 1) } else { None });
+
+    // Pick the first positional token: not a flag (`-`-prefixed) and not the
+    // value following `-o`.  This makes flag ordering irrelevant, so both
+    // `reify build file.ri --verbose` and `reify build --verbose file.ri`
+    // correctly identify the input file.
+    let file = match args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with('-') && Some(*i) != o_value_pos)
+    {
+        Some((_, f)) => f,
+        None => {
+            eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
+            return ExitCode::FAILURE;
+        }
+    };
 
     // Under `--verbose`, `-o` is optional (the full geometry build still runs
     // and provenance is printed; the file is only written if `-o` is present).
     // Without `--verbose`, `-o` is required (no behavior change).
-    let output_path: Option<&String> = match args.iter().position(|a| a == "-o") {
-        Some(i) if i + 1 < args.len() => Some(&args[i + 1]),
-        _ if verbose => None,
-        _ => {
-            eprintln!("Usage: reify build <file> -o <output>");
+    let output_path: Option<&String> = match o_value_pos {
+        Some(i) => Some(&args[i]),
+        None if verbose => None,
+        None => {
+            eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
             return ExitCode::FAILURE;
         }
     };

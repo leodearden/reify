@@ -403,7 +403,22 @@ impl Engine {
                 })
             })
             .collect();
-        entries.sort_by(|a, b| a.realization.cmp(&b.realization));
+        // Sort by (entity, numeric index) so entries appear in human-intuitive
+        // order (0, 1, 2, ..., 10) rather than lexicographic string order
+        // (which would give ..., [1], [10], [11], [2], ...).  The realization
+        // ID format is "EntityName#realization[N]"; we parse N as u32 and fall
+        // back to (whole_string, u32::MAX) for any unrecognised format so the
+        // sort remains total and deterministic for diff-stable CLI output.
+        entries.sort_by_key(|a| {
+            a.realization
+                .split_once("#realization[")
+                .and_then(|(entity, rest)| {
+                    rest.strip_suffix(']')
+                        .and_then(|idx| idx.parse::<u32>().ok())
+                        .map(|idx| (entity.to_owned(), idx))
+                })
+                .unwrap_or_else(|| (a.realization.clone(), u32::MAX))
+        });
         entries
     }
 
