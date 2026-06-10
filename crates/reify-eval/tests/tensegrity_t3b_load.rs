@@ -26,6 +26,7 @@
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_test_support::make_simple_engine;
 
 // ── Value crafting helpers ───────────────────────────────────────────────────
 
@@ -419,4 +420,66 @@ fn trampoline_out_of_range_support_is_failed() {
         Value::List(vec![Value::Int(0), Value::Int(99)]), // 99 out of range
     ];
     assert_failed_infeasible(call_tensegrity_load(&value_inputs), "out of range");
+}
+
+// ── step-13: dedicated solver::tensegrity_load target registration ───────────
+//
+// PRD §11 Q2: the load solver is wired as its OWN ComputeNode target (not an
+// extension of solver::elastic_static). This pins that, after the slice's
+// `register_compute_fns`, an engine dispatch of a "solver::tensegrity_load"
+// ComputeNode resolves to the trampoline (Ok) instead of falling through to the
+// unregistered-target Err — the registered-vs-unregistered discrimination from
+// `compute_dispatch_registry.rs`.
+
+/// After `register_compute_fns`, dispatching a `solver::tensegrity_load`
+/// ComputeNode must NOT yield the unregistered-target `Err`: the dedicated
+/// target is wired and resolves to the trampoline, which returns a
+/// `TensegrityLoadResult`. A valid 6-input payload (the no-slack golden) is used
+/// so a *registered* target returns `Completed → Ok`; an *unregistered* target
+/// would instead return `Err` naming `solver::tensegrity_load`.
+#[test]
+fn solver_tensegrity_load_target_is_registered() {
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    let value_inputs = vec![
+        two_cable_string(2.0),
+        Value::List(vec![force(5_000.0), force(5_000.0)]),
+        pressure(200.0e9),
+        area(1.0e-4),
+        Value::List(vec![
+            force_vec(0.0, 0.0, 0.0),
+            force_vec(0.0, 50.0, 0.0),
+            force_vec(0.0, 0.0, 0.0),
+        ]),
+        Value::List(vec![Value::Int(0), Value::Int(2)]),
+    ];
+
+    let dispatch =
+        engine.dispatch_compute_node("solver::tensegrity_load", &value_inputs, &[], &Value::Undef, None);
+
+    match dispatch {
+        Ok((result, _diags)) => match result {
+            Value::StructureInstance(d) => assert_eq!(
+                d.type_name, "TensegrityLoadResult",
+                "registered solver::tensegrity_load trampoline should return a \
+                 TensegrityLoadResult, got {:?}",
+                d.type_name,
+            ),
+            other => {
+                panic!("expected a TensegrityLoadResult StructureInstance, got {other:?}")
+            }
+        },
+        Err(diags) => {
+            let joined = diags
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            panic!(
+                "solver::tensegrity_load must be a registered ComputeNode target, but \
+                 dispatch returned the unregistered-target Err: {joined}"
+            );
+        }
+    }
 }
