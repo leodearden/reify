@@ -2816,4 +2816,84 @@ structure Assembly {
             "b.ri (not in open map) must serve on-disk content"
         );
     }
+
+    // -------------------------------------------------------------------------
+    // Closed-importer disk indexing — integration tests (task 4466 step-11, RED)
+    // -------------------------------------------------------------------------
+
+    /// Mirror `references_handler_follows_imports_across_files` but with the
+    /// importer CLOSED on disk.
+    ///
+    /// Setup: `parts.ri` declares `structure Hole` and is **opened** in the LSP
+    /// (did_open).  `other.ri` imports and constructs `Hole` but is **never
+    /// opened** — it only exists on disk.
+    ///
+    /// Cursor: on the `Hole` **declaration** in `parts.ri` (line 0, col 10 —
+    /// "structure Hole", `Hole` starts at char 10).
+    ///
+    /// Expected: the `references` response includes at least one Location in
+    /// `other.ri`, proving the handler picked up the closed importer via the
+    /// disk walk (step-12 wires `build_workspace_docs` into the handler).
+    ///
+    /// This test FAILS on pre-step-12 code because only open docs are scanned.
+    #[tokio::test]
+    async fn references_handler_finds_closed_disk_importer() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        let tmp = std::env::temp_dir()
+            .join(format!("reify-lsp-refs-closed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // parts.ri — the HOME file; will be opened in LSP.
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        std::fs::write(tmp.join("parts.ri"), parts_source).unwrap();
+
+        // other.ri — CLOSED importer; exists on disk only.
+        let other_source = "import parts.Hole\nstructure A {\n    sub h = Hole()\n}";
+        std::fs::write(tmp.join("other.ri"), other_source).unwrap();
+
+        // Initialize with workspace root so the disk walk has a root.
+        let root_uri = Url::from_file_path(&tmp).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Open ONLY parts.ri — other.ri is intentionally left closed.
+        let parts_uri = Url::from_file_path(tmp.join("parts.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: parts_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: parts_source.to_string(),
+                },
+            })
+            .await;
+
+        // Cursor on the `Hole` declaration in parts.ri:
+        // "structure Hole ..." — "structure " is 10 chars → col 10.
+        let locations = server
+            .references(ref_params(parts_uri.clone(), Position::new(0, 10), true))
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let locations = locations.expect(
+            "references on Hole declaration should return Some(locations), not None",
+        );
+        // Must include at least one Location in the closed other.ri.
+        assert!(
+            locations.iter().any(|l| l.uri.path().ends_with("other.ri")),
+            "references must include a Location in the CLOSED other.ri \
+             (disk-walk importer discovery), got {locations:?}"
+        );
+    }
 }
