@@ -101,7 +101,7 @@ pub struct TestResult {
 /// # No `SolverRegistry`
 ///
 /// Unlike `configured_eval_engine`, this helper deliberately omits
-/// `.with_solver(reify_constraints::SolverRegistry::production())`.
+/// `.with_solver(Box::new(reify_constraints::SolverRegistry::production()))`.
 /// `reify-constraints` is a **dev-only** dependency of `reify-eval`; promoting
 /// it to a runtime dep would (a) break the crate's dependency boundary and
 /// (b) violate the `run_tests_with_auto_param_returns_indeterminate` contract —
