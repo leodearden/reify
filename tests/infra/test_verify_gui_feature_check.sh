@@ -63,7 +63,10 @@ make_fixture() {
                  "in make_fixture." >&2
             exit 1
         }
-    done < <(grep -E 'source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
+    # Anchor 'source' to line-start (after optional indent) so prose/comments
+    # that merely mention the token `source "$SCRIPT_DIR/...` (e.g. the design
+    # note at verify.sh:545) are not mistaken for real source statements.
+    done < <(grep -E '^[[:space:]]*source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
                  | sed 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|' || true)
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
