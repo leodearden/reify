@@ -172,16 +172,27 @@ async function main() {
   }
   console.log('  OK: MAIN file is active');
 
-  // Ensure a deterministic starting state: panel collapsed and problemsHeight at default.
+  // Ensure a deterministic starting state: panel collapsed.
   // The layout persists to localStorage across sessions; a previous smoke run may have
-  // left the panel expanded. Force problemsCollapsed=true so scenario 1 starts from a
-  // known collapsed state regardless of prior localStorage contents.
+  // left the panel expanded. Detect via the data-collapsed attribute (always present on
+  // the diagnostics-panel div) and click fold-toggle to collapse if needed.
+  // Note: resize_panes handles numeric pane dimensions only (DIMS), not boolean fields
+  // like problemsCollapsed; DOM interaction is the correct mechanism here.
   log('Ensuring panel starts collapsed (deterministic initial state)…');
-  const collapseInit = await rpc('resize_panes', { problemsCollapsed: true });
-  if (!collapseInit || !collapseInit.ok) {
-    fail(`Failed to set initial problemsCollapsed=true: ${JSON.stringify(collapseInit)}`);
+  {
+    const panelState = await countElements('[data-testid="diagnostics-panel"][data-collapsed="true"]');
+    if (panelState.count === 0) {
+      // Panel is currently expanded (data-collapsed="false"); collapse it via fold-toggle.
+      console.log('  Panel is expanded; clicking fold-toggle to collapse…');
+      await rpc('click_element', { testId: 'diagnostics-fold-toggle' });
+      await sleep(300);
+      const afterCollapse = await countElements('[data-testid="diagnostics-panel"][data-collapsed="true"]');
+      if (afterCollapse.count !== 1) {
+        fail(`Failed to collapse panel: data-collapsed is still not "true" after toggle`);
+      }
+    }
+    console.log('  OK: panel is collapsed');
   }
-  await sleep(100);
 
   // ════════════════════════════════════════════════════════════════════════════
   // Scenario 1: FOLD / UNFOLD
