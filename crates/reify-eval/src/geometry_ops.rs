@@ -18151,4 +18151,163 @@ mod tests {
             diagnostics[0].severity
         );
     }
+
+    // ── resolve_subhandle_list (task 3205 step-7/8) ───────────────────────
+    //
+    // `resolve_subhandle_list(arg, parent)` is the KERNEL-FREE (pure
+    // Value→Value) helper that lowers a List<Geometry> of KGQ sub-handles to a
+    // canonical `Vec<GeometryHandleId>`: it requires a List of `GeometryHandle`
+    // elements, rejects any element whose `realization_ref` differs from the
+    // parent's (cross-solid gate), dedups by `kernel_handle`, and returns the
+    // ids in ascending canonical order (matching extract_edges' mint order).
+    // These cases are built from DIRECTLY-CONSTRUCTED handles via
+    // `make_sub_handle` — no live build / scheduling required.
+
+    /// (a) Happy path: a List of N edge sub-handles all sharing the parent's
+    /// `realization_ref` resolves to their `kernel_handle` ids in ascending-id
+    /// canonical order. The sub-handles are constructed OUT of ascending order
+    /// to prove the resolver sorts (canonical = ascending kernel_handle id,
+    /// matching extract_edges' TopExp mint order).
+    #[test]
+    fn resolve_subhandle_list_happy_path_canonical_order() {
+        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
+        let parent_hash = [7u8; 32];
+        let parent = reify_ir::Value::GeometryHandle {
+            realization_ref: ra.clone(),
+            upstream_values_hash: parent_hash,
+            kernel_handle: GeometryHandleId(1),
+        };
+        // kernel handles deliberately scrambled to prove ascending canonical sort.
+        let scrambled = [103u64, 101, 102, 100];
+        let edges: Vec<reify_ir::Value> = scrambled
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| {
+                crate::topology_selectors::make_sub_handle(
+                    &ra,
+                    &parent_hash,
+                    crate::topology_selectors::SubKind::Edge,
+                    i as u32,
+                    GeometryHandleId(id),
+                )
+            })
+            .collect();
+        let arg = reify_ir::Value::List(edges);
+        let result = super::resolve_subhandle_list(&arg, &parent);
+        assert_eq!(
+            result,
+            Ok(vec![
+                GeometryHandleId(100),
+                GeometryHandleId(101),
+                GeometryHandleId(102),
+                GeometryHandleId(103),
+            ]),
+            "happy path must resolve sub-handles to kernel_handle ids in \
+             ascending canonical order"
+        );
+    }
+
+    /// (b) Dedup: the same sub-handle listed twice collapses to one entry.
+    #[test]
+    fn resolve_subhandle_list_dedups_repeated_handle() {
+        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
+        let parent_hash = [9u8; 32];
+        let parent = reify_ir::Value::GeometryHandle {
+            realization_ref: ra.clone(),
+            upstream_values_hash: parent_hash,
+            kernel_handle: GeometryHandleId(1),
+        };
+        let edge = crate::topology_selectors::make_sub_handle(
+            &ra,
+            &parent_hash,
+            crate::topology_selectors::SubKind::Edge,
+            0,
+            GeometryHandleId(200),
+        );
+        let arg = reify_ir::Value::List(vec![edge.clone(), edge]);
+        let result = super::resolve_subhandle_list(&arg, &parent);
+        assert_eq!(
+            result,
+            Ok(vec![GeometryHandleId(200)]),
+            "a repeated sub-handle must dedup to a single kernel_handle"
+        );
+    }
+
+    /// (c) Cross-solid rejection: a sub-handle whose `realization_ref` differs
+    /// from the parent's is rejected (a handle minted from a different solid).
+    #[test]
+    fn resolve_subhandle_list_rejects_cross_solid_handle() {
+        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
+        let rb = reify_core::identity::RealizationNodeId::new("PartB", 0);
+        let parent_hash = [1u8; 32];
+        let other_hash = [2u8; 32];
+        let parent = reify_ir::Value::GeometryHandle {
+            realization_ref: ra.clone(),
+            upstream_values_hash: parent_hash,
+            kernel_handle: GeometryHandleId(1),
+        };
+        // One legit edge from PartA, one foreign edge from PartB.
+        let good = crate::topology_selectors::make_sub_handle(
+            &ra,
+            &parent_hash,
+            crate::topology_selectors::SubKind::Edge,
+            0,
+            GeometryHandleId(100),
+        );
+        let foreign = crate::topology_selectors::make_sub_handle(
+            &rb,
+            &other_hash,
+            crate::topology_selectors::SubKind::Edge,
+            0,
+            GeometryHandleId(101),
+        );
+        let arg = reify_ir::Value::List(vec![good, foreign]);
+        let result = super::resolve_subhandle_list(&arg, &parent);
+        assert!(
+            result.is_err(),
+            "a sub-handle from a different realization_ref must be rejected \
+             (cross-solid), got {:?}",
+            result
+        );
+    }
+
+    /// (d) Non-List arg: a non-List `Value` (e.g. `Real`) is rejected — the
+    /// resolver requires a `List<Geometry>`.
+    #[test]
+    fn resolve_subhandle_list_rejects_non_list_arg() {
+        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
+        let parent = reify_ir::Value::GeometryHandle {
+            realization_ref: ra,
+            upstream_values_hash: [3u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+        let arg = reify_ir::Value::Real(2.0);
+        let result = super::resolve_subhandle_list(&arg, &parent);
+        assert!(
+            result.is_err(),
+            "a non-List arg must be rejected, got {:?}",
+            result
+        );
+    }
+
+    /// (e) Empty List: an empty selector list resolves to `Ok(vec![])`. The
+    /// anti-zero-edges (E_EMPTY_SELECTION) guard lives in the eval arm, NOT in
+    /// this kernel-free resolver — the resolver's job is purely structural.
+    #[test]
+    fn resolve_subhandle_list_empty_list_is_ok_empty() {
+        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
+        let parent = reify_ir::Value::GeometryHandle {
+            realization_ref: ra,
+            upstream_values_hash: [4u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+        let arg = reify_ir::Value::List(vec![]);
+        let result = super::resolve_subhandle_list(&arg, &parent);
+        assert_eq!(
+            result,
+            Ok(Vec::<GeometryHandleId>::new()),
+            "an empty selector List must resolve to Ok(empty) — the \
+             anti-zero-edges guard lives in the eval arm, not the resolver"
+        );
+    }
 }
