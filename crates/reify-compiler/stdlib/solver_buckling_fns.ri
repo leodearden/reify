@@ -34,12 +34,12 @@
 //
 // Signature notes:
 //
-//   `loads : List<Real>` and `supports : List<Real>`:
-//     Placeholder types for `List<Load>` and `List<Support>`. Same
-//     TODO(load-trait) constraint as `solve_elastic_static`. Callers pass
-//     the values via `LoadCase.loads` / `LoadCase.supports` member access,
-//     which satisfies the type resolver at compile time while preserving the
-//     actual `Value::StructureInstance` items at runtime.
+//   `loads : List<Load>` and `supports : List<Support>`:
+//     Tightened from `List<Real>` placeholders (task ζ/4444) to match
+//     `LoadCase.loads : List<Load>` and `LoadCase.supports : List<Support>`.
+//     Callers pass the values via `LoadCase.loads` / `LoadCase.supports`
+//     member access (or inline typed list literals).  Conformance is enforced
+//     at compile time for StructureInstanceCtor list elements.
 //
 //   `options : BucklingOptions` (no default):
 //     Even though `BucklingOptions` is now in the prelude (loaded earlier via
@@ -52,8 +52,8 @@ pub fn solve_buckling(
     length    : Length,
     width     : Length,
     height    : Length,
-    loads     : List<Real>,
-    supports  : List<Real>,
+    loads     : List<Load>,
+    supports  : List<Support>,
     options   : BucklingOptions
 ) -> BucklingResult {
     BucklingResult()
