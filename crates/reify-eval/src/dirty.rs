@@ -1797,4 +1797,65 @@ mod tests {
             ),
         }
     }
+
+    // --- assert_dag_complete_from_graph wrapper tests (step-5) ---
+
+    /// #[should_panic] wrapper test: minimal two-entity EvaluationGraph with
+    /// cross-sub Boolean edge (inner_a → outer). Reversed exec_order
+    /// (outer before inner_a) → BackwardEdge → wrapper must panic with
+    /// a message containing "assert_dag_complete".
+    ///
+    /// RED until step-6 adds assert_dag_complete_from_graph.
+    #[test]
+    #[should_panic(expected = "assert_dag_complete")]
+    fn assert_dag_complete_from_graph_panics_on_reversed_cross_sub_exec_order() {
+        use crate::dirty::assert_dag_complete_from_graph;
+        use crate::graph::{EvaluationGraph, RealizationNodeData};
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+        use reify_core::{ContentHash, RealizationNodeId, ValueCellId};
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+
+        // inner_a: entity "A", geometry_cell = ValueCellId("A","body")
+        let inner_a = RealizationNodeId::new("A", 0);
+        let body_a = ValueCellId::new("A", "body");
+        graph.realizations.insert(
+            inner_a.clone(),
+            RealizationNodeData {
+                produced_kernel: None,
+                id: inner_a.clone(),
+                geometry_cell: Some(body_a.clone()),
+                operations: vec![],
+                content_hash: ContentHash::of_str("inner_a"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // outer: entity "Outer", Boolean { Union, Sub("a.body"), Sub("a.body") }
+        // (using same ref twice so we only need one inner entity for simplicity)
+        let outer = RealizationNodeId::new("Outer", 0);
+        graph.realizations.insert(
+            outer.clone(),
+            RealizationNodeData {
+                produced_kernel: None,
+                id: outer.clone(),
+                geometry_cell: None,
+                operations: vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("a.body".into()),
+                    right: GeomRef::Sub("a.body".into()),
+                }],
+                content_hash: ContentHash::of_str("outer"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // REVERSED exec_order: outer (consumer) before inner_a (producer)
+        // → BackwardEdge → panic
+        let exec_order = vec![outer.clone(), inner_a.clone()];
+
+        // Should panic with message containing "assert_dag_complete"
+        assert_dag_complete_from_graph(&graph, &[], &exec_order);
+    }
 }
