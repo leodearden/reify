@@ -119,6 +119,21 @@ trap _cleanup_balancer EXIT
 
 echo "=== jobserver-balancer.py tests ==="
 
-# (Assertion blocks are appended by subsequent TDD steps.)
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 1: script contract (test-1)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 1: script contract ---"
+
+assert "scripts/jobserver-balancer.py exists" \
+    test -f "$BALANCER"
+
+assert "scripts/jobserver-balancer.py is executable" \
+    test -x "$BALANCER"
+
+assert "first line is '#!/usr/bin/env python3'" \
+    bash -c "head -1 '$BALANCER' | grep -qxF '#!/usr/bin/env python3'"
+
+# (More assertion blocks are appended by subsequent TDD steps.)
 
 test_summary
