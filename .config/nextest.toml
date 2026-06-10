@@ -1,9 +1,10 @@
 # cargo-nextest configuration for Reify.
 #
 # LIVE (task 4503/γ): occt test-group cap raised 4→24, env-driven via
-# REIFY_OCCT_NEXTEST_MAX_THREADS (default 24).  scripts/verify.sh resolves the
-# env var at plan-build time and passes `--config 'test-groups.occt.max-threads=N'`
-# to cargo nextest run on the NEXTEST=1 branch.
+# REIFY_OCCT_NEXTEST_MAX_THREADS (default 24).  scripts/gen-nextest-config.sh
+# generates a temp copy of this file with the occt cap rewritten; verify.sh
+# passes it as `--config-file <tmp>` on the NEXTEST=1 branch.  nextest `--config`
+# overrides CARGO config only (NO-OP for test-groups — verified on 0.9.136).
 #
 # Headroom basis (task 4503/γ, supersedes task 4451 §d basis):
 #   32-core / 125 GiB host; held-slot semaphore (task β/4502) bounds concurrent

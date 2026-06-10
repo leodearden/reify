@@ -47,6 +47,9 @@ make_branch_fixture() {
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh" "$dir/scripts/affected-crates-lib.sh"
     cp "$REPO_ROOT/scripts/lib_test_semaphore.sh" "$dir/scripts/lib_test_semaphore.sh"
+    cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
+    mkdir -p "$dir/.config"
+    cp "$REPO_ROOT/.config/nextest.toml" "$dir/.config/nextest.toml"
     chmod +x "$dir/scripts/verify.sh"
     # Preflight: fail loudly if verify.sh sources a lib that was not copied to the
     # fixture.  Without this check a new 'source "$SCRIPT_DIR/foo.sh"' line in

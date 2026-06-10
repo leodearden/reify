@@ -638,29 +638,41 @@ wrap_subshell() {
     esac
 }
 
+# Memoized temp nextest config path (populated on first NEXTEST=1 pass in emit_nextest_pass).
+# scripts/gen-nextest-config.sh writes a full copy of .config/nextest.toml with the occt
+# literal rewritten to the REIFY_OCCT_NEXTEST_MAX_THREADS value (default 24).
+# nextest --config overrides CARGO config only (NO-OP for test-groups on 0.9.136);
+# --config-file is required to actually override the occt group max-threads.
+_NEXTEST_CONFIG_FILE=""
+
+_verify_cleanup() {
+    if [ -n "$_NEXTEST_CONFIG_FILE" ] && [ -f "$_NEXTEST_CONFIG_FILE" ]; then
+        rm -f "$_NEXTEST_CONFIG_FILE"
+    fi
+}
+trap '_verify_cleanup' EXIT
+
 # emit_nextest_pass <selector> <rel> <outer_timeout>
 # Emit a single nextest (or cargo-test fallback) pass.
 # selector: "--workspace" (full-workspace) or "-p crate1 -p crate2 ..." (narrowed/release)
 # rel: "" (debug) or " --release"
 # outer_timeout: e.g. "60m" or "75m"
 # Task 4451: replaces emit_gated_ungated; the flock-gated OCCT pass is dropped.
-# Task 4503/γ: env-driven occt cap (REIFY_OCCT_NEXTEST_MAX_THREADS, default 24).
-# OCCT crates are now included in the pool; the nextest occt test-group (max-threads=24,
-# env-driven) bounds their intra-run concurrency for FD/memory headroom.
+# Task 4503/γ: env-driven occt cap via REIFY_OCCT_NEXTEST_MAX_THREADS (default 24).
+# scripts/gen-nextest-config.sh generates a temp nextest config (memoized in
+# _NEXTEST_CONFIG_FILE) passed as --config-file; nextest --config overrides CARGO
+# config only (NO-OP for test-groups on 0.9.136) so --config-file is required.
 emit_nextest_pass() {
     local selector="$1" rel="$2" outer_timeout="$3"
     local cmd
     if [ "$NEXTEST" -eq 1 ]; then
-        # Validate and resolve the occt group cap at plan-build time so --print-plan
-        # is concrete and eval sees a literal integer inside single quotes.
-        # Mirrors parse_debug_port: strict digits-only check; fall back to 24 on
-        # empty, non-digit, or whitespace-padded input (e.g. "abc", "4 ", "'").
-        local _occt_cap
-        case "${REIFY_OCCT_NEXTEST_MAX_THREADS:-}" in
-            (''|*[!0-9]*) _occt_cap=24 ;;
-            (*)            _occt_cap="${REIFY_OCCT_NEXTEST_MAX_THREADS}" ;;
-        esac
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config 'test-groups.occt.max-threads=${_occt_cap}'"
+        # Generate the nextest config once per process (memoized in _NEXTEST_CONFIG_FILE).
+        # Produces a full copy of .config/nextest.toml with the occt cap rewritten to the
+        # resolved env value; the temp file is removed by _verify_cleanup on EXIT.
+        if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
+            _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+        fi
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config-file ${_NEXTEST_CONFIG_FILE}"
     else
         # Fallback: single-threaded (OCCT serialization via the nextest occt group is
         # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
@@ -835,7 +847,7 @@ build_plan() {
     # "npm ci.*|| true", and the trap is on the same line as the npm ci call;
     # the `if`-guard achieves the same set -e safety without that token.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi' EXIT"
+        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi; _verify_cleanup' EXIT"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
