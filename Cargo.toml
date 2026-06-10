@@ -130,8 +130,9 @@ faer = { version = "0.24", default-features = false, features = ["std", "sparse"
 # object files into the final binary), (B) dependency debug data is shared
 # across binaries rather than duplicated (one .dwo per .rlib TU, not per
 # binary), so target/ shrinks substantially. Backtraces still resolve
-# file:line via split-DWARF symbolication — verified by the
-# crates/reify-test-support/tests/debuginfo_backtrace.rs integration test.
+# file:line via split-DWARF symbolication — confirmed GREEN by the
+# crates/reify-test-support/tests/debuginfo_backtrace.rs integration test
+# (task 4450 step-3 empirical gate; rustc 1.96.0 / LLD 22.1.2 on this host).
 #
 # Fallback (PRD §12 Q2): if split-DWARF symbolication degrades on the host
 # (debuginfo_backtrace test goes RED), switch to debug = 1 (line-tables-only,
