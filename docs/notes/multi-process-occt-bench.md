@@ -68,6 +68,15 @@ below: 4×~2 GiB OCCT peak RSS ≈ 8 GiB ≪ 32 GiB host. The semaphore wrapper
 (`scripts/cargo-test-occt-gated.sh`) is retained as a standalone/manual OCCT runner and for
 its 23 mechanism tests in `tests/infra/test_occt_flock_gate.sh`.
 
+### Superseded by task 4503 (γ): occt group cap 4→24, env-driven
+
+Task 4503/γ raises the nextest `occt` group `max-threads` from 4 to 24 (default; override
+via `REIFY_OCCT_NEXTEST_MAX_THREADS`). This is safe because task β/4502 (the held-slot
+test-run semaphore) is live in `scripts/verify.sh` and hard-bounds concurrent verify runs
+to ≤2 (1 task slot at default N=1 + 1 exempt merge). Worst case: 2×24 OCCT×~2 GiB = 96 GiB
+< 125 GiB host → guaranteed no swap. Cap 24 < nproc=32 global remains a real backstop.
+See §(d) below for the updated headroom basis.
+
 ## (c) Validation Gate Results
 
 ### Mechanism correctness — automated, sleep-based proxy (2026-05-26)
@@ -174,19 +183,28 @@ implementation).
 
 ## (d) Adopted Defaults and Headroom Evidence
 
+*Updated by task 4503/γ (occt nextest group cap 4→24, env-driven).  The task-4451 basis
+(N=4, ≪ 32 GiB host) is superseded by the task-4503/γ basis below.*
+
 | Parameter | Default | Rationale |
 |-----------|---------|-----------|
-| `REIFY_OCCT_MAX_CONCURRENCY` | 4 | Conservative: 4 × ~4 GiB peak RSS ≤ 16 GiB, well within typical 32 GiB host; leaves headroom for orchestrator (48 max-concurrent tasks) and other cargo builds |
-| Auto-detect formula | `N = clamp(nproc − load_1m_int, 1, MAX_CAP)` | Idle box: `N = min(4, 32) = 4`; loaded box (load 30, 32 CPUs): `N = max(1, 2) = 2` — never goes below 1, never starves |
-| `REIFY_OCCT_CONCURRENCY` override | (unset) | Set to 1 to restore historical exclusive-mode behavior; set to 8+ in dedicated benchmark contexts |
+| `REIFY_OCCT_MAX_CONCURRENCY` (standalone flock, `cargo-test-occt-gated.sh`) | 4 | Retained for the standalone/manual OCCT runner; unchanged by task 4503 |
+| nextest `occt` group `max-threads` (`REIFY_OCCT_NEXTEST_MAX_THREADS`) | **24** | Task 4503/γ: held-slot semaphore bounds concurrent runs to ≤2; worst case 2×24×~2 GiB = 96 GiB < 125 GiB host; cap 24 < nproc=32 global remains a real backstop |
+| Auto-detect formula (standalone) | `N = clamp(nproc − load_1m_int, 1, MAX_CAP)` | Idle box: `N = min(4, 32) = 4`; loaded box (load 30, 32 CPUs): `N = max(1, 2) = 2` — never goes below 1, never starves |
+| `REIFY_OCCT_CONCURRENCY` override (standalone) | (unset) | Set to 1 to restore historical exclusive-mode behavior; set to 8+ in dedicated benchmark contexts |
 
-**FD headroom:** The semaphore uses 1 file descriptor (FD 9) per wrapper invocation.
-With N=4 concurrently running wrappers, 4 slot FDs are held simultaneously on the host.
-Each wrapper also inherits stdin/stdout/stderr + cargo's pipe FDs (~15–20 total per process).
-No meaningful FD pressure at any realistic concurrency level.
+**Host spec (task 4503/γ basis):** 32-core / 125 GiB RAM.
 
-**Memory headroom (conservative estimate):** Release OCCT test binaries peak at ~1–2 GiB
-RSS each; 4 concurrent `cargo test` invocations (each spawning up to 10 test binaries in
-parallel) peak at ~4 × 2 GiB = 8 GiB.  On a 32-GiB host this leaves ~24 GiB for the OS
-and orchestrator.  Raising MAX\_CAP to 8 should be safe on such a host but is not the
-default to avoid surprises on smaller CI machines.
+**Cross-run bound (task β/4502):** The held-slot test-run semaphore
+(`scripts/lib_test_semaphore.sh`) limits concurrent verify runs to ≤2
+(default N=1 task slot + 1 merge-exempt run).  This is the safety precondition
+that makes the 4→24 cap raise non-swapping.
+
+**Memory headroom (task 4503/γ basis):** Release OCCT test binaries peak at ~1–2 GiB RSS
+each.  With the nextest occt group cap at 24 and at most 2 concurrent verify runs:
+worst case = 2 runs × 24 concurrent OCCT tests × ~2 GiB = **96 GiB**.
+125 GiB host − 96 GiB = **29 GiB** residual for OS, orchestrator, and non-OCCT tests.
+No swap expected under any realistic workload.
+
+**FD headroom:** Unchanged from task 4451 analysis — no meaningful FD pressure at any
+realistic concurrency level.

@@ -581,7 +581,7 @@ fi
 if [ "$NARROW_ACTIVE" -eq 1 ]; then
     # Build the affected-crate -p flag string. Task 4451: no gated/ungated split;
     # all affected crates (including OCCT ones) go through the single nextest pass,
-    # with the occt test-group (max-threads=4) bounding their concurrency.
+    # with the occt test-group (max-threads=24, env-driven) bounding their concurrency.
     # Word-split $AFFECTED (safe: Rust crate names never contain spaces).
     # shellcheck disable=SC2086
     for _nc in $AFFECTED; do
@@ -606,8 +606,8 @@ PLAN=()
 add() { PLAN+=("$1"); }
 
 # Release-sensitive crate flags: ALL release-sensitive crates in one nextest -p set.
-# Task 4451: the gated/ungated split is gone; the nextest occt group (max-threads=4)
-# bounds intra-run concurrency for OCCT-touching release-sensitive crates (reify-eval).
+# Task 4451: the gated/ungated split is gone; the nextest occt group (max-threads=24,
+# env-driven) bounds intra-run concurrency for OCCT-touching release-sensitive crates (reify-eval).
 # reify-kernel-occt, reify-cli, reify-config have zero release-sensitive tests and
 # correctly drop out of the release pass; the debug full-workspace pass covers them.
 _RELEASE_DECLARED="$(release_declared_set)"
@@ -638,19 +638,58 @@ wrap_subshell() {
     esac
 }
 
+# Memoized temp nextest config path (populated on first NEXTEST=1 execute-mode pass in
+# emit_nextest_pass).  scripts/gen-nextest-config.sh writes a full copy of
+# .config/nextest.toml with the occt literal rewritten to the REIFY_OCCT_NEXTEST_MAX_THREADS
+# value (default 24).  nextest --config overrides CARGO config only (NO-OP for test-groups
+# on 0.9.136); --config-file is required to actually override the occt group max-threads.
+# In --print-plan mode the variable stays empty (no subprocess, no temp file — print mode
+# is a hermetic, side-effect-free oracle; execute mode generates the real file).
+_NEXTEST_CONFIG_FILE=""
+
+_verify_cleanup() {
+    if [ -n "$_NEXTEST_CONFIG_FILE" ] && [ -f "$_NEXTEST_CONFIG_FILE" ]; then
+        rm -f "$_NEXTEST_CONFIG_FILE"
+    fi
+}
+trap '_verify_cleanup' EXIT
+
 # emit_nextest_pass <selector> <rel> <outer_timeout>
 # Emit a single nextest (or cargo-test fallback) pass.
 # selector: "--workspace" (full-workspace) or "-p crate1 -p crate2 ..." (narrowed/release)
 # rel: "" (debug) or " --release"
 # outer_timeout: e.g. "60m" or "75m"
 # Task 4451: replaces emit_gated_ungated; the flock-gated OCCT pass is dropped.
-# OCCT crates are now included in the pool; the nextest occt test-group (max-threads=4)
-# bounds their intra-run concurrency for FD/memory headroom.
+# Task 4503/γ: env-driven occt cap via REIFY_OCCT_NEXTEST_MAX_THREADS (default 24).
+# scripts/gen-nextest-config.sh generates a temp nextest config (memoized in
+# _NEXTEST_CONFIG_FILE) passed as --config-file; nextest --config overrides CARGO
+# config only (NO-OP for test-groups on 0.9.136) so --config-file is required.
+# In --print-plan mode a static placeholder path is emitted instead of a real temp
+# path so --print-plan remains a pure, hermetic oracle (no subprocess, no temp file).
 emit_nextest_pass() {
     local selector="$1" rel="$2" outer_timeout="$3"
     local cmd
     if [ "$NEXTEST" -eq 1 ]; then
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}"
+        local _cfg_path
+        if [ "$PRINT_PLAN" -eq 1 ]; then
+            # Print mode: emit a representative placeholder so --print-plan is a
+            # pure, hermetic oracle — no subprocess, no temp file created.
+            # The placeholder preserves the 'reify-nextest-occt' prefix so plan-shape
+            # assertions (tests/infra/test_occt_gated_scope.sh Test 9) can still
+            # match the pattern without requiring a real file on disk.
+            # This path is intentionally NOT re-runnable; only execute mode produces
+            # a real config file (memoized in _NEXTEST_CONFIG_FILE).
+            _cfg_path="${TMPDIR:-/tmp}/reify-nextest-occt.<print-plan-placeholder>"
+        else
+            # Execute mode: generate the nextest config once per process (memoized).
+            # Produces a full copy of .config/nextest.toml with the occt cap rewritten
+            # to the resolved env value; removed by _verify_cleanup on EXIT.
+            if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
+                _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+            fi
+            _cfg_path="$_NEXTEST_CONFIG_FILE"
+        fi
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config-file ${_cfg_path}"
     else
         # Fallback: single-threaded (OCCT serialization via the nextest occt group is
         # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
@@ -696,7 +735,7 @@ add_test_passes() {
 
         if [ "$profile" = "release" ]; then
             # Release pass: ALL release-sensitive crates in one nextest pass (task 4451).
-            # The nextest occt group (max-threads=4) bounds concurrency for OCCT-touching
+            # The nextest occt group (max-threads=24, env-driven) bounds concurrency for OCCT-touching
             # release-sensitive crates (e.g. reify-eval). Only crates with
             # debug_assertions/overflow-checks-dependent tests need to re-run in release;
             # the DEBUG full-workspace pass covers every other crate.
@@ -717,7 +756,7 @@ add_test_passes() {
             else
                 # Full-workspace debug pass (scope=all and non-narrow branch/staged).
                 # Task 4451: OCCT crates are now IN the pool (--workspace, no --exclude);
-                # the nextest occt test-group (max-threads=4) bounds their concurrency.
+                # the nextest occt test-group (max-threads=24, env-driven) bounds their concurrency.
                 emit_nextest_pass "--workspace" "$rel" "$outer_timeout"
             fi
         fi
@@ -825,7 +864,7 @@ build_plan() {
     # "npm ci.*|| true", and the trap is on the same line as the npm ci call;
     # the `if`-guard achieves the same set -e safety without that token.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi' EXIT"
+        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi; _verify_cleanup' EXIT"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
