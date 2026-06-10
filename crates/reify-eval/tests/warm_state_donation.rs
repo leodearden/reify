@@ -488,18 +488,33 @@ fn frequency_bits(val: &Value) -> u64 {
 ///
 /// Asserts that running an `@optimized` modal solve on the `ComputeNode` path
 /// with warm state pre-parked in the `WarmStatePool` produces a result that is
-/// **bit-identical** to a cold-baseline run.  Exercises the exact production
-/// seam at `run_compute_dispatch` (engine_compute.rs): cache-miss → pool-hit
-/// checkout → modal trampoline reuses the baseline's assembled (K, M) via
-/// `key.matches` → deterministic dense eigensolver → identical eigenvalues.
+/// **bit-identical** to a cold-baseline run.
+///
+/// ## What this test proves (and what it does NOT)
+///
+/// **Proven:** (1) **Pipeline consumption** — the parked warm state is checked
+/// out of the pool by `run_compute_dispatch` during the warm eval (the pool
+/// entry is absent afterwards). (2) **Output-invariance** — the warm eval
+/// produces bit-identical results to the cold baseline.
+///
+/// **NOT proven:** assembly reuse.  The `reused_assembly` flag inside the
+/// modal trampoline (modal_ops.rs) is `pub(crate)` and unobservable from this
+/// integration test.  If a future regression broke `key.matches` so the
+/// trampoline always re-assembled (K,M) from scratch, both runs would still
+/// produce bit-identical eigenvalues (deterministic assembly + deterministic
+/// eigensolver), and the pool entry would still be consumed, so this test would
+/// remain GREEN.  Assembly-reuse correctness is covered by the in-crate unit
+/// tests in modal_ops.rs:2504-2641 that directly assert on `reused_assembly`.
 ///
 /// ## Why GREEN on arrival
 ///
 /// The warm-state lifecycle landed in tasks 3425/3496 and is output-invariant
-/// by construction (modal_ops.rs: warm run reuses the EXACT assembled (K,M)
-/// produced by the cold run; deterministic eigensolver ⇒ identical bits).
+/// by construction (deterministic modal assembly + deterministic eigensolver ⇒
+/// identical bits whether the trampoline reuses or re-assembles (K,M)).
 /// There is no production code to fix.  This test guards against **future**
-/// regressions in the seed pipeline that would silently corrupt the result.
+/// regressions in the seed pipeline that would silently corrupt the result
+/// (e.g. a pool-checkout that returns a malformed OpaqueState causing the
+/// trampoline to produce wrong eigenvalues).
 ///
 /// ## Why two fresh engines
 ///
@@ -574,8 +589,9 @@ fn warm_state_seeded_modal_solve_matches_cold_baseline() {
     // ── (B) Warm engine ────────────────────────────────────────────────────
     // Pre-park the baseline's warm state in the fresh engine's WarmStatePool.
     // The FIRST eval on this engine dispatches the solve; run_compute_dispatch's
-    // cache-miss → pool-hit checkout (engine_compute.rs:285-288) feeds the warm
-    // state to the modal trampoline, which reuses the assembled (K,M).
+    // cache-miss → pool-hit checkout (engine_compute.rs:285-288) delivers the warm
+    // state to the modal trampoline (which may reuse the assembled (K,M) via
+    // key.matches — correctness of that reuse is tested in modal_ops.rs unit tests).
     let mut warm_engine = make_simple_engine();
     reify_eval::compute_targets::register_compute_fns(&mut warm_engine);
 
@@ -610,10 +626,13 @@ fn warm_state_seeded_modal_solve_matches_cold_baseline() {
     );
 
     // ── (C) Output-invariance assertions ──────────────────────────────────
-    // Bit-identity is robust by construction: the warm run reuses the EXACT
-    // assembled (K,M) the baseline produced (OpaqueState carries it;
-    // key.matches gates reuse) and the dense eigensolver is deterministic, so
-    // identical (K,M) ⇒ identical eigenvalues ⇒ identical bits.
+    // Bit-identity is robust by construction: modal assembly is deterministic
+    // and the dense eigensolver is deterministic, so whether the trampoline
+    // reuses the baseline's assembled (K,M) via key.matches (the normal warm
+    // path) or re-assembles from scratch, identical input geometry ⇒ identical
+    // (K,M) ⇒ identical eigenvalues ⇒ identical bits.  Assembly-reuse
+    // correctness itself is verified by in-crate unit tests in
+    // modal_ops.rs:2504-2641 that assert on the `reused_assembly` flag.
 
     // (C1) Primary: f1 bits are identical.
     let warm_f1 = frequency_bits(
@@ -625,7 +644,8 @@ fn warm_state_seeded_modal_solve_matches_cold_baseline() {
     assert_eq!(
         warm_f1,
         baseline_f1,
-        "f1 bits must be identical: warm run reuses baseline's assembled (K,M); \
+        "f1 bits must be identical: deterministic assembly + deterministic eigensolver \
+         guarantee bit-identity regardless of whether the trampoline reused (K,M); \
          warm_f1 bits={:#018x}, baseline_f1 bits={:#018x}",
         warm_f1,
         baseline_f1
