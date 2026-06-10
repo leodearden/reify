@@ -248,6 +248,25 @@ pub(crate) fn eval_all_args_to_f64(
         .collect()
 }
 
+/// Canonicalize sub-handle `kernel_handle` ids into the canonical edge/face
+/// order: ascending `kernel_handle` id, deduplicated. Single source of truth
+/// for the "canonical order + dedup" step, shared by `resolve_subhandle_list`
+/// (which layers the cross-solid membership gate on top) and the
+/// `compile_geometry_op` `ModifyKind::Fillet` eval arm, so the two never drift
+/// on ordering/dedup (task 3205 reviewer note). Ascending id matches
+/// `extract_edges`' TopExp mint order, so a curated subset lines up with the
+/// kernel's edge map.
+fn canonical_subhandle_ids(
+    ids: impl IntoIterator<Item = GeometryHandleId>,
+) -> Vec<GeometryHandleId> {
+    // `BTreeSet` gives dedup (by id) + ascending canonical order in a single
+    // structure — `GeometryHandleId` is `Ord`.
+    ids.into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Lower a `List<Geometry>` of KGQ topology sub-handles to a canonical
 /// `Vec<GeometryHandleId>` (task 3205 — the curated edge/face SELECTION SEAM).
 ///
@@ -281,20 +300,20 @@ pub(crate) fn eval_all_args_to_f64(
 ///     present but resolved to nothing" from "no selector at all" — is the
 ///     eval arm's job, NOT this structural resolver's.
 // `#[allow(dead_code)]`: forward-looking selection-resolver seam. The legacy
-// eval arm (`compile_geometry_op`'s `ModifyKind::Fillet`) cannot call it because
-// the parent solid's `Value::GeometryHandle` is not realized in phase P2 (it
-// enters `values` only in P3 — see the task-3205 plan), so that arm inlines a
-// kernel_handle-only extraction. The full cross-solid resolver is consumed by
-// engine-unified-build-dag η/ε (tasks 4360/4358), whose in-loop driver has the
-// realized parent handle. Exercised now by the `resolve_subhandle_list_*` unit
-// tests below.
+// eval arm (`compile_geometry_op`'s `ModifyKind::Fillet`) cannot call the full
+// resolver because the parent solid's `Value::GeometryHandle` is not realized in
+// phase P2 (it enters `values` only in P3 — see the task-3205 plan), so that arm
+// shares only the structural `canonical_subhandle_ids` canonicalization and skips
+// the cross-solid membership gate. The full cross-solid resolver is consumed by
+// engine-unified-build-dag η/ε, whose in-loop driver has the realized parent
+// handle. Exercised now by the `resolve_subhandle_list_*` unit tests below.
+// TODO(tasks 4360/4358): drop this `#[allow(dead_code)]` once η/ε's in-loop
+// driver calls `resolve_subhandle_list` from production code.
 #[allow(dead_code)]
 pub(crate) fn resolve_subhandle_list(
     arg: &reify_ir::Value,
     parent: &reify_ir::Value,
 ) -> Result<Vec<GeometryHandleId>, String> {
-    use std::collections::BTreeSet;
-
     let parent_ref = match parent {
         reify_ir::Value::GeometryHandle {
             realization_ref, ..
@@ -317,9 +336,11 @@ pub(crate) fn resolve_subhandle_list(
         }
     };
 
-    // BTreeSet gives dedup (by kernel_handle) + ascending canonical order in
-    // a single structure — GeometryHandleId is Ord.
-    let mut ids: BTreeSet<GeometryHandleId> = BTreeSet::new();
+    // Validate every element (cross-solid membership gate), collecting raw
+    // kernel_handles; `canonical_subhandle_ids` then dedups + sorts them into
+    // canonical order — the SAME canonicalization the eval Fillet arm uses, so
+    // the two cannot drift on ordering/dedup.
+    let mut ids: Vec<GeometryHandleId> = Vec::with_capacity(elems.len());
     for (i, elem) in elems.iter().enumerate() {
         match elem {
             reify_ir::Value::GeometryHandle {
@@ -334,7 +355,7 @@ pub(crate) fn resolve_subhandle_list(
                         i, realization_ref, parent_ref
                     ));
                 }
-                ids.insert(*kernel_handle);
+                ids.push(*kernel_handle);
             }
             other => {
                 return Err(format!(
@@ -345,7 +366,7 @@ pub(crate) fn resolve_subhandle_list(
         }
     }
 
-    Ok(ids.into_iter().collect())
+    Ok(canonical_subhandle_ids(ids))
 }
 
 /// Validate and convert a pattern count from f64 to usize.
@@ -732,26 +753,26 @@ pub(crate) fn compile_geometry_op(
                             );
                             match &edges_val {
                                 reify_ir::Value::List(elems) => {
-                                    // Extract each sub-handle's kernel_handle in
-                                    // canonical (ascending) order with dedup —
-                                    // mirrors `resolve_subhandle_list`. Full
-                                    // parent-membership / cross-solid resolution
-                                    // is engine-unified-build-dag η's in-loop
-                                    // job and is NOT exercised on the legacy
-                                    // pipeline (the selector resolves in P4,
-                                    // this arm runs in P2).
-                                    let mut resolved: Vec<GeometryHandleId> = elems
-                                        .iter()
-                                        .filter_map(|e| match e {
+                                    // Extract each sub-handle's kernel_handle and
+                                    // canonicalize via the SHARED
+                                    // `canonical_subhandle_ids` (ascending order +
+                                    // dedup) — the same canonicalization
+                                    // `resolve_subhandle_list` uses, so the two
+                                    // never drift. Full parent-membership /
+                                    // cross-solid resolution is
+                                    // engine-unified-build-dag η's in-loop job and
+                                    // is NOT exercised on the legacy pipeline (the
+                                    // selector resolves in P4, this arm runs in
+                                    // P2).
+                                    let resolved = canonical_subhandle_ids(
+                                        elems.iter().filter_map(|e| match e {
                                             reify_ir::Value::GeometryHandle {
                                                 kernel_handle,
                                                 ..
                                             } => Some(*kernel_handle),
                                             _ => None,
-                                        })
-                                        .collect();
-                                    resolved.sort();
-                                    resolved.dedup();
+                                        }),
+                                    );
                                     // ANTI-ZERO-EDGES: a present selector that
                                     // resolves to ZERO edges must NEVER silently
                                     // fall through to the all-edges path (the
