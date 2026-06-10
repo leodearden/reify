@@ -640,6 +640,18 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
             span,
             diags,
         );
+        // task 4444 ζ: StructureInstanceCtor trait-arg conformance for value-cell
+        // let bindings.  phase_pending_bound_checks covers sub-component ctor args
+        // (queued in entity.rs at sub-lowering time); value-cell `let c = Foo(...)`
+        // bindings lower to StructureInstanceCtor expressions and were NOT checked.
+        // Walking every StructureInstanceCtor here closes that gap.
+        check_expr_struct_ctor_args(
+            expr,
+            &template_registry,
+            &trait_registry,
+            span,
+            diags,
+        );
     };
 
     // Walk EVERY CompiledExpr-bearing root field of each entity template via the
@@ -814,6 +826,68 @@ fn check_expr_fn_calls(
                 trait_registry,
                 diagnostics,
                 representative_span,
+            );
+        }
+    });
+}
+
+/// Walk `expr` and its descendants; for every `StructureInstanceCtor` node call
+/// `check_trait_arg_conformance` on each named arg whose declared param type is
+/// `List<TraitObject(...)>`.
+///
+/// This closes the gap left by `phase_pending_bound_checks`: that phase only
+/// queues `TraitArgConformance` checks for sub-component declarations (entity.rs
+/// sub-lowering path).  Value-cell `let c = Foo(...)` bindings lower to
+/// `StructureInstanceCtor` expressions and were not checked.  By walking the
+/// compiled expression tree here we cover them with the same
+/// `check_trait_arg_conformance` logic that sub-components use.
+///
+/// **Scope: `List<TraitObject>` params only.**  Bare `TraitObject` params (e.g.
+/// `ConstitutiveLawInput.law : ConstitutiveLaw`) are intentionally excluded.
+/// Those params are either already covered by the fn-call/sub-component paths,
+/// or are deliberate type-coercion escape hatches pending trait-coerce support
+/// (e.g. `ConstitutiveLawInput`, task δ/3780 `TODO(trait-coerce)`).  Extending
+/// to bare `TraitObject` would regress those escape-hatch call sites and is
+/// deferred to a follow-up once the coercion story is settled.
+fn check_expr_struct_ctor_args(
+    expr: &CompiledExpr,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    representative_span: SourceSpan,
+    diagnostics: &mut Vec<reify_core::Diagnostic>,
+) {
+    expr.walk(&mut |node: &CompiledExpr| {
+        let CompiledExprKind::StructureInstanceCtor { type_name, ordered_args, .. } = &node.kind
+        else {
+            return;
+        };
+        // Resolve the target template once; skip if not found.
+        let Some(template) = template_registry.get(type_name.as_str()) else {
+            return;
+        };
+        for (arg_name, compiled_arg) in ordered_args {
+            // Scope to List<TraitObject> params only.  Bare TraitObject params
+            // (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`) are skipped —
+            // see fn doc-comment rationale.
+            let is_list_trait_param = template
+                .value_cells
+                .iter()
+                .find(|vc| vc.id.member == arg_name.as_str())
+                .is_some_and(|vc| {
+                    matches!(&vc.cell_type,
+                        Type::List(inner) if matches!(inner.as_ref(), Type::TraitObject(_)))
+                });
+            if !is_list_trait_param {
+                continue;
+            }
+            check_trait_arg_conformance(
+                type_name,
+                arg_name,
+                compiled_arg,
+                representative_span,
+                template_registry,
+                trait_registry,
+                diagnostics,
             );
         }
     });

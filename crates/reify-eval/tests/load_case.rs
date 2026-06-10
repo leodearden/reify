@@ -42,11 +42,19 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 /// The `options` default (`= none`) compiles to `CompiledExprKind::OptionNone`
 /// which evaluates to `Value::Option(None)` — NOT `Value::None` — per
 /// `crates/reify-expr/src/lib.rs:611`.
+///
+/// After task ζ/4444: `loads` and `supports` are typed `List<Load>` /
+/// `List<Support>` so each element must be a conforming structure instance
+/// (`PointLoad`, `FixedSupport`, etc.).
 #[test]
 fn load_case_ctor_round_trips_to_structure_instance() {
     const SOURCE: &str = r#"
 structure def LoadCaseFixture {
-    let case = LoadCase(name: "g", loads: [10.0, 20.0], supports: [30.0])
+    let case = LoadCase(
+        name: "g",
+        loads: [PointLoad(point: "a", force: 10.0), PointLoad(point: "b", force: 20.0)],
+        supports: [FixedSupport(target: "r")]
+    )
 }
 "#;
 
@@ -77,7 +85,7 @@ structure def LoadCaseFixture {
                 data.fields
             );
 
-            // loads = [10.0, 20.0]
+            // loads = [PointLoad(...), PointLoad(...)]
             match field(&data.fields, "loads") {
                 Some(Value::List(items)) => {
                     assert_eq!(
@@ -86,23 +94,35 @@ structure def LoadCaseFixture {
                         "LoadCase.loads must have 2 elements; got {:?}",
                         items
                     );
-                    assert_eq!(
-                        items[0],
-                        Value::Real(10.0),
-                        "loads[0] must be Value::Real(10.0); got {:?}",
-                        items[0]
-                    );
-                    assert_eq!(
-                        items[1],
-                        Value::Real(20.0),
-                        "loads[1] must be Value::Real(20.0); got {:?}",
-                        items[1]
-                    );
+                    match &items[0] {
+                        Value::StructureInstance(si) => assert_eq!(
+                            si.type_name, "PointLoad",
+                            "loads[0] must be StructureInstance{{type_name=\"PointLoad\"}}; \
+                             got type_name={:?}",
+                            si.type_name
+                        ),
+                        other => panic!(
+                            "loads[0] must be Value::StructureInstance(PointLoad); got {:?}",
+                            other
+                        ),
+                    }
+                    match &items[1] {
+                        Value::StructureInstance(si) => assert_eq!(
+                            si.type_name, "PointLoad",
+                            "loads[1] must be StructureInstance{{type_name=\"PointLoad\"}}; \
+                             got type_name={:?}",
+                            si.type_name
+                        ),
+                        other => panic!(
+                            "loads[1] must be Value::StructureInstance(PointLoad); got {:?}",
+                            other
+                        ),
+                    }
                 }
                 other => panic!("expected Value::List for LoadCase.loads, got {:?}", other),
             }
 
-            // supports = [30.0]
+            // supports = [FixedSupport(...)]
             match field(&data.fields, "supports") {
                 Some(Value::List(items)) => {
                     assert_eq!(
@@ -111,12 +131,19 @@ structure def LoadCaseFixture {
                         "LoadCase.supports must have 1 element; got {:?}",
                         items
                     );
-                    assert_eq!(
-                        items[0],
-                        Value::Real(30.0),
-                        "supports[0] must be Value::Real(30.0); got {:?}",
-                        items[0]
-                    );
+                    match &items[0] {
+                        Value::StructureInstance(si) => assert_eq!(
+                            si.type_name, "FixedSupport",
+                            "supports[0] must be StructureInstance{{type_name=\"FixedSupport\"}}; \
+                             got type_name={:?}",
+                            si.type_name
+                        ),
+                        other => panic!(
+                            "supports[0] must be Value::StructureInstance(FixedSupport); \
+                             got {:?}",
+                            other
+                        ),
+                    }
                 }
                 other => panic!(
                     "expected Value::List for LoadCase.supports, got {:?}",
@@ -141,15 +168,22 @@ structure def LoadCaseFixture {
 
 /// task 3549 SIR-β-mlcfea: member-access chain via `self.`-qualified sibling
 /// references reads through the `LoadCase` structure instance and resolves each
-/// field to the correct scalar value.
+/// field to the correct value.
 ///
 /// Member access MUST be `self.`-qualified — bare `case.name` does not resolve
 /// (confirmed convention across structure_instance_e2e.rs / pressure_load.rs).
+///
+/// After task ζ/4444: `first_load` / `first_support` resolve to typed
+/// `Value::StructureInstance` values (PointLoad / FixedSupport).
 #[test]
 fn load_case_member_access_reads_name_loads_supports_through() {
     const SOURCE: &str = r#"
 structure def LoadCaseAccess {
-    let case          = LoadCase(name: "g", loads: [10.0, 20.0], supports: [30.0])
+    let case          = LoadCase(
+        name: "g",
+        loads: [PointLoad(point: "a", force: 10.0), PointLoad(point: "b", force: 20.0)],
+        supports: [FixedSupport(target: "r")]
+    )
     let case_name     = self.case.name
     let first_load    = self.case.loads[0]
     let first_support = self.case.supports[0]
@@ -172,29 +206,41 @@ structure def LoadCaseAccess {
         "self.case.name must resolve to Value::String(\"g\"); got {case_name:?}"
     );
 
-    // first_load == 10.0
+    // first_load == StructureInstance{type_name="PointLoad"}
     let first_load_id = ValueCellId::new("LoadCaseAccess", "first_load");
     let first_load = result
         .values
         .get(&first_load_id)
         .unwrap_or_else(|| panic!("LoadCaseAccess.first_load cell missing"));
-    assert_eq!(
-        first_load,
-        &Value::Real(10.0),
-        "self.case.loads[0] must resolve to Value::Real(10.0); got {first_load:?}"
-    );
+    match first_load {
+        Value::StructureInstance(si) => assert_eq!(
+            si.type_name, "PointLoad",
+            "self.case.loads[0] must resolve to StructureInstance{{type_name=\"PointLoad\"}}; \
+             got type_name={:?}",
+            si.type_name
+        ),
+        other => panic!(
+            "self.case.loads[0] must be Value::StructureInstance(PointLoad); got {other:?}"
+        ),
+    }
 
-    // first_support == 30.0
+    // first_support == StructureInstance{type_name="FixedSupport"}
     let first_support_id = ValueCellId::new("LoadCaseAccess", "first_support");
     let first_support = result
         .values
         .get(&first_support_id)
         .unwrap_or_else(|| panic!("LoadCaseAccess.first_support cell missing"));
-    assert_eq!(
-        first_support,
-        &Value::Real(30.0),
-        "self.case.supports[0] must resolve to Value::Real(30.0); got {first_support:?}"
-    );
+    match first_support {
+        Value::StructureInstance(si) => assert_eq!(
+            si.type_name, "FixedSupport",
+            "self.case.supports[0] must resolve to StructureInstance{{type_name=\"FixedSupport\"}}; \
+             got type_name={:?}",
+            si.type_name
+        ),
+        other => panic!(
+            "self.case.supports[0] must be Value::StructureInstance(FixedSupport); got {other:?}"
+        ),
+    }
 }
 
 // NOTE: `MultiCaseResult(cases: map{})` ctor→StructureInstance is already
@@ -256,27 +302,43 @@ fn load_case_example_evals_clean_and_exercises_signal_cells() {
         "LoadCaseDemo.case_name must be Value::String(\"g\"); got {case_name:?}"
     );
 
-    // LoadCaseDemo.first_load → Value::Real(10.0)
+    // LoadCaseDemo.first_load → Value::StructureInstance{type_name="PointLoad"}
+    // (after task ζ/4444: typed PointLoad conformer instead of bare Real)
     let first_load = result
         .values
         .get(&ValueCellId::new("LoadCaseDemo", "first_load"))
         .unwrap_or_else(|| panic!("LoadCaseDemo.first_load cell missing"));
-    assert_eq!(
-        first_load,
-        &Value::Real(10.0),
-        "LoadCaseDemo.first_load must be Value::Real(10.0); got {first_load:?}"
-    );
+    match first_load {
+        Value::StructureInstance(si) => assert_eq!(
+            si.type_name, "PointLoad",
+            "LoadCaseDemo.first_load must be StructureInstance{{type_name=\"PointLoad\"}}; \
+             got type_name={:?}",
+            si.type_name
+        ),
+        other => panic!(
+            "LoadCaseDemo.first_load must be Value::StructureInstance(PointLoad); \
+             got {other:?}"
+        ),
+    }
 
-    // LoadCaseDemo.first_support → Value::Real(30.0)
+    // LoadCaseDemo.first_support → Value::StructureInstance{type_name="FixedSupport"}
+    // (after task ζ/4444: typed FixedSupport conformer instead of bare Real)
     let first_support = result
         .values
         .get(&ValueCellId::new("LoadCaseDemo", "first_support"))
         .unwrap_or_else(|| panic!("LoadCaseDemo.first_support cell missing"));
-    assert_eq!(
-        first_support,
-        &Value::Real(30.0),
-        "LoadCaseDemo.first_support must be Value::Real(30.0); got {first_support:?}"
-    );
+    match first_support {
+        Value::StructureInstance(si) => assert_eq!(
+            si.type_name, "FixedSupport",
+            "LoadCaseDemo.first_support must be StructureInstance{{type_name=\"FixedSupport\"}}; \
+             got type_name={:?}",
+            si.type_name
+        ),
+        other => panic!(
+            "LoadCaseDemo.first_support must be Value::StructureInstance(FixedSupport); \
+             got {other:?}"
+        ),
+    }
 
     // MapVsStructureDemo.raw_cases → Value::Map(_)
     let raw_cases = result
