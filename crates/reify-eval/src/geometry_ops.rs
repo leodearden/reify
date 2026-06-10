@@ -248,6 +248,97 @@ pub(crate) fn eval_all_args_to_f64(
         .collect()
 }
 
+/// Lower a `List<Geometry>` of KGQ topology sub-handles to a canonical
+/// `Vec<GeometryHandleId>` (task 3205 — the curated edge/face SELECTION SEAM).
+///
+/// This helper is **kernel-free** (pure `Value` → `Value`): it never touches
+/// the geometry kernel, so it is callable from BOTH [`compile_geometry_op`]
+/// (the legacy eval lowering site, which has no kernel parameter and runs in a
+/// phase where the parent shape is not yet realized) AND the unified
+/// build-DAG driver (engine-unified-build-dag task η).
+///
+/// The cross-solid gate is `realization_ref` equality: every KGQ sub-handle
+/// inherits its parent solid's `realization_ref` unchanged (KGQ-η PRD §4
+/// invariant i, see [`crate::topology_selectors::make_sub_handle`]), so a
+/// handle minted from a different solid carries a different `realization_ref`
+/// and is rejected. The hash domain for these sub-handles is
+/// [`crate::topology_selectors::compose_sub_handle_hash`] /
+/// [`crate::topology_selectors::SubKind`]; this resolver reads only the
+/// already-built `realization_ref` + `kernel_handle`, so it needs no rehash.
+///
+/// Contract:
+///   - `arg` MUST be a `Value::List`; any other shape is a hard `Err`.
+///   - `parent` MUST be a `Value::GeometryHandle`; its `realization_ref` is the
+///     membership key.
+///   - every element MUST be a `Value::GeometryHandle` whose `realization_ref`
+///     equals the parent's — an element from a different solid is `Err`
+///     (cross-solid).
+///   - the resulting ids are **deduped** by `kernel_handle` and returned in
+///     **ascending canonical order** (matching `extract_edges`' TopExp mint
+///     order, so a curated subset lines up with the kernel's edge map).
+///   - an **empty** input list is a legitimate `Ok(vec![])`. The anti-zero-
+///     edges (`E_EMPTY_SELECTION`) guard — which distinguishes "selector
+///     present but resolved to nothing" from "no selector at all" — is the
+///     eval arm's job, NOT this structural resolver's.
+pub(crate) fn resolve_subhandle_list(
+    arg: &reify_ir::Value,
+    parent: &reify_ir::Value,
+) -> Result<Vec<GeometryHandleId>, String> {
+    use std::collections::BTreeSet;
+
+    let parent_ref = match parent {
+        reify_ir::Value::GeometryHandle {
+            realization_ref, ..
+        } => realization_ref,
+        other => {
+            return Err(format!(
+                "resolve_subhandle_list: parent must be a Geometry handle, got {:?}",
+                other
+            ));
+        }
+    };
+
+    let elems = match arg {
+        reify_ir::Value::List(elems) => elems,
+        other => {
+            return Err(format!(
+                "resolve_subhandle_list: edge selector must be a List<Geometry>, got {:?}",
+                other
+            ));
+        }
+    };
+
+    // BTreeSet gives dedup (by kernel_handle) + ascending canonical order in
+    // a single structure — GeometryHandleId is Ord.
+    let mut ids: BTreeSet<GeometryHandleId> = BTreeSet::new();
+    for (i, elem) in elems.iter().enumerate() {
+        match elem {
+            reify_ir::Value::GeometryHandle {
+                realization_ref,
+                kernel_handle,
+                ..
+            } => {
+                if realization_ref != parent_ref {
+                    return Err(format!(
+                        "resolve_subhandle_list: edge[{}] belongs to a different solid \
+                         ({} != parent {}) — cross-solid edge selection is rejected",
+                        i, realization_ref, parent_ref
+                    ));
+                }
+                ids.insert(*kernel_handle);
+            }
+            other => {
+                return Err(format!(
+                    "resolve_subhandle_list: edge[{}] must be a Geometry sub-handle, got {:?}",
+                    i, other
+                ));
+            }
+        }
+    }
+
+    Ok(ids.into_iter().collect())
+}
+
 /// Validate and convert a pattern count from f64 to usize.
 ///
 /// Rejects non-positive values, non-integers, and values exceeding
