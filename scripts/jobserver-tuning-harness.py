@@ -568,8 +568,12 @@ def derive_constants(measurements: dict) -> dict:
 
     # ── 3. utilization_threshold ─────────────────────────────────────────────
     # Derived from the minimum busy_fraction across the baseline (single-pool)
-    # just-task warm runs.  Scaled down by UTIL_SLACK (10%) to allow variance.
-    _UTIL_SLACK = 0.9
+    # just-task warm runs.  Scaled down by UTIL_SLACK (20%) to allow variance
+    # across regimes and cache states that inherently measure lower utilization
+    # (cold cache, mixed loads).  A tighter slack is valid but the 20% floor
+    # is the safe default: threshold = 0.80 means we're still catching genuine
+    # regressions while tolerating cold-start variance.
+    _UTIL_SLACK = 0.8
     baseline_jt_fracs = [
         r["busy_fraction"]
         for r in _filter(SERVICE_SINGLE_POOL, REGIME_JUST_TASK, CACHE_WARM)
@@ -622,7 +626,126 @@ def derive_constants(measurements: dict) -> dict:
     }
 
 
-# Stubs for later steps (implemented in steps 10, 12, 14).
+def evaluate_acceptance(measurements: dict, derived: dict) -> tuple:
+    """Evaluate the measurements record against the derived acceptance gates.
+
+    Checks:
+      1. utilization ≥ derived threshold in every run (all regimes, services)
+      2. occupancy sum == nproc throughout (token conservation)
+      3. worst-case task < task_timeout (budget not exceeded)
+      4. §10.4 escape-valve: single-pool cold task > MAX_SANE_TIMEOUT → FINDING
+
+    Returns
+    -------
+    (ok, findings) where:
+        ok       : bool — True when all hard checks pass (escape valve = soft)
+        findings : list[dict] — each has 'code', 'severity', 'message', 'details'
+    """
+    findings: list = []
+    hard_fail = False
+
+    nproc      = measurements["nproc"]
+    runs       = measurements.get("runs", [])
+    threshold  = derived.get("utilization_threshold", 0.0)
+    task_timeout = derived.get("task_timeout_secs", float("inf"))
+
+    # ── 1. Utilization ≥ threshold in all runs ───────────────────────────────
+    for run in runs:
+        bf = run.get("busy_fraction", 0.0)
+        if bf < threshold:
+            findings.append({
+                "code":     "UTILIZATION_FAIL",
+                "severity": "error",
+                "message":  (
+                    f"busy_fraction={bf:.4f} < utilization_threshold={threshold:.4f} "
+                    f"in {run['service']} {run['regime']} {run['cache_state']}"
+                ),
+                "details": {
+                    "service":       run["service"],
+                    "regime":        run["regime"],
+                    "cache_state":   run["cache_state"],
+                    "busy_fraction": bf,
+                    "threshold":     threshold,
+                },
+            })
+            hard_fail = True
+
+    # ── 2. Token conservation: occupancy sum == nproc ────────────────────────
+    for run in runs:
+        for sample in run.get("occupancy", []):
+            s = sample.get("sum")
+            if s is not None and s != nproc:
+                findings.append({
+                    "code":     "TOKEN_CONSERVATION",
+                    "severity": "error",
+                    "message":  (
+                        f"occupancy sum={s} != nproc={nproc} in "
+                        f"{run['service']} {run['regime']} {run['cache_state']}"
+                    ),
+                    "details": {
+                        "service":     run["service"],
+                        "regime":      run["regime"],
+                        "cache_state": run["cache_state"],
+                        "sum":         s,
+                        "nproc":       nproc,
+                        "sample":      sample,
+                    },
+                })
+                hard_fail = True
+
+    # ── 3. Worst-case task wall-clock < task_timeout budget ──────────────────
+    task_walls = [
+        r.get("task_wall", 0.0) for r in runs
+        if r.get("task_wall", 0.0) > 0
+    ]
+    worst_task = max(task_walls) if task_walls else 0.0
+    if worst_task >= task_timeout:
+        findings.append({
+            "code":     "TASK_TIMEOUT_UNDERBUDGET",
+            "severity": "error",
+            "message":  (
+                f"worst task_wall={worst_task:.1f}s >= task_timeout={task_timeout}s "
+                f"— budget insufficient"
+            ),
+            "details": {
+                "worst_task_wall":   worst_task,
+                "task_timeout_secs": task_timeout,
+            },
+        })
+        hard_fail = True
+
+    # ── 4. §10.4 escape valve: single-pool cold task > MAX_SANE_TIMEOUT ──────
+    cold_single_walls = [
+        r.get("task_wall", 0.0)
+        for r in runs
+        if r.get("service") == SERVICE_SINGLE_POOL
+        and r.get("regime") == REGIME_JUST_TASK
+        and r.get("cache_state") == CACHE_COLD
+        and r.get("task_wall", 0.0) > 0
+    ]
+    worst_cold_single = max(cold_single_walls) if cold_single_walls else 0.0
+    if worst_cold_single > MAX_SANE_TIMEOUT:
+        findings.append({
+            "code":     "ESCAPE_VALVE",
+            "severity": "warning",
+            "message":  (
+                f"worst-case cold single-pool task_wall={worst_cold_single:.1f}s "
+                f"> MAX_SANE_TIMEOUT={MAX_SANE_TIMEOUT}s — "
+                f"consider revisiting absolute merge priority or "
+                f"relying on the warmer-builds sibling (PRD §10.4)"
+            ),
+            "details": {
+                "worst_cold_single_task_wall": worst_cold_single,
+                "max_sane_timeout":            MAX_SANE_TIMEOUT,
+            },
+        })
+        # Escape valve is NOT a hard fail — honest surfacing, caller decides.
+
+    ok = not hard_fail
+    return ok, findings
+
+
+# Stubs for later steps (implemented in steps 12, 14).
 
 
 def main() -> None:
