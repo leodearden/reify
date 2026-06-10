@@ -3554,5 +3554,139 @@ structure Assembly {
             "(c) an unresolvable imported structure use is not renameable"
         );
     }
+
+    // --- κ step-9 (task 4210): cross-file rename WorkspaceEdit (Invariant 5) ---
+
+    /// Apply LSP `TextEdit`s to `source`, splicing in DESCENDING start order so
+    /// earlier byte offsets stay valid as later ones are replaced (mirrors
+    /// `compute_rename_edit_is_valid_and_reparses_clean`).
+    fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
+        let mut to_apply: Vec<(usize, usize, &str)> = edits
+            .iter()
+            .map(|e| {
+                (
+                    position_to_offset(source, e.range.start),
+                    position_to_offset(source, e.range.end),
+                    e.new_text.as_str(),
+                )
+            })
+            .collect();
+        to_apply.sort_by_key(|e| std::cmp::Reverse(e.0));
+        let mut buffer = source.to_string();
+        for (start, end, text) in &to_apply {
+            buffer.replace_range(*start..*end, text);
+        }
+        buffer
+    }
+
+    #[test]
+    fn compute_rename_cross_file_two_file_workspace_edit_reparses_clean() {
+        // CANONICAL SIGNAL: rename Hole→Bore from the main.ri construction site.
+        // The WorkspaceEdit must carry BOTH files: parts.ri (the structure decl
+        // token) and main.ri (the import entity token + the sub construction
+        // site), every edit new_text="Bore". Applying each file's edits and
+        // re-parsing must yield ZERO errors (Invariant 5): `structure Bore`,
+        // `import parts.Bore`, and `sub hole = Bore()` are all valid.
+        let (docs, resolver) = canonical_workspace();
+        let parsed_main = reify_syntax::parse(MAIN_SRC, ModulePath::single("main"));
+        let main_use = occurrences(MAIN_SRC, "Hole")[1]; // `sub hole = Hole()`
+
+        let edit = compute_rename_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            offset_to_position(MAIN_SRC, main_use as u32),
+            "Bore",
+            &docs,
+            &resolver,
+        )
+        .expect("cross-file rename yields a WorkspaceEdit");
+
+        let changes = edit.changes.expect("changes present");
+        assert_eq!(changes.len(), 2, "edit spans both parts.ri and main.ri");
+
+        let parts_edits = changes.get(&parts_uri()).expect("parts.ri edits present");
+        assert_eq!(parts_edits.len(), 1, "parts.ri: 1 edit (structure decl token)");
+        assert!(
+            parts_edits.iter().all(|e| e.new_text == "Bore"),
+            "every parts.ri edit writes Bore"
+        );
+        let main_edits = changes.get(&main_uri()).expect("main.ri edits present");
+        assert_eq!(main_edits.len(), 2, "main.ri: 2 edits (import token + sub use)");
+        assert!(
+            main_edits.iter().all(|e| e.new_text == "Bore"),
+            "every main.ri edit writes Bore"
+        );
+
+        // Invariant 5: apply per-file edits, re-parse, assert ZERO errors in BOTH.
+        let parts_after = apply_edits(PARTS_SRC, parts_edits);
+        let main_after = apply_edits(MAIN_SRC, main_edits);
+        let parts_reparsed = reify_syntax::parse(&parts_after, ModulePath::single("parts"));
+        assert!(
+            parts_reparsed.errors.is_empty(),
+            "parts.ri re-parses clean after rename: {:?}\n{parts_after}",
+            parts_reparsed.errors
+        );
+        let main_reparsed = reify_syntax::parse(&main_after, ModulePath::single("main"));
+        assert!(
+            main_reparsed.errors.is_empty(),
+            "main.ri re-parses clean after rename: {:?}\n{main_after}",
+            main_reparsed.errors
+        );
+        // The renamed tokens are concretely present in both buffers.
+        assert!(
+            parts_after.contains("structure Bore"),
+            "parts.ri now declares `structure Bore`: {parts_after}"
+        );
+        assert!(
+            main_after.contains("import parts.Bore"),
+            "main.ri import renamed to `parts.Bore`: {main_after}"
+        );
+        assert!(
+            main_after.contains("= Bore()"),
+            "main.ri construction site renamed to `Bore()`: {main_after}"
+        );
+    }
+
+    #[test]
+    fn compute_rename_cross_file_rejects_invalid_new_names() {
+        // An illegal new_name must be refused (None) BEFORE any edit — else the
+        // multi-file buffer no longer re-parses cleanly (the re-parse-clean half
+        // of Invariant 5).
+        let (docs, resolver) = canonical_workspace();
+        let parsed_main = reify_syntax::parse(MAIN_SRC, ModulePath::single("main"));
+        let pos = offset_to_position(MAIN_SRC, occurrences(MAIN_SRC, "Hole")[1] as u32);
+
+        // Sanity: a legal identifier is accepted (so the refusals attribute to
+        // the new_name, not the cursor).
+        assert!(
+            compute_rename_cross_file(
+                MAIN_SRC,
+                &parsed_main,
+                &main_uri(),
+                pos,
+                "Bore",
+                &docs,
+                &resolver
+            )
+            .is_some(),
+            "a legal identifier new_name is accepted"
+        );
+        for bad in ["2x", "let", "foo bar", ""] {
+            assert!(
+                compute_rename_cross_file(
+                    MAIN_SRC,
+                    &parsed_main,
+                    &main_uri(),
+                    pos,
+                    bad,
+                    &docs,
+                    &resolver
+                )
+                .is_none(),
+                "illegal new_name {bad:?} must be refused"
+            );
+        }
+    }
 }
 
