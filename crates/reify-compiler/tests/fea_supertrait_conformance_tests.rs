@@ -33,6 +33,22 @@
 //!     param must still emit at least one `TypeNotConformingToTrait` mentioning
 //!     "ConstitutiveLaw" — the supertrait must not widen conformance to accept
 //!     non-material values.
+//!
+//! (d) `non_conforming_struct_at_material_slot_still_errors` — GREEN before & after.
+//!     Over-widening guard via StructureRef path: `ElasticOptions()` is a StructureRef
+//!     that does not conform to `ConstitutiveLaw`. Passing it to the `material` slot
+//!     exercises the StructureRef arm of `emit_leaf_conformance_for_arg_type` →
+//!     `satisfies_trait_bound` / `trait_satisfies` (the transitive refinement walk).
+//!     In contrast, `box(...)` in (c) compiles to `Type::Scalar` and enters a
+//!     different code path that never reaches the walk. This probe is the genuine
+//!     over-widening guard for the supertrait.
+//!
+//! (e) `solve_elastic_static_accepts_direct_constitutive_law_conformer` — GREEN after step-2.
+//!     Direct-conformer positive probe: `TransverseIsotropicMaterial(...)` conforms to
+//!     `ConstitutiveLaw` directly (not via `ElasticMaterial`), so it must pass to
+//!     `solve_elastic_static` with zero `TypeNotConformingToTrait` diagnostics. Locks
+//!     in the direct-conformer half of the contract documented in `solver_elastic.ri`
+//!     for `material : ConstitutiveLaw`.
 
 use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::compile_source_with_stdlib;
@@ -184,5 +200,136 @@ structure NonConforming {
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+}
+
+/// (d) NEGATIVE / non-conforming StructureRef guard — GREEN before & after step-2.
+///
+/// `ElasticOptions()` passed to the `material : ConstitutiveLaw` slot must emit at
+/// least one `TypeNotConformingToTrait` mentioning "ConstitutiveLaw".
+///
+/// `ElasticOptions` is a `StructureRef`, so this probe enters the StructureRef arm of
+/// `emit_leaf_conformance_for_arg_type` → `satisfies_trait_bound` / `trait_satisfies`
+/// — the transitive refinement walk that the supertrait `ElasticMaterial : ConstitutiveLaw`
+/// could plausibly widen.  Unlike `box(...)` in test (c), which compiles to
+/// `Type::Scalar{DIMENSIONLESS}` and takes a different code path that never reaches the
+/// walk, this probe directly exercises the path the supertrait affects and verifies it
+/// still correctly rejects a non-conforming structure.
+#[test]
+fn non_conforming_struct_at_material_slot_still_errors() {
+    let source = r#"
+structure StructRefNonConforming {
+    let r = solve_elastic_static(
+        ElasticOptions(),
+        1000mm,
+        100mm,
+        100mm,
+        [PointLoad(point: "tip", force: 1000.0)],
+        [FixedSupport(target: "root")],
+        ElasticOptions()
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert!(
+        !conformance_errors.is_empty(),
+        "expected at least one TypeNotConformingToTrait for ElasticOptions() at material slot \
+         (exercises the StructureRef arm of the conformance walk); \
+         got 0 diagnostics; all diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    let mentions_constitutive_law = conformance_errors
+        .iter()
+        .any(|d| d.message.contains("ConstitutiveLaw"));
+
+    assert!(
+        mentions_constitutive_law,
+        "at least one TypeNotConformingToTrait diagnostic should mention 'ConstitutiveLaw'; \
+         got: {:?}",
+        conformance_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// (e) POSITIVE direct-conformer — GREEN after step-2 (γ/4441).
+///
+/// `TransverseIsotropicMaterial(...)` conforms to `ConstitutiveLaw` **directly**
+/// (not via `ElasticMaterial`), so it must pass to `solve_elastic_static`'s
+/// `material : ConstitutiveLaw` param with zero conformance errors.
+///
+/// This locks in the direct-conformer half of the contract documented in
+/// `solver_elastic.ri` for `material : ConstitutiveLaw`: *"OrthotropicMaterial
+/// and TransverseIsotropicMaterial (: ConstitutiveLaw directly) also pass without
+/// a wrapper."*  Complements test (a) which covers the transitive case
+/// (`Steel_AISI_1045` → `ElasticMaterial` → `ConstitutiveLaw`).
+#[test]
+fn solve_elastic_static_accepts_direct_constitutive_law_conformer() {
+    // TransverseIsotropicMaterial has no default values, so all params are supplied.
+    // Values are physically plausible (CFRP-like) but citations are synthetic ("test").
+    let source = r#"
+structure DirectConformer {
+    let r = solve_elastic_static(
+        TransverseIsotropicMaterial(
+            e_in_plane: 70GPa,
+            e_axial: 8500MPa,
+            nu_in_plane: 0.07,
+            nu_axial: 0.04,
+            g_axial: 3500MPa,
+            density: 1600kg/m^3,
+            e_in_plane_provenance: MaterialPropertyProvenance(source: "test", reference: "test", notes: ""),
+            e_axial_provenance: MaterialPropertyProvenance(source: "test", reference: "test", notes: ""),
+            nu_in_plane_provenance: MaterialPropertyProvenance(source: "test", reference: "test", notes: ""),
+            nu_axial_provenance: MaterialPropertyProvenance(source: "test", reference: "test", notes: ""),
+            g_axial_provenance: MaterialPropertyProvenance(source: "test", reference: "test", notes: ""),
+            density_provenance: MaterialPropertyProvenance(source: "test", reference: "test", notes: "")
+        ),
+        1000mm,
+        100mm,
+        100mm,
+        [PointLoad(point: "tip", force: 1000.0)],
+        [FixedSupport(target: "root")],
+        ElasticOptions()
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let conformance_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+
+    assert!(
+        conformance_errors.is_empty(),
+        "expected zero TypeNotConformingToTrait diagnostics for direct \
+         TransverseIsotropicMaterial() pass to solve_elastic_static; \
+         got {}: {:?}",
+        conformance_errors.len(),
+        conformance_errors
+    );
+
+    let error_diagnostics: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        error_diagnostics.is_empty(),
+        "expected zero Error-severity diagnostics for direct TransverseIsotropicMaterial() call; \
+         got {}: {:?}",
+        error_diagnostics.len(),
+        error_diagnostics
     );
 }
