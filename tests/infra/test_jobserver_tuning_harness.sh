@@ -777,4 +777,111 @@ PY
 assert "evaluate_acceptance: ok/findings correct for all four synthetic scenarios" \
     test "$_b6_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 7: render_report() — output contract over a synthetic triple
+#
+# Asserts the returned markdown contains the required STRUCTURAL MARKERS:
+#   - A/B comparison section (baseline vs balancer)
+#   - All three regime names: just-task, just-merge, mixed
+#   - warm AND cold cache-state rows
+#   - A derived-constants block with the key names:
+#       merge_baseline, task_baseline, poll_interval, epsilon,
+#       task_timeout_secs, merge_timeout_secs, utilization_threshold
+#   - A findings/escape-valve section
+#
+# Asserts output contract (section markers + key names), NOT prose wording.
+# Fails: render_report absent → AttributeError.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 7: render_report() output contract ---"
+
+_b7_exit=0
+{
+python3 - "$HARNESS" <<'PY'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("jth", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# Reuse the good-measurements fixture and derive+evaluate
+NPROC_F = 32
+def _run(service, regime, cache, busy, merge_wall, task_wall, occ_sum=NPROC_F):
+    return {
+        "service":        service,
+        "regime":         regime,
+        "cache_state":    cache,
+        "busy_fraction":  busy,
+        "occupancy":      [{"merge": occ_sum, "task": 0, "sum": occ_sum,
+                            "timestamp": 1.0}],
+        "merge_wall":     merge_wall,
+        "task_wall":      task_wall,
+        "exit_124_count": 0,
+        "nproc":          NPROC_F,
+    }
+
+measurements = {
+    "nproc": NPROC_F,
+    "runs": [
+        _run("single-pool","just-task",  "warm", 0.875, 0.0,  90.0),
+        _run("single-pool","just-task",  "cold", 0.800, 0.0, 120.0),
+        _run("single-pool","just-merge", "warm", 0.900, 240.0, 0.0),
+        _run("single-pool","just-merge", "cold", 0.880, 220.0, 0.0),
+        _run("single-pool","mixed",      "warm", 0.820, 210.0, 100.0),
+        _run("single-pool","mixed",      "cold", 0.780, 230.0, 115.0),
+        _run("dual-pool",  "just-task",  "warm", 0.875, 0.0,  88.0),
+        _run("dual-pool",  "just-task",  "cold", 0.800, 0.0, 118.0),
+        _run("dual-pool",  "just-merge", "warm", 0.900, 235.0, 0.0),
+        _run("dual-pool",  "just-merge", "cold", 0.870, 215.0, 0.0),
+        _run("dual-pool",  "mixed",      "warm", 0.840, 205.0,  92.0),
+        _run("dual-pool",  "mixed",      "cold", 0.790, 225.0, 110.0),
+    ],
+}
+derived = mod.derive_constants(measurements)
+ok, findings = mod.evaluate_acceptance(measurements, derived)
+
+# Call render_report — returns a markdown string
+report = mod.render_report(measurements, derived, ok, findings)
+
+# ── Structural markers ────────────────────────────────────────────────────────
+REQUIRED_MARKERS = [
+    # A/B comparison section
+    "single-pool",   "dual-pool",
+    # All three regime names
+    "just-task",     "just-merge",   "mixed",
+    # Both cache states
+    "warm",          "cold",
+    # Derived-constants block — key names must appear in the report
+    "merge_baseline", "task_baseline",
+    "poll_interval",  "epsilon",
+    "task_timeout_secs", "merge_timeout_secs",
+    "utilization_threshold",
+    # Findings / escape-valve section
+    "findings",
+]
+
+for marker in REQUIRED_MARKERS:
+    if marker.lower() not in report.lower():
+        errors.append(f"render_report missing required marker: {marker!r}")
+
+# ── Report must be a non-empty string ────────────────────────────────────────
+if not isinstance(report, str) or len(report) < 100:
+    errors.append(
+        f"render_report returned too-short string ({len(report) if isinstance(report, str) else type(report).__name__})"
+    )
+
+if errors:
+    for e in errors:
+        print("FAIL:", e, file=sys.stderr)
+    raise SystemExit(1)
+
+print("render_report: all structural markers present")
+PY
+} || _b7_exit=$?
+
+assert "render_report: markdown contains A/B + regime + cache + constants + findings sections" \
+    test "$_b7_exit" -eq 0
+
 test_summary
