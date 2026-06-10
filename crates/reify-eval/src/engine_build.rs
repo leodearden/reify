@@ -7730,6 +7730,67 @@ mod tests {
         }
     }
 
+    /// openvdb-like counting kernel: `ingest_mesh` bumps a shared counter and
+    /// returns a fresh handle (the Mesh→Voxel target projection via voxelising ingest),
+    /// `execute` bumps a shared counter (the final cross-kernel `BooleanUnion` op runs
+    /// here), and `tessellate` returns `Err(TessError::TessellationFailed)` mirroring the
+    /// real OpenVDB stub — the real kernel cannot tessellate Voxel handles back to Mesh.
+    /// `query` / `export` delegate to an inner [`MockGeometryKernel`].
+    struct CountingVoxelizerKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        ingest_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        execute_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        next_ingest_id: u64,
+    }
+
+    impl reify_ir::GeometryKernel for CountingVoxelizerKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            *self.execute_count.lock().unwrap() += 1;
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            // Mirrors the real OpenVDB stub: Voxel handles cannot be tessellated
+            // back to Mesh via this kernel — the executor must NOT call this.
+            Err(reify_ir::TessError::TessellationFailed(
+                "openvdb stub: tessellate not supported".into(),
+            ))
+        }
+
+        fn ingest_mesh(
+            &mut self,
+            _mesh: &reify_ir::Mesh,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            *self.ingest_count.lock().unwrap() += 1;
+            let id = reify_ir::GeometryHandleId(self.next_ingest_id);
+            self.next_ingest_id += 1;
+            Ok(reify_ir::GeometryHandle { id, repr: None })
+        }
+    }
+
     /// step-7(A) CONVERSION PATH (RED). With `demanded_repr = Mesh`, the
     /// dispatcher routes the terminal `BooleanUnion` to the Mesh-capable
     /// `"manifold"` kernel, preceded by a single BRep→Mesh conversion stage
@@ -7888,6 +7949,177 @@ mod tests {
             state.produced_repr_out,
             Some(ReprKind::Mesh),
             "produced_repr_out must be Mesh for the cross-kernel realization"
+        );
+    }
+
+    /// step-3 TWO-STAGE BRep→Voxel EXECUTOR (RED). With `demanded_repr = Voxel`
+    /// and kernels `"occt"` (CountingTessellateKernel) + `"openvdb"`
+    /// (CountingVoxelizerKernel), the two-stage chain
+    /// `[(occt,BRep,Mesh),(openvdb,Mesh,Voxel)]` must run EXACTLY ONCE per
+    /// op-input parent: `occt.tessellate` × 2 → Mesh, `openvdb.ingest_mesh`
+    /// × 2 → Voxel handle; then the union runs on `"openvdb"` once.
+    ///
+    /// RED: the current per-stage executor re-processes stage-2
+    /// `(openvdb,Mesh,Voxel)` by calling `openvdb.tessellate(brep_pid)` →
+    /// `TessError::TessellationFailed` → conversion-error diagnostic, so the
+    /// no-error / ingest==2 / terminal assertions fail.
+    #[test]
+    fn execute_realization_ops_conversion_path_two_stage_brep_to_voxel() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, KernelId, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Shared call counters, read back after the call via the Arc clones.
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "openvdb".to_string(),
+            Box::new(CountingVoxelizerKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 2000,
+            }),
+        );
+
+        // occt: (PrimitiveBox, BRep) + (Convert{BRep}, Mesh);
+        // openvdb: (BooleanUnion, Voxel) + (Convert{Mesh}, Voxel).
+        // For demanded = Voxel / available = {BRep} the dispatcher yields plan:
+        // { kernel: "openvdb", conversions: [(Occt,BRep,Mesh),(OpenVdb,Mesh,Voxel)] }.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_openvdb = CapabilityDescriptor {
+            supports: vec![
+                (Operation::BooleanUnion, ReprKind::Voxel),
+                (
+                    Operation::Convert {
+                        from: ReprKind::Mesh,
+                    },
+                    ReprKind::Voxel,
+                ),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("openvdb".to_string(), &desc_openvdb);
+
+        // Two BRep primitives + one BooleanUnion consuming them.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("MyDesign", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Voxel,
+            None,
+        );
+
+        // The two-stage conversion must succeed: no error diagnostics, no
+        // kernel_error_out.
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "two-stage BRep→Voxel conversion must not emit error diagnostics, got: {:?}",
+            errors
+        );
+        assert!(
+            state.kernel_error_out.is_none(),
+            "two-stage BRep→Voxel conversion must leave kernel_error_out None, got {:?}",
+            state.kernel_error_out
+        );
+
+        // (a) occt.tessellate fires once per BooleanUnion input handle = 2.
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            2,
+            "occt.tessellate must be called once per union input handle (2)"
+        );
+        // (b) openvdb.ingest_mesh fires once per converted input = 2.
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            2,
+            "openvdb.ingest_mesh must be called once per converted input (2)"
+        );
+        // (c) openvdb runs the final BooleanUnion exactly once.
+        assert_eq!(
+            *union_count.lock().unwrap(),
+            1,
+            "openvdb must run the final BooleanUnion exactly once"
+        );
+
+        // The terminal pushed handle is an OpenVdb handle (plan.kernel).
+        let terminal = state
+            .step_handles
+            .last()
+            .expect("a terminal handle must be pushed on success");
+        assert_eq!(
+            terminal.kernel,
+            KernelId::OpenVdb,
+            "terminal handle must be tagged KernelId::OpenVdb, got {:?}",
+            terminal.kernel
+        );
+
+        // produced_repr surfaced as Voxel (plan_output_repr of the union on openvdb).
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::Voxel),
+            "produced_repr_out must be Voxel for the two-stage BRep→Voxel realization"
         );
     }
 
