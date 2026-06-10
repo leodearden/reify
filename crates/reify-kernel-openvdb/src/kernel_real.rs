@@ -399,6 +399,42 @@ impl GeometryKernel for OpenVdbKernel {
         Err(GeometryError::OperationFailed(VOXEL_BOOL_STUB_MSG.into()))
     }
 
+    /// Convert a triangle-soup [`Mesh`] to a narrow-band SDF `FloatGrid` via
+    /// [`Self::realize_voxel_from_mesh_with_options`] (done #3095) and register
+    /// the result as a new `GeometryHandle`.
+    ///
+    /// # Resolution policy (PRD §3b honest-floor)
+    ///
+    /// Options are derived from the mesh bounding box via
+    /// [`crate::MeshToVoxelOptions::honest_floor`]:
+    /// - `voxel_size = h = longest_extent / VOXELS_PER_LONGEST_AXIS` — scales
+    ///   with the part so resolution is meaningful across unit systems.
+    /// - `narrow_band` wide enough that the level-set band covers the full
+    ///   interior (`narrow_band × h ≥ longest_extent/2`), preventing the
+    ///   interior-saturation artefact where deep-interior voxels read
+    ///   `-half_width × voxel_size` instead of the true SDF value.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(GeometryHandle { id, repr: None })` — `repr` is `None` because
+    ///   the Voxel kernel has no BRep sub-shape (mirrors the
+    ///   `GeometryHandle` contract at `geometry.rs:121-128`).
+    /// - `Err(GeometryError::OperationFailed(_))` for empty / degenerate meshes
+    ///   (honest_floor returns None → zero or non-finite bbox extent) or for
+    ///   malformed flat buffers / invalid opts (propagated from
+    ///   `realize_voxel_from_mesh_with_options`).
+    fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        let opts = crate::MeshToVoxelOptions::honest_floor(mesh).ok_or_else(|| {
+            GeometryError::OperationFailed(
+                "OpenVdbKernel::ingest_mesh: cannot derive honest-floor voxel size \
+                 — mesh has zero or non-finite bounding-box extent"
+                    .into(),
+            )
+        })?;
+        let id = self.realize_voxel_from_mesh_with_options(mesh, &opts)?;
+        Ok(GeometryHandle { id, repr: None })
+    }
+
     fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
         Err(QueryError::QueryFailed(VOXEL_BOOL_STUB_MSG.into()))
     }
