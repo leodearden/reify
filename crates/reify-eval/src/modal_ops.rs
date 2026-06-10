@@ -4870,11 +4870,21 @@ mod tests {
     }
 
     /// task-4470 step-3 (RED → GREEN in step-4): assert that a single
-    /// `ElasticMaterial` Value with a positive dimensioned-Scalar `density`
+    /// `ElasticMaterial` Value with a **positive** dimensioned-Scalar `density`
     /// yields **identical** density values from both the modal and dynamics
     /// resolution paths, and that the two paths diverge by design at the
     /// missing-density tail (modal strict → E_ModalNoMassMatrix; dynamics →
     /// 1000 kg/m³ water + W_DynamicsDefaultDensity).
+    ///
+    /// **Scope of the convergence invariant:** identical ρ holds only on the
+    /// *positive* material rung.  A non-positive (≤ 0) or NaN material density
+    /// intentionally diverges earlier, on the *material* rung itself: modal's
+    /// local positivity guard (`*si_value > 0.0`) short-circuits to
+    /// `Err(E_ModalNoMassMatrix)`, while dynamics returns the raw value verbatim
+    /// for the downstream PSD hook to validate.  This positivity filtering is
+    /// deliberately **not** part of the shared `resolve_density_strict` rung-walk
+    /// (mass_props.rs is Value-free and does not validate magnitude — see
+    /// design decision "Keep modal's positivity validation in the eval layer").
     ///
     /// RED: `crate::dynamics_ops::resolve_body_density` is private until
     /// step-4 bumps it to `pub(crate)` → compile error.
