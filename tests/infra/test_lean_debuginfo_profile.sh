@@ -86,7 +86,10 @@ elif action == 'check_posture':
     #   (A) split-debuginfo in {"unpacked", "packed"}  — moves DWARF out of link
     #   (B) debug in {1, "line-tables-only"}            — line-tables-only (embedded)
     lean_split = str(eff_split) in ('unpacked', 'packed')
-    lean_debug = str(eff_debug) in ('1', 'line-tables-only') or eff_debug == 1
+    # Guard: Python's `True == 1` would wrongly classify TOML `debug = true`
+    # (full DWARF, not lean) as lean.  Exclude bool instances explicitly so
+    # `debug = true` does not accidentally pass the lean-debug check.
+    lean_debug = (not isinstance(eff_debug, bool)) and (str(eff_debug) in ('1', 'line-tables-only') or eff_debug == 1)
 
     # NOT backtrace-killing: debug must not be 0 / "0" / "none" / False (no debuginfo at all)
     no_debug = str(eff_debug) in ('0', 'none') or eff_debug is False or eff_debug == 0
@@ -122,6 +125,11 @@ EFFECTIVE_DEBUG="$(python3 "$_PARSE_PY" "$CARGO_TOML" effective_debug)"
 # -- Test 1 (a): POSTURE -------------------------------------------------------
 echo ""
 echo "--- Test 1 (a): effective dev/test debuginfo posture is lean-and-backtrace-preserving ---"
+
+# Echo computed values BEFORE the assert so the raw posture is visible even
+# when assert() swallows the python helper's stderr diagnostics on failure.
+echo "  effective split-debuginfo : $EFFECTIVE_SPLIT"
+echo "  effective debug            : $EFFECTIVE_DEBUG"
 
 assert "effective dev/test posture is lean-and-backtrace-preserving" \
     python3 "$_PARSE_PY" "$CARGO_TOML" check_posture
