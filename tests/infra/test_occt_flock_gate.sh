@@ -243,20 +243,20 @@ assert "Test 16: stderr contains log line with 'acquired', 'OCCT lock', and nume
 
 rm -f "$_LOCK16" "$_ERR16"
 
-# -- Test 17: no gated invocations in plan; workspace pass uses 90m outer timeout --
+# -- Test 17: no gated invocations in plan; workspace pass uses 60m outer timeout --
 echo ""
-echo "--- Test 17: no REIFY_OCCT_TEST_TIMEOUT in plan; workspace nextest pass uses 90m timeout (task 4451) ---"
+echo "--- Test 17: no REIFY_OCCT_TEST_TIMEOUT in plan; workspace nextest pass uses 60m timeout (restored, task 4453) ---"
 
 # Task 4451 drops the gated passes: REIFY_OCCT_TEST_TIMEOUT= no longer appears.
-# The full-workspace nextest pass retains its 90m outer timeout.
+# The full-workspace nextest pass uses its restored 60m outer timeout (task 4453).
 assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= does NOT appear in the plan (no gated pass, task 4451)" \
     bash -c "[ \"\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -oF 'REIFY_OCCT_TEST_TIMEOUT=' | wc -l | tr -d ' ')\" -eq 0 ]"
 
 assert "Test 17: no ./scripts/cargo-test-occt-gated in the plan at all (folded into nextest, task 4451)" \
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q './scripts/cargo-test-occt-gated'"
 
-assert "Test 17: debug full-workspace nextest pass uses 90m outer timeout (retained)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run --workspace'"
+assert "Test 17: debug full-workspace nextest pass uses 60m outer timeout (restored, task 4453)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
