@@ -336,6 +336,17 @@ for path_str, prepped in prepped_cache.items():
             # v1 accepted limitation: whitespace between NAME and `::`, or a `::`
             # split across lines, is not detected — same approximation posture as
             # the rest of the script.
+            #
+            # Blast-radius verified against the full workspace (crates/reify-*/src,
+            # ~390 files): the only callers that flip from >0 to 0 are the two
+            # name==module collision cases this fix targets (compute_cache_key and
+            # significance_filter).  No fn whose sole reference happens to be a
+            # NAME::CONST path expression for an unrelated type is affected because
+            # in practice no such fn exists in the corpus — every fn whose name
+            # matches a `NAME::` token also has a `pub mod NAME;` declaration (the
+            # collision pattern).  If that ever changes, scope this skip to names
+            # that also appear in mod_decl_names (a set built once from all
+            # `pub mod` declarations across the corpus).
             after = line[m.end():m.end() + 3]
             if after.startswith("::") and not after.startswith("::<"):
                 continue
