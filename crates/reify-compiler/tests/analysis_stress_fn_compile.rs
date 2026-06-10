@@ -19,6 +19,10 @@ use reify_core::{DimensionVector, Severity, Type};
 
 /// `.ri` fixture: a 3×3 uniaxial Pressure tensor via `matrix([[..Pa..]])`.
 /// Uses SI `MPa` (6e6 Pa) literals — these are available via the prelude.
+///
+/// Also pins `max_shear` (→ Scalar<PRESSURE>) and `safety_factor`
+/// (→ Real) — the two analysis builtins whose newly-wired compile typing
+/// (task 2884 step-4) previously drifted to the first-arg Tensor type.
 const ANALYSIS_TYPE_FIXTURE: &str = r#"
 structure def AnalysisTypePins {
     let stress = matrix([[1.0e6Pa, 0.0Pa, 0.0Pa],
@@ -28,6 +32,8 @@ structure def AnalysisTypePins {
     let vm   = von_mises(stress)
     let ps   = principal_stresses(stress)
     let inv  = stress_invariants(stress)
+    let ms   = max_shear(stress)
+    let sf   = safety_factor(stress, 250.0e6Pa)
 }
 "#;
 
@@ -119,5 +125,38 @@ fn stress_invariants_cell_type_is_structure_ref() {
         ty,
         Type::StructureRef("StressInvariants".to_string()),
         "stress_invariants(Tensor<Pressure>) must compile as StructureRef(\"StressInvariants\"), got {ty:?}"
+    );
+}
+
+/// `max_shear(stress)` on a `Tensor<PRESSURE>` must compile-type as
+/// `Scalar<PRESSURE>` — NOT the first-arg `Tensor<PRESSURE>` drift.
+///
+/// Pins that the newly-wired `is_analysis_typed_fn` arm in `expr.rs` fixes
+/// `max_shear`'s compile type (it previously drifted to `Tensor<PRESSURE>`
+/// via the `NoUserFunctions` fallback, mirroring the `von_mises` bug).
+#[test]
+fn max_shear_cell_type_is_scalar_pressure() {
+    let module = compile_fixture();
+    let ty = cell_type(&module, "ms");
+    assert_eq!(
+        ty,
+        Type::Scalar { dimension: DimensionVector::PRESSURE },
+        "max_shear(Tensor<Pressure>) must compile as Scalar<PRESSURE>, got {ty:?}"
+    );
+}
+
+/// `safety_factor(stress, yield)` must compile-type as `Type::Real`
+/// (dimensionless yield/von_mises ratio) — NOT the first-arg `Tensor<PRESSURE>` drift.
+///
+/// The yield argument (`250.0e6Pa`) has `Scalar<PRESSURE>` type; the result
+/// is dimensionless because pressure cancels.
+#[test]
+fn safety_factor_cell_type_is_real() {
+    let module = compile_fixture();
+    let ty = cell_type(&module, "sf");
+    assert_eq!(
+        ty,
+        Type::Real,
+        "safety_factor(Tensor<Pressure>, Scalar<Pressure>) must compile as Type::Real, got {ty:?}"
     );
 }
