@@ -884,4 +884,132 @@ PY
 assert "render_report: markdown contains A/B + regime + cache + constants + findings sections" \
     test "$_b7_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 8: --check mode exit-code contract (hermetic, synthetic JSON in tmp)
+#
+# (a) good record (floors cleared)       → exit 0
+# (b) bad record (utilization violation) → exit 1
+# (c) escape-valve record (MAX_SANE_TIMEOUT exceeded, soft finding) → exit 0
+#
+# Reuses the check_event_inventory exit-0/1 contract.
+# Fails: --check mode stub exits 1 for all inputs → (a) and (c) fail.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 8: --check mode exit-code contract ---"
+
+_b8_exit=0
+{
+python3 - "$HARNESS" <<'PY'
+import importlib.util, sys, json, tempfile, subprocess, os
+
+spec = importlib.util.spec_from_file_location("jth", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+HARNESS_PATH = sys.argv[1]
+
+errors = []
+NPROC_F = 32
+
+def _run(service, regime, cache, busy, merge_wall, task_wall):
+    return {
+        "service":        service,
+        "regime":         regime,
+        "cache_state":    cache,
+        "busy_fraction":  busy,
+        "occupancy":      [{"merge": NPROC_F, "task": 0, "sum": NPROC_F,
+                            "timestamp": 1.0}],
+        "merge_wall":     merge_wall,
+        "task_wall":      task_wall,
+        "exit_124_count": 0,
+        "nproc":          NPROC_F,
+    }
+
+def write_measurements(runs):
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, prefix="/tmp/test-check-"
+    )
+    json.dump({"nproc": NPROC_F, "runs": runs}, tmp)
+    tmp.close()
+    return tmp.name
+
+GOOD_RUNS = [
+    _run("single-pool","just-task",  "warm", 0.875, 0.0,  90.0),
+    _run("single-pool","just-task",  "cold", 0.800, 0.0, 120.0),
+    _run("single-pool","just-merge", "warm", 0.900, 240.0, 0.0),
+    _run("single-pool","just-merge", "cold", 0.880, 220.0, 0.0),
+    _run("single-pool","mixed",      "warm", 0.820, 210.0, 100.0),
+    _run("single-pool","mixed",      "cold", 0.780, 230.0, 115.0),
+    _run("dual-pool",  "just-task",  "warm", 0.875, 0.0,  88.0),
+    _run("dual-pool",  "just-task",  "cold", 0.800, 0.0, 118.0),
+    _run("dual-pool",  "just-merge", "warm", 0.900, 235.0, 0.0),
+    _run("dual-pool",  "just-merge", "cold", 0.870, 215.0, 0.0),
+    _run("dual-pool",  "mixed",      "warm", 0.840, 205.0,  92.0),
+    _run("dual-pool",  "mixed",      "cold", 0.790, 225.0, 110.0),
+]
+
+# ── (a) Good record → exit 0 ──────────────────────────────────────────────────
+path_a = write_measurements(GOOD_RUNS)
+try:
+    rc_a = subprocess.run(
+        [sys.executable, HARNESS_PATH, "--check", path_a],
+        capture_output=True,
+    ).returncode
+    if rc_a != 0:
+        errors.append(f"(a) good record: expected exit 0, got {rc_a}")
+finally:
+    os.unlink(path_a)
+
+# ── (b) Utilization violation → exit 1 ────────────────────────────────────────
+bad_runs = [
+    {**r, "busy_fraction": 0.40}
+    if r["service"] == "single-pool" and r["regime"] == "just-task"
+       and r["cache_state"] == "warm"
+    else r
+    for r in GOOD_RUNS
+]
+path_b = write_measurements(bad_runs)
+try:
+    rc_b = subprocess.run(
+        [sys.executable, HARNESS_PATH, "--check", path_b],
+        capture_output=True,
+    ).returncode
+    if rc_b != 1:
+        errors.append(f"(b) utilization violation: expected exit 1, got {rc_b}")
+finally:
+    os.unlink(path_b)
+
+# ── (c) Escape-valve record → exit 0 (soft finding, not a hard fail) ──────────
+escape_runs = [
+    {**r, "task_wall": mod.MAX_SANE_TIMEOUT + 600.0}
+    if r["service"] == "single-pool" and r["regime"] == "just-task"
+       and r["cache_state"] == "cold"
+    else r
+    for r in GOOD_RUNS
+]
+path_c = write_measurements(escape_runs)
+try:
+    rc_c = subprocess.run(
+        [sys.executable, HARNESS_PATH, "--check", path_c],
+        capture_output=True,
+    ).returncode
+    if rc_c != 0:
+        errors.append(
+            f"(c) escape valve: expected exit 0 (ESCAPE_VALVE is soft), got {rc_c}"
+        )
+finally:
+    os.unlink(path_c)
+
+if errors:
+    for e in errors:
+        print("FAIL:", e, file=sys.stderr)
+    raise SystemExit(1)
+
+print("--check mode: all exit-code assertions passed")
+PY
+} || _b8_exit=$?
+
+assert "--check: exits 0/1 correctly for good/bad/escape-valve records" \
+    test "$_b8_exit" -eq 0
+
 test_summary
