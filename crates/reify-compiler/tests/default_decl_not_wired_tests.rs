@@ -89,3 +89,75 @@ purpose Exploration() {
         errors
     );
 }
+
+// ─── Warning count equals declaration count ────────────────────────────────────
+
+/// Two top-level `default` declarations each produce their own W_DEFAULT_NOT_WIRED
+/// warning — the per-declaration emission arm fires once per declaration and does
+/// not collapse or deduplicate.
+#[test]
+fn two_top_level_defaults_emit_two_warnings() {
+    let source = "default Material = steel\ndefault Fluid = water";
+    let module = compile_source_with_stdlib(source);
+
+    let warnings: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("W_DEFAULT_NOT_WIRED"))
+        .collect();
+
+    assert_eq!(
+        warnings.len(),
+        2,
+        "expected exactly 2 W_DEFAULT_NOT_WIRED warnings for 2 top-level defaults; got: {:?}",
+        module.diagnostics
+    );
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics; got: {:?}",
+        errors
+    );
+}
+
+/// Two purpose-nested `default` declarations each produce their own W_DEFAULT_NOT_WIRED
+/// warning — the `for d in &p.defaults` loop in the Purpose arm fires once per entry.
+#[test]
+fn two_purpose_nested_defaults_emit_two_warnings() {
+    let source = r#"
+purpose Exploration() {
+    default Material = steel
+    default Fluid = water
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let warnings: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("W_DEFAULT_NOT_WIRED"))
+        .collect();
+
+    assert_eq!(
+        warnings.len(),
+        2,
+        "expected exactly 2 W_DEFAULT_NOT_WIRED warnings for 2 purpose-nested defaults; got: {:?}",
+        module.diagnostics
+    );
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics; got: {:?}",
+        errors
+    );
+}

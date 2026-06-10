@@ -394,10 +394,31 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "default_declaration" => {
-                    // Defaults are not annotatable in v1; consume and drop pending
-                    // annotations/cfg so they don't bleed into the next declaration.
-                    let _ = std::mem::take(&mut pending_annotations);
-                    let _ = std::mem::take(&mut pending_cfg);
+                    // Defaults are not annotatable in v1. Emit a diagnostic for each
+                    // annotation/cfg that preceded this declaration so it is not
+                    // silently dropped — the author can see the annotation was ignored.
+                    let dropped_annotations = std::mem::take(&mut pending_annotations);
+                    let dropped_cfg = std::mem::take(&mut pending_cfg);
+                    for ann in &dropped_annotations {
+                        self.push_error(
+                            format!(
+                                "annotation '@{}' on a default declaration is not supported; \
+                                 defaults are not annotatable in v1",
+                                ann.name
+                            ),
+                            ann.span,
+                        );
+                    }
+                    for cfg in &dropped_cfg {
+                        self.push_error(
+                            format!(
+                                "'#[{}]' attribute on a default declaration is not supported; \
+                                 defaults are not annotatable in v1",
+                                cfg.name
+                            ),
+                            cfg.span,
+                        );
+                    }
                     if let Some(decl) = self.lower_default_decl(child) {
                         self.declarations.push(Declaration::Default(decl));
                     }
@@ -1330,9 +1351,11 @@ impl<'a> Lowering<'a> {
 
     /// Lower a `default_declaration` node: `default TypeName = expr`
     ///
-    /// Mirrors `lower_unit`. Reads the `type` field via `lower_type_expr_node` and
-    /// the `value` field via `lower_expr`. Returns `None` only if either field is
-    /// absent (malformed/error-recovery CST).
+    /// Note: unlike `lower_unit`, the `type` field here is a plain `type_expr`
+    /// (not a `dimensional_type_expr`), and the `value` is a full `_expression`
+    /// (not a binding value). Reads the `type` field via `lower_type_expr_node`
+    /// and the `value` field via `lower_expr`. Returns `None` only if either
+    /// field is absent (malformed/error-recovery CST).
     fn lower_default_decl(&mut self, node: tree_sitter::Node) -> Option<DefaultDecl> {
         let type_node = node.child_by_field_name("type")?;
         let type_expr = self.lower_type_expr_node(type_node);
