@@ -749,4 +749,91 @@ mod tests {
         // the name guard dispatches before the result is inspected.
         assert!(diagnose("stackup_rss", &[], &Value::Bool(false)).is_empty());
     }
+
+    // ─── step-1 RED: diagnose — unsupported_overhang_faces arm ───────────────
+
+    #[test]
+    fn diagnose_overhang_violation_warning_severity() {
+        // Bool(true) = overhang violation present; DFMSeverity.Warning → one Warning diagnostic.
+        let diags = diagnose(
+            "unsupported_overhang_faces",
+            &[dfm_sev("Warning")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1, "one overhang violation diagnostic");
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(
+            diags[0].message.contains("W_DFM_OVERHANG"),
+            "Warning overhang message carries W_DFM_OVERHANG prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_overhang_violation_error_severity() {
+        let diags = diagnose(
+            "unsupported_overhang_faces",
+            &[dfm_sev("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_OVERHANG"),
+            "Error overhang message carries E_DFM_OVERHANG prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_overhang_violation_info_severity() {
+        let diags = diagnose(
+            "unsupported_overhang_faces",
+            &[dfm_sev("Info")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Info);
+        assert!(
+            diags[0].message.contains("I_DFM_OVERHANG"),
+            "Info overhang message carries I_DFM_OVERHANG prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_overhang_violation_rule_form_reads_severity_field() {
+        // DFMRule structure-instance form: severity read from `severity` field → Error diagnostic.
+        let diags = diagnose(
+            "unsupported_overhang_faces",
+            &[dfm_rule("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_OVERHANG"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_overhang_violation_defaults_to_warning_when_tag_absent() {
+        // No tag in args → default Warning.
+        let diags = diagnose("unsupported_overhang_faces", &[], &Value::Bool(true));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn diagnose_overhang_conforms_emits_no_diagnostic() {
+        // Bool(false) = conforms (no unsupported overhang faces) → empty Vec.
+        let diags = diagnose(
+            "unsupported_overhang_faces",
+            &[dfm_sev("Warning")],
+            &Value::Bool(false),
+        );
+        assert!(diags.is_empty(), "a conforming overhang result surfaces no diagnostic");
+    }
 }
