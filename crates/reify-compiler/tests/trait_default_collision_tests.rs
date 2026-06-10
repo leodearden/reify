@@ -1,46 +1,44 @@
-//! RED tests for the conformance collision rule (PRD v0_6 type-hygiene §7.4, task η).
+//! Tests for the conformance collision rule (PRD v0_6 type-hygiene §7.4, task η).
 //!
 //! A conformer member that REDECLARES (collides with) a *defaulted* trait member
-//! is currently accepted with NO type check. The requirements loop in
-//! `check_phase_check_members_against_requirements` (conformance/checker.rs phase 5)
-//! only sees REQUIRED (no-default) members — defaulted params/lets go into
-//! `ctx.defaults`, never `ctx.requirements`. So incompatible overrides of defaulted
-//! trait members silently pass today.
+//! is type-checked against the trait's declared type. The defaults loop
+//! (`for default in &ctx.defaults`) inside `check_phase_check_members_against_requirements`
+//! (conformance/checker.rs phase 5) handles both `DefaultKind::Param` and annotated
+//! `DefaultKind::Let { cell_type: Some(_) }` defaults. An incompatible collision produces
+//! a `"type mismatch for trait member '<name>'"` diagnostic.
 //!
-//! After step-2 adds a `for default in &ctx.defaults` loop (Param arm) inside
-//! `check_phase_check_members_against_requirements`, incompatible collisions produce
-//! `"type mismatch for trait member '<name>'"` diagnostics.
+//! Compatible collisions (same type or implicitly-convertible type) remain legal —
+//! the override idiom (§10 row 11: conformer param overrides trait let with a measured value)
+//! is preserved. Unannotated trait-let defaults (`cell_type: None`) are silently skipped
+//! (their inferred type is not available for colliding names — see deferred gap note in
+//! checker.rs). Names already covered by a required-member check (`ctx.requirements`) are
+//! also skipped to avoid false-positive double-reports in refinement chains.
 //!
 //! ## Coverage (Cycle 1 — Param arm)
 //!
 //! (a) POSITIVE `incompatible_scalar_override_of_defaulted_param_errors`:
 //!     `trait T { param x : Length = 5mm }` + `structure def S : T { param x : Mass }`
-//!     → expect ≥1 error containing "type mismatch for trait member 'x'".
-//!     RED today (no check on defaulted params) → GREEN after step-2.
+//!     → expect ≥1 error containing "type mismatch for trait member 'x'". GREEN.
 //!
 //! (b) POSITIVE `scalar_override_of_tensor_defaulted_trait_param_errors`:
 //!     Trait with `param moi : Tensor<2,3,MomentOfInertia>` defaulted via a
 //!     self-contained `matrix([...])` literal + conformer with `param moi : MomentOfInertia`
-//!     → expect "type mismatch for trait member 'moi'" (probe-7 headline, §10 row 10).
-//!     RED today → GREEN after step-2.
+//!     → expect "type mismatch for trait member 'moi'" (probe-7 headline, §10 row 10). GREEN.
 //!
 //! (c) NEGATIVE `compatible_param_override_of_defaulted_param_conforms`:
 //!     `trait T { param x : Length = 5mm }` + `structure def S : T { param x : Length }`
-//!     → NO "type mismatch for trait member" diagnostic (override idiom stays legal).
-//!     GREEN today and after step-2.
+//!     → NO "type mismatch for trait member" diagnostic (override idiom stays legal). GREEN.
 //!
 //! (d) NEGATIVE `tensor_typed_override_of_tensor_defaulted_param_conforms`:
 //!     Conformer overrides with the SAME `Tensor<2,3,MomentOfInertia>` type
-//!     → no mismatch (probe-7 TensorOverride, §10 row 11).
-//!     GREEN today and after step-2.
+//!     → no mismatch (probe-7 TensorOverride, §10 row 11). GREEN.
 //!
 //! (e) NEGATIVE `unresolved_override_of_defaulted_param_suppresses_cascade`:
 //!     `trait T { param x : Length = 5mm }` + `structure def S : T { param x : UnknownType }`
 //!     → `resolve_member_annotation_type` returns `Type::Error`;
 //!     `implicitly_converts_to(Type::Error, Length) → true` (producer-side wildcard,
 //!     type_compat.rs:3–26) → NO "type mismatch for trait member" cascade;
-//!     a root-cause "unresolved type in conformance check" error MUST be present.
-//!     GREEN today and after step-2.
+//!     a root-cause "unresolved type in conformance check" error MUST be present. GREEN.
 
 use reify_test_support::{compile_source, errors_only};
 
@@ -48,10 +46,6 @@ use reify_test_support::{compile_source, errors_only};
 
 /// Conformer declares `param x : Mass` but the trait defaults `param x : Length = 5mm`.
 /// The collision check must fire: Mass is not implicitly_converts_to Length.
-///
-/// ## RED before step-2
-/// Today (no collision check on defaulted params) this silently accepts the override.
-/// After step-2 adds the `for default in &ctx.defaults` Param arm, the check fires.
 #[test]
 fn incompatible_scalar_override_of_defaulted_param_errors() {
     let source = r#"
@@ -83,9 +77,6 @@ structure def S : T {
 ///
 /// Uses a SELF-CONTAINED matrix literal (no `moment_of_inertia(geometry, material.density)`)
 /// so this test has zero dependency on sibling tasks γ/δ/ε/ζ.
-///
-/// ## RED before step-2
-/// Today this silently accepts the incompatible scalar override.
 #[test]
 fn scalar_override_of_tensor_defaulted_trait_param_errors() {
     let source = r#"
@@ -121,8 +112,6 @@ structure def ScalarOverride : LocalRigid {
 ///
 /// This is the §10 row 11 override idiom — conformers can pin a measured value for
 /// a parameter that a trait already defaults, as long as the type is compatible.
-///
-/// Must remain GREEN both before and after step-2.
 #[test]
 fn compatible_param_override_of_defaulted_param_conforms() {
     let source = r#"
@@ -151,8 +140,6 @@ structure def S : T {
 /// Conformer overrides with the SAME `Tensor<2,3,MomentOfInertia>` type the trait declares.
 /// `implicitly_converts_to(Tensor<2,3,MomentOfInertia>, Tensor<2,3,MomentOfInertia>)` is true.
 /// No mismatch should fire. This is probe-7 TensorOverride, §10 row 11.
-///
-/// Must remain GREEN both before and after step-2.
 #[test]
 fn tensor_typed_override_of_tensor_defaulted_param_conforms() {
     let source = r#"
@@ -193,8 +180,6 @@ structure def TensorOverride : LocalRigid {
 /// (a) ≥1 Severity::Error is present (root-cause pin)
 /// (b) NO diagnostic at any severity contains "type mismatch for trait member"
 /// (c) ≥1 error contains "unresolved type in conformance check" AND "UnknownType"
-///
-/// Must remain GREEN both before and after step-2.
 #[test]
 fn unresolved_override_of_defaulted_param_suppresses_cascade() {
     let source = r#"
@@ -245,22 +230,18 @@ structure def S : T {
 //
 // (a) POSITIVE `param_override_of_annotated_trait_let_default_incompatible_errors`:
 //     `trait T { let y : Length = 5mm }` + `structure def S : T { param y : Mass }`
-//     → expect ≥1 error containing "type mismatch for trait member 'y'".
-//     After step-2 the loop handles only DefaultKind::Param (`_ => continue`), so
-//     this still FAILS → RED.
+//     → expect ≥1 error containing "type mismatch for trait member 'y'". GREEN.
+//
+//     The defaults loop covers both `DefaultKind::Param` and `DefaultKind::Let { cell_type: Some }`,
+//     so annotated-let defaults are type-checked against conformer members too.
 //
 // (b) NEGATIVE guard `param_override_of_annotated_trait_let_default_compatible_conforms`:
 //     `trait T { let y : Length = 5mm }` + `structure def S : T { param y : Length }`
-//     → NO "type mismatch for trait member" (§10 row 11 override idiom).
-//     Must remain GREEN both before and after step-4.
+//     → NO "type mismatch for trait member" (§10 row 11 override idiom). GREEN.
 
 // ── (a) POSITIVE: cross-kind incompatible override — conformer param vs annotated trait let
 /// A conformer `param y : Mass` collides with a trait annotated-let default
 /// `let y : Length = 5mm`. The collision check must fire (cross-kind, Mass ≠ Length).
-///
-/// ## RED before step-4
-/// After step-2 the defaults loop only covers `DefaultKind::Param`; the annotated-Let arm
-/// is `_ => continue`. This test fails until step-4 extends the match.
 #[test]
 fn param_override_of_annotated_trait_let_default_incompatible_errors() {
     let source = r#"
@@ -292,8 +273,6 @@ structure def S : T {
 ///
 /// This is §10 row 11: a conformer can upgrade a trait `let` default to a settable `param`
 /// as long as the type is compatible.
-///
-/// Must remain GREEN both before and after step-4.
 #[test]
 fn param_override_of_annotated_trait_let_default_compatible_conforms() {
     let source = r#"
@@ -313,6 +292,143 @@ structure def S : T {
             .any(|d| d.message.contains("type mismatch for trait member")),
         "compatible cross-kind override (conformer param Length over trait let Length) \
          must NOT produce \"type mismatch for trait member\"; all diagnostics: {:?}",
+        module.diagnostics,
+    );
+}
+
+// ── Suggestion-2 guard: required_names prevents false positive in refinement chains ──
+
+/// When a sub-trait re-declares a parent-defaulted param as REQUIRED (no default),
+/// BOTH the requirement AND the old default end up in the merged `ctx`. The requirements
+/// loop validates the conformer member against the required type; the defaults loop must
+/// SKIP the name (it is in `required_names`) to avoid re-checking against the old default
+/// type — which would be a false positive.
+///
+/// Scenario:
+///   trait Parent { param x : Length = 5mm }   // defaulted, goes into ctx.defaults
+///   trait Child : Parent { param x : Mass }    // required (no default), goes into ctx.requirements
+///   structure def S : Child { param x : Mass = 10kg }
+///
+/// The requirements loop sees `x : Mass` (required) and validates `Mass` against `Mass` → OK.
+/// The defaults loop sees `x : Length` (old default) but skips it because 'x' ∈ required_names.
+/// Without the guard a false "expected Length, got Mass" would fire.
+#[test]
+fn required_names_guard_prevents_false_positive_in_refinement_chain() {
+    let source = r#"
+trait Parent {
+    param x : Length = 5mm
+}
+trait Child : Parent {
+    param x : Mass
+}
+structure def S : Child {
+    param x : Mass = 10kg
+}
+"#;
+    let module = compile_source(source);
+
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait member")),
+        "required_names guard must prevent false 'type mismatch for trait member 'x'' when \
+         the name is already validated by the requirements loop; \
+         all diagnostics: {:?}",
+        module.diagnostics,
+    );
+}
+
+// ── Suggestion-4a: unannotated trait-let collision is silently accepted (deferred gap) ──
+
+/// When a trait has an UNANNOTATED `let` default (`DefaultKind::Let { cell_type: None }`),
+/// the defaults loop skips it (`continue`) — the inferred type is NOT computed for names
+/// that collide with a structure member (pre-register Pass 2 skips them, checker.rs:596).
+/// So a conformer member colliding with an unannotated trait let is silently accepted.
+///
+/// This is a documented, intentional limitation (the deferred gap in checker.rs comment).
+/// Closing it would require compiling the trait-let expression in the conformer scope.
+///
+/// Source:
+///   trait T { let y = 5mm }           // unannotated — cell_type: None → skipped
+///   structure def S : T { param y : Mass }  // type is NOT checked against y's inferred type
+///
+/// Expected: NO "type mismatch for trait member 'y'" diagnostic.
+#[test]
+fn unannotated_trait_let_collision_silently_accepted() {
+    let source = r#"
+trait T {
+    let y = 5mm
+}
+structure def S : T {
+    param y : Mass
+}
+"#;
+    let module = compile_source(source);
+
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait member")),
+        "unannotated trait-let collision must NOT produce \"type mismatch for trait member\" \
+         (deferred gap: inferred type not available for colliding names); \
+         all diagnostics: {:?}",
+        module.diagnostics,
+    );
+}
+
+// ── Suggestion-4b: conformer `let` member overriding a defaulted `param` ────────────
+
+/// The defaults loop looks up the conformer type KIND-AGNOSTICALLY:
+/// `structure_param_members.get(name).or_else(|| structure_let_members.get(name))`.
+/// This means a conformer `let x : Mass` (stored in `structure_let_members`)
+/// IS type-checked against a trait `param x : Length = 5mm` default.
+///
+/// POSITIVE case: incompatible conformer let → type check fires.
+#[test]
+fn conformer_let_overriding_defaulted_param_incompatible_errors() {
+    let source = r#"
+trait T {
+    param x : Length = 5mm
+}
+structure def S : T {
+    let x : Mass = 10kg
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait member 'x'")),
+        "conformer annotated-let (Mass) overriding a defaulted trait param (Length) must \
+         produce \"type mismatch for trait member 'x'\"; got: {:?}",
+        errors,
+    );
+}
+
+/// NEGATIVE case: compatible conformer let → no type-mismatch diagnostic.
+#[test]
+fn conformer_let_overriding_defaulted_param_compatible_conforms() {
+    let source = r#"
+trait T {
+    param x : Length = 5mm
+}
+structure def S : T {
+    let x : Length = 3mm
+}
+"#;
+    let module = compile_source(source);
+
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait member")),
+        "conformer annotated-let (Length) overriding a defaulted trait param (Length) must \
+         NOT produce \"type mismatch for trait member\"; all diagnostics: {:?}",
         module.diagnostics,
     );
 }
