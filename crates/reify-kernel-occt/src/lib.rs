@@ -6432,6 +6432,53 @@ mod tests {
         }
     }
 
+    // --- Offset curve (offset_curve ι) tests ---
+
+    /// Overload-1 precise signal (FFI level): offsetting a planar circular arc
+    /// of radius 10mm outward by 2mm yields a concentric arc of radius 12mm.
+    ///
+    /// Ground truth: the planar offset of a radius-R circular arc is a
+    /// concentric arc of radius R+d (outward offset); curvature κ = 1/R is
+    /// exact for circles, so the offset arc's curvature at its angle-0 point
+    /// (R+d, 0, 0) is exactly 1/(R+d). We assert radius = 1/κ ≈ 12mm within 2%
+    /// (covers OCCT numerical error). Units are SI metres (10mm = 0.01m),
+    /// matching `tests/curve_curvature_integration.rs`.
+    #[test]
+    fn make_offset_curve_grows_arc_radius_by_distance() {
+        use std::f64::consts::FRAC_PI_4;
+        // Radius-10mm arc in the XY plane, swept symmetric about angle 0.
+        let arc = ffi::ffi::make_arc_wire(
+            0.0, 0.0, 0.0, // center at origin
+            0.01,          // radius = 10mm
+            -FRAC_PI_4, FRAC_PI_4, // symmetric about angle 0
+            0.0, 0.0, 1.0, // axis = +Z (XY plane)
+        )
+        .expect("make_arc_wire should build a radius-10mm arc");
+
+        // Offset outward by 2mm. Positive distance grows the radius (convention).
+        let offset = ffi::ffi::make_offset_curve(&arc, 0.002)
+            .expect("make_offset_curve should succeed on a planar arc");
+        assert!(!offset.is_null(), "offset result should be a non-null shape");
+
+        // Extract the offset arc edge (IsOpenResult → single concentric edge).
+        let edges = ffi::ffi::get_edges(&offset).expect("get_edges on offset wire");
+        let n_edges = ffi::ffi::shape_vec_len(&edges);
+        assert!(n_edges >= 1, "offset wire should contain at least one edge");
+        let edge = ffi::ffi::shape_vec_at(&edges, 0).expect("first offset edge");
+
+        // Measure radius at the offset arc's angle-0 point (12mm, 0, 0).
+        let kappa = ffi::ffi::curve_curvature_at(&edge, 0.012, 0.0, 0.0)
+            .expect("curve_curvature_at on offset arc");
+        let radius = 1.0 / kappa.abs();
+        let expected = 0.012; // 12mm
+        let rel_err = (radius - expected).abs() / expected;
+        assert!(
+            rel_err <= 0.02,
+            "offset arc radius should be 12mm (ratio 1.2) within 2%, \
+             got radius={radius} (κ={kappa}, rel_err={rel_err})"
+        );
+    }
+
     // --- Query tests ---
 
     #[test]
