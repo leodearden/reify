@@ -353,7 +353,7 @@ fn check_objective_no_conflict_exits_success_without_mnemonic() {
 // ── task 4488 θ: --strict flag (step-7 RED integration tests) ────────────────
 
 /// (1) `check --strict bracket_indeterminate.ri` → failure + names the
-/// indeterminate constraint; must NOT contain the legacy summary line.
+/// indeterminate constraint on stderr; must NOT contain the legacy summary line.
 #[test]
 fn check_strict_indeterminate_exits_failure_naming_constraint() {
     let (status, stdout, stderr) = common::run_with_args(&[
@@ -368,12 +368,12 @@ fn check_strict_indeterminate_exits_failure_naming_constraint() {
          indeterminate.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("Strict check failed"),
-        "stdout should contain 'Strict check failed', got: {stdout}"
+        stderr.contains("Strict check failed"),
+        "stderr should contain 'Strict check failed' (strict detail goes to stderr), got stderr: {stderr}\nstdout: {stdout}"
     );
     assert!(
-        stdout.contains("Bracket#constraint[1]"),
-        "stdout should name 'Bracket#constraint[1]', got: {stdout}"
+        stderr.contains("Bracket#constraint[1]"),
+        "stderr should name 'Bracket#constraint[1]', got stderr: {stderr}\nstdout: {stdout}"
     );
     assert!(
         !stdout.contains("No constraints violated"),
@@ -382,7 +382,7 @@ fn check_strict_indeterminate_exits_failure_naming_constraint() {
 }
 
 /// (2) `check --strict bracket_all_indeterminate.ri` → failure + names BOTH
-/// indeterminate constraints.
+/// indeterminate constraints on stderr.
 #[test]
 fn check_strict_all_indeterminate_lists_all() {
     let (status, stdout, stderr) = common::run_with_args(&[
@@ -397,12 +397,12 @@ fn check_strict_all_indeterminate_lists_all() {
          indeterminate.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("Bracket#constraint[0]"),
-        "stdout should name 'Bracket#constraint[0]', got: {stdout}"
+        stderr.contains("Bracket#constraint[0]"),
+        "stderr should name 'Bracket#constraint[0]' (strict detail on stderr), got stderr: {stderr}\nstdout: {stdout}"
     );
     assert!(
-        stdout.contains("Bracket#constraint[1]"),
-        "stdout should name 'Bracket#constraint[1]', got: {stdout}"
+        stderr.contains("Bracket#constraint[1]"),
+        "stderr should name 'Bracket#constraint[1]' (strict detail on stderr), got stderr: {stderr}\nstdout: {stdout}"
     );
 }
 
@@ -449,6 +449,36 @@ fn check_indeterminate_without_strict_unchanged() {
     assert!(
         !stdout.contains("Strict check failed"),
         "stdout must NOT contain 'Strict check failed' without --strict, got: {stdout}"
+    );
+}
+
+/// (5) `check --strict --purpose mfg_ready=Bracket bracket_purpose_indeterminate.ri`
+/// → failure + strict detail on stderr naming the purpose-injected indeterminate
+/// constraint. Guards the wiring of `strict` into the `--purpose` branch against
+/// future regressions (both paths share `finish_check` but the wiring is distinct).
+#[test]
+fn check_strict_purpose_indeterminate_exits_failure() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--strict",
+        "--purpose",
+        "mfg_ready=Bracket",
+        &common::fixture_path("bracket_purpose_indeterminate.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "reify check --strict --purpose should exit non-zero when the purpose-injected \
+         constraint is indeterminate.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Strict check failed"),
+        "stderr should contain 'Strict check failed' for strict purpose-injected \
+         indeterminate, got stderr: {stderr}\nstdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("No constraints violated"),
+        "stdout must NOT contain 'No constraints violated' in strict mode, got: {stdout}"
     );
 }
 

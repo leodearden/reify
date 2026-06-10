@@ -535,7 +535,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        finish_check(&outcome, &result.constraint_results, strict, &mut std::io::stdout())
+        finish_check(&outcome, &result.constraint_results, strict, &mut std::io::stdout(), &mut std::io::stderr())
     } else {
         // --purpose path: replicates the canonical
         // eval → activate_purpose → check_constraints_with_values sequence
@@ -639,7 +639,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // Same outcome → summary + exit-code mapping as the no-purpose path,
         // so a purpose-injected violation behaves identically to a structure
         // constraint violation in stdout and shell exit semantics.
-        finish_check(&outcome, &constraint_results, strict, &mut std::io::stdout())
+        finish_check(&outcome, &constraint_results, strict, &mut std::io::stdout(), &mut std::io::stderr())
     }
 }
 
@@ -1592,11 +1592,16 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
 /// `cmd_check` (no-purpose path and `--purpose` path) with a single
 /// implementation so the strict upgrade logic lives in one place.
 ///
-/// * [`ConstraintOutcome::AllSatisfied`] → `"All constraints satisfied."` + SUCCESS
-/// * [`ConstraintOutcome::SomeViolated`] → `"Some constraints violated."` + FAILURE
+/// * [`ConstraintOutcome::AllSatisfied`] → `"All constraints satisfied."` + SUCCESS (to `out`)
+/// * [`ConstraintOutcome::SomeViolated`] → `"Some constraints violated."` + FAILURE (to `out`)
 /// * [`ConstraintOutcome::SomeIndeterminate(n)`]:
-///   * `strict=false` → legacy `"No constraints violated ({n} indeterminate)."` + SUCCESS
-///   * `strict=true`  → [`report_indeterminate_detail`] output + FAILURE
+///   * `strict=false` → legacy `"No constraints violated ({n} indeterminate)."` + SUCCESS (to `out`)
+///   * `strict=true`  → [`report_indeterminate_detail`] output + FAILURE (to `err`)
+///
+/// Success-path summaries go to `out` (stdout). The strict-failure narrative goes
+/// to `err` (stderr) — conventional for error diagnostics and avoids polluting the
+/// stdout stream on the failure path. The exit code remains the machine-parseable
+/// contract in both cases.
 ///
 /// Without `--strict` every existing literal string and exit code is preserved
 /// byte-for-byte (C2 — backward-compatible behavior).
@@ -1605,6 +1610,7 @@ fn finish_check(
     results: &[reify_eval::ConstraintCheckEntry],
     strict: bool,
     out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
 ) -> std::process::ExitCode {
     match outcome {
         ConstraintOutcome::AllSatisfied => {
@@ -1615,7 +1621,7 @@ fn finish_check(
         }
         ConstraintOutcome::SomeIndeterminate(n) => {
             if strict {
-                report_indeterminate_detail(*n, results, out);
+                report_indeterminate_detail(*n, results, err);
             } else {
                 let _ = writeln!(out, "No constraints violated ({n} indeterminate).");
             }
@@ -2271,7 +2277,8 @@ mod tests {
         ];
         let outcome = ConstraintOutcome::SomeIndeterminate(1);
         let mut buf = Vec::new();
-        finish_check(&outcome, &entries, false, &mut buf);
+        let mut err_buf = Vec::new();
+        finish_check(&outcome, &entries, false, &mut buf, &mut err_buf);
         let output = String::from_utf8(buf).unwrap();
         assert_eq!(
             output,
@@ -2282,27 +2289,34 @@ mod tests {
 
     #[test]
     fn finish_check_strict_indeterminate_emits_detail_not_legacy_line() {
-        // (b) strict + SomeIndeterminate → buffer contains "Strict check failed"
-        // and names the indeterminate constraint; must NOT contain "No constraints
-        // violated".
+        // (b) strict + SomeIndeterminate → the strict-failure block goes to `err`
+        // (stderr); `out` (stdout) must remain empty. The failure narrative must
+        // contain "Strict check failed" and name the indeterminate constraint; the
+        // legacy summary "No constraints violated" must NOT appear in either stream.
         let entries = vec![
             make_entry("Bracket", 1, Some("tolerance"), Satisfaction::Indeterminate),
         ];
         let outcome = ConstraintOutcome::SomeIndeterminate(1);
         let mut buf = Vec::new();
-        finish_check(&outcome, &entries, true, &mut buf);
-        let output = String::from_utf8(buf).unwrap();
+        let mut err_buf = Vec::new();
+        finish_check(&outcome, &entries, true, &mut buf, &mut err_buf);
+        let out_str = String::from_utf8(buf).unwrap();
+        let err_str = String::from_utf8(err_buf).unwrap();
         assert!(
-            output.contains("Strict check failed"),
-            "strict SomeIndeterminate must contain 'Strict check failed', got: {output}"
+            err_str.contains("Strict check failed"),
+            "strict SomeIndeterminate: 'Strict check failed' must appear on stderr, got err: {err_str}"
         );
         assert!(
-            output.contains("tolerance"),
-            "strict SomeIndeterminate must name the constraint 'tolerance', got: {output}"
+            err_str.contains("tolerance"),
+            "strict SomeIndeterminate: constraint name 'tolerance' must appear on stderr, got err: {err_str}"
         );
         assert!(
-            !output.contains("No constraints violated"),
-            "strict SomeIndeterminate must NOT contain 'No constraints violated', got: {output}"
+            !out_str.contains("No constraints violated"),
+            "strict SomeIndeterminate: 'No constraints violated' must NOT appear on stdout, got: {out_str}"
+        );
+        assert!(
+            !out_str.contains("Strict check failed"),
+            "strict SomeIndeterminate: 'Strict check failed' must NOT appear on stdout, got: {out_str}"
         );
     }
 
@@ -2313,7 +2327,8 @@ mod tests {
         let outcome = ConstraintOutcome::AllSatisfied;
         for strict in [false, true] {
             let mut buf = Vec::new();
-            finish_check(&outcome, &entries, strict, &mut buf);
+            let mut err_buf = Vec::new();
+            finish_check(&outcome, &entries, strict, &mut buf, &mut err_buf);
             let output = String::from_utf8(buf).unwrap();
             assert_eq!(
                 output,
@@ -2330,7 +2345,8 @@ mod tests {
         let outcome = ConstraintOutcome::SomeViolated;
         for strict in [false, true] {
             let mut buf = Vec::new();
-            finish_check(&outcome, &entries, strict, &mut buf);
+            let mut err_buf = Vec::new();
+            finish_check(&outcome, &entries, strict, &mut buf, &mut err_buf);
             let output = String::from_utf8(buf).unwrap();
             assert_eq!(
                 output,
