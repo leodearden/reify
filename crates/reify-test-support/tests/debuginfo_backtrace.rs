@@ -28,12 +28,41 @@
 //!   - reify-test-support compiles at dev opt-level 0 (the [profile.dev.package."*"]
 //!     opt=3 override applies to dependency packages, not workspace members), so
 //!     the test's own frames are not inlined away and resolve cleanly.
+//!
+//! Host requirements:
+//!   This test is a hard, host-validated gate for split-DWARF symbolication.  It
+//!   was validated on `x86_64-unknown-linux-gnu`, rustc 1.96.0, LLD 22.1.2, with
+//!   the `.dwo` files present alongside binaries in `target/debug/deps/`.  Reify's
+//!   verify pipeline runs on that same host class (single dev machine per
+//!   CLAUDE.md), so this is not a cross-host portability concern in practice.
+//!
+//!   If verify is ever run on a different host (different toolchain, partial clean,
+//!   or a relocated binary missing its companion `.dwo` files), this test may go
+//!   RED for toolchain reasons rather than a profile regression.  In that case:
+//!     • Check that `target/debug/deps/*.dwo` files exist alongside the test binary.
+//!     • Or switch `[profile.dev]` to `debug = 1` (line-tables-only, embedded) —
+//!       the PRD §12 Q2 fallback — which embeds line tables in the binary and
+//!       guarantees symbolication regardless of `.dwo` file presence.
+//!   Setting `REIFY_SKIP_BACKTRACE_TEST=1` skips this test for ad-hoc foreign-host
+//!   runs without modifying the profile.
 
 use std::backtrace::Backtrace;
 use std::sync::{Arc, Mutex};
 
 #[test]
 fn backtrace_resolves_own_file_line() {
+    // ── 0. Env opt-out for foreign-host / partial-clean runs ───────────────────
+    //
+    // When REIFY_SKIP_BACKTRACE_TEST=1 is set, skip rather than fail.  This is
+    // intended only for ad-hoc runs on non-standard hosts (e.g. a different
+    // toolchain, a relocated binary missing its companion .dwo files) where a
+    // symbolication failure would be a host-portability issue, not a profile
+    // regression.  Normal verify runs on the dev host do NOT set this var.
+    if std::env::var("REIFY_SKIP_BACKTRACE_TEST").as_deref() == Ok("1") {
+        eprintln!("REIFY_SKIP_BACKTRACE_TEST=1: skipping backtrace symbolication check");
+        return;
+    }
+
     // ── 1. Save the existing panic hook ────────────────────────────────────────
     let old_hook = std::panic::take_hook();
 
