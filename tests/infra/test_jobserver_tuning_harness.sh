@@ -187,9 +187,10 @@ spec.loader.exec_module(mod)
 errors = []
 
 # ── (a) sample_pool_occupancy over hermetic pre-seeded FIFOs ─────────────────
-# Create two temp FIFOs and seed them with known token counts.
-merge_path = tempfile.mktemp(prefix="/tmp/test-harness-merge-")
-task_path  = tempfile.mktemp(prefix="/tmp/test-harness-task-")
+# Create two temp FIFOs in a private mkdtemp dir (avoids mktemp TOCTOU race).
+_tmp_dir   = tempfile.mkdtemp(prefix="test-harness-")
+merge_path = os.path.join(_tmp_dir, "merge")
+task_path  = os.path.join(_tmp_dir, "task")
 os.mkfifo(merge_path)
 os.mkfifo(task_path)
 
@@ -240,6 +241,7 @@ finally:
     os.close(task_fd)
     os.unlink(merge_path)
     os.unlink(task_path)
+    os.rmdir(_tmp_dir)
 
 # ── (b) wall-clock timer wrapper ─────────────────────────────────────────────
 # timed_run(cmd_list) should return (elapsed_seconds, returncode).
@@ -1172,6 +1174,15 @@ if [ -f "$MEASUREMENTS_JSON" ]; then
 {
 python3 - "$HARNESS" "$BALANCER" "$MEASUREMENTS_JSON" <<'PY'
 import importlib.util, sys, json, os
+
+# Scrub REIFY_TUNING_* env vars BEFORE exec_module so the derive_constants()
+# derivation is hermetic against CI ambient environment.  Without this,
+# REIFY_TUNING_NPROC / REIFY_TUNING_MARGIN / REIFY_TUNING_MIN_POLL_INTERVAL
+# set in the shell would change the derived values while the balancer defaults
+# are fixed, causing spurious anti-drift failures on otherwise-clean repos.
+for _k in list(os.environ):
+    if _k.startswith("REIFY_TUNING_"):
+        os.environ.pop(_k)
 
 spec = importlib.util.spec_from_file_location("jth", sys.argv[1])
 mod  = importlib.util.module_from_spec(spec)

@@ -39,7 +39,7 @@ Balancer **dual-pool** (B): merge + task FIFOs managed by `jobserver-balancer.py
 
 ## Derived Constants
 
-These values replace the PLACEHOLDER defaults in `scripts/jobserver-balancer.py`.
+Balancer wired: `POLL_INTERVAL` and `EPSILON` are updated in `scripts/jobserver-balancer.py`. The timeout constants (`task_timeout_secs`, `merge_timeout_secs`) and `utilization_threshold` are informational — consumed by downstream tasks (ζ reads timeouts; η reads the A/B narrative) but not wired into the balancer directly.
 
 | constant | value |
 |----------|-------|
