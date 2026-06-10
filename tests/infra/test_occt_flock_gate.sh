@@ -123,7 +123,8 @@ export TEST_PLAN_SEGS
 echo ""
 echo "--- Test 10: plan has NO cargo-test-occt-gated.sh invocation (task 4451: OCCT folded into nextest pool) ---"
 
-# Task 4451 folds OCCT crates into the nextest pool (occt test-group max-threads=4).
+# Task 4451 folds OCCT crates into the nextest pool (occt test-group max-threads=24,
+# env-driven, default 24 — raised from 4 by task 4503/γ).
 # The flock-gated debug pass is gone; cargo-test-occt-gated.sh is retained only as
 # a standalone/manual runner.
 assert "plan contains NO cargo-test-occt-gated.sh invocation (gated pass dropped, task 4451)" \
@@ -141,8 +142,8 @@ echo ""
 echo "--- Test 12: nextest --workspace pass has NO --exclude (OCCT folded in, task 4451) ---"
 
 # After the fold the full-workspace debug nextest pass covers ALL crates including
-# OCCT ones. The nextest occt test-group (max-threads=4) bounds their concurrency.
-# A bare --workspace pass WITHOUT --exclude is now the CORRECT form.
+# OCCT ones. The nextest occt test-group (max-threads=24, env-driven, default 24)
+# bounds their concurrency. A bare --workspace pass WITHOUT --exclude is now the CORRECT form.
 assert "full-workspace nextest pass does NOT have --exclude (OCCT no longer excluded, task 4451)" \
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -E 'cargo (test|nextest run) --workspace' | grep -q -- '--exclude'"
 

@@ -46,10 +46,11 @@ assert "plan contains a non-release 'cargo (test|nextest run) --workspace' pass"
 
 # -- Test 3: no gated OCCT pass (OCCT serialization via nextest occt group) ----
 echo ""
-echo "--- Test 3: no gated OCCT pass (task 4451: OCCT folded into nextest pool, serialized by occt group max-threads=4) ---"
+echo "--- Test 3: no gated OCCT pass (task 4451: OCCT folded into nextest pool, serialized by occt group max-threads=24, env-driven) ---"
 
 # Task 4451 folds OCCT into the nextest pool; the nextest occt test-group
-# (max-threads=4) bounds intra-run OCCT concurrency for memory/FD headroom.
+# (max-threads=24, env-driven, default 24 — raised from 4 by task 4503/γ)
+# bounds intra-run OCCT concurrency for memory/FD headroom.
 # There is no longer a flock-gated `cargo test ... --release -- --test-threads=1`.
 assert "plan: no cargo-test-occt-gated.sh invocation (OCCT folded into nextest pool, task 4451)" \
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'cargo-test-occt-gated\.sh'"
