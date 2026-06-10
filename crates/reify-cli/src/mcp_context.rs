@@ -1420,6 +1420,42 @@ mod tests {
         );
     }
 
+    /// CLI `get_diagnostics` (producer #4: `mcp_context.rs:239`) must set
+    /// `has_location == true` for diagnostics that carry a real source span
+    /// (non-empty labels), pinning the `!diag.labels.is_empty()` predicate at
+    /// the CLI construction site (`mcp_context.rs:230` branch).
+    ///
+    /// Uses the same `fresh_ctx()` + `BRACKET_COMPILE_ERROR_PATH` fixture as
+    /// `get_diagnostics_severity_is_pascal_case_wire_format` (line 1386) — that
+    /// fixture is known to produce at least one labelled compile Error with a
+    /// real source span.
+    ///
+    /// RED until step-5 adds `has_location` to `DiagnosticInfo` and sets
+    /// `has_location: !diag.labels.is_empty()` at the CLI construction site.
+    #[test]
+    fn get_diagnostics_has_location_true_for_spanned_error() {
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_COMPILE_ERROR_PATH)
+            .expect("load_file should succeed for bracket_compile_error.ri");
+
+        let diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should succeed");
+
+        assert!(
+            !diags.is_empty(),
+            "bracket_compile_error.ri must produce at least one diagnostic"
+        );
+
+        // The fixture is known to produce a labelled compile Error with a real source span.
+        // At least one diagnostic must have has_location == true (non-empty labels path).
+        assert!(
+            diags.iter().any(|d| d.has_location),
+            "at least one diagnostic from bracket_compile_error.ri must have has_location = true \
+             (labelled Error ⇒ non-empty labels ⇒ real source span)"
+        );
+    }
+
     /// Regression guard: `update_source` must prune `state.files` to exactly the
     /// new active canonical key on each call, so `get_open_files()` never returns
     /// more than one entry across repeated file switches.
