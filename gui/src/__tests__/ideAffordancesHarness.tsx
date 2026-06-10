@@ -15,7 +15,7 @@
 import { vi } from 'vitest';
 import { createRoot, createSignal, Show } from 'solid-js';
 import { render } from '@solidjs/testing-library';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, type InvokeArgs } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import * as bridge from '../bridge';
 import type { DebugStores } from '../debug/types';
@@ -577,9 +577,9 @@ export async function setupBridgeHarness(): Promise<HarnessSetup> {
   const lspCalls: LspCall[] = [];
 
   // Route invoke calls: lsp_request → router; others → undefined (debug_response, update_selection, etc.)
-  vi.mocked(invoke).mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args?: InvokeArgs) => {
     if (cmd === 'lsp_request') {
-      const { method, params: paramsJson } = args as { method: string; params: string };
+      const { method, params: paramsJson } = args as unknown as { method: string; params: string };
       lspCalls.push({ method, params: JSON.parse(paramsJson) });
       return createLspResponseFor(method, paramsJson);
     }
