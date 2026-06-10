@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
-import { applyWorkspaceEdit, renameCommand } from '../editor/rename';
+import { applyWorkspaceEdit, applyTextEditsToString, renameCommand } from '../editor/rename';
 import type { RenameClient, RenameUi } from '../editor/rename';
 import type { WorkspaceEdit } from '../editor/lspClient';
 import { flushMacrotasks } from './test-utils';
@@ -63,6 +63,102 @@ function makeMockView(overrides?: {
 }
 
 const URI = 'file:///test.ri';
+
+// ---------------------------------------------------------------------------
+// applyTextEditsToString — pure string transform, no CodeMirror/Tauri
+// ---------------------------------------------------------------------------
+
+describe('applyTextEditsToString', () => {
+  // LSP TextEdit = { range: { start: { line, character }, end: { line, character } }, newText }
+  // Lines are 0-based; characters are 0-based column offsets.
+
+  it('applies a single edit replacing a substring on one line', () => {
+    // source: "hello world\n"
+    // edit: line 0, char 6..11 ("world") → "reify"
+    const source = 'hello world\n';
+    const result = applyTextEditsToString(source, [
+      { range: { start: { line: 0, character: 6 }, end: { line: 0, character: 11 } }, newText: 'reify' },
+    ]);
+    expect(result).toBe('hello reify\n');
+  });
+
+  it('applies multiple non-overlapping ascending edits without offset drift (right-to-left)', () => {
+    // source: "struct Foo { sub x: Bar }\n"
+    // edit 1: line 0, char 7..10 ("Foo") → "Baz"
+    // edit 2: line 0, char 21..24 ("Bar") → "Baz"
+    // Both should be replaced independently.
+    const source = 'struct Foo { sub x: Bar }\n';
+    const result = applyTextEditsToString(source, [
+      { range: { start: { line: 0, character: 7 }, end: { line: 0, character: 10 } }, newText: 'Baz' },
+      { range: { start: { line: 0, character: 21 }, end: { line: 0, character: 24 } }, newText: 'Baz' },
+    ]);
+    expect(result).toBe('struct Baz { sub x: Baz }\n');
+  });
+
+  it('applies a multi-line edit replacing content across lines', () => {
+    // source: "line0\nline1\nline2\n"
+    // edit: line 0 char 0 → line 1 char 5 (covers "line0\nline1") → "replaced"
+    const source = 'line0\nline1\nline2\n';
+    const result = applyTextEditsToString(source, [
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 1, character: 5 } },
+        newText: 'replaced',
+      },
+    ]);
+    expect(result).toBe('replaced\nline2\n');
+  });
+
+  it('applies edits in descending offset order even when provided ascending', () => {
+    // Three edits in ascending order; right-to-left application must prevent offset drift.
+    // source: "aaa bbb ccc"
+    // edit 1: char 0..3 ("aaa") → "AAA"
+    // edit 2: char 4..7 ("bbb") → "BBB"
+    // edit 3: char 8..11 ("ccc") → "CCC"
+    const source = 'aaa bbb ccc';
+    const result = applyTextEditsToString(source, [
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: 'AAA' },
+      { range: { start: { line: 0, character: 4 }, end: { line: 0, character: 7 } }, newText: 'BBB' },
+      { range: { start: { line: 0, character: 8 }, end: { line: 0, character: 11 } }, newText: 'CCC' },
+    ]);
+    expect(result).toBe('AAA BBB CCC');
+  });
+
+  it('handles a pure-insertion edit (zero-width range)', () => {
+    // Insert "X" at position (0, 5) without replacing anything.
+    const source = 'hello world';
+    const result = applyTextEditsToString(source, [
+      { range: { start: { line: 0, character: 5 }, end: { line: 0, character: 5 } }, newText: 'X' },
+    ]);
+    expect(result).toBe('helloX world');
+  });
+
+  it('handles a pure-deletion edit (empty newText)', () => {
+    // Delete chars 5..10 (inclusive) — removes " worl"
+    const source = 'hello world';
+    const result = applyTextEditsToString(source, [
+      { range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } }, newText: '' },
+    ]);
+    expect(result).toBe('hellod');
+  });
+
+  it('returns the source unchanged when the edit list is empty', () => {
+    const source = 'no change here';
+    expect(applyTextEditsToString(source, [])).toBe(source);
+  });
+
+  it('clamps an out-of-range character to the line end (defense-in-depth)', () => {
+    // source: "abc\n", line 0 has length 3 (chars 0..2 + newline at 3).
+    // Edit with character 99 past end: should clamp to end of line.
+    const source = 'abc\n';
+    const result = applyTextEditsToString(source, [
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 99 } }, newText: 'X' },
+    ]);
+    // Clamped to include up to and including the newline (line.to = 3, before newline),
+    // or to end of 'abc' (char 3). Result should not throw and should replace 'abc'.
+    expect(result).not.toBeNull();
+    expect(result.startsWith('X')).toBe(true);
+  });
+});
 
 describe('applyWorkspaceEdit', () => {
   it('dispatches ONE transaction mapping a single TextEdit to a CM change', () => {
