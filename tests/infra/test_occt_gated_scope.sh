@@ -183,7 +183,14 @@ assert "workspace nextest pass is wrapped in 'timeout --kill-after=60 [0-9]+m'" 
 # Mechanism: scripts/gen-nextest-config.sh generates a full copy of
 # .config/nextest.toml with the occt literal rewritten to the resolved cap,
 # and prints the temp path to stdout.  scripts/verify.sh passes that path as
-# `cargo nextest run ... --config-file <tmp>`.
+# `cargo nextest run ... --config-file <real-tmp>` in EXECUTE mode.
+#
+# --print-plan mode (hermetic oracle): verify.sh emits a static placeholder
+# path (`…/reify-nextest-occt.<print-plan-placeholder>`) instead of calling
+# gen-nextest-config.sh.  No subprocess is spawned and no temp file is created
+# during plan inspection.  The placeholder path is NOT re-runnable; only the
+# execute path produces a real config file.  Test 9 checks the 'reify-nextest-occt'
+# prefix (present in both the real path and the placeholder), not a real file.
 #
 # NOTE: the broken cargo-config form `--config 'test-groups.occt.max-threads=N'`
 # (the step-3 mechanism) is a NO-OP for nextest test-groups — it overrides CARGO
@@ -201,7 +208,8 @@ echo ""
 echo "--- Tests 9–12 (task 4503/γ): --config-file plan assertions for env-driven occt cap ---"
 
 # Test 9 (plan-shape): every cargo nextest run line carries --config-file <path>
-# where the path contains the reify-nextest-occt prefix from gen-nextest-config.sh.
+# where the path contains the 'reify-nextest-occt' prefix.  In --print-plan mode
+# (used here) this is the static placeholder; in execute mode it is the real temp path.
 assert "every 'cargo nextest run' plan line carries '--config-file' with 'reify-nextest-occt' path" \
     bash -c "
         if [ '${PLAN_HAS_NEXTEST}' -eq 0 ]; then exit 0; fi

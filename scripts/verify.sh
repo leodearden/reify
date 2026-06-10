@@ -638,11 +638,13 @@ wrap_subshell() {
     esac
 }
 
-# Memoized temp nextest config path (populated on first NEXTEST=1 pass in emit_nextest_pass).
-# scripts/gen-nextest-config.sh writes a full copy of .config/nextest.toml with the occt
-# literal rewritten to the REIFY_OCCT_NEXTEST_MAX_THREADS value (default 24).
-# nextest --config overrides CARGO config only (NO-OP for test-groups on 0.9.136);
-# --config-file is required to actually override the occt group max-threads.
+# Memoized temp nextest config path (populated on first NEXTEST=1 execute-mode pass in
+# emit_nextest_pass).  scripts/gen-nextest-config.sh writes a full copy of
+# .config/nextest.toml with the occt literal rewritten to the REIFY_OCCT_NEXTEST_MAX_THREADS
+# value (default 24).  nextest --config overrides CARGO config only (NO-OP for test-groups
+# on 0.9.136); --config-file is required to actually override the occt group max-threads.
+# In --print-plan mode the variable stays empty (no subprocess, no temp file — print mode
+# is a hermetic, side-effect-free oracle; execute mode generates the real file).
 _NEXTEST_CONFIG_FILE=""
 
 _verify_cleanup() {
@@ -662,17 +664,32 @@ trap '_verify_cleanup' EXIT
 # scripts/gen-nextest-config.sh generates a temp nextest config (memoized in
 # _NEXTEST_CONFIG_FILE) passed as --config-file; nextest --config overrides CARGO
 # config only (NO-OP for test-groups on 0.9.136) so --config-file is required.
+# In --print-plan mode a static placeholder path is emitted instead of a real temp
+# path so --print-plan remains a pure, hermetic oracle (no subprocess, no temp file).
 emit_nextest_pass() {
     local selector="$1" rel="$2" outer_timeout="$3"
     local cmd
     if [ "$NEXTEST" -eq 1 ]; then
-        # Generate the nextest config once per process (memoized in _NEXTEST_CONFIG_FILE).
-        # Produces a full copy of .config/nextest.toml with the occt cap rewritten to the
-        # resolved env value; the temp file is removed by _verify_cleanup on EXIT.
-        if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
-            _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+        local _cfg_path
+        if [ "$PRINT_PLAN" -eq 1 ]; then
+            # Print mode: emit a representative placeholder so --print-plan is a
+            # pure, hermetic oracle — no subprocess, no temp file created.
+            # The placeholder preserves the 'reify-nextest-occt' prefix so plan-shape
+            # assertions (tests/infra/test_occt_gated_scope.sh Test 9) can still
+            # match the pattern without requiring a real file on disk.
+            # This path is intentionally NOT re-runnable; only execute mode produces
+            # a real config file (memoized in _NEXTEST_CONFIG_FILE).
+            _cfg_path="${TMPDIR:-/tmp}/reify-nextest-occt.<print-plan-placeholder>"
+        else
+            # Execute mode: generate the nextest config once per process (memoized).
+            # Produces a full copy of .config/nextest.toml with the occt cap rewritten
+            # to the resolved env value; removed by _verify_cleanup on EXIT.
+            if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
+                _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+            fi
+            _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config-file ${_NEXTEST_CONFIG_FILE}"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config-file ${_cfg_path}"
     else
         # Fallback: single-threaded (OCCT serialization via the nextest occt group is
         # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
