@@ -618,6 +618,198 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
     )
 }
 
+// ── DFM overhang / draft selectors (task 4406 α) ───────────────────────────
+
+/// Maximum face-normal angle from the horizontal plane for a face to be
+/// classified as a "wall" (as opposed to a floor/ceiling) during draft-angle
+/// analysis.  Faces with `|n·pull_dir| < WALL_WINDOW_RAD.sin()` are
+/// wall-window candidates; faces outside that range are horizontal and
+/// excluded from the draft calculation.
+///
+/// **§9-Q1 contract constant** — pinned to 45° by the fixture
+/// `draft_wall_window_is_45_degrees`.  Changing this value here changes
+/// the selector's semantics; update the fixture accordingly.
+pub(crate) const WALL_WINDOW_RAD: f64 = std::f64::consts::FRAC_PI_4;
+
+/// Tessellation tolerance (metres) used when sampling curved faces for the
+/// conservative overhang / draft scalar bounds.  This is a *sampling density*
+/// parameter, **not** a numeric-accuracy floor — the bound is conservative at
+/// any positive tolerance value (finer sampling can only worsen, never improve,
+/// the reported worst-dip / min-draft).
+const OVERHANG_TESS_TOLERANCE: f64 = 1e-3;
+
+/// Return the subset of faces whose outward normal is "unsupported" in the
+/// additive-manufacturing sense, together with the worst (largest) overhang
+/// dip angle over **all** faces.
+///
+/// A face is *unsupported* iff its outward normal satisfies
+/// `n · build_dir < −sin(max_overhang_angle)`, i.e. the face points more
+/// than `max_overhang_angle` below the horizontal build plane.
+///
+/// The per-face *dip* is defined as
+/// `asin(clamp(−n · build_dir, −1, 1)) ∈ [−π/2, π/2]`.  Positive dip means
+/// the face points downward (overhang); negative dip means it points upward
+/// (self-supporting).  `worst_dip` is the maximum over **all** faces
+/// (including non-overhang faces), seeded at `f64::NEG_INFINITY` (empty face
+/// list returns `NEG_INFINITY`; closed solids always have faces).
+///
+/// For curved faces the scalar `worst_dip` is additionally refined by
+/// per-vertex normals from `kernel.tessellate` (conservative bound — finer
+/// sampling only worsens the reported value).  The unsupported **face set**
+/// comes solely from per-BRep-face `FaceNormal` queries (Mesh carries no
+/// per-face attribution — a documented v1 limitation).
+///
+/// All angles are SI radians, consistent with the rest of this file.
+///
+/// # Errors
+///
+/// - Returns `QueryError::QueryFailed` if `build_dir` is the zero vector or
+///   contains a non-finite component.
+/// - Returns `QueryError::QueryFailed` if `max_overhang_angle` is not finite
+///   or outside `[0, π/2]`.
+/// - Propagates any error from `extract_faces` or per-face `FaceNormal`.
+/// - Returns `QueryError::QueryFailed` on a malformed `FaceNormal` payload
+///   or a degenerate (near-zero) face normal.
+pub fn unsupported_overhang_faces<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    build_dir: [f64; 3],
+    max_overhang_angle: f64,
+) -> Result<(Vec<GeometryHandleId>, f64), QueryError> {
+    // Validate angle range [0, π/2] before any kernel touch.
+    validate_angular_tol(
+        "unsupported_overhang_faces",
+        max_overhang_angle,
+        std::f64::consts::FRAC_PI_2,
+        "π/2",
+    )?;
+    // Normalize build_dir; reject zero / non-finite vectors.
+    let b = normalize3(build_dir).ok_or_else(|| {
+        QueryError::QueryFailed(
+            "unsupported_overhang_faces: build_dir must be non-zero and finite".into(),
+        )
+    })?;
+
+    let faces = kernel.extract_faces(handle)?;
+    let values = query_per_subshape(
+        kernel,
+        &faces,
+        "unsupported_overhang_faces",
+        GeometryQuery::FaceNormal,
+    )?;
+
+    let threshold = -max_overhang_angle.sin();
+    let mut unsupported = Vec::new();
+    let mut worst_dip = f64::NEG_INFINITY;
+
+    for (id, value) in faces.iter().zip(values.iter()) {
+        let raw = parse_xyz_value(value, "FaceNormal")?;
+        let n = normalize3(raw).ok_or_else(|| {
+            QueryError::QueryFailed(format!(
+                "FaceNormal({:?}) returned a degenerate (near-zero) normal",
+                id
+            ))
+        })?;
+        let d = dot3(n, b);
+        if d < threshold {
+            unsupported.push(*id);
+        }
+        let dip = (-d).clamp(-1.0, 1.0).asin();
+        if dip > worst_dip {
+            worst_dip = dip;
+        }
+    }
+
+    Ok((unsupported, worst_dip))
+}
+
+/// Return the minimum signed draft angle over the wall-window faces of
+/// `handle`, together with a flag indicating whether any wall face is
+/// re-entrant (undercut).
+///
+/// *Wall-window* faces satisfy `|n · pull_dir| < sin(WALL_WINDOW_RAD)` where
+/// [`WALL_WINDOW_RAD`] = π/4 (45°).  For each such face the signed draft
+/// angle is
+/// `δ = π/2 − acos(clamp(n · pull_dir, −1, 1)) ∈ (−π/2, π/2)`.
+/// Positive δ means the face has positive draft (tapers away from the die);
+/// negative δ means the face is re-entrant (undercut).
+///
+/// `signed_min_draft` is the minimum δ over all wall-window faces.  When no
+/// wall-window faces exist (the part has only horizontal faces) the function
+/// returns the sentinel `+π/2` — a wall-less part trivially satisfies any
+/// draft requirement.
+///
+/// `has_undercut` is `true` iff any wall-window face (or facet, once the
+/// tessellate fold is applied) has `n · pull_dir < 0`.
+///
+/// For curved faces the scalar `signed_min_draft` and `has_undercut` are
+/// additionally refined by per-vertex normals from `kernel.tessellate`
+/// (conservative bound — only lowers the reported min draft / sets undercut,
+/// never improves it).
+///
+/// All angles are SI radians.
+///
+/// # Errors
+///
+/// - Returns `QueryError::QueryFailed` if `pull_dir` is the zero vector or
+///   contains a non-finite component.
+/// - Propagates any error from `extract_faces` or per-face `FaceNormal`.
+/// - Returns `QueryError::QueryFailed` on a malformed `FaceNormal` payload
+///   or a degenerate face normal.
+pub fn min_draft_angle<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+    pull_dir: [f64; 3],
+) -> Result<(f64, bool), QueryError> {
+    let p = normalize3(pull_dir).ok_or_else(|| {
+        QueryError::QueryFailed(
+            "min_draft_angle: pull_dir must be non-zero and finite".into(),
+        )
+    })?;
+
+    let faces = kernel.extract_faces(handle)?;
+    let values = query_per_subshape(
+        kernel,
+        &faces,
+        "min_draft_angle",
+        GeometryQuery::FaceNormal,
+    )?;
+
+    let wall_sin = WALL_WINDOW_RAD.sin(); // sin(π/4) ≈ 0.7071
+    let mut min_draft = f64::INFINITY;
+    let mut has_undercut = false;
+
+    for (id, value) in faces.iter().zip(values.iter()) {
+        let raw = parse_xyz_value(value, "FaceNormal")?;
+        let n = normalize3(raw).ok_or_else(|| {
+            QueryError::QueryFailed(format!(
+                "FaceNormal({:?}) returned a degenerate (near-zero) normal",
+                id
+            ))
+        })?;
+        let d = dot3(n, p);
+        if d.abs() < wall_sin {
+            // Wall-window face: compute signed draft angle.
+            let delta = std::f64::consts::FRAC_PI_2 - d.clamp(-1.0, 1.0).acos();
+            if delta < min_draft {
+                min_draft = delta;
+            }
+            if d < 0.0 {
+                has_undercut = true;
+            }
+        }
+    }
+
+    // No wall-window face seen → return +π/2 sentinel (trivially conforms).
+    let signed_min_draft = if min_draft.is_finite() {
+        min_draft
+    } else {
+        std::f64::consts::FRAC_PI_2
+    };
+
+    Ok((signed_min_draft, has_undercut))
+}
+
 /// Return the subset of `extract_edges(handle)` whose midpoint tangent is
 /// (anti-)parallel to `axis` within `angular_tol_rad`.
 ///
