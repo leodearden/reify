@@ -1,0 +1,73 @@
+// Fixture for FEA constraint-gating tests.
+//
+// Based on examples/fea_cantilever_smoke.ri — same solve setup, same geometry —
+// but adds two FEA-result constraints:
+//
+//   constraint peak_stress < 1MPa    — deliberately VIOLATED (~5.14 MPa actual)
+//   constraint peak_stress < 100MPa  — SATISFIED
+//
+// The analytical reference (Euler–Bernoulli, rectangular cross-section):
+//
+//   σ_max = 6 · P · L / (b · h²)
+//         = 6 × 1000 × 1.0 / (0.1 × 0.01) = 6 MPa
+//
+// The e2e integration test (crates/reify-eval/tests/solve_elastic_static_e2e.rs)
+// asserts result.max_von_mises is within ±50% of 6 MPa, placing the band at
+// 3–9 MPa.  Both constraint thresholds are safely outside this band:
+//   1 MPa  < 3 MPa  → always VIOLATED
+//   100 MPa > 9 MPa → always SATISFIED
+//
+// Together the two constraints prove real numeric evaluation: one VIOLATED + one
+// OK is only possible when the FEA solve produced a real max_von_mises value.
+// Under the unregistered-trampoline fallback both go Undef → both INDETERMINATE.
+//
+// The `let body = box(...)` realization is required so that in the OCCT-present
+// merge gate the fixture produces geometry and the non-zero exit is driven by the
+// constraint violation (SomeViolated→FAILURE), not by "No geometry output
+// produced".
+
+structure FeaCantileverViolated {
+    // Geometry: 1 m long beam with 100 mm × 100 mm square cross-section.
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    // Material: AISI 1045 hot-rolled medium-carbon steel (E = 205 GPa, ν = 0.29).
+    let material = Steel_AISI_1045()
+
+    // Loads: 1000 N point load applied at the beam tip.
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+
+    // Supports: fully clamped (fixed) at the beam root.
+    let mount = FixedSupport(target: "root")
+
+    // Wrap material in ConstitutiveLawInput so that member-access .law has
+    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
+    let ci = ConstitutiveLawInput(law: material)
+
+    // FEA solve: the @optimized dispatcher routes this call to the
+    // `solver::elastic_static` trampoline when registered via
+    // register_compute_fns (cmd_build + cmd_eval).
+    let result = solve_elastic_static(
+        ci.law, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+
+    // FEA-result constraints — use let-bind member-access idiom so the
+    // constraint expression is a simple scalar variable (mirrors
+    // examples/anisotropic_bar.ri `let iso_peak_von_mises = iso_result.max_von_mises`).
+    // max_von_mises is declared `param max_von_mises : Pressure` in
+    // crates/reify-compiler/stdlib/solver_elastic.ri, so peak_stress is a Pressure
+    // scalar and the comparisons against Pressure literals are dimensionally valid.
+    let peak_stress = result.max_von_mises
+
+    // Deliberately VIOLATED: actual ~5.14 MPa >> 1 MPa threshold.
+    constraint peak_stress < 1MPa
+
+    // SATISFIED: actual ~5.14 MPa << 100 MPa threshold.
+    constraint peak_stress < 100MPa
+
+    // Geometry realization: required so reify build writes a STEP file and
+    // the non-zero exit is driven by the constraint violation, not by the
+    // "No geometry output produced" fallback.
+    let body = box(length, width, height)
+}
