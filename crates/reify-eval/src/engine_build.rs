@@ -4267,17 +4267,17 @@ impl Engine {
                                     // equal the prior stage's `to`.  Detects
                                     // out-of-order chains a future dispatcher change
                                     // could accidentally produce.
-                                    if let Some(expected) = prev_to {
-                                        if *from != expected {
-                                            conversion_error = Some(format!(
-                                                "internal error: conversion chain for op \
-                                                 '{operation:?}' is non-contiguous: stage \
-                                                 {from:?}→{to:?} follows a stage that \
-                                                 produced {expected:?}; chain must be ordered \
-                                                 (e.g. BRep→Mesh then Mesh→Voxel)",
-                                            ));
-                                            break;
-                                        }
+                                    if let Some(expected) = prev_to
+                                        && *from != expected
+                                    {
+                                        conversion_error = Some(format!(
+                                            "internal error: conversion chain for op \
+                                             '{operation:?}' is non-contiguous: stage \
+                                             {from:?}→{to:?} follows a stage that \
+                                             produced {expected:?}; chain must be ordered \
+                                             (e.g. BRep→Mesh then Mesh→Voxel)",
+                                        ));
+                                        break;
                                     }
                                     prev_to = Some(*to);
 
