@@ -383,6 +383,41 @@ describe('hover-sync', () => {
   });
 });
 
+// ── console-error capture integration (step-15 / step-16) ────────────────────
+//
+// Proves the list_console_errors gate is NOT tautological.
+//
+// Step-15 RED: setupBridgeHarness() does not call installConsoleErrorCapture()
+// so console.error stays unpatched, the module-global buffer stays empty,
+// and list_console_errors returns count:0 — failing the expectations below.
+//
+// Step-16 GREEN: after installConsoleErrorCapture()+clearConsoleErrors() are
+// wired into setupBridgeHarness(), the sentinel emission is captured and the
+// combined-session gate's expect(count).toBe(0) becomes a real regression guard.
+
+describe('list_console_errors — capture integration (step-15)', () => {
+  it('captures console.error into the ring buffer — sentinel proves capture is live', async () => {
+    harness = await setupBridgeHarness();
+    dispatch = makeDispatch(harness.handler);
+
+    // Emit sentinel errors AFTER bridge init and BEFORE dispatching the query.
+    // For this assertion to hold, installConsoleErrorCapture() must have patched
+    // console.error so the ring buffer receives these entries.
+    console.error('SENTINEL-4211-gate', new Error('sentinel'));
+    console.warn('SENTINEL-4211-warn');
+
+    const result = await dispatch('list_console_errors', {}) as any;
+
+    // Capture must be live: count must reflect the sentinel emission.
+    expect(result.count).toBeGreaterThanOrEqual(1);
+    // The sentinel message must appear in the captured errors array.
+    const gateEntry = (result.errors as Array<{ message: string }>).find(
+      (e) => e.message.includes('SENTINEL-4211-gate'),
+    );
+    expect(gateEntry).toBeDefined();
+  });
+});
+
 // ── combined session ──────────────────────────────────────────────────────────
 //
 // Integration gate: one it() that exercises all five affordances in sequence
