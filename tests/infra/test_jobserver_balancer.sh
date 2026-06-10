@@ -52,6 +52,36 @@ PY
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
+# fionread_pair <fifo1> <fifo2>
+#   Read FIONREAD for TWO FIFOs in a SINGLE python3 process.
+#   Both reads happen within microseconds of each other, preventing the race
+#   where a daemon transfer fires between two separate fionread() shell calls
+#   (each of which spawns a ~30ms python3 subprocess).
+#   Prints two space-separated integers: "merge_count task_count".
+#   Prints "-1 -1" if either path is unavailable.
+# ──────────────────────────────────────────────────────────────────────────────
+fionread_pair() {
+    local merge_path="$1"
+    local task_path="$2"
+    python3 - "$merge_path" "$task_path" <<'PY'
+import fcntl, termios, os, struct, sys
+
+def fr(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        n = struct.unpack('i', fcntl.ioctl(fd, termios.FIONREAD, struct.pack('i', 0)))[0]
+        os.close(fd)
+        return n
+    except OSError:
+        return -1
+
+m = fr(sys.argv[1])
+t = fr(sys.argv[2])
+print(m, t)
+PY
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # start_balancer <tokens> <poll_interval_seconds>
 #   Launch the balancer daemon in the background against mktemp FIFOs.
 #   Populates _BALANCER_PID, _MERGE_FIFO, _TASK_FIFO, _FIXTURE_TOKENS.
@@ -284,8 +314,11 @@ assert "balancer migrated tokens from merge → task pool (donate-idle dir-1)" \
     test "$_b4_migrated_to_task" -eq 1
 
 # Conservation: consumer_held + fionread(merge) + fionread(task) == TOKENS
-_b4_merge_now=$(fionread "$_MERGE_FIFO")
-_b4_task_now=$(fionread "$_TASK_FIFO")
+# Use fionread_pair to read BOTH FIFOs in one python3 process, preventing the
+# race where a daemon transfer fires between two sequential fionread() calls.
+_b4_pair=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+_b4_merge_now=$(echo "$_b4_pair" | awk '{print $1}')
+_b4_task_now=$(echo  "$_b4_pair" | awk '{print $2}')
 _b4_held=$(cat "$_b4_consumer_held_file" 2>/dev/null || echo 0)
 
 assert "C1: consumer_held + fionread(merge) + fionread(task) == TOKENS (dir-1)" \
@@ -357,9 +390,10 @@ done
 assert "balancer migrated tokens from task → merge pool (donate-idle dir-2)" \
     test "$_b4_migrated_to_merge" -eq 1
 
-# Conservation
-_b4_merge_now2=$(fionread "$_MERGE_FIFO")
-_b4_task_now2=$(fionread "$_TASK_FIFO")
+# Conservation — atomic pair read (same race fix as dir-1)
+_b4_pair2=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+_b4_merge_now2=$(echo "$_b4_pair2" | awk '{print $1}')
+_b4_task_now2=$(echo  "$_b4_pair2" | awk '{print $2}')
 _b4_held2=$(cat "$_b4_consumer_held_file2" 2>/dev/null || echo 0)
 
 assert "C1: consumer_held + fionread(merge) + fionread(task) == TOKENS (dir-2)" \
@@ -370,6 +404,47 @@ wait "$_b4_consumer_pid2" 2>/dev/null || true
 rm -f "$_b4_consumer_held_file2"
 _cleanup_balancer
 
-# (More assertion blocks are appended by subsequent TDD steps.)
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 5: setup-dev.sh reify-jobserver.service unit rewrite (test-5)
+#   Grep-the-source validation — no systemctl, no live service restart.
+#   Mirrors the test_setup_dev_no_ldconfig.sh pattern.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 5: setup-dev.sh jobserver unit rewrite (grep-the-source) ---"
+
+SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+
+# 5a: ExecStart runs the daemon via ${repo_dir}/scripts/jobserver-balancer.py
+assert "ExecStart references scripts/jobserver-balancer.py (new daemon)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'scripts/jobserver-balancer.py'"
+
+# 5b: old single-pool seeder is GONE — no 'sleep infinity' in an uncommented line
+#     inside the jobserver unit context
+assert "old 'sleep infinity' seeder line is absent (uncommented)" \
+    bash -c "! grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'sleep infinity'"
+
+# 5c: old printf seeder is GONE
+assert "old 'printf %%032s' seeder is absent (uncommented)" \
+    bash -c "! grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF '%%032s'"
+
+# 5d: ExecStopPost removes the MERGE FIFO path
+assert "ExecStopPost references reify-jobserver-merge in setup-dev.sh" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'reify-jobserver-merge'"
+
+# 5e: ExecStopPost removes the TASK FIFO path
+assert "ExecStopPost references reify-jobserver-task in setup-dev.sh" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'reify-jobserver-task'"
+
+# 5f: PartOf=orchestrator-reify.service is retained
+assert "PartOf=orchestrator-reify.service is retained" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'PartOf=orchestrator-reify.service'"
+
+# 5g: Restart=on-failure is retained
+assert "Restart=on-failure is retained" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'Restart=on-failure'"
+
+# 5h: chmod +x includes jobserver-balancer.py
+assert "chmod +x line includes jobserver-balancer.py" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'jobserver-balancer.py'"
 
 test_summary
