@@ -70,6 +70,25 @@ fn eval_std_tolerancing_surface_example_succeeds() {
         stdout.contains("finish_ok = true"),
         "stdout should contain 'finish_ok = true' (sf.value > 0mm: 1.6µm > 0mm → true);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+
+    // ── α new-type exercises: nominal_zone reads off the new GD&T types ────────
+    // Value-agnostic name-substring anchors (same style as it7_width / fit_maxc):
+    // nominal_zone materialises a real scalar for each, so the cell prints.
+    //   soa_zone    — StraightnessOfAxis (FOS axis form variant, MMC-eligible)
+    //   runout_zone — CircularRunout with a required datum_refs
+    //   prof_zone   — ProfileOfSurfaceRelated with a required datum_refs
+    assert!(
+        stdout.contains("soa_zone"),
+        "stdout should contain 'soa_zone' (StraightnessOfAxis.nominal_zone);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("runout_zone"),
+        "stdout should contain 'runout_zone' (CircularRunout.nominal_zone w/ datum_refs);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("prof_zone"),
+        "stdout should contain 'prof_zone' (ProfileOfSurfaceRelated.nominal_zone w/ datum_refs);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }
 
 /// Test B: `reify check examples/tolerancing/std_tolerancing_surface.ri`
