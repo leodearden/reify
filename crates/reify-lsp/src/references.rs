@@ -28,7 +28,8 @@ use reify_ast::{
 };
 use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{
-    DocumentHighlight, DocumentHighlightKind, Position, Range, TextEdit, Url, WorkspaceEdit,
+    DocumentHighlight, DocumentHighlightKind, Location, Position, Range, TextEdit, Url,
+    WorkspaceEdit,
 };
 
 use crate::analysis::{enclosing_decl_at, name_token_span};
@@ -100,6 +101,38 @@ pub fn collect_references(
     let offset = position_to_offset(source, pos);
     let (_word_start, word) = find_word_at_offset(source, offset)?;
     collect_references_at(source, parsed, offset, word, include_declaration)
+}
+
+/// Map the [`ReferenceSet`] under the cursor to LSP [`Location`]s in `uri`.
+///
+/// The thin LSP-facing wrapper over [`collect_references`] (task β, 4202). It
+/// takes an **already-resolved** [`ParsedModule`] — fed by the handler from the
+/// per-document parse cache (`DocumentState::parsed_module`, one parse per edit),
+/// mirroring [`compute_document_highlights`] — runs the scope-aware collection,
+/// then maps each name-token [`SourceSpan`] to a [`Location`] via
+/// [`span_to_range`], paired with the document `uri`. Returns `None` when the
+/// cursor is not on an identifier that resolves to a local value-member binding
+/// (propagated from [`collect_references`]). The LSP `context.include_declaration`
+/// flag is passed straight through. Single-file: no spawn_blocking, no cross-file
+/// FS I/O.
+pub fn compute_references(
+    source: &str,
+    parsed: &ParsedModule,
+    uri: &Url,
+    pos: Position,
+    include_declaration: bool,
+) -> Option<Vec<Location>> {
+    let refset = collect_references(source, parsed, pos, include_declaration)?;
+    Some(
+        refset
+            .references
+            .iter()
+            .map(|&span| Location {
+                uri: uri.clone(),
+                range: span_to_range(source, span),
+            })
+            .collect(),
+    )
 }
 
 /// Reference collection from an **already-resolved** cursor (`offset` + the
@@ -2573,6 +2606,82 @@ structure S {
         assert_eq!(
             prepare_decl.placeholder, "diameter",
             "prepare_rename placeholder is `diameter` when on the decl"
+        );
+    }
+
+    // --- step-1 (β, task 4202): compute_references maps a ReferenceSet to LSP Locations ---
+
+    #[test]
+    fn compute_references_maps_referenceset_to_locations() {
+        // A single structure where one value-member binding (`base`) is used
+        // multiple times. compute_references is the thin LSP wrapper over
+        // collect_references: it must map each name-token SourceSpan in the
+        // ReferenceSet to a Location { uri, range } via span_to_range, preserving
+        // count and ascending order. collect_references already proves the
+        // underlying counts (collect_references_basic_single_binding_width /
+        // _include_declaration_toggle), so this pins only the span→Location mapping.
+        let source = "\
+structure S {
+    param base: Length = 1mm
+    let a = base
+    let b = base
+}";
+        let uri = Url::parse("file:///refs.ri").unwrap();
+        let parsed = reify_syntax::parse(source, ModulePath::single("refs"));
+        let base = occurrences(source, "base");
+        assert_eq!(base.len(), 3, "1 decl + 2 uses of base");
+        // base[0]=param decl token, base[1]/base[2]=uses.
+
+        // Cursor on the first USE of base (in `let a = base`).
+        let pos = offset_to_position(source, base[1] as u32);
+
+        // include_declaration=true → declaration ∪ uses = 3 Locations, ascending.
+        let with = compute_references(source, &parsed, &uri, pos, true)
+            .expect("cursor on a base use must resolve to Locations");
+        let expected: Vec<Location> = base
+            .iter()
+            .map(|&off| Location {
+                uri: uri.clone(),
+                range: span_to_range(source, span_of(off, "base")),
+            })
+            .collect();
+        assert_eq!(
+            with, expected,
+            "each Location.range must equal span_to_range of the name-token span, ascending"
+        );
+        // Every Location carries the document uri.
+        assert!(
+            with.iter().all(|l| l.uri == uri),
+            "every Location.uri must equal the document uri"
+        );
+
+        // include_declaration=false → the declaration token drops; count is N-1.
+        let without = compute_references(source, &parsed, &uri, pos, false)
+            .expect("cursor on a base use resolves (exclude declaration)");
+        assert_eq!(
+            without.len(),
+            with.len() - 1,
+            "include_declaration=false drops exactly the declaration token"
+        );
+        let expected_uses: Vec<Location> = base
+            .iter()
+            .skip(1)
+            .map(|&off| Location {
+                uri: uri.clone(),
+                range: span_to_range(source, span_of(off, "base")),
+            })
+            .collect();
+        assert_eq!(
+            without, expected_uses,
+            "uses-only set, declaration token excluded"
+        );
+
+        // A cursor on a non-identifier byte (the `=` sign) resolves to nothing.
+        let eq_off = source.find('=').expect("source contains an '='");
+        let eq_pos = offset_to_position(source, eq_off as u32);
+        assert!(
+            compute_references(source, &parsed, &uri, eq_pos, true).is_none(),
+            "a cursor off any identifier must return None"
         );
     }
 }

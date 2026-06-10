@@ -215,9 +215,16 @@ describe('SHORTCUTS bind fields', () => {
         // CodeMirror's foldKeymap inside the editor; useKeyboardShortcuts skips
         // them because the CM contentDOM is contentEditable (bails before matching).
         if (s.id === 'fold' || s.id === 'unfold' || s.id === 'foldAll' || s.id === 'unfoldAll') continue;
-        // gotoDefinition/navBack/navForward/rename are display-only: dispatch is handled
-        // by the CM keymap in Editor.tsx; same rationale as fold entries above.
-        if (s.id === 'gotoDefinition' || s.id === 'navBack' || s.id === 'navForward' || s.id === 'rename') continue;
+        // gotoDefinition/navBack/navForward/rename/findUses are display-only: dispatch is
+        // handled by the CM keymap in Editor.tsx; same rationale as fold entries above.
+        if (
+          s.id === 'gotoDefinition' ||
+          s.id === 'navBack' ||
+          s.id === 'navForward' ||
+          s.id === 'rename' ||
+          s.id === 'findUses'
+        )
+          continue;
         expect(s.bind, `shortcut "${s.id}" has a display key but no bind field`).toBeDefined();
       }
     }
@@ -535,6 +542,30 @@ describe('shortcuts — commandPalette and symbolJump entries', () => {
     expect(symbolJumpEntry?.bind).toBeDefined();
     // Ctrl+Shift+O event should not match the open bind (shift:false prevents it)
     expect(matchesEvent(openEntry!.bind!, new KeyboardEvent('keydown', { key: 'o', ctrlKey: true, shiftKey: true }))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Find-uses shortcut entry (task-4202 β)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — findUses entry', () => {
+  it('SHORTCUTS contains a findUses entry with key "Shift+F12", category "Editor", truthy description, and not disabled', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'findUses');
+    expect(entry, 'findUses missing from SHORTCUTS').toBeDefined();
+    expect(entry?.key).toBe('Shift+F12');
+    expect((entry as ShortcutDef & { category?: string })?.category).toBe('Editor');
+    expect(entry?.description).toBeTruthy();
+    expect(entry?.disabled).not.toBe(true);
+  });
+
+  it('getShortcut("findUses") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('findUses')).toBeDefined();
+  });
+
+  it('findUses has no bind field (display-only, dispatched by the CM keymap in Editor.tsx)', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'findUses');
+    expect(entry?.bind, 'findUses must not have a bind field').toBeUndefined();
   });
 });
 
