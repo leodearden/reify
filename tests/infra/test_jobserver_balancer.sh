@@ -179,6 +179,32 @@ assert "sum still == TOKENS after a few poll intervals (buffered tokens persist)
 
 _cleanup_balancer
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 3: baseline split merge-favored + non-starving (test-3)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 3: merge-favored baseline split (merge > task, task >= 1) ---"
+
+_cleanup_balancer   # ensure clean state
+
+# Use TOKENS=4 so a strict merge>task inequality is well-defined (3 vs 1)
+start_balancer 4 0.05
+wait_for_seed 10 || true
+
+_b3_m=$(fionread "$_MERGE_FIFO")
+_b3_t=$(fionread "$_TASK_FIFO")
+
+assert "merge pool > task pool (merge-favored baseline)" \
+    test "$_b3_m" -gt "$_b3_t"
+
+assert "task pool >= 1 (non-starving — prevents donate-idle thrash)" \
+    test "$_b3_t" -ge 1
+
+assert "merge + task == TOKENS (C1 still conserved)" \
+    test $(( _b3_m + _b3_t )) -eq "$_FIXTURE_TOKENS"
+
+_cleanup_balancer
+
 # (More assertion blocks are appended by subsequent TDD steps.)
 
 test_summary
