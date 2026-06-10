@@ -535,7 +535,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        return finish_check(&outcome, &result.constraint_results, strict, &mut std::io::stdout());
+        finish_check(&outcome, &result.constraint_results, strict, &mut std::io::stdout())
     } else {
         // --purpose path: replicates the canonical
         // eval → activate_purpose → check_constraints_with_values sequence
