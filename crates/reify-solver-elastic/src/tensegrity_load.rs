@@ -42,6 +42,7 @@
 //! §10 future work / the trampoline's v1 shared-section decision).
 
 use crate::assembly::BarSection;
+use crate::assembly::bar::MIN_BAR_LENGTH;
 use crate::form_find::MemberKind;
 use crate::solver::CgSolverOptions;
 
@@ -163,6 +164,65 @@ pub fn tensegrity_load_analysis(
     _options: &TensegrityLoadOptions,
 ) -> Result<TensegrityLoadSolve, TensegrityLoadError> {
     Err(TensegrityLoadError::DimensionMismatch)
+}
+
+/// First-order axial member-force delta for a 2-node bar/cable element.
+///
+/// With unit direction cosine `c = (node1 − node0) / L`, cross-section `(E, A)`,
+/// and element nodal displacement `u_local = [u0x,u0y,u0z, u1x,u1y,u1z]`, the
+/// linearised change in axial force is
+///
+/// ```text
+/// dN = (E·A / L) · c · (u1 − u0)
+/// ```
+///
+/// where `u1 − u0` is the relative tip displacement. This is the axial
+/// component of `K_e · u_local` projected back onto the bar direction: a purely
+/// transverse relative displacement contributes nothing, and a rigid-body
+/// translation (`u1 = u0`) contributes nothing. The total member force is
+/// `N = prestress + dN`.
+///
+/// Uses the same unit-direction normalisation and `MIN_BAR_LENGTH` degeneracy
+/// guard convention as [`crate::assembly::bar::element_stiffness_bar_p1`].
+fn bar_axial_force_delta(
+    phys_nodes: &[[f64; 3]; 2],
+    section: &BarSection,
+    u_local: &[f64; 6],
+) -> f64 {
+    debug_assert!(
+        section.youngs_modulus.is_finite() && section.youngs_modulus > 0.0,
+        "youngs_modulus must be finite and positive, got {}",
+        section.youngs_modulus,
+    );
+    debug_assert!(
+        section.area.is_finite() && section.area > 0.0,
+        "area must be finite and positive, got {}",
+        section.area,
+    );
+
+    let r = [
+        phys_nodes[1][0] - phys_nodes[0][0],
+        phys_nodes[1][1] - phys_nodes[0][1],
+        phys_nodes[1][2] - phys_nodes[0][2],
+    ];
+    let l = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+
+    debug_assert!(
+        l > MIN_BAR_LENGTH,
+        "degenerate bar: L = {} (must be > {})",
+        l,
+        MIN_BAR_LENGTH,
+    );
+
+    let c = [r[0] / l, r[1] / l, r[2] / l];
+    // Relative tip displacement du = u1 − u0 (the only part that strains the bar).
+    let du = [
+        u_local[3] - u_local[0],
+        u_local[4] - u_local[1],
+        u_local[5] - u_local[2],
+    ];
+    let c_dot_du = c[0] * du[0] + c[1] * du[1] + c[2] * du[2];
+    section.youngs_modulus * section.area / l * c_dot_du
 }
 
 #[cfg(test)]
