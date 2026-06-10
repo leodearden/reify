@@ -3136,6 +3136,57 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::MechanismNonDrivingJoint).unwrap();
         assert_eq!(s, "\"MechanismNonDrivingJoint\"");
     }
+
+    /// `DiagnosticInfo.has_location` round-trips through serde:
+    /// (a) `has_location: false` serializes to JSON key `"has_location"` with value `false`
+    /// — the field is never skipped, always present on the wire; (b) deserializing a JSON
+    /// object that omits `has_location` yields `has_location == true` — pinning the
+    /// backward-compat `#[serde(default = "default_has_location")]` contract so older
+    /// payloads and un-updated consumers are treated as line-tied.
+    ///
+    /// RED until step-5 adds the field and `default_has_location` helper to `DiagnosticInfo`.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_info_has_location_serde_wire_and_default() {
+        use super::DiagnosticInfo;
+
+        // (a) Serialize: has_location: false must produce JSON key "has_location" = false.
+        let info = DiagnosticInfo {
+            file_path: "test.ri".to_owned(),
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 1,
+            severity: "Error".to_owned(),
+            message: "test".to_owned(),
+            code: None,
+            has_location: false,
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(
+            v["has_location"],
+            serde_json::Value::Bool(false),
+            "has_location: false must serialize to JSON false under key 'has_location'"
+        );
+
+        // (b) Deserialize: omitting has_location from JSON must yield has_location == true
+        //     (backward-compat: older payloads without the field are treated as line-tied).
+        let json = serde_json::json!({
+            "file_path": "test.ri",
+            "line": 1,
+            "column": 1,
+            "end_line": 1,
+            "end_column": 1,
+            "severity": "Error",
+            "message": "test",
+            "code": null
+        });
+        let deserialized: DiagnosticInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            deserialized.has_location, true,
+            "missing `has_location` in JSON must deserialize as true (backward-compat default)"
+        );
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
