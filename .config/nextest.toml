@@ -1,14 +1,16 @@
 # cargo-nextest configuration for Reify.
 #
-# LIVE (task 4451): scripts/verify.sh folds the OCCT-touching crates into the
-# single nextest pool (`cargo nextest run --workspace`, no --exclude). This
-# group bounds intra-run OCCT concurrency to N=4 for FD/memory headroom while
-# per-process address-space isolation keeps OCCT execution race-free (each
-# nextest test process gets its own OCCT C++ static state — no sharing).
+# LIVE (task 4503/γ): occt test-group cap raised 4→24, env-driven via
+# REIFY_OCCT_NEXTEST_MAX_THREADS (default 24).  scripts/verify.sh resolves the
+# env var at plan-build time and passes `--config 'test-groups.occt.max-threads=N'`
+# to cargo nextest run on the NEXTEST=1 branch.
 #
-# Headroom basis: docs/notes/multi-process-occt-bench.md §d — each release
-# OCCT test process peaks ~1-2 GiB RSS, so 4 concurrent ≈ 4-8 GiB ≪ 32 GiB
-# host, leaving plenty of room for OS + orchestrator overhead.
+# Headroom basis (task 4503/γ, supersedes task 4451 §d basis):
+#   32-core / 125 GiB host; held-slot semaphore (task β/4502) bounds concurrent
+#   verify runs to ≤2 (1 task slot at default N=1 + 1 exempt merge); worst case
+#   2 × 24 OCCT × ~2 GiB = 96 GiB < 125 GiB → guaranteed no swap; cap 24 stays
+#   below nproc=32 global so it remains a real backstop.  See
+#   docs/notes/multi-process-occt-bench.md §d for full evidence.
 #
 # The OCCT-touching crates (reify-kernel-occt, reify-eval, reify-cli,
 # reify-config — authoritative list: scripts/occt-touching-crates.txt) are
@@ -17,9 +19,9 @@
 # but is NO LONGER invoked by verify.sh.
 
 [test-groups]
-occt = { max-threads = 4 }
+occt = { max-threads = 24 }
 
-# Pin the OCCT-touching packages to the `occt` group (max-threads = 4).
+# Pin the OCCT-touching packages to the `occt` group (max-threads = 24, env-driven).
 # Kept in sync with scripts/occt-touching-crates.txt by hand (these are config
 # literals, not shell). A drift here would let a crate escape the max-threads
 # cap and run unbounded in the nextest pool — the drift-catcher in
