@@ -12,11 +12,10 @@
 //!      source-text matching), a `results` cell (pins ≥1 `MultiCaseResult`
 //!      envelope), and a `width` param cell of type `Scalar<LENGTH>` (typed
 //!      assertion mirroring `cost_aggregation_tests.rs:218-283`), plus
-//!      source-text markers for `box(` geometry and at least one realistic-load
-//!      constructor (`point_load(`, `traction_load(`, `body_force(`, or `gravity(`).
-//!      Note: `pressure_load(` was removed from this list after SIR-β-load
-//!      (task 3544) retired the snake_case builtin — `PressureLoad(...)` is now
-//!      the valid form and uses the structure-def ctor path, not a builtin call.
+//!      source-text markers for `box(` geometry, typed `PointLoad(` and `Gravity(`
+//!      structure-def constructors (load-KIND migration per task 4443), and absence
+//!      of the retired snake_case builtins `point_load(`/`gravity(` (directly
+//!      encodes the PRD/task user-observable signal).
 //!   5. The source references `STANDARD_GRAVITY` (the std.units zero-arg pub fn)
 //!      and does not contain the magic number `9.80665` inline (catches any
 //!      identifier-renamed reconstruction, not just the original `let g_scalar` form).
@@ -167,19 +166,31 @@ fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
          (parametric box geometry for the bracket body)"
     );
 
-    // `pressure_load(` removed from the OR-list after SIR-β-load (task 3544
-    // step-7): the snake_case builtin is retired; `PressureLoad(...)` is the
-    // valid form but uses the structure-def ctor path, not a builtin-style
-    // `name(` call. The example file uses `point_load(` so the test stays green.
-    let has_realistic_load = src.contains("point_load(")
-        || src.contains("traction_load(")
-        || src.contains("body_force(")
-        || src.contains("gravity(");
+    // Load-KIND migration (task 4443): `point_load(`/`gravity(` builtins are
+    // retired; typed structure-def ctors `PointLoad(`/`Gravity(` are the valid
+    // forms. Positive assertions confirm the typed ctors are present; negative
+    // assertions confirm the retired builtins are absent. Note: `gravity(` is
+    // lowercase and therefore does NOT match the retained `STANDARD_GRAVITY(`
+    // (uppercase), so the negative assertion is unaffected by the kept constant.
     assert!(
-        has_realistic_load,
-        "leaf signal 'realistic loads': expected src to contain at least one of \
-         point_load(, traction_load(, body_force(, gravity( \
-         but none found"
+        src.contains("PointLoad("),
+        "leaf signal 'typed PointLoad ctor': expected src to contain 'PointLoad(' \
+         (typed structure-def constructor for point loads)"
+    );
+    assert!(
+        src.contains("Gravity("),
+        "leaf signal 'typed Gravity ctor': expected src to contain 'Gravity(' \
+         (typed structure-def constructor for gravity load)"
+    );
+    assert!(
+        !src.contains("point_load("),
+        "leaf signal 'no retired point_load builtin': expected src NOT to contain \
+         'point_load(' — retired builtin must be replaced by PointLoad(...)"
+    );
+    assert!(
+        !src.contains("gravity("),
+        "leaf signal 'no retired gravity builtin': expected src NOT to contain \
+         'gravity(' — retired builtin must be replaced by Gravity(...)"
     );
 
     // Task 3647 leaf signals: stdlib gravity constant in use; inline magic-number removed.
