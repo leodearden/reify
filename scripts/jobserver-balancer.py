@@ -22,9 +22,7 @@ Environment variables (all optional, with sensible defaults):
 import fcntl
 import os
 import signal
-import stat
 import struct
-import sys
 import termios
 import time
 
@@ -78,23 +76,42 @@ def seed_fifo(fd: int, count: int) -> None:
 
 
 def _transfer(donor_fd: int, recipient_fd: int) -> None:
-    """Spin-grab all free tokens from donor_fd and write them to recipient_fd.
+    """Transfer exactly ONE token byte from donor_fd to recipient_fd.
 
-    TRANSFER PRIMITIVE (contract C1):
-      Each non-blocking read of one byte is immediately paired with a write of
-      that byte to recipient_fd before the next read.  A token is only ever
-      in-transit inside one read→write pair — it is never lost even if the
-      process is killed mid-loop (at most one token in flight at that instant).
+    TRANSFER PRIMITIVE (contract C1 / anti-oscillation):
+      Moves one token per call rather than draining the donor entirely.
+      Draining all donor tokens per tick causes steady-state oscillation when
+      a hold-and-stop consumer satisfies its demand and stops reading: the
+      donated tokens then sit free in the recipient pool, and the next tick
+      triggers a full reverse transfer.  Moving one token per tick avoids
+      this in the common case (multiple free tokens in the donor): after the
+      first donation the recipient leaves 0-free and the donate-idle condition
+      no longer holds — transfer stops naturally.  The edge case (exactly one
+      free token in the entire pool) can still exhibit per-tick oscillation;
+      full anti-oscillation policy (C4 hysteresis / contention ratchet) is
+      β's scope (PRD §4).
 
-    Stops when donor_fd raises BlockingIOError (no more free tokens / EAGAIN).
-    With ≤32 tokens and a 64 KB pipe buffer the recipient write never blocks.
+      A token is only ever in-transit inside one read→write pair — it is
+      never dropped even if the process is killed mid-call (at most one
+      token in flight at that instant).
+
+    The recipient write is retried on BlockingIOError (the token byte is
+    already in hand and must not be dropped — C1 conservation invariant).
+    With ≤TOKENS bytes and a 64 KB pipe buffer this retry path is
+    unreachable in practice; the guard defends against silent token loss if
+    TOKENS ever approaches the pipe capacity.
     """
+    try:
+        byte = os.read(donor_fd, 1)
+    except BlockingIOError:
+        return
+    # Token byte is now in hand; must write before returning (C1 no-drop).
     while True:
         try:
-            byte = os.read(donor_fd, 1)
+            os.write(recipient_fd, byte)
+            return
         except BlockingIOError:
-            break
-        os.write(recipient_fd, byte)
+            time.sleep(0.001)  # pipe buffer briefly full; retry in 1 ms
 
 
 def main() -> None:
@@ -144,21 +161,25 @@ def main() -> None:
     #   1. SENSE both pools via FIONREAD (non-destructive).
     #   2. Apply the minimal symmetric DONATE-IDLE rule:
     #      if donor.free > 0 and recipient.free == 0:
-    #          spin-grab donor's free tokens to recipient via TRANSFER PRIMITIVE.
+    #          transfer ONE token (donor → recipient) via TRANSFER PRIMITIVE.
     #   3. Sleep POLL_INTERVAL.
     #
     # TRANSFER PRIMITIVE (C1 no-drop guarantee):
     #   - Non-blocking read 1 byte from the donor fd.
-    #   - If EAGAIN/BlockingIOError: stop (no more free tokens).
-    #   - Otherwise: IMMEDIATELY write that byte to the recipient fd BEFORE
-    #     reading the next.  A token is only ever in-transit inside one
-    #     read→write pair, never dropped.
+    #   - If EAGAIN/BlockingIOError: return without transferring.
+    #   - Otherwise: IMMEDIATELY write that byte to the recipient fd
+    #     (retrying on BlockingIOError) before returning.  A token is only
+    #     ever in-transit inside one read→write pair, never dropped.
     #
-    # With ≤32 tokens and a 64 KB pipe buffer the write never blocks.
+    # One token per tick prevents oscillation in the common case (multiple
+    # free tokens in the donor): after the first donation the recipient leaves
+    # 0-free and the donate-idle condition no longer holds — transfer stops.
+    # The edge case (exactly one free token in the pool) can still exhibit
+    # per-tick oscillation; full anti-oscillation policy (C4 hysteresis /
+    # contention ratchet) is β's scope (PRD §4).
+    #
     # The recipient-at-0-free state IS the 'live demand' signal (GNU-make
     # jobserver semantics: a pool empties only when consumers hold its tokens).
-    # both_baseline ≥ 1 + a real consumer keeping the demanded pool at 0 ensure
-    # the reverse condition never holds simultaneously → non-thrashing.
 
     while not _stop[0]:
         # SENSE
