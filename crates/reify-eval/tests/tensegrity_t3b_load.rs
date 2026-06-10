@@ -249,3 +249,174 @@ fn trampoline_no_slack_transverse_load_solves() {
         "a well-posed solve must report converged == true",
     );
 }
+
+// ── step-11: slack-mask encoding + failure-path coverage ─────────────────────
+//
+// These target the three step-12 deliverables: (1) the real slack mask + zeroed
+// slack-cable force in the result; (2) trampoline-level range/length guards; and
+// (3) the per-variant `describe()` phrase mapping. Each failure test checks a
+// guard-specific phrase (not just the shared `E_TensegrityLoadInfeasible`
+// prefix), mirroring the T1a `assert_failed_infeasible` discipline.
+
+/// Assert the outcome is `Failed` with an `E_TensegrityLoadInfeasible`
+/// diagnostic whose message also contains `needle` (proving the specific guard /
+/// `describe()` arm fired, not merely *some* infeasibility).
+fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
+    match outcome {
+        ComputeOutcome::Failed { diagnostics } => {
+            let joined = diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            assert!(
+                joined.contains("E_TensegrityLoadInfeasible"),
+                "expected an E_TensegrityLoadInfeasible diagnostic, got: {joined}"
+            );
+            assert!(
+                joined.contains(needle),
+                "expected the diagnostic to mention {needle:?}, got: {joined}"
+            );
+        }
+        other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
+    }
+}
+
+/// (a) Slackening axial load: an axial tip load `P = 3·N0` drives cable `(1,2)`
+/// compressive, so the tension-only active set drops it. The result must flag
+/// `slack[1] == true` with a zeroed `member_forces[1]`, the reduced single-cable
+/// deflection `u_x[1] = P·L/(E·A)`, and the surviving cable carrying `N0 + P`.
+/// Mirrors the kernel golden `slackening_cable_axial_load`, but through the
+/// trampoline's Value encoding.
+#[test]
+fn trampoline_slackening_axial_load_flags_slack() {
+    let l = 2.0_f64;
+    let e = 200.0e9_f64;
+    let a = 1.0e-4_f64;
+    let n0 = 5_000.0_f64;
+    let p = 3.0 * n0;
+
+    let value_inputs = vec![
+        two_cable_string(l),
+        Value::List(vec![force(n0), force(n0)]),
+        pressure(e),
+        area(a),
+        Value::List(vec![
+            force_vec(0.0, 0.0, 0.0),
+            force_vec(p, 0.0, 0.0), // axial tip load toward node 2
+            force_vec(0.0, 0.0, 0.0),
+        ]),
+        Value::List(vec![Value::Int(0), Value::Int(2)]),
+    ];
+
+    let fields = match call_tensegrity_load(&value_inputs) {
+        ComputeOutcome::Completed { result, .. } => match result {
+            Value::StructureInstance(d) => d.fields,
+            other => panic!("Completed result should be a StructureInstance, got {other:?}"),
+        },
+        other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+    };
+
+    // Slack mask flags the dropped cable (1,2); cable (0,1) stays taut.
+    assert_eq!(
+        fields.get(&"slack".to_string()),
+        Some(&Value::List(vec![Value::Bool(false), Value::Bool(true)])),
+        "cable (1,2) must be flagged slack, cable (0,1) taut",
+    );
+
+    // Slack cable reports zero force; surviving cable carries N0 + P.
+    let member_forces = match fields.get(&"member_forces".to_string()) {
+        Some(Value::List(fs)) => fs,
+        other => panic!("member_forces must be a List, got {other:?}"),
+    };
+    assert!(
+        coord(&member_forces[1]).abs() < 1e-6,
+        "slack cable (1,2) must report zero force, got {}",
+        coord(&member_forces[1]),
+    );
+    assert!(
+        (coord(&member_forces[0]) - (n0 + p)).abs() < 1e-6,
+        "taut cable (0,1) must carry N0 + P = {}, got {}",
+        n0 + p,
+        coord(&member_forces[0]),
+    );
+
+    // Reduced single-cable deflection u_x[1] = P·L/(E·A), NOT P·L/(2EA).
+    let displacements = match fields.get(&"displacements".to_string()) {
+        Some(Value::List(ds)) => ds,
+        other => panic!("displacements must be a List, got {other:?}"),
+    };
+    let ux1 = vec3(&displacements[1])[0];
+    let ux_expected = p * l / (e * a); // 0.0015
+    assert!(
+        (ux1 - ux_expected).abs() < 1e-9,
+        "u_x[1] = {ux1} expected P·L/(EA) = {ux_expected}",
+    );
+
+    assert_eq!(
+        fields.get(&"converged".to_string()),
+        Some(&Value::Bool(true)),
+        "post-drop solve must converge",
+    );
+}
+
+/// (b1) Every node listed as a support ⇒ empty free set: the kernel has nothing
+/// to solve for and the trampoline must surface a clean diagnostic.
+#[test]
+fn trampoline_all_anchored_is_failed_empty_free_set() {
+    let value_inputs = vec![
+        two_cable_string(2.0),
+        Value::List(vec![force(5_000.0), force(5_000.0)]),
+        pressure(200.0e9),
+        area(1.0e-4),
+        Value::List(vec![
+            force_vec(0.0, 0.0, 0.0),
+            force_vec(0.0, 0.0, 0.0),
+            force_vec(0.0, 0.0, 0.0),
+        ]),
+        Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(2)]), // all anchored
+    ];
+    assert_failed_infeasible(
+        call_tensegrity_load(&value_inputs),
+        "every node is anchored",
+    );
+}
+
+/// (b2) prestress shorter than the member count (2 cables, 1 prestress) is a
+/// dimension mismatch — the trampoline must reject it rather than silently
+/// truncating to a one-member solve.
+#[test]
+fn trampoline_prestress_count_mismatch_is_failed() {
+    let value_inputs = vec![
+        two_cable_string(2.0),
+        Value::List(vec![force(5_000.0)]), // only 1 prestress for 2 cables
+        pressure(200.0e9),
+        area(1.0e-4),
+        Value::List(vec![
+            force_vec(0.0, 0.0, 0.0),
+            force_vec(0.0, 50.0, 0.0),
+            force_vec(0.0, 0.0, 0.0),
+        ]),
+        Value::List(vec![Value::Int(0), Value::Int(2)]),
+    ];
+    assert_failed_infeasible(call_tensegrity_load(&value_inputs), "member count");
+}
+
+/// (b3) A support index past the node array is rejected by the trampoline's own
+/// range check, with the offending index located in the message.
+#[test]
+fn trampoline_out_of_range_support_is_failed() {
+    let value_inputs = vec![
+        two_cable_string(2.0), // 3 nodes ⇒ valid indices 0..3
+        Value::List(vec![force(5_000.0), force(5_000.0)]),
+        pressure(200.0e9),
+        area(1.0e-4),
+        Value::List(vec![
+            force_vec(0.0, 0.0, 0.0),
+            force_vec(0.0, 50.0, 0.0),
+            force_vec(0.0, 0.0, 0.0),
+        ]),
+        Value::List(vec![Value::Int(0), Value::Int(99)]), // 99 out of range
+    ];
+    assert_failed_infeasible(call_tensegrity_load(&value_inputs), "out of range");
+}
