@@ -2235,6 +2235,88 @@ mod tests {
 
     // ── end step-3 ────────────────────────────────────────────────────────────
 
+    // ── step-5: RED unit tests for finish_check writer output ────────────────
+
+    #[test]
+    fn finish_check_non_strict_indeterminate_emits_unchanged_summary() {
+        // (a) !strict + SomeIndeterminate(1) → byte-identical "No constraints
+        // violated (1 indeterminate).\n" regression guard.
+        let entries = vec![
+            make_entry("Bracket", 1, Some("tolerance"), Satisfaction::Indeterminate),
+        ];
+        let outcome = ConstraintOutcome::SomeIndeterminate(1);
+        let mut buf = Vec::new();
+        finish_check(&outcome, &entries, false, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            output,
+            "No constraints violated (1 indeterminate).\n",
+            "non-strict SomeIndeterminate(1) must produce the exact legacy summary line"
+        );
+    }
+
+    #[test]
+    fn finish_check_strict_indeterminate_emits_detail_not_legacy_line() {
+        // (b) strict + SomeIndeterminate → buffer contains "Strict check failed"
+        // and names the indeterminate constraint; must NOT contain "No constraints
+        // violated".
+        let entries = vec![
+            make_entry("Bracket", 1, Some("tolerance"), Satisfaction::Indeterminate),
+        ];
+        let outcome = ConstraintOutcome::SomeIndeterminate(1);
+        let mut buf = Vec::new();
+        finish_check(&outcome, &entries, true, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("Strict check failed"),
+            "strict SomeIndeterminate must contain 'Strict check failed', got: {output}"
+        );
+        assert!(
+            output.contains("tolerance"),
+            "strict SomeIndeterminate must name the constraint 'tolerance', got: {output}"
+        );
+        assert!(
+            !output.contains("No constraints violated"),
+            "strict SomeIndeterminate must NOT contain 'No constraints violated', got: {output}"
+        );
+    }
+
+    #[test]
+    fn finish_check_all_satisfied_either_strict() {
+        // (c) AllSatisfied (either strict value) → "All constraints satisfied.\n".
+        let entries: Vec<reify_eval::ConstraintCheckEntry> = vec![];
+        let outcome = ConstraintOutcome::AllSatisfied;
+        for strict in [false, true] {
+            let mut buf = Vec::new();
+            finish_check(&outcome, &entries, strict, &mut buf);
+            let output = String::from_utf8(buf).unwrap();
+            assert_eq!(
+                output,
+                "All constraints satisfied.\n",
+                "AllSatisfied (strict={strict}) must produce 'All constraints satisfied.'"
+            );
+        }
+    }
+
+    #[test]
+    fn finish_check_some_violated_either_strict() {
+        // (d) SomeViolated (either strict value) → "Some constraints violated.\n".
+        let entries: Vec<reify_eval::ConstraintCheckEntry> = vec![];
+        let outcome = ConstraintOutcome::SomeViolated;
+        for strict in [false, true] {
+            let mut buf = Vec::new();
+            finish_check(&outcome, &entries, strict, &mut buf);
+            let output = String::from_utf8(buf).unwrap();
+            assert_eq!(
+                output,
+                "Some constraints violated.\n",
+                "SomeViolated (strict={strict}) must produce 'Some constraints violated.'"
+            );
+        }
+    }
+
+    // ── end step-5 ────────────────────────────────────────────────────────────
+
     #[test]
     fn report_eval_output_returns_correct_outcome_variants() {
         let no_diags: Vec<reify_core::Diagnostic> = vec![];
