@@ -13,6 +13,20 @@ use reify_lsp::server::NotificationSink;
 ///
 /// Holds the [`InProcessLsp`] instance and provides an interface
 /// suitable for Tauri command dispatch.
+///
+/// # Cross-file references & rename (the workspace-document substrate)
+///
+/// `textDocument/references`, `textDocument/prepareRename`, and
+/// `textDocument/rename` follow the import graph (task 4210 κ) **only when the
+/// in-process LSP holds a workspace root**. That root is seeded by an
+/// `initialize` request carrying `rootUri`: [`lsp_request_impl`] forwards the
+/// `initialize` params verbatim to the server, so a frontend that calls
+/// `initialize` with `rootUri` (see `lspClient.initialize`) activates the
+/// multi-document workspace view — the open-document set scanned for importers
+/// plus on-disk resolution of imported targets. Without a `rootUri`, the server
+/// has no `workspace_root` and these handlers fall back to single-file behavior
+/// (cross-module symbols remain refused). No per-method dispatch arm is required
+/// for cross-file: the substrate rides entirely on the forwarded `rootUri`.
 pub struct LspBridge {
     lsp: InProcessLsp,
 }
