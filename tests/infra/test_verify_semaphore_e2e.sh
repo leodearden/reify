@@ -225,6 +225,52 @@ assert "merge-role verify.sh test proceeds while task slot is held (exit 0, got 
 assert "merge-role run did NOT wait for held task slot (elapsed ${MERGE_S}s < ${EXEMPT_BOUND}s, holder holds ${HOLD_S}s)" \
     test "$MERGE_S" -lt "$EXEMPT_BOUND"
 
+# run_task_with_slot_held
+# Pins the single slot via an external flock holder for 10s, then runs a
+# DF_VERIFY_ROLE=task verify.sh run with REIFY_TEST_SEMAPHORE_WAIT=1 (times out
+# after 1s → returns 75) and `timeout 15` outer guard.  Sets C_RC, C_S, C_ERR.
+# Cargo is never reached — the semaphore acquire fails first — confirming that
+# C_RC=75 came from the acquire path, not a stubbed cargo step.
+run_task_with_slot_held() {
+    local _tmpdir _stubdir _lock
+    _tmpdir="$(mktemp -d)"
+    _TMPDIRS+=("$_tmpdir")
+    _stubdir="$_tmpdir/stubs"
+    _lock="$_tmpdir/sem.lock"
+    mkdir -p "$_stubdir"
+    make_stub_bin "$_stubdir"
+
+    C_ERR="$_tmpdir/c_err.txt"
+    touch "$C_ERR"
+
+    # External holder pins slot-1 for 10s — longer than REIFY_TEST_SEMAPHORE_WAIT=1
+    # so the acquire deadline fires while the slot is still held.
+    local _holder_pid
+    ( flock -x 9; sleep 10 ) 9>>"${_lock}.slot-1" &
+    _holder_pid=$!
+    sleep 0.2  # give holder time to acquire
+
+    local _start_s _end_s
+    _start_s="$(date +%s)"
+
+    # REIFY_TEST_SEMAPHORE_WAIT=1: acquire deadline fires after 1s → returns 75.
+    # verify.sh executor: `exit $_rc` propagates 75 out of the verify.sh process.
+    # `timeout 15` outer guard prevents a hung test from blocking indefinitely.
+    C_RC=0
+    (
+        apply_hermetic_env "$_stubdir" "$_lock" 1
+        DF_VERIFY_ROLE=task timeout 15 bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+    ) 2>"$C_ERR" || C_RC=$?
+
+    _end_s="$(date +%s)"
+    C_S=$(( _end_s - _start_s ))
+    echo "  [C] task run with held slot: rc=$C_RC elapsed=${C_S}s (WAIT=1s)" >&2
+
+    kill "$_holder_pid" 2>/dev/null || true
+    wait "$_holder_pid" 2>/dev/null || true
+    rm -f "${_lock}.slot-1"
+}
+
 # ===========================================================================
 # Section C: exit-75 propagation (execute mode)
 # ===========================================================================
