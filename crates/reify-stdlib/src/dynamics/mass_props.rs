@@ -7,7 +7,10 @@
 //! owns the `Value`/diagnostic/kernel wiring that calls into this module).
 //!
 //! Two responsibilities:
-//!   * [`resolve_density`] — the fn-level density priority ladder
+//!   * [`resolve_density_strict`] — the shared explicit→material rung-walk,
+//!     returning `None` when neither source is present (strict / no-water tail).
+//!   * [`resolve_density`] — thin wrapper over `resolve_density_strict` that
+//!     adds the `DEFAULT_DENSITY_KG_M3` water tail used by `body_mass_props`
 //!     (explicit arg > body `Material` density > default water).
 //!   * `uniform_box_inertia` (added in step-4) — the closed-form analytic
 //!     ground-truth mass/com/inertia for a uniform-density box, the value the
@@ -42,6 +45,32 @@ pub enum DensitySource {
     DefaultWater,
 }
 
+/// Walk the explicit→material priority ladder and return the winning rung, or
+/// `None` if neither source is present (strict / no-water tail).
+///
+/// This is the **single canonical definition** of the density rung-walk.
+/// Both `body_mass_props` (via [`resolve_density`]) and modal FEA (via
+/// `extract_density_or_degenerate`) delegate here so the ladder is defined in
+/// exactly one place; callers differ only in how they handle the `None` tail:
+///
+/// * [`resolve_density`] maps `None → (DEFAULT_DENSITY_KG_M3, DefaultWater)`.
+/// * `modal_ops::extract_density_or_degenerate` maps `None → E_ModalNoMassMatrix`
+///   (eigenfrequencies scale with √(1/ρ); a silent ρ=1000 would yield
+///   plausible-but-wrong physics).
+///
+/// Like [`resolve_density`] this is pure `f64` selection — no validation of
+/// the magnitude (a non-positive or `NaN` density is returned verbatim).
+pub fn resolve_density_strict(
+    explicit: Option<f64>,
+    material: Option<f64>,
+) -> Option<(f64, DensitySource)> {
+    if let Some(rho) = explicit {
+        Some((rho, DensitySource::Explicit))
+    } else {
+        material.map(|rho| (rho, DensitySource::Material))
+    }
+}
+
 /// Resolve the mass density for `body_mass_props` via the fn-level priority
 /// ladder (PRD §5.4): an explicit `density` argument wins; failing that, the
 /// body's `Material` density; failing that, the [`DEFAULT_DENSITY_KG_M3`] water
@@ -52,14 +81,12 @@ pub enum DensitySource {
 /// This is pure `f64` selection — no validation of the magnitude (a non-positive
 /// or `NaN` density is returned verbatim; physical validity of the resulting
 /// inertia is enforced downstream by the existing MassProperties PSD hook).
+///
+/// Implemented as a thin wrapper over [`resolve_density_strict`] so the
+/// explicit→material ladder is defined in exactly one place.
 pub fn resolve_density(explicit: Option<f64>, material: Option<f64>) -> (f64, DensitySource) {
-    if let Some(rho) = explicit {
-        (rho, DensitySource::Explicit)
-    } else if let Some(rho) = material {
-        (rho, DensitySource::Material)
-    } else {
-        (DEFAULT_DENSITY_KG_M3, DensitySource::DefaultWater)
-    }
+    resolve_density_strict(explicit, material)
+        .unwrap_or((DEFAULT_DENSITY_KG_M3, DensitySource::DefaultWater))
 }
 
 /// Closed-form mass/center-of-mass/inertia of a uniform-density axis-aligned
