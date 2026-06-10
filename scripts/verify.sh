@@ -103,6 +103,18 @@ fi
 # shellcheck source=scripts/affected-crates-lib.sh
 source "$SCRIPT_DIR/affected-crates-lib.sh"
 
+# Test-run counting semaphore (PRD test-run-concurrency-semaphore §3A/§5 D2/D5/D6).
+# Holds one slot (FD 9) across ALL test passes via @@SEMAPHORE_ACQUIRE@@/@@SEMAPHORE_RELEASE@@
+# sentinels in the PLAN array (see add_test_passes / executor below).
+# Bypassed on DF_VERIFY_ROLE=merge or REIFY_TEST_SEMAPHORE_DISABLE=1; knob
+# REIFY_TEST_SEMAPHORE_CONCURRENCY controls the slot count (default 1).
+if [ ! -f "$SCRIPT_DIR/lib_test_semaphore.sh" ]; then
+    echo "verify.sh: ERROR — scripts/lib_test_semaphore.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_test_semaphore.sh
+source "$SCRIPT_DIR/lib_test_semaphore.sh"
+
 usage() {
     sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
@@ -644,7 +656,11 @@ emit_nextest_pass() {
         # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
         cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} -- --test-threads=1"
     fi
-    add "$cmd"
+    # FD 9 is the held semaphore slot; close it for each gated child so daemon
+    # processes (sccache/rustc) cannot inadvertently inherit the lock fd and
+    # wedge the slot after the test pass exits (2026-04-20 wedge class).
+    # Harmless no-op when the slot was not acquired (merge-exempt or disabled).
+    add "$cmd 9<&-"
 }
 
 add_test_passes() {
@@ -653,6 +669,11 @@ add_test_passes() {
     # and REIFY_PSI_GATE_*; exit 75 (EX_TEMPFAIL) propagates → orchestrator retries.
     # In --print-plan mode: printed faithfully as a normal plan line.
     add "./scripts/verify.sh psi-gate"
+
+    # Acquire the test-run semaphore slot AFTER psi-gate so the scarce held
+    # slot is not occupied during a PSI pressure wait (PRD §5 D2).
+    # The executor calls test_semaphore_acquire here; the printer emits a comment.
+    add "@@SEMAPHORE_ACQUIRE@@"
 
     local profile rel outer_timeout
     # Timeout budgets sized to absorb a COLD merge-worktree workspace compile.
@@ -701,6 +722,12 @@ add_test_passes() {
             fi
         fi
     done
+
+    # Release the semaphore slot after all passes complete.
+    # The executor calls test_semaphore_release; the printer emits a comment.
+    # The slot is also freed automatically on any verify.sh exit (FD 9 closes),
+    # so the failure path needs no explicit release sentinel.
+    add "@@SEMAPHORE_RELEASE@@"
 }
 
 build_plan() {
@@ -883,7 +910,17 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
         echo "# (no commands — nothing to verify for this action/scope)"
     fi
     for _cmd in "${PLAN[@]+"${PLAN[@]}"}"; do
-        printf '%s\n' "$_cmd"
+        case "$_cmd" in
+            '@@SEMAPHORE_ACQUIRE@@')
+                printf '# >>> test-run semaphore: ACQUIRE held slot — TEST-EXECUTION gated region BEGINS (held in verify.sh, not a fire-and-return line)\n'
+                ;;
+            '@@SEMAPHORE_RELEASE@@')
+                printf '# <<< test-run semaphore: RELEASE held slot — TEST-EXECUTION gated region ENDS\n'
+                ;;
+            *)
+                printf '%s\n' "$_cmd"
+                ;;
+        esac
     done
     exit 0
 fi
@@ -894,6 +931,20 @@ if [ "${#PLAN[@]}" -eq 0 ]; then
 fi
 
 for _cmd in "${PLAN[@]}"; do
+    case "$_cmd" in
+        '@@SEMAPHORE_ACQUIRE@@')
+            test_semaphore_acquire || {
+                _rc=$?
+                echo "verify.sh: FAILED (exit $_rc): test-run semaphore acquire" >&2
+                exit "$_rc"
+            }
+            continue
+            ;;
+        '@@SEMAPHORE_RELEASE@@')
+            test_semaphore_release || true
+            continue
+            ;;
+    esac
     echo "verify.sh: + $_cmd" >&2
     eval "$_cmd" || {
         _rc=$?
