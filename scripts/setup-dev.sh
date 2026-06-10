@@ -370,19 +370,20 @@ RestartSec=2
 WantedBy=default.target
 EOF
 
-    cat > "$unit_dir/reify-jobserver.service" <<'EOF'
+    cat > "$unit_dir/reify-jobserver.service" <<EOF
 [Unit]
-Description=Shared cargo jobserver FIFO (32 tokens) for reify orchestrator
-# PartOf= re-seeds the pool when the orchestrator restarts (a restart SIGKILLs
+Description=Dual-pool cargo jobserver custodian (merge + task FIFOs) for reify orchestrator
+# PartOf= re-seeds both pools when the orchestrator restarts (a restart SIGKILLs
 # in-flight verify rustc, each permanently losing the FIFO token it held).
 # Inert if orchestrator-reify.service isn't installed.
 PartOf=orchestrator-reify.service
 
 [Service]
 Type=simple
-ExecStartPre=/bin/bash -c 'rm -f /tmp/reify-jobserver && mkfifo /tmp/reify-jobserver'
-ExecStart=/bin/bash -c 'exec 7<>/tmp/reify-jobserver; printf "%%032s" | tr " " "+" >&7; exec sleep infinity'
-ExecStopPost=/bin/rm -f /tmp/reify-jobserver
+# Remove stale FIFOs so the daemon starts clean (it recreates them).
+ExecStartPre=-/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task
+ExecStart=${repo_dir}/scripts/jobserver-balancer.py
+ExecStopPost=/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task
 Restart=on-failure
 RestartSec=2
 
@@ -414,7 +415,7 @@ AccuracySec=15s
 WantedBy=timers.target
 EOF
 
-    chmod +x "$repo_dir/scripts/jobserver-canary.sh"
+    chmod +x "$repo_dir/scripts/jobserver-canary.sh" "$repo_dir/scripts/jobserver-balancer.py"
     systemctl --user daemon-reload
     systemctl --user enable --now sccache.service reify-jobserver.service reify-jobserver-canary.timer
 }
