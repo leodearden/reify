@@ -279,4 +279,166 @@ PY
 assert "sample_pool_occupancy returns {merge,task,sum,timestamp} with correct counts" \
     test "$_b3_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 4: run_regime() structural record — stub load, all regime/service combos
+#
+# Drives run_regime(regime, service, cache_state, load_cmd=<stub>) for each
+# regime ∈ {just-task, just-merge, mixed} against BOTH single-pool (A) and
+# dual-pool (B) services.
+#
+# A "stub load" is a python one-liner that exits immediately (0 or 124), so the
+# test runs in under a second on any machine.  run_regime is expected to accept
+# a load_cmd kwarg that replaces the real verify.sh invocation.
+#
+# Each returned record must carry ALL of:
+#   service        ∈ {single-pool, dual-pool}
+#   regime         ∈ {just-task, just-merge, mixed}
+#   cache_state    ∈ {warm, cold}
+#   busy_fraction  : float in [0.0, 1.0]  (CPU utilization sample)
+#   occupancy      : list of {merge,task,sum,timestamp} dicts (≥1 sample)
+#   merge_wall     : float ≥ 0  (wall-clock of merge verify, 0 if not run)
+#   task_wall      : float ≥ 0  (wall-clock of SLOWEST task verify)
+#   exit_124_count : int ≥ 0    (timeout count)
+#   nproc          : int > 0    (total token budget for this run)
+#
+# Fails: run_regime + self-provisioning absent → AttributeError.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 4: run_regime() structural record ---"
+
+_b4_exit=0
+{
+python3 - "$HARNESS" "$BALANCER" <<'PY'
+import importlib.util, os, sys, tempfile
+
+spec = importlib.util.spec_from_file_location("jth", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+BALANCER_PATH = sys.argv[2]
+
+errors = []
+
+# Stub command: exits 0 immediately (hermetic, no cargo)
+STUB_OK  = [sys.executable, "-c", "import sys; sys.exit(0)"]
+STUB_124 = [sys.executable, "-c", "import sys; sys.exit(124)"]
+
+REQUIRED_KEYS = {
+    "service", "regime", "cache_state",
+    "busy_fraction", "occupancy",
+    "merge_wall", "task_wall",
+    "exit_124_count", "nproc",
+}
+
+def check_record(rec, label):
+    """Validate all required keys are present and sane."""
+    local_errors = []
+    missing = REQUIRED_KEYS - set(rec.keys())
+    if missing:
+        local_errors.append(f"{label}: missing keys {missing}")
+        return local_errors
+
+    # service ∈ {single-pool, dual-pool}
+    if rec["service"] not in (mod.SERVICE_SINGLE_POOL, mod.SERVICE_DUAL_POOL):
+        local_errors.append(f"{label}: service={rec['service']!r} not valid")
+
+    # regime ∈ known regimes
+    if rec["regime"] not in mod.REGIMES:
+        local_errors.append(f"{label}: regime={rec['regime']!r} not valid")
+
+    # cache_state ∈ {warm, cold}
+    if rec["cache_state"] not in (mod.CACHE_WARM, mod.CACHE_COLD):
+        local_errors.append(f"{label}: cache_state={rec['cache_state']!r} not valid")
+
+    # busy_fraction ∈ [0, 1]
+    if not (0.0 <= rec["busy_fraction"] <= 1.0):
+        local_errors.append(
+            f"{label}: busy_fraction={rec['busy_fraction']} not in [0,1]"
+        )
+
+    # occupancy: list with ≥1 sample, each a dict with merge/task/sum/timestamp
+    occ = rec["occupancy"]
+    if not isinstance(occ, list) or len(occ) < 1:
+        local_errors.append(f"{label}: occupancy should be list ≥1 element, got {occ!r}")
+    else:
+        sample = occ[0]
+        for k in ("merge", "task", "sum", "timestamp"):
+            if k not in sample:
+                local_errors.append(f"{label}: occupancy[0] missing key {k!r}")
+
+    # merge_wall ≥ 0
+    if not (isinstance(rec["merge_wall"], (int, float)) and rec["merge_wall"] >= 0):
+        local_errors.append(f"{label}: merge_wall={rec['merge_wall']!r} not ≥ 0")
+
+    # task_wall ≥ 0
+    if not (isinstance(rec["task_wall"], (int, float)) and rec["task_wall"] >= 0):
+        local_errors.append(f"{label}: task_wall={rec['task_wall']!r} not ≥ 0")
+
+    # exit_124_count ≥ 0
+    if not (isinstance(rec["exit_124_count"], int) and rec["exit_124_count"] >= 0):
+        local_errors.append(
+            f"{label}: exit_124_count={rec['exit_124_count']!r} not int ≥ 0"
+        )
+
+    # nproc > 0
+    if not (isinstance(rec["nproc"], int) and rec["nproc"] > 0):
+        local_errors.append(f"{label}: nproc={rec['nproc']!r} not int > 0")
+
+    return local_errors
+
+
+# ── Test each (regime, service) combo with warm cache and a stub load ─────────
+COMBOS = [
+    (mod.REGIME_JUST_TASK,  mod.SERVICE_SINGLE_POOL),
+    (mod.REGIME_JUST_MERGE, mod.SERVICE_SINGLE_POOL),
+    (mod.REGIME_MIXED,      mod.SERVICE_SINGLE_POOL),
+    (mod.REGIME_JUST_TASK,  mod.SERVICE_DUAL_POOL),
+    (mod.REGIME_JUST_MERGE, mod.SERVICE_DUAL_POOL),
+    (mod.REGIME_MIXED,      mod.SERVICE_DUAL_POOL),
+]
+
+for regime, service in COMBOS:
+    label = f"run_regime({regime},{service},warm,stub_ok)"
+    try:
+        rec = mod.run_regime(
+            regime=regime,
+            service=service,
+            cache_state=mod.CACHE_WARM,
+            load_cmd=STUB_OK,
+            balancer_path=BALANCER_PATH,
+        )
+        errors.extend(check_record(rec, label))
+    except Exception as exc:
+        errors.append(f"{label}: raised {type(exc).__name__}: {exc}")
+
+# ── Verify exit_124_count is non-zero when stub exits 124 ─────────────────────
+label_124 = "run_regime(just-task,single-pool,warm,stub_124)"
+try:
+    rec_124 = mod.run_regime(
+        regime=mod.REGIME_JUST_TASK,
+        service=mod.SERVICE_SINGLE_POOL,
+        cache_state=mod.CACHE_WARM,
+        load_cmd=STUB_124,
+        balancer_path=BALANCER_PATH,
+    )
+    if rec_124.get("exit_124_count", 0) < 1:
+        errors.append(
+            f"{label_124}: exit_124_count should be ≥ 1 when stub exits 124, "
+            f"got {rec_124.get('exit_124_count')}"
+        )
+except Exception as exc:
+    errors.append(f"{label_124}: raised {type(exc).__name__}: {exc}")
+
+if errors:
+    for e in errors:
+        print("FAIL:", e, file=sys.stderr)
+    raise SystemExit(1)
+
+print("run_regime: all structural assertions passed")
+PY
+} || _b4_exit=$?
+
+assert "run_regime returns valid structured record for all regime/service combos" \
+    test "$_b4_exit" -eq 0
+
 test_summary
