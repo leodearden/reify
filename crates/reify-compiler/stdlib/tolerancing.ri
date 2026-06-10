@@ -164,17 +164,23 @@ structure def Symmetry : LocationTolerance {
 }
 
 // ── Runout Tolerances (2 types) ──────────────────────────────────────────────
+// Runout is ALWAYS datum-referenced per ASME Y14.5 (it measures variation of a
+// surface as the part is rotated about a datum axis). The datum reference is
+// therefore MANDATORY: `datum_refs` has NO default, so callers must supply a
+// datum. (DatumRef aliases Geometry per #3116.)
 
 structure def CircularRunout : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
+    param datum_refs : DatumRef
 }
 
 structure def TotalRunout : GeometricTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
+    param datum_refs : DatumRef
 }
 
 // ── Profile Tolerances (2 types) ─────────────────────────────────────────────
