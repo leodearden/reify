@@ -21,7 +21,7 @@
 //
 // Type-coercion notes (same pattern as fea_cantilever_smoke.ri):
 //   - FEAMaterialInput wrapper for material (ElasticMaterial type coercion)
-//   - LoadCase bundle for loads/supports (List<Real> placeholder type coercion)
+//   - LoadCase bundle for loads/supports (List<Load>/List<Support> — task ζ/4444)
 //
 // IMPORTANT — argument binding is POSITIONAL (the `name:` labels are
 // cosmetic; the parser strips them and binds each value to the param in
@@ -50,7 +50,7 @@ structure BucklingColumnP2 {
     // Support: pin-pin — fixed supports at both ends (lateral restraint).
     let base_support = FixedSupport(target: "base")
 
-    // Bundle loads + supports via LoadCase (List<Real> type coercion).
+    // Bundle loads + supports via LoadCase (List<Load>/List<Support>).
     let lc = LoadCase(
         name: "buckling_p2",
         loads: [tip_load],
