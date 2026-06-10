@@ -497,29 +497,75 @@ impl LanguageServer for ReifyLanguageServer {
         let position = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
 
-        // Brief read lock: snapshot the document, then release before the
-        // (pure, CPU-only, single-file) reference walk — mirrors document_symbol.
-        // β is single-file: no spawn_blocking and no cross-file/filesystem
-        // resolution (unlike goto_definition); collect_references is a cheap
-        // in-memory AST walk scoped to one entity body.
+        // κ (task 4210): references now follow the import graph. Assemble the same
+        // cross-file rig as goto_definition — workspace_root + ModuleResolver +
+        // resolve_import (editor buffer over disk) + the open-document snapshot —
+        // and move the parsing + blocking filesystem I/O off the async worker.
         let state = self.state.read().await;
         let doc = match state.documents.get(&uri) {
             Some(doc) => doc,
             None => return Ok(None),
         };
+        let workspace_root = state.workspace_root.clone();
+        let stdlib_path = state.stdlib_path.clone();
+        // Snapshot open documents twice: a path-keyed map for resolve_import's
+        // editor-buffer-over-disk fallback, and a (Url, String) list as the
+        // multi-document workspace view the cross-file collector scans for
+        // importers of the home module.
+        let open_docs = state.documents.snapshot_as_path_map();
+        let workspace_docs: Vec<(Url, String)> = state
+            .documents
+            .iter()
+            .map(|(u, d)| (u.clone(), d.text.clone()))
+            .collect();
         drop(state);
 
-        // Reuse the per-document cached parse (one parse per edit).
-        let text = doc.text.clone();
-        let parsed = doc.parsed_module();
-
-        Ok(crate::references::compute_references(
-            &text,
-            &parsed,
-            &uri,
-            position,
-            include_declaration,
-        ))
+        let locations = match tokio::task::spawn_blocking(move || {
+            let parsed = doc.parsed_module();
+            let primary_source = doc.text.as_str();
+            if let Some(root) = workspace_root {
+                let stdlib_root =
+                    stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
+                let resolver = reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                let resolve_import = |import_path: &str| -> Option<(Url, String)> {
+                    let path = resolver.resolve_import_path(import_path).ok()?;
+                    let source = open_docs
+                        .get(&path)
+                        .cloned()
+                        .or_else(|| std::fs::read_to_string(&path).ok())?;
+                    let target_uri = Url::from_file_path(&path).ok()?;
+                    Some((target_uri, source))
+                };
+                crate::references::compute_references_cross_file(
+                    primary_source,
+                    &parsed,
+                    &uri,
+                    position,
+                    include_declaration,
+                    &workspace_docs,
+                    &resolve_import,
+                )
+            } else {
+                // No workspace root — single-file references (cross-module symbols
+                // remain refused, as before κ).
+                crate::references::compute_references(
+                    primary_source,
+                    &parsed,
+                    &uri,
+                    position,
+                    include_declaration,
+                )
+            }
+        })
+        .await
+        {
+            Ok(locs) => locs,
+            Err(e) => {
+                tracing::error!("references blocking task failed: {e}");
+                None
+            }
+        };
+        Ok(locations)
     }
 
     async fn shutdown(&self) -> Result<()> {
