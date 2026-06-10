@@ -715,10 +715,10 @@ fn build_workspace_docs(root: &std::path::Path, open: &HashMap<PathBuf, String>)
     collect_ri_files(root, &mut docs, &mut covered, open);
     // Append open buffers that are not under root (cross-root imports).
     for (path, text) in open {
-        if !covered.contains(path.as_path()) {
-            if let Ok(url) = Url::from_file_path(path) {
-                docs.push((url, text.clone()));
-            }
+        if !covered.contains(path.as_path())
+            && let Ok(url) = Url::from_file_path(path)
+        {
+            docs.push((url, text.clone()));
         }
     }
     docs
