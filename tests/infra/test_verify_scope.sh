@@ -703,7 +703,7 @@ plan_for_vs_change
 assert "VS-pos: plan contains test_verify_*.sh glob literal" \
     plan_has 'tests/infra/test_verify_\*\.sh'
 assert "VS-pos: plan contains timeout+bash invocation for infra tests" \
-    plan_has 'timeout.*bash.*tests/infra/test_verify'
+    plan_has 'test_verify.*timeout.*bash'
 
 # ---------------------------------------------------------------------------
 # Scenario VS-coverage: glob expands to include both incident-named guards
