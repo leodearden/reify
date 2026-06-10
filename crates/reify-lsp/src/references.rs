@@ -2746,4 +2746,48 @@ structure S {
             "a cursor off any identifier must return None"
         );
     }
+
+    // --- κ step-1 (task 4210): single-file structure-name collector ---
+
+    #[test]
+    fn collect_structure_name_spans_decl_plus_same_file_sub_uses() {
+        // `SubDecl.structure_name` is a plain `String` field, structurally
+        // invisible to the Expr-walking `collect_uses`/`collect_idents_in_expr`.
+        // The dedicated structure-name collector must surface the home
+        // declaration token (`structure Hole`) PLUS each same-file
+        // `sub _ = Hole` construction-site token, ascending by start, each
+        // covering exactly `Hole`.
+        let source = "\
+structure Hole {
+    param diameter: Length = 10mm
+}
+structure Assembly {
+    sub a = Hole
+    sub b = Hole
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("kappa1"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean: {:?}",
+            parsed.errors
+        );
+
+        // `Hole` appears exactly 3×: the structure decl + 2 sub construction sites
+        // (`param diameter` / `Assembly` contain no `Hole` substring).
+        let hole = occurrences(source, "Hole");
+        assert_eq!(hole.len(), 3, "1 structure decl + 2 sub construction sites");
+        // hole[0]=`structure Hole` decl token, hole[1]=`sub a = Hole`,
+        // hole[2]=`sub b = Hole`.
+
+        let spans = collect_structure_name_spans(source, &parsed, "Hole");
+        assert_eq!(
+            spans,
+            vec![
+                span_of(hole[0], "Hole"),
+                span_of(hole[1], "Hole"),
+                span_of(hole[2], "Hole"),
+            ],
+            "decl token + both sub-use tokens, ascending, each covering exactly `Hole`"
+        );
+    }
 }
