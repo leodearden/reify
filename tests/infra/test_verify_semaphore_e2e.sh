@@ -160,6 +160,48 @@ assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000m
 assert "serialization elapsed within sanity bound (elapsed <= 20000ms, got ${MS}ms)" \
     test "$MS" -le 20000
 
+# run_merge_while_task_slot_held
+# Pins the single slot via an external flock holder for HOLD_S=6s, then times a
+# DF_VERIFY_ROLE=merge verify.sh run (REIFY_TEST_SEMAPHORE_WAIT=30 so a non-exempt
+# run would block, not exit-75 quickly).  Sets MERGE_RC and MERGE_S (seconds).
+# Mirrors test_occt_flock_gate.sh Test 14: `( flock -x 9; sleep N ) 9>>"${LOCK}.slot-1" &`.
+run_merge_while_task_slot_held() {
+    local _tmpdir _stubdir _lock
+    _tmpdir="$(mktemp -d)"
+    _TMPDIRS+=("$_tmpdir")
+    _stubdir="$_tmpdir/stubs"
+    _lock="$_tmpdir/sem.lock"
+    mkdir -p "$_stubdir"
+    # Stub cargo with SLEEP=0: merge run should be fast (instant nextest pass).
+    REIFY_E2E_CARGO_SLEEP=0 make_stub_bin "$_stubdir"
+
+    # Spawn background external holder that pins slot-1 for HOLD_S seconds.
+    # A non-exempt task run would block here for up to REIFY_TEST_SEMAPHORE_WAIT=30s.
+    local _holder_pid
+    ( flock -x 9; sleep "$HOLD_S" ) 9>>"${_lock}.slot-1" &
+    _holder_pid=$!
+    sleep 0.2  # give holder time to acquire the lock
+
+    local _start_s _end_s
+    _start_s="$(date +%s)"
+
+    # Time the merge-role run.  REIFY_TEST_SEMAPHORE_WAIT=30 ensures a non-exempt
+    # run would block (not exit-75 quickly), so fast+exit0 proves real bypass.
+    MERGE_RC=0
+    (
+        apply_hermetic_env "$_stubdir" "$_lock" 30
+        DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+    ) || MERGE_RC=$?
+
+    _end_s="$(date +%s)"
+    MERGE_S=$(( _end_s - _start_s ))
+    echo "  [B] merge-role run: rc=$MERGE_RC elapsed=${MERGE_S}s (holder holds ${HOLD_S}s)" >&2
+
+    kill "$_holder_pid" 2>/dev/null || true
+    wait "$_holder_pid" 2>/dev/null || true
+    rm -f "${_lock}.slot-1"
+}
+
 # ===========================================================================
 # Section B: merge exemption (execute mode)
 # ===========================================================================
