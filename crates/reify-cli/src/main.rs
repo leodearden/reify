@@ -1444,6 +1444,43 @@ enum ConstraintOutcome {
     SomeViolated,
 }
 
+/// Return the display label for a constraint entry: the `label` field when
+/// present, or the [`ConstraintNodeId`] Display representation as a fallback.
+///
+/// Shared by [`report_constraint_results`] and [`report_indeterminate_detail`]
+/// so both use the same label-or-id formatting without duplication.
+fn constraint_display_label(entry: &reify_eval::ConstraintCheckEntry) -> String {
+    match entry.label.as_deref() {
+        Some(l) => l.to_string(),
+        None => format!("{}", entry.id),
+    }
+}
+
+/// Write the strict-failure detail block for indeterminate constraints.
+///
+/// Emits a header naming the count of `Indeterminate` entries and a generic
+/// "why" (inputs undefined), then one indented line per `Indeterminate` entry
+/// using [`constraint_display_label`]. Only `Indeterminate` entries are listed;
+/// `Satisfied` and `Violated` entries are silently skipped.
+fn report_indeterminate_detail(
+    results: &[reify_eval::ConstraintCheckEntry],
+    out: &mut impl std::io::Write,
+) {
+    let indet: Vec<_> = results
+        .iter()
+        .filter(|e| e.satisfaction == reify_ir::Satisfaction::Indeterminate)
+        .collect();
+    let count = indet.len();
+    let _ = writeln!(
+        out,
+        "Strict check failed: {count} constraint(s) INDETERMINATE \
+         \u{2014} inputs undefined (e.g. auto-params unresolved or geometry did not realize):"
+    );
+    for entry in indet {
+        let _ = writeln!(out, "  {}", constraint_display_label(entry));
+    }
+}
+
 /// Report constraint check results to the given writer.
 ///
 /// Returns a [`ConstraintOutcome`] indicating the overall result.
@@ -1477,9 +1514,7 @@ fn report_constraint_results(
                 "INDETERMINATE"
             }
         };
-        let id_str = format!("{}", entry.id);
-        let label = entry.label.as_deref().unwrap_or(&id_str);
-        let _ = writeln!(out, "  {} {}", status, label);
+        let _ = writeln!(out, "  {} {}", status, constraint_display_label(entry));
     }
     if violated {
         ConstraintOutcome::SomeViolated
