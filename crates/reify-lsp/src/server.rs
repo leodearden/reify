@@ -1700,6 +1700,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn references_handler_follows_imports_across_files() {
+        // κ (task 4210): the `references` handler now follows the import graph.
+        // Mirror goto_definition_resolves_imported_symbol_across_files: parts.ri on
+        // disk declares `structure Hole`; main.ri (open) imports + constructs it.
+        // Find-references on the main.ri `Hole` use must span BOTH files — proving
+        // the handler assembles the workspace rig (workspace_root + ModuleResolver +
+        // resolve_import + workspace_docs) and calls the cross-file collector rather
+        // than the single-file producer (which refuses cross-module symbols).
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        let tmp_dir =
+            std::env::temp_dir().join(format!("reify-lsp-refs-xfile-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        std::fs::write(tmp_dir.join("parts.ri"), parts_source).unwrap();
+
+        let root_uri = Url::from_file_path(&tmp_dir).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // main.ri uses the parenthesized constructor `Hole()` so the construction
+        // site lowers to a SubDecl carrying structure_name="Hole" (the bare
+        // `sub hole = Hole` form is a syntax error and never lowers to a SubDecl).
+        let main_source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole()\n}";
+        let main_uri = Url::from_file_path(tmp_dir.join("main.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: main_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: main_source.to_string(),
+                },
+            })
+            .await;
+
+        // Cursor on the main.ri `Hole` use in `sub hole = Hole()` (line 2, col 15).
+        let locations = server
+            .references(ref_params(main_uri.clone(), Position::new(2, 15), true))
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        let locations =
+            locations.expect("cross-file references should resolve for the imported Hole use");
+        assert_eq!(
+            locations.len(),
+            3,
+            "home decl + import entity token + sub use = 3 cross-file Locations, got {locations:?}"
+        );
+        assert!(
+            locations.iter().any(|l| l.uri.path().ends_with("parts.ri")),
+            "references must include a parts.ri Location (the structure decl), got {locations:?}"
+        );
+        assert!(
+            locations.iter().any(|l| l.uri.path().ends_with("main.ri")),
+            "references must include main.ri Locations (import entity + sub use), got {locations:?}"
+        );
+        // The parts.ri Location points at `structure Hole` on line 0.
+        let parts_loc = locations
+            .iter()
+            .find(|l| l.uri.path().ends_with("parts.ri"))
+            .unwrap();
+        assert_eq!(
+            parts_loc.range.start.line, 0,
+            "parts.ri Location is the structure Hole decl on line 0"
+        );
+    }
+
+    #[tokio::test]
     async fn server_captures_published_diagnostics() {
         let (service, _socket) = test_service();
         let server = service.inner();
