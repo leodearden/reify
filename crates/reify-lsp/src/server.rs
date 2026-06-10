@@ -581,16 +581,12 @@ impl LanguageServer for ReifyLanguageServer {
         };
         let workspace_root = state.workspace_root.clone();
         let stdlib_path = state.stdlib_path.clone();
-        // Snapshot open documents twice: a path-keyed map for resolve_import's
-        // editor-buffer-over-disk fallback, and a (Url, String) list as the
-        // multi-document workspace view the cross-file collector scans for
-        // importers of the home module.
+        // Snapshot open documents: a path-keyed map for resolve_import's
+        // editor-buffer-over-disk fallback (and as the open-text override for
+        // build_workspace_docs so the in-memory version wins over the disk copy).
+        // The workspace_docs (Url, String) list is built inside spawn_blocking
+        // because it may need to read closed-importer files from disk.
         let open_docs = state.documents.snapshot_as_path_map();
-        let workspace_docs: Vec<(Url, String)> = state
-            .documents
-            .iter()
-            .map(|(u, d)| (u.clone(), d.text.clone()))
-            .collect();
         drop(state);
 
         let locations = match tokio::task::spawn_blocking(move || {
@@ -599,7 +595,11 @@ impl LanguageServer for ReifyLanguageServer {
             if let Some(root) = workspace_root {
                 let stdlib_root =
                     stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
-                let resolver = reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                let resolver = reify_compiler::module_dag::ModuleResolver::new(root.clone(), stdlib_root);
+                // Build workspace_docs here (blocking context) so the disk walk
+                // for closed importers is off the async worker thread.  Open-buffer
+                // text overrides the on-disk copy for already-open files.
+                let workspace_docs = build_workspace_docs(&root, &open_docs);
                 let resolve_import = |import_path: &str| -> Option<(Url, String)> {
                     let path = resolver.resolve_import_path(import_path).ok()?;
                     let source = open_docs
@@ -2894,6 +2894,122 @@ structure Assembly {
             locations.iter().any(|l| l.uri.path().ends_with("other.ri")),
             "references must include a Location in the CLOSED other.ri \
              (disk-walk importer discovery), got {locations:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Closed-importer disk indexing — rename integration test (task 4466 step-13, RED)
+    // -------------------------------------------------------------------------
+
+    /// Mirror `prepare_rename_and_rename_follow_imports_across_files` but with
+    /// the importer CLOSED on disk.
+    ///
+    /// Setup: `parts.ri` declares `structure Hole` and is **opened** in the LSP
+    /// (did_open).  `other.ri` imports and constructs `Hole` but is **never
+    /// opened** — it only exists on disk.
+    ///
+    /// Action: rename `Hole` → `Bore` on the declaration cursor in `parts.ri`
+    /// (line 0, col 10).
+    ///
+    /// Expected: the returned `WorkspaceEdit.changes` contains an entry keyed
+    /// by `other.ri`'s URI with at least one edit replacing `Hole` with `Bore`,
+    /// proving the rename handler picked up the closed importer via the disk walk
+    /// (step-14 wires `build_workspace_docs` into the handler).
+    ///
+    /// This test FAILS on pre-step-14 code because only open docs are included
+    /// in `workspace_docs`, so the closed `other.ri` is invisible to the rename
+    /// collector.
+    #[tokio::test]
+    async fn rename_handler_includes_closed_disk_importer_edits() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        let tmp = std::env::temp_dir()
+            .join(format!("reify-lsp-rename-closed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // parts.ri — the HOME file; will be opened in LSP.
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        std::fs::write(tmp.join("parts.ri"), parts_source).unwrap();
+
+        // other.ri — CLOSED importer; exists on disk only.
+        let other_source = "import parts.Hole\nstructure A {\n    sub h = Hole()\n}";
+        std::fs::write(tmp.join("other.ri"), other_source).unwrap();
+
+        // Initialize with workspace root so the disk walk has a root.
+        let root_uri = Url::from_file_path(&tmp).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Open ONLY parts.ri — other.ri is intentionally left closed.
+        let parts_uri = Url::from_file_path(tmp.join("parts.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: parts_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: parts_source.to_string(),
+                },
+            })
+            .await;
+
+        // Rename `Hole` → `Bore` from the declaration in parts.ri:
+        // "structure Hole ..." — "structure " is 10 chars → col 10.
+        let edit = server
+            .rename(rename_params(parts_uri.clone(), 0, 10, "Bore"))
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let changes = edit
+            .expect("rename returns a WorkspaceEdit")
+            .changes
+            .expect("changes map present");
+
+        // Must include an entry for the CLOSED other.ri.
+        let other_key = changes
+            .keys()
+            .find(|u| u.path().ends_with("other.ri"))
+            .expect(
+                "WorkspaceEdit.changes must include an entry for the CLOSED other.ri \
+                 (disk-walk importer discovery)",
+            )
+            .clone();
+
+        // Every edit in other.ri must write the new name.
+        let other_edits = changes.get(&other_key).unwrap();
+        assert!(
+            !other_edits.is_empty(),
+            "other.ri edits must be non-empty"
+        );
+        assert!(
+            other_edits.iter().all(|e| e.new_text == "Bore"),
+            "all other.ri edits must write the new name 'Bore', got {other_edits:?}"
+        );
+
+        // Invariant 5: applying the other.ri edits yields a buffer that
+        // re-parses clean.
+        let mut buffer = other_source.to_string();
+        let mut edits_sorted = other_edits.clone();
+        edits_sorted.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+        for e in edits_sorted.iter().rev() {
+            let start = crate::convert::position_to_offset(&buffer, e.range.start);
+            let end = crate::convert::position_to_offset(&buffer, e.range.end);
+            buffer.replace_range(start..end, &e.new_text);
+        }
+        let reparsed = reify_syntax::parse(&buffer, reify_core::ModulePath::single("test"));
+        assert!(
+            reparsed.errors.is_empty(),
+            "renamed other.ri buffer must re-parse clean (Invariant 5): {:?}\n{buffer}",
+            reparsed.errors
         );
     }
 }
