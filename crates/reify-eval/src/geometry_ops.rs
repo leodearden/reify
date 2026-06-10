@@ -688,11 +688,103 @@ pub(crate) fn compile_geometry_op(
                     .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
             };
             match kind {
-                reify_compiler::ModifyKind::Fillet => Ok(reify_ir::GeometryOp::Fillet {
-                    target: target_id,
-                    edges: vec![],
-                    radius: eval_arg("radius")?,
-                }),
+                reify_compiler::ModifyKind::Fillet => {
+                    // Evaluate radius FIRST, while the `eval_arg` closure (which
+                    // borrows `diagnostics` mutably) is still live — this keeps
+                    // the missing-radius Warning behaviour identical to the
+                    // 2-arg path.
+                    let radius = eval_arg("radius")?;
+                    // Is a curated edge selector present? Presence of an "edges"
+                    // named arg distinguishes the 3-arg `fillet(solid, edges,
+                    // radius)` form from the 2-arg `fillet(solid, radius)`
+                    // back-compat form. `args` is shared-borrowed (compatible
+                    // with the closure's shared borrow of `args`).
+                    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
+                    // Release the closure's `&mut diagnostics` borrow so this
+                    // arm can push its own EmptyEdgeSelection diagnostic. The
+                    // arm always returns, so `eval_arg` is never reused after
+                    // this point on the Fillet path.
+                    drop(eval_arg);
+                    match edges_expr {
+                        // 2-arg form: no selector → empty edges = all-edges
+                        // back-compat (legacy `fillet(solid, radius)`).
+                        None => Ok(reify_ir::GeometryOp::Fillet {
+                            target: target_id,
+                            edges: vec![],
+                            radius,
+                        }),
+                        // 3-arg form: evaluate the selector and resolve it.
+                        Some(expr) => {
+                            let edges_val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(values, functions, meta_map),
+                            );
+                            match &edges_val {
+                                reify_ir::Value::List(elems) => {
+                                    // Extract each sub-handle's kernel_handle in
+                                    // canonical (ascending) order with dedup —
+                                    // mirrors `resolve_subhandle_list`. Full
+                                    // parent-membership / cross-solid resolution
+                                    // is engine-unified-build-dag η's in-loop
+                                    // job and is NOT exercised on the legacy
+                                    // pipeline (the selector resolves in P4,
+                                    // this arm runs in P2).
+                                    let mut resolved: Vec<GeometryHandleId> = elems
+                                        .iter()
+                                        .filter_map(|e| match e {
+                                            reify_ir::Value::GeometryHandle {
+                                                kernel_handle,
+                                                ..
+                                            } => Some(*kernel_handle),
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    resolved.sort();
+                                    resolved.dedup();
+                                    // ANTI-ZERO-EDGES: a present selector that
+                                    // resolves to ZERO edges must NEVER silently
+                                    // fall through to the all-edges path (the
+                                    // task-3295 fake-done trap). Emit a blocking
+                                    // E_EMPTY_SELECTION and return Err.
+                                    if resolved.is_empty() {
+                                        diagnostics.push(
+                                            Diagnostic::error(
+                                                "fillet(solid, edges, radius): edge selector \
+                                                 resolved to zero edges — refusing to silently \
+                                                 fillet all edges",
+                                            )
+                                            .with_code(
+                                                reify_core::DiagnosticCode::EmptyEdgeSelection,
+                                            ),
+                                        );
+                                        return Err(
+                                            "fillet: edge selector resolved to zero edges"
+                                                .to_string(),
+                                        );
+                                    }
+                                    Ok(reify_ir::GeometryOp::Fillet {
+                                        target: target_id,
+                                        edges: resolved,
+                                        radius,
+                                    })
+                                }
+                                // The selector did not resolve to a List — on the
+                                // legacy pipeline it is `Undef` (the edges
+                                // selector resolves in P4, after this P2 arm).
+                                // This is NOT an empty selection, so do NOT emit
+                                // E_EMPTY_SELECTION (that would false-positive on
+                                // every legacy 3-arg fillet); return a plain Err
+                                // so the cell stays Undef and η resolves it
+                                // in-loop.
+                                other => Err(format!(
+                                    "fillet: edge selector did not resolve to a \
+                                     List<Geometry> (got {:?})",
+                                    other
+                                )),
+                            }
+                        }
+                    }
+                }
                 reify_compiler::ModifyKind::Chamfer => Ok(reify_ir::GeometryOp::Chamfer {
                     target: target_id,
                     distance: eval_arg("distance")?,
