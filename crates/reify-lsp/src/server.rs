@@ -517,12 +517,12 @@ impl LanguageServer for ReifyLanguageServer {
         };
         let workspace_root = state.workspace_root.clone();
         let stdlib_path = state.stdlib_path.clone();
+        // Snapshot open documents: a path-keyed map for resolve_import's
+        // editor-buffer-over-disk fallback (and as the open-text override for
+        // build_workspace_docs so the in-memory version wins over the disk copy).
+        // The workspace_docs (Url, String) list is built inside spawn_blocking
+        // because it may need to read closed-importer files from disk.
         let open_docs = state.documents.snapshot_as_path_map();
-        let workspace_docs: Vec<(Url, String)> = state
-            .documents
-            .iter()
-            .map(|(u, d)| (u.clone(), d.text.clone()))
-            .collect();
         drop(state);
 
         let edit = match tokio::task::spawn_blocking(move || {
@@ -531,7 +531,11 @@ impl LanguageServer for ReifyLanguageServer {
             if let Some(root) = workspace_root {
                 let stdlib_root =
                     stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
-                let resolver = reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                let resolver = reify_compiler::module_dag::ModuleResolver::new(root.clone(), stdlib_root);
+                // Build workspace_docs here (blocking context) so the disk walk
+                // for closed importers is off the async worker thread.  Open-buffer
+                // text overrides the on-disk copy for already-open files.
+                let workspace_docs = build_workspace_docs(&root, &open_docs);
                 let resolve_import = |import_path: &str| -> Option<(Url, String)> {
                     let path = resolver.resolve_import_path(import_path).ok()?;
                     let source = open_docs
