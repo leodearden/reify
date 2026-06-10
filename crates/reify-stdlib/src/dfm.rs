@@ -218,6 +218,26 @@ fn overhang_violation(severity: Severity) -> Diagnostic {
     }
 }
 
+/// Build the code-less draft-angle VIOLATION diagnostic at `severity`.
+///
+/// Mirrors [`overhang_violation`]: code-less message-prefix convention;
+/// `{I,W,E}_DFM_DRAFT` names the PRD's diagnostic code. Emitted when element 0 of
+/// `min_draft_angle`'s result List is `Bool(true)` (wall draft below process minimum).
+fn draft_violation(severity: Severity) -> Diagnostic {
+    let msg = |prefix: char| {
+        format!(
+            "{prefix}_DFM_DRAFT: wall draft below the process minimum — \
+             the part has faces whose draft angle is too shallow for clean mold \
+             release; increase the draft angle or add a taper to the affected walls"
+        )
+    };
+    match severity {
+        Severity::Info => Diagnostic::info(msg('I')),
+        Severity::Warning => Diagnostic::warning(msg('W')),
+        Severity::Error => Diagnostic::error(msg('E')),
+    }
+}
+
 /// Build the code-less E_DFM_BUILD_VOLUME usage-error diagnostic for a
 /// `fits_build_volume` that evaluated to `Value::Undef`.
 ///
@@ -305,6 +325,17 @@ pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
             let mut diags = Vec::new();
             if let Value::Bool(true) = result {
                 diags.push(overhang_violation(rule_severity(args)));
+            }
+            diags
+        }
+        "min_draft_angle" => {
+            let mut diags = Vec::new();
+            if let Value::List(items) = result {
+                // Element 0: draft violation (honors rule severity).
+                if let Some(Value::Bool(true)) = items.get(0) {
+                    diags.push(draft_violation(rule_severity(args)));
+                }
+                // Element 1: undercut — intentionally deferred to step-6.
             }
             diags
         }
