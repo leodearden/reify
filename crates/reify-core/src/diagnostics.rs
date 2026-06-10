@@ -3182,8 +3182,8 @@ mod tests {
             "code": null
         });
         let deserialized: DiagnosticInfo = serde_json::from_value(json).unwrap();
-        assert_eq!(
-            deserialized.has_location, true,
+        assert!(
+            deserialized.has_location,
             "missing `has_location` in JSON must deserialize as true (backward-compat default)"
         );
     }
