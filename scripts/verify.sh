@@ -563,9 +563,12 @@ select_infra_tests() {
         while IFS= read -r _f; do
             [ -z "$_f" ] && continue
             if [ "$_f" = "$_artifact" ]; then
-                # Append glob to selection if not already present (dedup).
-                case "$SELECTED_INFRA_GLOBS" in
-                    *"$_glob"*) : ;;
+                # Append glob to selection if not already present (whole-token
+                # dedup via space sentinels — prevents false dedup when one
+                # glob is a substring of another, e.g. a specific path vs a
+                # broader wildcard pattern).
+                case " $SELECTED_INFRA_GLOBS " in
+                    *" $_glob "*) : ;;
                     *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$_glob" ;;
                 esac
                 break
@@ -971,14 +974,20 @@ build_plan() {
     # Selective infra injection (task 4523): task-level path runs the infra
     # drift-guards for any changed verify-pipeline artifact.  FAIL-FAST: emitted
     # BEFORE add_test_passes (the expensive long-pole).  One guarded for-loop
-    # per glob so the glob expands at execution time under CWD=REPO_ROOT.
+    # per glob — the glob literal is embedded in the emitted subshell command
+    # and expands at EXECUTION time under CWD=REPO_ROOT.
+    # set -f / set +f prevents the shell from pathname-expanding the token
+    # during loop iteration here at build time, so the literal glob string
+    # (e.g. tests/infra/test_verify_*.sh) always reaches the emitted plan.
     # Suppressed when INCLUDE_INFRA=1: run_all.sh already runs the full suite
     # (a superset), so the selective subset would double-run hermetic tests.
     if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$INCLUDE_INFRA" -eq 0 ]; then
         local _glob
+        set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
             add "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
         done
+        set +f
     fi
 
     # test: gated + ungated cargo passes, per profile.
