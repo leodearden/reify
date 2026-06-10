@@ -1665,4 +1665,136 @@ mod tests {
         let result = check_dag_complete(&traces, &exec_order);
         assert!(result.is_ok(), "expected Ok(()), got: {:?}", result);
     }
+
+    // --- check_dag_complete negative-teeth tests (step-3) ---
+
+    /// (a) backward realization→realization: producer after consumer → BackwardEdge
+    #[test]
+    fn check_dag_complete_backward_realization_to_realization_err() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::{DagViolation, check_dag_complete};
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer
+        let c_id = RealizationNodeId::new(e, 1); // consumer
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
+        traces.insert(
+            NodeId::Realization(c_id.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // REVERSED order: consumer at position 0, producer at position 1
+        let exec_order = vec![c_id.clone(), p_id.clone()];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        match result {
+            Err(DagViolation::BackwardEdge {
+                producer,
+                consumer,
+                ..
+            }) => {
+                assert_eq!(producer, p_id, "wrong producer in BackwardEdge");
+                assert_eq!(consumer, c_id, "wrong consumer in BackwardEdge");
+            }
+            other => panic!(
+                "expected Err(BackwardEdge {{ producer: {:?}, consumer: {:?} }}), got: {:?}",
+                p_id, c_id, other
+            ),
+        }
+    }
+
+    /// (b) missing producer for Realization consumer → MissingProducer
+    #[test]
+    fn check_dag_complete_missing_producer_for_realization_consumer_err() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::{DagViolation, check_dag_complete};
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer — NOT in exec_order
+        let c_id = RealizationNodeId::new(e, 1); // consumer
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // P is absent from traces (no DependencyTrace inserted for it)
+        traces.insert(
+            NodeId::Realization(c_id.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // exec_order only contains C, P is never built
+        let exec_order = vec![c_id.clone()];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        match result {
+            Err(DagViolation::MissingProducer { producer, consumer }) => {
+                assert_eq!(producer, p_id, "wrong producer in MissingProducer");
+                assert_eq!(
+                    consumer,
+                    NodeId::Realization(c_id.clone()),
+                    "wrong consumer in MissingProducer"
+                );
+            }
+            other => panic!(
+                "expected Err(MissingProducer {{ producer: {:?}, consumer: {:?} }}), got: {:?}",
+                p_id,
+                NodeId::Realization(c_id),
+                other
+            ),
+        }
+    }
+
+    /// (c) missing producer for non-realization consumer (Constraint) → MissingProducer
+    #[test]
+    fn check_dag_complete_missing_producer_for_constraint_consumer_err() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::{DagViolation, check_dag_complete};
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer — NOT in exec_order
+        let k = ConstraintNodeId::new(e, 0);
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        traces.insert(
+            NodeId::Constraint(k.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // exec_order is empty — P is never built
+        let exec_order: Vec<RealizationNodeId> = vec![];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        match result {
+            Err(DagViolation::MissingProducer { producer, consumer }) => {
+                assert_eq!(producer, p_id, "wrong producer in MissingProducer");
+                assert_eq!(
+                    consumer,
+                    NodeId::Constraint(k.clone()),
+                    "wrong consumer in MissingProducer"
+                );
+            }
+            other => panic!(
+                "expected Err(MissingProducer {{ producer: {:?}, consumer: Constraint({:?}) }}), got: {:?}",
+                p_id, k, other
+            ),
+        }
+    }
 }
