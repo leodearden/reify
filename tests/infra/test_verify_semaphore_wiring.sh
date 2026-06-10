@@ -131,8 +131,10 @@ echo ""
 echo "--- Section 2: pre-merge-commit merge-exemption ---"
 
 # (2a) Static wiring: pre-merge-commit's verify.sh call carries DF_VERIFY_ROLE=merge.
+# Pattern mirrors test_hooks_call_verify.sh: the path is quoted so verify.sh" (with
+# closing quote) precedes the subcommand — match "DF_VERIFY_ROLE=merge … verify.sh\" all".
 assert "pre-merge-commit: verify.sh invocation prefixed with DF_VERIFY_ROLE=merge" \
-    grep -qE 'DF_VERIFY_ROLE=merge[[:space:]].*scripts/verify\.sh[[:space:]]' \
+    grep -qE 'DF_VERIFY_ROLE=merge[[:space:]].*scripts/verify\.sh" all' \
     "$REPO_ROOT/hooks/pre-merge-commit"
 
 # (2b) Behavioral: throwaway repo confirms role=merge is recorded on `git merge`.
@@ -146,9 +148,12 @@ make_pmc_repo() {
     mkdir -p "$dir/scripts" "$dir/hooks"
 
     # STUB verify.sh: record the role and succeed.
+    # Use git rev-parse --absolute-git-dir for a reliable absolute git-dir path
+    # (git does not always export $GIT_DIR for pre-merge-commit children).
     cat > "$dir/scripts/verify.sh" <<'VSTUB'
 #!/usr/bin/env bash
-echo "${DF_VERIFY_ROLE:-<unset>}" > "$(git rev-parse --git-common-dir)/recorded-role"
+_gitdir="$(git rev-parse --absolute-git-dir)"
+echo "${DF_VERIFY_ROLE:-<unset>}" > "$_gitdir/recorded-role"
 exit 0
 VSTUB
     chmod +x "$dir/scripts/verify.sh"
@@ -181,7 +186,7 @@ PMC_REPO=""
 make_pmc_repo PMC_REPO
 
 git -C "$PMC_REPO" merge --no-ff task/foo
-_recorded_role="$(cat "$(git -C "$PMC_REPO" rev-parse --git-common-dir)/recorded-role" 2>/dev/null || echo "<missing>")"
+_recorded_role="$(cat "$(git -C "$PMC_REPO" rev-parse --absolute-git-dir)/recorded-role" 2>/dev/null || echo "<missing>")"
 assert "pre-merge-commit behavioral: DF_VERIFY_ROLE=merge recorded during git merge" \
     test "$_recorded_role" = "merge"
 
@@ -215,11 +220,13 @@ make_land_repo() {
     chmod +x "$dir/hooks/reference-transaction"
 
     # STUB pre-merge-commit: record the INHERITED role, mark sentinel, succeed.
+    # Use git rev-parse --absolute-git-dir for reliable absolute git-dir path.
     cat > "$dir/hooks/pre-merge-commit" <<'PMC'
 #!/usr/bin/env bash
 ROOT="$(git rev-parse --show-toplevel)"
 . "$ROOT/hooks/main-gate-lib.sh"
-echo "${DF_VERIFY_ROLE:-<unset>}" > "$(git rev-parse --git-common-dir)/recorded-role"
+_gitdir="$(git rev-parse --absolute-git-dir)"
+echo "${DF_VERIFY_ROLE:-<unset>}" > "$_gitdir/recorded-role"
 main_gate_mark
 exit 0
 PMC
@@ -249,7 +256,7 @@ _land_rc=0
 ( cd "$LAND_REPO" && bash scripts/land.sh task/foo ) >/dev/null 2>&1 || _land_rc=$?
 assert "land.sh behavioral: exits 0 (merge succeeded)" test "$_land_rc" -eq 0
 
-_land_role="$(cat "$(git -C "$LAND_REPO" rev-parse --git-common-dir)/recorded-role" 2>/dev/null || echo "<missing>")"
+_land_role="$(cat "$(git -C "$LAND_REPO" rev-parse --absolute-git-dir)/recorded-role" 2>/dev/null || echo "<missing>")"
 assert "land.sh behavioral: DF_VERIFY_ROLE=merge inherited by pre-merge-commit" \
     test "$_land_role" = "merge"
 
