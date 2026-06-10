@@ -972,7 +972,9 @@ build_plan() {
     # drift-guards for any changed verify-pipeline artifact.  FAIL-FAST: emitted
     # BEFORE add_test_passes (the expensive long-pole).  One guarded for-loop
     # per glob so the glob expands at execution time under CWD=REPO_ROOT.
-    if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ]; then
+    # Suppressed when INCLUDE_INFRA=1: run_all.sh already runs the full suite
+    # (a superset), so the selective subset would double-run hermetic tests.
+    if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$INCLUDE_INFRA" -eq 0 ]; then
         local _glob
         for _glob in $SELECTED_INFRA_GLOBS; do
             add "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
