@@ -327,9 +327,11 @@ fn all_fourteen_gdt_types_and_datum_present() {
         // Runout (2)
         "CircularRunout",
         "TotalRunout",
-        // Profile (2)
+        // Profile (2 datum-less + 2 …Related datum-referenced, α)
         "ProfileOfSurface",
         "ProfileOfLine",
+        "ProfileOfSurfaceRelated",
+        "ProfileOfLineRelated",
         // Datum
         "Datum",
     ];
@@ -433,6 +435,68 @@ fn runout_callouts_carry_required_datum_refs() {
             .find(|t| t.name == *name)
             .unwrap_or_else(|| panic!("expected '{}' template", name));
 
+        let datum = t
+            .value_cells
+            .iter()
+            .find(|vc| vc.kind == ValueCellKind::Param && vc.id.member == "datum_refs")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} must have a 'datum_refs' Param cell, got params: {:?}",
+                    name,
+                    t.value_cells
+                        .iter()
+                        .filter(|vc| vc.kind == ValueCellKind::Param)
+                        .map(|vc| &vc.id.member)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            datum.cell_type,
+            Type::Geometry,
+            "{}.datum_refs must be Type::Geometry (DatumRef aliases Geometry), got {:?}",
+            name,
+            datum.cell_type
+        );
+    }
+}
+
+// ─── α: profile split — datum-less vs datum-referenced (…Related) ────────────
+
+/// α: the profile callouts split into datum-less (form-only) and datum-referenced
+/// (…Related) variants. ProfileOfSurface / ProfileOfLine remain datum-less (no
+/// datum_refs cell); ProfileOfSurfaceRelated / ProfileOfLineRelated add a required
+/// `datum_refs` Param cell typed Geometry.
+///
+/// RED before step-8: the two …Related variants do not exist.
+#[test]
+fn profile_callouts_split_datumless_and_related() {
+    let module = load_stdlib_module();
+
+    // Datum-less variants: present, and NO datum_refs cell.
+    for name in &["ProfileOfSurface", "ProfileOfLine"] {
+        let t = module
+            .templates
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' template", name));
+        assert!(
+            !t.value_cells.iter().any(|vc| vc.id.member == "datum_refs"),
+            "{} must be datum-less (no 'datum_refs' cell), got cells: {:?}",
+            name,
+            t.value_cells
+                .iter()
+                .map(|vc| &vc.id.member)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // …Related variants: present, with a required datum_refs Param cell typed Geometry.
+    for name in &["ProfileOfSurfaceRelated", "ProfileOfLineRelated"] {
+        let t = module
+            .templates
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' template", name));
         let datum = t
             .value_cells
             .iter()
@@ -744,11 +808,13 @@ fn full_module_integrity() {
             .collect::<Vec<_>>()
     );
 
-    // 20 templates: DimensionalTolerance(1) + 14 GD&T + StraightnessOfAxis(1, α) + Datum(1) + SurfaceFinish(1) + Fit(1) + ISOToleranceGrade(1)
+    // 22 templates: DimensionalTolerance(1) + 14 GD&T + StraightnessOfAxis(1, α)
+    //   + ProfileOfSurfaceRelated(1, α) + ProfileOfLineRelated(1, α)
+    //   + Datum(1) + SurfaceFinish(1) + Fit(1) + ISOToleranceGrade(1)
     assert_eq!(
         module.templates.len(),
-        20,
-        "expected 20 templates, got: {:?}",
+        22,
+        "expected 22 templates, got: {:?}",
         module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 
