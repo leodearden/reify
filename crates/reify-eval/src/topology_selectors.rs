@@ -2564,6 +2564,98 @@ mod tests {
         );
     }
 
+    // ── Curved conservative-bound tests (task 4406 step-5 / step-7 RED) ─────
+
+    /// step-5 RED: tessellate per-vertex normals must refine worst_dip to a
+    /// value ≥ the steepest facet dip (conservative bound; G6).
+    ///
+    /// Fixture: one BRep face with n=(√3/2,0,−1/2) → per-face dip ≈ 30°.
+    /// Mesh carries a steep outward vertex normal n_f=(0.6427,0,−0.766)
+    /// → −n_f·b = 0.766 ≈ sin(50°) → facet dip ≈ 50°.
+    ///
+    /// Assertion: worst_dip ≥ 50°.to_radians() − ε  (inequality — G6).
+    /// Fails until step-6 adds the tessellate fold (step-2 impl ignores
+    /// the mesh → worst_dip stays at ~30°).
+    #[test]
+    fn overhang_curved_conservative_bound() {
+        let face_ids = vec![GeometryHandleId(701)];
+        let sqrt3_over2 = (3.0_f64).sqrt() / 2.0;
+
+        // Steep vertex normal: z ≈ −0.766 → facet dip ≈ asin(0.766) ≈ 50°.
+        let steep_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0],
+            indices: vec![],
+            normals: Some(vec![0.6427_f32, 0.0_f32, -0.766_f32]),
+        };
+
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(sqrt3_over2, 0.0, -0.5))
+            .with_mesh(steep_mesh);
+        let handle = GeometryHandleId(1);
+
+        let (_faces, worst_dip) =
+            unsupported_overhang_faces(&mut kernel, handle, [0.0, 0.0, 1.0], 20f64.to_radians())
+                .expect("should succeed");
+
+        // The steep facet dip ≈ asin(0.766) ≥ 50° — exact float would be
+        // fragile on f32→f64 cast; an inequality is G6-safe.
+        let min_expected = 50f64.to_radians() - 1e-4;
+        assert!(
+            worst_dip >= min_expected,
+            "curved conservative bound: worst_dip must be ≥ 50° (got {} rad ≈ {}°)",
+            worst_dip,
+            worst_dip.to_degrees()
+        );
+    }
+
+    /// step-7 RED: tessellate per-vertex normals must lower signed_min_draft and
+    /// set has_undercut when a re-entrant facet is present (conservative; G6).
+    ///
+    /// Fixture: one wall face n=(cos10°,0,sin10°) → δ=+10°, no undercut.
+    /// Mesh carries a re-entrant wall-window vertex normal
+    /// n_f=(cos4°,0,−sin4°) → n_f·p=−sin4°≈−0.0698, in window → δ_f≈−4°.
+    ///
+    /// Assertions (inequalities — G6):
+    ///   signed_min_draft ≤ (−4°).to_radians() + ε
+    ///   has_undercut == true
+    ///
+    /// Fails until step-8 adds the draft tessellate fold.
+    #[test]
+    fn draft_curved_conservative_bound() {
+        let face_ids = vec![GeometryHandleId(711)];
+        let cos10 = 10f64.to_radians().cos();
+        let sin10 = 10f64.to_radians().sin();
+
+        // Re-entrant facet normal: n_f·p = −sin4° → δ_f ≈ −4° (undercut).
+        let cos4 = 4f32.to_radians().cos();
+        let sin4 = 4f32.to_radians().sin();
+        let reentrant_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0],
+            indices: vec![],
+            normals: Some(vec![cos4, 0.0_f32, -sin4]),
+        };
+
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(cos10, 0.0, sin10))
+            .with_mesh(reentrant_mesh);
+        let handle = GeometryHandleId(1);
+
+        let (signed_min_draft, has_undercut) =
+            min_draft_angle(&mut kernel, handle, [0.0, 0.0, 1.0]).expect("should succeed");
+
+        // min_draft must be ≤ −4° (more negative than the per-face +10°).
+        let max_expected = (-4f64).to_radians() + 1e-4;
+        assert!(
+            signed_min_draft <= max_expected,
+            "curved conservative bound: signed_min_draft must be ≤ −4° (got {} rad ≈ {}°)",
+            signed_min_draft,
+            signed_min_draft.to_degrees()
+        );
+        assert!(has_undercut, "re-entrant facet must set has_undercut=true");
+    }
+
     // ── Two sub-handles at the same (parent, kind, index) but different
     /// kernel_handle ids must compare EQUAL — kernel_handle is excluded from
     /// PartialEq (PRD §4 iv cache-hit equality).
