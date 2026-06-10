@@ -47,6 +47,7 @@ make_fixture() {
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh" "$dir/scripts/affected-crates-lib.sh"
     cp "$REPO_ROOT/scripts/lib_test_semaphore.sh" "$dir/scripts/lib_test_semaphore.sh"
     cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
+    cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
     mkdir -p "$dir/.config"
     cp "$REPO_ROOT/.config/nextest.toml" "$dir/.config/nextest.toml"
     chmod +x "$dir/scripts/verify.sh"
@@ -213,6 +214,7 @@ make_branch_fixture() {
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh" "$dir/scripts/affected-crates-lib.sh"
     cp "$REPO_ROOT/scripts/lib_test_semaphore.sh" "$dir/scripts/lib_test_semaphore.sh"
     cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
+    cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
     mkdir -p "$dir/.config"
     cp "$REPO_ROOT/.config/nextest.toml" "$dir/.config/nextest.toml"
     chmod +x "$dir/scripts/verify.sh"
@@ -657,5 +659,80 @@ assert "MG-hook: pre-merge-commit calls verify.sh with --scope all" \
     grep -qE 'verify\.sh.*--scope all' "$REPO_ROOT/hooks/pre-merge-commit"
 assert "MG-hook: pre-merge-commit does NOT pass --scope branch or --scope staged" \
     bash -c '! grep -qE "verify\.sh.*--scope (branch|staged)" "$1"' _ "$REPO_ROOT/hooks/pre-merge-commit"
+
+# ===========================================================================
+# VS-* scenarios: selective infra test injection (task 4523)
+#
+# When a task-level verify (--scope branch, NO --include-infra) detects that a
+# verify-pipeline artifact listed in scripts/verify-pipeline-infra-tests.txt
+# was changed, build_plan() must emit a guarded for-loop that runs the
+# artifact's infra test glob via `timeout ... bash` BEFORE cargo test poles.
+#
+# VS-pos   (RED until step-2): verify.sh change -> selective loop present
+# VS-coverage (GREEN now):     glob covers both incident-named guards
+# VS-neg   (GREEN now):        non-artifact change -> no selective loop
+# ===========================================================================
+echo ""
+echo "=== Selective infra injection (task 4523 VS-* scenarios) ==="
+
+# FIX_VS — branch fixture for VS-pos.  make_branch_fixture now copies the map.
+FIX_VS=""
+make_branch_fixture FIX_VS
+
+# plan_for_vs_change — on a fresh task-branch, APPEND a harmless comment line
+# to the fixture's scripts/verify.sh (NEVER overwrite — it is the SUT), commit,
+# then capture the plan WITHOUT --include-infra (the real task-verify path).
+# Restores main and deletes the branch when done.
+plan_for_vs_change() {
+    git -C "$FIX_VS" checkout -q -b task-branch
+    echo "# task-4523 verify.sh-change simulation sentinel" >> "$FIX_VS/scripts/verify.sh"
+    git -C "$FIX_VS" add scripts/verify.sh
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+# ---------------------------------------------------------------------------
+# Scenario VS-pos: verify.sh change (no --include-infra) -> selective infra loop
+# RED until step-2: implementation doesn't exist yet.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario VS-pos: scripts/verify.sh changed -> selective infra loop in plan (RED until step-2) ---"
+plan_for_vs_change
+assert "VS-pos: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+assert "VS-pos: plan contains timeout+bash invocation for infra tests" \
+    plan_has 'timeout.*bash.*tests/infra/test_verify'
+
+# ---------------------------------------------------------------------------
+# Scenario VS-coverage: glob expands to include both incident-named guards
+# GREEN now (pure filesystem lock; no implementation dependency).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario VS-coverage: glob tests/infra/test_verify_*.sh covers incident guards (GREEN) ---"
+assert "VS-coverage: test_verify_gui_feature_check.sh exists under glob" \
+    test -f "$REPO_ROOT/tests/infra/test_verify_gui_feature_check.sh"
+assert "VS-coverage: test_verify_throughput.sh exists under glob" \
+    test -f "$REPO_ROOT/tests/infra/test_verify_throughput.sh"
+
+# ---------------------------------------------------------------------------
+# Scenario VS-neg: non-artifact change (no --include-infra) -> NO selective loop
+# GREEN now (no implementation => no loop emitted; plan_lacks trivially passes).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario VS-neg: crates/reify-doc change -> NO selective infra loop (no --include-infra; GREEN) ---"
+FIX_VS_NEG=""
+make_branch_fixture FIX_VS_NEG
+git -C "$FIX_VS_NEG" checkout -q -b task-branch
+mkdir -p "$FIX_VS_NEG/crates/reify-doc/src"
+printf 'x\n' > "$FIX_VS_NEG/crates/reify-doc/src/lib.rs"
+git -C "$FIX_VS_NEG" add crates
+git -C "$FIX_VS_NEG" commit -q -m "task changes"
+PLAN_VS_NEG="$(cd "$FIX_VS_NEG" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
+git -C "$FIX_VS_NEG" checkout -q main
+git -C "$FIX_VS_NEG" branch -q -D task-branch
+assert "VS-neg: plan lacks test_verify_*.sh glob (reify-doc not in artifact map)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "tests/infra/test_verify_\*\.sh"' _ "$PLAN_VS_NEG"
 
 test_summary
