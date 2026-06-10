@@ -2091,6 +2091,59 @@ fn stdlib_feature_datum_refs_have_geometry_type() {
     }
 }
 
+// ─── task-4461: tolerancing_diagnose wired into eval Undef-diagnosis ─────────
+
+/// E2E pin: out-of-envelope iso_it_tolerance (grade 25) surfaces a
+/// Severity::Error "E_TolerancingOutOfEnvelope" in result.diagnostics after
+/// the tolerancing_diagnose arm was wired into emit_undef_builtin_diagnostics
+/// (task 4461 step-2).
+///
+/// Mirrors the result.diagnostics read at tolerancing_tests.rs:980 — this is
+/// the eval-pipeline realization of the `reify eval`→stderr user-observable
+/// signal (cmd_eval renders result.diagnostics to stderr). Grade 25 keeps this
+/// test distinct from iso_tolerance_grade_out_of_envelope_undef (grade 4),
+/// which only checks compile diagnostics + the Undef cell value.
+#[test]
+fn iso_it_tolerance_grade_25_out_of_envelope_emits_eval_error_diagnostic() {
+    let source = r#"
+structure def TestOOE {
+    param grade : Int = 25
+    param nmin : Length = 30mm
+    param nmax : Length = 50mm
+    let tolerance_value = iso_it_tolerance(grade, nmin, nmax)
+}
+structure def Probe {
+    sub g = TestOOE()
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    // Compile should be clean (no Error diagnostics).
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "out-of-envelope TestOOE should compile without errors, got: {:?}",
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Eval must push at least one E_TolerancingOutOfEnvelope Severity::Error.
+    assert!(
+        result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Error && d.message.contains("E_TolerancingOutOfEnvelope")
+        }),
+        "eval diagnostics must contain an E_TolerancingOutOfEnvelope Error for grade 25, \
+         got: {:?}",
+        result.diagnostics
+    );
+}
+
 /// GREEN (step-3 resolver contract): `param feature : Geometry` and
 /// `param datum_refs : DatumRef` in an inline source must compile with
 /// zero "unresolved type" diagnostics.

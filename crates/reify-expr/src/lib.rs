@@ -7157,6 +7157,47 @@ mod tests {
     }
 
     #[test]
+    fn iso_it_tolerance_in_envelope_emits_no_diagnostic_into_sink() {
+        // Grade 6 with 30–50mm nominal is in-envelope → iso_it_tolerance returns
+        // a finite LENGTH scalar; the sink must stay empty (pins the None-path and
+        // the matches!(result, Value::Undef) gate — an unconditional emit or
+        // mis-gated success path would be caught here).
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(6),
+            mm_val(30.0),
+            mm_val(50.0),
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        match &result {
+            Value::Scalar { dimension, si_value } => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar"
+                );
+                assert!(
+                    *si_value > 0.0,
+                    "iso_it_tolerance(6,30mm,50mm) should be positive, got {si_value}"
+                );
+            }
+            other => panic!(
+                "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            sink.borrow().is_empty(),
+            "in-envelope iso_it_tolerance must emit no diagnostic, got {:?}",
+            sink.borrow()
+        );
+    }
+
+    #[test]
     fn iso_it_tolerance_out_of_envelope_emits_tolerancing_error_into_sink() {
         // Grade 25 is outside IT5–IT18 → iso_it_tolerance returns Value::Undef.
         // After wiring tolerancing_diagnose into emit_undef_builtin_diagnostics
