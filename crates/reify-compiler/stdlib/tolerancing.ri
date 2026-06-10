@@ -12,6 +12,12 @@
 // Material condition modifiers used in GD&T callouts.
 enum MaterialCondition { MMC, LMC, RFS }
 
+// Tolerance-zone shape discriminator for feature-of-size (FOS) location/orientation
+// callouts. Width = two-parallel-planes (width) tolerance zone; Cylindrical = Ø
+// cylindrical tolerance zone. Used to gate MMC/LMC eligibility on FOS callouts
+// (legality enforced Rust-side): a Cylindrical zone on a FOS axis is MMC-eligible.
+enum ZoneShape { Width, Cylindrical }
+
 // Fit classification per ISO 286 / ANSI B4.1.
 enum FitCategory { Clearance, Transition, Interference }
 
