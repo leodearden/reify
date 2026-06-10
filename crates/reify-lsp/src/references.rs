@@ -1230,6 +1230,83 @@ pub fn compute_document_highlights(
     )
 }
 
+// ─── κ (task 4210): cross-file structure references + rename ─────────────────
+//
+// The single-file producers above resolve VALUE-member bindings
+// (param/let/auto/sub/port) within one entity body. The machinery below follows
+// the import graph to resolve a STRUCTURE name (a declaration name) across
+// files: its home declaration token, every same-file `sub _ = Name`
+// construction site, and — in each importing document — the import entity token
+// plus its construction sites. The collectors are PURE: the open-document set
+// arrives as `workspace_docs` and target resolution as an injectable
+// `resolve_import` closure (mirroring goto_def's pattern), so the whole
+// cross-file scope logic is unit-testable with an in-memory workspace + a mock
+// resolver. The server handlers assemble both from the live DocumentStore.
+
+/// Collect every structure-name reference to `name` within a SINGLE parsed
+/// document: the home declaration's name token (when `name` is declared in this
+/// document) plus each `sub _ = name` construction-site token across every
+/// entity's members, recursing into nested scopes. Ascending by `span.start`.
+///
+/// `SubDecl.structure_name` is a plain `String` field (decl.rs), not an `Expr`,
+/// so these construction-site uses never appear as `ExprKind::Ident` and are
+/// structurally invisible to `collect_uses`/`collect_idents_in_expr`. This
+/// dedicated traversal is the only way to surface them (κ design decision). The
+/// home declaration token is located via goto_def's `find_declaration_name_span`
+/// so a structure's rename/reference token is uniform with go-to-definition.
+#[allow(dead_code)] // wired into compute_references_cross_file in step-4
+fn collect_structure_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> Vec<SourceSpan> {
+    let mut spans = Vec::new();
+    // Home declaration token (`structure Name` / `occurrence def Name` / …),
+    // present only when `name` is declared in THIS document.
+    if let Some(decl_token) = crate::goto_def::find_declaration_name_span(source, name) {
+        spans.push(decl_token);
+    }
+    // Every `sub _ = name` construction site across all entities' members.
+    for decl in &parsed.declarations {
+        if let Some(members) = entity_members(decl) {
+            collect_sub_structure_uses(members, source, name, 0, &mut spans);
+        }
+    }
+    spans.sort_by_key(|s| s.start);
+    spans
+}
+
+/// Push the name-token span of each `MemberDecl::Sub` whose `structure_name`
+/// equals `name`, recursing into nested member-list scopes (guarded branches,
+/// port bodies, sub specialization bodies / keyed overrides, match-arm members)
+/// exactly as `collect_uses` does — depth-bounded by `MAX_MEMBER_NESTING_DEPTH`
+/// — so a construction site nested inside a `where`/port/sub block is not missed.
+///
+/// The emitted span is `name_token_span(source, sub.span, name)`: the first
+/// whole-word `name` token within the `sub` statement, i.e. the structure-name
+/// (construction) token in `sub binding = Name(...)`.
+#[allow(dead_code)] // reached via collect_structure_name_spans (wired in step-4)
+fn collect_sub_structure_uses(
+    members: &[MemberDecl],
+    source: &str,
+    name: &str,
+    depth: usize,
+    out: &mut Vec<SourceSpan>,
+) {
+    if depth > MAX_MEMBER_NESTING_DEPTH {
+        return;
+    }
+    for member in members {
+        if let MemberDecl::Sub(s) = member
+            && s.structure_name == name
+        {
+            out.push(name_token_span(source, s.span, name));
+        }
+        // Recurse into the SAME nested member-list scopes `collect_uses`
+        // descends into (via `for_each_child_scope`), so a `sub` construction
+        // site inside a guarded/port/sub/match scope is also collected.
+        for_each_child_scope(member, |child| {
+            collect_sub_structure_uses(child, source, name, depth + 1, out);
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2757,13 +2834,17 @@ structure S {
         // declaration token (`structure Hole`) PLUS each same-file
         // `sub _ = Hole` construction-site token, ascending by start, each
         // covering exactly `Hole`.
+        // NB: the bare `sub x = Hole` form (no parens) parses clean only as the
+        // final member of a block; two consecutive bare subs are a syntax error,
+        // so multi-sub fixtures use the parenthesized constructor form (which the
+        // completeness fixtures above also rely on).
         let source = "\
 structure Hole {
     param diameter: Length = 10mm
 }
 structure Assembly {
-    sub a = Hole
-    sub b = Hole
+    sub a = Hole(diameter: 6mm)
+    sub b = Hole(diameter: 8mm)
 }";
         let parsed = reify_syntax::parse(source, ModulePath::single("kappa1"));
         assert!(
