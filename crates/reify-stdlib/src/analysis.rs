@@ -1,6 +1,7 @@
-//! Stress analysis builtins: von_mises, principal_stresses, max_shear, safety_factor.
+//! Stress analysis builtins: von_mises, principal_stresses, max_shear, safety_factor,
+//! stress_invariants.
 
-use reify_ir::Value;
+use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 use crate::helpers::{binary, sanitize_value, unary};
 use crate::matrix::matrix_components_f64;
@@ -15,6 +16,7 @@ pub(crate) fn eval_analysis(name: &str, args: &[Value]) -> Option<Value> {
         "principal_stresses" => principal_stresses(args),
         "max_shear" => max_shear(args),
         "safety_factor" => safety_factor(args),
+        "stress_invariants" => stress_invariants(args),
         _ => return None,
     })
 }
@@ -237,6 +239,101 @@ fn safety_factor(args: &[Value]) -> Value {
         };
 
         sanitize_value(Value::Real(yield_f64 / vm_f64))
+    })
+}
+
+/// Compute the three stress invariants of a 3×3 row-major symmetric stress tensor.
+///
+/// Returns `[I1, I2, I3]` where:
+///   I1 = trace = σ_xx + σ_yy + σ_zz
+///   I2 = (σ_xx·σ_yy + σ_yy·σ_zz + σ_zz·σ_xx) − (σ_xy² + σ_yz² + σ_xz²)
+///   I3 = determinant of the stress tensor
+///
+/// Row-major flat layout: d[0]=σ_xx, d[1]=σ_xy, d[2]=σ_xz,
+///                         d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
+///                         d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
+///
+/// Mirrors the `debug_assert!` symmetry/len guards of sibling kernels.
+pub(crate) fn compute_stress_invariants_3x3(d: &[f64]) -> [f64; 3] {
+    debug_assert!(
+        d.len() >= 9,
+        "compute_stress_invariants_3x3 requires at least 9 elements, got {}",
+        d.len()
+    );
+    debug_assert!(
+        {
+            let tol = |a: f64, b: f64| {
+                (a.is_nan() && b.is_nan())
+                    || (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()))
+            };
+            tol(d[1], d[3]) && tol(d[2], d[6]) && tol(d[5], d[7])
+        },
+        "compute_stress_invariants_3x3: input matrix is not symmetric"
+    );
+
+    let sxx = d[0];
+    let syy = d[4];
+    let szz = d[8];
+    let sxy = d[1]; // upper-triangle; lower triangle ignored for symmetric inputs
+    let syz = d[5];
+    let sxz = d[2];
+
+    let i1 = sxx + syy + szz;
+    let i2 = sxx * syy + syy * szz + szz * sxx - (sxy * sxy + syz * syz + sxz * sxz);
+    // I3 = determinant (using upper-triangle symmetry: syx=sxy, szx=sxz, szy=syz)
+    let i3 = sxx * (syy * szz - syz * syz) - sxy * (sxy * szz - syz * sxz)
+        + sxz * (sxy * syz - syy * sxz);
+
+    [i1, i2, i3]
+}
+
+/// Compute the three stress invariants of a 3×3 stress tensor `Value::Tensor`.
+///
+/// Returns a `Value::StructureInstance` with `type_name = "StressInvariants"` and
+/// fields `i1` (PRESSURE), `i2` (PRESSURE²), `i3` (PRESSURE³) — or `Value::Real`
+/// for dimensionless inputs.
+fn stress_invariants(args: &[Value]) -> Value {
+    unary(args, |tensor| {
+        let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
+            Some(v) if v.0 == 3 && v.1 == 3 => v,
+            _ => return Value::Undef,
+        };
+        let _ = (nrows, ncols);
+
+        let [i1, i2, i3] = compute_stress_invariants_3x3(&d);
+
+        // Build correctly-dimensioned scalars: I1 ∝ dim, I2 ∝ dim², I3 ∝ dim³.
+        // Value::from_real_scalar(v, DIMENSIONLESS) → Value::Real(v), so the
+        // dimensionless case produces Real fields automatically.
+        let dim2 = dim.mul(&dim);
+        let dim3 = dim2.mul(&dim);
+
+        // Sentinel type_id for registry-free (engine-side) instances — mirrors
+        // `REGISTRY_FREE_TYPE_ID` in dynamics/eval.rs; the type_name string is the
+        // authoritative key for downstream consumers.
+        let fields: PersistentMap<String, Value> = [
+            (
+                "i1".to_string(),
+                sanitize_value(Value::from_real_scalar(i1, dim)),
+            ),
+            (
+                "i2".to_string(),
+                sanitize_value(Value::from_real_scalar(i2, dim2)),
+            ),
+            (
+                "i3".to_string(),
+                sanitize_value(Value::from_real_scalar(i3, dim3)),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "StressInvariants".to_string(),
+            version: 1,
+            fields,
+        }))
     })
 }
 
