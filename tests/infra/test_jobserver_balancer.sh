@@ -695,4 +695,99 @@ assert "decide(): merge-demanded branch returns (t2m, free_task) for all k in 1.
 assert "decide(): monotonicity — free_merge==0 never returns action 'm2t'" \
     test "$_b8_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 9: decide() task-demanded give-back-with-ε branch (test-9)
+#   Uses tokens strictly > free_merge so sum < tokens (non-idle state).
+#
+#   (a) free_task==0, free_merge > epsilon → ("m2t", free_merge - epsilon)
+#   (b) free_task==0, free_merge == epsilon → ("none", 0)  [at buffer, no give-back]
+#   (c) free_task==0, free_merge == 0 → ("none", 0)        [contention, no give-back]
+#   (d) module exposes int EPSILON >= 1
+#
+#   RED: give-back branch not active; EPSILON constant does not exist.
+#   (decide() currently returns ("none",0) for give-back states — step-4 stub.)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 9: decide() give-back-with-ε branch + EPSILON constant ---"
+
+_b9_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+# Check EPSILON constant
+errors = []
+
+# ── (d) module exposes int EPSILON >= 1 ───────────────────────────────────
+if not hasattr(mod, 'EPSILON'):
+    errors.append("(d) EPSILON constant not found in module")
+    sys.stderr.write("FAIL decide() give-back:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+EPS = mod.EPSILON
+if not isinstance(EPS, int):
+    errors.append(f"(d) EPSILON is not int: {type(EPS)}")
+if EPS < 1:
+    errors.append(f"(d) EPSILON < 1: {EPS}")
+
+TOKENS = 8
+baseline_task  = max(1, TOKENS // 4)   # 2
+baseline_merge = TOKENS - baseline_task  # 6
+threshold      = 5
+# Use TOKENS=8, consumer holds some tokens so sum < TOKENS (non-idle).
+# free_task=0 means task pool is fully drained/held.
+# free_merge values chosen so free_task+free_merge < TOKENS (tokens held).
+HELD = 2  # simulated tokens held by a task consumer
+
+# ── (a) give-back: free_merge > epsilon ──────────────────────────────────
+for m in range(EPS + 1, TOKENS - HELD):
+    action, count = mod.decide(
+        free_merge=m, free_task=0,
+        tokens=TOKENS, baseline_merge=baseline_merge,
+        baseline_task=baseline_task, epsilon=EPS,
+        idle_ticks=0, idle_threshold=threshold,
+    )
+    if action != "m2t" or count != m - EPS:
+        errors.append(
+            f"(a) free_merge={m}: got ({action!r},{count}), want ('m2t',{m - EPS})"
+        )
+
+# ── (b) at epsilon: no give-back ─────────────────────────────────────────
+action, count = mod.decide(
+    free_merge=EPS, free_task=0,
+    tokens=TOKENS, baseline_merge=baseline_merge,
+    baseline_task=baseline_task, epsilon=EPS,
+    idle_ticks=0, idle_threshold=threshold,
+)
+if action != "none" or count != 0:
+    errors.append(f"(b) free_merge=epsilon: got ({action!r},{count}), want ('none',0)")
+
+# ── (c) at zero: no give-back (contention) ────────────────────────────────
+action, count = mod.decide(
+    free_merge=0, free_task=0,
+    tokens=TOKENS, baseline_merge=baseline_merge,
+    baseline_task=baseline_task, epsilon=EPS,
+    idle_ticks=0, idle_threshold=threshold,
+)
+if action != "none" or count != 0:
+    errors.append(f"(c) free_merge=0,free_task=0: got ({action!r},{count}), want ('none',0)")
+
+if errors:
+    sys.stderr.write("FAIL decide() give-back:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: decide() give-back-with-epsilon")
+PY
+} || _b9_exit=$?
+assert "decide(): give-back (a) free_merge>ε → (m2t, free_merge-ε)" \
+    test "$_b9_exit" -eq 0
+assert "decide(): give-back (b) free_merge==ε → (none,0) — buffer preserved" \
+    test "$_b9_exit" -eq 0
+assert "decide(): give-back (c) free_merge==0,free_task==0 → (none,0) — contention" \
+    test "$_b9_exit" -eq 0
+assert "module exposes int EPSILON >= 1" \
+    test "$_b9_exit" -eq 0
+
 test_summary
