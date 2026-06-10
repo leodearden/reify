@@ -257,7 +257,21 @@ def decide(
     Invariants by construction:
       - free_merge==0 → NEVER returns "m2t" (give-back requires free_merge>epsilon)
       - Monotone: contested state drifts toward merge=tokens, task=0
+
+    Requires: baseline_merge + baseline_task == tokens.
+    main() guarantees this via:
+        task_baseline  = max(1, TOKENS // 4)
+        merge_baseline = TOKENS - task_baseline  # sum == TOKENS by construction
+    Violated baselines cause the IDLE branch to oscillate (the toward-baseline
+    move overshoots, then the next tick undershoots, indefinitely).  An assert
+    below guards this so a future caller cannot silently induce oscillation.
     """
+    assert baseline_merge + baseline_task == tokens, (
+        f"decide() precondition violated: "
+        f"baseline_merge({baseline_merge}) + baseline_task({baseline_task}) "
+        f"!= tokens({tokens}) — caller must ensure partition sums to tokens"
+    )
+
     sum_free = free_merge + free_task
 
     # ── Branch 1: IDLE — all tokens free, nobody holding ──────────────────
@@ -377,6 +391,11 @@ def main() -> None:
         if action == "t2m":
             _transfer_burst(task_fd, merge_fd, count)
         elif action == "m2t":
+            # ε retention is best-effort under concurrent merge consumption:
+            # count = free_merge - epsilon was computed from the FIONREAD
+            # snapshot; a concurrent merge consumer may drain merge to 0
+            # before the burst completes.  C1 conservation is preserved
+            # (no token is dropped); the state self-corrects on the next tick.
             _transfer_burst(merge_fd, task_fd, count)
         # "none" → no-op
 
