@@ -1633,6 +1633,81 @@ pub fn prepare_rename_cross_file(
     })
 }
 
+/// Cross-file rename over the import graph (κ, task 4210): a [`WorkspaceEdit`]
+/// that renames a structure (or single-file value member) to `new_name` across
+/// every document that references it.
+///
+/// The edit set is exactly the cross-file reference set
+/// ([`compute_references_cross_file`] with `include_declaration = true`) — the
+/// home declaration token + same-file construction sites, plus each importing
+/// document's import entity token + construction sites — one [`TextEdit`] per
+/// name-token span, grouped by document URI (ascending and non-overlapping
+/// within each file).
+///
+/// Two refusals keep the multi-file result re-parse-clean (Invariant 5):
+/// `new_name` must be a legal Reify identifier ([`is_valid_rename_identifier`] —
+/// rejecting empty/whitespace/punctuation/digit-leading/reserved-keyword), and
+/// the cursor must resolve to a renameable home. Renameability is gated through
+/// [`prepare_rename_cross_file`] so prepare and rename never disagree (value
+/// members keep single-file semantics; structure homes admit only
+/// Structure/Occurrence). Returns `None` on either refusal.
+///
+/// PURE: the open-document set arrives as `workspace_docs` and target resolution
+/// as the injected `resolve_import` closure (mirroring goto_def), so the whole
+/// cross-file rename is unit-testable with an in-memory workspace + mock
+/// resolver.
+pub fn compute_rename_cross_file(
+    primary_source: &str,
+    primary_parsed: &ParsedModule,
+    primary_uri: &Url,
+    pos: Position,
+    new_name: &str,
+    workspace_docs: &[(Url, String)],
+    resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
+) -> Option<WorkspaceEdit> {
+    // A `new_name` that is not a legal Reify identifier would corrupt every
+    // rewritten token so the buffers no longer re-parse cleanly — refuse before
+    // producing any edits (the re-parse-clean half of Invariant 5).
+    if !is_valid_rename_identifier(new_name) {
+        return None;
+    }
+
+    // Renameability gate — share prepare's resolution so prepare and rename never
+    // disagree on what is renameable (value member, or Structure/Occurrence home).
+    prepare_rename_cross_file(primary_source, primary_parsed, primary_uri, pos, resolve_import)?;
+
+    // The cross-file reference set (declaration ∪ uses) is exactly the set of
+    // name-token spans to rewrite.
+    let locations = compute_references_cross_file(
+        primary_source,
+        primary_parsed,
+        primary_uri,
+        pos,
+        /* include_declaration = */ true,
+        workspace_docs,
+        resolve_import,
+    )?;
+
+    // One TextEdit per location, grouped by document URI.
+    let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+    for loc in locations {
+        changes.entry(loc.uri).or_default().push(TextEdit {
+            range: loc.range,
+            new_text: new_name.to_string(),
+        });
+    }
+    // Keep each file's edits ascending (and thus non-overlapping — every span is
+    // a distinct name token) so the client applies them deterministically.
+    for edits in changes.values_mut() {
+        edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+    }
+
+    Some(WorkspaceEdit {
+        changes: Some(changes),
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
