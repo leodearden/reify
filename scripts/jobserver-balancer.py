@@ -66,6 +66,22 @@ except ValueError as _exc:
     )
     sys.exit(1)
 
+# PLACEHOLDER pending ε (PRD §10): give-back buffer retained in merge pool.
+# ε=1 is the smallest buffer that exercises the give-back path (merge_baseline
+# > 1 for all TOKENS≥4, so give = merge_baseline − ε > 0).
+# ε's true value is an OUTPUT of the ε measurement harness — not a frozen guess.
+_eps_raw: str = os.environ.get("REIFY_JOBSERVER_EPSILON", "1")
+try:
+    EPSILON: int = int(_eps_raw)
+    if EPSILON < 1:
+        raise ValueError("must be >= 1")
+except ValueError as _exc:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_EPSILON={_eps_raw!r}: {_exc}\n"
+        f"  Set to a positive integer >= 1\n"
+    )
+    sys.exit(1)
+
 # Token byte: '+' (0x2b) — matches the retired printf/tr seeder for byte-level
 # compatibility with the canary and any downstream tools.
 TOKEN_BYTE: bytes = b"+"
