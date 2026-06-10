@@ -893,4 +893,214 @@ assert "decide(): (e) contention both-0 → (none,0)" \
 assert "module exposes int IDLE_RESET_TICKS >= 1" \
     test "$_b10_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 11: behavioral tests — β-distinguishing live-daemon scenarios (test-11)
+#   Reuses start_balancer/wait_for_seed/fionread/fionread_pair/_cleanup_balancer.
+#
+#   Scenario A — just-task ε-buffer:
+#     Consumer drains+holds task pool (0-free demand).  Under C4 give-back,
+#     merge settles at EPSILON (not 0).  Under α, merge transfers ONE token
+#     then stops at merge=5 (single-shot donate-idle), leaving merge >> EPSILON.
+#     → RED under α (merge ≠ EPSILON), GREEN under C4.
+#
+#   Scenario B — idle baseline-reset:
+#     Pools skewed to merge=2, task=6 (task-heavy, sum==TOKENS → idle).
+#     Under C4 (small IDLE_RESET_TICKS override) the idle branch resets back
+#     to merge-favored baseline (merge=6).  Under α both pools > 0 so neither
+#     branch fires — skew persists forever.
+#     → RED under α (merge stays 2), GREEN under C4.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 11: behavioral — just-task ε-buffer + idle baseline-reset ---"
+
+# Read EPSILON from the module (default 1; respects env override if set).
+_b11_EPSILON=$(python3 - "$BALANCER" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.EPSILON)
+PY
+)
+
+# ── Scenario A: just-task ε-buffer ───────────────────────────────────────
+echo ""
+echo "  Scenario A: just-task ε-buffer settle"
+
+_cleanup_balancer
+start_balancer 8 0.05
+wait_for_seed 10 || true
+
+# Consumer drains+holds the task pool (simulates rustc holding all task tokens).
+# The consumer reads to EAGAIN, writes held count to a file, then sleeps 30s.
+_b11a_held_file=$(mktemp)
+python3 - "$_TASK_FIFO" "$_b11a_held_file" <<'PY' &
+import os, time, sys
+path, count_file = sys.argv[1], sys.argv[2]
+held = 0
+fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+deadline = time.monotonic() + 5.0
+while time.monotonic() < deadline:
+    try:
+        data = os.read(fd, 64)
+        held += len(data)
+    except BlockingIOError:
+        if held > 0:
+            break
+        time.sleep(0.01)
+os.close(fd)
+with open(count_file, 'w') as f:
+    f.write(str(held))
+time.sleep(30)  # hold tokens indefinitely
+PY
+_b11a_consumer_pid=$!
+
+# Wait for consumer to establish demand (held > 0, task pool drained).
+_b11a_drained=0
+_b11a_t0=$(date +%s)
+while true; do
+    if [ -s "$_b11a_held_file" ]; then
+        _b11a_held_now=$(cat "$_b11a_held_file" 2>/dev/null || echo 0)
+        if [ "$_b11a_held_now" -gt 0 ]; then
+            _b11a_drained=1; break
+        fi
+    fi
+    [ $(( $(date +%s) - _b11a_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+
+assert "Scenario A: consumer drained task pool (demand established)" \
+    test "$_b11a_drained" -eq 1
+
+# Poll until FIONREAD(merge) == EPSILON (C4 give-back settles the pool).
+# Under C4: free_task=0, free_merge>EPSILON → ("m2t", free_merge-EPSILON) burst.
+# Under α:  one-token donate-idle fires once (merge=5→task=1), then stops.
+_b11a_settled=0
+_b11a_t0=$(date +%s)
+while true; do
+    _b11a_m=$(fionread "$_MERGE_FIFO" 2>/dev/null || echo -1)
+    if [ "$_b11a_m" -eq "$_b11_EPSILON" ]; then
+        # Confirm stability: no further transfers should fire (branch 3 requires
+        # free_merge > EPSILON, which is false once free_merge == EPSILON).
+        sleep 0.15
+        _b11a_m2=$(fionread "$_MERGE_FIFO" 2>/dev/null || echo -1)
+        if [ "$_b11a_m2" -eq "$_b11_EPSILON" ]; then
+            _b11a_settled=1; break
+        fi
+    fi
+    [ $(( $(date +%s) - _b11a_t0 )) -ge 10 ] && break
+    sleep 0.1
+done
+
+assert "Scenario A: FIONREAD(merge) == EPSILON (ε-buffer retained by C4 give-back)" \
+    test "$_b11a_settled" -eq 1
+
+# Assert C1 and task reaching TOKENS - EPSILON (three-way conservation).
+_b11a_c1_ok=0
+_b11a_task_ok=0
+for _b11a_retry in 1 2 3; do
+    _b11a_pair=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+    _b11a_m_f=$(echo "$_b11a_pair" | awk '{print $1}')
+    _b11a_t_f=$(echo "$_b11a_pair" | awk '{print $2}')
+    _b11a_held_f=$(cat "$_b11a_held_file" 2>/dev/null || echo 0)
+    _b11a_sum=$(( _b11a_held_f + _b11a_m_f + _b11a_t_f ))
+    _b11a_task_sum=$(( _b11a_held_f + _b11a_t_f ))
+    if [ "$_b11a_sum" -eq 8 ]; then
+        _b11a_c1_ok=1
+    fi
+    if [ "$_b11a_task_sum" -eq $(( 8 - _b11_EPSILON )) ]; then
+        _b11a_task_ok=1
+    fi
+    [ "$_b11a_c1_ok" -eq 1 ] && [ "$_b11a_task_ok" -eq 1 ] && break
+    sleep 0.01
+done
+
+assert "Scenario A: C1 — consumer_held + FIONREAD(merge) + FIONREAD(task) == TOKENS" \
+    test "$_b11a_c1_ok" -eq 1
+assert "Scenario A: consumer_held + FIONREAD(task) == TOKENS - EPSILON" \
+    test "$_b11a_task_ok" -eq 1
+
+kill "$_b11a_consumer_pid" 2>/dev/null || true
+wait "$_b11a_consumer_pid" 2>/dev/null || true
+rm -f "$_b11a_held_file"
+_cleanup_balancer
+
+# ── Scenario B: idle baseline-reset ──────────────────────────────────────
+echo ""
+echo "  Scenario B: idle baseline-reset"
+
+_cleanup_balancer
+
+# Export small IDLE_RESET_TICKS so the reset fires quickly (3 * 0.05s = 0.15s).
+export REIFY_JOBSERVER_IDLE_RESET_TICKS=3
+start_balancer 8 0.05
+# Unset immediately — the background python3 process already has the value.
+unset REIFY_JOBSERVER_IDLE_RESET_TICKS
+wait_for_seed 10 || true
+
+# Verify initial seeded baseline: merge=6, task=2 (TOKENS=8, task=max(1,8//4)=2).
+_b11b_pair0=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+_b11b_m0=$(echo "$_b11b_pair0" | awk '{print $1}')
+_b11b_t0_v=$(echo "$_b11b_pair0" | awk '{print $2}')
+
+assert "Scenario B: initial seed is merge-favored (merge > task)" \
+    test "$_b11b_m0" -gt "$_b11b_t0_v"
+
+# Skew: read 4 tokens from merge FIFO, write 4 tokens to task FIFO.
+# Both pools sum to TOKENS=8 throughout (sum preserved → idle state maintained).
+# Result: merge=2, task=6 (task-heavy skew).
+_b11b_skew_exit=0
+{
+python3 - "$_MERGE_FIFO" "$_TASK_FIFO" <<'PY'
+import os, sys, time
+merge_path, task_path = sys.argv[1], sys.argv[2]
+SKEW = 4
+mfd = os.open(merge_path, os.O_RDWR | os.O_NONBLOCK)
+tfd = os.open(task_path,  os.O_RDWR | os.O_NONBLOCK)
+moved = 0
+deadline = time.monotonic() + 3.0
+while moved < SKEW and time.monotonic() < deadline:
+    try:
+        n = min(SKEW - moved, 8)
+        data = os.read(mfd, n)
+        if data:
+            # Write immediately to preserve sum invariant
+            written = 0
+            while written < len(data):
+                written += os.write(tfd, data[written:])
+            moved += len(data)
+    except BlockingIOError:
+        time.sleep(0.005)
+os.close(mfd); os.close(tfd)
+if moved != SKEW:
+    import sys as _sys
+    _sys.stderr.write(f"skew helper: only moved {moved}/{SKEW} tokens\n")
+    _sys.exit(1)
+PY
+} || _b11b_skew_exit=$?
+
+assert "Scenario B: skew helper moved 4 tokens merge→task" \
+    test "$_b11b_skew_exit" -eq 0
+
+# Poll until pools reset to merge-favored baseline (merge==6, merge > task).
+# Under C4: idle_ticks reaches IDLE_RESET_TICKS=3 → ("t2m", 4) burst resets.
+# Under α:  both pools > 0 → neither donate-idle branch fires → skew persists.
+_b11b_reset=0
+_b11b_t0=$(date +%s)
+while true; do
+    _b11b_pair=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+    _b11b_m=$(echo "$_b11b_pair" | awk '{print $1}')
+    _b11b_t=$(echo "$_b11b_pair" | awk '{print $2}')
+    if [ "$_b11b_m" -eq 6 ] && [ "$_b11b_m" -gt "$_b11b_t" ]; then
+        _b11b_reset=1; break
+    fi
+    [ $(( $(date +%s) - _b11b_t0 )) -ge 15 ] && break
+    sleep 0.1
+done
+
+assert "Scenario B: idle-reset drives pools back to merge-favored baseline (merge==6)" \
+    test "$_b11b_reset" -eq 1
+
+_cleanup_balancer
+
 test_summary
