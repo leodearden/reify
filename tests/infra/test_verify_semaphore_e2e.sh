@@ -92,4 +92,25 @@ apply_hermetic_env() {
     export REIFY_TEST_SEMAPHORE_WAIT="$wait"
 }
 
+# ===========================================================================
+# Section A: held-slot serialization (execute mode)
+# ===========================================================================
+# Two concurrent DF_VERIFY_ROLE=task runs must HOLD-serialize at N=1 — the slot
+# is held for the run's whole duration, NOT merely PSI-admission-spaced.
+# With stub cargo sleeping 2s and a single debug nextest pass:
+#   serialized  ≈ preamble + 2×2s ≈ 4.2–4.8s  (the second run waits behind the first)
+#   non-held    ≈ preamble + 2s   ≈ 2.2–2.8s  (both overlapping)
+# The 3000ms lower bound sits clearly in the gap between the two regimes with
+# load-tolerant margin, mirroring test_occt_flock_gate.sh Test 8 / esc-3939-94.
+echo ""
+echo "--- Section A: held-slot serialization (execute mode) ---"
+
+MS=0
+drive_two_concurrent_task_runs
+assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000ms, got ${MS}ms)" \
+    test "$MS" -ge 3000
+# Loose upper-bound sanity: even on a heavily loaded machine serial ≤ 20s.
+assert "serialization elapsed within sanity bound (elapsed <= 20000ms, got ${MS}ms)" \
+    test "$MS" -le 20000
+
 test_summary
