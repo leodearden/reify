@@ -581,7 +581,7 @@ fi
 if [ "$NARROW_ACTIVE" -eq 1 ]; then
     # Build the affected-crate -p flag string. Task 4451: no gated/ungated split;
     # all affected crates (including OCCT ones) go through the single nextest pass,
-    # with the occt test-group (max-threads=4) bounding their concurrency.
+    # with the occt test-group (max-threads=24, env-driven) bounding their concurrency.
     # Word-split $AFFECTED (safe: Rust crate names never contain spaces).
     # shellcheck disable=SC2086
     for _nc in $AFFECTED; do
@@ -606,8 +606,8 @@ PLAN=()
 add() { PLAN+=("$1"); }
 
 # Release-sensitive crate flags: ALL release-sensitive crates in one nextest -p set.
-# Task 4451: the gated/ungated split is gone; the nextest occt group (max-threads=4)
-# bounds intra-run concurrency for OCCT-touching release-sensitive crates (reify-eval).
+# Task 4451: the gated/ungated split is gone; the nextest occt group (max-threads=24,
+# env-driven) bounds intra-run concurrency for OCCT-touching release-sensitive crates (reify-eval).
 # reify-kernel-occt, reify-cli, reify-config have zero release-sensitive tests and
 # correctly drop out of the release pass; the debug full-workspace pass covers them.
 _RELEASE_DECLARED="$(release_declared_set)"
@@ -644,13 +644,17 @@ wrap_subshell() {
 # rel: "" (debug) or " --release"
 # outer_timeout: e.g. "60m" or "75m"
 # Task 4451: replaces emit_gated_ungated; the flock-gated OCCT pass is dropped.
-# OCCT crates are now included in the pool; the nextest occt test-group (max-threads=4)
-# bounds their intra-run concurrency for FD/memory headroom.
+# Task 4503/γ: env-driven occt cap (REIFY_OCCT_NEXTEST_MAX_THREADS, default 24).
+# OCCT crates are now included in the pool; the nextest occt test-group (max-threads=24,
+# env-driven) bounds their intra-run concurrency for FD/memory headroom.
 emit_nextest_pass() {
     local selector="$1" rel="$2" outer_timeout="$3"
     local cmd
     if [ "$NEXTEST" -eq 1 ]; then
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}"
+        # Resolve the occt group cap at plan-build time so --print-plan is concrete
+        # and eval sees a literal integer inside single quotes (not a shell variable).
+        local _occt_cap="${REIFY_OCCT_NEXTEST_MAX_THREADS:-24}"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config 'test-groups.occt.max-threads=${_occt_cap}'"
     else
         # Fallback: single-threaded (OCCT serialization via the nextest occt group is
         # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
@@ -696,7 +700,7 @@ add_test_passes() {
 
         if [ "$profile" = "release" ]; then
             # Release pass: ALL release-sensitive crates in one nextest pass (task 4451).
-            # The nextest occt group (max-threads=4) bounds concurrency for OCCT-touching
+            # The nextest occt group (max-threads=24, env-driven) bounds concurrency for OCCT-touching
             # release-sensitive crates (e.g. reify-eval). Only crates with
             # debug_assertions/overflow-checks-dependent tests need to re-run in release;
             # the DEBUG full-workspace pass covers every other crate.
@@ -717,7 +721,7 @@ add_test_passes() {
             else
                 # Full-workspace debug pass (scope=all and non-narrow branch/staged).
                 # Task 4451: OCCT crates are now IN the pool (--workspace, no --exclude);
-                # the nextest occt test-group (max-threads=4) bounds their concurrency.
+                # the nextest occt test-group (max-threads=24, env-driven) bounds their concurrency.
                 emit_nextest_pass "--workspace" "$rel" "$outer_timeout"
             fi
         fi
