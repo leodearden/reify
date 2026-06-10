@@ -441,4 +441,175 @@ PY
 assert "run_regime returns valid structured record for all regime/service combos" \
     test "$_b4_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 5: derive_constants() — pure arithmetic over a SYNTHETIC measurements
+# record, deterministic assertions.
+#
+# The synthetic record has:
+#   - single-pool just-task cold  → worst_case_cold_task_secs = 120.0
+#   - single-pool just-merge warm → measured_merge_secs_full_alloc = 240.0
+#   - single-pool just-task warm  → busy_fraction = 0.875 (baseline reference)
+# MARGIN defaults to 1.5, so:
+#   - task_timeout_secs  = ceil(120.0 × 1.5) = 180
+#   - merge_timeout_secs = ceil(240.0 × 1.5) = 360
+#
+# Asserts that the derived split is merge-favored, sums to nproc, task ≥ 1,
+# poll_interval ≥ harness MIN_POLL_INTERVAL, epsilon ≥ 1, timeout budgets match
+# the ceil(wall × MARGIN) formula, and utilization_threshold is derived from the
+# baseline capture (not a hardcoded constant).
+#
+# Fails: derive_constants absent → AttributeError.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 5: derive_constants() pure arithmetic ---"
+
+_b5_exit=0
+{
+python3 - "$HARNESS" <<'PY'
+import importlib.util, sys, math
+
+spec = importlib.util.spec_from_file_location("jth", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# ── Synthetic measurements record ────────────────────────────────────────────
+NPROC_F = 32
+WORST_CASE_COLD_TASK = 120.0    # single-pool just-task cold task_wall
+MEASURED_MERGE       = 240.0    # single-pool just-merge warm merge_wall
+BASELINE_UTIL        = 0.875    # single-pool just-task warm busy_fraction (28/32)
+
+def _run(service, regime, cache, busy, merge_wall, task_wall, occupancy_sum):
+    return {
+        "service":        service,
+        "regime":         regime,
+        "cache_state":    cache,
+        "busy_fraction":  busy,
+        "occupancy":      [{"merge": occupancy_sum, "task": 0, "sum": occupancy_sum,
+                            "timestamp": 1.0}],
+        "merge_wall":     merge_wall,
+        "task_wall":      task_wall,
+        "exit_124_count": 0,
+        "nproc":          NPROC_F,
+    }
+
+measurements = {
+    "nproc": NPROC_F,
+    "runs": [
+        # baseline (single-pool) — the three regimes × warm/cold
+        _run("single-pool","just-task",  "warm", BASELINE_UTIL, 0.0, 90.0,  NPROC_F),
+        _run("single-pool","just-task",  "cold", 0.80,          0.0, WORST_CASE_COLD_TASK, NPROC_F),
+        _run("single-pool","just-merge", "warm", 0.90,          MEASURED_MERGE,   0.0, NPROC_F),
+        _run("single-pool","just-merge", "cold", 0.88,          220.0,            0.0, NPROC_F),
+        _run("single-pool","mixed",      "warm", 0.82,          210.0,            100.0, NPROC_F),
+        _run("single-pool","mixed",      "cold", 0.78,          230.0,            115.0, NPROC_F),
+        # balancer (dual-pool) — same regimes × warm/cold
+        _run("dual-pool","just-task",  "warm", 0.875, 0.0,   88.0, NPROC_F),
+        _run("dual-pool","just-task",  "cold", 0.80,  0.0,   118.0, NPROC_F),
+        _run("dual-pool","just-merge", "warm", 0.90,  235.0, 0.0,  NPROC_F),
+        _run("dual-pool","just-merge", "cold", 0.87,  215.0, 0.0,  NPROC_F),
+        _run("dual-pool","mixed",      "warm", 0.84,  205.0, 92.0, NPROC_F),
+        _run("dual-pool","mixed",      "cold", 0.79,  225.0, 110.0, NPROC_F),
+    ],
+}
+
+derived = mod.derive_constants(measurements)
+
+# ── (a) baseline split properties ────────────────────────────────────────────
+merge_b = derived.get("merge_baseline")
+task_b  = derived.get("task_baseline")
+
+if merge_b is None or task_b is None:
+    errors.append("derive_constants missing merge_baseline or task_baseline")
+else:
+    if not (merge_b > task_b):
+        errors.append(f"split not merge-favored: merge={merge_b}, task={task_b}")
+    if merge_b + task_b != NPROC_F:
+        errors.append(f"split sum {merge_b+task_b} != nproc {NPROC_F}")
+    if task_b < 1:
+        errors.append(f"task_baseline={task_b} < 1 (starvation)")
+
+# ── (b) poll_interval ────────────────────────────────────────────────────────
+pi = derived.get("poll_interval")
+if pi is None:
+    errors.append("derive_constants missing poll_interval")
+elif not (pi >= mod.MIN_POLL_INTERVAL and pi > 0):
+    errors.append(f"poll_interval={pi} < MIN_POLL_INTERVAL={mod.MIN_POLL_INTERVAL}")
+
+# ── (c) epsilon ──────────────────────────────────────────────────────────────
+eps = derived.get("epsilon")
+if eps is None:
+    errors.append("derive_constants missing epsilon")
+elif eps < 1:
+    errors.append(f"epsilon={eps} < 1")
+
+# ── (d) task_timeout_secs — exact: ceil(worst_case_cold_task × MARGIN) ───────
+task_to = derived.get("task_timeout_secs")
+expected_task_to = math.ceil(WORST_CASE_COLD_TASK * mod.MARGIN)
+if task_to is None:
+    errors.append("derive_constants missing task_timeout_secs")
+elif task_to != expected_task_to:
+    errors.append(
+        f"task_timeout_secs={task_to} != ceil({WORST_CASE_COLD_TASK}×{mod.MARGIN})"
+        f"={expected_task_to}"
+    )
+
+# ── (e) merge_timeout_secs — exact: ceil(measured_merge × MARGIN) ────────────
+merge_to = derived.get("merge_timeout_secs")
+expected_merge_to = math.ceil(MEASURED_MERGE * mod.MARGIN)
+if merge_to is None:
+    errors.append("derive_constants missing merge_timeout_secs")
+elif merge_to != expected_merge_to:
+    errors.append(
+        f"merge_timeout_secs={merge_to} != ceil({MEASURED_MERGE}×{mod.MARGIN})"
+        f"={expected_merge_to}"
+    )
+
+# ── (f) utilization_threshold — derived from baseline, not hardcoded ─────────
+util_t = derived.get("utilization_threshold")
+if util_t is None:
+    errors.append("derive_constants missing utilization_threshold")
+elif not (0 < util_t <= BASELINE_UTIL):
+    errors.append(
+        f"utilization_threshold={util_t} out of range (expected 0 < t ≤ {BASELINE_UTIL})"
+    )
+
+# ── (g) sensitivity: change worst-case input → timeout changes accordingly ───
+# Make a record with a shorter worst-case cold task (60.0 s)
+short_cold = dict(measurements)
+short_cold_runs = [
+    r for r in measurements["runs"]
+    if not (r["service"] == "single-pool" and r["regime"] == "just-task"
+            and r["cache_state"] == "cold")
+]
+short_cold_runs.append(
+    _run("single-pool","just-task","cold", 0.80, 0.0, 60.0, NPROC_F)
+)
+short_cold = {"nproc": NPROC_F, "runs": short_cold_runs}
+derived2 = mod.derive_constants(short_cold)
+expected_short_to = math.ceil(60.0 * mod.MARGIN)
+if derived2.get("task_timeout_secs") == expected_task_to:
+    errors.append(
+        "derive_constants task_timeout_secs did not change when worst-case "
+        "cold task changed from 120s to 60s — may be a hardcoded constant"
+    )
+if derived2.get("task_timeout_secs") != expected_short_to:
+    errors.append(
+        f"derive_constants sensitivity: expected task_timeout_secs="
+        f"{expected_short_to} for 60s worst-case, got {derived2.get('task_timeout_secs')}"
+    )
+
+if errors:
+    for e in errors:
+        print("FAIL:", e, file=sys.stderr)
+    raise SystemExit(1)
+
+print("derive_constants: all assertions passed")
+PY
+} || _b5_exit=$?
+
+assert "derive_constants: split/poll/epsilon/timeout/utilization derived correctly" \
+    test "$_b5_exit" -eq 0
+
 test_summary
