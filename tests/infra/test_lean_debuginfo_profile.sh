@@ -126,4 +126,62 @@ echo "--- Test 1 (a): effective dev/test debuginfo posture is lean-and-backtrace
 assert "effective dev/test posture is lean-and-backtrace-preserving" \
     python3 "$_PARSE_PY" "$CARGO_TOML" check_posture
 
+# -- Test 2 (b): BENCH-DOC EXISTS -----------------------------------------------
+echo ""
+echo "--- Test 2 (b): bench doc docs/notes/lean-debuginfo-bench.md exists ---"
+
+assert "docs/notes/lean-debuginfo-bench.md exists" \
+    test -f "$BENCH_DOC"
+
+if [ -f "$BENCH_DOC" ]; then
+
+    # -- Test 3 (c): CHOSEN-MECHANISM TOKEN IN ALLOWED SET + CONSISTENT WITH CONFIG --
+    echo ""
+    echo "--- Test 3 (c): chosen-mechanism token valid and consistent with Cargo.toml posture ---"
+
+    # Extract: "chosen-mechanism: split-debuginfo-unpacked" | "split-debuginfo-packed" | "debug-1"
+    CHOSEN="$(grep -oE 'chosen-mechanism: [a-z0-9-]+' "$BENCH_DOC" | head -1 | sed 's/chosen-mechanism: //')"
+
+    assert "chosen-mechanism token is in allowed set {split-debuginfo-unpacked,split-debuginfo-packed,debug-1}" \
+        bash -c "[ '$CHOSEN' = 'split-debuginfo-unpacked' ] || \
+                 [ '$CHOSEN' = 'split-debuginfo-packed' ]   || \
+                 [ '$CHOSEN' = 'debug-1' ]"
+
+    # Consistency: token must agree with the effective Cargo.toml posture
+    # (mirrors test_linker_config.sh Test 3 "chosen-linker matches effective linker").
+    if [ "$CHOSEN" = "split-debuginfo-unpacked" ]; then
+        assert "chosen-mechanism split-debuginfo-unpacked matches effective split-debuginfo=unpacked in Cargo.toml" \
+            bash -c "[ '$EFFECTIVE_SPLIT' = 'unpacked' ]"
+    elif [ "$CHOSEN" = "split-debuginfo-packed" ]; then
+        assert "chosen-mechanism split-debuginfo-packed matches effective split-debuginfo=packed in Cargo.toml" \
+            bash -c "[ '$EFFECTIVE_SPLIT' = 'packed' ]"
+    elif [ "$CHOSEN" = "debug-1" ]; then
+        assert "chosen-mechanism debug-1 matches effective debug=1 in Cargo.toml" \
+            bash -c "[ '$EFFECTIVE_DEBUG' = '1' ]"
+    fi
+
+    # -- Test 4 (d): SHRINK DIRECTION -------------------------------------------
+    echo ""
+    echo "--- Test 4 (d): target-size-after-bytes < target-size-before-bytes (measurable shrink) ---"
+
+    # Extract integer tokens: "target-size-before-bytes: 12345678901" etc.
+    BEFORE_BYTES="$(grep -oE 'target-size-before-bytes: [0-9]+' "$BENCH_DOC" | head -1 | grep -oE '[0-9]+$')"
+    AFTER_BYTES="$(grep -oE 'target-size-after-bytes: [0-9]+' "$BENCH_DOC" | head -1 | grep -oE '[0-9]+$')"
+
+    assert "target-size-before-bytes is a non-empty integer in bench doc" \
+        bash -c "[ -n '$BEFORE_BYTES' ]"
+    assert "target-size-after-bytes is a non-empty integer in bench doc" \
+        bash -c "[ -n '$AFTER_BYTES' ]"
+
+    # Direction check — user-observable signal: the mechanism must produce a measurable
+    # shrink (after < before).  Numbers come from the implementer's real before/after
+    # measurement (not a guessed threshold); asserting direction avoids freezing a
+    # percentage that might not hold across host configurations (esc-3453 pattern).
+    if [ -n "$BEFORE_BYTES" ] && [ -n "$AFTER_BYTES" ]; then
+        assert "target-size-after-bytes ($AFTER_BYTES) < target-size-before-bytes ($BEFORE_BYTES): shrink recorded" \
+            bash -c "[ '$AFTER_BYTES' -lt '$BEFORE_BYTES' ]"
+    fi
+
+fi
+
 test_summary
