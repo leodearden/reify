@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -682,6 +682,99 @@ pub mod test_support {
         /// Return a clone of all recorded calls.
         pub fn take_calls(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i32>)> {
             self.calls.lock().unwrap().clone()
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workspace-docs builder (task 4466, part 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Walk `root` recursively for `*.ri` files and merge with the open-buffer
+/// snapshot so every importer — whether currently open or only on disk — feeds
+/// the cross-file collectors.
+///
+/// Resolution order per file:
+/// 1. If the file's `PathBuf` is a key in `open`, the **in-memory text** wins.
+/// 2. Otherwise the file is **read from disk**; unreadable files are skipped.
+///
+/// Directory pruning: `target`, `.git`, `node_modules`, and any name beginning
+/// with `.` are not descended.  Symlinks are never followed.
+///
+/// Files in `open` but **not** under `root` (e.g. a buffer from a different
+/// project that happens to be open) are appended at the end so the cross-file
+/// collectors still see them.
+fn build_workspace_docs(root: &std::path::Path, open: &HashMap<PathBuf, String>) -> Vec<(Url, String)> {
+    let mut docs: Vec<(Url, String)> = Vec::new();
+    // Track canonical paths we emitted to avoid double-including open files.
+    let mut covered: HashSet<PathBuf> = HashSet::new();
+    collect_ri_files(root, &mut docs, &mut covered, open);
+    // Append open buffers that are not under root (cross-root imports).
+    for (path, text) in open {
+        if !covered.contains(path.as_path()) {
+            if let Ok(url) = Url::from_file_path(path) {
+                docs.push((url, text.clone()));
+            }
+        }
+    }
+    docs
+}
+
+/// Recursively collect `*.ri` files from `dir` into `docs`.
+///
+/// See [`build_workspace_docs`] for the full contract.
+fn collect_ri_files(
+    dir: &std::path::Path,
+    docs: &mut Vec<(Url, String)>,
+    covered: &mut HashSet<PathBuf>,
+    open: &HashMap<PathBuf, String>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return, // unreadable dir — silently skip
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Use entry.file_type() (NOT metadata) so symlinks are detected without
+        // following them — the check below skips them unconditionally.
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        // Never follow symlinks.
+        if file_type.is_symlink() {
+            continue;
+        }
+        let file_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        // Skip hidden entries (names starting with '.').
+        if file_name.starts_with('.') {
+            continue;
+        }
+        if file_type.is_dir() {
+            // Skip well-known build / VCS / package-manager directories.
+            if matches!(file_name.as_str(), "target" | "node_modules") {
+                continue;
+            }
+            collect_ri_files(&path, docs, covered, open);
+        } else if file_type.is_file()
+            && path.extension().and_then(|e| e.to_str()) == Some("ri")
+        {
+            // Open override wins over disk; unreadable disk files are skipped.
+            let text = if let Some(t) = open.get(&path) {
+                t.clone()
+            } else {
+                match std::fs::read_to_string(&path) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                }
+            };
+            if let Ok(url) = Url::from_file_path(&path) {
+                covered.insert(path);
+                docs.push((url, text));
+            }
         }
     }
 }
