@@ -414,6 +414,50 @@ fn straightness_of_axis_is_fos_form_variant() {
     );
 }
 
+// ─── α: runout callouts carry a required datum_refs ──────────────────────────
+
+/// α: CircularRunout and TotalRunout each gain a required `datum_refs` Param
+/// cell typed Geometry (DatumRef aliases Type::Geometry per #3116). Runout is
+/// always datum-referenced per ASME Y14.5, so the datum is mandatory (no default).
+///
+/// RED before step-6: the base runout structures refine GeometricTolerance
+/// directly and have no datum_refs cell.
+#[test]
+fn runout_callouts_carry_required_datum_refs() {
+    let module = load_stdlib_module();
+
+    for name in &["CircularRunout", "TotalRunout"] {
+        let t = module
+            .templates
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' template", name));
+
+        let datum = t
+            .value_cells
+            .iter()
+            .find(|vc| vc.kind == ValueCellKind::Param && vc.id.member == "datum_refs")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} must have a 'datum_refs' Param cell, got params: {:?}",
+                    name,
+                    t.value_cells
+                        .iter()
+                        .filter(|vc| vc.kind == ValueCellKind::Param)
+                        .map(|vc| &vc.id.member)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            datum.cell_type,
+            Type::Geometry,
+            "{}.datum_refs must be Type::Geometry (DatumRef aliases Geometry), got {:?}",
+            name,
+            datum.cell_type
+        );
+    }
+}
+
 // ─── step-13: SurfaceFinish, Fit, ISOToleranceGrade, Conforms ────────────────
 
 /// Step 13: SurfaceFinish, Fit, ISOToleranceGrade templates exist with correct
