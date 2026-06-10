@@ -7127,4 +7127,60 @@ mod tests {
             "expected Undef for dimensioned Scalar - Real"
         );
     }
+
+    // ─── tolerancing Undef-diagnosis sink tests (task 4461, step-1) ──────────
+
+    /// Build an `iso_it_tolerance(...)` FunctionCall expr over the given args.
+    fn iso_it_tolerance_call_expr(args: Vec<Value>) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x49, 0x49, 0x54, 0x31]),
+            result_type: Type::length(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "iso_it_tolerance".to_string(),
+                    qualified_name: "std::iso_it_tolerance".to_string(),
+                },
+                // Literal args' static Type is not consulted at runtime.
+                args: args.into_iter().map(|v| lit(v, Type::Real)).collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn iso_it_tolerance_out_of_envelope_emits_tolerancing_error_into_sink() {
+        // Grade 25 is outside IT5–IT18 → iso_it_tolerance returns Value::Undef.
+        // After wiring tolerancing_diagnose into emit_undef_builtin_diagnostics
+        // the sink must receive exactly one Severity::Error whose message
+        // contains "E_TolerancingOutOfEnvelope".
+        // RED: this test FAILS today because tolerancing_diagnose is not yet wired.
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(25),
+            mm_val(30.0),  // 30mm nominal_min
+            mm_val(50.0),  // 50mm nominal_max
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Undef, "grade 25 is out of envelope → Undef");
+
+        let diags = sink.borrow();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one E_TolerancingOutOfEnvelope diagnostic, got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            reify_core::Severity::Error,
+            "out-of-envelope iso_it_tolerance must emit Severity::Error"
+        );
+        assert!(
+            diags[0].message.contains("E_TolerancingOutOfEnvelope"),
+            "message must contain E_TolerancingOutOfEnvelope prefix: {}",
+            diags[0].message
+        );
+    }
 }
