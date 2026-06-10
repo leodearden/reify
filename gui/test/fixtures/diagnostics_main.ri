@@ -6,13 +6,17 @@
 //
 // Injected line-tied diagnostic for in-file jump:
 //   file_path: <abs path of this file>
-//   line: 10  (1-based, the "let side = 20mm" line below)
+//   line: 19  (1-based, the "let side = 20mm" line below)
 //   column: 7
+//
+// NOTE: intentionally no box() call — avoids tessellation diagnostics that would
+// add a real row alongside the injected diagnostics (tessellation slot is separate
+// from the compile slot and is NOT replaced by inject_diagnostics{source:"compile"}).
 
 structure DiagnosticsMain {
     param width: Length = 50mm
     param height: Length = 40mm
     let side = 20mm
 
-    let body = box(width, height, side)
+    let volume = width * height * side
 }

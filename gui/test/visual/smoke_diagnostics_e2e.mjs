@@ -41,10 +41,10 @@ const MAIN   = path.join(REPO_ROOT, 'gui', 'test', 'fixtures', 'diagnostics_main
 const HELPER = path.join(REPO_ROOT, 'gui', 'test', 'fixtures', 'diagnostics_helper.ri');
 
 // 1-based line numbers for the injected line-tied diagnostics.
-// diagnostics_main.ri: "let side = 20mm" is at line 15
-// diagnostics_helper.ri: "let depth = 15mm" is at line 16
-const L_MAIN   = 15;
-const L_HELPER = 16;
+// diagnostics_main.ri: "let side = 20mm" is at line 19
+// diagnostics_helper.ri: "let depth = 15mm" is at line 19
+const L_MAIN   = 19;
+const L_HELPER = 19;
 const COL      = 7;   // column (1-based) for injected line-tied diagnostics
 
 // ─── Port resolution (mirrors endpoint.ts / lib_portable.sh logic) ─────────────
@@ -143,10 +143,24 @@ async function main() {
   console.log('  OK: server ready');
 
   // ── Boot: open MAIN fixture ──────────────────────────────────────────────────
-  log('Opening diagnostics_main.ri via open_file…');
-  const openResult = await rpc('open_file', { path: MAIN });
-  console.log('  open_file result:', JSON.stringify(openResult));
-  if (!openResult || !openResult.ok) fail(`open_file failed: ${JSON.stringify(openResult)}`);
+  // The debug MCP server comes up before the WebKit WebView finishes loading.
+  // The first few frontend-mediated calls (open_file, wait_for_idle) may time
+  // out with "debug-request timed out after 5000ms" while the WebView is still
+  // initialising its EGL/GLX context.  Retry open_file up to 8 times (≤45s)
+  // to give the WebView time to complete its startup sequence.  This is the
+  // primary empirical constant for this smoke — adjust if startup is slower.
+  log('Opening diagnostics_main.ri via open_file (with retry for WebView init)…');
+  let openResult = null;
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    openResult = await rpc('open_file', { path: MAIN });
+    console.log(`  open_file attempt ${attempt} result:`, JSON.stringify(openResult));
+    if (openResult && openResult.ok) break;
+    if (attempt < 8) {
+      console.log(`  Retrying in 3s (WebView still initialising)…`);
+      await sleep(3000);
+    }
+  }
+  if (!openResult || !openResult.ok) fail(`open_file failed after retries: ${JSON.stringify(openResult)}`);
 
   log('Waiting for engine idle…');
   const idleResult = await rpc('wait_for_idle', { timeout_ms: 15000 });
@@ -157,6 +171,17 @@ async function main() {
     fail(`Expected activeFile to contain 'diagnostics_main', got: ${ec0?.activeFile}`);
   }
   console.log('  OK: MAIN file is active');
+
+  // Ensure a deterministic starting state: panel collapsed and problemsHeight at default.
+  // The layout persists to localStorage across sessions; a previous smoke run may have
+  // left the panel expanded. Force problemsCollapsed=true so scenario 1 starts from a
+  // known collapsed state regardless of prior localStorage contents.
+  log('Ensuring panel starts collapsed (deterministic initial state)…');
+  const collapseInit = await rpc('resize_panes', { problemsCollapsed: true });
+  if (!collapseInit || !collapseInit.ok) {
+    fail(`Failed to set initial problemsCollapsed=true: ${JSON.stringify(collapseInit)}`);
+  }
+  await sleep(100);
 
   // ════════════════════════════════════════════════════════════════════════════
   // Scenario 1: FOLD / UNFOLD

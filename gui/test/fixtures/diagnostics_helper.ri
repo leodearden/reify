@@ -7,13 +7,16 @@
 //
 // Injected line-tied diagnostic for cross-file jump:
 //   file_path: <abs path of this file>
-//   line: 10  (1-based, the "let depth = 15mm" line below)
+//   line: 19  (1-based, the "let depth = 15mm" line below)
 //   column: 7
+//
+// NOTE: intentionally no box() call — avoids tessellation diagnostics that would
+// add a real row alongside the injected diagnostics (see diagnostics_main.ri note).
 
 structure DiagnosticsHelper {
     param radius: Length = 30mm
     param height: Length = 60mm
     let depth = 15mm
 
-    let body = box(radius, height, depth)
+    let volume = radius * height * depth
 }

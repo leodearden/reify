@@ -67,6 +67,29 @@ echo "run_diagnostics_e2e_smoke: using debug port $PORT"
 export DISPLAY="${DISPLAY:-:0}"
 
 # ---------------------------------------------------------------------------
+# 2a. Ensure /opt/reify-deps/lib is on LD_LIBRARY_PATH when present.
+#     libopenvdb.so.13+ links against TBB 12.18; on hosts where only
+#     TBB 12.11 is installed at the system path the binary fails with
+#     "undefined symbol" at startup.  This mirrors the .cargo/run-with-occt.sh
+#     logic (which fires for `cargo run` but NOT for direct binary invocations).
+# ---------------------------------------------------------------------------
+REIFY_DEPS_LIB="/opt/reify-deps/lib"
+if [ -d "$REIFY_DEPS_LIB" ] && ls "$REIFY_DEPS_LIB"/libTKernel.so* >/dev/null 2>&1; then
+    export LD_LIBRARY_PATH="$REIFY_DEPS_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+# ---------------------------------------------------------------------------
+# 2b. Disable WebKit GBM/DMABuf renderer on headless or DRI-unavailable hosts.
+#     On systems where the Nvidia driver exposes DRI fds but the mesa EGL
+#     GBM backend cannot create a screen (pci id 10de:…, driver null), WebKit
+#     crashes with "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
+#     WEBKIT_DISABLE_DMABUF_RENDERER=1 forces fallback to the GLX/xlib path,
+#     which works correctly against DISPLAY=:0.  This matches the approach used
+#     by the Tauri upstream CI and other headless Tauri test harnesses.
+# ---------------------------------------------------------------------------
+export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+
+# ---------------------------------------------------------------------------
 # 3. Trap for cleanup — SIGTERM the launcher on exit.
 # ---------------------------------------------------------------------------
 GUI_LAUNCHER_PID=""
