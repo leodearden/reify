@@ -247,6 +247,133 @@ pub fn compute_eval_set(
     topological_sort(&intersection, traces)
 }
 
+/// A violation detected by [`check_dag_complete`].
+///
+/// Returned as the `Err` variant when the declared execution order (L(B))
+/// is **not** a linear extension of the partial order induced by the
+/// realization-edge graph.
+///
+/// Two variants:
+/// - `MissingProducer`: the trace records an edge to a producer that never
+///   appears in `exec_order` (i.e. a realization that was supposed to have
+///   been built but wasn't scheduled at all).
+/// - `BackwardEdge`: a realization-to-realization edge where the producer
+///   is scheduled *after* its consumer (producer_pos >= consumer_pos).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DagViolation {
+    /// A consumer depends on a producer realization that is not present in
+    /// the execution order.
+    MissingProducer {
+        producer: RealizationNodeId,
+        consumer: NodeId,
+    },
+    /// A realization consumer is scheduled before its producer realization.
+    BackwardEdge {
+        producer: RealizationNodeId,
+        consumer: RealizationNodeId,
+        producer_pos: usize,
+        consumer_pos: usize,
+    },
+}
+
+impl DagViolation {
+    /// Human-readable description of the violation, used in `panic!` messages.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            DagViolation::MissingProducer { producer, consumer } => {
+                format!(
+                    "assert_dag_complete: MissingProducer — \
+                     consumer {:?} depends on producer {:?} \
+                     which is absent from exec_order",
+                    consumer, producer
+                )
+            }
+            DagViolation::BackwardEdge {
+                producer,
+                consumer,
+                producer_pos,
+                consumer_pos,
+            } => {
+                format!(
+                    "assert_dag_complete: BackwardEdge — \
+                     producer {:?} (pos {}) must precede consumer {:?} (pos {}), \
+                     but producer appears after consumer in exec_order",
+                    producer, producer_pos, consumer, consumer_pos
+                )
+            }
+        }
+    }
+}
+
+/// Check that `exec_order` is a linear extension of the realization-edge
+/// partial order encoded in `traces`.
+///
+/// For every consumer node `n` and every producer `P` in
+/// `n.realization_reads`:
+/// - Returns `Err(DagViolation::MissingProducer)` if `P` is not in
+///   `exec_order`.
+/// - Returns `Err(DagViolation::BackwardEdge)` if `n` is a
+///   `NodeId::Realization(C)` and `pos[P] >= pos[C]` (producer must
+///   strictly precede consumer).
+///
+/// Non-realization consumers (Value/Constraint/Resolution/Compute) only
+/// get the `MissingProducer` check — they have no position in `exec_order`,
+/// so ordering cannot be verified.
+///
+/// Iterates with a deterministic tie-break (node keys sorted by `Debug`
+/// representation, mirroring [`DebugOrd`] in topological sort) so the
+/// first-reported violation is stable across runs.
+///
+/// Returns `Ok(())` when no violation is found.
+pub(crate) fn check_dag_complete(
+    traces: &HashMap<NodeId, DependencyTrace>,
+    exec_order: &[RealizationNodeId],
+) -> Result<(), DagViolation> {
+    // Build position map: RealizationNodeId → index in exec_order.
+    let pos: HashMap<&RealizationNodeId, usize> = exec_order
+        .iter()
+        .enumerate()
+        .map(|(i, rid)| (rid, i))
+        .collect();
+
+    // Sort nodes by Debug repr for deterministic first-violation reporting.
+    let mut sorted_nodes: Vec<&NodeId> = traces.keys().collect();
+    sorted_nodes.sort_by_key(|n| format!("{:?}", n));
+
+    for node in sorted_nodes {
+        let trace = &traces[node];
+        for producer in &trace.realization_reads {
+            match pos.get(producer) {
+                None => {
+                    return Err(DagViolation::MissingProducer {
+                        producer: producer.clone(),
+                        consumer: node.clone(),
+                    });
+                }
+                Some(&p_pos) => {
+                    // BackwardEdge only applies to Realization consumers.
+                    if let NodeId::Realization(consumer_rid) = node {
+                        if let Some(&c_pos) = pos.get(consumer_rid) {
+                            if p_pos >= c_pos {
+                                return Err(DagViolation::BackwardEdge {
+                                    producer: producer.clone(),
+                                    consumer: consumer_rid.clone(),
+                                    producer_pos: p_pos,
+                                    consumer_pos: c_pos,
+                                });
+                            }
+                        }
+                        // If consumer is a Realization but absent from exec_order,
+                        // that is the caller's problem — skip ordering check.
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Wrapper for NodeId that implements Ord based on Debug representation.
 /// Used for deterministic tie-breaking in topological sort.
 #[derive(Debug, Clone, PartialEq, Eq)]
