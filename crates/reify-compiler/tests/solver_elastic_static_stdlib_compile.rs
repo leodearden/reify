@@ -162,20 +162,15 @@ fn solve_elastic_static_supports_param_is_list_support() {
 }
 
 /// Caller-compile positive (PointLoad + FixedSupport):
-/// `solve_elastic_static(ci.law, ..., [PointLoad(...)], [FixedSupport(...)], ElasticOptions())`
-/// must compile with ZERO Error diagnostics once params are tightened.
-///
-/// RED before step-2: params are still `List<Real>`, so a
-/// `List<StructureRef("PointLoad")>` arg fails the overload resolver
-/// (no-matching-overload error).
-/// GREEN after step-2.
+/// `solve_elastic_static(Steel_AISI_1045(), ..., [PointLoad(...)], [FixedSupport(...)], ElasticOptions())`
+/// must compile with ZERO Error diagnostics (direct-pass via task γ/4441 supertrait,
+/// ConstitutiveLawInput shim retired in task δ/4442).
 #[test]
 fn solve_elastic_static_direct_point_load_compiles_clean() {
     let src = r#"
 structure FEACantileverTest {
-    let ci = ConstitutiveLawInput(law: Steel_AISI_1045())
     let result = solve_elastic_static(
-        ci.law, 1000mm, 100mm, 100mm,
+        Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [PointLoad(point: "tip", force: 1000.0)],
         [FixedSupport(target: "root")],
         ElasticOptions()
@@ -197,18 +192,15 @@ structure FEACantileverTest {
 }
 
 /// Caller-compile positive (PressureLoad + FixedSupport):
-/// `solve_elastic_static(ci.law, ..., [PressureLoad(...)], [FixedSupport(...)], ElasticOptions())`
-/// must compile with ZERO Error diagnostics once params are tightened.
-///
-/// RED before step-2: same no-matching-overload failure as the PointLoad variant.
-/// GREEN after step-2.
+/// `solve_elastic_static(Steel_AISI_1045(), ..., [PressureLoad(...)], [FixedSupport(...)], ElasticOptions())`
+/// must compile with ZERO Error diagnostics (direct-pass via task γ/4441 supertrait,
+/// ConstitutiveLawInput shim retired in task δ/4442).
 #[test]
 fn solve_elastic_static_direct_pressure_load_compiles_clean() {
     let src = r#"
 structure FEAPressureTest {
-    let ci = ConstitutiveLawInput(law: Steel_AISI_1045())
     let result = solve_elastic_static(
-        ci.law, 1000mm, 100mm, 100mm,
+        Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [PressureLoad(magnitude: 1000000.0, face: "x_max", direction: "normal")],
         [FixedSupport(target: "root")],
         ElasticOptions()
@@ -233,16 +225,14 @@ structure FEAPressureTest {
 /// as the `loads` argument must yield at least one Error diagnostic with code
 /// `DiagnosticCode::TypeNotConformingToTrait`.
 ///
-/// RED before step-2: the error is `NoMatchingOverload` (or similar), not
-/// `TypeNotConformingToTrait` — wrong diagnostic code, so the assertion fails.
-/// GREEN after step-2 (the conformance pass fires).
+/// The material arg is passed directly (ConstitutiveLawInput shim retired δ/4442);
+/// only the loads arg is intentionally wrong so the conformance-error assertion fires.
 #[test]
 fn solve_elastic_static_non_conforming_loads_yields_type_not_conforming_to_trait() {
     let src = r#"
 structure FEABadLoads {
-    let ci = ConstitutiveLawInput(law: Steel_AISI_1045())
     let result = solve_elastic_static(
-        ci.law, 1000mm, 100mm, 100mm,
+        Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [Steel_AISI_1045()],
         [FixedSupport(target: "root")],
         ElasticOptions()
@@ -267,17 +257,14 @@ structure FEABadLoads {
 }
 
 /// Regression guard: `solve_load_cases` with a `LoadCase` bundle must still
-/// compile with ZERO Error diagnostics after the `solve_elastic_static`
-/// param tightening (the multi-case path is intentionally untouched).
-///
-/// Already GREEN before and after step-2.
+/// compile with ZERO Error diagnostics (direct-pass — ConstitutiveLawInput shim
+/// retired in task δ/4442; the multi-case path is intentionally untouched).
 #[test]
 fn solve_load_cases_still_compiles_clean_after_tightening() {
     let src = r#"
 structure FEAMultiCaseTest {
-    let ci = ConstitutiveLawInput(law: Steel_AISI_1045())
     let result = solve_load_cases(
-        ci.law, 1000mm, 100mm, 100mm,
+        Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [LoadCase(
             name: "c",
             loads: [PointLoad(point: "tip", force: 1000.0)],

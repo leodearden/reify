@@ -604,7 +604,6 @@ fn worst_case_lambda_returns_non_field_returns_undef() {
 ///   `missing_case` = `result_for(result, "missing")` → `Value::Undef`
 const SOLVE_LOAD_CASES_SOURCE: &str = r#"
 structure def SolveLoadCasesFixture {
-    let ci        = ConstitutiveLawInput(law: Steel_AISI_1045())
     let lc1       = LoadCase(
         name:     "operating",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
@@ -615,7 +614,7 @@ structure def SolveLoadCasesFixture {
         loads:    [PointLoad(point: "tip", force: 2000.0)],
         supports: [FixedSupport(target: "root")],
     )
-    let result        = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
+    let result        = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
     let case_list     = case_names(result)
     let op_case       = result_for(result, "operating")
     let missing_case  = result_for(result, "missing")
@@ -775,11 +774,10 @@ fn solve_load_cases_two_cases_returns_mcr_shape() {
 /// Bindings:
 ///   `lc_high`  = `LoadCase(name: "high_res", ..., options: some(ElasticOptions(max_iter: 500)))`
 ///   `lc_low`   = `LoadCase(name: "low_res", ...)` (options: none, defaults to shared)
-///   `result`   = `solve_load_cases(ci.law, ..., [lc_high, lc_low], ElasticOptions())`
+///   `result`   = `solve_load_cases(Steel_AISI_1045(), ..., [lc_high, lc_low], ElasticOptions())`
 ///   `case_list` = `case_names(result)` → `["high_res", "low_res"]`
 const PER_CASE_OPTIONS_SOURCE: &str = r#"
 structure def PerCaseOptionsFixture {
-    let ci       = ConstitutiveLawInput(law: Steel_AISI_1045())
     let lc_high  = LoadCase(
         name:     "high_res",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
@@ -791,7 +789,7 @@ structure def PerCaseOptionsFixture {
         loads:    [PointLoad(point: "tip", force: 1000.0)],
         supports: [FixedSupport(target: "root")],
     )
-    let result     = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc_high, lc_low], ElasticOptions())
+    let result     = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc_high, lc_low], ElasticOptions())
     let case_list  = case_names(result)
 }
 "#;
@@ -907,16 +905,15 @@ fn solve_load_cases_per_case_options_both_cases_appear() {
 /// as the 1-case solve (modulo the different `loads` per case).
 ///
 /// Bindings:
-///   `result` = `solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1], ElasticOptions())`
+///   `result` = `solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1], ElasticOptions())`
 const SINGLE_CASE_SOURCE: &str = r#"
 structure def SingleCaseFixture {
-    let ci   = ConstitutiveLawInput(law: Steel_AISI_1045())
     let lc1  = LoadCase(
         name:     "only",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
         supports: [FixedSupport(target: "root")],
     )
-    let result   = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1], ElasticOptions())
+    let result   = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1], ElasticOptions())
 }
 "#;
 
@@ -925,10 +922,9 @@ structure def SingleCaseFixture {
 /// volume-mesh ComputeNode would be reused across cases in a real FEA engine.
 ///
 /// Bindings:
-///   `result` = `solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())`
+///   `result` = `solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())`
 const TWO_CASE_SHARED_MESH_SOURCE: &str = r#"
 structure def TwoCaseSharedMeshFixture {
-    let ci   = ConstitutiveLawInput(law: Steel_AISI_1045())
     let lc1  = LoadCase(
         name:     "light",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
@@ -939,7 +935,7 @@ structure def TwoCaseSharedMeshFixture {
         loads:    [PointLoad(point: "tip", force: 5000.0)],
         supports: [FixedSupport(target: "root")],
     )
-    let result   = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
+    let result   = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
 }
 "#;
 
