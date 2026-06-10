@@ -78,10 +78,9 @@ concurrent_verify: false
 verify_env:
   RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
-  # Global jobserver: all concurrent cargo processes share 32 rustc tokens.
-  # A solo task gets all 32 CPUs; N concurrent tasks split them ~32/N each.
-  # The FIFO is managed by reify-jobserver.service (systemd --user).
-  CARGO_MAKEFLAGS: "--jobserver-auth=fifo:/tmp/reify-jobserver"
+  # CARGO_MAKEFLAGS is owned solely by scripts/verify.sh apply_env() (single source,
+  # contract C3 / task 4518 δ). It is NOT injected here; apply_env selects the role
+  # FIFO at runtime (merge→/tmp/reify-jobserver-merge, task→/tmp/reify-jobserver-task).
   # Test-run semaphore knobs (REIFY_TEST_SEMAPHORE_*) are intentionally absent
   # here — they use safe defaults (N=1, WAIT=1800s; scripts/lib_test_semaphore.sh
   # L17-22). Add entries here only to tune; see docs/prds/test-run-concurrency-
