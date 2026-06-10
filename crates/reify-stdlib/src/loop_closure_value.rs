@@ -108,7 +108,7 @@ impl std::error::Error for FlattenError {}
 impl JointValue {
     /// Manifold DOF for this value (1 / 2 / 3 / 3).  Does **not** drive
     /// flatten/unflatten arithmetic — use [`JointKind::flat_len`] for that.
-    // G-allow: KCC-γ task #3765 widens chain_transform/value_for_joint to JointValue; dof_count is consumed by that chain-arity bridge (also KCC-α #3764 snapshot/sweep).
+    // G-allow: foundational JointValue DOF-count encoding helper; KCC-γ #3843 (done, provenance); live downstream closed-chain consumer: KIN-OFFSET batch #4428 (β1, in-progress).
     pub fn dof_count(&self) -> usize {
         match self {
             JointValue::Scalar(_) => 1,
