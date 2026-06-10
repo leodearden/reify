@@ -849,12 +849,12 @@ structure def ProbeNeg {
 /// IT4, which is below the supported IT5–IT18 range), iso_it_tolerance returns
 /// Value::Undef and the derived `tolerance_value` let resolves to Undef.
 ///
-/// NOTE: tolerancing_diagnose is not yet wired into reify-expr (the sibling β/ε
-/// TODO in reify-stdlib/src/lib.rs), so E_TolerancingOutOfEnvelope does not fire
-/// as an eval diagnostic. The observable behavior is a missing/Undef cell.
-///
-/// This test pins the current Undef behavior and will need updating when
-/// tolerancing_diagnose is wired and the diagnostic fires.
+/// NOTE: tolerancing_diagnose is now wired into reify-expr's eval-time
+/// Undef-diagnosis fallthrough (`emit_undef_builtin_diagnostics`, task 4461
+/// step-2). The eval diagnostic is pinned by
+/// `iso_it_tolerance_grade_25_out_of_envelope_emits_eval_error_diagnostic`.
+/// This test continues to pin the compile-clean + Undef-cell assertions, which
+/// are orthogonal to (and unaffected by) the eval-diagnostic wiring.
 #[test]
 fn iso_tolerance_grade_out_of_envelope_undef() {
     // IT4 is below IT5 — iso_it_tolerance returns Undef, so the derived let is Undef.
@@ -904,10 +904,9 @@ structure def Probe {
             // Expected: iso_it_tolerance returns Undef for out-of-envelope grade 4
         }
         None => {
-            // Acceptable current behavior: tolerancing_diagnose is not yet wired into
-            // reify-expr, so iso_it_tolerance may omit the Undef cell rather than
-            // surfacing it. Will need updating when tolerancing_diagnose fires.
-            // (Sub-component presence confirmed above via probe_g_keys.)
+            // The Undef cell may be elided by the evaluator (observable as a missing
+            // entry rather than an explicit Undef). This is distinct from a
+            // sub-component resolution failure (confirmed above via probe_g_keys).
         }
         Some(other) => panic!(
             "out-of-envelope grade 4 should yield Undef tolerance_value, got {:?}",
@@ -2089,6 +2088,88 @@ fn stdlib_feature_datum_refs_have_geometry_type() {
             other
         ),
     }
+}
+
+// ─── task-4461: tolerancing_diagnose wired into eval Undef-diagnosis ─────────
+
+/// E2E pin: out-of-envelope iso_it_tolerance (grade 25) surfaces a
+/// Severity::Error "E_TolerancingOutOfEnvelope" in result.diagnostics after
+/// the tolerancing_diagnose arm was wired into emit_undef_builtin_diagnostics
+/// (task 4461 step-2).
+///
+/// Mirrors the result.diagnostics read at tolerancing_tests.rs:980 — this is
+/// the eval-pipeline realization of the `reify eval`→stderr user-observable
+/// signal (cmd_eval renders result.diagnostics to stderr). Grade 25 keeps this
+/// test distinct from iso_tolerance_grade_out_of_envelope_undef (grade 4),
+/// which only checks compile diagnostics + the Undef cell value.
+#[test]
+fn iso_it_tolerance_grade_25_out_of_envelope_emits_eval_error_diagnostic() {
+    let source = r#"
+structure def TestOOE {
+    param grade : Int = 25
+    param nmin : Length = 30mm
+    param nmax : Length = 50mm
+    let tolerance_value = iso_it_tolerance(grade, nmin, nmax)
+}
+structure def Probe {
+    sub g = TestOOE()
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    // Compile should be clean (no Error diagnostics).
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "out-of-envelope TestOOE should compile without errors, got: {:?}",
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // (a) Sub-component was instantiated — distinguishes "diagnostic emitted via sub" from
+    // "sub was never resolved" (a different failure mode that the unit test cannot catch).
+    let probe_g_keys: Vec<_> = result
+        .values
+        .iter()
+        .filter(|(k, _)| k.entity == "Probe.g")
+        .collect();
+    assert!(
+        !probe_g_keys.is_empty(),
+        "Probe.g sub-component should have produced at least one value cell; \
+         got none — check sub-component resolution"
+    );
+
+    // (b) tolerance_value inside the sub-component is Undef (or absent — the evaluator
+    // may elide Undef cells; see iso_tolerance_grade_out_of_envelope_undef for context).
+    let cell_id = ValueCellId::new("Probe.g", "tolerance_value");
+    match result.values.get(&cell_id) {
+        Some(Value::Undef) | None => {
+            // Expected: grade 25 → Undef (cell present-as-Undef or elided by evaluator).
+        }
+        Some(other) => panic!(
+            "Probe.g.tolerance_value for grade 25 should be Undef or absent, got {:?}",
+            other
+        ),
+    }
+
+    // (c) Eval sink contains the E_TolerancingOutOfEnvelope Error that propagated from
+    // the sub-component evaluation through the full compile→eval pipeline.  This is
+    // the eval-pipeline realization of the `reify eval`→stderr user-observable signal
+    // (cmd_eval renders result.diagnostics to stderr).
+    assert!(
+        result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Error && d.message.contains("E_TolerancingOutOfEnvelope")
+        }),
+        "eval diagnostics must contain an E_TolerancingOutOfEnvelope Error for grade 25, \
+         got: {:?}",
+        result.diagnostics
+    );
 }
 
 /// GREEN (step-3 resolver contract): `param feature : Geometry` and

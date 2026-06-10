@@ -516,11 +516,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     }
                     let result = reify_stdlib::eval_builtin(&function.name, &evaluated_args);
                     // Post-Undef builtin diagnostics: when a stackup / multi-load-
-                    // case (`linear_combine`) / AffineMap-constructor builtin returns
-                    // `Value::Undef`, classify and emit its specific diagnostic into
-                    // the ctx sink. The three name families are disjoint, so at most
-                    // one diagnose helper fires for a single Undef. Consolidated into
-                    // one `#[inline(never)]` helper so the owned `Diagnostic` locals
+                    // case (`linear_combine`) / AffineMap-constructor / inverse-
+                    // dynamics / iso_it_tolerance builtin returns `Value::Undef`,
+                    // classify and emit its specific diagnostic into the ctx sink.
+                    // The five name families are disjoint, so at most one diagnose
+                    // helper fires for a single Undef. Consolidated into one
+                    // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
                     // frame — keeping the 2 MiB test-thread stack under
                     // `MAX_RECURSION_DEPTH` (pinned by
@@ -1540,8 +1541,9 @@ fn interp_render(value: &Value) -> String {
 }
 
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
-/// FEA (`linear_combine`, task #10), and AffineMap constructors (PRD §4.2,
-/// task β) — for a builtin call whose `result` is `Value::Undef`.
+/// FEA (`linear_combine`, task #10), AffineMap constructors (PRD §4.2, task β),
+/// inverse-dynamics body mass, and ISO tolerancing — for a builtin call whose
+/// `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -1552,10 +1554,11 @@ fn interp_render(value: &Value) -> String {
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
-/// The three name families (stackup math builtins / `"linear_combine"` /
-/// `affine_*` constructors) are disjoint, so at most one of the three classifiers
-/// returns `Some` for any single `Undef`; each returns `None` for every other
-/// name or for valid input, making this a cheap no-op for ordinary builtins.
+/// The five name families (stackup math builtins / `"linear_combine"` /
+/// `affine_*` constructors / inverse-dynamics / `"iso_it_tolerance"`) are
+/// disjoint, so at most one of the five classifiers returns `Some` for any
+/// single `Undef`; each returns `None` for every other name or for valid input,
+/// making this a cheap no-op for ordinary builtins.
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
     if !matches!(result, Value::Undef) {
@@ -1579,6 +1582,13 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     }
     // Inverse-dynamics Undef: body has no resolvable mass.
     if let Some(diag) = reify_stdlib::dynamics_diagnose(name, args) {
+        sink.borrow_mut().push(diag);
+    }
+    // ISO 286-1 tolerancing: out-of-envelope iso_it_tolerance (grade outside
+    // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
+    // Severity::Error instead of a silent Undef. Post-Undef-only, same
+    // (name,&[Value])->Option<Diagnostic> shape as stackup/fea/geometry/dynamics.
+    if let Some(diag) = reify_stdlib::tolerancing_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
 }
@@ -7125,6 +7135,147 @@ mod tests {
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
             "expected Undef for dimensioned Scalar - Real"
+        );
+    }
+
+    // ─── tolerancing Undef-diagnosis sink tests (task 4461, step-1) ──────────
+
+    /// Build an `iso_it_tolerance(...)` FunctionCall expr over the given args.
+    fn iso_it_tolerance_call_expr(args: Vec<Value>) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x49, 0x49, 0x54, 0x31]),
+            result_type: Type::length(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "iso_it_tolerance".to_string(),
+                    qualified_name: "std::iso_it_tolerance".to_string(),
+                },
+                // Literal args' static Type is not consulted at runtime.
+                args: args.into_iter().map(|v| lit(v, Type::Real)).collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn iso_it_tolerance_in_envelope_emits_no_diagnostic_into_sink() {
+        // Grade 6 with 30–50mm nominal is in-envelope → iso_it_tolerance returns
+        // a finite LENGTH scalar; the sink must stay empty (pins the None-path and
+        // the matches!(result, Value::Undef) gate — an unconditional emit or
+        // mis-gated success path would be caught here).
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(6),
+            mm_val(30.0),
+            mm_val(50.0),
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        match &result {
+            Value::Scalar { dimension, si_value } => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar"
+                );
+                assert!(
+                    *si_value > 0.0,
+                    "iso_it_tolerance(6,30mm,50mm) should be positive, got {si_value}"
+                );
+            }
+            other => panic!(
+                "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            sink.borrow().is_empty(),
+            "in-envelope iso_it_tolerance must emit no diagnostic, got {:?}",
+            sink.borrow()
+        );
+    }
+
+    #[test]
+    fn iso_it_tolerance_out_of_envelope_emits_tolerancing_error_into_sink() {
+        // Grade 25 is outside IT5–IT18 → iso_it_tolerance returns Value::Undef.
+        // tolerancing_diagnose is wired into emit_undef_builtin_diagnostics as
+        // the fifth classifier arm (after dynamics_diagnose), so the sink now
+        // receives exactly one Severity::Error whose message contains
+        // "E_TolerancingOutOfEnvelope". GREEN: wiring is live.
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(25),
+            mm_val(30.0),  // 30mm nominal_min
+            mm_val(50.0),  // 50mm nominal_max
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Undef, "grade 25 is out of envelope → Undef");
+
+        let diags = sink.borrow();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one E_TolerancingOutOfEnvelope diagnostic, got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            reify_core::Severity::Error,
+            "out-of-envelope iso_it_tolerance must emit Severity::Error"
+        );
+        assert!(
+            diags[0].message.contains("E_TolerancingOutOfEnvelope"),
+            "message must contain E_TolerancingOutOfEnvelope prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn iso_it_tolerance_oversize_nominal_emits_tolerancing_error_into_sink() {
+        // Grade 6 is within IT5–IT18 (valid), but nmax = 700mm > 500mm is outside
+        // the ISO 286-1 size envelope → iso_it_tolerance returns Value::Undef and
+        // tolerancing_diagnose fires the iso_size_in_envelope branch (not the
+        // grade branch).  This pins the other half of the envelope predicate at
+        // the wiring layer, independently of the grade-out-of-range path exercised
+        // by iso_it_tolerance_out_of_envelope_emits_tolerancing_error_into_sink.
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(6),
+            mm_val(600.0), // 600mm nominal_min — grade valid, size oversize
+            mm_val(700.0), // 700mm nominal_max > 500mm → out-of-size-envelope
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Undef,
+            "oversize nominal (700mm > 500mm) with valid grade 6 should yield Undef"
+        );
+
+        let diags = sink.borrow();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one E_TolerancingOutOfEnvelope diagnostic for oversize nominal, \
+             got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            reify_core::Severity::Error,
+            "oversize nominal must emit Severity::Error"
+        );
+        assert!(
+            diags[0].message.contains("E_TolerancingOutOfEnvelope"),
+            "message must contain E_TolerancingOutOfEnvelope prefix: {}",
+            diags[0].message
         );
     }
 }
