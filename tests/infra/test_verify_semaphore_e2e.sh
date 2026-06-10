@@ -225,4 +225,27 @@ assert "merge-role verify.sh test proceeds while task slot is held (exit 0, got 
 assert "merge-role run did NOT wait for held task slot (elapsed ${MERGE_S}s < ${EXEMPT_BOUND}s, holder holds ${HOLD_S}s)" \
     test "$MERGE_S" -lt "$EXEMPT_BOUND"
 
+# ===========================================================================
+# Section C: exit-75 propagation (execute mode)
+# ===========================================================================
+# With the single slot pinned by an external holder and REIFY_TEST_SEMAPHORE_WAIT=1,
+# test_semaphore_acquire times out after 1s and returns 75.  verify.sh's executor
+# catches this and runs `exit $_rc` — propagating 75 OUT of the verify.sh process.
+# Asserting the verify.sh-level stderr message proves the 75 came from verify.sh's
+# own acquire branch, not from a stubbed sub-step — the exact contract the
+# orchestrator's exit-75→requeue path depends on.
+echo ""
+echo "--- Section C: exit-75 propagation (execute mode) ---"
+
+C_RC=0
+C_S=0
+C_ERR=""
+run_task_with_slot_held
+assert "verify.sh exits 75 (EX_TEMPFAIL) on acquisition deadline (got ${C_RC})" \
+    test "$C_RC" -eq 75
+assert "exit-75 fires within budget (elapsed ${C_S}s <= 8)" \
+    test "$C_S" -le 8
+assert "stderr shows exit-75 propagated THROUGH verify.sh (verify.sh: FAILED (exit 75): ...)" \
+    grep -qE 'verify\.sh: FAILED \(exit 75\): test-run semaphore acquire' "$C_ERR"
+
 test_summary
