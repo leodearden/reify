@@ -417,48 +417,12 @@ structure def ShellStress {
 //      declared param type) — to the function. Exact match. ✓
 //
 // NOTE: this struct is intentionally kept for solve_buckling compatibility.
-// solve_elastic_static now accepts ConstitutiveLaw via ConstitutiveLawInput
-// (task δ/3780). Do NOT widen FEAMaterialInput.material to ConstitutiveLaw —
-// that would break buckling (solver_buckling_fns.ri:51, param material:ElasticMaterial).
-//
-// TODO(trait-coerce): remove this struct and pass material directly once the
-// type checker supports trait-object coercion at fn call sites.
+// solve_elastic_static accepts ConstitutiveLaw directly (task γ/4441 supertrait
+// + task δ/4442 shim retirement). Do NOT widen FEAMaterialInput.material to
+// ConstitutiveLaw — that would break buckling (solver_buckling_fns.ri:51,
+// param material:ElasticMaterial).
 pub structure def FEAMaterialInput {
     param material : ElasticMaterial
-}
-
-// ── ConstitutiveLawInput ──────────────────────────────────────────────────────
-//
-// Type-coercion shim for passing any `ConstitutiveLaw` conformer (isotropic,
-// orthotropic, transverse-isotropic) to `solve_elastic_static`.
-//
-// As of task γ/4441, `trait ElasticMaterial : ConstitutiveLaw` holds and the
-// conformance post-pass (`phase_fn_arg_conformance` → `satisfies_trait_bound` →
-// `trait_satisfies`) walks refinement chains transitively — so `Steel_AISI_1045`
-// and every other `ElasticMaterial` conformer may now be passed DIRECTLY to
-// `solve_elastic_static` without this wrapper.  The wrapper is VESTIGIAL and
-// retained only for backwards compatibility; task δ removes it and migrates
-// callers.
-//
-// Historical context (δ/3780, now superseded by γ):
-//   The load order (materials_fea before constitutive) once forbade
-//   `trait ElasticMaterial : ConstitutiveLaw`; task γ relocated the
-//   ConstitutiveLaw marker to materials_fea.ri (above ElasticMaterial) so the
-//   supertrait no longer requires a forward-reference. Wrapper-coercion was
-//   chosen at δ because that stdlib-scope solution was the cheapest path at the
-//   time — no compiler changes were needed and the wrapper pattern already
-//   existed (FEAMaterialInput).
-//
-// This is the δ/3780 scalar-lift surface: a bare ConstitutiveLaw is
-// auto-lifted to a homogeneous ConstantField by the trampoline so a single
-// solve path handles both isotropic and anisotropic (orthotropic /
-// transverse-isotropic) cases. Heterogeneous Field<Point3,AnisotropicMaterial>
-// call-surface is deferred to task ε.
-//
-// TODO(task-δ): remove this struct once task δ migrates all callers to pass
-// material directly.
-pub structure def ConstitutiveLawInput {
-    param law : ConstitutiveLaw
 }
 
 // ── solve_elastic_static ──────────────────────────────────────────────────────
@@ -498,12 +462,8 @@ pub structure def ConstitutiveLawInput {
 //     `Steel_AISI_1045()` (and every other `ElasticMaterial` conformer) may be
 //     passed DIRECTLY — no `ConstitutiveLawInput` wrapper required.
 //     `OrthotropicMaterial` and `TransverseIsotropicMaterial` (: ConstitutiveLaw
-//     directly) also pass without a wrapper.
-//
-//     Legacy wrapper (vestigial, removed in task δ): callers that still wrap via
-//     `ConstitutiveLawInput(law: mat).law` continue to compile — `ci.law` has
-//     declared type `ConstitutiveLaw`, which is an exact match.  Task δ migrates
-//     those callers to the direct-pass form.
+//     directly) also pass without a wrapper.  The `ConstitutiveLawInput` shim
+//     was retired in task δ/4442; callers pass material directly.
 //
 //     Heterogeneous `Field<Point3<Length>, AnisotropicMaterial>` call-surface
 //     deferred to task ε.
