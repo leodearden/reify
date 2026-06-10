@@ -710,6 +710,7 @@ fn build_workspace_docs(root: &std::path::Path, open: &HashMap<PathBuf, String>)
 /// scales linearly with project size and the read results are discarded after
 /// each request.  A persistent incremental index (keyed by mtime / dir-generation)
 /// is the documented follow-up optimisation.
+#[allow(clippy::type_complexity)]
 fn build_cross_file_rig(
     root: &std::path::Path,
     stdlib_path: Option<PathBuf>,
