@@ -1603,6 +1603,49 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
     })
 }
 
+/// Write the terminal summary for `reify check` and return the appropriate
+/// [`ExitCode`].
+///
+/// Replaces the two byte-identical terminal `match outcome` blocks in
+/// `cmd_check` (no-purpose path and `--purpose` path) with a single
+/// implementation so the strict upgrade logic lives in one place.
+///
+/// * [`ConstraintOutcome::AllSatisfied`] → `"All constraints satisfied."` + SUCCESS
+/// * [`ConstraintOutcome::SomeViolated`] → `"Some constraints violated."` + FAILURE
+/// * [`ConstraintOutcome::SomeIndeterminate(n)`]:
+///   * `strict=false` → legacy `"No constraints violated ({n} indeterminate)."` + SUCCESS
+///   * `strict=true`  → [`report_indeterminate_detail`] output + FAILURE
+///
+/// Without `--strict` every existing literal string and exit code is preserved
+/// byte-for-byte (C2 — backward-compatible behavior).
+fn finish_check(
+    outcome: &ConstraintOutcome,
+    results: &[reify_eval::ConstraintCheckEntry],
+    strict: bool,
+    out: &mut impl std::io::Write,
+) -> std::process::ExitCode {
+    match outcome {
+        ConstraintOutcome::AllSatisfied => {
+            let _ = writeln!(out, "All constraints satisfied.");
+        }
+        ConstraintOutcome::SomeViolated => {
+            let _ = writeln!(out, "Some constraints violated.");
+        }
+        ConstraintOutcome::SomeIndeterminate(n) => {
+            if strict {
+                report_indeterminate_detail(results, out);
+            } else {
+                let _ = writeln!(out, "No constraints violated ({n} indeterminate).");
+            }
+        }
+    }
+    if check_fails(outcome, strict) {
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
+    }
+}
+
 /// Report constraint results and eval diagnostics in a consistent order.
 ///
 /// Writes constraint status lines to `out` (via [`report_constraint_results`]),
