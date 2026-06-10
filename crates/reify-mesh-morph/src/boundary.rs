@@ -145,7 +145,7 @@ pub trait Projector {
 /// attached B-rep entity — never the globally-closest entity. See the critical
 /// correctness anchor in this module's doc-comment and the regression-guard
 /// test `compute_dirichlet_bcs_corner_node_projects_onto_attached_face_not_globally_closest_face`.
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #2947 (mesh-morph VolumeMesh realization wiring) / CN-contract §8 task κ #3429
+// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #3429 (Mesh-morph engine wiring via ComputeNode at VolumeMesh realization dispatch, engine_build.rs)
 pub fn compute_dirichlet_bcs(
     old_mesh: &VolumeMesh,
     boundary: &BoundaryAssociation,
