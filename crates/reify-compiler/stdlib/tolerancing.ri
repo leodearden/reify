@@ -82,7 +82,22 @@ structure def Flatness : FormTolerance {
     param material_condition : MaterialCondition = MaterialCondition.RFS
 }
 
+// Straightness of a surface line element (the as-derived line on a surface).
+// This is the RFS-only surface-line variant: a material modifier is NOT
+// applicable to a surface line element. For the feature-of-size axis variant
+// (MMC-eligible), use StraightnessOfAxis below.
 structure def Straightness : FormTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Geometry
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+// Straightness applied to a feature-of-size (FOS) derived median line / axis.
+// This is the MMC-eligible variant — the one form control that legitimately
+// takes a material modifier (an axis can depart toward MMC, earning bonus
+// tolerance). The distinct type name is what β's Rust-side legality table keys
+// on to permit MMC here while flagging it on the surface-line `Straightness`.
+structure def StraightnessOfAxis : FormTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
     param material_condition : MaterialCondition = MaterialCondition.RFS
