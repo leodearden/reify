@@ -747,4 +747,132 @@ describe('renameCommand', () => {
     await flushMacrotasks();
     expect(prepareRename).toHaveBeenLastCalledWith('file:///second.ri', 0, 5);
   });
+
+  // -------------------------------------------------------------------------
+  // injected applyEdit (multi-file routing) — step-7 tests
+  // -------------------------------------------------------------------------
+
+  it('multi-file: injected applyEdit is called with the FULL WorkspaceEdit (not just active uri)', async () => {
+    const { client, ui, prepareRename, rename, promptNewName } = makeRenameDeps();
+    const target = {
+      range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } },
+      placeholder: 'width',
+    };
+    // WorkspaceEdit spans two URIs: the active file AND a sibling.
+    const SIBLING_URI = 'file:///other.ri';
+    const multiEdit: WorkspaceEdit = {
+      changes: {
+        [URI]: [{ range: target.range, newText: 'girth' }],
+        [SIBLING_URI]: [
+          { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, newText: 'girth' },
+        ],
+      },
+    };
+    prepareRename.mockResolvedValue(target);
+    rename.mockResolvedValue(multiEdit);
+
+    const applyEdit = vi.fn();
+    const view = makeMockView({
+      state: {
+        selection: { main: { head: 5 } },
+        doc: {
+          lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+        },
+      },
+    });
+
+    renameCommand(() => URI, client, ui, applyEdit)(view);
+    await flushMacrotasks();
+
+    const onSubmit = promptNewName.mock.calls[0][3] as (newName: string) => void;
+    onSubmit('girth');
+    await flushMacrotasks();
+
+    // The injected applyEdit is called with the full multi-uri edit, not just the active URI.
+    expect(applyEdit).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, multiEdit, URI);
+  });
+
+  it('multi-file: stale-apply guard (isConnected=false) prevents the injected applyEdit call', async () => {
+    const { client, ui, prepareRename, rename, promptNewName } = makeRenameDeps();
+    const target = {
+      range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } },
+      placeholder: 'width',
+    };
+    const SIBLING_URI = 'file:///other.ri';
+    const multiEdit: WorkspaceEdit = {
+      changes: {
+        [URI]: [{ range: target.range, newText: 'girth' }],
+        [SIBLING_URI]: [
+          { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, newText: 'girth' },
+        ],
+      },
+    };
+    prepareRename.mockResolvedValue(target);
+    rename.mockResolvedValue(multiEdit);
+
+    const applyEdit = vi.fn();
+    // view.dom.isConnected = false → stale guard blocks apply
+    const view = makeMockView({
+      state: {
+        selection: { main: { head: 5 } },
+        doc: {
+          lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+        },
+      },
+      dom: { isConnected: false },
+    });
+
+    renameCommand(() => URI, client, ui, applyEdit)(view);
+    await flushMacrotasks();
+
+    const onSubmit = promptNewName.mock.calls[0][3] as (newName: string) => void;
+    onSubmit('girth');
+    await flushMacrotasks();
+
+    // stale view: rename request fires but injected applyEdit must NOT be called
+    expect(rename).toHaveBeenCalledWith(URI, 0, 5, 'girth');
+    expect(applyEdit).not.toHaveBeenCalled();
+  });
+
+  it('multi-file: file-switch race blocks the injected applyEdit call', async () => {
+    const { client, ui, prepareRename, rename, promptNewName } = makeRenameDeps();
+    const target = {
+      range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } },
+      placeholder: 'width',
+    };
+    const multiEdit: WorkspaceEdit = {
+      changes: {
+        [URI]: [{ range: target.range, newText: 'girth' }],
+      },
+    };
+    prepareRename.mockResolvedValue(target);
+    rename.mockResolvedValue(multiEdit);
+
+    const applyEdit = vi.fn();
+    let currentUri = URI;
+    const view = makeMockView({
+      state: {
+        selection: { main: { head: 5 } },
+        doc: {
+          lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+        },
+      },
+    });
+
+    renameCommand(() => currentUri, client, ui, applyEdit)(view);
+    await flushMacrotasks();
+
+    const onSubmit = promptNewName.mock.calls[0][3] as (newName: string) => void;
+    // Switch files while inline field is open
+    currentUri = 'file:///other.ri';
+    onSubmit('girth');
+    await flushMacrotasks();
+
+    expect(rename).toHaveBeenCalledWith(URI, 0, 5, 'girth');
+    expect(applyEdit).not.toHaveBeenCalled();
+  });
 });
