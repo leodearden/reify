@@ -1393,6 +1393,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
           severity: entry.severity as string,
           message: entry.message as string,
           code: entry.code !== undefined ? (entry.code as string | null) : null,
+          has_location: typeof entry.has_location === 'boolean' ? entry.has_location : undefined,
         };
       });
 
