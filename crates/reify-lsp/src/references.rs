@@ -3189,5 +3189,115 @@ structure Assembly {
             "include_declaration=false drops the parts.ri home decl token"
         );
     }
+
+    // --- κ step-5 (task 4210): cross-file scope soundness ---
+
+    #[test]
+    fn compute_references_cross_file_excludes_same_name_different_module() {
+        // Invariant 1 (scope soundness): a DIFFERENT module's same-named `Hole`
+        // must NOT be swept into the reference set when renaming parts.ri's
+        // `Hole`. `other.ri` imports `widgets.Hole` (resolving — via the mock —
+        // to a DIFFERENT file than parts.ri) and constructs it. Even though the
+        // entity NAME matches, importer matching keys on the RESOLVED home URI,
+        // so `other.ri`'s import token and `sub w = Hole()` use are excluded.
+        // The legitimate importer `main.ri` (which imports `parts.Hole`) still
+        // contributes — proving the resolver distinguishes the two modules.
+        let other_src = "import widgets.Hole\nstructure X {\n    sub w = Hole()\n}";
+        let widgets_uri = Url::parse("file:///proj/widgets.ri").unwrap();
+        let other_uri = Url::parse("file:///proj/other.ri").unwrap();
+
+        let docs = workspace_docs(&[
+            (parts_uri(), PARTS_SRC),
+            (main_uri(), MAIN_SRC),
+            (other_uri.clone(), other_src),
+        ]);
+        let mut map = HashMap::new();
+        map.insert("parts".to_string(), (parts_uri(), PARTS_SRC.to_string()));
+        map.insert(
+            "widgets".to_string(),
+            (widgets_uri, PARTS_SRC.to_string()),
+        );
+        let resolver = mock_resolver(map);
+
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+        let parts_decl = occurrences(PARTS_SRC, "Hole")[0];
+        let main_import = occurrences(MAIN_SRC, "Hole")[0];
+        let main_use = occurrences(MAIN_SRC, "Hole")[1];
+        // EXACT expected set: parts.ri decl + main.ri import token + main.ri use.
+        // NOTHING from other.ri (different module).
+        let expected = sorted_locations(vec![
+            loc_at(parts_uri(), PARTS_SRC, parts_decl, "Hole"),
+            loc_at(main_uri(), MAIN_SRC, main_import, "Hole"),
+            loc_at(main_uri(), MAIN_SRC, main_use, "Hole"),
+        ]);
+
+        // Rename from the parts.ri declaration token.
+        let pos = offset_to_position(PARTS_SRC, parts_decl as u32);
+        let got = compute_references_cross_file(
+            PARTS_SRC,
+            &parsed_parts,
+            &parts_uri(),
+            pos,
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("declaration cursor resolves to a cross-file reference set");
+        assert_eq!(
+            sorted_locations(got),
+            expected,
+            "other.ri's `import widgets.Hole` (different module) must be excluded"
+        );
+    }
+
+    #[test]
+    fn compute_references_cross_file_aliased_import_contributes_entity_token_only() {
+        // Aliased import: `import parts.Hole as Bore` binds the entity `Hole`
+        // under the DISTINCT local name `Bore`. Renaming parts.ri's `Hole` must
+        // touch the import ENTITY token (`Hole`) — it names the renamed entity —
+        // but NOT the alias token (`Bore`) nor the `sub _ = Bore()` construction
+        // sites, which reference the alias binding, not the entity itself.
+        let aliased_src = "import parts.Hole as Bore\nstructure Y {\n    sub h = Bore()\n}";
+        let aliased_uri = Url::parse("file:///proj/aliased.ri").unwrap();
+
+        let docs = workspace_docs(&[(parts_uri(), PARTS_SRC), (aliased_uri.clone(), aliased_src)]);
+        let mut map = HashMap::new();
+        map.insert("parts".to_string(), (parts_uri(), PARTS_SRC.to_string()));
+        let resolver = mock_resolver(map);
+
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+        let parts_decl = occurrences(PARTS_SRC, "Hole")[0];
+        // `Hole` appears exactly once in aliased.ri — the import entity token in
+        // `import parts.Hole as Bore`. The alias `Bore` and its `sub h = Bore()`
+        // use are a distinct binding and contribute nothing.
+        let aliased_entity = occurrences(aliased_src, "Hole");
+        assert_eq!(
+            aliased_entity.len(),
+            1,
+            "aliased.ri: only the import entity token spells `Hole`"
+        );
+        let expected = sorted_locations(vec![
+            loc_at(parts_uri(), PARTS_SRC, parts_decl, "Hole"),
+            loc_at(aliased_uri.clone(), aliased_src, aliased_entity[0], "Hole"),
+        ]);
+
+        // Rename from the parts.ri declaration token.
+        let pos = offset_to_position(PARTS_SRC, parts_decl as u32);
+        let got = compute_references_cross_file(
+            PARTS_SRC,
+            &parsed_parts,
+            &parts_uri(),
+            pos,
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("declaration cursor resolves to a cross-file reference set");
+        assert_eq!(
+            sorted_locations(got),
+            expected,
+            "aliased import contributes only the entity token `Hole`, not the alias or its uses"
+        );
+    }
 }
 
