@@ -1,33 +1,33 @@
-/// Runtime debuginfo guarantee: a deliberately-panicking test still resolves
-/// file:line in its backtrace under the lean dev/test debuginfo profile
-/// (task 4450, PRD §9 β / §12 Q2 empirical gate).
-///
-/// This is the decision gate for the unpacked-vs-debug=1 mechanism choice:
-/// - GREEN under `split-debuginfo = "unpacked"`: on-host split-DWARF symbolication
-///   resolves file:line for OUR code → keep "unpacked".
-/// - RED under `split-debuginfo = "unpacked"`: symbolication degraded → switch to
-///   `debug = 1` (line-tables-only, embedded) which GUARANTEES file:line.
-///
-/// The test:
-///   1. Takes the current panic hook (restores it after), sets a temporary hook
-///      that captures `Backtrace::force_capture()` — hermetic, ignores
-///      RUST_BACKTRACE, captures while the panicking frame is still live.
-///   2. Catches a deliberate panic via `catch_unwind`.
-///   3. Restores the original hook.
-///   4. Asserts the captured text is non-empty AND contains THIS file's own frame
-///      (`debuginfo_backtrace.rs:<digits>`) — NOT merely any ".rs:" (which std
-///      internal frames always satisfy). This distinguishes "our source resolved"
-///      from "some Rust stdlib frame happened to appear".
-///
-/// Safety notes:
-///   - nextest per-test process isolation makes `set_hook`/`take_hook` safe (no
-///     cross-test process-global interference).
-///   - The hook is always restored even if assertions fail (hook restored before
-///     assertions).
-///   - This file is a single-test integration file; no other tests share the hook.
-///   - reify-test-support compiles at dev opt-level 0 (the [profile.dev.package."*"]
-///     opt=3 override applies to dependency packages, not workspace members), so
-///     the test's own frames are not inlined away and resolve cleanly.
+//! Runtime debuginfo guarantee: a deliberately-panicking test still resolves
+//! file:line in its backtrace under the lean dev/test debuginfo profile
+//! (task 4450, PRD §9 β / §12 Q2 empirical gate).
+//!
+//! This is the decision gate for the unpacked-vs-debug=1 mechanism choice:
+//! - GREEN under `split-debuginfo = "unpacked"`: on-host split-DWARF symbolication
+//!   resolves file:line for OUR code → keep "unpacked".
+//! - RED under `split-debuginfo = "unpacked"`: symbolication degraded → switch to
+//!   `debug = 1` (line-tables-only, embedded) which GUARANTEES file:line.
+//!
+//! The test:
+//!   1. Takes the current panic hook (restores it after), sets a temporary hook
+//!      that captures `Backtrace::force_capture()` — hermetic, ignores
+//!      RUST_BACKTRACE, captures while the panicking frame is still live.
+//!   2. Catches a deliberate panic via `catch_unwind`.
+//!   3. Restores the original hook.
+//!   4. Asserts the captured text is non-empty AND contains THIS file's own frame
+//!      (`debuginfo_backtrace.rs:<digits>`) — NOT merely any ".rs:" (which std
+//!      internal frames always satisfy). This distinguishes "our source resolved"
+//!      from "some Rust stdlib frame happened to appear".
+//!
+//! Safety notes:
+//!   - nextest per-test process isolation makes `set_hook`/`take_hook` safe (no
+//!     cross-test process-global interference).
+//!   - The hook is always restored even if assertions fail (hook restored before
+//!     assertions).
+//!   - This file is a single-test integration file; no other tests share the hook.
+//!   - reify-test-support compiles at dev opt-level 0 (the [profile.dev.package."*"]
+//!     opt=3 override applies to dependency packages, not workspace members), so
+//!     the test's own frames are not inlined away and resolve cleanly.
 
 use std::backtrace::Backtrace;
 use std::sync::{Arc, Mutex};
