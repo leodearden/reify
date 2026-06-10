@@ -889,4 +889,96 @@ mod tests {
         );
         assert!(diags.is_empty(), "a conforming overhang result surfaces no diagnostic");
     }
+
+    // ─── step-3 RED: diagnose — min_draft_angle arm (draft only, no undercut) ─
+
+    /// Construct a `Value::List([Bool(draft_violation), Bool(has_undercut)])`.
+    fn draft_result(violated: bool, undercut: bool) -> Value {
+        Value::List(vec![Value::Bool(violated), Value::Bool(undercut)])
+    }
+
+    #[test]
+    fn diagnose_draft_violation_warning_severity() {
+        // List([Bool(true), Bool(false)]) + DFMSeverity.Warning → one Warning diagnostic.
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Warning")],
+            &draft_result(true, false),
+        );
+        assert_eq!(diags.len(), 1, "one draft violation diagnostic");
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(
+            diags[0].message.contains("W_DFM_DRAFT"),
+            "Warning draft message carries W_DFM_DRAFT prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_violation_error_severity() {
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Error")],
+            &draft_result(true, false),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_DRAFT"),
+            "Error draft message carries E_DFM_DRAFT prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_violation_info_severity() {
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Info")],
+            &draft_result(true, false),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Info);
+        assert!(
+            diags[0].message.contains("I_DFM_DRAFT"),
+            "Info draft message carries I_DFM_DRAFT prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_violation_rule_form_reads_severity_field() {
+        // DFMRule structure-instance form: severity read from `severity` field → Error diagnostic.
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_rule("Error")],
+            &draft_result(true, false),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_DRAFT"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_violation_defaults_to_warning_when_tag_absent() {
+        // No tag in args → default Warning.
+        let diags = diagnose("min_draft_angle", &[], &draft_result(true, false));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn diagnose_draft_conforms_emits_no_diagnostic() {
+        // List([Bool(false), Bool(false)]) → empty Vec.
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Warning")],
+            &draft_result(false, false),
+        );
+        assert!(diags.is_empty(), "a conforming draft result surfaces no diagnostic");
+    }
 }
