@@ -160,4 +160,27 @@ assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000m
 assert "serialization elapsed within sanity bound (elapsed <= 20000ms, got ${MS}ms)" \
     test "$MS" -le 20000
 
+# ===========================================================================
+# Section B: merge exemption (execute mode)
+# ===========================================================================
+# DF_VERIFY_ROLE=merge bypasses test_semaphore_acquire entirely (lib lines 59-62).
+# With a background holder pinning the SINGLE slot for HOLD_S=6s and
+# REIFY_TEST_SEMAPHORE_WAIT=30 (so a non-exempt run would block for up to 30s),
+# "completes fast AND exits 0" is an unambiguous discriminator for the bypass:
+#   exempt  → MERGE_S ≈ preamble_time (<4s), MERGE_RC=0
+#   blocked → MERGE_S ≈ HOLD_S (~6s), then MERGE_RC=0
+#   exit-75 → MERGE_S << HOLD_S, MERGE_RC=75 (wrong — that's WAIT<HOLD_S case)
+echo ""
+echo "--- Section B: merge exemption (execute mode) ---"
+
+MERGE_RC=0
+MERGE_S=0
+EXEMPT_BOUND=4
+HOLD_S=6
+run_merge_while_task_slot_held
+assert "merge-role verify.sh test proceeds while task slot is held (exit 0, got ${MERGE_RC})" \
+    test "$MERGE_RC" -eq 0
+assert "merge-role run did NOT wait for held task slot (elapsed ${MERGE_S}s < ${EXEMPT_BOUND}s, holder holds ${HOLD_S}s)" \
+    test "$MERGE_S" -lt "$EXEMPT_BOUND"
+
 test_summary
