@@ -79,6 +79,40 @@ pub struct TestResult {
     pub constraint_results: Vec<ConstraintCheckEntry>,
 }
 
+/// Build a per-test [`Engine`] with all compute trampolines registered.
+///
+/// # What this fixes
+///
+/// Without compute-trampoline registration, any `@test {}` constraint that
+/// references an `@optimized(…)` call (e.g. `solver::elastic_static`,
+/// `solver::buckling`, `modal::free_vibration`, `shell-extract::extract`) would
+/// find no registered trampoline, fall back to body-inlining, produce
+/// `Value::Undef`, evaluate the constraint as `Indeterminate`, and silently
+/// never fire — the *meaningless-pass* bug.
+///
+/// # Registration pair
+///
+/// Mirrors [`reify-cli::configured_eval_engine`]'s registration pair exactly:
+/// - [`crate::compute_targets::register_compute_fns`] — FEA/buckling/modal/
+///   form-find/multi-case/dynamics/trajectory trampolines.
+/// - [`crate::register_shell_extract_compute_fns`] — shell mid-surface
+///   extraction trampoline.
+///
+/// # No `SolverRegistry`
+///
+/// Unlike `configured_eval_engine`, this helper deliberately omits
+/// `.with_solver(reify_constraints::SolverRegistry::production())`.
+/// `reify-constraints` is a **dev-only** dependency of `reify-eval`; promoting
+/// it to a runtime dep would (a) break the crate's dependency boundary and
+/// (b) violate the `run_tests_with_auto_param_returns_indeterminate` contract —
+/// auto-params must remain `Indeterminate` when no solver is wired.
+fn build_test_engine(checker: Box<dyn ConstraintChecker>) -> Engine {
+    let mut engine = Engine::new(checker, None);
+    crate::compute_targets::register_compute_fns(&mut engine);
+    crate::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+
 /// Run all `@test`-annotated structure/occurrence templates in `module`,
 /// returning one `TestResult` per test.
 ///
@@ -134,7 +168,7 @@ where
     let mut results = Vec::new();
     for test_template in module.test_templates() {
         let isolated = build_isolated_module(module, test_template);
-        let mut engine = Engine::new(make_checker(), None);
+        let mut engine = build_test_engine(make_checker());
         let check_result = engine.check(&isolated);
         results.push(TestResult {
             name: test_template.name.clone(),
