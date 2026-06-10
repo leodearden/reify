@@ -294,4 +294,51 @@ assert "exit-75 fires within budget (elapsed ${C_S}s <= 8)" \
 assert "stderr shows exit-75 propagated THROUGH verify.sh (verify.sh: FAILED (exit 75): ...)" \
     grep -qE 'verify\.sh: FAILED \(exit 75\): test-run semaphore acquire' "$C_ERR"
 
+# ===========================================================================
+# Section D: print-plan oracle — occt cap=24 + gated-region ordering
+# ===========================================================================
+# Hermetic (no stubs / no timing): asserts the plan STRUCTURE through --print-plan.
+#   (a) All `cargo nextest run` lines in test plan carry --config-file with a
+#       reify-nextest-occt path (the γ/4503 cap mechanism, NOT inline --config).
+#   (b) .config/nextest.toml pins occt max-threads=24; gen-nextest-config.sh
+#       resolves it to 24 (integration-faithful cap assertion).
+#   (c) Using `all --scope all --print-plan` (full plan), cargo clippy and
+#       cargo check -p reify-gui appear BEFORE the ACQUIRE marker, and every
+#       cargo nextest run line appears strictly BETWEEN the ACQUIRE and RELEASE
+#       markers (re-verifies β gated-region oracle + γ cap as single gate).
+# Intentionally re-consolidates β's gated-region oracle and γ's cap=24 here.
+echo ""
+echo "--- Section D: print-plan oracle (occt cap=24 + gated-region ordering) ---"
+
+capture_plans
+assert "test plan: all nextest run lines carry --config-file with reify-nextest-occt path" \
+    bash -c '! printf "%s\n" "$1" | grep "cargo nextest run" | grep -v -- "--config-file.*reify-nextest-occt"' \
+    _ "$PLAN_TEST_CMDS"
+assert ".config/nextest.toml pins occt max-threads=24" \
+    grep -qE 'occt = \{ max-threads = 24 \}' "$REPO_ROOT/.config/nextest.toml"
+assert "gen-nextest-config.sh resolves occt cap to 24" \
+    bash -c '_p=$(bash "$1/scripts/gen-nextest-config.sh"); rc=0; grep -qE "max-threads = 24" "$_p" || rc=1; rm -f "$_p"; exit $rc' \
+    _ "$REPO_ROOT"
+assert "all plan: cargo clippy ordered BEFORE acquire marker (outside gated region)" \
+    bash -c '
+        ACQ=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
+        CLIP=$(printf "%s\n" "$1" | grep -n "cargo clippy" | head -1 | cut -d: -f1)
+        [ -n "$ACQ" ] && [ -n "$CLIP" ] && [ "$CLIP" -lt "$ACQ" ]
+    ' _ "$PLAN_ALL_FULL"
+assert "all plan: cargo check -p reify-gui ordered BEFORE acquire marker (outside gated region)" \
+    bash -c '
+        ACQ=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
+        CHK=$(printf "%s\n" "$1" | grep -n "cargo check -p reify-gui" | head -1 | cut -d: -f1)
+        [ -n "$ACQ" ] && [ -n "$CHK" ] && [ "$CHK" -lt "$ACQ" ]
+    ' _ "$PLAN_ALL_FULL"
+assert "all plan: every nextest run line BETWEEN acquire and release markers" \
+    bash -c '
+        ACQ=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
+        REL=$(printf "%s\n" "$1" | grep -n "test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
+        FIRST=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | head -1 | cut -d: -f1)
+        LAST=$(printf "%s\n" "$1" | grep -n "cargo nextest run" | tail -1 | cut -d: -f1)
+        [ -n "$ACQ" ] && [ -n "$REL" ] && [ -n "$FIRST" ] && [ -n "$LAST" ]
+        [ "$FIRST" -gt "$ACQ" ] && [ "$LAST" -lt "$REL" ]
+    ' _ "$PLAN_ALL_FULL"
+
 test_summary
