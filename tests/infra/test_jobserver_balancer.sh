@@ -790,4 +790,107 @@ assert "decide(): give-back (c) free_merge==0,free_task==0 → (none,0) — cont
 assert "module exposes int EPSILON >= 1" \
     test "$_b9_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 10: decide() IDLE + reset + contention branches + IDLE_RESET_TICKS (test-10)
+#   tokens=8, baseline_merge=6, baseline_task=2, epsilon=1
+#
+#   (a) idle + window NOT elapsed: decide(free_merge=6,free_task=2,idle_ticks<threshold) == ("none",0)
+#   (b) idle + elapsed + merge-heavy skew: decide(free_merge=8,free_task=0,...>=threshold) == ("m2t",2)
+#   (c) idle + elapsed + task-heavy skew:  decide(free_merge=2,free_task=6,...>=threshold) == ("t2m",4)
+#   (d) idle + elapsed + already at baseline: decide(free_merge=6,free_task=2,...>=threshold) == ("none",0)
+#   (e) contention: decide(free_merge=0,free_task=0,...) == ("none",0)
+#   (f) module exposes int IDLE_RESET_TICKS >= 1
+#
+#   RED: IDLE_RESET_TICKS does not exist; idle/baseline-reset not implemented.
+#   (decide() currently falls through to branch 4 for sum==tokens cases that
+#    don't match merge-demanded / give-back, so (a)+(d) may pass by accident,
+#    but (b)+(c) fail since merge-heavy/task-heavy idle states give wrong action.)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 10: decide() IDLE-reset + contention branches + IDLE_RESET_TICKS ---"
+
+_b10_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# ── (f) module exposes int IDLE_RESET_TICKS >= 1 ─────────────────────────
+if not hasattr(mod, 'IDLE_RESET_TICKS'):
+    errors.append("(f) IDLE_RESET_TICKS constant not found in module")
+    sys.stderr.write("FAIL decide() idle:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+THRESH = mod.IDLE_RESET_TICKS
+if not isinstance(THRESH, int):
+    errors.append(f"(f) IDLE_RESET_TICKS is not int: {type(THRESH)}")
+if THRESH < 1:
+    errors.append(f"(f) IDLE_RESET_TICKS < 1: {THRESH}")
+
+TOKENS = 8
+baseline_task  = max(1, TOKENS // 4)   # 2
+baseline_merge = TOKENS - baseline_task  # 6
+EPS    = 1
+
+def d(fm, ft, it):
+    return mod.decide(
+        free_merge=fm, free_task=ft,
+        tokens=TOKENS, baseline_merge=baseline_merge,
+        baseline_task=baseline_task, epsilon=EPS,
+        idle_ticks=it, idle_threshold=THRESH,
+    )
+
+# ── (a) idle + window NOT elapsed → ("none", 0) ──────────────────────────
+action, count = d(baseline_merge, baseline_task, THRESH - 1)
+if action != "none" or count != 0:
+    errors.append(f"(a) idle+not-elapsed: got ({action!r},{count}), want ('none',0)")
+
+# ── (b) idle + elapsed + merge-heavy skew → ("m2t", 2) ──────────────────
+# free_merge=8 > baseline_merge=6 (merge-heavy); free_task=0 (task absent)
+# sum = 8+0=8 == TOKENS → IDLE branch
+action, count = d(8, 0, THRESH)
+if action != "m2t" or count != 8 - baseline_merge:
+    errors.append(f"(b) merge-heavy idle reset: got ({action!r},{count}), want ('m2t',{8 - baseline_merge})")
+
+# ── (c) idle + elapsed + task-heavy skew → ("t2m", 4) ───────────────────
+# free_merge=2 < baseline_merge=6; free_task=6 > baseline_task=2
+# sum = 2+6=8 == TOKENS → IDLE branch
+action, count = d(2, 6, THRESH)
+if action != "t2m" or count != 6 - baseline_task:
+    errors.append(f"(c) task-heavy idle reset: got ({action!r},{count}), want ('t2m',{6 - baseline_task})")
+
+# ── (d) idle + elapsed + already at baseline → ("none", 0) ───────────────
+action, count = d(baseline_merge, baseline_task, THRESH)
+if action != "none" or count != 0:
+    errors.append(f"(d) idle+at-baseline: got ({action!r},{count}), want ('none',0)")
+
+# ── (e) contention (both-0, sum < TOKENS) → ("none", 0) ─────────────────
+action, count = d(0, 0, 0)
+if action != "none" or count != 0:
+    errors.append(f"(e) contention: got ({action!r},{count}), want ('none',0)")
+
+if errors:
+    sys.stderr.write("FAIL decide() idle/contention:\n"
+                     + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: decide() idle/contention branches")
+PY
+} || _b10_exit=$?
+assert "decide(): (a) idle+not-elapsed → (none,0)" \
+    test "$_b10_exit" -eq 0
+assert "decide(): (b) idle+elapsed+merge-heavy → (m2t, merge-baseline_merge)" \
+    test "$_b10_exit" -eq 0
+assert "decide(): (c) idle+elapsed+task-heavy → (t2m, task-baseline_task)" \
+    test "$_b10_exit" -eq 0
+assert "decide(): (d) idle+elapsed+at-baseline → (none,0)" \
+    test "$_b10_exit" -eq 0
+assert "decide(): (e) contention both-0 → (none,0)" \
+    test "$_b10_exit" -eq 0
+assert "module exposes int IDLE_RESET_TICKS >= 1" \
+    test "$_b10_exit" -eq 0
+
 test_summary
