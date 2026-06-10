@@ -43,13 +43,13 @@
 /// path that could drift). The Hz→rad/s conversion (`ω = 2π·f`) matches
 /// `build_train_for_shaper`'s marshalling boundary.
 ///
-/// `#[allow(dead_code)]`: this is an engine-side seam exposed ahead of its
-/// consumers (`simulate_trajectory` θ/ι, TOTS κ) and is meanwhile exercised only
-/// by the in-module unit tests, so it is written-but-never-read in a non-test
-/// `cargo build`. Same "implemented ahead of wiring" suppression the trajectory
-/// stdlib modules use.
+/// `#[allow(dead_code)]`: permanent internal helper of the wired trajectory
+/// evaluation pipeline (simulate_trajectory_value / solve_tots, both wired via
+/// trampoline.rs → trajectory_ops.rs:371/429); exercised by in-module unit tests;
+/// 0-external-caller by design — the top-level entry points own the external
+/// call sites.
 #[allow(dead_code)]
-// G-allow: trajectory robustness metric seam (worst_case_residual_fraction), task #3869 (θ/ι — simulate_trajectory, DONE) and task #3870 (κ — TOTS, DONE); consumers PENDING, so no in-tree caller yet.
+// G-allow: trajectory robustness metric seam (worst_case_residual_fraction), task #3869 (θ/ι — simulate_trajectory) + #3870 (κ — TOTS); wired pipeline entry points are in trampoline.rs; helper is 0-external-caller by design.
 pub fn worst_case_residual_fraction(
     shaper: &reify_ir::Value,
     f_lo_hz: f64,
