@@ -2131,6 +2131,75 @@ mod tests {
 
     // ── end step-1 ────────────────────────────────────────────────────────────
 
+    // ── step-3: RED unit tests for report_indeterminate_detail ───────────────
+
+    #[test]
+    fn report_indeterminate_detail_lists_only_indeterminate_entries() {
+        // Mix: satisfied, indeterminate (with label), violated, indeterminate
+        // (no label — must fall back to id Display "Foo#constraint[3]").
+        let entries = vec![
+            make_entry("Bracket", 0, Some("c_ok"), Satisfaction::Satisfied),
+            make_entry("Bracket", 1, Some("c_bad"), Satisfaction::Indeterminate),
+            make_entry("Bracket", 2, Some("c_v"), Satisfaction::Violated),
+            make_entry("Foo", 3, None, Satisfaction::Indeterminate),
+        ];
+        let mut buf = Vec::new();
+        report_indeterminate_detail(&entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        // (a) Header names the count (2) and mentions undefined inputs.
+        assert!(
+            output.contains("2"),
+            "header should name the indeterminate count (2), got: {output}"
+        );
+        assert!(
+            output.contains("undefined"),
+            "header should mention undefined inputs, got: {output}"
+        );
+
+        // (b) Lists "c_bad" and id-Display fallback "Foo#constraint[3]".
+        assert!(
+            output.contains("c_bad"),
+            "output should list 'c_bad', got: {output}"
+        );
+        assert!(
+            output.contains("Foo#constraint[3]"),
+            "output should list id fallback 'Foo#constraint[3]', got: {output}"
+        );
+
+        // (c) Does NOT list "c_ok" or "c_v" (only Indeterminate entries).
+        assert!(
+            !output.contains("c_ok"),
+            "output must NOT list satisfied constraint 'c_ok', got: {output}"
+        );
+        assert!(
+            !output.contains("c_v"),
+            "output must NOT list violated constraint 'c_v', got: {output}"
+        );
+    }
+
+    #[test]
+    fn report_indeterminate_detail_single_entry_count_one() {
+        let entries = vec![
+            make_entry("Part", 0, Some("load"), Satisfaction::Indeterminate),
+        ];
+        let mut buf = Vec::new();
+        report_indeterminate_detail(&entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        // Count is 1 and the labelled constraint is listed.
+        assert!(
+            output.contains("1"),
+            "header should name the indeterminate count (1), got: {output}"
+        );
+        assert!(
+            output.contains("load"),
+            "output should list 'load', got: {output}"
+        );
+    }
+
+    // ── end step-3 ────────────────────────────────────────────────────────────
+
     #[test]
     fn report_eval_output_returns_correct_outcome_variants() {
         let no_diags: Vec<reify_core::Diagnostic> = vec![];
