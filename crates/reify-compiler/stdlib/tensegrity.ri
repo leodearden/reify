@@ -105,7 +105,7 @@ structure def Membrane {
 //
 // Open typed-element-groups invariant: existing Tensegrity(nodes,struts,cables)
 // call sites are unchanged — the uncovered `surfaces` required param is silently
-// dropped by the SIR ctor-lowering (expr.rs:1433-1488), so all prior goldens and
+// dropped by the `StructureInstanceCtor` branch in expr.rs, so all prior goldens and
 // tests remain byte-identical. See Design Decision 1 in plan.json.
 //
 // Index convention (wire members): each inner list in struts/cables is exactly

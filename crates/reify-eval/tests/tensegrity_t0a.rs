@@ -263,7 +263,7 @@ structure def TNet {
 /// Regression: `Tensegrity(nodes, struts, cables)` with NO `surfaces` argument
 /// compiles and evaluates successfully to a `Value::StructureInstance`. The
 /// `surfaces` field is ABSENT from the resulting fields map — the SIR
-/// ctor-lowering (expr.rs:1433-1488) silently drops uncovered required params
+/// `StructureInstanceCtor` branch in expr.rs silently drops uncovered required params
 /// rather than defaulting them. This contracts the backward-compatibility
 /// invariant that makes `surfaces` safely addable as a required (no-default)
 /// param: all pre-existing call sites remain valid by language semantics.
