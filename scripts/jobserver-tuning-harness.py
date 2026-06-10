@@ -128,11 +128,58 @@ CACHE_COLD = "cold"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Pure functions (implemented in later steps)
+# Pure functions
 # ──────────────────────────────────────────────────────────────────────────────
-# These stubs will be replaced by step-2 (busy_fraction), step-4 (instruments),
-# step-6 (run_regime), step-8 (derive_constants), step-10 (evaluate_acceptance),
-# step-12 (render_report), step-14 (--check + campaign entrypoints).
+
+
+def busy_fraction(stat_before: str, stat_after: str, nproc: int):
+    """Compute CPU busy-core fraction from two /proc/stat 'cpu …' snapshots.
+
+    Parses the aggregate 'cpu' line from each snapshot string.  The line
+    format is (fields after the 'cpu' label, 0-based):
+        user  nice  system  idle  iowait  irq  softirq  steal  guest  guest_nice
+
+    busy  = Σ(user + nice + system + irq + softirq + steal) delta
+    idle  = Σ(idle + iowait) delta
+    total = busy + idle
+
+    Returns
+    -------
+    (fraction, busy_cores) where
+      fraction   : float in [0.0, 1.0] — busy / total (0.0 if total == 0)
+      busy_cores : float — fraction × nproc
+    """
+
+    def _parse(line: str):
+        """Return a list of ints from a /proc/stat cpu line."""
+        parts = line.split()
+        # Skip the leading 'cpu' label; handle both 'cpu' and 'cpu0' etc.
+        idx = 0
+        while idx < len(parts) and not parts[idx][0].isdigit():
+            idx += 1
+        return [int(p) for p in parts[idx:]]
+
+    b = _parse(stat_before)
+    a = _parse(stat_after)
+
+    # Field indices (0-based within the numeric section):
+    # 0=user 1=nice 2=system 3=idle 4=iowait 5=irq 6=softirq 7=steal
+    BUSY_FIELDS = (0, 1, 2, 5, 6, 7)   # user, nice, system, irq, softirq, steal
+    IDLE_FIELDS = (3, 4)               # idle, iowait
+
+    busy_delta = sum(a[i] - b[i] for i in BUSY_FIELDS if i < len(a) and i < len(b))
+    idle_delta = sum(a[i] - b[i] for i in IDLE_FIELDS if i < len(a) and i < len(b))
+    total_delta = busy_delta + idle_delta
+
+    if total_delta == 0:
+        return 0.0, 0.0
+
+    fraction = busy_delta / total_delta
+    busy_cores = fraction * nproc
+    return fraction, busy_cores
+
+
+# Stubs for later steps (implemented in steps 4, 6, 8, 10, 12, 14).
 
 
 def main() -> None:
