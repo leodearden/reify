@@ -324,10 +324,13 @@ ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
 #                                    re-seeds it whenever the orchestrator
 #                                    restarts (a restart SIGKILLs in-flight
 #                                    rustc, each permanently leaking its token).
-#   * reify-jobserver-canary.{service,timer} — every 5 min, re-seed the FIFO if
-#                                    tokens have leaked; acts ONLY while the
-#                                    build is idle, so it can never disrupt an
-#                                    in-flight verify.
+#   * reify-jobserver-canary.{service,timer} — generated but NOT auto-enabled;
+#                                    the legacy canary targets the defunct single
+#                                    /tmp/reify-jobserver FIFO and would
+#                                    restart-loop the dual-pool daemon each tick.
+#                                    The gamma task will rewrite and re-enable it
+#                                    for the dual-FIFO (/tmp/reify-jobserver-merge
+#                                    + /tmp/reify-jobserver-task) pools.
 #
 # Cache size overridable via REIFY_SCCACHE_SIZE (default 100G). Skipped when no
 # systemd --user bus is available (e.g. CI).
@@ -417,7 +420,15 @@ EOF
 
     chmod +x "$repo_dir/scripts/jobserver-canary.sh" "$repo_dir/scripts/jobserver-balancer.py"
     systemctl --user daemon-reload
-    systemctl --user enable --now sccache.service reify-jobserver.service reify-jobserver-canary.timer
+    # Disable any stale canary timer that was enabled before the alpha release.
+    # The legacy timer targets /tmp/reify-jobserver (single FIFO, now defunct) and
+    # would trigger an unconditional restart before its build-idle guard each tick,
+    # SIGKILLing in-flight rustc and permanently leaking held tokens.  A plain
+    # drop from 'enable --now' does NOT stop an already-running timer on hosts
+    # provisioned before alpha, so we explicitly disable --now (guarded because
+    # set -euo pipefail is active and the unit may already be absent/disabled).
+    systemctl --user disable --now reify-jobserver-canary.timer 2>/dev/null || true
+    systemctl --user enable --now sccache.service reify-jobserver.service
 }
 
 if systemctl --user show-environment &>/dev/null; then
