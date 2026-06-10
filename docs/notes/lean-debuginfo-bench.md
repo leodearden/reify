@@ -29,6 +29,14 @@ Both measurements use the same protocol: full workspace debug nextest compile (n
 
 **Shrink**: 121.4 GB → 51.8 GB = **−57%** (69.5 GB saved per warm worktree).
 
+> **Note on measurement fidelity**: BEFORE and AFTER were measured in different
+> worktrees (`task/4400` vs `task/4450`), so the −57% headline conflates the
+> split-debuginfo change with any code-state differences between them.  The
+> direction (after < before) remains valid — any inter-worktree code delta is
+> small relative to the dominant DWARF-deduplication effect.  For a controlled
+> A/B, toggle only the `[profile.dev] split-debuginfo` line in a single
+> worktree and re-run the same protocol.
+
 Per the PRD (task β / §9), this is best measured after task α (linker choice), as the chosen linker affects link performance. Task α (`chosen-linker: rust-lld`) landed before this measurement; the two levers compose.
 
 ## Mechanism
