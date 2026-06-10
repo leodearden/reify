@@ -307,7 +307,9 @@ fn build_volume_usage_error(args: &[Value]) -> Diagnostic {
 ///   = overhang violation present, `Bool(false)` = conforms). `Bool(true)` → one
 ///   `{I,W,E}_DFM_OVERHANG` at the rule's declared [`rule_severity`] (default Warning);
 ///   `Bool(false)` → nothing. The verdict is pre-computed upstream by γ; δ receives it
-///   as a bare Bool and does NOT re-examine numeric thresholds.
+///   as a bare Bool and does NOT re-examine numeric thresholds. No `Undef` usage-error
+///   path: γ guarantees a valid Bool verdict; any non-Bool result (e.g. `Undef`) emits
+///   nothing (defensive) rather than a spurious error.
 ///
 /// - `"min_draft_angle"` — draft-angle / undercut check. Result is
 ///   `Value::List([Bool(draft_violation), Bool(has_undercut)])`. Each element is
@@ -315,7 +317,9 @@ fn build_volume_usage_error(args: &[Value]) -> Diagnostic {
 ///   declared [`rule_severity`]; `has_undercut = true` → one `E_DFM_UNDERCUT` (ALWAYS
 ///   [`Severity::Error`], independent of the rule tag — an undercut means the part
 ///   cannot physically release from the mold). Both true → two diagnostics; `[false,
-///   false]` → nothing. A non-List result emits nothing (defensive).
+///   false]` → nothing. No `Undef` usage-error path: γ guarantees a well-formed List;
+///   a non-List result (e.g. `Undef`) emits nothing (defensive) rather than a spurious
+///   error.
 ///
 /// - Any other name → empty (non-DFM builtin, ignored).
 ///
@@ -1091,5 +1095,34 @@ mod tests {
         });
         assert!(has_draft, "one W_DFM_DRAFT Warning diagnostic present");
         assert!(has_undercut, "one E_DFM_UNDERCUT Error diagnostic present");
+    }
+
+    // ─── amend: defensive no-emit for malformed γ verdicts ────────────────────
+    // The new arms deliberately have no Undef usage-error path (γ pre-computes the
+    // verdict and guarantees a valid Bool / List). These tests lock the documented
+    // defensive no-emit behavior so a future refactor that accidentally emits a
+    // diagnostic (or panics) on a malformed verdict is caught immediately.
+
+    #[test]
+    fn diagnose_overhang_non_bool_result_emits_nothing() {
+        // Defensive: a non-Bool result (e.g. Undef — a wrong-shaped γ verdict) must
+        // produce NO diagnostics rather than panic or emit a spurious error.
+        // γ guarantees Bool; this guards the "impossible" branch so regressions are
+        // caught rather than silently dropped.
+        assert!(
+            diagnose("unsupported_overhang_faces", &[], &Value::Undef).is_empty(),
+            "non-Bool result emits nothing (defensive, no Undef usage-error path)"
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_non_list_result_emits_nothing() {
+        // Defensive: a non-List result (e.g. Undef — a wrong-shaped γ verdict) must
+        // produce NO diagnostics rather than panic or emit a spurious error.
+        // γ guarantees a well-formed List; this guards the "impossible" branch.
+        assert!(
+            diagnose("min_draft_angle", &[dfm_sev("Warning")], &Value::Undef).is_empty(),
+            "non-List result emits nothing (defensive, no Undef usage-error path)"
+        );
     }
 }
