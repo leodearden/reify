@@ -13,7 +13,7 @@
  */
 
 import { vi } from 'vitest';
-import { createRoot, createSignal } from 'solid-js';
+import { createRoot, createSignal, Show } from 'solid-js';
 import { render } from '@solidjs/testing-library';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -27,7 +27,13 @@ import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 import { initDebugBridge } from '../debug/bridge';
 import { Editor } from '../editor/Editor';
 import { FindUsesPanel } from '../panels/FindUsesPanel';
+import { CommandPalette } from '../components/CommandPalette';
+import { DesignTree } from '../panels/DesignTree';
+import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
+import type { PaletteCommand } from '../hooks/useKeyboardShortcuts';
 import type { ReferenceResult } from '../editor/references';
+import type { EntityTreeNode } from '../types';
+import type { ViewStateStore } from '../stores/viewStateStore';
 
 // ── FIXTURE ───────────────────────────────────────────────────────────────────
 
@@ -273,6 +279,193 @@ export function renderEditorWithFindUsesPanel(
   ));
 
   return { renderResult, findUsesOpen, findUsesResults, setFindUsesOpen };
+}
+
+// ── Palette test constants ────────────────────────────────────────────────────
+
+/**
+ * Deterministic command list for palette tests.
+ * Using 'reEvaluate' (first paletteCommands() entry after filtering) so the
+ * test can assert lastCommandRan() === 'reEvaluate' without depending on
+ * dynamic SHORTCUTS ordering.
+ */
+const PALETTE_TEST_COMMANDS: PaletteCommand[] = [
+  { id: 'reEvaluate', title: 'Re-evaluate', key: 'F5' },
+];
+
+// ── Entity tree constants ─────────────────────────────────────────────────────
+
+/**
+ * Minimal EntityTreeNode[] seeded from the FIXTURE .ri file.
+ * PartA and PartB are root-level structures with no children.
+ * Used by renderEditorWithDesignTree + renderAllAffordances.
+ */
+export const FIXTURE_TREE: EntityTreeNode[] = [
+  {
+    entity_path: 'PartA',
+    kind: 'structure',
+    type_name: null,
+    display_name: 'PartA',
+    has_mesh: false,
+    trait_geometry: false,
+    freshness: 'final',
+    children: [],
+  },
+  {
+    entity_path: 'PartB',
+    kind: 'structure',
+    type_name: null,
+    display_name: 'PartB',
+    has_mesh: false,
+    trait_geometry: false,
+    freshness: 'final',
+    children: [],
+  },
+];
+
+/** Extended ViewStateStore mock for DesignTree (adds getStalePaths, getEffectiveVisibility, etc.). */
+function makeDesignTreeViewStateMock(): ViewStateStore {
+  return {
+    ...makeViewStateStoreMock(),
+    getStalePaths: vi.fn().mockReturnValue([]),
+    getEffectiveVisibility: vi.fn().mockReturnValue('show'),
+    cycleCascading: vi.fn(),
+    setVisibility: vi.fn(),
+    showOnly: vi.fn(),
+    resetToInherit: vi.fn(),
+  } as unknown as ViewStateStore;
+}
+
+// ── Command palette rendering (step-9/step-10) ─────────────────────────────────
+
+/**
+ * Renders Editor + CommandPalette with useKeyboardShortcuts wired to Ctrl+Shift+P.
+ *
+ * The command list is deterministic (PALETTE_TEST_COMMANDS: ['reEvaluate']).
+ * runCommand records the executed command id in lastCommandRan() and closes the palette.
+ *
+ * Must be called AFTER setupBridgeHarness() so window.__REIFY_DEBUG__ is set.
+ */
+export function renderEditorWithPalette(harness: HarnessSetup): {
+  renderResult: ReturnType<typeof render>;
+  paletteOpen: () => boolean;
+  lastCommandRan: () => string | null;
+} {
+  vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+  vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+
+  const [paletteOpen, setPaletteOpen] = createSignal(false);
+  const [lastCommandRan, setLastCommandRan] = createSignal<string | null>(null);
+
+  // Solid component that registers the global Ctrl+Shift+P handler and renders
+  // the real CommandPalette when paletteOpen() is true.
+  const HarnessWithPalette = () => {
+    useKeyboardShortcuts({
+      onCommandPalette: () => setPaletteOpen(true),
+    });
+    return (
+      <div>
+        <Editor store={harness.editorStore} />
+        <Show when={paletteOpen()}>
+          <CommandPalette
+            getCommands={() => PALETTE_TEST_COMMANDS}
+            runCommand={(id) => {
+              setLastCommandRan(id as string);
+              setPaletteOpen(false);
+            }}
+            fetchSymbols={() => Promise.resolve([])}
+            filePath={FIXTURE_PATH}
+            onJumpToLocation={() => {}}
+            onClose={() => setPaletteOpen(false)}
+          />
+        </Show>
+      </div>
+    );
+  };
+
+  const renderResult = render(() => <HarnessWithPalette />);
+  return { renderResult, paletteOpen, lastCommandRan };
+}
+
+// ── DesignTree rendering (step-11/step-12) ─────────────────────────────────────
+
+/**
+ * Renders Editor + DesignTree with the fixture entity tree.
+ *
+ * step-11 RED: onHover is NOT wired to selectionStore — hover assertions fail.
+ * step-12 GREEN: onHover is wired to selectionStore.hoverEntity — tests pass.
+ *
+ * Must be called AFTER setupBridgeHarness().
+ */
+export function renderEditorWithDesignTree(harness: HarnessSetup): {
+  renderResult: ReturnType<typeof render>;
+  viewStateMock: ViewStateStore;
+} {
+  vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+  vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+
+  const viewStateMock = makeDesignTreeViewStateMock();
+
+  const renderResult = render(() => (
+    <div>
+      <Editor store={harness.editorStore} />
+      <DesignTree
+        tree={FIXTURE_TREE}
+        viewStateStore={viewStateMock}
+        // step-11 RED: intentionally not wired — selectionStore.hoverEntity not called.
+        // step-12 GREEN: wire onHover → selectionStore.hoverEntity.
+        onHover={() => {}}
+        hoveredEntity={null}
+      />
+    </div>
+  ));
+
+  return { renderResult, viewStateMock };
+}
+
+// ── Combined affordances rendering (step-13/step-14) ──────────────────────────
+
+/**
+ * Renders all five affordance components in a single root.
+ *
+ * step-13 RED stub: only Editor + FindUsesPanel (palette + DesignTree absent).
+ *   Combined test fails at the palette assertion after Ctrl+Shift+P.
+ * step-14 GREEN: full implementation with useKeyboardShortcuts + CommandPalette + DesignTree.
+ */
+export function renderAllAffordances(harness: HarnessSetup): {
+  renderResult: ReturnType<typeof render>;
+  findUsesOpen: () => boolean;
+  findUsesResults: () => ReferenceResult[];
+  lastCommandRan: () => string | null;
+} {
+  vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+  vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+
+  const [findUsesOpen, setFindUsesOpen] = createSignal(false);
+  const [findUsesResults, setFindUsesResults] = createSignal<ReferenceResult[]>([]);
+  const [lastCommandRan, setLastCommandRan] = createSignal<string | null>(null);
+
+  // step-13 RED stub: Editor + FindUsesPanel only.
+  // step-14 GREEN will add useKeyboardShortcuts, CommandPalette, and DesignTree.
+  const renderResult = render(() => (
+    <div>
+      <Editor
+        store={harness.editorStore}
+        onShowReferences={(results) => {
+          setFindUsesResults(() => results);
+          setFindUsesOpen(true);
+        }}
+      />
+      <FindUsesPanel
+        open={findUsesOpen()}
+        results={findUsesResults()}
+        onClose={() => setFindUsesOpen(false)}
+        onNavigate={() => {}}
+      />
+    </div>
+  ));
+
+  return { renderResult, findUsesOpen, findUsesResults, lastCommandRan };
 }
 
 // ── dispatchCmd helper ────────────────────────────────────────────────────────

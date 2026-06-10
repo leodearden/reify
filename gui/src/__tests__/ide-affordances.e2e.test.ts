@@ -53,9 +53,13 @@ import { cleanup } from '@solidjs/testing-library';
 import {
   FIXTURE,
   FIXTURE_PATH,
+  FIXTURE_TREE,
   setupBridgeHarness,
   renderEditorInHarness,
   renderEditorWithFindUsesPanel,
+  renderEditorWithPalette,
+  renderEditorWithDesignTree,
+  renderAllAffordances,
   makeDispatch,
   type DebugRequestHandler,
   type LspCall,
@@ -332,5 +336,192 @@ describe('find-references (step-3 RED → step-4 GREEN)', () => {
     // (faces frontend) FindUsesPanel shows 2 rows — PartA.width ×2 (decl + use).
     const rows = document.querySelectorAll('[data-testid="find-use-row"]');
     expect(rows.length).toBe(2);
+  });
+});
+
+// ── step-9: RED command palette ───────────────────────────────────────────────
+//
+// Asserts:
+//   (frontend) palette container is observable via data-testid 'command-palette'
+//              after Ctrl+Shift+P (without focusing the editor — risk R2).
+//   (frontend) at least one command row with data-testid 'command-palette-item'.
+//   (frontend) clicking the first row runs the command and closes the palette.
+//
+// Goes RED at step-9: CommandPalette.tsx has no data-testid attributes yet.
+// step-10 GREEN: add testids to CommandPalette.tsx; harness already wires the palette.
+
+describe('command palette (step-9 RED → step-10 GREEN)', () => {
+  it('Ctrl+Shift+P opens the palette; a command row is runnable', async () => {
+    harness = await setupBridgeHarness();
+    dispatch = makeDispatch(harness.handler);
+
+    // step-10 GREEN: renderEditorWithPalette wires useKeyboardShortcuts(onCommandPalette)
+    // and renders the real CommandPalette when the signal fires.
+    const { lastCommandRan } = renderEditorWithPalette(harness);
+
+    await dispatch('open_file', { path: FIXTURE_PATH, content: FIXTURE });
+    await flushMacrotasks(0);
+
+    // Do NOT call focus_editor — the global Ctrl+Shift+P handler is on document,
+    // so it fires regardless of focus (risk R2 bypass via palette-global exemption).
+    // Bridge keyboard dispatches on document.activeElement (body), bubbles to document.
+    await dispatch('keyboard', { key: 'P', ctrl: true, shift: true });
+    await flushMacrotasks(0);
+
+    // (faces frontend) palette container must be observable via data-testid.
+    // FAILS at step-9: CommandPalette.tsx has no data-testid attributes.
+    const palette = document.querySelector('[data-testid="command-palette"]');
+    expect(palette).not.toBeNull();
+
+    // Palette should have at least one command row (data-testid='command-palette-item').
+    const items = document.querySelectorAll('[data-testid="command-palette-item"]');
+    expect(items.length).toBeGreaterThan(0);
+
+    // Click the first command row to execute it.
+    (items[0] as HTMLElement).click();
+    await flushMacrotasks(0);
+
+    // After running the command, the palette should close (onClose called).
+    const paletteAfter = document.querySelector('[data-testid="command-palette"]');
+    expect(paletteAfter).toBeNull();
+
+    // The command id was recorded by the harness runCommand spy.
+    expect(lastCommandRan()).toBe('reEvaluate');
+  });
+});
+
+// ── step-11: RED hover-sync ───────────────────────────────────────────────────
+//
+// Asserts:
+//   (frontend) mouseenter on DesignTree tree-row-PartA sets
+//              store_state().selection.hoveredEntity === 'PartA'.
+//   (frontend) the row gains data-hovered='true' (driven by hoveredEntity prop).
+//
+// Goes RED at step-11: renderEditorWithDesignTree does NOT wire onHover to
+//   selectionStore.hoverEntity (intentional stub — wired in step-12 GREEN).
+
+describe('hover-sync (step-11 RED → step-12 GREEN)', () => {
+  it('mouseenter on tree-row-PartA sets hoveredEntity in store and marks row data-hovered', async () => {
+    harness = await setupBridgeHarness();
+    dispatch = makeDispatch(harness.handler);
+
+    // step-11 RED: harness renders DesignTree with FIXTURE_TREE but onHover is
+    // not wired to selectionStore.hoverEntity — store stays null.
+    renderEditorWithDesignTree(harness);
+
+    await dispatch('open_file', { path: FIXTURE_PATH, content: FIXTURE });
+    await flushMacrotasks(0);
+
+    // DesignTree renders FIXTURE_TREE rows unconditionally (tree prop is static).
+    const partARow = document.querySelector('[data-testid="tree-row-PartA"]');
+    expect(partARow).not.toBeNull();
+
+    // Fire mouseenter — DesignTree.tsx:223 calls props.onHover?.(node.entity_path).
+    partARow!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    await flushMacrotasks(0);
+
+    // (faces frontend) store: hoveredEntity must be set to 'PartA'.
+    // FAILS at step-11: onHover is () => {} — selectionStore.hoverEntity not called.
+    const storeResult = await dispatch('store_state', {}) as any;
+    expect(storeResult.selection.hoveredEntity).toBe('PartA');
+
+    // (faces frontend) DOM: row should carry data-hovered='true'.
+    // Also fails at step-11 because hoveredEntity prop is null (not reactive to store).
+    expect(partARow!.getAttribute('data-hovered')).toBe('true');
+  });
+});
+
+// ── step-13: RED combined session ─────────────────────────────────────────────
+//
+// The integration gate: one it() that exercises all five affordances in sequence
+// through the real bridge:
+//   1. rename   (F2 → PartA.width → newWidth)
+//   2. find-refs (Shift+F12)
+//   3. folding  (Ctrl+Shift+[)
+//   4. palette  (Ctrl+Shift+P → run command)
+//   5. hover    (mouseenter on tree-row-PartA)
+// Finally asserts list_console_errors count === 0.
+//
+// Goes RED at step-13: renderAllAffordances is a stub (Editor+FindUsesPanel only).
+//   Palette assertion fails because useKeyboardShortcuts is not registered.
+// step-14 GREEN: full implementation adds palette + DesignTree.
+
+describe('combined session — all five affordances (step-13 RED → step-14 GREEN)', () => {
+  it('rename → find-refs → folding → palette → hover all work in one open_file session', async () => {
+    harness = await setupBridgeHarness();
+    dispatch = makeDispatch(harness.handler);
+
+    // step-13 RED stub: only Editor + FindUsesPanel.
+    // step-14 GREEN: full renderAllAffordances with palette + DesignTree.
+    const { lastCommandRan } = renderAllAffordances(harness);
+
+    await dispatch('open_file', { path: FIXTURE_PATH, content: FIXTURE });
+    await flushMacrotasks(0);
+
+    const view = window.__REIFY_DEBUG__!.editorView!;
+    expect(view.state.doc.length).toBeGreaterThan(0);
+
+    // 1. Rename: F2 on PartA.width → newWidth.
+    const widthOffset = view.state.doc.line(2).from + 8;
+    view.dispatch({ selection: { anchor: widthOffset } });
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }));
+    await flushMacrotasks(0);
+    const renameField = document.querySelector('[data-testid="rename-field"]') as HTMLInputElement | null;
+    expect(renameField).not.toBeNull();
+    renameField!.value = 'newWidth';
+    renameField!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flushMacrotasks(0);
+    expect(view.state.doc.toString()).toContain('param newWidth = 10.0');
+    expect(view.state.doc.toString()).toContain('param width = 5.0'); // PartB untouched
+
+    // 2. Find-references: Shift+F12 at cursor (still on PartA line 2, char 8+).
+    harness.lspCalls.length = 0; // clear so we can find this specific call
+    view.dispatch({ selection: { anchor: widthOffset } });
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', shiftKey: true, bubbles: true }));
+    await flushMacrotasks(0);
+    const refsCall = harness.lspCalls.find((c) => c.method === 'textDocument/references');
+    expect(refsCall).toBeDefined();
+    const refRows = document.querySelectorAll('[data-testid="find-use-row"]');
+    expect(refRows.length).toBe(2);
+
+    // 3. Folding: Ctrl+Shift+[ via keymap-facet fallback (risk R1 confirmed).
+    view.dispatch({ selection: { anchor: 0 } });
+    const { foldedRanges } = await import('@codemirror/language');
+    const { keymap } = await import('@codemirror/view');
+    const allBindings = view.state.facet(keymap).flat();
+    const foldBinding = allBindings.find((b) => b.key === 'Ctrl-Shift-[');
+    expect(foldBinding).toBeDefined();
+    foldBinding!.run!(view);
+    await flushMacrotasks(0);
+    let foldCount = 0;
+    foldedRanges(view.state).between(0, view.state.doc.length, () => { foldCount++; });
+    expect(foldCount).toBeGreaterThan(0);
+
+    // 4. Command palette: Ctrl+Shift+P — FAILS at step-13 RED.
+    //    renderAllAffordances stub does not register useKeyboardShortcuts,
+    //    so Ctrl+Shift+P fires but no handler opens the palette.
+    await dispatch('keyboard', { key: 'P', ctrl: true, shift: true });
+    await flushMacrotasks(0);
+    const palette = document.querySelector('[data-testid="command-palette"]');
+    expect(palette).not.toBeNull(); // ← RED at step-13
+
+    const paletteItems = document.querySelectorAll('[data-testid="command-palette-item"]');
+    expect(paletteItems.length).toBeGreaterThan(0);
+    (paletteItems[0] as HTMLElement).click();
+    await flushMacrotasks(0);
+    expect(document.querySelector('[data-testid="command-palette"]')).toBeNull();
+    expect(lastCommandRan()).toBe('reEvaluate');
+
+    // 5. Hover: mouseenter on tree-row-PartA.
+    const partARow = document.querySelector('[data-testid="tree-row-PartA"]');
+    expect(partARow).not.toBeNull();
+    partARow!.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    await flushMacrotasks(0);
+    const storeResult = await dispatch('store_state', {}) as any;
+    expect(storeResult.selection.hoveredEntity).toBe('PartA');
+
+    // Integration gate: no console errors from the combined session.
+    const errResult = await dispatch('list_console_errors', {}) as any;
+    expect(errResult.count).toBe(0);
   });
 });
