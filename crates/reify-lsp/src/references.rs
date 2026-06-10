@@ -1536,6 +1536,103 @@ pub fn compute_references_cross_file(
     }
 }
 
+/// Classify the top-level declaration named `name` in `source` to a
+/// [`RefSymbolKind`], for κ cross-file rename gating. Mirrors the declaration
+/// scan in [`crate::goto_def::find_declaration_name_span`] (which located the
+/// home token), so the classified kind agrees with the resolved home. Returns
+/// `None` when no top-level declaration matches.
+fn classify_top_level_decl(source: &str, name: &str) -> Option<RefSymbolKind> {
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("_classify"));
+    parsed.declarations.iter().find_map(|decl| {
+        let (decl_name, kind) = match decl {
+            Declaration::Structure(s) => (s.name.as_str(), RefSymbolKind::Structure),
+            Declaration::Occurrence(o) => (o.name.as_str(), RefSymbolKind::Occurrence),
+            Declaration::Trait(t) => (t.name.as_str(), RefSymbolKind::Trait),
+            Declaration::Enum(e) => (e.name.as_str(), RefSymbolKind::Enum),
+            Declaration::Function(f) => (f.name.as_str(), RefSymbolKind::Fn),
+            _ => return None,
+        };
+        (decl_name == name).then_some(kind)
+    })
+}
+
+/// Whether a cross-file home of `kind` is renameable in κ: every single-file
+/// value-member kind ([`is_renameable`]) PLUS `Structure`/`Occurrence` — the
+/// declaration kinds whose construction sites (`sub _ = Name`) κ tracks across
+/// the import graph. `Trait`/`Enum`/`Fn`/`Variant` are OUT of κ scope (their use
+/// sites are type-annotation / refinement positions κ does not collect, so a
+/// rename would be unsound) and refuse. Shared by [`prepare_rename_cross_file`]
+/// and the cross-file rename producer so the two agree on what is renameable.
+fn is_renameable_cross_file(kind: RefSymbolKind) -> bool {
+    is_renameable(kind) || matches!(kind, RefSymbolKind::Structure | RefSymbolKind::Occurrence)
+}
+
+/// Cross-file prepare-rename over the import graph (κ, task 4210).
+///
+/// Lifts the single-file cross-module refusal: a structure name reached through
+/// an `import` (its import entity token or a `sub _ = Name` construction site),
+/// or the home declaration token itself, becomes a rename target — whereas the
+/// single-file [`prepare_rename`] returns `None` for it (declaration/imported
+/// kinds are not single-file renameable).
+///
+/// Resolution order mirrors [`compute_references_cross_file`]: try the
+/// single-file [`prepare_rename`] first (value members keep their exact
+/// semantics), then resolve a cross-file structure home and admit it only when
+/// its declaration kind is κ-renameable ([`is_renameable_cross_file`] —
+/// Structure/Occurrence). Refuses keywords, literals, type-annotation positions,
+/// and words resolving to neither a local binding nor a resolvable structure.
+///
+/// PURE: target resolution arrives as the injected `resolve_import` closure
+/// (mirroring goto_def), so the cross-file path is unit-testable with a mock
+/// resolver.
+pub fn prepare_rename_cross_file(
+    primary_source: &str,
+    primary_parsed: &ParsedModule,
+    primary_uri: &Url,
+    pos: Position,
+    resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
+) -> Option<RenameTarget> {
+    // 1. Single-file value-member rename keeps its exact semantics.
+    if let Some(target) = prepare_rename(primary_source, primary_parsed, pos) {
+        return Some(target);
+    }
+
+    // 2. Cross-file structure home — lift the single-file cross-module refusal.
+    let offset = position_to_offset(primary_source, pos);
+    let (word_start, word) = find_word_at_offset(primary_source, offset)?;
+    let CrossFileHome::Structure { name, source, .. } = resolve_cross_file_home(
+        primary_source,
+        primary_parsed,
+        primary_uri,
+        offset,
+        word,
+        resolve_import,
+    )?
+    else {
+        // A value-member home was already handled by `prepare_rename` above
+        // (every value-member kind is single-file renameable); reaching here
+        // with one would mean it was non-renameable, so refuse uniformly.
+        return None;
+    };
+
+    // Admit only the κ-renameable declaration kinds (Structure/Occurrence); a
+    // trait/enum/fn home is OUT of κ scope and refuses.
+    if !is_renameable_cross_file(classify_top_level_decl(&source, &name)?) {
+        return None;
+    }
+
+    // The rename target is the identifier token UNDER THE CURSOR — the home decl
+    // token, an import entity token, or a `sub _ = Name` construction token.
+    let range = span_to_range(
+        primary_source,
+        SourceSpan::new(word_start as u32, (word_start + word.len()) as u32),
+    );
+    Some(RenameTarget {
+        range,
+        placeholder: word.to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
