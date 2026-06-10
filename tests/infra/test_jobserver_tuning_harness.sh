@@ -161,4 +161,122 @@ PY
 assert "busy_fraction: /proc/stat arithmetic correct (all fixtures pass)" \
     test "$_b2_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 3: instruments — sample_pool_occupancy, wall-clock timer, exit-124
+#
+# (a) sample_pool_occupancy(merge_fifo, task_fifo) over hermetic FIFOs pre-seeded
+#     with known token counts returns {merge, task, sum, timestamp}.
+# (b) A wall-clock timer wrapper records elapsed seconds for a stub command.
+# (c) exit-124 detection: stub exiting 124 is counted as a timeout; exit 0 is not.
+#
+# All assertions are hermetic (tmp FIFOs + stub commands, no real cargo).
+# Fails: samplers absent → AttributeError.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 3: instruments (sample_pool_occupancy, wall-clock, exit-124) ---"
+
+_b3_exit=0
+{
+python3 - "$HARNESS" <<'PY'
+import importlib.util, os, sys, tempfile, time
+
+spec = importlib.util.spec_from_file_location("jth", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# ── (a) sample_pool_occupancy over hermetic pre-seeded FIFOs ─────────────────
+# Create two temp FIFOs and seed them with known token counts.
+merge_path = tempfile.mktemp(prefix="/tmp/test-harness-merge-")
+task_path  = tempfile.mktemp(prefix="/tmp/test-harness-task-")
+os.mkfifo(merge_path)
+os.mkfifo(task_path)
+
+# Open both FIFOs O_RDWR (non-blocking) so we can write and read without blocking.
+merge_fd = os.open(merge_path, os.O_RDWR | os.O_NONBLOCK)
+task_fd  = os.open(task_path,  os.O_RDWR | os.O_NONBLOCK)
+
+MERGE_TOKENS = 6
+TASK_TOKENS  = 2
+
+# Seed FIFOs with known token bytes
+os.write(merge_fd, b'\x00' * MERGE_TOKENS)
+os.write(task_fd,  b'\x00' * TASK_TOKENS)
+
+try:
+    sample = mod.sample_pool_occupancy(merge_path, task_path)
+
+    # Must return a dict with keys: merge, task, sum, timestamp
+    required_keys = {"merge", "task", "sum", "timestamp"}
+    missing = required_keys - set(sample.keys())
+    if missing:
+        errors.append(f"sample_pool_occupancy missing keys: {missing}")
+    else:
+        if sample["merge"] != MERGE_TOKENS:
+            errors.append(
+                f"sample_pool_occupancy merge: expected {MERGE_TOKENS}, "
+                f"got {sample['merge']}"
+            )
+        if sample["task"] != TASK_TOKENS:
+            errors.append(
+                f"sample_pool_occupancy task: expected {TASK_TOKENS}, "
+                f"got {sample['task']}"
+            )
+        expected_sum = MERGE_TOKENS + TASK_TOKENS
+        if sample["sum"] != expected_sum:
+            errors.append(
+                f"sample_pool_occupancy sum: expected {expected_sum}, "
+                f"got {sample['sum']}"
+            )
+        # timestamp should be a positive float close to now
+        if not isinstance(sample["timestamp"], float) or sample["timestamp"] <= 0:
+            errors.append(
+                f"sample_pool_occupancy timestamp should be positive float, "
+                f"got {sample['timestamp']!r}"
+            )
+finally:
+    os.close(merge_fd)
+    os.close(task_fd)
+    os.unlink(merge_path)
+    os.unlink(task_path)
+
+# ── (b) wall-clock timer wrapper ─────────────────────────────────────────────
+# timed_run(cmd_list) should return (elapsed_seconds, returncode).
+# Use a stub that sleeps briefly.
+t0 = time.monotonic()
+elapsed, rc = mod.timed_run([sys.executable, "-c", "import time; time.sleep(0.05)"])
+t1 = time.monotonic()
+
+if elapsed < 0.0:
+    errors.append(f"timed_run: elapsed should be >= 0, got {elapsed}")
+# Wall-clock of the outer measurement should be at least as large
+if elapsed > (t1 - t0) + 0.5:
+    errors.append(f"timed_run: elapsed {elapsed:.3f}s suspiciously > outer wall-clock")
+if rc != 0:
+    errors.append(f"timed_run: expected rc=0 for sleep stub, got {rc}")
+
+# ── (c) exit-124 detection ───────────────────────────────────────────────────
+# is_timeout(returncode) -> True iff returncode == 124
+if not mod.is_timeout(124):
+    errors.append("is_timeout(124) should be True")
+if mod.is_timeout(0):
+    errors.append("is_timeout(0) should be False")
+if mod.is_timeout(1):
+    errors.append("is_timeout(1) should be False")
+if mod.is_timeout(-1):
+    errors.append("is_timeout(-1) should be False")
+
+if errors:
+    for e in errors:
+        print("FAIL:", e, file=sys.stderr)
+    raise SystemExit(1)
+
+print("instruments: all assertions passed")
+PY
+} || _b3_exit=$?
+
+assert "sample_pool_occupancy returns {merge,task,sum,timestamp} with correct counts" \
+    test "$_b3_exit" -eq 0
+
 test_summary
