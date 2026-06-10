@@ -69,7 +69,7 @@ impl MotionTrajectory {
     ///
     /// Returns `None` if there are fewer than 2 samples or zero joints.
     /// Propagates `None` from `CubicSpline::fit` on any shape mismatch.
-    // G-allow: profile→MotionTrajectory sampling bridge (resample: samples→clamped cubic spline), task #3855 (γ, DONE); consumer is task #3869 (θ — simulate_trajectory), PENDING, so no in-tree caller yet.
+    // G-allow: profile→MotionTrajectory sampling bridge (resample: samples→clamped cubic spline), task #3855 (γ); permanent internal helper called only within sampling.rs; simulate_trajectory_value entry point is wired via trampoline.rs → trajectory_ops.rs:371.
     pub(crate) fn resample_cubic(&self) -> Option<MultiJointSpline> {
         let samples = &self.samples;
         if samples.len() < 2 {
@@ -118,7 +118,6 @@ impl MotionTrajectory {
 /// The profile is authored from `t = 0` (PRD §4.1 / §4.2 convention).
 /// `MultiJointSpline` exposes `duration()` but not `start_time`; for
 /// non-zero-origin profiles the caller must adjust.
-// G-allow: profile→MotionTrajectory sampling bridge (profile→samples), task #3855 (γ, DONE); consumer is task #3869 (θ — simulate_trajectory), PENDING, so no in-tree caller yet.
 pub(crate) fn to_trajectory_samples(
     spline: &MultiJointSpline,
     dt: f64,
