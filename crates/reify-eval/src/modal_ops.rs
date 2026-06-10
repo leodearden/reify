@@ -33,6 +33,7 @@ use reify_stdlib::modal::free_vibration::{
     modal_participation_mass, rayleigh_damping_ratio,
 };
 use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
+use reify_stdlib::dynamics::mass_props::resolve_density_strict;
 use reify_stdlib::modal::transient::{
     PreparedIntegrator, dominant_antinode_index, harmonic_force_at, impulse_force_at,
     integrate_prepared, prepare_modal_integrator, reconstruct_series, sampled_force_at,
@@ -740,13 +741,22 @@ fn solve_generalized_eigen(
 /// test calls it.
 #[allow(clippy::result_large_err)]
 fn extract_density_or_degenerate(material: &Value) -> Result<f64, ComputeOutcome> {
-    if let Value::StructureInstance(data) = material
+    // Marshal the material density into Option<f64>, keeping the existing
+    // Scalar-only + positivity predicate (modal's own "no usable density" guard;
+    // `> 0.0` also rejects NaN). Then delegate to the shared rung-walk so the
+    // explicit→material ladder is defined in exactly one place (task 4470).
+    let material_density = if let Value::StructureInstance(data) = material
         && let Some(Value::Scalar { si_value, .. }) = data.fields.get("density")
         && *si_value > 0.0
     {
-        return Ok(*si_value);
+        Some(*si_value)
+    } else {
+        None
+    };
+    match resolve_density_strict(None, material_density) {
+        Some((rho, _)) => Ok(rho),
+        None => Err(no_mass_matrix_outcome()),
     }
-    Err(no_mass_matrix_outcome())
 }
 
 /// Build the degenerate short-circuit outcome for a missing / non-positive mass
