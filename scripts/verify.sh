@@ -533,6 +533,52 @@ decide_scope() {
 decide_scope
 
 # ---------------------------------------------------------------------------
+# Selective infra test injection (task 4523).
+#
+# After decide_scope, read verify-pipeline-infra-tests.txt to derive
+# SELECTED_INFRA_GLOBS: the set of infra-test globs whose artifact was changed
+# on this branch/staged diff.  Empty under scope=all (CHANGED_FILES_RAW="").
+#
+# Design notes (see task 4523 decisions):
+#   • Map is read inline (NOT via a sourced lib) so the throughput/gui_feature
+#     auto-discovery greps don't flag it.  _VP_INFRA_MAP uses a variable
+#     assignment; the token `source "$SCRIPT_DIR/' never appears here.
+#   • [ -f ] guard degrades gracefully in fixtures that omit the map.
+#   • GLOB (not explicit names) so future test_verify_*.sh guards are
+#     auto-covered without a map edit.
+# ---------------------------------------------------------------------------
+SELECTED_INFRA_GLOBS=""
+
+select_infra_tests() {
+    local _VP_INFRA_MAP="$SCRIPT_DIR/verify-pipeline-infra-tests.txt"
+    # Graceful degradation: absent map or empty changed-file list -> empty.
+    [ -f "$_VP_INFRA_MAP" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    local _artifact _glob _f _line
+    while IFS= read -r _line; do
+        # Each row: <artifact-path>  <infra-test-glob>
+        read -r _artifact _glob <<< "$_line"
+        [ -n "$_artifact" ] || continue
+        [ -n "$_glob"     ] || continue
+        while IFS= read -r _f; do
+            [ -z "$_f" ] && continue
+            if [ "$_f" = "$_artifact" ]; then
+                # Append glob to selection if not already present (whole-token
+                # dedup via space sentinels — prevents false dedup when one
+                # glob is a substring of another, e.g. a specific path vs a
+                # broader wildcard pattern).
+                case " $SELECTED_INFRA_GLOBS " in
+                    *" $_glob "*) : ;;
+                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$_glob" ;;
+                esac
+                break
+            fi
+        done <<< "$CHANGED_FILES_RAW"
+    done < <(grep -v '^\s*#' "$_VP_INFRA_MAP" | grep -v '^\s*$')
+}
+select_infra_tests
+
+# ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
 #
 # Eligible when: (scope=branch OR (scope=staged AND --narrow)) AND RUN_RUST=1.
@@ -923,6 +969,25 @@ build_plan() {
             add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
             add "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
         fi
+    fi
+
+    # Selective infra injection (task 4523): task-level path runs the infra
+    # drift-guards for any changed verify-pipeline artifact.  FAIL-FAST: emitted
+    # BEFORE add_test_passes (the expensive long-pole).  One guarded for-loop
+    # per glob — the glob literal is embedded in the emitted subshell command
+    # and expands at EXECUTION time under CWD=REPO_ROOT.
+    # set -f / set +f prevents the shell from pathname-expanding the token
+    # during loop iteration here at build time, so the literal glob string
+    # (e.g. tests/infra/test_verify_*.sh) always reaches the emitted plan.
+    # Suppressed when INCLUDE_INFRA=1: run_all.sh already runs the full suite
+    # (a superset), so the selective subset would double-run hermetic tests.
+    if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$INCLUDE_INFRA" -eq 0 ]; then
+        local _glob
+        set -f  # disable pathname expansion: keep glob tokens as literals
+        for _glob in $SELECTED_INFRA_GLOBS; do
+            add "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
+        done
+        set +f
     fi
 
     # test: gated + ungated cargo passes, per profile.
