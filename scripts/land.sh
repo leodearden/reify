@@ -86,6 +86,11 @@ git config core.hooksPath hooks \
 . "$ROOT/hooks/main-gate-lib.sh"
 main_gate_mark
 
+# Run the merge gate as role=merge so the held test-run slot and PSI gate exempt
+# the manual-land path — without this a manual land queues behind a task slot
+# (merge-starvation / livelock; PRD §5 D5). Exporting propagates the role to the
+# pre-merge-commit child spawned by git merge.
+export DF_VERIFY_ROLE=merge
 echo "land.sh: merging '$BRANCH' into main (--no-ff; pre-merge-commit runs the full gate)..." >&2
 if git merge --no-ff "$BRANCH"; then
     landed="$(git rev-parse HEAD)"
