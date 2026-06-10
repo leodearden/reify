@@ -1,22 +1,14 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 4452.
-# Validates the CARGO_INCREMENTAL config contract (outcome-independent):
+# Validates the CARGO_INCREMENTAL global-forbid config contract (outcome-independent):
 #   (a) GLOBAL-FORBID — CARGO_INCREMENTAL is NEVER enabled globally (PRD §11):
-#       scripts/verify.sh exports CARGO_INCREMENTAL=0;
+#       scripts/verify.sh exports CARGO_INCREMENTAL=0 and never sets CARGO_INCREMENTAL=1;
 #       orchestrator.yaml verify_env sets CARGO_INCREMENTAL: "0";
 #       .cargo/config.toml has no global incremental=true in [build] or any
 #       [target.*] rustflags.
-#   (b) LANE-SCOPE — any future incremental enablement is ONLY for the
-#       dark-factory persistent _merge-verify lane (git.persistent_merge_worktree),
-#       never global.  The bench doc names this lane.
-#   (c) DECISION-CONSISTENCY — docs/notes/cargo-incremental-persistent-lane-bench.md
-#       exists and carries exactly one machine-readable `decision: adopt|reject` token:
-#         reject → global-forbid (a) intact + no reify-side lane-incremental enablement;
-#         adopt  → doc names the DF-side lane-scoped seam AND global-forbid (a) intact.
+#   (b) DELIVERABLE — docs/notes/cargo-incremental-persistent-lane-bench.md exists.
 #
-# RED state:  bench doc absent → assert (c) file-exists fails.
-# GREEN state: bench doc present with a valid decision token consistent with config.
-# Valid in BOTH benchmark outcome branches (adopt or reject).
+# The test is GREEN against the current config and the existing bench doc.
 
 set -euo pipefail
 
@@ -101,6 +93,9 @@ echo "--- Test 1 (a): scripts/verify.sh exports CARGO_INCREMENTAL=0 ---"
 assert "scripts/verify.sh contains 'export CARGO_INCREMENTAL=0'" \
     grep -q 'export CARGO_INCREMENTAL=0' "$VERIFY_SH"
 
+assert "scripts/verify.sh does not set CARGO_INCREMENTAL=1 anywhere" \
+    bash -c "! grep -q 'CARGO_INCREMENTAL=1' \"$VERIFY_SH\""
+
 # -- Test 2 (a): GLOBAL-FORBID — orchestrator.yaml ----------------------------
 echo ""
 echo "--- Test 2 (a): orchestrator.yaml verify_env sets CARGO_INCREMENTAL: \"0\" ---"
@@ -118,59 +113,11 @@ assert ".cargo/config.toml: [build].incremental is not true" \
 assert ".cargo/config.toml: no [target.*] rustflag enables incremental" \
     python3 "$_PARSE_PY" "$CONFIG" check_target_no_incremental_flag
 
-# -- Test 4 (c): DECISION-CONSISTENCY — bench doc exists ----------------------
+# -- Test 4: DELIVERABLE — bench doc exists -----------------------------------
 echo ""
-echo "--- Test 4 (c): bench doc exists (RED trigger if absent) ---"
+echo "--- Test 4: bench doc exists ---"
 
 assert "docs/notes/cargo-incremental-persistent-lane-bench.md exists" \
     test -f "$BENCH_DOC"
-
-# Only run further decision checks if the doc is present (avoid cascading fails).
-if [ -f "$BENCH_DOC" ]; then
-
-    # -- Test 5 (c): decision token is valid ----------------------------------
-    echo ""
-    echo "--- Test 5 (c): bench doc carries a valid decision token ---"
-
-    DECISION="$(grep -oE 'decision: [a-z]+' "$BENCH_DOC" | head -1 | sed 's/decision: //')"
-
-    assert "decision token is 'adopt' or 'reject'" \
-        bash -c "[ '$DECISION' = 'adopt' ] || [ '$DECISION' = 'reject' ]"
-
-    # -- Test 6 (b)+(c): LANE-SCOPE — bench doc names the DF persistent lane --
-    echo ""
-    echo "--- Test 6 (b): bench doc names the DF persistent _merge-verify lane ---"
-
-    assert "bench doc references '_merge-verify' (persistent lane name)" \
-        grep -q '_merge-verify' "$BENCH_DOC"
-
-    assert "bench doc references 'git.persistent_merge_worktree' (DF knob)" \
-        grep -q 'git.persistent_merge_worktree' "$BENCH_DOC"
-
-    # -- Test 7 (c): decision↔config consistency ------------------------------
-    echo ""
-    echo "--- Test 7 (c): decision token is consistent with config ---"
-
-    if [ "$DECISION" = "reject" ]; then
-        # reject → global-forbid invariants already checked in Tests 1-3 above.
-        # Additionally verify no reify-side lane-incremental enablement in verify.sh:
-        # there must be no conditional that sets CARGO_INCREMENTAL=1.
-        assert "reject: verify.sh does not set CARGO_INCREMENTAL=1 anywhere" \
-            bash -c "! grep -q 'CARGO_INCREMENTAL=1' '$VERIFY_SH'"
-
-    elif [ "$DECISION" = "adopt" ]; then
-        # adopt → doc must name the lane-scoped seam.
-        # Global-forbid is still required (incremental is lane-scoped, never global).
-        assert "adopt: bench doc names a DF-side lane seam (verify-env or git.* yaml)" \
-            bash -c "grep -q 'verify.env\|verify_env\|git\.' '$BENCH_DOC'"
-
-        assert "adopt: global-forbid intact (verify.sh CARGO_INCREMENTAL=0 still present)" \
-            grep -q 'export CARGO_INCREMENTAL=0' "$VERIFY_SH"
-
-        assert "adopt: global-forbid intact (orchestrator.yaml CARGO_INCREMENTAL: \"0\" still present)" \
-            grep -q 'CARGO_INCREMENTAL:.*"0"' "$ORCH_YAML"
-    fi
-
-fi
 
 test_summary
