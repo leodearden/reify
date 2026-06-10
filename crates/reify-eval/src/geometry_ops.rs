@@ -7925,6 +7925,126 @@ mod tests {
         );
     }
 
+    // ── Fillet eval-arm: anti-zero-edges + 2-arg back-compat (task 3205 step-9/10) ──
+
+    /// Build a `CompiledExpr` literal that evaluates to an empty `Value::List`
+    /// — a present-but-empty edge selector. Drives the anti-zero-edges
+    /// (E_EMPTY_SELECTION) eval-arm path.
+    fn empty_list_literal() -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::List(vec![]),
+            reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+        )
+    }
+
+    /// (a) ANTI-ZERO-EDGES: a 3-arg Fillet whose `edges` arg is PRESENT but
+    /// evaluates to an empty `Value::List` must NOT silently fall through to
+    /// the all-edges path. `compile_geometry_op` returns `Err`, pushes exactly
+    /// one diagnostic carrying `DiagnosticCode::EmptyEdgeSelection`, and
+    /// produces NO `GeometryOp::Fillet`. Closes the task-3295 fake-done trap.
+    #[test]
+    fn compile_geometry_op_fillet_empty_edge_selection_errors_with_code() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // 3-arg form: args carry "target" (the solid expr), an "edges" selector
+        // that evaluates to Value::List(vec![]), and "radius".
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("edges".into(), empty_list_literal()),
+                ("radius".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "a present edge selector resolving to zero edges must Err (never \
+             fall through to all-edges), got {:?}",
+            result
+        );
+        let empty_sel: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::EmptyEdgeSelection))
+            .collect();
+        assert_eq!(
+            empty_sel.len(),
+            1,
+            "expected exactly one EmptyEdgeSelection diagnostic, got diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (b) 2-arg back-compat: a Fillet with NO `edges` arg lowers to
+    /// `GeometryOp::Fillet{edges: vec![], ..}` (the all-edges path) with NO
+    /// `EmptyEdgeSelection` diagnostic — "no selector" is legitimately
+    /// all-edges, distinct from "selector present but empty".
+    #[test]
+    fn compile_geometry_op_fillet_2arg_no_edges_arg_is_all_edges_back_compat() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("radius".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Fillet { target, edges, .. }) => {
+                assert_eq!(
+                    target,
+                    GeometryHandleId(10),
+                    "target must resolve via Step(0)"
+                );
+                assert!(
+                    edges.is_empty(),
+                    "2-arg fillet (no edges arg) must lower to empty edges \
+                     (all-edges back-compat), got {:?}",
+                    edges
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Fillet) for 2-arg fillet, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "2-arg fillet must NOT emit an EmptyEdgeSelection diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn compile_geometry_op_transform_pattern_sweep_present_args_emit_no_diagnostics() {
         let step_handles = vec![GeometryHandleId(1)];
