@@ -154,8 +154,13 @@ export async function navigateToDiagnostic(
       deps.store.setActiveFile(open.path);
     } else {
       // (4) Not yet open: read from disk and load into the store.
-      const fileData = await deps.openFile(d.file_path);
-      deps.store.openFile(fileData);
+      try {
+        const fileData = await deps.openFile(d.file_path);
+        deps.store.openFile(fileData);
+      } catch (err) {
+        deps.showToast(`Could not open ${d.file_path}: ${errorMessage(err)}`, 'error');
+        return;
+      }
     }
   }
 

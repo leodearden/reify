@@ -6511,4 +6511,36 @@ describe('navigateToDiagnostic unit tests (task-4403 γ)', () => {
       dispose();
     });
   });
+
+  it('open-failure → showToast called with error, setScrollToLocation NOT called, activeFile unchanged', async () => {
+    await createRoot(async (dispose) => {
+      const store = createEditorStore();
+      store.openFile({ path: 'main.ri', content: '' });
+
+      const diskError = new Error('disk read error');
+      const openFileSpy = vi.fn().mockRejectedValue(diskError);
+      const setScrollToLocationSpy = vi.fn();
+      const showToastSpy = vi.fn();
+
+      const diag = makeDiagnosticEntry({ file_path: 'missing.ri' });
+
+      // In RED state, navigateToDiagnostic propagates the rejection.
+      // Catch it here so assertions can still run.
+      try {
+        await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
+      } catch {
+        // Expected in RED state — step-8 wraps in try/catch so it won't throw.
+      }
+
+      expect(showToastSpy).toHaveBeenCalledTimes(1);
+      expect(showToastSpy).toHaveBeenCalledWith(
+        expect.stringContaining('missing.ri'),
+        'error',
+      );
+      expect(setScrollToLocationSpy).not.toHaveBeenCalled();
+      expect(store.state.activeFile).toBe('main.ri');
+
+      dispose();
+    });
+  });
 });
