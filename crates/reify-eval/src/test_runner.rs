@@ -478,4 +478,34 @@ constraint def Positive {
         assert!(tr.diagnostics.is_empty());
         assert!(tr.constraint_results.is_empty());
     }
+
+    #[test]
+    fn build_test_engine_registers_compute_trampolines() {
+        use super::build_test_engine;
+        use reify_constraints::SimpleConstraintChecker;
+        let engine = build_test_engine(Box::new(SimpleConstraintChecker));
+        // Positive: compute_targets::register_compute_fns trampolines are registered
+        assert!(
+            engine.compute_dispatch("solver::elastic_static").is_some(),
+            "solver::elastic_static trampoline not registered"
+        );
+        assert!(
+            engine.compute_dispatch("solver::buckling").is_some(),
+            "solver::buckling trampoline not registered"
+        );
+        assert!(
+            engine.compute_dispatch("modal::free_vibration").is_some(),
+            "modal::free_vibration trampoline not registered"
+        );
+        // Positive: register_shell_extract_compute_fns trampoline is registered
+        assert!(
+            engine.compute_dispatch("shell-extract::extract").is_some(),
+            "shell-extract::extract trampoline not registered"
+        );
+        // Negative control: cannot pass trivially
+        assert!(
+            engine.compute_dispatch("reify::unregistered::sentinel").is_none(),
+            "sentinel target must not be registered"
+        );
+    }
 }
