@@ -547,6 +547,26 @@ describe('DiagnosticsPanel span-less interactivity (β/4402)', () => {
     expect(onNavigate).toHaveBeenCalledWith(diagB);
   });
 
+  it('row B (has_location:true) keyDown Enter calls onNavigate with diagB', () => {
+    const { diagA, diagB, diagC } = makeRowSet();
+    const onNavigate = vi.fn();
+    renderDocked({ collapsed: false, diagnostics: [diagA, diagB, diagC], onNavigate });
+    const rowB = screen.getByText(/line-tied warning B/).closest('[data-testid="diagnostic-row"]') as HTMLElement;
+    fireEvent.keyDown(rowB, { key: 'Enter' });
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledWith(diagB);
+  });
+
+  it('row B (has_location:true) keyDown Space calls onNavigate with diagB', () => {
+    const { diagA, diagB, diagC } = makeRowSet();
+    const onNavigate = vi.fn();
+    renderDocked({ collapsed: false, diagnostics: [diagA, diagB, diagC], onNavigate });
+    const rowB = screen.getByText(/line-tied warning B/).closest('[data-testid="diagnostic-row"]') as HTMLElement;
+    fireEvent.keyDown(rowB, { key: ' ' });
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledWith(diagB);
+  });
+
   it('row C (has_location omitted — back-compat) has role="button" and tabindex="0"', () => {
     const { diagA, diagB, diagC } = makeRowSet();
     renderDocked({ collapsed: false, diagnostics: [diagA, diagB, diagC] });

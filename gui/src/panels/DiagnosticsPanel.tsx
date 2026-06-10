@@ -207,19 +207,25 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
             <For each={displayedGroups()}>
               {(group) => {
                 const lineTied = isLineTied(group.diagnostic);
-                return (
-                <div
-                  class={`${styles.row}${lineTied ? '' : ` ${styles.rowSpanless}`}`}
-                  data-testid="diagnostic-row"
-                  onClick={lineTied ? () => props.onNavigate(group.diagnostic) : undefined}
-                  role={lineTied ? 'button' : undefined}
-                  tabindex={lineTied ? '0' : undefined}
-                  onKeyDown={lineTied ? (e) => {
+                // All five interactive attributes are gated on a single condition so
+                // they stay in sync. Span-less rows (lineTied===false) spread an empty
+                // object → no role/tabindex/handlers; SolidJS omits undefined props.
+                const nav = lineTied ? {
+                  role: 'button' as const,
+                  tabindex: '0',
+                  onClick: () => props.onNavigate(group.diagnostic),
+                  onKeyDown: (e: KeyboardEvent) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
                       props.onNavigate(group.diagnostic);
                     }
-                  } : undefined}
+                  },
+                } : {};
+                return (
+                <div
+                  class={`${styles.row}${lineTied ? '' : ` ${styles.rowSpanless}`}`}
+                  data-testid="diagnostic-row"
+                  {...nav}
                 >
                   <span class={severityClass(group.diagnostic.severity)}>
                     {group.diagnostic.severity}
