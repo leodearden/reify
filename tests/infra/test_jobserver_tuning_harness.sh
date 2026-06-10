@@ -1012,4 +1012,246 @@ PY
 assert "--check: exits 0/1 correctly for good/bad/escape-valve records" \
     test "$_b8_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 9: committed-artifact consistency (step-15 / step-16)
+#
+# Asserts the committed tuning artifacts exist, parse, and are internally
+# consistent:
+#
+#   (a) docs/prds/jobserver-merge-priority-balancer.tuning-measurements.json
+#       exists, parses as valid JSON, and contains at least one run entry
+#       for each of the 12 expected combinations:
+#         {single-pool, dual-pool} × {just-task, just-merge, mixed} × {warm, cold}
+#
+#   (b) `--check <committed_measurements.json>` exits 0 — meaning the committed
+#       numbers clear their own re-derived floors (or record an escape-valve
+#       finding, which is honest surfacing, not a hard fail).
+#
+#   (c) docs/prds/jobserver-merge-priority-balancer.tuning-report.md exists and
+#       carries the required structural markers (A/B section + derived constants
+#       + findings section).
+#
+#   (d) Anti-drift: scripts/jobserver-balancer.py default POLL_INTERVAL and
+#       EPSILON (loaded without overriding env vars) equal the derived constants
+#       stored in the committed measurements record.
+#
+# Fails before step-16: artifacts absent → (a)/(b)/(c)/(d) all fail.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 9: committed-artifact consistency ---"
+
+MEASUREMENTS_JSON="$REPO_ROOT/docs/prds/jobserver-merge-priority-balancer.tuning-measurements.json"
+REPORT_MD="$REPO_ROOT/docs/prds/jobserver-merge-priority-balancer.tuning-report.md"
+
+# (a) measurements JSON exists
+assert "committed measurements JSON exists" \
+    test -f "$MEASUREMENTS_JSON"
+
+# (a) parse + structure check
+_b9a_exit=0
+if [ -f "$MEASUREMENTS_JSON" ]; then
+{
+python3 - "$HARNESS" "$MEASUREMENTS_JSON" <<'PY'
+import importlib.util, sys, json
+
+spec = importlib.util.spec_from_file_location("jth", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+meas_path = sys.argv[2]
+
+errors = []
+
+with open(meas_path) as f:
+    meas = json.load(f)
+
+# Must have nproc and runs
+if "nproc" not in meas:
+    errors.append("measurements JSON missing 'nproc' key")
+if "runs" not in meas:
+    errors.append("measurements JSON missing 'runs' key")
+
+if not errors:
+    runs = meas["runs"]
+    # Build expected 12-combination coverage set
+    EXPECTED_COMBOS = {
+        (svc, regime, cache)
+        for svc    in (mod.SERVICE_SINGLE_POOL, mod.SERVICE_DUAL_POOL)
+        for regime in mod.REGIMES
+        for cache  in (mod.CACHE_WARM, mod.CACHE_COLD)
+    }
+    found_combos = {
+        (r["service"], r["regime"], r["cache_state"])
+        for r in runs
+    }
+    missing = EXPECTED_COMBOS - found_combos
+    if missing:
+        for m in sorted(missing):
+            errors.append(f"measurements missing combination: {m}")
+
+if errors:
+    for e in errors:
+        print("FAIL:", e, file=sys.stderr)
+    raise SystemExit(1)
+
+print("measurements JSON: structure OK, all 12 combinations present")
+PY
+} || _b9a_exit=$?
+else
+    _b9a_exit=1
+fi
+
+assert "committed measurements JSON has all 12 regime/service/cache combinations" \
+    test "$_b9a_exit" -eq 0
+
+# (b) --check exits 0 on the committed record
+_b9b_rc=1
+if [ -f "$MEASUREMENTS_JSON" ]; then
+    python3 "$HARNESS" --check "$MEASUREMENTS_JSON" >/dev/null 2>&1
+    _b9b_rc=$?
+fi
+
+assert "--check exits 0 on committed measurements (floors cleared or escape-valve)" \
+    test "$_b9b_rc" -eq 0
+
+# (c) report.md exists and has the required sections
+assert "committed tuning report exists" \
+    test -f "$REPORT_MD"
+
+_b9c_exit=0
+if [ -f "$REPORT_MD" ]; then
+    {
+    python3 - "$REPORT_MD" <<'PY'
+import sys
+
+report_path = sys.argv[1]
+errors = []
+
+with open(report_path) as f:
+    report = f.read()
+
+REQUIRED_MARKERS = [
+    # A/B section
+    "single-pool", "dual-pool",
+    # Regime names
+    "just-task", "just-merge", "mixed",
+    # Cache states
+    "warm", "cold",
+    # Derived-constants block
+    "merge_baseline", "task_baseline",
+    "poll_interval", "epsilon",
+    "task_timeout_secs", "merge_timeout_secs",
+    "utilization_threshold",
+    # Findings section
+    "findings",
+]
+
+rl = report.lower()
+for marker in REQUIRED_MARKERS:
+    if marker.lower() not in rl:
+        errors.append(f"report missing required marker: {marker!r}")
+
+if errors:
+    for e in errors:
+        print("FAIL:", e, file=sys.stderr)
+    raise SystemExit(1)
+
+print("tuning report: all required structural markers present")
+PY
+    } || _b9c_exit=$?
+else
+    _b9c_exit=1
+fi
+
+assert "committed tuning report contains A/B + constants + findings sections" \
+    test "$_b9c_exit" -eq 0
+
+# (d) anti-drift: balancer defaults match committed derived constants
+_b9d_exit=0
+if [ -f "$MEASUREMENTS_JSON" ]; then
+{
+python3 - "$HARNESS" "$BALANCER" "$MEASUREMENTS_JSON" <<'PY'
+import importlib.util, sys, json, os
+
+spec = importlib.util.spec_from_file_location("jth", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+balancer_path  = sys.argv[2]
+meas_path      = sys.argv[3]
+
+errors = []
+
+with open(meas_path) as f:
+    meas = json.load(f)
+
+# Derive constants from the committed record
+derived = mod.derive_constants(meas)
+
+# Import balancer with clean env (strip overrides so we get the compiled defaults)
+clean_env = {k: v for k, v in os.environ.items()
+             if k not in ("REIFY_JOBSERVER_POLL_INTERVAL",
+                          "REIFY_JOBSERVER_EPSILON",
+                          "REIFY_JOBSERVER_IDLE_RESET_TICKS")}
+spec_b = importlib.util.spec_from_file_location("balancer", balancer_path)
+mod_b  = importlib.util.module_from_spec(spec_b)
+# Execute in a subprocess to avoid clobbering current module-level env state
+import subprocess as _sp, sys as _sys
+result = _sp.run(
+    [_sys.executable, "-c",
+     f"""
+import importlib.util, os
+for k in ("REIFY_JOBSERVER_POLL_INTERVAL","REIFY_JOBSERVER_EPSILON",
+          "REIFY_JOBSERVER_IDLE_RESET_TICKS"):
+    os.environ.pop(k, None)
+spec = importlib.util.spec_from_file_location("balancer", {balancer_path!r})
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(f"POLL_INTERVAL={{mod.POLL_INTERVAL}}")
+print(f"EPSILON={{mod.EPSILON}}")
+"""],
+    capture_output=True, text=True,
+)
+if result.returncode != 0:
+    errors.append(f"Failed to load balancer defaults: {result.stderr.strip()}")
+else:
+    bal_defaults = {}
+    for line in result.stdout.splitlines():
+        k, _, v = line.partition("=")
+        bal_defaults[k.strip()] = v.strip()
+
+    bal_poll = float(bal_defaults.get("POLL_INTERVAL", "nan"))
+    bal_eps  = int(bal_defaults.get("EPSILON", "-1"))
+
+    derived_poll = derived["poll_interval"]
+    derived_eps  = derived["epsilon"]
+
+    if abs(bal_poll - derived_poll) > 1e-9:
+        errors.append(
+            f"anti-drift POLL_INTERVAL: balancer default={bal_poll!r} "
+            f"!= derived={derived_poll!r} — run --derive and update "
+            f"scripts/jobserver-balancer.py"
+        )
+    if bal_eps != derived_eps:
+        errors.append(
+            f"anti-drift EPSILON: balancer default={bal_eps!r} "
+            f"!= derived={derived_eps!r} — run --derive and update "
+            f"scripts/jobserver-balancer.py"
+        )
+
+if errors:
+    for e in errors:
+        print("FAIL:", e, file=sys.stderr)
+    raise SystemExit(1)
+
+print("anti-drift: balancer POLL_INTERVAL and EPSILON match committed derived constants")
+PY
+} || _b9d_exit=$?
+else
+    _b9d_exit=1
+fi
+
+assert "anti-drift: balancer defaults match committed derived constants" \
+    test "$_b9d_exit" -eq 0
+
 test_summary
