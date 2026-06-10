@@ -111,6 +111,100 @@ fn ingest_mesh_skipped_without_cfg() {
 }
 
 // ---------------------------------------------------------------------------
-// densify_grid_to_sampled tests  (step-5 RED — added later)
+// densify_grid_to_sampled tests  (step-5 RED)
 // ---------------------------------------------------------------------------
-// (populated in step-5)
+
+/// Ingest a 2mm box → densify → check the resulting SampledField.
+///
+/// Asserts:
+/// - `field.kind == SampledGridKind::Regular3D`
+/// - `field.spacing.len() == 3` and all spacings are positive
+/// - `!field.data.is_empty()`
+/// - Headline α signal: sample φ at the box centre (0,0,0) via trilinear
+///   interpolation is negative (interior) and within `h` of the true distance
+///   `-1.0` (half-extent of the 2mm box).
+/// - An invalid handle returns `Err(QueryError::InvalidHandle(_))`.
+///
+/// RED: `densify_grid_to_sampled` does not exist yet (compile error).
+#[cfg(has_openvdb)]
+#[test]
+fn densify_grid_to_sampled_from_ingested_box_mesh() {
+    use reify_expr::interp::{InterpolationMethod, interpolate_3d};
+    use reify_ir::{GeometryHandleId, GeometryKernel, QueryError, SampledGridKind};
+    use reify_kernel_openvdb::OpenVdbKernel;
+
+    let mesh = box_2mm();
+    let mut kernel = OpenVdbKernel::new();
+    let handle = kernel
+        .ingest_mesh(&mesh)
+        .expect("ingest_mesh must succeed for the 2mm box");
+
+    let field = kernel
+        .densify_grid_to_sampled(handle.id)
+        .expect("densify_grid_to_sampled must succeed for a freshly-ingested handle");
+
+    // Shape checks.
+    assert_eq!(
+        field.kind,
+        SampledGridKind::Regular3D,
+        "densified field must be Regular3D"
+    );
+    assert_eq!(
+        field.spacing.len(),
+        3,
+        "spacing must have 3 entries for a Regular3D field"
+    );
+    for (i, &s) in field.spacing.iter().enumerate() {
+        assert!(
+            s > 0.0 && s.is_finite(),
+            "spacing[{i}] = {s} must be positive and finite"
+        );
+    }
+    assert!(!field.data.is_empty(), "densified field data must not be empty");
+
+    // Headline α signal: interior SDF at (0, 0, 0) ≈ -1.0 (half-extent).
+    // The honest-floor band covers the interior so this is the TRUE signed
+    // distance, not the saturated background sentinel.
+    let h = field.spacing[0];
+    let phi = interpolate_3d(
+        InterpolationMethod::Linear,
+        &field.axis_grids[0], // X axis (axis-0, outermost)
+        &field.axis_grids[1], // Y axis
+        &field.axis_grids[2], // Z axis
+        &field.data,
+        (0.0, 0.0, 0.0),
+    )
+    .value;
+
+    assert!(
+        phi < 0.0,
+        "SDF at centre (0,0,0) must be negative (interior); got phi={phi}"
+    );
+    // Accept ±h tolerance around -1.0 (the true half-extent = 1.0 mm for 2mm box).
+    // A tighter bound (±h/2) risks flipping on voxel-centre rounding; ±h is
+    // the documented spec (PRD §α "within h").
+    assert!(
+        (phi - (-1.0_f64)).abs() <= h,
+        "SDF at centre must be within h={h} of -1.0 (true half-extent); \
+         got phi={phi}, |phi - (-1.0)| = {}",
+        (phi - (-1.0_f64)).abs()
+    );
+
+    // Invalid handle → QueryError::InvalidHandle.
+    let bad_result = kernel.densify_grid_to_sampled(GeometryHandleId(999_999));
+    assert!(
+        matches!(bad_result, Err(QueryError::InvalidHandle(_))),
+        "densify_grid_to_sampled with an unknown handle must return \
+         Err(InvalidHandle); got {bad_result:?}"
+    );
+}
+
+/// `cfg(not(has_openvdb))` skip-stub for the densify test.
+#[cfg(not(has_openvdb))]
+#[test]
+fn densify_grid_to_sampled_skipped_without_cfg() {
+    println!(
+        "ingest_mesh_densify_tests: has_openvdb cfg not set, skipping densify test"
+    );
+    assert!(true);
+}
