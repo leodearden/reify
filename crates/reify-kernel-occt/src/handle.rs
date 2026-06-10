@@ -108,6 +108,18 @@ enum OcctRequest {
         reply:
             oneshot::Sender<Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>>,
     },
+    /// Curated per-edge fillet (task 3205): apply `BRepFilletAPI_MakeFillet` to
+    /// ONLY the selected `edges` of `shape` with the given `radius`, capturing
+    /// Modified/Generated/Deleted records. Mirrors `FilletWithHistory` but
+    /// carries the curated edge subset. An empty `edges` vector is rejected by
+    /// the kernel — the all-edges path is `FilletWithHistory` / `fillet_all_edges`.
+    FilletEdgesWithHistory {
+        shape: GeometryHandleId,
+        radius: f64,
+        edges: Vec<GeometryHandleId>,
+        reply:
+            oneshot::Sender<Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>>,
+    },
     /// v0.2 persistent-naming-v2 local-feature history: apply
     /// `BRepFilletAPI_MakeChamfer` to every edge of `shape` with the given
     /// `distance`, capturing Modified/Generated/Deleted records. Mirrors
@@ -546,6 +558,40 @@ impl OcctKernelHandle {
             |reply| OcctRequest::FilletWithHistory {
                 shape,
                 radius,
+                reply,
+            },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )??;
+        Ok((handle.id, records))
+    }
+
+    /// Apply `BRepFilletAPI_MakeFillet` to ONLY the selected `edges` of `shape`
+    /// (a curated subset) with the given `radius`, returning the
+    /// modified-result handle id alongside the per-parent face/edge history
+    /// records (Modified / Generated / Deleted) emitted by the algorithm.
+    ///
+    /// Mirrors [`OcctKernel::fillet_edges_with_history`] across the
+    /// kernel-thread channel. Result handle is registered with
+    /// `BRepKind::Solid`. An empty `edges` slice is rejected — the all-edges
+    /// path is [`Self::fillet_with_history`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    ///
+    /// Curated edge-selection seam (task 3205).
+    pub fn fillet_edges_with_history(
+        &self,
+        shape: GeometryHandleId,
+        radius: f64,
+        edges: &[GeometryHandleId],
+    ) -> Result<(GeometryHandleId, LocalFeatureOpHistoryRecords), GeometryError> {
+        let edges = edges.to_vec();
+        let (handle, records) = self.send_request_blocking(
+            |reply| OcctRequest::FilletEdgesWithHistory {
+                shape,
+                radius,
+                edges,
                 reply,
             },
             || GeometryError::OperationFailed("kernel thread died".into()),
@@ -1021,6 +1067,15 @@ impl OcctKernelHandle {
                         reply,
                     } => {
                         let result = kernel.fillet_with_history(shape, radius);
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::FilletEdgesWithHistory {
+                        shape,
+                        radius,
+                        edges,
+                        reply,
+                    } => {
+                        let result = kernel.fillet_edges_with_history(shape, radius, &edges);
                         let _ = reply.send(result);
                     }
                     OcctRequest::ChamferWithHistory {

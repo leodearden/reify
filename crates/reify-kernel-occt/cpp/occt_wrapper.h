@@ -626,6 +626,18 @@ struct LocalFeatureOpHistory {
 std::unique_ptr<LocalFeatureOpHistory> make_fillet_with_history(
     const OcctShape& shape, double radius);
 
+/// Run `BRepFilletAPI_MakeFillet` on `shape` with the given `radius` applied to
+/// ONLY the selected edges, identified by 0-based `edge_indices` into the
+/// canonical `TopExp::MapShapes(shape, TopAbs_EDGE)` enumeration (the same order
+/// `get_edges` / `OcctShape::edge_map()` use, so a `GeometryHandleId` resolved
+/// via `extract_edges` maps to the matching index). Materializes the result
+/// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
+/// identically to `make_fillet_with_history` — the curated path preserves the
+/// persistent-naming seam. The all-edges path uses `fillet_all_edges`; this
+/// function requires a non-empty `edge_indices`.
+std::unique_ptr<LocalFeatureOpHistory> make_fillet_edges_with_history(
+    const OcctShape& shape, double radius, const rust::Vec<uint32_t>& edge_indices);
+
 /// Run `BRepFilletAPI_MakeChamfer` on `shape` with the given `distance` applied
 /// to every edge, materializing the result shape AND the Modified/Generated/Deleted
 /// records into a single `LocalFeatureOpHistory`. Identical structure to

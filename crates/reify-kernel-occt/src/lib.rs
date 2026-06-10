@@ -1542,6 +1542,65 @@ impl OcctKernel {
         })
     }
 
+    /// Apply `BRepFilletAPI_MakeFillet` to ONLY the `edges` of `shape_id` (a
+    /// curated subset) with the given `radius`, returning the modified-result
+    /// handle alongside the per-parent face/edge Modified/Generated/Deleted
+    /// history records.
+    ///
+    /// Each [`GeometryHandleId`] in `edges` must be an edge of `shape_id` (as
+    /// minted by [`Self::extract_edges`]); the `extracted_edges` cache is warmed
+    /// here if cold so a freshly-built solid resolves without the caller calling
+    /// `extract_edges` first. Each handle is mapped to its 0-based position in
+    /// the parent's canonical edge enumeration and passed to the kernel, which
+    /// applies the fillet to exactly those edges. An empty selection is rejected
+    /// up-front — the all-edges path is [`Self::fillet_with_history`] /
+    /// `fillet_all_edges`, never this method silently falling through.
+    ///
+    /// `radius` must be finite and strictly positive. Result handle is
+    /// registered with `BRepKind::Solid`. `parent_index` in every record is `0`.
+    ///
+    /// Curated edge-selection seam (task 3205). The persistent-naming history
+    /// seam is preserved identically to the all-edges path.
+    pub fn fillet_edges_with_history(
+        &mut self,
+        shape_id: GeometryHandleId,
+        radius: f64,
+        edges: &[GeometryHandleId],
+    ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
+        validate_positive_finite(radius, "fillet radius")?;
+        if edges.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "fillet_edges_with_history: edge selection must be non-empty \
+                 (the all-edges path is fillet_with_history / fillet_all_edges)"
+                    .into(),
+            ));
+        }
+        // Map each selected edge handle → its 0-based position in the parent's
+        // canonical edge enumeration. `extract_edges`, `get_edges`, and
+        // `OcctShape::edge_map()` all share one `TopExp::MapShapes(EDGE)` order,
+        // so the position is exactly the index the kernel-side FFI expects.
+        // Warm the cache if cold (idempotent per parent).
+        let parent_edges = self.extract_edges(shape_id).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "fillet_edges_with_history: failed to enumerate parent edges of \
+                 {shape_id:?}: {e:?}"
+            ))
+        })?;
+        let mut edge_indices: Vec<u32> = Vec::with_capacity(edges.len());
+        for e in edges {
+            let pos = parent_edges.iter().position(|h| h == e).ok_or_else(|| {
+                GeometryError::OperationFailed(format!(
+                    "fillet_edges_with_history: edge {e:?} does not belong to \
+                     solid {shape_id:?}"
+                ))
+            })?;
+            edge_indices.push(pos as u32);
+        }
+        self.run_local_feature_with_history(shape_id, |shape| {
+            ffi::ffi::make_fillet_edges_with_history(shape, radius, &edge_indices)
+        })
+    }
+
     /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
     /// given `distance`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
@@ -2105,16 +2164,33 @@ impl OcctKernel {
                 ffi::ffi::boolean_common(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            GeometryOp::Fillet { target, radius, .. } => {
-                let shape = self.get_shape(*target)?;
+            GeometryOp::Fillet {
+                target,
+                edges,
+                radius,
+            } => {
                 let r = extract_f64(radius)?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "fillet radius must be a finite positive value".into(),
                     ));
                 }
-                ffi::ffi::fillet_all_edges(shape, r)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                if edges.is_empty() {
+                    // 2-arg / empty-selection back-compat: fillet ALL edges
+                    // (unchanged path). Yields a shape stored after the match.
+                    let shape = self.get_shape(*target)?;
+                    ffi::ffi::fillet_all_edges(shape, r)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                } else {
+                    // Curated per-edge selection: fillet only the chosen edges.
+                    // `fillet_edges_with_history` stores the Solid result and
+                    // returns its handle (mirroring the Wire/Face early-return
+                    // arms below); the history is captured for the
+                    // persistent-naming seam but not surfaced through execute().
+                    let (handle, _history) =
+                        self.fillet_edges_with_history(*target, r, edges)?;
+                    return Ok(handle);
+                }
             }
             GeometryOp::Chamfer { target, distance } => {
                 let shape = self.get_shape(*target)?;

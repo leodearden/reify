@@ -393,6 +393,21 @@ pub mod ffi {
             radius: f64,
         ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
 
+        /// Run `BRepFilletAPI_MakeFillet` on `shape` with the given `radius`
+        /// applied to ONLY the selected edges. `edge_indices` are 0-based
+        /// positions into the canonical `TopExp::MapShapes(shape, TopAbs_EDGE)`
+        /// enumeration — the same order `extract_edges` mints edge handles in —
+        /// so a `GeometryHandleId` resolved via the `extracted_edges` cache maps
+        /// to the matching index. Eagerly captures the per-parent face/edge
+        /// Modified/Generated/Deleted records (the curated path preserves the
+        /// persistent-naming seam). Requires a non-empty `edge_indices`; the
+        /// all-edges / empty-selection path keeps using `fillet_all_edges`.
+        fn make_fillet_edges_with_history(
+            shape: &OcctShape,
+            radius: f64,
+            edge_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
+
         /// Run `BRepFilletAPI_MakeChamfer` on `shape` with the given `distance`
         /// applied to every edge, eagerly capturing the per-parent face/edge
         /// Modified/Generated/Deleted records alongside the modified result shape.
