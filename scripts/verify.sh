@@ -651,9 +651,15 @@ emit_nextest_pass() {
     local selector="$1" rel="$2" outer_timeout="$3"
     local cmd
     if [ "$NEXTEST" -eq 1 ]; then
-        # Resolve the occt group cap at plan-build time so --print-plan is concrete
-        # and eval sees a literal integer inside single quotes (not a shell variable).
-        local _occt_cap="${REIFY_OCCT_NEXTEST_MAX_THREADS:-24}"
+        # Validate and resolve the occt group cap at plan-build time so --print-plan
+        # is concrete and eval sees a literal integer inside single quotes.
+        # Mirrors parse_debug_port: strict digits-only check; fall back to 24 on
+        # empty, non-digit, or whitespace-padded input (e.g. "abc", "4 ", "'").
+        local _occt_cap
+        case "${REIFY_OCCT_NEXTEST_MAX_THREADS:-}" in
+            (''|*[!0-9]*) _occt_cap=24 ;;
+            (*)            _occt_cap="${REIFY_OCCT_NEXTEST_MAX_THREADS}" ;;
+        esac
         cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config 'test-groups.occt.max-threads=${_occt_cap}'"
     else
         # Fallback: single-threaded (OCCT serialization via the nextest occt group is

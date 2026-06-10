@@ -127,7 +127,7 @@ done <<< "$DECLARED_CRATES"
 # wrapped in the standard outer timeout.
 # RED against current verify.sh (which still emits the gated pass).
 # ---------------------------------------------------------------------------
-TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
+TEST_PLAN_SEGS="$(env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
 export TEST_PLAN_SEGS
 
 echo ""
