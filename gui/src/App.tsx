@@ -150,9 +150,13 @@ export async function navigateToDiagnostic(
     // (3) Cross-file: file is already open in a tab → switch to it.
     const open = deps.store.state.openFiles.find((f) => isSameFile(f.path, d.file_path));
     if (open) {
+      // (3) Already-open cross-file: just activate.
       deps.store.setActiveFile(open.path);
+    } else {
+      // (4) Not yet open: read from disk and load into the store.
+      const fileData = await deps.openFile(d.file_path);
+      deps.store.openFile(fileData);
     }
-    // (4) Not-open cross-file: open from disk (steps 6, 8).
   }
 
   // All non-error paths fall through here so the scroll fires AFTER any

@@ -6478,4 +6478,37 @@ describe('navigateToDiagnostic unit tests (task-4403 γ)', () => {
       dispose();
     });
   });
+
+  it('cross-file, NOT open → bridge openFile called, file loaded into store (active), setScrollToLocation called once', async () => {
+    await createRoot(async (dispose) => {
+      const store = createEditorStore();
+      store.openFile({ path: 'main.ri', content: '' });
+      // helper.ri is NOT in openFiles
+
+      const helperFileData = { path: 'helper.ri', content: 'structure Helper {}' };
+      const openFileSpy = vi.fn().mockResolvedValue(helperFileData);
+      const setScrollToLocationSpy = vi.fn();
+      const showToastSpy = vi.fn();
+
+      const diag = makeDiagnosticEntry({
+        file_path: 'helper.ri',
+        line: 2, column: 1, end_line: 2, end_column: 15,
+      });
+      await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
+
+      // Bridge openFile must have been called with the diagnostic's file path
+      expect(openFileSpy).toHaveBeenCalledTimes(1);
+      expect(openFileSpy).toHaveBeenCalledWith('helper.ri');
+      // File must now be in the store and active
+      expect(store.state.openFiles.some(f => f.path === 'helper.ri')).toBe(true);
+      expect(store.state.activeFile).toBe('helper.ri');
+      // setScrollToLocation called once AFTER the open
+      expect(setScrollToLocationSpy).toHaveBeenCalledTimes(1);
+      expect(setScrollToLocationSpy).toHaveBeenCalledWith({
+        file_path: 'helper.ri', line: 2, column: 1, end_line: 2, end_column: 15,
+      });
+
+      dispose();
+    });
+  });
 });
