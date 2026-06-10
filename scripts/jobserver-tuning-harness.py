@@ -40,8 +40,13 @@ Environment variables (all optional, with sensible defaults)
 """
 
 import argparse
+import fcntl
 import os
+import struct
+import subprocess
 import sys
+import termios
+import time
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Configuration — read from environment, fall back to sensible defaults
@@ -179,7 +184,67 @@ def busy_fraction(stat_before: str, stat_after: str, nproc: int):
     return fraction, busy_cores
 
 
-# Stubs for later steps (implemented in steps 4, 6, 8, 10, 12, 14).
+def _fionread(fd: int) -> int:
+    """Return the number of bytes readable on *fd* via FIONREAD (non-destructive)."""
+    buf = struct.pack("i", 0)
+    return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, buf))[0]
+
+
+def sample_pool_occupancy(merge_fifo: str, task_fifo: str) -> dict:
+    """Sample token counts from both FIFO pools in a single process.
+
+    Opens BOTH FIFOs with O_RDONLY | O_NONBLOCK and reads FIONREAD for each
+    within the same Python process, minimising the race where a balancer
+    transfer fires between two separate shell/subprocess calls.
+
+    Returns a dict with:
+        merge      : int — token count in the merge pool
+        task       : int — token count in the task pool
+        sum        : int — merge + task
+        timestamp  : float — monotonic time at sampling (time.monotonic())
+    """
+    merge_fd = os.open(merge_fifo, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        task_fd = os.open(task_fifo, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            merge_count = _fionread(merge_fd)
+            task_count  = _fionread(task_fd)
+            ts = time.monotonic()
+        finally:
+            os.close(task_fd)
+    finally:
+        os.close(merge_fd)
+
+    return {
+        "merge":     merge_count,
+        "task":      task_count,
+        "sum":       merge_count + task_count,
+        "timestamp": ts,
+    }
+
+
+def timed_run(cmd_list: list) -> tuple:
+    """Run *cmd_list* via subprocess and return (elapsed_seconds, returncode).
+
+    elapsed_seconds is the wall-clock duration measured with time.monotonic().
+    returncode is the process exit code.
+    """
+    t0 = time.monotonic()
+    result = subprocess.run(cmd_list, check=False)
+    elapsed = time.monotonic() - t0
+    return elapsed, result.returncode
+
+
+def is_timeout(returncode: int) -> bool:
+    """Return True iff *returncode* is 124 (the POSIX timeout(1) exit code).
+
+    cargo/make propagates 124 through the jobserver timeout path, so this is
+    the canonical 'this verify exceeded its time budget' signal.
+    """
+    return returncode == 124
+
+
+# Stubs for later steps (implemented in steps 6, 8, 10, 12, 14).
 
 
 def main() -> None:
