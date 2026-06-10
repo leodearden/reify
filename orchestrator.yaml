@@ -74,6 +74,14 @@ verify_env:
   # The FIFO is managed by reify-jobserver.service (systemd --user).
   CARGO_MAKEFLAGS: "--jobserver-auth=fifo:/tmp/reify-jobserver"
 
+# A′ coupling-tolerant merge train former — enabled per the s(N) go/no-go gate
+# (reify esc-4455-16: GO at N=3; s(3)=0.962 ≫ 1/3, observed coupling-failure 0/104).
+# Batches line-stackable merge-ready tasks into ONE full-scope merge verify to relieve
+# the serial-queue backlog. Correctness is the same gate as single merges (the train tip
+# is verified by verify.sh --scope all before advance). df tasks 1704-1708 landed the code.
+merge_train_former_enabled: true
+merge_train_max_members: 3  # already the default; explicit per GO-N3
+
 # Per-role turn budgets. Raising the architect budget is a direct response to
 # silent max_turns exits on large-scope tasks (e.g. reify 1749): the architect
 # now has headroom to verify premises and produce a plan without the CLI
