@@ -40,10 +40,13 @@
 # Environment baked in (mirrors orchestrator.yaml verify_env + .cargo/run-with-occt.sh):
 #   - . ~/.cargo/env
 #   - RUSTC_WRAPPER=sccache, CARGO_INCREMENTAL=0  (sccache cache shared across worktrees)
-#   - CARGO_MAKEFLAGS=--jobserver-auth=fifo:/tmp/reify-jobserver  ONLY when that FIFO
-#     exists (else cargo uses its own per-process job pool). This is a COMPILE-time
-#     concurrency control; OCCT TEST-execution concurrency is bounded by a separate
-#     mechanism (the semaphore wrapper + --test-threads=1 below).
+#   - CARGO_MAKEFLAGS=--jobserver-auth=fifo:<role-fifo>  ONLY when the role's FIFO exists
+#     (else cargo uses its own per-process job pool). Role→FIFO selection:
+#       merge → ${REIFY_JOBSERVER_MERGE_FIFO:-/tmp/reify-jobserver-merge}
+#       task  → ${REIFY_JOBSERVER_TASK_FIFO:-/tmp/reify-jobserver-task}
+#     Var-names and defaults match scripts/jobserver-balancer.py (α, task 4516).
+#     This is a COMPILE-time concurrency control; TEST-execution concurrency is
+#     bounded by a separate mechanism (the semaphore wrapper + --test-threads=1 below).
 #   - OCCT LD_LIBRARY_PATH (snap + /opt/reify-deps). The .cargo/config.toml `runner`
 #     remains the primary runtime-lib mechanism for `cargo test`/`cargo run`; this is
 #     belt-and-braces for contexts the runner does not cover.
@@ -413,14 +416,22 @@ apply_env() {
     export CARGO_INCREMENTAL=0
     ENV_LINES+=("export CARGO_INCREMENTAL=0")
 
-    # Inherit the shared global jobserver ONLY when its FIFO exists; otherwise
+    # Inherit the shared global jobserver ONLY when the role's FIFO exists; otherwise
     # leave CARGO_MAKEFLAGS unset so cargo manages its own job pool. Exporting a
     # stale fifo path when reify-jobserver.service is down would wedge cargo.
-    if [ -p /tmp/reify-jobserver ]; then
-        export CARGO_MAKEFLAGS="--jobserver-auth=fifo:/tmp/reify-jobserver"
-        ENV_LINES+=("export CARGO_MAKEFLAGS=--jobserver-auth=fifo:/tmp/reify-jobserver")
+    # Role→FIFO selection: merge → REIFY_JOBSERVER_MERGE_FIFO (default /tmp/reify-jobserver-merge)
+    #                       task  → REIFY_JOBSERVER_TASK_FIFO  (default /tmp/reify-jobserver-task)
+    # Defaults/var-names match scripts/jobserver-balancer.py (α, task 4516).
+    if [ "$DF_VERIFY_ROLE" = "merge" ]; then
+        _jb_fifo="${REIFY_JOBSERVER_MERGE_FIFO:-/tmp/reify-jobserver-merge}"
     else
-        ENV_LINES+=("# CARGO_MAKEFLAGS left unset (no /tmp/reify-jobserver FIFO) — cargo uses its own job pool")
+        _jb_fifo="${REIFY_JOBSERVER_TASK_FIFO:-/tmp/reify-jobserver-task}"
+    fi
+    if [ -p "$_jb_fifo" ]; then
+        export CARGO_MAKEFLAGS="--jobserver-auth=fifo:$_jb_fifo"
+        ENV_LINES+=("export CARGO_MAKEFLAGS=--jobserver-auth=fifo:$_jb_fifo")
+    else
+        ENV_LINES+=("# CARGO_MAKEFLAGS left unset (no $_jb_fifo FIFO) — cargo uses its own job pool")
     fi
 
     # OCCT shared-library search path (mirrors .cargo/run-with-occt.sh).
