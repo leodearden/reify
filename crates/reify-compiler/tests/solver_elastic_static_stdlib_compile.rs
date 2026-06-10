@@ -286,3 +286,73 @@ structure FEAMultiCaseTest {
         errors
     );
 }
+
+// ─── Task δ/4442 struct-retirement tests ─────────────────────────────────────
+
+/// RED test: `ConstitutiveLawInput` is no longer a declared stdlib symbol.
+///
+/// Compiling a snippet that constructs `ConstitutiveLawInput(law: Steel_AISI_1045())`
+/// must yield at least one `Severity::Error` diagnostic (unknown symbol / undeclared
+/// structure), and at least one error message must reference the unknown name
+/// "ConstitutiveLawInput".
+///
+/// This is RED today (struct still exists → snippet compiles with 0 errors, so
+/// the `assert!(!errors.is_empty())` assertion fails).  It becomes GREEN after
+/// step-2 deletes the struct declaration from `solver_elastic.ri`.
+///
+/// Paired with a regression guard that the direct-pass form still compiles clean
+/// (already GREEN post-γ/4441) so the test jointly captures "wrapper gone AND
+/// direct-pass works".
+#[test]
+fn constitutive_law_input_struct_is_retired() {
+    // ── negative probe: constructing ConstitutiveLawInput must error ──────────
+    let bad_src = r#"
+structure T {
+    let ci = ConstitutiveLawInput(law: Steel_AISI_1045())
+}
+"#;
+    let module = reify_test_support::compile_source_with_stdlib(bad_src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected >= 1 Error diagnostic when constructing ConstitutiveLawInput \
+         (struct should be retired), but got zero errors; all diagnostics: {:?}",
+        module.diagnostics
+    );
+    let references_name = errors.iter().any(|d| d.message.contains("ConstitutiveLawInput"));
+    assert!(
+        references_name,
+        "expected at least one Error diagnostic message to reference \
+         \"ConstitutiveLawInput\", but none did; errors: {:?}",
+        errors
+    );
+
+    // ── positive regression: direct-pass still compiles clean ─────────────────
+    let good_src = r#"
+structure DirectPassRegression {
+    let result = solve_elastic_static(
+        Steel_AISI_1045(), 1000mm, 100mm, 100mm,
+        [PointLoad(point: "tip", force: 1000.0)],
+        [FixedSupport(target: "root")],
+        ElasticOptions()
+    )
+}
+"#;
+    let module2 = reify_test_support::compile_source_with_stdlib(good_src);
+    let errors2: Vec<_> = module2
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors2.is_empty(),
+        "regression: expected zero Error diagnostics for direct-pass \
+         solve_elastic_static(Steel_AISI_1045(), ...) after struct retirement, \
+         got {:?}",
+        errors2
+    );
+}
