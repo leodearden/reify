@@ -101,6 +101,10 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
     });
   }
 
+  function isLineTied(d: DiagnosticInfo): boolean {
+    return d.has_location !== false;
+  }
+
   function locationLabel(d: DiagnosticInfo): string {
     return `${d.file_path}:${d.line}:${d.column}`;
   }
@@ -201,19 +205,21 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
         >
           <div class={styles.list}>
             <For each={displayedGroups()}>
-              {(group) => (
+              {(group) => {
+                const lineTied = isLineTied(group.diagnostic);
+                return (
                 <div
                   class={styles.row}
                   data-testid="diagnostic-row"
-                  onClick={() => props.onNavigate(group.diagnostic)}
-                  role="button"
-                  tabindex="0"
-                  onKeyDown={(e) => {
+                  onClick={lineTied ? () => props.onNavigate(group.diagnostic) : undefined}
+                  role={lineTied ? 'button' : undefined}
+                  tabindex={lineTied ? '0' : undefined}
+                  onKeyDown={lineTied ? (e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
                       props.onNavigate(group.diagnostic);
                     }
-                  }}
+                  } : undefined}
                 >
                   <span class={severityClass(group.diagnostic.severity)}>
                     {group.diagnostic.severity}
@@ -235,7 +241,7 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
                     </span>
                   </Show>
                 </div>
-              )}
+              );}}
             </For>
           </div>
         </Show>
