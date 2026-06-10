@@ -573,24 +573,33 @@ pub fn per_stage_tolerance_for_plan(plan: &DispatchPlan, requested_tol: f64) -> 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConversionProjection {
-    /// Tessellate the source kernel's BRep handle into a mesh — the only
-    /// `BRep → Mesh` realisation in v0.3 ε. The executor calls
+    /// Tessellate the source kernel's BRep handle into a mesh — the
+    /// `BRep → Mesh` realisation. The executor calls
     /// `source_kernel.tessellate(handle, per_stage_tol)` to produce the mesh,
     /// then hands it to the target kernel's `ingest_mesh`.
     Tessellate,
+    /// Voxelize a Mesh handle via the target kernel's `ingest_mesh` — the sole
+    /// `Mesh → Voxel` realisation. The executor calls `plan.kernel.ingest_mesh(&mesh)`
+    /// where `mesh` was produced by the preceding `Tessellate` stage (or is the
+    /// direct input). `ingest_mesh` on the OpenVDB kernel converts the interchange
+    /// mesh into a voxel grid on ingest, so no separate voxelise call is needed.
+    Voxelize,
 }
 
-/// Classifies a single conversion stage `(from, to)` into the v0.3-ε-executable
-/// [`ConversionProjection`], or `None` when ε cannot perform that crossing.
+/// Classifies a single conversion stage `(from, to)` into the v0.3-β-executable
+/// [`ConversionProjection`], or `None` when β cannot perform that crossing.
 ///
 /// The conversion executor walks a [`DispatchPlan`]'s `conversions` chain and
 /// calls this for each `(from, to)` stage: a `Some(projection)` is run, while a
 /// `None` surfaces as the realization-failed diagnostic (NOT a panic) — the
-/// plan named a crossing the current ε slice cannot execute.
+/// plan named a crossing the current β slice cannot execute.
 ///
-/// v0.3 ε supports exactly one crossing: `(BRep, Mesh) ⇒ Tessellate`. Every
-/// other ordered pair returns `None`. Adding a conversion to ε means adding a
-/// [`ConversionProjection`] variant and a row to the match below.
+/// v0.3 β supports exactly two crossings:
+/// - `(BRep, Mesh) ⇒ Tessellate` — BRep→Mesh via source kernel `tessellate`.
+/// - `(Mesh, Voxel) ⇒ Voxelize` — Mesh→Voxel via target kernel `ingest_mesh`.
+///
+/// Every other ordered pair returns `None`. Adding a conversion to β means
+/// adding a [`ConversionProjection`] variant and a row to the match below.
 // `#[allow(dead_code)]`: see [`ConversionProjection`] — wired into the non-test
 // build path by `execute_realization_ops` in task 4050 step-8.
 #[allow(dead_code)]
@@ -600,6 +609,7 @@ pub(crate) fn v03_conversion_projection(
 ) -> Option<ConversionProjection> {
     match (from, to) {
         (ReprKind::BRep, ReprKind::Mesh) => Some(ConversionProjection::Tessellate),
+        (ReprKind::Mesh, ReprKind::Voxel) => Some(ConversionProjection::Voxelize),
         _ => None,
     }
 }
