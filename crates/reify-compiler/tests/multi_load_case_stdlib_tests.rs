@@ -112,13 +112,14 @@ fn std_fea_multi_case_module_loads_with_no_errors() {
 /// exactly four params with the canonical names and types:
 ///
 ///   - `name     : String`
-///   - `loads    : List<Real>`    (placeholder for `List<Load>` — see TODO(load-trait))
-///   - `supports : List<Real>`    (placeholder for `List<Support>` — see TODO(load-trait))
+///   - `loads    : List<Load>`    (conformance enforced — elements must satisfy `trait Load`)
+///   - `supports : List<Support>` (conformance enforced — elements must satisfy `trait Support`)
 ///   - `options  : Option<ElasticOptions>`  (none = use solver defaults)
 ///
-/// `loads` and `supports` use `List<Real>` placeholders pending a `trait def Load`
-/// marker that all runtime load/support kind-constructors satisfy. Same precedent
-/// as `ElasticResult.displacement : Real` in `solver_elastic.ri:17-28`.
+/// `loads` and `supports` are typed `List<Load>` / `List<Support>` respectively;
+/// conformance is enforced at compile time via `TypeNotConformingToTrait` (task ζ/4444
+/// tightened from the `List<Real>` placeholder). Precedent: `ModalResult.boundary_conditions
+/// : List<Support>` in `modal_analysis.ri:244`.
 ///
 /// Only `options` carries a default (`none`); the other three must be caller-supplied.
 #[test]
