@@ -630,7 +630,7 @@ wrap_subshell() {
 # Emit a single nextest (or cargo-test fallback) pass.
 # selector: "--workspace" (full-workspace) or "-p crate1 -p crate2 ..." (narrowed/release)
 # rel: "" (debug) or " --release"
-# outer_timeout: e.g. "90m" or "75m"
+# outer_timeout: e.g. "60m" or "75m"
 # Task 4451: replaces emit_gated_ungated; the flock-gated OCCT pass is dropped.
 # OCCT crates are now included in the pool; the nextest occt test-group (max-threads=4)
 # bounds their intra-run concurrency for FD/memory headroom.
