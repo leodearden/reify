@@ -273,60 +273,162 @@ fn multi_case_result_struct_has_correct_param_shape() {
     );
 }
 
-// ─── shallow-kind-match invariant ────────────────────────────────────────────
+// ─── LoadCase conformance enforcement (task-ζ tighten) ───────────────────────
+//
+// These tests pin the compile-time conformance enforcement activated by
+// task-ζ: tightening `LoadCase.loads : List<Real>` → `List<Load>` and
+// `LoadCase.supports : List<Real>` → `List<Support>`.
+//
+// RED state (current stdlib, still `List<Real>`): the three NEGATIVE
+// assertions below FAIL because the conformance walker silently skips
+// `List<Real>` slots (Real is not a trait).  After the impl step tightens
+// the field types, the walker recurses into the list literals and all three
+// NEGATIVE tests turn GREEN.  The POSITIVE guard passes on both old and new
+// stdlib.
 
-/// Pins the compile-time invariant that `List<Real>` placeholder types accept
-/// `List<Int>` literals for `loads` and `supports` without Error-severity
-/// diagnostics.
+/// NEGATIVE-loads: bare numeric literals in `loads` must emit
+/// `TypeNotConformingToTrait` once `loads : List<Load>` is enforced.
 ///
-/// `LoadCase.loads` and `LoadCase.supports` are typed `List<Real>` as
-/// placeholders (pending `trait def Load` / `trait def Support`). The Reify
-/// compiler's type-checker permits integer list literals (`List<Int>`) in
-/// `List<Real>` parameter slots — inner element kinds are not validated at
-/// compile time. This test exercises only the compile-time path
-/// (`parse_with_stdlib` → `compile_with_stdlib`), pinning the compile-time
-/// acceptance guarantee. Runtime shallow-kind behaviour
-/// (`value_type_kind_matches` in `reify-eval/src/lib.rs`) is a separate
-/// concern not covered here; it becomes testable once struct-constructor eval
-/// lands (Stage 2).
-///
-/// This test compiles a `LoadCase` instantiation with integer list literals
-/// for `loads` and `supports`, and asserts no Error-severity diagnostics are
-/// emitted. If the compiler is ever tightened to reject `List<Int>` in a
-/// `List<Real>` slot, this test fails first — surfacing the breakage before
-/// downstream PRD task #2 (`solve_load_cases`) lands.
+/// RED on current `List<Real>` stdlib: the conformance walker skips scalar
+/// slots whose param type is not a trait, emitting 0 conformance diagnostics.
+/// After ζ: walker recurses into the `List<Load>` literal, the bare-int
+/// arm (conformance/mod.rs:931, no call-name) fires for each element.
 #[test]
-fn loadcase_list_real_placeholder_compiles_without_errors() {
-    // Compile a user source that passes integer-list literals for `loads` and
-    // `supports`. The declared types are `List<Real>`; integer literals are
-    // `List<Int>` (or implicitly-coerced `List<Real>`). Either way, the
-    // compiler must not emit an Error-severity diagnostic — the `List<Real>`
-    // placeholder is intentionally permissive to allow runtime kind-tagged
-    // Map values (load/support constructors) in the same slot.
+fn loadcase_bare_numeric_in_loads_emits_type_not_conforming() {
     let source = r#"
-structure def ShallowKindPinTest {
-    let lc = LoadCase(name: "operating", loads: [1, 2, 3], supports: [4, 5, 6])
+structure def NegativeLoadsFixture {
+    let c = LoadCase(name: "x", loads: [1, 2, 3], supports: [FixedSupport(target: "r")])
 }
 "#;
     let parsed = parse_with_stdlib(
         source,
-        ModulePath::from_dotted("test.shallow_kind_pin").expect("valid dotted path"),
+        ModulePath::from_dotted("test.loadcase_neg_loads").expect("valid dotted path"),
     );
     assert!(
         parsed.errors.is_empty(),
-        "ShallowKindPinTest source should parse without errors: {:?}",
+        "NegativeLoadsFixture should parse without errors: {:?}",
         parsed.errors
     );
-
     let compiled = compile_with_stdlib(&parsed);
-    let errors: Vec<_> = compiled
+    let conformance_errors: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
         .collect();
     assert!(
-        errors.is_empty(),
-        "LoadCase with integer-list loads/supports should not produce Error-severity \
-         diagnostics (shallow-kind-match invariant: List<Real> accepts any List): {errors:?}"
+        !conformance_errors.is_empty(),
+        "expected ≥1 TypeNotConformingToTrait for bare numeric literals in \
+         LoadCase.loads (after ζ: List<Load> enforces conformance); got 0. \
+         diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// NEGATIVE-supports: bare numeric literals in `supports` must emit
+/// `TypeNotConformingToTrait` once `supports : List<Support>` is enforced.
+///
+/// RED on current `List<Real>` stdlib (same reasoning as NEGATIVE-loads).
+#[test]
+fn loadcase_bare_numeric_in_supports_emits_type_not_conforming() {
+    let source = r#"
+structure def NegativeSupportsFixture {
+    let c = LoadCase(name: "x", loads: [PointLoad(point: "a", force: 1.0)], supports: [4, 5, 6])
+}
+"#;
+    let parsed = parse_with_stdlib(
+        source,
+        ModulePath::from_dotted("test.loadcase_neg_supports").expect("valid dotted path"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "NegativeSupportsFixture should parse without errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile_with_stdlib(&parsed);
+    let conformance_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+    assert!(
+        !conformance_errors.is_empty(),
+        "expected ≥1 TypeNotConformingToTrait for bare numeric literals in \
+         LoadCase.supports (after ζ: List<Support> enforces conformance); got 0. \
+         diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// NEGATIVE-cross-trait: a `FixedSupport` (which conforms to `Support`, not
+/// `Load`) in the `loads` list must emit `TypeNotConformingToTrait`.
+///
+/// Exercises the `StructureRef → satisfies_trait_bound(["Support"], "Load") = false`
+/// emit arm (conformance/mod.rs:539).  RED on current `List<Real>` stdlib.
+#[test]
+fn loadcase_cross_trait_in_loads_emits_type_not_conforming() {
+    let source = r#"
+structure def CrossTraitFixture {
+    let c = LoadCase(name: "x", loads: [FixedSupport(target: "r")], supports: [FixedSupport(target: "r")])
+}
+"#;
+    let parsed = parse_with_stdlib(
+        source,
+        ModulePath::from_dotted("test.loadcase_cross_trait").expect("valid dotted path"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "CrossTraitFixture should parse without errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile_with_stdlib(&parsed);
+    let conformance_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+    assert!(
+        !conformance_errors.is_empty(),
+        "expected ≥1 TypeNotConformingToTrait for FixedSupport (Support, not Load) \
+         in LoadCase.loads (after ζ: List<Load> rejects cross-trait conformers); \
+         got 0. diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+/// POSITIVE guard: typed conformers (`PointLoad`, `Gravity` in `loads`;
+/// `FixedSupport` in `supports`) must emit ZERO `TypeNotConformingToTrait`
+/// diagnostics on both old (`List<Real>`) and new (`List<Load>`/`List<Support>`)
+/// stdlib.  Passes on both sides of the ζ-tighten.
+#[test]
+fn loadcase_typed_conformers_emit_no_type_not_conforming() {
+    let source = r#"
+structure def PositiveConformanceFixture {
+    let c = LoadCase(
+        name: "x",
+        loads: [PointLoad(point: "a", force: 1.0), Gravity(magnitude: STANDARD_GRAVITY())],
+        supports: [FixedSupport(target: "r")]
+    )
+}
+"#;
+    let parsed = parse_with_stdlib(
+        source,
+        ModulePath::from_dotted("test.loadcase_positive_conformance").expect("valid dotted path"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "PositiveConformanceFixture should parse without errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile_with_stdlib(&parsed);
+    let conformance_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
+        .collect();
+    assert!(
+        conformance_errors.is_empty(),
+        "typed Load/Support conformers in LoadCase.loads/supports must NOT emit \
+         TypeNotConformingToTrait; got: {:?}",
+        conformance_errors
     );
 }
