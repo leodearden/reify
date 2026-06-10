@@ -102,6 +102,35 @@ fn ingest_mesh_empty_mesh_returns_operation_failed() {
     );
 }
 
+/// `ingest_mesh` with a vertices buffer whose length is not a multiple of 3
+/// must return `Err(GeometryError::OperationFailed(_))` with a diagnostic that
+/// names the buffer-layout cause — NOT the misleading "bbox extent" message
+/// that `honest_floor` would emit if called directly on the malformed mesh.
+#[cfg(has_openvdb)]
+#[test]
+fn ingest_mesh_non_multiple_of_3_vertices_returns_layout_error() {
+    use reify_ir::{GeometryError, GeometryKernel, Mesh};
+    use reify_kernel_openvdb::OpenVdbKernel;
+
+    // 10 floats — not divisible by 3 (malformed flat xyz buffer).
+    let mesh = Mesh { vertices: vec![0.0_f32; 10], indices: vec![], normals: None };
+    let mut kernel = OpenVdbKernel::new();
+    let result = kernel.ingest_mesh(&mesh);
+
+    let msg = match result {
+        Err(GeometryError::OperationFailed(m)) => m,
+        other => panic!(
+            "ingest_mesh must return Err(OperationFailed) for non-multiple-of-3 \
+             vertices; got {other:?}"
+        ),
+    };
+    assert!(
+        msg.contains("not a multiple of 3"),
+        "error message must mention the malformed layout (\"not a multiple of 3\"); \
+         got: {msg}"
+    );
+}
+
 /// `cfg(not(has_openvdb))` skip-stub for the ingest_mesh tests.
 #[cfg(not(has_openvdb))]
 #[test]

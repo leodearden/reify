@@ -520,11 +520,33 @@ impl GeometryKernel for OpenVdbKernel {
     /// - `Ok(GeometryHandle { id, repr: None })` — `repr` is `None` because
     ///   the Voxel kernel has no BRep sub-shape (mirrors the
     ///   `GeometryHandle` contract at `geometry.rs:121-128`).
-    /// - `Err(GeometryError::OperationFailed(_))` for empty / degenerate meshes
-    ///   (honest_floor returns None → zero or non-finite bbox extent) or for
-    ///   malformed flat buffers / invalid opts (propagated from
-    ///   `realize_voxel_from_mesh_with_options`).
+    /// - `Err(GeometryError::OperationFailed(_))` for:
+    ///   - malformed flat buffers (`vertices.len()` or `indices.len()` not
+    ///     a multiple of 3) — validated here before calling `honest_floor`
+    ///     so the diagnostic names the actual cause (buffer layout) rather
+    ///     than the misleading "bbox extent" message that `honest_floor`
+    ///     would produce (it uses `chunks_exact(3)` which drops the trailing
+    ///     partial triplet);
+    ///   - empty / degenerate / non-finite meshes (honest_floor returns None);
+    ///   - invalid opts or FFI failure (propagated from
+    ///     `realize_voxel_from_mesh_with_options`).
     fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        // Validate flat-buffer lengths before calling honest_floor so the error
+        // message names the true cause.  honest_floor's chunks_exact(3) silently
+        // drops a trailing partial triplet and would return None with the generic
+        // "bbox extent" message instead of the precise layout error below.
+        if !mesh.vertices.len().is_multiple_of(3) {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh.vertices length {} is not a multiple of 3 (expected flat xyz layout)",
+                mesh.vertices.len(),
+            )));
+        }
+        if !mesh.indices.len().is_multiple_of(3) {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh.indices length {} is not a multiple of 3 (expected flat triangle layout)",
+                mesh.indices.len(),
+            )));
+        }
         let opts = crate::MeshToVoxelOptions::honest_floor(mesh).ok_or_else(|| {
             GeometryError::OperationFailed(
                 "OpenVdbKernel::ingest_mesh: cannot derive honest-floor voxel size \

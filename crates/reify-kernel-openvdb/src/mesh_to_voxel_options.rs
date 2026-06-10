@@ -109,19 +109,33 @@ impl MeshToVoxelOptions {
     /// - `Some(opts)` for a valid mesh with at least one vertex and a
     ///   positive, finite bounding-box extent on every axis.
     /// - `None` for an empty mesh (`vertices` is empty), a mesh where all
-    ///   vertices are coincident (zero extent on every axis), or a mesh with
-    ///   non-finite vertex coordinates.
+    ///   vertices are coincident (zero extent on every axis), or a mesh
+    ///   containing any non-finite (NaN or Inf) vertex coordinate.
+    ///
+    /// Note: a single NaN or Inf coordinate in any vertex is enough to
+    /// return `None` — the function does not skip bad coordinates and
+    /// compute a bbox over the remaining valid vertices.  A partial-bad
+    /// mesh would yield a misleadingly-tight bbox; returning `None` forces
+    /// the caller to reject or clean the mesh before voxelization.
     pub fn honest_floor(mesh: &Mesh) -> Option<Self> {
         if mesh.vertices.is_empty() {
             return None;
         }
 
         // Compute per-axis min/max over flat xyz triplets.
+        // Any NaN / Inf coordinate makes the bounding box undefined — return
+        // None immediately rather than silently skipping the bad value and
+        // computing a bbox over partial data (the NaN-comparison short-circuit
+        // in `v < min` / `v > max` would otherwise produce a plausible-looking
+        // bbox that ignores the offending vertex entirely).
         let mut min = [f32::INFINITY; 3];
         let mut max = [f32::NEG_INFINITY; 3];
         for chunk in mesh.vertices.chunks_exact(3) {
             for axis in 0..3 {
                 let v = chunk[axis];
+                if !v.is_finite() {
+                    return None;
+                }
                 if v < min[axis] { min[axis] = v; }
                 if v > max[axis] { max[axis] = v; }
             }
@@ -302,6 +316,41 @@ mod tests {
         assert!(
             MeshToVoxelOptions::honest_floor(&mesh).is_none(),
             "honest_floor must return None for a degenerate (zero-extent) mesh"
+        );
+    }
+
+    /// A mesh containing a NaN vertex coordinate → None.
+    ///
+    /// honest_floor returns None on the FIRST non-finite coordinate encountered,
+    /// rather than silently skipping it and computing a bbox over the remaining
+    /// valid vertices (which would produce a plausible-looking bbox for a
+    /// conceptually invalid mesh).
+    #[test]
+    fn honest_floor_nan_coordinate_returns_none() {
+        let v: Vec<f32> = vec![
+            -1.0, -1.0, -1.0,         // valid vertex
+             1.0,  1.0, f32::NAN,      // NaN on z of second vertex
+        ];
+        let mesh = Mesh { vertices: v, indices: vec![], normals: None };
+        assert!(
+            MeshToVoxelOptions::honest_floor(&mesh).is_none(),
+            "honest_floor must return None for a mesh containing a NaN vertex coordinate"
+        );
+    }
+
+    /// A mesh containing an Inf vertex coordinate → None.
+    ///
+    /// Same contract as the NaN test: any non-finite coordinate rejects the mesh.
+    #[test]
+    fn honest_floor_inf_coordinate_returns_none() {
+        let v: Vec<f32> = vec![
+            -1.0, -1.0, -1.0,
+             1.0,  1.0, f32::INFINITY,  // Inf on z of second vertex
+        ];
+        let mesh = Mesh { vertices: v, indices: vec![], normals: None };
+        assert!(
+            MeshToVoxelOptions::honest_floor(&mesh).is_none(),
+            "honest_floor must return None for a mesh containing an Inf vertex coordinate"
         );
     }
 
