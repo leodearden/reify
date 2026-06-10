@@ -1734,11 +1734,13 @@ mod tests {
     /// a realization-failed diagnostic rather than attempting (or panicking on)
     /// an unsupported stage.
     ///
-    /// Exhaustively pins all 16 ordered pairs: the one supported cell returns
-    /// `Some(Tessellate)`; the other 15 return `None`. A future ε that learns a
-    /// new conversion (e.g. `(Mesh, Voxel)`) must update this table explicitly.
+    /// Exhaustively pins all 16 ordered pairs: the two supported cells return
+    /// `Some(Tessellate)` for `(BRep, Mesh)` and `Some(Voxelize)` for
+    /// `(Mesh, Voxel)`; the other 14 return `None`. Adding a new conversion
+    /// to ε means adding a [`ConversionProjection`] variant and a row to
+    /// `v03_conversion_projection`, and updating this table explicitly.
     #[test]
-    fn v03_conversion_projection_supports_only_brep_to_mesh_tessellate() {
+    fn v03_conversion_projection_supports_brep_to_mesh_and_mesh_to_voxel() {
         use super::{ConversionProjection, v03_conversion_projection};
 
         let all = [
@@ -1755,14 +1757,21 @@ mod tests {
                     assert_eq!(
                         got,
                         Some(ConversionProjection::Tessellate),
-                        "(BRep, Mesh) is the sole ε-executable stage and must \
-                         classify as the Tessellate projection",
+                        "(BRep, Mesh) must classify as the Tessellate projection \
+                         (BRep→Mesh realised by source kernel tessellate)",
+                    );
+                } else if from == ReprKind::Mesh && to == ReprKind::Voxel {
+                    assert_eq!(
+                        got,
+                        Some(ConversionProjection::Voxelize),
+                        "(Mesh, Voxel) must classify as the Voxelize projection \
+                         (Mesh→Voxel realised by target kernel ingest_mesh)",
                     );
                 } else {
                     assert_eq!(
                         got, None,
                         "({from:?}, {to:?}) is not ε-executable and must classify \
-                         as None (only BRep→Mesh is supported in v0.3 ε)",
+                         as None (only BRep→Mesh and Mesh→Voxel are supported in v0.3 β)",
                     );
                 }
             }
