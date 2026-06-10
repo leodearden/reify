@@ -263,6 +263,70 @@ fi
 rm -f "$_LOCK13" "${_LOCK13}.slot-1" "$_DAEMON_PID_FILE13"
 
 # ===========================================================================
+# INPUT VALIDATION tests (Tests 14-17): early-return contract for bad knobs
+# These paths are part of the documented interface; regression-test them so
+# a refactor of test_semaphore_acquire cannot silently break them.
+# ===========================================================================
+
+echo ""
+echo "--- Test 14: REIFY_TEST_SEMAPHORE_CONCURRENCY=abc exits 64 (non-integer) ---"
+
+_LOCK14="$(mktemp)"
+_EXIT14=0
+DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_CONCURRENCY=abc \
+    REIFY_TEST_SEMAPHORE_LOCK="$_LOCK14" \
+    "$LIB" true || _EXIT14=$?
+rm -f "$_LOCK14"
+
+assert "Test 14: CONCURRENCY=abc exits 64 (got $_EXIT14)" \
+    test "$_EXIT14" -eq 64
+
+echo ""
+echo "--- Test 15: REIFY_TEST_SEMAPHORE_CONCURRENCY=0 exits 64 (less than 1) ---"
+
+_LOCK15="$(mktemp)"
+_EXIT15=0
+DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_CONCURRENCY=0 \
+    REIFY_TEST_SEMAPHORE_LOCK="$_LOCK15" \
+    "$LIB" true || _EXIT15=$?
+rm -f "$_LOCK15"
+
+assert "Test 15: CONCURRENCY=0 exits 64 (got $_EXIT15)" \
+    test "$_EXIT15" -eq 64
+
+echo ""
+echo "--- Test 16: REIFY_TEST_SEMAPHORE_WAIT=x exits 64 (non-integer) ---"
+
+_LOCK16="$(mktemp)"
+_EXIT16=0
+DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_WAIT=x \
+    REIFY_TEST_SEMAPHORE_LOCK="$_LOCK16" \
+    REIFY_TEST_SEMAPHORE_CONCURRENCY=1 \
+    "$LIB" true || _EXIT16=$?
+rm -f "$_LOCK16"
+
+assert "Test 16: WAIT=x exits 64 (got $_EXIT16)" \
+    test "$_EXIT16" -eq 64
+
+echo ""
+echo "--- Test 17: non-existent LOCK parent dir exits 1 with a stderr diagnostic ---"
+
+_LOCK17="/tmp/nonexistent_semaphore_test_parent_$$/mylock"
+_ERR17="$(mktemp)"
+_EXIT17=0
+DF_VERIFY_ROLE=task REIFY_TEST_SEMAPHORE_CONCURRENCY=1 \
+    REIFY_TEST_SEMAPHORE_LOCK="$_LOCK17" \
+    "$LIB" true 2>"$_ERR17" || _EXIT17=$?
+
+assert "Test 17: non-existent LOCK parent exits 1 (got $_EXIT17)" \
+    test "$_EXIT17" -eq 1
+
+assert "Test 17: non-existent LOCK parent emits a 'lock parent' diagnostic on stderr" \
+    grep -q 'lock parent' "$_ERR17"
+
+rm -f "$_ERR17"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 
