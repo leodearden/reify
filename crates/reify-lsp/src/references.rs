@@ -1338,6 +1338,20 @@ enum CrossFileHome {
 /// sitting on an `import` entity token and on a `sub _ = Name` construction site,
 /// since both carry the same `word`. Returns `None` when the word names none of
 /// these (keyword, literal, unresolved/cross-module word).
+///
+/// DIRECTIONAL ALIAS GAP — step 3 gates on [`import_exposes_entity`], which is
+/// `false` for ALIASED imports (`import m.Name as Alias`). So resolution cannot
+/// START from an aliased import's entity token: invoking references/rename with
+/// the cursor exactly on the `Name` in `import parts.Hole as Bore` returns
+/// `None`. This is asymmetric with [`collect_importer_structure_references`],
+/// which DOES emit that aliased entity token into the reference set when
+/// resolution starts elsewhere (e.g. the home declaration) — so the token is
+/// part of the set yet is not a valid starting cursor. The asymmetry is
+/// internally consistent with the κ step-6 boundary (an aliased entity binds a
+/// distinct local name; only its entity token, not the alias or alias uses,
+/// names the renamed entity). Allowing the start by resolving the ENTITY (not
+/// the alias) through `resolve_import` here would restore symmetry; it is left
+/// as a follow-up to keep κ's start-position contract test-covered.
 fn resolve_cross_file_home(
     primary_source: &str,
     primary_parsed: &ParsedModule,
@@ -1563,6 +1577,18 @@ fn classify_top_level_decl(source: &str, name: &str) -> Option<RefSymbolKind> {
 /// sites are type-annotation / refinement positions κ does not collect, so a
 /// rename would be unsound) and refuse. Shared by [`prepare_rename_cross_file`]
 /// and the cross-file rename producer so the two agree on what is renameable.
+///
+/// CAVEAT — the same type-position gap applies to the ADMITTED Structure/
+/// Occurrence kinds: κ collects only the declaration token and `sub _ = Name`
+/// construction sites (κ design decision #3). If a structure name ALSO appears
+/// in a type-annotation / refinement position (e.g. `param p: Name`), renaming
+/// the structure rewrites the decl + construction sites but leaves that
+/// type-position use stale. Because Invariant 5 only checks that buffers
+/// re-PARSE clean, such a rename parses fine yet references a now-nonexistent
+/// name. Admitting Structure/Occurrence is sound for the κ signal (construction
+/// across an import); extending the collector to type positions — or refusing
+/// when such uses exist — is a clean follow-up that does not change the
+/// substrate.
 fn is_renameable_cross_file(kind: RefSymbolKind) -> bool {
     is_renameable(kind) || matches!(kind, RefSymbolKind::Structure | RefSymbolKind::Occurrence)
 }
@@ -1635,7 +1661,26 @@ pub fn prepare_rename_cross_file(
 
 /// Cross-file rename over the import graph (κ, task 4210): a [`WorkspaceEdit`]
 /// that renames a structure (or single-file value member) to `new_name` across
-/// every document that references it.
+/// every OPEN document that references it.
+///
+/// SCOPE — open documents only. The guarantee is bounded to the `workspace_docs`
+/// set, which the server populates exclusively from documents currently OPEN in
+/// the editor (the open-doc snapshot). A file that imports and constructs the
+/// renamed structure but is NOT open is never edited, so the rename can leave
+/// stale references to the old name in closed importers. This matches κ design
+/// decision #5 (whole-tree on-disk enumeration of unopened importers is a
+/// deferred follow-up); the substrate here is the open-doc set + resolved
+/// targets. A consuming task that surfaces "only open files were updated" or
+/// walks the workspace `.ri` tree would close this gap.
+///
+/// SCOPE — declaration + construction sites only. For a Structure/Occurrence
+/// home the edit set covers the declaration token, import entity tokens, and
+/// `sub _ = Name` (construction) sites — NOT type-annotation / refinement
+/// positions (see [`is_renameable_cross_file`] and [`collect_structure_name_spans`]).
+/// If a structure name also appears in such a position the rename rewrites the
+/// decl + construction sites but leaves that use stale; the buffers still
+/// re-PARSE clean (Invariant 5 only checks parse-cleanliness) yet now reference
+/// a renamed entity. Extending the collector to type positions is a κ follow-up.
 ///
 /// The edit set is exactly the cross-file reference set
 /// ([`compute_references_cross_file`] with `include_declaration = true`) — the
