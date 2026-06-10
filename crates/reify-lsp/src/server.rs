@@ -2635,4 +2635,92 @@ structure Assembly {
             other => panic!("expected Scalar location, got {other:?}"),
         }
     }
+
+    // -------------------------------------------------------------------------
+    // build_workspace_docs — unit tests (task 4466 step-9, RED)
+    // -------------------------------------------------------------------------
+
+    /// Verify that `build_workspace_docs` walks a project root recursively,
+    /// collects only *.ri files, skips ignored directories, and that a path
+    /// present in the `open` override map supplies the in-memory text instead
+    /// of the on-disk content.
+    #[test]
+    fn build_workspace_docs_walks_ri_files_and_applies_open_override() {
+        use std::path::Path;
+
+        let tmp = std::env::temp_dir()
+            .join(format!("reify-lsp-bwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp); // clean slate
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Two .ri files at root level.
+        std::fs::write(tmp.join("a.ri"), "file_a_on_disk").unwrap();
+        std::fs::write(tmp.join("b.ri"), "file_b_on_disk").unwrap();
+        // One .ri file in a nested subdir — must be discovered recursively.
+        let sub = tmp.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("c.ri"), "file_c_on_disk").unwrap();
+        // A non-.ri file — must be excluded.
+        std::fs::write(tmp.join("d.txt"), "not_ri").unwrap();
+        // A *.ri file inside an ignored dir (target/) — must be excluded.
+        let ignored = tmp.join("target");
+        std::fs::create_dir_all(&ignored).unwrap();
+        std::fs::write(ignored.join("e.ri"), "should_be_ignored").unwrap();
+
+        // `open` override: a.ri uses in-memory text (simulates an open editor buffer).
+        let a_path = tmp.join("a.ri");
+        let mut open: HashMap<PathBuf, String> = HashMap::new();
+        open.insert(a_path.clone(), "file_a_open".to_string());
+
+        let docs = build_workspace_docs(Path::new(&tmp), &open);
+
+        // Clean up before assertions so a panic doesn't leave the dir behind.
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        // Collect the (path-suffix, content) pairs for easy assertions.
+        let collected: Vec<(String, String)> = docs
+            .iter()
+            .map(|(url, content)| (url.path().to_string(), content.clone()))
+            .collect();
+
+        // Every .ri file (outside ignored dirs) must be present.
+        let has = |suffix: &str| collected.iter().any(|(p, _)| p.ends_with(suffix));
+        assert!(has("a.ri"),   "a.ri must be in docs, got {collected:?}");
+        assert!(has("b.ri"),   "b.ri must be in docs, got {collected:?}");
+        assert!(has("c.ri"),   "sub/c.ri must be in docs, got {collected:?}");
+
+        // Non-.ri file excluded.
+        assert!(!has("d.txt"), "d.txt must NOT be in docs, got {collected:?}");
+        // .ri inside target/ excluded.
+        assert!(!has("e.ri"),  "target/e.ri must NOT be in docs, got {collected:?}");
+
+        // Exactly three docs expected.
+        assert_eq!(
+            docs.len(), 3,
+            "expected 3 docs (a.ri, b.ri, sub/c.ri), got {} docs: {collected:?}",
+            docs.len()
+        );
+
+        // Open override: a.ri must serve the in-memory text, NOT the disk content.
+        let a_content = collected
+            .iter()
+            .find(|(p, _)| p.ends_with("a.ri"))
+            .map(|(_, c)| c.as_str())
+            .unwrap_or("NOT FOUND");
+        assert_eq!(
+            a_content, "file_a_open",
+            "open override for a.ri must be returned instead of disk content"
+        );
+
+        // b.ri must serve the on-disk text (not in the open map).
+        let b_content = collected
+            .iter()
+            .find(|(p, _)| p.ends_with("b.ri"))
+            .map(|(_, c)| c.as_str())
+            .unwrap_or("NOT FOUND");
+        assert_eq!(
+            b_content, "file_b_on_disk",
+            "b.ri (not in open map) must serve on-disk content"
+        );
+    }
 }
