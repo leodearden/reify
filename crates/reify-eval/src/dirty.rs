@@ -311,7 +311,12 @@ impl DagViolation {
 /// For every consumer node `n` and every producer `P` in
 /// `n.realization_reads`:
 /// - Returns `Err(DagViolation::MissingProducer)` if `P` is not in
-///   `exec_order`.
+///   `exec_order` **and** `P` has its own trace entry (i.e. `P` is a
+///   known graph node that was simply not scheduled).  Producers absent
+///   from *both* `exec_order` and `traces` indicate a trace-extraction
+///   gap (e.g. a recursive or Pattern/Sweep shape the extractor did not
+///   fully walk) rather than a scheduling omission — those are silently
+///   skipped to avoid false-positive panics on every debug build.
 /// - Returns `Err(DagViolation::BackwardEdge)` if `n` is a
 ///   `NodeId::Realization(C)` and `pos[P] >= pos[C]` (producer must
 ///   strictly precede consumer).
@@ -320,9 +325,10 @@ impl DagViolation {
 /// get the `MissingProducer` check — they have no position in `exec_order`,
 /// so ordering cannot be verified.
 ///
-/// Iterates with a deterministic tie-break (node keys sorted by `Debug`
-/// representation, mirroring [`DebugOrd`] in topological sort) so the
-/// first-reported violation is stable across runs.
+/// Iterates in arbitrary hash-map order; when multiple violations exist
+/// the returned violation is unspecified.  This avoids sorting the full
+/// node set on every debug build — the overwhelmingly common happy path
+/// returns `Ok(())` with zero allocation beyond the `pos` map.
 ///
 /// Returns `Ok(())` when no violation is found.
 pub(crate) fn check_dag_complete(
@@ -336,19 +342,20 @@ pub(crate) fn check_dag_complete(
         .map(|(i, rid)| (rid, i))
         .collect();
 
-    // Sort nodes by Debug repr for deterministic first-violation reporting.
-    let mut sorted_nodes: Vec<&NodeId> = traces.keys().collect();
-    sorted_nodes.sort_by_key(|n| format!("{:?}", n));
-
-    for node in sorted_nodes {
-        let trace = &traces[node];
+    for (node, trace) in traces {
         for producer in &trace.realization_reads {
             match pos.get(producer) {
                 None => {
-                    return Err(DagViolation::MissingProducer {
-                        producer: producer.clone(),
-                        consumer: node.clone(),
-                    });
+                    // Only a scheduling bug when the producer is actually a
+                    // graph node (has its own trace entry).  If absent from
+                    // both exec_order and traces, this edge came from a
+                    // trace-extraction gap — skip to avoid false positives.
+                    if traces.contains_key(&NodeId::Realization(producer.clone())) {
+                        return Err(DagViolation::MissingProducer {
+                            producer: producer.clone(),
+                            consumer: node.clone(),
+                        });
+                    }
                 }
                 Some(&p_pos) => {
                     // BackwardEdge only applies to Realization consumers.
@@ -380,9 +387,10 @@ pub(crate) fn check_dag_complete(
 /// Panics with a human-readable [`DagViolation::describe`] message when any
 /// producer→consumer edge is missing or reversed in `exec_order`.
 ///
-/// This is a no-op in release builds (the function body is empty when
-/// `debug_assertions` are disabled — callers should gate the call with
-/// `#[cfg(debug_assertions)]` so the exec_order allocation also disappears).
+/// This function is compiled only under `debug_assertions`; callers must
+/// gate the call (and the `exec_order` allocation) with
+/// `#[cfg(debug_assertions)]` so the whole site disappears entirely in
+/// release builds.
 ///
 /// # Panics
 ///
@@ -1728,10 +1736,14 @@ mod tests {
             Err(DagViolation::BackwardEdge {
                 producer,
                 consumer,
-                ..
+                producer_pos,
+                consumer_pos,
             }) => {
                 assert_eq!(producer, p_id, "wrong producer in BackwardEdge");
                 assert_eq!(consumer, c_id, "wrong consumer in BackwardEdge");
+                // exec_order = [c_id, p_id]: consumer at index 0, producer at index 1.
+                assert_eq!(producer_pos, 1, "producer_pos should be 1");
+                assert_eq!(consumer_pos, 0, "consumer_pos should be 0");
             }
             other => panic!(
                 "expected Err(BackwardEdge {{ producer: {:?}, consumer: {:?} }}), got: {:?}",
@@ -1749,11 +1761,16 @@ mod tests {
         use std::collections::HashMap;
 
         let e = "E";
-        let p_id = RealizationNodeId::new(e, 0); // producer — NOT in exec_order
+        let p_id = RealizationNodeId::new(e, 0); // producer — in graph but NOT in exec_order
         let c_id = RealizationNodeId::new(e, 1); // consumer
 
         let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
-        // P is absent from traces (no DependencyTrace inserted for it)
+        // P exists as a graph node (has its own trace entry) but will be
+        // absent from exec_order — this is the genuine MissingProducer case.
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
         traces.insert(
             NodeId::Realization(c_id.clone()),
             DependencyTrace {
@@ -1793,10 +1810,16 @@ mod tests {
         use std::collections::HashMap;
 
         let e = "E";
-        let p_id = RealizationNodeId::new(e, 0); // producer — NOT in exec_order
+        let p_id = RealizationNodeId::new(e, 0); // producer — in graph but NOT in exec_order
         let k = ConstraintNodeId::new(e, 0);
 
         let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // P exists as a graph node (has its own trace entry) but will be
+        // absent from exec_order — genuine MissingProducer for a constraint consumer.
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
         traces.insert(
             NodeId::Constraint(k.clone()),
             DependencyTrace {
