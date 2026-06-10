@@ -160,6 +160,15 @@ git:
   branch_prefix: "task/"
   remote: "origin"
   worktree_dir: ".worktrees"
+  # Persistent warm merge-verify worktree (dark_factory:1692 = warmer-builds PRD κ).
+  # Reuse a FIXED .worktrees/_merge-verify with target/ retained across the serial
+  # (_MERGE_AHEAD_BOUND=1) merge-verify attempts → ~90→~25-35m typical, -60-80% CPU-s.
+  # Activated 2026-06-10 (deb red-main-livelock follow-up). Trivially revertible (set false).
+  persistent_merge_worktree: true
+  # Off-lane detective (PRD §10 inv.6b): periodically re-verify a landed commit COLD and
+  # compare test-level vs the warm result; divergence fires a born-at-L2 alarm naming the
+  # commit + diverging tests. Cadence left at dark-factory defaults (every 40 lands OR nightly).
+  warm_verify_shadow_compare: true
   # Main-gate sanction handshake (task 4367 step 1; dark_factory:1678 wired the
   # orchestrator side). advance_main runs main_gate_mark_command BEFORE its CAS
   # update-ref, so the reify reference-transaction hook records the orchestrator
