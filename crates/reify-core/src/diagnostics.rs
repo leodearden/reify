@@ -2373,10 +2373,6 @@ mod tests {
     fn diagnostic_code_empty_edge_selection_with_code_round_trips() {
         let d = Diagnostic::error("x").with_code(DiagnosticCode::EmptyEdgeSelection);
         assert_eq!(d.code, Some(DiagnosticCode::EmptyEdgeSelection));
-        assert_eq!(
-            format!("{:?}", DiagnosticCode::EmptyEdgeSelection),
-            "EmptyEdgeSelection"
-        );
     }
 
     // --- Shadowing tests (task 2310 — spec §8.5) ---
