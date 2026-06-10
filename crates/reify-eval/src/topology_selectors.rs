@@ -639,44 +639,74 @@ pub(crate) const WALL_WINDOW_RAD: f64 = std::f64::consts::FRAC_PI_4;
 ///
 /// **Per-call cost note:** `tessellate` is called once per selector invocation
 /// regardless of whether the BRep contains curved faces.  For purely planar
-/// solids this is a no-op at the mesh level (the fold finds no normals to
+/// solids this is a no-op at the mesh level (the fold finds no triangles to
 /// process), but the kernel call itself is not skipped.  If the call overhead
 /// becomes measurable, a future optimisation can query face-type metadata first
 /// and skip tessellation for all-planar shapes.
 ///
-/// **Kernel contract:** `Mesh.normals`, when `Some`, must contain
-/// *per-facet outward normals* — one outward normal per triangle vertex,
-/// consistent in orientation with `FaceNormal` (outward = away from the solid
-/// interior).  Smoothed or averaged vertex normals violate the conservative-
-/// bound invariant: averaged normals at wall/floor seams can fall into the
-/// wall window when neither adjacent face is a true wall, producing a
-/// misleading `signed_min_draft` or a spurious `has_undercut`.  If a kernel
-/// emits smoothed normals, derive facet normals from `vertices`+`indices`
-/// via cross-product instead.
+/// **Conservative-bound approach:** per-facet normals are derived from
+/// `Mesh.vertices` + `Mesh.indices` via geometric cross-product of triangle
+/// edge vectors (see [`fold_mesh_facet_dots`]), NOT from `Mesh.normals`.
+/// This makes the conservative-bound guarantee kernel-agnostic: kernels that
+/// emit smoothed per-vertex normals (e.g. OCCT's `tessellate_shape` path,
+/// which averages adjacent triangle face normals at shared vertices) cannot
+/// produce misleading DFM results via this path.  `Mesh.normals` is ignored
+/// by the DFM fold.
 const DFM_TESS_TOLERANCE: f64 = 1e-3;
 
-/// Iterate the per-facet normals in `mesh`, normalising each, and call `f`
-/// with `dot3(n_facet, dir)` for every non-degenerate facet normal.
+/// Iterate the geometric facet normals in `mesh`, normalising each, and call
+/// `f` with `dot3(n_facet, dir)` for every non-degenerate triangle.
+///
+/// Per-facet normals are computed from `mesh.vertices` + `mesh.indices` via
+/// the cross-product `(v1−v0) × (v2−v0)` of each triangle's edge vectors.
+/// This is geometry-driven and kernel-agnostic — `mesh.normals` (which may
+/// carry smoothed per-vertex normals that violate the conservative-bound
+/// invariant) is intentionally ignored.  See [`DFM_TESS_TOLERANCE`] for the
+/// rationale.
 ///
 /// This is the shared tessellate-fold kernel for both
 /// [`unsupported_overhang_faces`] and [`min_draft_angle`]: both functions
-/// read `Mesh.normals` in the same `chunks(3) → f32→f64 cast → normalize3`
-/// pattern but apply different reduction closures (max-dip vs min-draft/
-/// undercut).  Extracting the loop here removes the duplication so the
-/// orientation convention and conservative-bound logic live in one place.
+/// derive facet normals with the same cross-product path but apply different
+/// reduction closures (max-dip vs min-draft/undercut).  Extracting the loop
+/// here keeps the orientation convention and conservative-bound logic in one
+/// place.
 ///
-/// The `Mesh.normals` kernel contract (per-facet outward, unsmoothed) is
-/// stated on [`DFM_TESS_TOLERANCE`].  When `mesh.normals` is `None` or
-/// empty, `f` is never called (no-op).  Degenerate (near-zero) facet
-/// normals are silently skipped.
+/// When `mesh.indices` is empty or `mesh.vertices` is empty, `f` is never
+/// called (no-op).  Out-of-bounds index entries and degenerate (zero-area)
+/// triangles are silently skipped.
 fn fold_mesh_facet_dots(mesh: &reify_ir::Mesh, dir: [f64; 3], mut f: impl FnMut(f64)) {
-    let Some(ns) = &mesh.normals else { return };
-    for chunk in ns.chunks(3) {
-        if chunk.len() == 3 {
-            let nf = [chunk[0] as f64, chunk[1] as f64, chunk[2] as f64];
-            if let Some(nf_unit) = normalize3(nf) {
-                f(dot3(nf_unit, dir));
-            }
+    let verts = &mesh.vertices;
+    let idxs = &mesh.indices;
+    if idxs.is_empty() || verts.is_empty() {
+        return;
+    }
+    let nv = verts.len() / 3;
+    for tri in idxs.chunks(3) {
+        if tri.len() < 3 {
+            continue;
+        }
+        let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+        if i0 >= nv || i1 >= nv || i2 >= nv {
+            continue; // out-of-bounds index — skip gracefully
+        }
+        let v = |i: usize| -> [f64; 3] {
+            [
+                verts[i * 3] as f64,
+                verts[i * 3 + 1] as f64,
+                verts[i * 3 + 2] as f64,
+            ]
+        };
+        let (va, vb, vc) = (v(i0), v(i1), v(i2));
+        let ab = [vb[0] - va[0], vb[1] - va[1], vb[2] - va[2]];
+        let ac = [vc[0] - va[0], vc[1] - va[1], vc[2] - va[2]];
+        // Geometric facet normal: cross product of edge vectors ab × ac.
+        let nf = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        if let Some(nf_unit) = normalize3(nf) {
+            f(dot3(nf_unit, dir));
         }
     }
 }
@@ -693,10 +723,10 @@ fn fold_mesh_facet_dots(mesh: &reify_ir::Mesh, dir: [f64; 3], mut f: impl FnMut(
 /// `asin(clamp(−n · build_dir, −1, 1)) ∈ [−π/2, π/2]`.  Positive dip means
 /// the face points downward (overhang); negative dip means it points upward
 /// (self-supporting).  `worst_dip` is the maximum over **all** BRep faces
-/// and tessellated facet normals, seeded at `f64::NEG_INFINITY`.  The seeded
-/// value is returned only when both the BRep face list and the tessellation
-/// yield no normals; closed solids always have faces, so this is a
-/// theoretical edge case in practice.
+/// and tessellated facet normals.  When both the BRep face list and the
+/// tessellation yield no normals (a theoretical edge case for closed solids),
+/// the sentinel `−π/2` is returned — the most self-supporting possible value,
+/// mirroring `min_draft_angle`'s `+π/2` no-wall sentinel.
 ///
 /// For curved faces the scalar `worst_dip` is additionally refined by
 /// per-vertex normals from `kernel.tessellate` (conservative bound — finer
@@ -765,13 +795,12 @@ pub fn unsupported_overhang_faces<K: GeometryKernel + ?Sized>(
         }
     }
 
-    // Conservative tessellate fold: refine worst_dip from per-facet normals.
-    // A tessellate error or absent normals is a no-op (per-face result stands).
+    // Conservative tessellate fold: refine worst_dip from per-facet normals
+    // derived via cross-product (kernel-agnostic — see DFM_TESS_TOLERANCE).
+    // A tessellate error is a no-op (per-face result stands).
     // The unsupported FACE SET is not updated here — Mesh has no per-face
     // attribution (documented v1 limitation; per-region overhang maps are
     // out of scope per PRD §5).
-    // Kernel contract: Mesh.normals must be per-facet outward unsmoothed normals
-    // (see DFM_TESS_TOLERANCE doc).
     if let Ok(mesh) = kernel.tessellate(handle, DFM_TESS_TOLERANCE) {
         fold_mesh_facet_dots(&mesh, b, |d| {
             let dip = (-d).clamp(-1.0, 1.0).asin();
@@ -781,7 +810,16 @@ pub fn unsupported_overhang_faces<K: GeometryKernel + ?Sized>(
         });
     }
 
-    Ok((unsupported, worst_dip))
+    // No BRep faces and no tessellation normals → return −π/2 sentinel
+    // (most self-supporting) rather than leaking NEG_INFINITY to callers.
+    // Mirrors min_draft_angle's +π/2 no-wall sentinel.
+    let final_worst_dip = if worst_dip.is_finite() {
+        worst_dip
+    } else {
+        -std::f64::consts::FRAC_PI_2
+    };
+
+    Ok((unsupported, final_worst_dip))
 }
 
 /// Return the minimum signed draft angle over the wall-window faces of
@@ -862,9 +900,8 @@ pub fn min_draft_angle<K: GeometryKernel + ?Sized>(
     }
 
     // Conservative tessellate fold: lower min_draft / set undercut flag from
-    // per-facet normals. A tessellate error or absent normals is a no-op.
-    // Kernel contract: Mesh.normals must be per-facet outward unsmoothed normals
-    // (see DFM_TESS_TOLERANCE doc).
+    // per-facet normals derived via cross-product (kernel-agnostic — see
+    // DFM_TESS_TOLERANCE). A tessellate error is a no-op.
     if let Ok(mesh) = kernel.tessellate(handle, DFM_TESS_TOLERANCE) {
         fold_mesh_facet_dots(&mesh, p, |d| {
             if d.abs() < wall_sin {
@@ -2677,11 +2714,19 @@ mod tests {
         let face_ids = vec![GeometryHandleId(701)];
         let sqrt3_over2 = (3.0_f64).sqrt() / 2.0;
 
-        // Steep vertex normal: z ≈ −0.766 → facet dip ≈ asin(0.766) ≈ 50°.
+        // Triangle whose geometric normal ≈ (0.6427, 0, −0.766) → facet dip ≈ 50°.
+        // Vertices: v0=(0,0,0), v1=(0,1,0), v2=(0.766, 0, 0.6427).
+        // Edge vectors ab=(0,1,0), ac=(0.766,0,0.6427).
+        // Cross product ab×ac = (0.6427, 0, −0.766), already unit-length.
+        // −n·(0,0,1) = 0.766 ≈ sin(50°) → dip ≈ asin(0.766) ≥ 50°.
         let steep_mesh = Mesh {
-            vertices: vec![0.0, 0.0, 0.0],
-            indices: vec![],
-            normals: Some(vec![0.6427_f32, 0.0_f32, -0.766_f32]),
+            vertices: vec![
+                0.0_f32, 0.0_f32, 0.0_f32, // v0
+                0.0_f32, 1.0_f32, 0.0_f32, // v1
+                0.766_f32, 0.0_f32, 0.6427_f32, // v2
+            ],
+            indices: vec![0, 1, 2],
+            normals: None, // derived from geometry by fold_mesh_facet_dots
         };
 
         let mut kernel = CountingKernel::new()
@@ -2723,13 +2768,21 @@ mod tests {
         let cos10 = 10f64.to_radians().cos();
         let sin10 = 10f64.to_radians().sin();
 
-        // Re-entrant facet normal: n_f·p = −sin4° → δ_f ≈ −4° (undercut).
+        // Triangle whose geometric normal ≈ (cos4°, 0, −sin4°) → δ_f ≈ −4° (undercut).
+        // Vertices: v0=(0,0,0), v1=(0,1,0), v2=(sin4°, 0, cos4°).
+        // Edge vectors ab=(0,1,0), ac=(sin4°,0,cos4°).
+        // Cross product ab×ac = (cos4°, 0, −sin4°), already unit-length.
+        // n·(0,0,1) = −sin4° < 0 → undercut; |n·p| = sin4° < sin(45°) → wall-window.
         let cos4 = 4f32.to_radians().cos();
         let sin4 = 4f32.to_radians().sin();
         let reentrant_mesh = Mesh {
-            vertices: vec![0.0, 0.0, 0.0],
-            indices: vec![],
-            normals: Some(vec![cos4, 0.0_f32, -sin4]),
+            vertices: vec![
+                0.0_f32, 0.0_f32, 0.0_f32, // v0
+                0.0_f32, 1.0_f32, 0.0_f32, // v1
+                sin4, 0.0_f32, cos4, // v2 — cross product gives (cos4,0,−sin4)
+            ],
+            indices: vec![0, 1, 2],
+            normals: None, // derived from geometry by fold_mesh_facet_dots
         };
 
         let mut kernel = CountingKernel::new()
