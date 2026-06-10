@@ -4268,12 +4268,44 @@ impl Engine {
                                             break;
                                         }
                                         Some(ConversionProjection::Tessellate) => {
-                                            tessellate_source =
-                                                Some((*stage_kernel).as_registry_name());
+                                            // Guard: a chain may contain AT MOST one
+                                            // BRep→Mesh Tessellate stage.  Two
+                                            // Tessellate stages would mean two distinct
+                                            // source kernels, which the single-recipe
+                                            // executor cannot represent — surface it as
+                                            // a graceful diagnostic rather than
+                                            // silently using the last one seen.
+                                            if tessellate_source.is_some() {
+                                                conversion_error = Some(format!(
+                                                    "conversion chain for op '{operation:?}' \
+                                                     has more than one Tessellate stage \
+                                                     (BRep→Mesh); only one is supported \
+                                                     in v0.3-β",
+                                                ));
+                                            } else {
+                                                tessellate_source =
+                                                    Some((*stage_kernel).as_registry_name());
+                                            }
                                         }
                                         Some(ConversionProjection::Voxelize) => {
-                                            // Realised by ingest_mesh on plan.kernel
-                                            // in phase 2; no separate step here.
+                                            // Realised by ingest_mesh on plan.kernel in
+                                            // phase 2.  Guard: the Voxelize stage's
+                                            // recorded kernel must match plan.kernel —
+                                            // the executor always ingests into
+                                            // plan.kernel, so a mismatch would ingest
+                                            // into the wrong kernel silently.
+                                            if stage_kernel.as_registry_name()
+                                                != plan.kernel.as_str()
+                                            {
+                                                conversion_error = Some(format!(
+                                                    "internal error: Voxelize stage kernel \
+                                                     '{}' does not match plan.kernel '{}' \
+                                                     for op '{operation:?}'; executor would \
+                                                     ingest into the wrong kernel",
+                                                    stage_kernel.as_registry_name(),
+                                                    plan.kernel,
+                                                ));
+                                            }
                                         }
                                     }
                                 }
@@ -8172,6 +8204,141 @@ mod tests {
             state.produced_repr_out,
             Some(ReprKind::Voxel),
             "produced_repr_out must be Voxel for the two-stage BRep→Voxel realization"
+        );
+    }
+
+    /// Amendment (suggestion 4): NEGATIVE — unsupported conversion crossing
+    /// degrades gracefully (no kernel work performed).
+    ///
+    /// Exercises the Phase-1 validation gate: when the dispatcher produces a
+    /// chain containing a crossing that `v03_conversion_projection` classifies
+    /// as `None` (e.g. a direct `BRep→Voxel` stage, which is not one of the
+    /// two supported crossings), the executor must emit exactly one
+    /// `Error`-severity diagnostic and must perform zero kernel work —
+    /// `ingest_mesh` and `execute` (for the final op) must never be called.
+    ///
+    /// Scenario: "occt" registers `(Convert{from:BRep}, Voxel)` — a
+    /// single-step BRep→Voxel crossing.  The dispatcher BFS finds a plan
+    /// `{kernel:"openvdb", conversions:[(Occt,BRep,Voxel)]}`.  Phase 1 calls
+    /// `v03_conversion_projection(BRep, Voxel)` → `None` → `conversion_error`.
+    #[test]
+    fn execute_realization_ops_conversion_path_unsupported_crossing_degrades_gracefully() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        // "occt": produces BRep primitives and claims a direct BRep→Voxel
+        // Convert edge (unsupported crossing in v0.3-β).
+        kernels.insert("occt".to_string(), Box::new(MockGeometryKernel::new()));
+        // "openvdb": counts ingest_mesh + execute calls so the test can assert
+        // they never fire on the error path.
+        kernels.insert(
+            "openvdb".to_string(),
+            Box::new(CountingVoxelizerKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 4000,
+            }),
+        );
+
+        // occt: (PrimitiveBox, BRep) + (Convert{BRep}, Voxel) — the direct
+        // BRep→Voxel crossing is not one of the two β-supported shapes.
+        // openvdb: (BooleanUnion, Voxel) only — no Convert capability.
+        //
+        // Dispatcher BFS for demanded=Voxel / available={BRep}:
+        //   pop(BRep): expand via occt's (Convert{BRep},Voxel) → (Voxel,[occt,BRep,Voxel])
+        //   pop(Voxel): openvdb supports (BooleanUnion,Voxel) → plan found.
+        // Phase 1: v03_conversion_projection(BRep,Voxel) = None → error.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Voxel,
+                ),
+            ],
+        };
+        let desc_openvdb = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Voxel)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("openvdb".to_string(), &desc_openvdb);
+
+        // Two BRep primitives + one BooleanUnion consuming them.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("BadConv", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("BadConv"),
+            SourceSpan::new(0, 0),
+            ReprKind::Voxel,
+            None,
+        );
+
+        // Must emit at least one Error diagnostic (the unsupported crossing).
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(
+            !errors.is_empty(),
+            "an unsupported BRep→Voxel crossing must emit an Error diagnostic, \
+             got no errors (diagnostics: {:?})",
+            state.diagnostics,
+        );
+
+        // No kernel work must have been performed after the Phase-1 error.
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            0,
+            "ingest_mesh must not be called when the conversion stage is unsupported"
+        );
+        assert_eq!(
+            *union_count.lock().unwrap(),
+            0,
+            "BooleanUnion must not run when the conversion stage is unsupported"
         );
     }
 

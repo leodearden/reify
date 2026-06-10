@@ -1733,21 +1733,26 @@ mod tests {
         );
     }
 
-    /// Task 4050 (steps 5/6): [`v03_conversion_projection`] classifies a single
-    /// conversion stage `(from, to)` into the v0.3-ε-executable projection.
+    /// Task 4050 (steps 5/6) + task 4422 (β): [`v03_conversion_projection`]
+    /// classifies a single conversion stage `(from, to)` into the
+    /// v0.3-β-executable projection.
     ///
-    /// ε supports exactly ONE conversion shape — `(BRep, Mesh)` ⇒ `Tessellate`
-    /// (the source kernel tessellates its BRep handle into a mesh, which the
-    /// target kernel then ingests via `ingest_mesh`). EVERY other ordered
-    /// `(from, to)` pair over the four [`ReprKind`] variants is NOT runnable in
-    /// ε and must classify as `None`, so the conversion executor surfaces it as
-    /// a realization-failed diagnostic rather than attempting (or panicking on)
-    /// an unsupported stage.
+    /// β supports exactly TWO conversion shapes:
+    /// - `(BRep, Mesh)` ⇒ `Tessellate` — the source kernel tessellates its
+    ///   BRep handle into a mesh, which the target kernel then ingests via
+    ///   `ingest_mesh`.
+    /// - `(Mesh, Voxel)` ⇒ `Voxelize` — the target kernel voxelises the
+    ///   interchange mesh via `ingest_mesh` (producing a voxel grid).
+    ///
+    /// EVERY other ordered `(from, to)` pair over the four [`ReprKind`]
+    /// variants is NOT runnable in β and must classify as `None`, so the
+    /// conversion executor surfaces it as a realization-failed diagnostic
+    /// rather than attempting (or panicking on) an unsupported stage.
     ///
     /// Exhaustively pins all 16 ordered pairs: the two supported cells return
     /// `Some(Tessellate)` for `(BRep, Mesh)` and `Some(Voxelize)` for
     /// `(Mesh, Voxel)`; the other 14 return `None`. Adding a new conversion
-    /// to ε means adding a [`ConversionProjection`] variant and a row to
+    /// to β means adding a [`ConversionProjection`] variant and a row to
     /// `v03_conversion_projection`, and updating this table explicitly.
     #[test]
     fn v03_conversion_projection_supports_brep_to_mesh_and_mesh_to_voxel() {
@@ -1780,8 +1785,8 @@ mod tests {
                 } else {
                     assert_eq!(
                         got, None,
-                        "({from:?}, {to:?}) is not ε-executable and must classify \
-                         as None (only BRep→Mesh and Mesh→Voxel are supported in v0.3 β)",
+                        "({from:?}, {to:?}) is not β-executable and must classify \
+                         as None (only BRep→Mesh and Mesh→Voxel are supported in v0.3-β)",
                     );
                 }
             }
