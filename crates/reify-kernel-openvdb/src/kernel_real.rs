@@ -14,15 +14,16 @@
 //! # Public non-trait methods
 //!
 //! `realize_voxel_from_mesh`, `active_voxel_count`, `sample_sdf_at`,
-//! `write_vdb_grid`, and `open_vdb_grid_for_test` are additional public
-//! surface area exposed for the v0.4 shells use-case (direct callers) and
-//! for integration tests. They are NOT part of the `GeometryKernel` trait —
-//! trait dispatch routes through `execute()` / `query()`.
+//! `write_vdb_grid`, `open_vdb_grid_for_test`, and `densify_grid_to_sampled`
+//! are additional public surface area exposed for the v0.4 shells use-case
+//! (direct callers) and for integration tests. They are NOT part of the
+//! `GeometryKernel` trait — trait dispatch routes through `execute()` / `query()`.
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
+use reify_core::Type;
+use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, SampledField, TessError, Value};
 
 use crate::ffi::ffi as openvdb_ffi;
 use crate::init::ensure_initialized;
@@ -297,7 +298,99 @@ impl OpenVdbKernel {
             .ok_or(QueryError::InvalidHandle(handle))?;
         Ok(openvdb_ffi::grid_name(grid))
     }
+
+    /// Densify the registered SDF grid into a flat f64 buffer and lower it to
+    /// a [`SampledField`] via the shared `lower_to_sampled` pipeline.
+    ///
+    /// # What this does
+    ///
+    /// Mirrors the grid→SampledField extraction path in `read_vdb_file`
+    /// (ingest.rs:574–649), but starts from an **already-registered handle**
+    /// instead of a file open. The shared `build_realized_grid_source` helper
+    /// (ingest.rs) captures the drift-prone invariants (Regular3D, X-outermost
+    /// axis convention, f32→f64 conversion, units-empty→None) in one place.
+    ///
+    /// Codomain is `Type::Real` (dimensionless raw SDF).
+    /// `meshToLevelSet` writes no units metadata → `grid_units` returns "" →
+    /// `OpenVdbGridSource.units = None` →
+    /// `validate_grid_units(None, &Type::Real) = Ok(())` → no `UnitMismatch`.
+    ///
+    /// # `&mut self` — Sync-audit deviation from PRD §7.1
+    ///
+    /// The PRD §7.1 proposed `&self`, but `grid_bbox_min`, `grid_bbox_max`, and
+    /// `grid_densify_to_buffer` all call `h.grid->evalActiveVoxelBoundingBox()`
+    /// (cpp/openvdb_wrapper.cpp:131, 138, 274).  The Sync maintenance contract
+    /// at the bottom of this file explicitly prohibits new `&self` methods that
+    /// call that API: "a future `&self` 'get bbox' accessor would race".
+    /// Using `&mut self` sidesteps the concern via borrow-checker exclusivity
+    /// — the same approach used by `realize_voxel_from_mesh` and
+    /// `open_vdb_grid_for_test`.  Consumer γ (`realize_solid_sdf`) already
+    /// holds `&mut self` to call `ingest_mesh`, so chaining densify is free.
+    ///
+    /// Condition to relax back to `&self` (per PRD §7.1): confirm that
+    /// `evalActiveVoxelBoundingBox()` is non-caching on libopenvdb 13.x under
+    /// all active build configurations, OR migrate the kernel to the
+    /// `Mutex<HashMap<…>>` actor pattern.
+    ///
+    /// # Errors
+    ///
+    /// - `Err(QueryError::InvalidHandle(handle))` — handle not registered.
+    /// - `Err(QueryError::QueryFailed(_))` — densification overflows the
+    ///   C++-side `GRID_DENSIFY_MAX_VOXELS` cap (~256M voxels), or
+    ///   `lower_to_sampled` rejects the resulting source (empty grid,
+    ///   degenerate bbox, etc.).
+    pub fn densify_grid_to_sampled(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<SampledField, QueryError> {
+        let grid = self
+            .handles
+            .get(&handle)
+            .ok_or(QueryError::InvalidHandle(handle))?;
+
+        // Read per-axis metadata from the registered grid via FFI.
+        let voxel_sizes = openvdb_ffi::grid_voxel_sizes(grid);
+        let bbox_min = openvdb_ffi::grid_bbox_min(grid);
+        let bbox_max = openvdb_ffi::grid_bbox_max(grid);
+        let units_str = openvdb_ffi::grid_units(grid);
+
+        // Densify all active voxels into a flat f32 buffer (X-outermost).
+        // The C++ side caps at GRID_DENSIFY_MAX_VOXELS (~256M) and throws
+        // std::runtime_error on overflow; cxx maps it to Err(cxx::Exception).
+        let raw_buffer = openvdb_ffi::grid_densify_to_buffer(grid).map_err(|e| {
+            QueryError::QueryFailed(format!("densify_grid_to_sampled: {e}"))
+        })?;
+
+        // Build the in-memory source using the shared helper (ingest.rs) so
+        // the Regular3D + X-outermost + f32→f64 + units-None invariants live
+        // in one place, shared with read_vdb_file.
+        let source = crate::ingest::build_realized_grid_source(
+            voxel_sizes,
+            bbox_min,
+            bbox_max,
+            &units_str,
+            raw_buffer,
+        );
+
+        // Lower to SampledField.  Codomain = Type::Real (dimensionless SDF);
+        // meshToLevelSet writes no units → grid_units="" → units=None →
+        // validate_grid_units(None, &Type::Real) = Ok(()) — no UnitMismatch.
+        let outcome = crate::ingest::lower_to_sampled(
+            &source,
+            SDF_FIELD_NAME,
+            &Type::Real,
+        )
+        .map_err(|e| QueryError::QueryFailed(format!("densify_grid_to_sampled: {e}")))?;
+
+        Ok(outcome.field)
+    }
 }
+
+/// Fixed field name used by `densify_grid_to_sampled`.
+///
+/// The name feeds the `W_FIELD_OUT_OF_BOUNDS` diagnostic message only —
+/// it has no semantic significance for the densified SDF.
+const SDF_FIELD_NAME: &str = "openvdb_voxel_sdf";
 
 impl Default for OpenVdbKernel {
     fn default() -> Self {
@@ -330,9 +423,17 @@ impl Default for OpenVdbKernel {
 //   - `grid_name_for_test` → `grid_name` → `Grid::getName()`: pure read
 //     of the cached `MetaMap` entry, no lazy init, no tree walk.
 //
-// Mutating methods (`realize_voxel_from_mesh`, `open_vdb_grid_for_test`)
-// take `&mut self` and rely on Rust's borrow checker for exclusive
-// access, NOT on `Sync`.
+// Mutating methods (`realize_voxel_from_mesh`, `open_vdb_grid_for_test`,
+// `densify_grid_to_sampled`) take `&mut self` and rely on Rust's borrow
+// checker for exclusive access, NOT on `Sync`.
+//
+// `densify_grid_to_sampled` uses `&mut self` rather than the PRD §7.1 `&self`
+// because it calls `grid_bbox_min` / `grid_bbox_max` / `grid_densify_to_buffer`,
+// all of which invoke `h.grid->evalActiveVoxelBoundingBox()` — the exact API
+// this comment lists below as prohibited for new `&self` methods.  Using
+// `&mut self` is the established safe pattern (borrow-checker exclusivity).
+// Condition to relax: confirm evalActiveVoxelBoundingBox() is non-caching on
+// libopenvdb 13.x, OR migrate to Mutex<HashMap<…>>.
 //
 // DO NOT add a new `&self` method that internally calls any of the
 // following OpenVDB APIs without first replacing this `unsafe impl Sync`
@@ -397,6 +498,64 @@ impl GeometryKernel for OpenVdbKernel {
         // OperationFailed (not a panic, not Ok(_)) until task ε wires the
         // realize_voxel_from_mesh_with_options wrapper into engine dispatch.
         Err(GeometryError::OperationFailed(VOXEL_BOOL_STUB_MSG.into()))
+    }
+
+    /// Convert a triangle-soup [`Mesh`] to a narrow-band SDF `FloatGrid` via
+    /// [`Self::realize_voxel_from_mesh_with_options`] (done #3095) and register
+    /// the result as a new `GeometryHandle`.
+    ///
+    /// # Resolution policy (PRD §3b honest-floor)
+    ///
+    /// Options are derived from the mesh bounding box via
+    /// [`crate::MeshToVoxelOptions::honest_floor`]:
+    /// - `voxel_size = h = longest_extent / VOXELS_PER_LONGEST_AXIS` — scales
+    ///   with the part so resolution is meaningful across unit systems.
+    /// - `narrow_band` wide enough that the level-set band covers the full
+    ///   interior (`narrow_band × h ≥ longest_extent/2`), preventing the
+    ///   interior-saturation artefact where deep-interior voxels read
+    ///   `-half_width × voxel_size` instead of the true SDF value.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(GeometryHandle { id, repr: None })` — `repr` is `None` because
+    ///   the Voxel kernel has no BRep sub-shape (mirrors the
+    ///   `GeometryHandle` contract at `geometry.rs:121-128`).
+    /// - `Err(GeometryError::OperationFailed(_))` for:
+    ///   - malformed flat buffers (`vertices.len()` or `indices.len()` not
+    ///     a multiple of 3) — validated here before calling `honest_floor`
+    ///     so the diagnostic names the actual cause (buffer layout) rather
+    ///     than the misleading "bbox extent" message that `honest_floor`
+    ///     would produce (it uses `chunks_exact(3)` which drops the trailing
+    ///     partial triplet);
+    ///   - empty / degenerate / non-finite meshes (honest_floor returns None);
+    ///   - invalid opts or FFI failure (propagated from
+    ///     `realize_voxel_from_mesh_with_options`).
+    fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        // Validate flat-buffer lengths before calling honest_floor so the error
+        // message names the true cause.  honest_floor's chunks_exact(3) silently
+        // drops a trailing partial triplet and would return None with the generic
+        // "bbox extent" message instead of the precise layout error below.
+        if !mesh.vertices.len().is_multiple_of(3) {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh.vertices length {} is not a multiple of 3 (expected flat xyz layout)",
+                mesh.vertices.len(),
+            )));
+        }
+        if !mesh.indices.len().is_multiple_of(3) {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh.indices length {} is not a multiple of 3 (expected flat triangle layout)",
+                mesh.indices.len(),
+            )));
+        }
+        let opts = crate::MeshToVoxelOptions::honest_floor(mesh).ok_or_else(|| {
+            GeometryError::OperationFailed(
+                "OpenVdbKernel::ingest_mesh: cannot derive honest-floor voxel size \
+                 — mesh has zero or non-finite bounding-box extent"
+                    .into(),
+            )
+        })?;
+        let id = self.realize_voxel_from_mesh_with_options(mesh, &opts)?;
+        Ok(GeometryHandle { id, repr: None })
     }
 
     fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {

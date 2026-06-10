@@ -118,6 +118,13 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 include_str!("../stdlib/fea_multi_case.ri"),
             ),
             ("std.analysis", include_str!("../stdlib/analysis.ri")),
+            // `std.fea` declares `StressInvariants` — the named output struct
+            // for the `stress_invariants` builtin (FEA-5, task 2884). Placed
+            // immediately after `std.analysis` (which defines `Stress`/
+            // `AnalysisResult`) and before `std.determinacy.purposes` (which
+            // MUST remain last). Zero ordering constraints on neighbouring
+            // modules — it only uses built-in `Real`.
+            ("std.fea", include_str!("../stdlib/fea.ri")),
             ("std.tolerancing", include_str!("../stdlib/tolerancing.ri")),
             (
                 "std.geometry.traits",

@@ -1,0 +1,27 @@
+// Stdlib: FEA stress-tensor reduction types  (`std.fea`)
+//
+// Declares the named output struct for the `stress_invariants` builtin.
+//
+// `StressInvariants` holds the three classical scalar invariants of a 3×3
+// symmetric Cauchy stress tensor:
+//
+//   I1 = tr(σ)                        (trace — first invariant)
+//   I2 = (tr(σ)²  − tr(σ²)) / 2      (sum of principal 2×2 minors)
+//   I3 = det(σ)                        (determinant — third invariant)
+//
+// All three params are typed `Real` as dimension-agnostic placeholders, per
+// the `AnalysisResult` convention in analysis.ri: the `stress_invariants`
+// runtime builtin produces correctly-dimensioned `Scalar` values
+// (I1 ~ Pressure, I2 ~ Pressure², I3 ~ Pressure³), but Pressure² and
+// Pressure³ have no named `.ri` alias, so `Real` is used to avoid a
+// dimension-checking dead-end while still naming the fields.
+//
+// Module placement: registered after `std.analysis` in `stdlib_loader.rs`
+// so the growing prelude carries `Stress`/`AnalysisResult` when this module
+// compiles. Zero dependencies on other stdlib modules beyond built-in types.
+
+structure def StressInvariants {
+    param i1 : Real
+    param i2 : Real
+    param i3 : Real
+}

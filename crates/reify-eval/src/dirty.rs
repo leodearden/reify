@@ -247,6 +247,168 @@ pub fn compute_eval_set(
     topological_sort(&intersection, traces)
 }
 
+/// A violation detected by [`check_dag_complete`].
+///
+/// Returned as the `Err` variant when the declared execution order (L(B))
+/// is **not** a linear extension of the partial order induced by the
+/// realization-edge graph.
+///
+/// Two variants:
+/// - `MissingProducer`: the trace records an edge to a producer that never
+///   appears in `exec_order` (i.e. a realization that was supposed to have
+///   been built but wasn't scheduled at all).
+/// - `BackwardEdge`: a realization-to-realization edge where the producer
+///   is scheduled *after* its consumer (producer_pos >= consumer_pos).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DagViolation {
+    /// A consumer depends on a producer realization that is not present in
+    /// the execution order.
+    MissingProducer {
+        producer: RealizationNodeId,
+        consumer: NodeId,
+    },
+    /// A realization consumer is scheduled before its producer realization.
+    BackwardEdge {
+        producer: RealizationNodeId,
+        consumer: RealizationNodeId,
+        producer_pos: usize,
+        consumer_pos: usize,
+    },
+}
+
+impl DagViolation {
+    /// Human-readable description of the violation, used in `panic!` messages.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            DagViolation::MissingProducer { producer, consumer } => {
+                format!(
+                    "assert_dag_complete: MissingProducer — \
+                     consumer {:?} depends on producer {:?} \
+                     which is absent from exec_order",
+                    consumer, producer
+                )
+            }
+            DagViolation::BackwardEdge {
+                producer,
+                consumer,
+                producer_pos,
+                consumer_pos,
+            } => {
+                format!(
+                    "assert_dag_complete: BackwardEdge — \
+                     producer {:?} (pos {}) must precede consumer {:?} (pos {}), \
+                     but producer appears after consumer in exec_order",
+                    producer, producer_pos, consumer, consumer_pos
+                )
+            }
+        }
+    }
+}
+
+/// Check that `exec_order` is a linear extension of the realization-edge
+/// partial order encoded in `traces`.
+///
+/// For every consumer node `n` and every producer `P` in
+/// `n.realization_reads`:
+/// - Returns `Err(DagViolation::MissingProducer)` if `P` is not in
+///   `exec_order` **and** `P` has its own trace entry (i.e. `P` is a
+///   known graph node that was simply not scheduled).  Producers absent
+///   from *both* `exec_order` and `traces` indicate a trace-extraction
+///   gap (e.g. a recursive or Pattern/Sweep shape the extractor did not
+///   fully walk) rather than a scheduling omission — those are silently
+///   skipped to avoid false-positive panics on every debug build.
+/// - Returns `Err(DagViolation::BackwardEdge)` if `n` is a
+///   `NodeId::Realization(C)` and `pos[P] >= pos[C]` (producer must
+///   strictly precede consumer).
+///
+/// Non-realization consumers (Value/Constraint/Resolution/Compute) only
+/// get the `MissingProducer` check — they have no position in `exec_order`,
+/// so ordering cannot be verified.
+///
+/// Iterates in arbitrary hash-map order; when multiple violations exist
+/// the returned violation is unspecified.  This avoids sorting the full
+/// node set on every debug build — the overwhelmingly common happy path
+/// returns `Ok(())` with zero allocation beyond the `pos` map.
+///
+/// Returns `Ok(())` when no violation is found.
+pub(crate) fn check_dag_complete(
+    traces: &HashMap<NodeId, DependencyTrace>,
+    exec_order: &[RealizationNodeId],
+) -> Result<(), DagViolation> {
+    // Build position map: RealizationNodeId → index in exec_order.
+    let pos: HashMap<&RealizationNodeId, usize> = exec_order
+        .iter()
+        .enumerate()
+        .map(|(i, rid)| (rid, i))
+        .collect();
+
+    for (node, trace) in traces {
+        for producer in &trace.realization_reads {
+            match pos.get(producer) {
+                None => {
+                    // Only a scheduling bug when the producer is actually a
+                    // graph node (has its own trace entry).  If absent from
+                    // both exec_order and traces, this edge came from a
+                    // trace-extraction gap — skip to avoid false positives.
+                    if traces.contains_key(&NodeId::Realization(producer.clone())) {
+                        return Err(DagViolation::MissingProducer {
+                            producer: producer.clone(),
+                            consumer: node.clone(),
+                        });
+                    }
+                }
+                Some(&p_pos) => {
+                    // BackwardEdge only applies to Realization consumers.
+                    if let NodeId::Realization(consumer_rid) = node
+                        && let Some(&c_pos) = pos.get(consumer_rid)
+                        && p_pos >= c_pos
+                    {
+                        return Err(DagViolation::BackwardEdge {
+                            producer: producer.clone(),
+                            consumer: consumer_rid.clone(),
+                            producer_pos: p_pos,
+                            consumer_pos: c_pos,
+                        });
+                    }
+                    // If consumer is a Realization but absent from exec_order,
+                    // that is the caller's problem — skip ordering check.
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Debug-only wrapper: build the complete forward dependency trace map from
+/// `graph` and `fields`, then assert that `exec_order` is a linear extension
+/// of the realization-edge partial order.
+///
+/// Panics with a human-readable [`DagViolation::describe`] message when any
+/// producer→consumer edge is missing or reversed in `exec_order`.
+///
+/// This function is compiled only under `debug_assertions`; callers must
+/// gate the call (and the `exec_order` allocation) with
+/// `#[cfg(debug_assertions)]` so the whole site disappears entirely in
+/// release builds.
+///
+/// # Panics
+///
+/// Panics if `check_dag_complete` returns `Err(_)`.  The panic message always
+/// contains `"assert_dag_complete"` so that `#[should_panic(expected =
+/// "assert_dag_complete")]` tests reliably match it.
+#[cfg(debug_assertions)]
+pub(crate) fn assert_dag_complete_from_graph(
+    graph: &crate::graph::EvaluationGraph,
+    fields: &[reify_compiler::CompiledField],
+    exec_order: &[RealizationNodeId],
+) {
+    let traces = crate::deps::build_trace_map_and_fields(graph, fields);
+    if let Err(violation) = check_dag_complete(&traces, exec_order) {
+        panic!("{}", violation.describe());
+    }
+}
+
 /// Wrapper for NodeId that implements Ord based on Debug representation.
 /// Used for deterministic tie-breaking in topological sort.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1433,5 +1595,323 @@ mod tests {
         assert_eq!(levels[0], vec![a]);
         assert_eq!(levels[1], vec![b]);
         assert_eq!(levels[2], vec![c]);
+    }
+
+    // --- check_dag_complete positive tests (step-1) ---
+
+    /// (a) realization→realization: producer P before consumer C in exec_order → Ok(())
+    #[test]
+    fn check_dag_complete_realization_to_realization_ordered_ok() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::check_dag_complete;
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer
+        let c_id = RealizationNodeId::new(e, 1); // consumer
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // Producer has no deps
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
+        // Consumer reads producer
+        traces.insert(
+            NodeId::Realization(c_id.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // exec_order: producer first, consumer second
+        let exec_order = vec![p_id, c_id];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        assert!(result.is_ok(), "expected Ok(()), got: {:?}", result);
+    }
+
+    /// (b) value→realization: value cell reads producer realization; producer present → Ok(())
+    #[test]
+    fn check_dag_complete_value_to_realization_producer_present_ok() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::check_dag_complete;
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer realization
+        let selector = ValueCellId::new(e, "sel");
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // Producer realization
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
+        // Value (selector) reads the producer realization
+        traces.insert(
+            NodeId::Value(selector.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // exec_order contains the producer
+        let exec_order = vec![p_id];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        assert!(result.is_ok(), "expected Ok(()), got: {:?}", result);
+    }
+
+    /// (c) constraint→realization: constraint reads producer realization; producer present → Ok(())
+    #[test]
+    fn check_dag_complete_constraint_to_realization_producer_present_ok() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::check_dag_complete;
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer realization
+        let k = ConstraintNodeId::new(e, 0);
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // Producer realization
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
+        // Constraint reads the producer realization
+        traces.insert(
+            NodeId::Constraint(k.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // exec_order contains the producer
+        let exec_order = vec![p_id];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        assert!(result.is_ok(), "expected Ok(()), got: {:?}", result);
+    }
+
+    // --- check_dag_complete negative-teeth tests (step-3) ---
+
+    /// (a) backward realization→realization: producer after consumer → BackwardEdge
+    #[test]
+    fn check_dag_complete_backward_realization_to_realization_err() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::{DagViolation, check_dag_complete};
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer
+        let c_id = RealizationNodeId::new(e, 1); // consumer
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
+        traces.insert(
+            NodeId::Realization(c_id.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // REVERSED order: consumer at position 0, producer at position 1
+        let exec_order = vec![c_id.clone(), p_id.clone()];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        match result {
+            Err(DagViolation::BackwardEdge {
+                producer,
+                consumer,
+                producer_pos,
+                consumer_pos,
+            }) => {
+                assert_eq!(producer, p_id, "wrong producer in BackwardEdge");
+                assert_eq!(consumer, c_id, "wrong consumer in BackwardEdge");
+                // exec_order = [c_id, p_id]: consumer at index 0, producer at index 1.
+                assert_eq!(producer_pos, 1, "producer_pos should be 1");
+                assert_eq!(consumer_pos, 0, "consumer_pos should be 0");
+            }
+            other => panic!(
+                "expected Err(BackwardEdge {{ producer: {:?}, consumer: {:?} }}), got: {:?}",
+                p_id, c_id, other
+            ),
+        }
+    }
+
+    /// (b) missing producer for Realization consumer → MissingProducer
+    #[test]
+    fn check_dag_complete_missing_producer_for_realization_consumer_err() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::{DagViolation, check_dag_complete};
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer — in graph but NOT in exec_order
+        let c_id = RealizationNodeId::new(e, 1); // consumer
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // P exists as a graph node (has its own trace entry) but will be
+        // absent from exec_order — this is the genuine MissingProducer case.
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
+        traces.insert(
+            NodeId::Realization(c_id.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // exec_order only contains C, P is never built
+        let exec_order = vec![c_id.clone()];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        match result {
+            Err(DagViolation::MissingProducer { producer, consumer }) => {
+                assert_eq!(producer, p_id, "wrong producer in MissingProducer");
+                assert_eq!(
+                    consumer,
+                    NodeId::Realization(c_id.clone()),
+                    "wrong consumer in MissingProducer"
+                );
+            }
+            other => panic!(
+                "expected Err(MissingProducer {{ producer: {:?}, consumer: {:?} }}), got: {:?}",
+                p_id,
+                NodeId::Realization(c_id),
+                other
+            ),
+        }
+    }
+
+    /// (c) missing producer for non-realization consumer (Constraint) → MissingProducer
+    #[test]
+    fn check_dag_complete_missing_producer_for_constraint_consumer_err() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::{DagViolation, check_dag_complete};
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer — in graph but NOT in exec_order
+        let k = ConstraintNodeId::new(e, 0);
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // P exists as a graph node (has its own trace entry) but will be
+        // absent from exec_order — genuine MissingProducer for a constraint consumer.
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
+        traces.insert(
+            NodeId::Constraint(k.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // exec_order is empty — P is never built
+        let exec_order: Vec<RealizationNodeId> = vec![];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        match result {
+            Err(DagViolation::MissingProducer { producer, consumer }) => {
+                assert_eq!(producer, p_id, "wrong producer in MissingProducer");
+                assert_eq!(
+                    consumer,
+                    NodeId::Constraint(k.clone()),
+                    "wrong consumer in MissingProducer"
+                );
+            }
+            other => panic!(
+                "expected Err(MissingProducer {{ producer: {:?}, consumer: Constraint({:?}) }}), got: {:?}",
+                p_id, k, other
+            ),
+        }
+    }
+
+    // --- assert_dag_complete_from_graph wrapper tests (step-5) ---
+
+    /// #[should_panic] wrapper test: minimal two-entity EvaluationGraph with
+    /// cross-sub Boolean edge (inner_a → outer). Reversed exec_order
+    /// (outer before inner_a) → BackwardEdge → wrapper must panic with
+    /// a message containing "assert_dag_complete".
+    ///
+    /// RED until step-6 adds assert_dag_complete_from_graph.
+    ///
+    /// Gated on `debug_assertions` to match `assert_dag_complete_from_graph`,
+    /// which is compiled only under `debug_assertions` (the wrapper disappears
+    /// entirely in release builds, so the test must too — otherwise the import
+    /// fails to resolve under `--release`).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "assert_dag_complete")]
+    fn assert_dag_complete_from_graph_panics_on_reversed_cross_sub_exec_order() {
+        use crate::dirty::assert_dag_complete_from_graph;
+        use crate::graph::{EvaluationGraph, RealizationNodeData};
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
+        use reify_core::{ContentHash, RealizationNodeId, ValueCellId};
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+
+        // inner_a: entity "A", geometry_cell = ValueCellId("A","body")
+        let inner_a = RealizationNodeId::new("A", 0);
+        let body_a = ValueCellId::new("A", "body");
+        graph.realizations.insert(
+            inner_a.clone(),
+            RealizationNodeData {
+                produced_kernel: None,
+                id: inner_a.clone(),
+                geometry_cell: Some(body_a.clone()),
+                operations: vec![],
+                content_hash: ContentHash::of_str("inner_a"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // outer: entity "Outer", Boolean { Union, Sub("a.body"), Sub("a.body") }
+        // (using same ref twice so we only need one inner entity for simplicity)
+        let outer = RealizationNodeId::new("Outer", 0);
+        graph.realizations.insert(
+            outer.clone(),
+            RealizationNodeData {
+                produced_kernel: None,
+                id: outer.clone(),
+                geometry_cell: None,
+                operations: vec![CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Sub("a.body".into()),
+                    right: GeomRef::Sub("a.body".into()),
+                }],
+                content_hash: ContentHash::of_str("outer"),
+                produced_repr: ReprKind::BRep,
+            },
+        );
+
+        // REVERSED exec_order: outer (consumer) before inner_a (producer)
+        // → BackwardEdge → panic
+        let exec_order = vec![outer.clone(), inner_a.clone()];
+
+        // Should panic with message containing "assert_dag_complete"
+        assert_dag_complete_from_graph(&graph, &[], &exec_order);
     }
 }

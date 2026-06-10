@@ -3136,6 +3136,57 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::MechanismNonDrivingJoint).unwrap();
         assert_eq!(s, "\"MechanismNonDrivingJoint\"");
     }
+
+    /// `DiagnosticInfo.has_location` round-trips through serde:
+    /// (a) `has_location: false` serializes to JSON key `"has_location"` with value `false`
+    /// — the field is never skipped, always present on the wire; (b) deserializing a JSON
+    /// object that omits `has_location` yields `has_location == true` — pinning the
+    /// backward-compat `#[serde(default = "default_has_location")]` contract so older
+    /// payloads and un-updated consumers are treated as line-tied.
+    ///
+    /// RED until step-5 adds the field and `default_has_location` helper to `DiagnosticInfo`.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_info_has_location_serde_wire_and_default() {
+        use super::DiagnosticInfo;
+
+        // (a) Serialize: has_location: false must produce JSON key "has_location" = false.
+        let info = DiagnosticInfo {
+            file_path: "test.ri".to_owned(),
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 1,
+            severity: "Error".to_owned(),
+            message: "test".to_owned(),
+            code: None,
+            has_location: false,
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(
+            v["has_location"],
+            serde_json::Value::Bool(false),
+            "has_location: false must serialize to JSON false under key 'has_location'"
+        );
+
+        // (b) Deserialize: omitting has_location from JSON must yield has_location == true
+        //     (backward-compat: older payloads without the field are treated as line-tied).
+        let json = serde_json::json!({
+            "file_path": "test.ri",
+            "line": 1,
+            "column": 1,
+            "end_line": 1,
+            "end_column": 1,
+            "severity": "Error",
+            "message": "test",
+            "code": null
+        });
+        let deserialized: DiagnosticInfo = serde_json::from_value(json).unwrap();
+        assert!(
+            deserialized.has_location,
+            "missing `has_location` in JSON must deserialize as true (backward-compat default)"
+        );
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
@@ -3155,4 +3206,29 @@ pub struct DiagnosticInfo {
     pub severity: String,
     pub message: String,
     pub code: Option<String>,
+    /// Whether this diagnostic carries a real, line-tied source span.
+    ///
+    /// `true` means the `line`/`column`/`end_line`/`end_column` fields reflect an
+    /// actual span from the compiled source (non-empty `Diagnostic::labels`).
+    /// `false` means the positions are synthetic (hardcoded 1/1/1/1) and do NOT
+    /// point at a meaningful source location — e.g. module-level hot-reload staleness
+    /// errors where no span is available.
+    ///
+    /// Consumers (β span-less render, γ span-less refusal) use this flag to avoid
+    /// navigating the editor to a fake line 1 for span-less diagnostics.
+    ///
+    /// **Wire default:** a JSON payload that omits `has_location` deserializes as
+    /// `true` (line-tied) to preserve backward compatibility with older serializers
+    /// and un-updated consumers.
+    #[cfg_attr(feature = "serde", serde(default = "default_has_location"))]
+    pub has_location: bool,
+}
+
+/// Serde default for [`DiagnosticInfo::has_location`]: `true` (line-tied).
+///
+/// Returning `true` makes a JSON payload that omits `has_location` deserialize as
+/// line-tied, preserving backward-compat for older serializers and un-updated consumers.
+#[cfg(feature = "serde")]
+fn default_has_location() -> bool {
+    true
 }

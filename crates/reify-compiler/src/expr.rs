@@ -1901,6 +1901,24 @@ pub(crate) fn compile_expr_guarded(
                         // families by the units.rs disjointness test, so this
                         // arm's position in the ladder is unobservable.
                         joint_ctor_result_type(name, &compiled_args)
+                    } else if is_analysis_typed_fn(name) {
+                        // FEA stress-analysis reduction family (FEA-5, task
+                        // 2884): von_mises / principal_stresses / max_shear /
+                        // safety_factor / stress_invariants. These are pure
+                        // eval-builtins dispatched by name in
+                        // `reify_stdlib::eval_builtin` (analysis.rs). Setting
+                        // their result types here PREVENTS the first-arg Tensor
+                        // drift in the fallback below — e.g.
+                        // `von_mises(stress)` would otherwise mis-type as
+                        // `Tensor<Pressure>` instead of `Scalar<Pressure>`.
+                        //
+                        // The call STAYS a `FunctionCall` (eval untouched, name-
+                        // dispatched to existing Rust kernels).  The family is
+                        // pinned disjoint from all sibling families by the
+                        // `analysis_fn_names_are_disjoint_from_other_families`
+                        // test in `units.rs`, so this arm's position in the
+                        // ladder is unobservable.
+                        analysis_fn_result_type(name, &compiled_args)
                     } else {
                         compiled_args
                             .first()

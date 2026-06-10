@@ -61,6 +61,28 @@ structure def MaterialPropertyProvenance {
     param notes : String
 }
 
+// ── ConstitutiveLaw marker ───────────────────────────────────────────────────
+
+// ConstitutiveLaw is the marker trait conformed to by every concrete
+// constitutive law (isotropic, orthotropic, transverse-isotropic). The
+// body is intentionally empty: the contract "produce a 6×6 stiffness D
+// in the material's local frame" is implemented producer-side in Rust
+// (`reify-solver-elastic::constitutive`) and dispatched on the
+// structure-name carried by `Value::StructureInstance`. The stdlib trait
+// exists so `param material : ConstitutiveLaw` resolves in user code
+// (e.g. `AnisotropicMaterial.law` below and `solve_elastic_static`) and
+// so downstream PRDs can declare their own conforming structures.
+//
+// Empty-marker pattern follows `trait Load { }` in std.fea.types
+// (relaxed in DD1; see fea_types.ri).
+//
+// Declared here (above ElasticMaterial) rather than in constitutive.ri so
+// that `trait ElasticMaterial : ConstitutiveLaw` is not a forward-reference
+// (materials_fea loads before constitutive in stdlib_loader.rs — PRD §4.2 γ).
+// constitutive.ri retains a pointer comment; Orthotropic/TransverseIsotropic
+// still refine ConstitutiveLaw via the growing prelude.
+trait ConstitutiveLaw { }
+
 // ── ElasticMaterial trait ────────────────────────────────────────────────────
 
 // ElasticMaterial is the dimensioned trait the v0.3 FEA solver consumes. It
@@ -85,7 +107,7 @@ structure def MaterialPropertyProvenance {
 //                    Optional because purely linear-elastic FEA does not
 //                    consult it; downstream plasticity / limit-state /
 //                    safety-factor passes do.
-trait ElasticMaterial {
+trait ElasticMaterial : ConstitutiveLaw {
     param youngs_modulus : Pressure
     param poisson_ratio : Real // dimensionless
     param density : Density

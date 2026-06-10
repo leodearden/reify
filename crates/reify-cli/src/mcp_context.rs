@@ -245,6 +245,7 @@ impl ReifyToolContext for CliToolContext {
                 severity: diag.severity.as_wire_str().to_owned(),
                 message: diag.message.clone(),
                 code: None,
+                has_location: !diag.labels.is_empty(),
             });
         }
 
@@ -1417,6 +1418,51 @@ mod tests {
                 .any(|d| d.severity == Severity::Error.as_wire_str()),
             "at least one diagnostic must have severity == \"Error\" (PascalCase wire format); \
              bracket_compile_error.ri is known to produce a compile-time Error",
+        );
+    }
+
+    /// CLI `get_diagnostics` (producer #4: `mcp_context.rs:239`) must set
+    /// `has_location == true` for diagnostics that carry a real source span
+    /// (non-empty labels), pinning the `!diag.labels.is_empty()` predicate at
+    /// the CLI construction site (`mcp_context.rs:230` branch).
+    ///
+    /// Uses the same `fresh_ctx()` + `BRACKET_COMPILE_ERROR_PATH` fixture as
+    /// `get_diagnostics_severity_is_pascal_case_wire_format` (line 1386) — that
+    /// fixture is known to produce at least one labelled compile Error with a
+    /// real source span.
+    ///
+    /// **False-branch coverage note:** the `has_location == false` path (labelless
+    /// diagnostic → false) is NOT tested here.  The CLI has no `inject_diagnostic_for_test`
+    /// equivalent, and no existing real-compiler fixture is known to produce a
+    /// labelless `compiled.diagnostics` entry (compile-time name-resolution errors,
+    /// which `bracket_compile_error.ri` triggers, always carry a label).  The false
+    /// branch is covered by the engine-side test
+    /// `get_diagnostics_labelless_fallback_unchanged_after_optimization`
+    /// (engine_tests.rs), which exercises the IDENTICAL predicate
+    /// `!diag.labels.is_empty()`.  The CLI site at `mcp_context.rs:248` uses
+    /// exactly that expression; a regression that hardcodes `true` there would be
+    /// caught by a code review of the one changed line.
+    #[test]
+    fn get_diagnostics_has_location_true_for_spanned_error() {
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_COMPILE_ERROR_PATH)
+            .expect("load_file should succeed for bracket_compile_error.ri");
+
+        let diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should succeed");
+
+        assert!(
+            !diags.is_empty(),
+            "bracket_compile_error.ri must produce at least one diagnostic"
+        );
+
+        // The fixture is known to produce a labelled compile Error with a real source span.
+        // At least one diagnostic must have has_location == true (non-empty labels path).
+        assert!(
+            diags.iter().any(|d| d.has_location),
+            "at least one diagnostic from bracket_compile_error.ri must have has_location = true \
+             (labelled Error ⇒ non-empty labels ⇒ real source span)"
         );
     }
 

@@ -2188,6 +2188,19 @@ impl Engine {
         // dispatcher call should be counted against the build that hasn't
         // entered the per-realization op loop yet.
         self.last_dispatch_count = 0;
+        // Task 4355 β: capture declaration-order execution order for the
+        // assert_dag_complete gate.  Realizations are visited in the same
+        // order as the build loop below (templates × realizations in
+        // declaration order, which compile_builder/entities_phase guarantees
+        // is topological for non-recursive structures).  Captured here, once,
+        // before any kernel work, so the assert can fire even when the
+        // geometry block is skipped (no kernel registered).
+        #[cfg(debug_assertions)]
+        let exec_order: Vec<RealizationNodeId> = module
+            .templates
+            .iter()
+            .flat_map(|t| t.realizations.iter().map(|r| r.id.clone()))
+            .collect();
         // GHR-δ §5: clear the realization→handle validity map and reset the
         // revalidation slow-path counter at the start of the build; the
         // per-template `post_process_geometry_handle_cells` below repopulates
@@ -2598,6 +2611,19 @@ impl Engine {
         } else {
             None
         };
+
+        // Task 4355 β: assert_dag_complete gate — debug-only, zero release overhead.
+        // Runs on EVERY build (geometry_output block may be skipped when no kernel
+        // is registered, but the snapshot graph is always populated by check() above).
+        // No-op when eval_state is None (empty module or compile-only build).
+        #[cfg(debug_assertions)]
+        if let Some(state) = self.eval_state.as_ref() {
+            crate::dirty::assert_dag_complete_from_graph(
+                &state.snapshot.graph,
+                &module.fields,
+                &exec_order,
+            );
+        }
 
         BuildResult {
             values,

@@ -97,6 +97,59 @@ export function pathToUri(path: string): string {
 }
 
 /**
+ * Derive the workspace-root URI for a given active file path.
+ *
+ * The backend ModuleResolver resolves non-std imports relative to
+ * `project_root`; κ test fixtures place all .ri files in one flat directory.
+ * This helper uses the PARENT DIRECTORY of the active file as workspace root
+ * — matching that convention — and returns it as a `file://` URI ready for
+ * `lspClient.initialize(rootUri)`.
+ *
+ * Steps:
+ * 1. If `activeFile` is null/empty, return `undefined` (single-file fallback).
+ * 2. Strip the `file://` prefix when present so we work with a raw path.
+ * 3. Resolve `.`/`..` and collapse repeated slashes via segment processing,
+ *    but preserve percent-encoding (so `hello%20world` stays encoded in the
+ *    returned URI — the backend's Url::from_file_path will decode it).
+ * 4. Extract the parent directory by stripping the last `/`-delimited segment.
+ * 5. Return `file://` + parent.
+ *
+ * @example
+ * workspaceRootUriForFile('/proj/sub/main.ri')                    // → 'file:///proj/sub'
+ * workspaceRootUriForFile('file:///proj/sub/main.ri')             // → 'file:///proj/sub'
+ * workspaceRootUriForFile('file:///proj/hello%20world/main.ri')   // → 'file:///proj/hello%20world'
+ * workspaceRootUriForFile(null)                                   // → undefined
+ */
+export function workspaceRootUriForFile(activeFile: string | null): string | undefined {
+  if (!activeFile) return undefined;
+
+  // Step 2: strip file:// to get a raw path (preserving percent-encoding).
+  const rawPath = activeFile.startsWith('file://') ? activeFile.slice('file://'.length) : activeFile;
+  if (!rawPath || !rawPath.startsWith('/')) return undefined;
+
+  // Step 3: resolve . and .. while preserving percent-encoding.
+  // Split on '/', process segments, rebuild.
+  const segments: string[] = [];
+  for (const seg of rawPath.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      if (segments.length > 0) segments.pop();
+    } else {
+      segments.push(seg);
+    }
+  }
+
+  // Step 4: parent is everything except the last segment.
+  // If there is only one segment (file directly under root), parent is '/'.
+  if (segments.length === 0) return undefined; // bare '/' with no file — unexpected
+  const parentSegments = segments.slice(0, -1);
+  const parentPath = '/' + parentSegments.join('/');
+
+  // Step 5: prepend file:// scheme.
+  return `file://${parentPath}`;
+}
+
+/**
  * Returns true if two file identifiers refer to the same file, normalizing
  * `file://` URI scheme vs bare path differences before comparison.
  *

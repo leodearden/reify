@@ -2867,6 +2867,13 @@ fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
         .expect("injected 'no-label-stress' not found");
 
     assert_eq!((d.line, d.column, d.end_line, d.end_column), (1, 1, 1, 1));
+
+    // has_location must be false for a labelless diagnostic (empty labels → no real span).
+    // RED until step-5 adds the field to DiagnosticInfo and sets it in diagnostics_to_info.
+    assert!(
+        !d.has_location,
+        "labelless diagnostic (empty labels) must set has_location = false"
+    );
 }
 
 // --- Multibyte UTF-8 cross-validation ---
@@ -11482,6 +11489,59 @@ fn staleness_api_record_reload_error_appends_diagnostic() {
         error_diags[0].code,
         Some("hot-reload-error".to_string()),
         "reload-error diagnostic must carry code 'hot-reload-error'"
+    );
+
+    // has_location must be false: the live-edit synthetic site hardcodes line/col=1
+    // with no real source span (engine.rs:2370 producer).
+    // RED until step-5 adds the field to DiagnosticInfo and sets has_location: false there.
+    assert!(
+        !error_diags[0].has_location,
+        "live-edit synthetic reload-error diagnostic must have has_location = false (no real span)"
+    );
+}
+
+/// Cold-start path: a fresh session (never loaded, compiled == None) that has
+/// record_reload_error called before any load must also synthesise a diagnostic
+/// with has_location == false via the early-return cold-start producer
+/// (engine.rs:2165, inside the `compiled.is_none()` guard of build_gui_state).
+///
+/// RED until step-5 adds the field to DiagnosticInfo and sets has_location: false
+/// in the cold-start producer.
+#[test]
+fn staleness_api_cold_start_reload_error_has_no_location() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    // Fresh session — never loaded, so core.compiled() is None.
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Inject a reload error without a prior successful load (cold-start path).
+    session.record_reload_error("cold-boom".to_string());
+
+    // build_gui_state hits the early-return cold-start branch (compiled is None).
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must succeed even on a cold-start stale session");
+
+    let error_diags: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error" && d.message.contains("cold-boom"))
+        .collect();
+    assert_eq!(
+        error_diags.len(),
+        1,
+        "expected exactly one Error diagnostic for the cold-start reload error; got {:?}",
+        state.compile_diagnostics
+    );
+    assert_eq!(
+        error_diags[0].code,
+        Some("hot-reload-error".to_string()),
+        "cold-start reload-error diagnostic must carry code 'hot-reload-error'"
+    );
+    // has_location must be false: the cold-start producer also hardcodes line/col=1.
+    assert!(
+        !error_diags[0].has_location,
+        "cold-start synthetic reload-error diagnostic must have has_location = false (no real span)"
     );
 }
 
