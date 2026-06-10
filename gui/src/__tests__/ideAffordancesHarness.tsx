@@ -19,6 +19,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import * as bridge from '../bridge';
 import type { DebugStores } from '../debug/types';
+import { installConsoleErrorCapture, clearConsoleErrors } from '../debug/consoleErrors';
 import { createEditorStore } from '../stores/editorStore';
 import { createSelectionStore } from '../stores/selectionStore';
 import { createEngineStore } from '../stores/engineStore';
@@ -566,6 +567,13 @@ export interface HarnessSetup {
  * component onMount hooks register into ctx (editorView, designTree, etc.).
  */
 export async function setupBridgeHarness(): Promise<HarnessSetup> {
+  // Install console-error capture (idempotent) and clear the ring buffer so each
+  // harness setup starts from a clean slate. This ensures list_console_errors
+  // is a REAL gate — any console.error/warn emitted during the test populates
+  // the buffer and will be caught by expect(count).toBe(0) in the combined session.
+  installConsoleErrorCapture();
+  clearConsoleErrors();
+
   const lspCalls: LspCall[] = [];
 
   // Route invoke calls: lsp_request → router; others → undefined (debug_response, update_selection, etc.)

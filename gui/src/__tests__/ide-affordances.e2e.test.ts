@@ -64,6 +64,7 @@ import {
   type LspCall,
   type HarnessSetup,
 } from './ideAffordancesHarness';
+import { clearConsoleErrors } from '../debug/consoleErrors';
 import { flushMacrotasks } from './test-utils';
 
 // jsdom lacks document.elementFromPoint — stub it (mirrors debugBridge.test.tsx:46-53).
@@ -92,6 +93,9 @@ afterEach(() => {
   if (harness?.dispose) harness.dispose();
   delete window.__REIFY_DEBUG__;
   document.body.innerHTML = '';
+  // Clear the module-global ring buffer so sentinel emissions in step-15 do not
+  // leak into the combined-session gate's expect(count).toBe(0) assertion.
+  clearConsoleErrors();
   harness = undefined as unknown as HarnessSetup;
 });
 
