@@ -726,16 +726,16 @@ pub fn unsupported_overhang_faces<K: GeometryKernel + ?Sized>(
     // The unsupported FACE SET is not updated here — Mesh has no per-face
     // attribution (documented v1 limitation; per-region overhang maps are
     // out of scope per PRD §5).
-    if let Ok(mesh) = kernel.tessellate(handle, OVERHANG_TESS_TOLERANCE) {
-        if let Some(ns) = &mesh.normals {
-            for chunk in ns.chunks(3) {
-                if chunk.len() == 3 {
-                    let nf = [chunk[0] as f64, chunk[1] as f64, chunk[2] as f64];
-                    if let Some(nf_unit) = normalize3(nf) {
-                        let dip = (-dot3(nf_unit, b)).clamp(-1.0, 1.0).asin();
-                        if dip > worst_dip {
-                            worst_dip = dip;
-                        }
+    if let Ok(mesh) = kernel.tessellate(handle, OVERHANG_TESS_TOLERANCE)
+        && let Some(ns) = &mesh.normals
+    {
+        for chunk in ns.chunks(3) {
+            if chunk.len() == 3 {
+                let nf = [chunk[0] as f64, chunk[1] as f64, chunk[2] as f64];
+                if let Some(nf_unit) = normalize3(nf) {
+                    let dip = (-dot3(nf_unit, b)).clamp(-1.0, 1.0).asin();
+                    if dip > worst_dip {
+                        worst_dip = dip;
                     }
                 }
             }
@@ -824,22 +824,22 @@ pub fn min_draft_angle<K: GeometryKernel + ?Sized>(
 
     // Conservative tessellate fold: lower min_draft / set undercut flag from
     // per-vertex facet normals. A tessellate error or absent normals is a no-op.
-    if let Ok(mesh) = kernel.tessellate(handle, OVERHANG_TESS_TOLERANCE) {
-        if let Some(ns) = &mesh.normals {
-            for chunk in ns.chunks(3) {
-                if chunk.len() == 3 {
-                    let nf = [chunk[0] as f64, chunk[1] as f64, chunk[2] as f64];
-                    if let Some(nf_unit) = normalize3(nf) {
-                        let d = dot3(nf_unit, p);
-                        if d.abs() < wall_sin {
-                            let delta =
-                                std::f64::consts::FRAC_PI_2 - d.clamp(-1.0, 1.0).acos();
-                            if delta < min_draft {
-                                min_draft = delta;
-                            }
-                            if d < 0.0 {
-                                has_undercut = true;
-                            }
+    if let Ok(mesh) = kernel.tessellate(handle, OVERHANG_TESS_TOLERANCE)
+        && let Some(ns) = &mesh.normals
+    {
+        for chunk in ns.chunks(3) {
+            if chunk.len() == 3 {
+                let nf = [chunk[0] as f64, chunk[1] as f64, chunk[2] as f64];
+                if let Some(nf_unit) = normalize3(nf) {
+                    let d = dot3(nf_unit, p);
+                    if d.abs() < wall_sin {
+                        let delta =
+                            std::f64::consts::FRAC_PI_2 - d.clamp(-1.0, 1.0).acos();
+                        if delta < min_draft {
+                            min_draft = delta;
+                        }
+                        if d < 0.0 {
+                            has_undercut = true;
                         }
                     }
                 }
