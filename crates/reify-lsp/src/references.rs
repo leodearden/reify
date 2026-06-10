@@ -1407,12 +1407,27 @@ fn resolve_cross_file_home(
 /// - `import home.Name as Alias` binds the entity under a DISTINCT local name;
 ///   only the entity token (`Name`) names the renamed entity — the alias token
 ///   and its `sub _ = Alias` uses are a separate binding and are excluded.
+///
+/// PERFORMANCE — a cheap substring pre-filter skips fully parsing docs that
+/// cannot contribute: every span this function emits (an import entity token or
+/// a `sub _ = name` construction token) requires `name` to appear LITERALLY in
+/// `doc_source`, so `!doc_source.contains(name)` is a sound early-out (a
+/// whole-word match implies a substring match — the pre-filter never drops a
+/// real reference). On a workspace with many open docs this avoids re-parsing
+/// every buffer just to discover it never imports the home entity.
 fn collect_importer_structure_references(
     doc_source: &str,
     name: &str,
     home_uri: &Url,
     resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
 ) -> Vec<SourceSpan> {
+    // Cheap pre-filter: a doc that does not even mention `name` as a substring
+    // can contribute no import-entity token and no `sub _ = name` construction
+    // site, so skip the parse entirely. Sound because every emitted span
+    // requires a literal occurrence of `name` in the source.
+    if !doc_source.contains(name) {
+        return Vec::new();
+    }
     let parsed = reify_syntax::parse(doc_source, reify_core::ModulePath::single("_importer"));
     let mut spans = Vec::new();
     // Whether `name` is imported under that SAME local name (non-aliased) — only
