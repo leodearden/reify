@@ -130,6 +130,11 @@ drive_two_concurrent_task_runs() {
     local _rc1=0 _rc2=0
     wait "$_pid1" || _rc1=$?
     wait "$_pid2" || _rc2=$?
+    # Export globals so Section A can assert both runs completed successfully.
+    # A failed run could still consume ~2s (if it errors mid-slot-hold) and
+    # satisfy the timing lower bound, giving a false green for serialization.
+    RC1=$_rc1
+    RC2=$_rc2
 
     _end_ns="$(date +%s%N)"
     MS=$(( (_end_ns - _start_ns) / 1000000 ))
@@ -152,8 +157,14 @@ drive_two_concurrent_task_runs() {
 echo ""
 echo "--- Section A: held-slot serialization (execute mode) ---"
 
+RC1=0
+RC2=0
 MS=0
 drive_two_concurrent_task_runs
+# Both runs must have exited 0: a run that errors mid-slot-hold could still
+# consume ~2s and satisfy the timing lower bound, producing a false green.
+assert "both concurrent task runs exited 0 (rc1=${RC1}, rc2=${RC2})" \
+    test "$RC1" -eq 0 -a "$RC2" -eq 0
 assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000ms, got ${MS}ms)" \
     test "$MS" -ge 3000
 # Loose upper-bound sanity: even on a heavily loaded machine serial ≤ 20s.
@@ -328,12 +339,12 @@ echo "--- Section D: print-plan oracle (occt cap=24 + gated-region ordering) ---
 
 capture_plans
 assert "test plan: all nextest run lines carry --config-file with reify-nextest-occt path" \
-    bash -c '! printf "%s\n" "$1" | grep "cargo nextest run" | grep -v -- "--config-file.*reify-nextest-occt"' \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo nextest run" && ! printf "%s\n" "$1" | grep "cargo nextest run" | grep -v -- "--config-file.*reify-nextest-occt"' \
     _ "$PLAN_TEST_CMDS"
 assert ".config/nextest.toml pins occt max-threads=24" \
     grep -qE 'occt = \{ max-threads = 24 \}' "$REPO_ROOT/.config/nextest.toml"
 assert "gen-nextest-config.sh resolves occt cap to 24" \
-    bash -c '_p=$(bash "$1/scripts/gen-nextest-config.sh"); rc=0; grep -qE "max-threads = 24" "$_p" || rc=1; rm -f "$_p"; exit $rc' \
+    bash -c '_p=$(bash "$1/scripts/gen-nextest-config.sh"); rc=0; grep -qE "^occt = \{ max-threads = 24 \}" "$_p" || rc=1; rm -f "$_p"; exit $rc' \
     _ "$REPO_ROOT"
 assert "all plan: cargo clippy ordered BEFORE acquire marker (outside gated region)" \
     bash -c '
