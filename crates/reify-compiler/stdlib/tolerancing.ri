@@ -97,6 +97,14 @@ structure def Straightness : FormTolerance {
 // takes a material modifier (an axis can depart toward MMC, earning bonus
 // tolerance). The distinct type name is what β's Rust-side legality table keys
 // on to permit MMC here while flagging it on the surface-line `Straightness`.
+//
+// INTENTIONAL STRUCTURAL IDENTITY: StraightnessOfAxis is deliberately
+// structurally identical to `Straightness` (same FormTolerance bound, same
+// three params: tolerance_value / feature / material_condition, no extra cells).
+// The two types differ ONLY by name. Do NOT merge them — the name-level
+// distinction is the sole mechanism β's legality table uses to permit MMC on the
+// FOS-axis variant while disallowing it on the surface-line variant. The
+// apparent duplication is by design, not an oversight.
 structure def StraightnessOfAxis : FormTolerance {
     param tolerance_value : Length = 0mm
     param feature : Geometry
@@ -126,6 +134,13 @@ structure def Cylindricity : FormTolerance {
 // before `material_condition` keeps `nominal_zone` materialising a real scalar
 // (verified via `reify eval`). Do NOT reorder without re-checking the
 // std_tolerancing_surface CI gate.
+//
+// BINDER DEFECT TRACKED: a follow-up task has been filed to fix the eval-engine
+// named-argument binder to bind strictly by parameter name rather than position
+// for params declared beyond the refined trait. Until that fix lands, the current
+// declaration order + the par_zone CI regression pin are the authoritative guard.
+// Once fixed, this PARAM-ORDER NOTE and the call-site CALL ORDER NOTE in the
+// example file can be removed.
 
 structure def Parallelism : OrientationTolerance {
     param tolerance_value : Length = 0mm
