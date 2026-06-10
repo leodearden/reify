@@ -40,6 +40,15 @@ lock_depth: 4
 # reify-solver-elastic) without slowing every per-task TDD iteration.
 # hooks/pre-merge-commit pins --profile both explicitly for the local manual-merge
 # gate (git merge on main) and is unchanged.
+#
+# DF_VERIFY_ROLE=merge also exempts the run from the held-slot test-run semaphore
+# (scripts/lib_test_semaphore.sh test_semaphore_acquire L59) in addition to the
+# psi_gate() bypass (scripts/verify.sh L173). The merge gate never waits behind
+# a task slot. No dark-factory / orchestrator-code change is required for this
+# (PRD docs/prds/test-run-concurrency-semaphore.md §6/§7): the orchestrator
+# already injects DF_VERIFY_ROLE=merge on the queue merge path, and already
+# requeues exit 75 (EX_TEMPFAIL) as retry-capped transient infra (same class as
+# OCCT-slot/ENOSPC) — the semaphore reuses both pre-existing contracts verbatim.
 test_command: "./scripts/verify.sh test --scope branch --include-infra"
 lint_command: "./scripts/verify.sh lint --scope branch --include-infra"
 # type_check_command is a passing no-op (task 4063).
@@ -73,6 +82,10 @@ verify_env:
   # A solo task gets all 32 CPUs; N concurrent tasks split them ~32/N each.
   # The FIFO is managed by reify-jobserver.service (systemd --user).
   CARGO_MAKEFLAGS: "--jobserver-auth=fifo:/tmp/reify-jobserver"
+  # Test-run semaphore knobs (REIFY_TEST_SEMAPHORE_*) are intentionally absent
+  # here — they use safe defaults (N=1, WAIT=1800s; scripts/lib_test_semaphore.sh
+  # L17-22). Add entries here only to tune; see docs/prds/test-run-concurrency-
+  # semaphore.md §5 for the full knob contract.
 
 # A′ coupling-tolerant merge train former — enabled per the s(N) go/no-go gate
 # (reify esc-4455-16: GO at N=3; s(3)=0.962 ≫ 1/3, observed coupling-failure 0/104).
