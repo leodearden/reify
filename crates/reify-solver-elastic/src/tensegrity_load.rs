@@ -41,10 +41,14 @@
 //! section marshalling beyond a single shared `(E, A)` are out of scope (PRD
 //! §10 future work / the trampoline's v1 shared-section decision).
 
-use crate::assembly::BarSection;
 use crate::assembly::bar::MIN_BAR_LENGTH;
+use crate::assembly::{
+    AssemblyElement, AssemblyMode, BarSection, ElementStiffness, assemble_global_stiffness,
+};
+use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination, apply_point_load};
 use crate::form_find::MemberKind;
-use crate::solver::CgSolverOptions;
+use crate::geometric_stiffness::bar_tangent_stiffness;
+use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
 
 /// A single pin-jointed bar or cable member in a tensegrity load problem.
 ///
@@ -157,13 +161,126 @@ pub struct TensegrityLoadSolve {
 /// in later steps start RED. The real implementation lands incrementally in the
 /// TDD steps that follow.
 pub fn tensegrity_load_analysis(
-    _nodes: &[[f64; 3]],
-    _members: &[BarMember],
-    _loads: &[[f64; 3]],
-    _fixed_nodes: &[usize],
-    _options: &TensegrityLoadOptions,
+    nodes: &[[f64; 3]],
+    members: &[BarMember],
+    loads: &[[f64; 3]],
+    fixed_nodes: &[usize],
+    options: &TensegrityLoadOptions,
 ) -> Result<TensegrityLoadSolve, TensegrityLoadError> {
-    Err(TensegrityLoadError::DimensionMismatch)
+    let n_members = members.len();
+
+    // All members active. The tension-only active-set drop loop is added in a
+    // later step; for now this is a single linear pass over every member.
+    let active = vec![true; n_members];
+
+    let (displacements, converged) =
+        solve_active_pass(nodes, members, &active, loads, fixed_nodes, options)?;
+
+    // Per-member total force N_i = prestress_i + dN_i (every member active here,
+    // so no slack zeroing yet).
+    let mut member_forces = vec![0.0_f64; n_members];
+    let mut member_force_deltas = vec![0.0_f64; n_members];
+    for (i, member) in members.iter().enumerate() {
+        let (j, k) = member.nodes;
+        let u_local = [
+            displacements[j][0],
+            displacements[j][1],
+            displacements[j][2],
+            displacements[k][0],
+            displacements[k][1],
+            displacements[k][2],
+        ];
+        let dn = bar_axial_force_delta(&[nodes[j], nodes[k]], &member.section, &u_local);
+        member_force_deltas[i] = dn;
+        member_forces[i] = member.prestress + dn;
+    }
+
+    Ok(TensegrityLoadSolve {
+        displacements,
+        member_forces,
+        member_force_deltas,
+        slack: vec![false; n_members],
+        active_set_iterations: 1,
+        converged,
+    })
+}
+
+/// One linear solve over the currently-active members.
+///
+/// Builds the global tangent stiffness from each active member's
+/// `K_t = K_e + K_g` ([`bar_tangent_stiffness`]), applies the per-node external
+/// loads, pins every `fixed_nodes` support in all three axes via homogeneous
+/// Dirichlet BCs, and solves the reduced system with CG. Returns the per-node
+/// displacement field and the CG convergence flag. This is the `bar_axial_
+/// deflection.rs` assemble→BC→solve pattern generalised to `N` members and
+/// supports; the tension-only active set (a later step) calls it once per pass
+/// with a shrinking active set.
+fn solve_active_pass(
+    nodes: &[[f64; 3]],
+    members: &[BarMember],
+    active: &[bool],
+    loads: &[[f64; 3]],
+    fixed_nodes: &[usize],
+    options: &TensegrityLoadOptions,
+) -> Result<(Vec<[f64; 3]>, bool), TensegrityLoadError> {
+    let n_nodes = nodes.len();
+
+    // Per-active-member connectivity + tangent stiffness. Both Vecs outlive the
+    // `AssemblyElement` borrows below.
+    let mut conns: Vec<[usize; 2]> = Vec::new();
+    let mut k_mats: Vec<ElementStiffness> = Vec::new();
+    for (m, member) in members.iter().enumerate() {
+        if !active[m] {
+            continue;
+        }
+        let (j, k) = member.nodes;
+        conns.push([j, k]);
+        k_mats.push(bar_tangent_stiffness(
+            &[nodes[j], nodes[k]],
+            &member.section,
+            member.prestress,
+        ));
+    }
+
+    let elements: Vec<AssemblyElement<'_>> = conns
+        .iter()
+        .zip(k_mats.iter())
+        .enumerate()
+        .map(|(id, (conn, kt))| AssemblyElement {
+            id,
+            connectivity: conn.as_slice(),
+            k_e: kt,
+        })
+        .collect();
+
+    let mut k_global =
+        assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+    // External nodal loads.
+    let mut f = vec![0.0_f64; 3 * n_nodes];
+    for (node, &force) in loads.iter().enumerate() {
+        apply_point_load(&mut f, node, force);
+    }
+
+    // Each fixed support node → 3 homogeneous Dirichlet BCs (all axes pinned).
+    let mut bcs: Vec<DirichletBc> = Vec::with_capacity(3 * fixed_nodes.len());
+    for &node in fixed_nodes {
+        for axis in 0..3 {
+            bcs.push(DirichletBc { dof: 3 * node + axis, value: 0.0 });
+        }
+    }
+    apply_dirichlet_row_elimination(&mut k_global, &mut f, &bcs);
+
+    let result = solve_cg(&k_global, &f, options.cg.clone(), SolverMode::Deterministic);
+
+    // Scatter the flat displacement vector into per-node [x, y, z].
+    let u = result.u();
+    let mut displacements = vec![[0.0_f64; 3]; n_nodes];
+    for (node, d) in displacements.iter_mut().enumerate() {
+        *d = [u[3 * node], u[3 * node + 1], u[3 * node + 2]];
+    }
+
+    Ok((displacements, result.converged))
 }
 
 /// First-order axial member-force delta for a 2-node bar/cable element.
