@@ -2871,4 +2871,126 @@ structure Assembly {
             "decl token + both sub-use tokens, ascending, each covering exactly `Hole`"
         );
     }
+
+    // --- κ step-3 (task 4210): cross-file structure references from any signal cursor ---
+
+    /// Sort `Location`s by (uri, start line, start char) so cross-file reference
+    /// sets can be compared order-independently — the producer's emission order is
+    /// an implementation detail; the *set* of Locations is the contract.
+    fn sorted_locations(mut locs: Vec<Location>) -> Vec<Location> {
+        locs.sort_by(|a, b| {
+            a.uri
+                .as_str()
+                .cmp(b.uri.as_str())
+                .then(a.range.start.line.cmp(&b.range.start.line))
+                .then(a.range.start.character.cmp(&b.range.start.character))
+        });
+        locs
+    }
+
+    /// Build the `Location` for the whole-word `text` token starting at byte
+    /// `start` in `source`, paired with `uri`.
+    fn loc_at(uri: Url, source: &str, start: usize, text: &str) -> Location {
+        Location {
+            uri,
+            range: span_to_range(source, span_of(start, text)),
+        }
+    }
+
+    #[test]
+    fn compute_references_cross_file_same_set_from_all_three_signal_cursors() {
+        // CANONICAL SIGNAL (PRD boundary row 8): `Hole` declared in parts.ri,
+        // imported + constructed (`sub hole = Hole`) in main.ri. Find-references
+        // from ANY of the three signal cursor positions — the parts.ri decl token,
+        // the main.ri `import parts.Hole` entity token, or the main.ri
+        // `sub hole = Hole` construction site — must surface the SAME cross-file
+        // reference set: parts.ri decl token + main.ri import entity token +
+        // main.ri sub-use token (3 Locations, correct uris/ranges).
+        let (docs, resolver) = canonical_workspace();
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+        let parsed_main = reify_syntax::parse(MAIN_SRC, ModulePath::single("main"));
+
+        let parts_decl = occurrences(PARTS_SRC, "Hole")[0]; // `structure Hole`
+        let main_import = occurrences(MAIN_SRC, "Hole")[0]; // `import parts.Hole`
+        let main_use = occurrences(MAIN_SRC, "Hole")[1]; // `sub hole = Hole`
+        let expected = sorted_locations(vec![
+            loc_at(parts_uri(), PARTS_SRC, parts_decl, "Hole"),
+            loc_at(main_uri(), MAIN_SRC, main_import, "Hole"),
+            loc_at(main_uri(), MAIN_SRC, main_use, "Hole"),
+        ]);
+
+        // (a) cursor on the main.ri `sub hole = Hole` construction site.
+        let pos_a = offset_to_position(MAIN_SRC, main_use as u32);
+        let got_a = compute_references_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            pos_a,
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("(a) cursor on cross-file sub use resolves to a cross-file reference set");
+        assert_eq!(sorted_locations(got_a), expected, "(a) sub-use cursor");
+
+        // (b) cursor on the parts.ri `structure Hole` declaration token.
+        let pos_b = offset_to_position(PARTS_SRC, parts_decl as u32);
+        let got_b = compute_references_cross_file(
+            PARTS_SRC,
+            &parsed_parts,
+            &parts_uri(),
+            pos_b,
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("(b) cursor on home declaration resolves to a cross-file reference set");
+        assert_eq!(sorted_locations(got_b), expected, "(b) declaration cursor");
+
+        // (c) cursor on the main.ri `import parts.Hole` entity token.
+        let pos_c = offset_to_position(MAIN_SRC, main_import as u32);
+        let got_c = compute_references_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            pos_c,
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("(c) cursor on import entity token resolves to a cross-file reference set");
+        assert_eq!(sorted_locations(got_c), expected, "(c) import entity cursor");
+    }
+
+    #[test]
+    fn compute_references_cross_file_exclude_declaration_drops_home_decl_token() {
+        // include_declaration=false drops ONLY the parts.ri home declaration token,
+        // leaving the two main.ri use Locations (import entity token + sub use).
+        let (docs, resolver) = canonical_workspace();
+        let parsed_main = reify_syntax::parse(MAIN_SRC, ModulePath::single("main"));
+
+        let main_import = occurrences(MAIN_SRC, "Hole")[0];
+        let main_use = occurrences(MAIN_SRC, "Hole")[1];
+        let expected = sorted_locations(vec![
+            loc_at(main_uri(), MAIN_SRC, main_import, "Hole"),
+            loc_at(main_uri(), MAIN_SRC, main_use, "Hole"),
+        ]);
+
+        let pos = offset_to_position(MAIN_SRC, main_use as u32);
+        let got = compute_references_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            pos,
+            false,
+            &docs,
+            &resolver,
+        )
+        .expect("cross-file references resolve with include_declaration=false");
+        assert_eq!(
+            sorted_locations(got),
+            expected,
+            "include_declaration=false drops the parts.ri home decl token"
+        );
+    }
 }
