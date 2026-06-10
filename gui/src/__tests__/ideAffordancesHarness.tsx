@@ -428,9 +428,14 @@ export function renderEditorWithDesignTree(harness: HarnessSetup): {
 /**
  * Renders all five affordance components in a single root.
  *
- * step-13 RED stub: only Editor + FindUsesPanel (palette + DesignTree absent).
- *   Combined test fails at the palette assertion after Ctrl+Shift+P.
- * step-14 GREEN: full implementation with useKeyboardShortcuts + CommandPalette + DesignTree.
+ * step-14 GREEN full implementation:
+ *   - Editor (rename, find-refs, folding keymaps)
+ *   - FindUsesPanel (wired via onShowReferences callback)
+ *   - CommandPalette (opened by useKeyboardShortcuts Ctrl+Shift+P)
+ *   - DesignTree (hover-sync via onHover → selectionStore.hoverEntity)
+ *
+ * useKeyboardShortcuts is registered inside the mounted component so the
+ * document-level handler is active for the full lifetime of the render.
  */
 export function renderAllAffordances(harness: HarnessSetup): {
   renderResult: ReturnType<typeof render>;
@@ -443,28 +448,59 @@ export function renderAllAffordances(harness: HarnessSetup): {
 
   const [findUsesOpen, setFindUsesOpen] = createSignal(false);
   const [findUsesResults, setFindUsesResults] = createSignal<ReferenceResult[]>([]);
+  const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [lastCommandRan, setLastCommandRan] = createSignal<string | null>(null);
+  const viewStateMock = makeDesignTreeViewStateMock();
 
-  // step-13 RED stub: Editor + FindUsesPanel only.
-  // step-14 GREEN will add useKeyboardShortcuts, CommandPalette, and DesignTree.
-  const renderResult = render(() => (
-    <div>
-      <Editor
-        store={harness.editorStore}
-        onShowReferences={(results) => {
-          setFindUsesResults(() => results);
-          setFindUsesOpen(true);
-        }}
-      />
-      <FindUsesPanel
-        open={findUsesOpen()}
-        results={findUsesResults()}
-        onClose={() => setFindUsesOpen(false)}
-        onNavigate={() => {}}
-      />
-    </div>
-  ));
+  // Full harness root: all five affordance components with App-equivalent glue.
+  const HarnessRoot = () => {
+    // Global Ctrl+Shift+P → opens CommandPalette (document-level handler).
+    useKeyboardShortcuts({
+      onCommandPalette: () => setPaletteOpen(true),
+    });
+    return (
+      <div>
+        {/* affordance 1: rename (F2), find-refs (Shift+F12), folding (Ctrl+Shift+[) */}
+        <Editor
+          store={harness.editorStore}
+          onShowReferences={(results) => {
+            setFindUsesResults(() => results);
+            setFindUsesOpen(true);
+          }}
+        />
+        {/* affordance 2: find-references panel */}
+        <FindUsesPanel
+          open={findUsesOpen()}
+          results={findUsesResults()}
+          onClose={() => setFindUsesOpen(false)}
+          onNavigate={() => {}}
+        />
+        {/* affordance 4: command palette — rendered when paletteOpen() is true */}
+        <Show when={paletteOpen()}>
+          <CommandPalette
+            getCommands={() => PALETTE_TEST_COMMANDS}
+            runCommand={(id) => {
+              setLastCommandRan(id as string);
+              setPaletteOpen(false);
+            }}
+            fetchSymbols={() => Promise.resolve([])}
+            filePath={FIXTURE_PATH}
+            onJumpToLocation={() => {}}
+            onClose={() => setPaletteOpen(false)}
+          />
+        </Show>
+        {/* affordance 5: hover-sync (outline row → store → viewport emissive) */}
+        <DesignTree
+          tree={FIXTURE_TREE}
+          viewStateStore={viewStateMock}
+          onHover={(path) => harness.selectionStore.hoverEntity(path)}
+          hoveredEntity={harness.selectionStore.state.hoveredEntity}
+        />
+      </div>
+    );
+  };
 
+  const renderResult = render(() => <HarnessRoot />);
   return { renderResult, findUsesOpen, findUsesResults, lastCommandRan };
 }
 
