@@ -130,6 +130,16 @@
   outline-offset: -2px;
 }
 
+.rowSpanless {
+  color: var(--reify-text-muted, #6c7086);
+  opacity: 0.7;
+  cursor: default;
+}
+
+.rowSpanless:hover {
+  background: transparent;
+}
+
 .errorBadge {
   padding: 1px 6px;
   border-radius: 8px;
