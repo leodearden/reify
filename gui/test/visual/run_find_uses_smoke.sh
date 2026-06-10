@@ -18,6 +18,12 @@
 #      with a kill -0 liveness check on each iteration — aborts early if the launcher
 #      dies rather than waiting the full budget.
 #   6. Runs `node gui/test/visual/smoke_find_uses.mjs` (the 4202 driver).
+#      Note: the driver contains its own waitForServer(60_000) readiness loop —
+#      that loop passes instantly because step 5 already confirmed the server is
+#      ready.  Both readiness gates are intentional and serve distinct purposes:
+#      step 5 polls with a kill -0 liveness check (bash-side, driver-agnostic);
+#      the driver's waitForServer is part of its own unchanged contract (design
+#      decision 2, task 4456).  Do NOT remove one believing the other is dead code.
 #   7. SIGTERMs the launcher so its trap reaps both vite and reify-gui, then exits
 #      with the driver's exit code.
 #
@@ -125,7 +131,10 @@ while [ $(( SECONDS - _start )) -lt "$WAIT_SEC" ]; do
         wait "$GUI_LAUNCHER_PID" 2>/dev/null || _launcher_rc=$?
         GUI_LAUNCHER_PID=""
         echo "run_find_uses_smoke: launcher exited early (rc=${_launcher_rc})" >&2
-        exit "${_launcher_rc:-1}"
+        # Treat launcher-exited-before-ready as failure regardless of exit code.
+        # A launcher exit-0 without a bound debug server means the driver never ran
+        # and readiness was never confirmed — that is a false PASS if we propagate 0.
+        exit "$(( _launcher_rc == 0 ? 1 : _launcher_rc ))"
     fi
     # Health poll.
     if curl -fsS -X POST "$HEALTH_URL" \
