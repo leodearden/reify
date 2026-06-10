@@ -2121,7 +2121,258 @@ mod tests {
         assert_ne!(a, b, "different topexp indices must compare unequal");
     }
 
-    /// Two sub-handles at the same (parent, kind, index) but different
+    // ── unsupported_overhang_faces tests (task 4406 step-1 RED) ─────────────
+
+    /// Helper: build a FaceNormal JSON string from x,y,z components.
+    fn face_normal_json(x: f64, y: f64, z: f64) -> Value {
+        Value::String(format!("{{\"x\":{x},\"y\":{y},\"z\":{z}}}"))
+    }
+
+    /// (a) Wedge fixture: three planar faces with hand-chosen outward normals.
+    ///
+    /// n0 = (√3/2, 0, −1/2)  → n·b = −0.5 → dip = asin(0.5) = 30°
+    ///                             in set at max=20° (sin20°<0.5);
+    ///                             NOT in set at max=45° (0.5 < sin45°)
+    /// n1 = (0, 0, 1)         → top face, dip = −π/2 (never overhang)
+    /// n2 = (1, 0, 0)         → side face, dip = 0 (never overhang)
+    ///
+    /// worst_dip = max(30°, −90°, 0°) = 30° regardless of max_overhang_angle.
+    #[test]
+    fn overhang_wedge_worst_dip_and_face_set() {
+        let face_ids = vec![
+            GeometryHandleId(501),
+            GeometryHandleId(502),
+            GeometryHandleId(503),
+        ];
+        let sqrt3_over2: f64 = (3.0_f64).sqrt() / 2.0;
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(sqrt3_over2, 0.0, -0.5))
+            .with_response(face_ids[1], face_normal_json(0.0, 0.0, 1.0))
+            .with_response(face_ids[2], face_normal_json(1.0, 0.0, 0.0));
+        let handle = GeometryHandleId(1);
+        let build_dir = [0.0, 0.0, 1.0_f64];
+
+        // At max_overhang_angle = 20°: n0 is unsupported (sin20° ≈ 0.342 < 0.5).
+        let (faces_20, worst_dip) =
+            unsupported_overhang_faces(&mut kernel, handle, build_dir, 20f64.to_radians())
+                .expect("20° call should succeed");
+        assert_eq!(
+            faces_20,
+            vec![face_ids[0]],
+            "only n0 (30° dip) is unsupported at max=20°"
+        );
+        let expected_dip = 30f64.to_radians();
+        assert!(
+            (worst_dip - expected_dip).abs() < 1e-9,
+            "worst_dip ≈ 30° = π/6 (got {worst_dip})"
+        );
+        assert_eq!(kernel.query_many_calls(), 1, "must batch via query_many");
+        assert_eq!(kernel.query_calls(), 0, "must not use per-element query");
+
+        // At max_overhang_angle = 45°: sin45° ≈ 0.707 > 0.5, so n0 is NOT in set.
+        let (faces_45, worst_dip2) =
+            unsupported_overhang_faces(&mut kernel, handle, build_dir, 45f64.to_radians())
+                .expect("45° call should succeed");
+        assert!(
+            faces_45.is_empty(),
+            "no face is unsupported at max=45° (set must be empty)"
+        );
+        assert!(
+            (worst_dip2 - expected_dip).abs() < 1e-9,
+            "worst_dip is still 30° independent of max_overhang_angle (got {worst_dip2})"
+        );
+    }
+
+    /// (b) Self-supporting: the dip-30° face is NOT in the unsupported set when
+    ///     max_overhang_angle = 45° (matches the wedge_worst_dip test above).
+    #[test]
+    fn overhang_self_supporting_at_45_degrees() {
+        let face_ids = vec![GeometryHandleId(511), GeometryHandleId(512)];
+        let sqrt3_over2: f64 = (3.0_f64).sqrt() / 2.0;
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(sqrt3_over2, 0.0, -0.5))
+            .with_response(face_ids[1], face_normal_json(0.0, 0.0, 1.0));
+        let handle = GeometryHandleId(1);
+
+        let (faces, _worst) =
+            unsupported_overhang_faces(&mut kernel, handle, [0.0, 0.0, 1.0], 45f64.to_radians())
+                .expect("should succeed");
+        assert!(
+            faces.is_empty(),
+            "dip-30° face is self-supporting at max=45°"
+        );
+    }
+
+    /// (c) Validation: zero / non-finite build_dir and out-of-range angle → QueryFailed.
+    #[test]
+    fn overhang_validation_errors() {
+        let mut kernel = CountingKernel::new().with_faces(vec![GeometryHandleId(521)]);
+        let handle = GeometryHandleId(1);
+
+        // Zero build_dir
+        assert!(
+            matches!(
+                unsupported_overhang_faces(&mut kernel, handle, [0.0, 0.0, 0.0], 0.1),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "zero build_dir must return QueryFailed"
+        );
+        // Non-finite build_dir
+        assert!(
+            matches!(
+                unsupported_overhang_faces(&mut kernel, handle, [f64::NAN, 0.0, 1.0], 0.1),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "NaN component in build_dir must return QueryFailed"
+        );
+        // max_overhang_angle < 0
+        assert!(
+            matches!(
+                unsupported_overhang_faces(&mut kernel, handle, [0.0, 0.0, 1.0], -0.1),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "negative max_overhang_angle must return QueryFailed"
+        );
+        // max_overhang_angle > π/2
+        assert!(
+            matches!(
+                unsupported_overhang_faces(
+                    &mut kernel,
+                    handle,
+                    [0.0, 0.0, 1.0],
+                    std::f64::consts::PI
+                ),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "max_overhang_angle > π/2 must return QueryFailed"
+        );
+    }
+
+    // ── min_draft_angle tests (task 4406 step-3 RED) ────────────────────────
+
+    /// (a) Taper + re-entrant fixture: two wall faces + top/bottom excluded.
+    ///
+    /// pull_dir = +Z; WALL_WINDOW = 45° (sin45° ≈ 0.7071).
+    /// n_taper    = (cos5°, 0, sin5°)   → n·p = sin5°  > 0, in window → δ ≈ +5°
+    /// n_reentrant= (cos3°, 0, −sin3°)  → n·p = −sin3° < 0, in window → δ ≈ −3°, undercut
+    /// n_top = (0,0,1) / n_bot = (0,0,−1) → |n·p|=1 ≥ sin45° → excluded
+    ///
+    /// signed_min_draft ≈ −3°.to_radians(), has_undercut = true.
+    #[test]
+    fn draft_taper_reentrant_fixture() {
+        use std::f64::consts::FRAC_PI_2;
+        let face_ids = vec![
+            GeometryHandleId(601),
+            GeometryHandleId(602),
+            GeometryHandleId(603),
+            GeometryHandleId(604),
+        ];
+        let cos5 = 5f64.to_radians().cos();
+        let sin5 = 5f64.to_radians().sin();
+        let cos3 = 3f64.to_radians().cos();
+        let sin3 = 3f64.to_radians().sin();
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(cos5, 0.0, sin5)) // taper
+            .with_response(face_ids[1], face_normal_json(cos3, 0.0, -sin3)) // re-entrant
+            .with_response(face_ids[2], face_normal_json(0.0, 0.0, 1.0)) // top
+            .with_response(face_ids[3], face_normal_json(0.0, 0.0, -1.0)); // bottom
+        let handle = GeometryHandleId(1);
+        let pull_dir = [0.0_f64, 0.0, 1.0];
+
+        let (signed_min_draft, has_undercut) =
+            min_draft_angle(&mut kernel, handle, pull_dir).expect("should succeed");
+
+        let expected = (-3f64).to_radians();
+        assert!(
+            (signed_min_draft - expected).abs() < 1e-9,
+            "signed_min_draft ≈ −3° (got {signed_min_draft})"
+        );
+        assert!(has_undercut, "re-entrant wall face must set has_undercut=true");
+        assert_eq!(kernel.query_many_calls(), 1, "must batch via query_many");
+        assert_eq!(kernel.query_calls(), 0, "must not use per-element query");
+        let _ = FRAC_PI_2; // silence unused-import lint if any
+    }
+
+    /// (b) WALL_WINDOW contract: pins WALL_WINDOW_RAD == π/4 (45°).
+    ///     A near-vertical wall face (|n·p| just below sin45°) must contribute;
+    ///     top/bottom (|n·p| = 1) must be excluded.
+    #[test]
+    fn draft_wall_window_is_45_degrees() {
+        // Contract constant must equal π/4.
+        assert!(
+            (WALL_WINDOW_RAD - std::f64::consts::FRAC_PI_4).abs() < f64::EPSILON,
+            "WALL_WINDOW_RAD must be π/4 (45°)"
+        );
+
+        // A face with |n·p| just below sin(45°) must be in the wall window.
+        let face_ids = vec![GeometryHandleId(611), GeometryHandleId(612)];
+        // sin(44.9°) ≈ 0.7059 < sin(45°) ≈ 0.7071 → in window
+        let sin449 = 44.9f64.to_radians().sin();
+        let cos449 = 44.9f64.to_radians().cos();
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(cos449, 0.0, sin449)) // near-vertical wall
+            .with_response(face_ids[1], face_normal_json(0.0, 0.0, 1.0)); // top (excluded)
+        let handle = GeometryHandleId(1);
+
+        let (signed_min_draft, has_undercut) =
+            min_draft_angle(&mut kernel, handle, [0.0, 0.0, 1.0]).expect("should succeed");
+
+        // The near-vertical face has δ = π/2 - acos(sin449) ≈ 44.9° and contributes.
+        let expected = std::f64::consts::FRAC_PI_2 - sin449.acos();
+        assert!(
+            (signed_min_draft - expected).abs() < 1e-9,
+            "near-vertical wall must set min_draft (got {signed_min_draft})"
+        );
+        assert!(!has_undercut, "positive draft: no undercut");
+    }
+
+    /// (c) No-wall fixture: only top/bottom faces → sentinel π/2, no undercut.
+    #[test]
+    fn draft_no_wall_returns_pi_over_2_sentinel() {
+        let face_ids = vec![GeometryHandleId(621), GeometryHandleId(622)];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(0.0, 0.0, 1.0))
+            .with_response(face_ids[1], face_normal_json(0.0, 0.0, -1.0));
+        let handle = GeometryHandleId(1);
+
+        let (signed_min_draft, has_undercut) =
+            min_draft_angle(&mut kernel, handle, [0.0, 0.0, 1.0]).expect("should succeed");
+
+        assert!(
+            (signed_min_draft - std::f64::consts::FRAC_PI_2).abs() < f64::EPSILON,
+            "no wall faces → sentinel π/2 (got {signed_min_draft})"
+        );
+        assert!(!has_undercut, "no wall faces → no undercut");
+    }
+
+    /// (d) Validation: zero / non-finite pull_dir → QueryFailed.
+    #[test]
+    fn draft_validation_errors() {
+        let mut kernel = CountingKernel::new().with_faces(vec![GeometryHandleId(631)]);
+        let handle = GeometryHandleId(1);
+
+        assert!(
+            matches!(
+                min_draft_angle(&mut kernel, handle, [0.0, 0.0, 0.0]),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "zero pull_dir must return QueryFailed"
+        );
+        assert!(
+            matches!(
+                min_draft_angle(&mut kernel, handle, [f64::INFINITY, 0.0, 0.0]),
+                Err(QueryError::QueryFailed(_))
+            ),
+            "infinite pull_dir must return QueryFailed"
+        );
+    }
+
+    // ── Two sub-handles at the same (parent, kind, index) but different
     /// kernel_handle ids must compare EQUAL — kernel_handle is excluded from
     /// PartialEq (PRD §4 iv cache-hit equality).
     #[test]
