@@ -294,6 +294,22 @@ assert "exit-75 fires within budget (elapsed ${C_S}s <= 8)" \
 assert "stderr shows exit-75 propagated THROUGH verify.sh (verify.sh: FAILED (exit 75): ...)" \
     grep -qE 'verify\.sh: FAILED \(exit 75\): test-run semaphore acquire' "$C_ERR"
 
+# capture_plans
+# Capture print-plan output for Section D assertions (once each, no stubs needed).
+# Sets:
+#   PLAN_TEST_FULL — full output of `verify.sh test --scope all --print-plan`
+#                    (includes # comment lines for ACQUIRE/RELEASE markers)
+#   PLAN_TEST_CMDS — commands-only view (grep -v '^#' of PLAN_TEST_FULL)
+#   PLAN_ALL_FULL  — full output of `verify.sh all --scope all --print-plan`
+#                    (used for index-based ordering assertions)
+# Uses the REAL verify.sh scripts, no env manipulation — print-plan is a pure
+# static plan builder, never executes cargo/npm/tree-sitter.
+capture_plans() {
+    PLAN_TEST_FULL="$(bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null)"
+    PLAN_TEST_CMDS="$(printf '%s\n' "$PLAN_TEST_FULL" | grep -v '^#')"
+    PLAN_ALL_FULL="$(bash "$REPO_ROOT/scripts/verify.sh" all --scope all --print-plan 2>/dev/null)"
+}
+
 # ===========================================================================
 # Section D: print-plan oracle — occt cap=24 + gated-region ordering
 # ===========================================================================
