@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use reify_ast::{
-    ConnectDecl, Declaration, Expr, ExprKind, ForallConnectBody, ForallConstraintBody,
+    ConnectDecl, Declaration, Expr, ExprKind, ForallConnectBody, ForallConstraintBody, ImportKind,
     MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, StringPart, SubDecl, WhereClause,
 };
 use reify_core::SourceSpan;
@@ -1230,6 +1230,544 @@ pub fn compute_document_highlights(
     )
 }
 
+// ─── κ (task 4210): cross-file structure references + rename ─────────────────
+//
+// The single-file producers above resolve VALUE-member bindings
+// (param/let/auto/sub/port) within one entity body. The machinery below follows
+// the import graph to resolve a STRUCTURE name (a declaration name) across
+// files: its home declaration token, every same-file `sub _ = Name`
+// construction site, and — in each importing document — the import entity token
+// plus its construction sites. The collectors are PURE: the open-document set
+// arrives as `workspace_docs` and target resolution as an injectable
+// `resolve_import` closure (mirroring goto_def's pattern), so the whole
+// cross-file scope logic is unit-testable with an in-memory workspace + a mock
+// resolver. The server handlers assemble both from the live DocumentStore.
+
+/// Collect every structure-name reference to `name` within a SINGLE parsed
+/// document: the home declaration's name token (when `name` is declared in this
+/// document) plus each `sub _ = name` construction-site token across every
+/// entity's members, recursing into nested scopes. Ascending by `span.start`.
+///
+/// `SubDecl.structure_name` is a plain `String` field (decl.rs), not an `Expr`,
+/// so these construction-site uses never appear as `ExprKind::Ident` and are
+/// structurally invisible to `collect_uses`/`collect_idents_in_expr`. This
+/// dedicated traversal is the only way to surface them (κ design decision). The
+/// home declaration token is located via goto_def's `find_declaration_name_span`
+/// so a structure's rename/reference token is uniform with go-to-definition.
+fn collect_structure_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> Vec<SourceSpan> {
+    let mut spans = Vec::new();
+    // Home declaration token (`structure Name` / `occurrence def Name` / …),
+    // present only when `name` is declared in THIS document.
+    if let Some(decl_token) = crate::goto_def::find_declaration_name_span(source, name) {
+        spans.push(decl_token);
+    }
+    // Every `sub _ = name` construction site across all entities' members.
+    for decl in &parsed.declarations {
+        if let Some(members) = entity_members(decl) {
+            collect_sub_structure_uses(members, source, name, 0, &mut spans);
+        }
+    }
+    spans.sort_by_key(|s| s.start);
+    spans
+}
+
+/// Push the name-token span of each `MemberDecl::Sub` whose `structure_name`
+/// equals `name`, recursing into nested member-list scopes (guarded branches,
+/// port bodies, sub specialization bodies / keyed overrides, match-arm members)
+/// exactly as `collect_uses` does — depth-bounded by `MAX_MEMBER_NESTING_DEPTH`
+/// — so a construction site nested inside a `where`/port/sub block is not missed.
+///
+/// The emitted span is `name_token_span(source, sub.span, name)`: the first
+/// whole-word `name` token within the `sub` statement, i.e. the structure-name
+/// (construction) token in `sub binding = Name(...)`.
+fn collect_sub_structure_uses(
+    members: &[MemberDecl],
+    source: &str,
+    name: &str,
+    depth: usize,
+    out: &mut Vec<SourceSpan>,
+) {
+    if depth > MAX_MEMBER_NESTING_DEPTH {
+        return;
+    }
+    for member in members {
+        if let MemberDecl::Sub(s) = member
+            && s.structure_name == name
+        {
+            out.push(name_token_span(source, s.span, name));
+        }
+        // Recurse into the SAME nested member-list scopes `collect_uses`
+        // descends into (via `for_each_child_scope`), so a `sub` construction
+        // site inside a guarded/port/sub/match scope is also collected.
+        for_each_child_scope(member, |child| {
+            collect_sub_structure_uses(child, source, name, depth + 1, out);
+        });
+    }
+}
+
+/// Whether import `kind` brings an entity named `name` into local scope under
+/// that SAME name — the non-aliased forms (`import m.Name`, `import m.{Name,…}`).
+/// Aliased imports (`import m.Name as Other`) bind a DISTINCT local name and are
+/// handled separately (κ step-6), so they return `false` here.
+fn import_exposes_entity(kind: &ImportKind, name: &str) -> bool {
+    match kind {
+        ImportKind::Entity(n) => n == name,
+        ImportKind::Destructured(names) => names.iter().any(|n| n == name),
+        ImportKind::EntityAliased { .. } | ImportKind::Module | ImportKind::Aliased { .. } => false,
+    }
+}
+
+/// What the cursor resolves to for the κ cross-file producers.
+enum CrossFileHome {
+    /// A local value-member binding (`param`/`let`/`auto`/`sub`/`port`) — the
+    /// single-file producers own it unchanged.
+    ValueMember,
+    /// A structure declaration named `name`, homed in document `uri` whose full
+    /// `source` is carried so the home-file collector can run over it.
+    Structure { uri: Url, name: String, source: String },
+}
+
+/// Resolve the cursor (`offset` + the identifier `word` under it) to a cross-file
+/// home (κ step-4): a local value-member binding, a structure declared in THIS
+/// document, or a structure reached through an `import`.
+///
+/// Resolution order is deliberate: value-member bindings win first (so the
+/// single-file semantics of `param`/`let`/`auto`/`sub`/`port` are untouched),
+/// then a same-file declaration name, then an imported entity name resolved via
+/// the injected `resolve_import` closure. The import arm covers BOTH the cursor
+/// sitting on an `import` entity token and on a `sub _ = Name` construction site,
+/// since both carry the same `word`. Returns `None` when the word names none of
+/// these (keyword, literal, unresolved/cross-module word).
+///
+/// DIRECTIONAL ALIAS GAP — step 3 gates on [`import_exposes_entity`], which is
+/// `false` for ALIASED imports (`import m.Name as Alias`). So resolution cannot
+/// START from an aliased import's entity token: invoking references/rename with
+/// the cursor exactly on the `Name` in `import parts.Hole as Bore` returns
+/// `None`. This is asymmetric with [`collect_importer_structure_references`],
+/// which DOES emit that aliased entity token into the reference set when
+/// resolution starts elsewhere (e.g. the home declaration) — so the token is
+/// part of the set yet is not a valid starting cursor. The asymmetry is
+/// internally consistent with the κ step-6 boundary (an aliased entity binds a
+/// distinct local name; only its entity token, not the alias or alias uses,
+/// names the renamed entity). Allowing the start by resolving the ENTITY (not
+/// the alias) through `resolve_import` here would restore symmetry; it is left
+/// as a follow-up to keep κ's start-position contract test-covered.
+fn resolve_cross_file_home(
+    primary_source: &str,
+    primary_parsed: &ParsedModule,
+    primary_uri: &Url,
+    offset: usize,
+    word: &str,
+    resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
+) -> Option<CrossFileHome> {
+    // 1. A local value-member binding keeps its exact single-file semantics.
+    if collect_references_at(primary_source, primary_parsed, offset, word, true).is_some() {
+        return Some(CrossFileHome::ValueMember);
+    }
+    // 2. A structure declared in THIS document → home is the current file.
+    if crate::goto_def::find_declaration_name_span(primary_source, word).is_some() {
+        return Some(CrossFileHome::Structure {
+            uri: primary_uri.clone(),
+            name: word.to_string(),
+            source: primary_source.to_string(),
+        });
+    }
+    // 3. An imported (non-aliased) entity → resolve to its home module via the
+    //    injected closure.
+    for decl in &primary_parsed.declarations {
+        if let Declaration::Import(import) = decl
+            && import_exposes_entity(&import.kind, word)
+            && let Some((home_uri, home_source)) = resolve_import(&import.path)
+        {
+            return Some(CrossFileHome::Structure {
+                uri: home_uri,
+                name: word.to_string(),
+                source: home_source,
+            });
+        }
+    }
+    None
+}
+
+/// Collect the structure-name reference spans an importing document
+/// `doc_source` contributes for an entity named `name` homed at `home_uri`:
+/// the import entity token plus (for non-aliased imports) every same-file
+/// `sub _ = name` construction site, ascending by `span.start`.
+///
+/// SCOPE SOUNDNESS (Invariant 1, κ step-6): an import contributes ONLY when
+/// `resolve_import(import.path)` resolves to `home_uri` — never by a bare
+/// entity-name match. Two different modules can both export a `Hole`; keying on
+/// the resolved target file (plus the entity name) is what keeps a same-named
+/// entity from a DIFFERENT module out of the renamed set.
+///
+/// Aliased vs non-aliased imports differ:
+/// - `import home.Name` / `import home.{Name, …}` (non-aliased) bind `Name`
+///   locally, so the import entity token AND every same-file `sub _ = Name`
+///   construction site are part of the entity's reference set.
+/// - `import home.Name as Alias` binds the entity under a DISTINCT local name;
+///   only the entity token (`Name`) names the renamed entity — the alias token
+///   and its `sub _ = Alias` uses are a separate binding and are excluded.
+///
+/// PERFORMANCE — a cheap substring pre-filter skips fully parsing docs that
+/// cannot contribute: every span this function emits (an import entity token or
+/// a `sub _ = name` construction token) requires `name` to appear LITERALLY in
+/// `doc_source`, so `!doc_source.contains(name)` is a sound early-out (a
+/// whole-word match implies a substring match — the pre-filter never drops a
+/// real reference). On a workspace with many open docs this avoids re-parsing
+/// every buffer just to discover it never imports the home entity.
+fn collect_importer_structure_references(
+    doc_source: &str,
+    name: &str,
+    home_uri: &Url,
+    resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
+) -> Vec<SourceSpan> {
+    // Cheap pre-filter: a doc that does not even mention `name` as a substring
+    // can contribute no import-entity token and no `sub _ = name` construction
+    // site, so skip the parse entirely. Sound because every emitted span
+    // requires a literal occurrence of `name` in the source.
+    if !doc_source.contains(name) {
+        return Vec::new();
+    }
+    let parsed = reify_syntax::parse(doc_source, reify_core::ModulePath::single("_importer"));
+    let mut spans = Vec::new();
+    // Whether `name` is imported under that SAME local name (non-aliased) — only
+    // then do this document's `sub _ = name` construction sites belong to the set.
+    let mut exposes_under_same_name = false;
+    for decl in &parsed.declarations {
+        let Declaration::Import(import) = decl else {
+            continue;
+        };
+        // Resolved-URI scope soundness: an import that resolves to a different
+        // module (or fails to resolve) never contributes, even when the entity
+        // name coincides.
+        if resolve_import(&import.path).is_none_or(|(uri, _)| uri != *home_uri) {
+            continue;
+        }
+        match &import.kind {
+            ImportKind::Entity(n) if n == name => {
+                spans.push(name_token_span(doc_source, import.span, name));
+                exposes_under_same_name = true;
+            }
+            ImportKind::Destructured(names) if names.iter().any(|n| n == name) => {
+                spans.push(name_token_span(doc_source, import.span, name));
+                exposes_under_same_name = true;
+            }
+            ImportKind::EntityAliased { entity, .. } if entity == name => {
+                // Entity token only — the alias is a distinct local binding, so
+                // its construction sites are NOT part of this entity's set.
+                spans.push(name_token_span(doc_source, import.span, name));
+            }
+            _ => {}
+        }
+    }
+    // Construction sites only when imported under the same (non-aliased) name.
+    if exposes_under_same_name {
+        for decl in &parsed.declarations {
+            if let Some(members) = entity_members(decl) {
+                collect_sub_structure_uses(members, doc_source, name, 0, &mut spans);
+            }
+        }
+    }
+    spans.sort_by_key(|s| s.start);
+    spans
+}
+
+/// Cross-file find-references over the import graph (κ, task 4210).
+///
+/// Resolves the cursor to a structure "home" — a local declaration name, an
+/// `import` entity token, or a `sub _ = Name` construction site — then unions:
+/// the home document's declaration token + same-file construction sites, and,
+/// for every OTHER document in `workspace_docs` that imports the home entity,
+/// that document's import entity token + construction sites. Each span is mapped
+/// to an LSP [`Location`] in its document. `include_declaration` controls whether
+/// the home declaration token is part of the set, mirroring the single-file
+/// [`compute_references`] contract.
+///
+/// When the cursor is on a local VALUE-member binding the call delegates to the
+/// single-file [`compute_references`] (value members keep single-file scope).
+/// Returns `None` when the cursor resolves to neither a value member nor a
+/// resolvable structure.
+///
+/// PURE: the open-document set arrives as `workspace_docs` and target resolution
+/// as the injected `resolve_import` closure (mirroring goto_def), so the whole
+/// cross-file scope is unit-testable with an in-memory workspace + mock resolver.
+pub fn compute_references_cross_file(
+    primary_source: &str,
+    primary_parsed: &ParsedModule,
+    primary_uri: &Url,
+    pos: Position,
+    include_declaration: bool,
+    workspace_docs: &[(Url, String)],
+    resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
+) -> Option<Vec<Location>> {
+    let offset = position_to_offset(primary_source, pos);
+    let (_word_start, word) = find_word_at_offset(primary_source, offset)?;
+
+    match resolve_cross_file_home(
+        primary_source,
+        primary_parsed,
+        primary_uri,
+        offset,
+        word,
+        resolve_import,
+    )? {
+        // A local value-member binding keeps exact single-file semantics.
+        CrossFileHome::ValueMember => compute_references(
+            primary_source,
+            primary_parsed,
+            primary_uri,
+            pos,
+            include_declaration,
+        ),
+        CrossFileHome::Structure {
+            uri: home_uri,
+            name,
+            source: home_source,
+        } => {
+            let mut locations = Vec::new();
+
+            // Home document: declaration token + same-file construction sites.
+            let home_parsed =
+                reify_syntax::parse(&home_source, reify_core::ModulePath::single("_home"));
+            let home_decl = crate::goto_def::find_declaration_name_span(&home_source, &name);
+            for span in collect_structure_name_spans(&home_source, &home_parsed, &name) {
+                // include_declaration=false drops the home declaration token.
+                if !include_declaration && Some(span) == home_decl {
+                    continue;
+                }
+                locations.push(Location {
+                    uri: home_uri.clone(),
+                    range: span_to_range(&home_source, span),
+                });
+            }
+
+            // Every OTHER open document that imports the home entity (matched by
+            // RESOLVED home URI, never raw import path — Invariant 1).
+            for (doc_uri, doc_source) in workspace_docs {
+                if *doc_uri == home_uri {
+                    continue; // home-file references already collected above
+                }
+                for span in collect_importer_structure_references(
+                    doc_source,
+                    &name,
+                    &home_uri,
+                    resolve_import,
+                ) {
+                    locations.push(Location {
+                        uri: doc_uri.clone(),
+                        range: span_to_range(doc_source, span),
+                    });
+                }
+            }
+
+            Some(locations)
+        }
+    }
+}
+
+/// Classify the top-level declaration named `name` in `source` to a
+/// [`RefSymbolKind`], for κ cross-file rename gating. Mirrors the declaration
+/// scan in [`crate::goto_def::find_declaration_name_span`] (which located the
+/// home token), so the classified kind agrees with the resolved home. Returns
+/// `None` when no top-level declaration matches.
+fn classify_top_level_decl(source: &str, name: &str) -> Option<RefSymbolKind> {
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("_classify"));
+    parsed.declarations.iter().find_map(|decl| {
+        let (decl_name, kind) = match decl {
+            Declaration::Structure(s) => (s.name.as_str(), RefSymbolKind::Structure),
+            Declaration::Occurrence(o) => (o.name.as_str(), RefSymbolKind::Occurrence),
+            Declaration::Trait(t) => (t.name.as_str(), RefSymbolKind::Trait),
+            Declaration::Enum(e) => (e.name.as_str(), RefSymbolKind::Enum),
+            Declaration::Function(f) => (f.name.as_str(), RefSymbolKind::Fn),
+            _ => return None,
+        };
+        (decl_name == name).then_some(kind)
+    })
+}
+
+/// Whether a cross-file home of `kind` is renameable in κ: every single-file
+/// value-member kind ([`is_renameable`]) PLUS `Structure`/`Occurrence` — the
+/// declaration kinds whose construction sites (`sub _ = Name`) κ tracks across
+/// the import graph. `Trait`/`Enum`/`Fn`/`Variant` are OUT of κ scope (their use
+/// sites are type-annotation / refinement positions κ does not collect, so a
+/// rename would be unsound) and refuse. Shared by [`prepare_rename_cross_file`]
+/// and the cross-file rename producer so the two agree on what is renameable.
+///
+/// CAVEAT — the same type-position gap applies to the ADMITTED Structure/
+/// Occurrence kinds: κ collects only the declaration token and `sub _ = Name`
+/// construction sites (κ design decision #3). If a structure name ALSO appears
+/// in a type-annotation / refinement position (e.g. `param p: Name`), renaming
+/// the structure rewrites the decl + construction sites but leaves that
+/// type-position use stale. Because Invariant 5 only checks that buffers
+/// re-PARSE clean, such a rename parses fine yet references a now-nonexistent
+/// name. Admitting Structure/Occurrence is sound for the κ signal (construction
+/// across an import); extending the collector to type positions — or refusing
+/// when such uses exist — is a clean follow-up that does not change the
+/// substrate.
+fn is_renameable_cross_file(kind: RefSymbolKind) -> bool {
+    is_renameable(kind) || matches!(kind, RefSymbolKind::Structure | RefSymbolKind::Occurrence)
+}
+
+/// Cross-file prepare-rename over the import graph (κ, task 4210).
+///
+/// Lifts the single-file cross-module refusal: a structure name reached through
+/// an `import` (its import entity token or a `sub _ = Name` construction site),
+/// or the home declaration token itself, becomes a rename target — whereas the
+/// single-file [`prepare_rename`] returns `None` for it (declaration/imported
+/// kinds are not single-file renameable).
+///
+/// Resolution order mirrors [`compute_references_cross_file`]: try the
+/// single-file [`prepare_rename`] first (value members keep their exact
+/// semantics), then resolve a cross-file structure home and admit it only when
+/// its declaration kind is κ-renameable ([`is_renameable_cross_file`] —
+/// Structure/Occurrence). Refuses keywords, literals, type-annotation positions,
+/// and words resolving to neither a local binding nor a resolvable structure.
+///
+/// PURE: target resolution arrives as the injected `resolve_import` closure
+/// (mirroring goto_def), so the cross-file path is unit-testable with a mock
+/// resolver.
+pub fn prepare_rename_cross_file(
+    primary_source: &str,
+    primary_parsed: &ParsedModule,
+    primary_uri: &Url,
+    pos: Position,
+    resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
+) -> Option<RenameTarget> {
+    // 1. Single-file value-member rename keeps its exact semantics.
+    if let Some(target) = prepare_rename(primary_source, primary_parsed, pos) {
+        return Some(target);
+    }
+
+    // 2. Cross-file structure home — lift the single-file cross-module refusal.
+    let offset = position_to_offset(primary_source, pos);
+    let (word_start, word) = find_word_at_offset(primary_source, offset)?;
+    let CrossFileHome::Structure { name, source, .. } = resolve_cross_file_home(
+        primary_source,
+        primary_parsed,
+        primary_uri,
+        offset,
+        word,
+        resolve_import,
+    )?
+    else {
+        // A value-member home was already handled by `prepare_rename` above
+        // (every value-member kind is single-file renameable); reaching here
+        // with one would mean it was non-renameable, so refuse uniformly.
+        return None;
+    };
+
+    // Admit only the κ-renameable declaration kinds (Structure/Occurrence); a
+    // trait/enum/fn home is OUT of κ scope and refuses.
+    if !is_renameable_cross_file(classify_top_level_decl(&source, &name)?) {
+        return None;
+    }
+
+    // The rename target is the identifier token UNDER THE CURSOR — the home decl
+    // token, an import entity token, or a `sub _ = Name` construction token.
+    let range = span_to_range(
+        primary_source,
+        SourceSpan::new(word_start as u32, (word_start + word.len()) as u32),
+    );
+    Some(RenameTarget {
+        range,
+        placeholder: word.to_string(),
+    })
+}
+
+/// Cross-file rename over the import graph (κ, task 4210): a [`WorkspaceEdit`]
+/// that renames a structure (or single-file value member) to `new_name` across
+/// every OPEN document that references it.
+///
+/// SCOPE — open documents only. The guarantee is bounded to the `workspace_docs`
+/// set, which the server populates exclusively from documents currently OPEN in
+/// the editor (the open-doc snapshot). A file that imports and constructs the
+/// renamed structure but is NOT open is never edited, so the rename can leave
+/// stale references to the old name in closed importers. This matches κ design
+/// decision #5 (whole-tree on-disk enumeration of unopened importers is a
+/// deferred follow-up); the substrate here is the open-doc set + resolved
+/// targets. A consuming task that surfaces "only open files were updated" or
+/// walks the workspace `.ri` tree would close this gap.
+///
+/// SCOPE — declaration + construction sites only. For a Structure/Occurrence
+/// home the edit set covers the declaration token, import entity tokens, and
+/// `sub _ = Name` (construction) sites — NOT type-annotation / refinement
+/// positions (see [`is_renameable_cross_file`] and [`collect_structure_name_spans`]).
+/// If a structure name also appears in such a position the rename rewrites the
+/// decl + construction sites but leaves that use stale; the buffers still
+/// re-PARSE clean (Invariant 5 only checks parse-cleanliness) yet now reference
+/// a renamed entity. Extending the collector to type positions is a κ follow-up.
+///
+/// The edit set is exactly the cross-file reference set
+/// ([`compute_references_cross_file`] with `include_declaration = true`) — the
+/// home declaration token + same-file construction sites, plus each importing
+/// document's import entity token + construction sites — one [`TextEdit`] per
+/// name-token span, grouped by document URI (ascending and non-overlapping
+/// within each file).
+///
+/// Two refusals keep the multi-file result re-parse-clean (Invariant 5):
+/// `new_name` must be a legal Reify identifier ([`is_valid_rename_identifier`] —
+/// rejecting empty/whitespace/punctuation/digit-leading/reserved-keyword), and
+/// the cursor must resolve to a renameable home. Renameability is gated through
+/// [`prepare_rename_cross_file`] so prepare and rename never disagree (value
+/// members keep single-file semantics; structure homes admit only
+/// Structure/Occurrence). Returns `None` on either refusal.
+///
+/// PURE: the open-document set arrives as `workspace_docs` and target resolution
+/// as the injected `resolve_import` closure (mirroring goto_def), so the whole
+/// cross-file rename is unit-testable with an in-memory workspace + mock
+/// resolver.
+pub fn compute_rename_cross_file(
+    primary_source: &str,
+    primary_parsed: &ParsedModule,
+    primary_uri: &Url,
+    pos: Position,
+    new_name: &str,
+    workspace_docs: &[(Url, String)],
+    resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
+) -> Option<WorkspaceEdit> {
+    // A `new_name` that is not a legal Reify identifier would corrupt every
+    // rewritten token so the buffers no longer re-parse cleanly — refuse before
+    // producing any edits (the re-parse-clean half of Invariant 5).
+    if !is_valid_rename_identifier(new_name) {
+        return None;
+    }
+
+    // Renameability gate — share prepare's resolution so prepare and rename never
+    // disagree on what is renameable (value member, or Structure/Occurrence home).
+    prepare_rename_cross_file(primary_source, primary_parsed, primary_uri, pos, resolve_import)?;
+
+    // The cross-file reference set (declaration ∪ uses) is exactly the set of
+    // name-token spans to rewrite.
+    let locations = compute_references_cross_file(
+        primary_source,
+        primary_parsed,
+        primary_uri,
+        pos,
+        /* include_declaration = */ true,
+        workspace_docs,
+        resolve_import,
+    )?;
+
+    // One TextEdit per location, grouped by document URI.
+    let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+    for loc in locations {
+        changes.entry(loc.uri).or_default().push(TextEdit {
+            range: loc.range,
+            new_text: new_name.to_string(),
+        });
+    }
+    // Keep each file's edits ascending (and thus non-overlapping — every span is
+    // a distinct name token) so the client applies them deterministically.
+    for edits in changes.values_mut() {
+        edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+    }
+
+    Some(WorkspaceEdit {
+        changes: Some(changes),
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1251,6 +1789,79 @@ mod tests {
     /// Whether `span` lies fully within the byte range `[lo, hi)`.
     fn within(span: SourceSpan, lo: usize, hi: usize) -> bool {
         (span.start as usize) >= lo && (span.end as usize) <= hi
+    }
+
+    // ─── κ (task 4210): cross-file references + rename scaffolding ────────────
+    //
+    // The CANONICAL SIGNAL (PRD boundary row 8): a `Hole` structure declared in
+    // `parts.ri` is imported and constructed (`sub hole = Hole`) in `main.ri`.
+    // Renaming `Hole`→`Bore` once must update the home declaration, the import
+    // entity token, AND the `sub` construction site — across both files — and
+    // both must re-parse clean. These fixtures + helpers mirror goto_def's
+    // `mock_resolver` pattern so the pure cross-file collectors are unit-testable
+    // with an in-memory workspace + an injectable import resolver (no filesystem).
+
+    /// parts.ri — the home module declaring `structure Hole`.
+    #[allow(dead_code)]
+    const PARTS_SRC: &str = "structure Hole {\n    param diameter: Length = 10mm\n}";
+
+    /// main.ri — imports `parts.Hole` and constructs it via `sub hole = Hole()`.
+    ///
+    /// The constructor uses the PARENTHESIZED form `Hole()` (not the bare
+    /// `sub hole = Hole` the PRD row-8 shorthand writes): the bare, paren-less
+    /// form is a Reify *syntax error*, so it never lowers to a `SubDecl` and
+    /// carries no `structure_name` for the κ collector to surface. `Hole()` is a
+    /// valid construction site (Hole's only `param` has a default), lowers to
+    /// `SubDecl { structure_name: "Hole", .. }`, and the rename target
+    /// `sub hole = Bore()` re-parses clean (Invariant 5).
+    #[allow(dead_code)]
+    const MAIN_SRC: &str = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole()\n}";
+
+    /// URI of the home module (`parts.ri`).
+    #[allow(dead_code)]
+    fn parts_uri() -> Url {
+        Url::parse("file:///proj/parts.ri").unwrap()
+    }
+
+    /// URI of the importing module (`main.ri`).
+    #[allow(dead_code)]
+    fn main_uri() -> Url {
+        Url::parse("file:///proj/main.ri").unwrap()
+    }
+
+    /// Build a `workspace_docs` open-document snapshot — the multi-document
+    /// workspace view the cross-file collectors scan for importers — from named
+    /// `(uri, source)` pairs.
+    #[allow(dead_code)]
+    fn workspace_docs(docs: &[(Url, &str)]) -> Vec<(Url, String)> {
+        docs.iter()
+            .map(|(uri, src)| (uri.clone(), (*src).to_string()))
+            .collect()
+    }
+
+    /// Build a mock `resolve_import` closure mapping an import dot-path
+    /// (e.g. `"parts"`) to its `(target_uri, target_source)`, mirroring
+    /// goto_def tests' `mock_resolver`. Returns `None` for an unknown path.
+    #[allow(dead_code)]
+    fn mock_resolver(
+        map: HashMap<String, (Url, String)>,
+    ) -> impl Fn(&str) -> Option<(Url, String)> {
+        move |path: &str| map.get(path).cloned()
+    }
+
+    /// The canonical two-file workspace: `parts.ri` + `main.ri` as a
+    /// `workspace_docs` snapshot, paired with a resolver that maps the `parts`
+    /// import path to `parts.ri`. Returned together so each cross-file test can
+    /// drive the collectors from any of the three signal cursor positions.
+    #[allow(dead_code)]
+    // test helper; the `impl Fn` closure can't live in a type alias, so the
+    // tuple-with-resolver return shape stays inline behind an allow.
+    #[allow(clippy::type_complexity)]
+    fn canonical_workspace() -> (Vec<(Url, String)>, impl Fn(&str) -> Option<(Url, String)>) {
+        let docs = workspace_docs(&[(parts_uri(), PARTS_SRC), (main_uri(), MAIN_SRC)]);
+        let mut map = HashMap::new();
+        map.insert("parts".to_string(), (parts_uri(), PARTS_SRC.to_string()));
+        (docs, mock_resolver(map))
     }
 
     // --- step-3: collect_references basic single binding ---
@@ -2684,4 +3295,536 @@ structure S {
             "a cursor off any identifier must return None"
         );
     }
+
+    // --- κ step-1 (task 4210): single-file structure-name collector ---
+
+    #[test]
+    fn collect_structure_name_spans_decl_plus_same_file_sub_uses() {
+        // `SubDecl.structure_name` is a plain `String` field, structurally
+        // invisible to the Expr-walking `collect_uses`/`collect_idents_in_expr`.
+        // The dedicated structure-name collector must surface the home
+        // declaration token (`structure Hole`) PLUS each same-file
+        // `sub _ = Hole` construction-site token, ascending by start, each
+        // covering exactly `Hole`.
+        // NB: the bare `sub x = Hole` form (no parens) parses clean only as the
+        // final member of a block; two consecutive bare subs are a syntax error,
+        // so multi-sub fixtures use the parenthesized constructor form (which the
+        // completeness fixtures above also rely on).
+        let source = "\
+structure Hole {
+    param diameter: Length = 10mm
 }
+structure Assembly {
+    sub a = Hole(diameter: 6mm)
+    sub b = Hole(diameter: 8mm)
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("kappa1"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean: {:?}",
+            parsed.errors
+        );
+
+        // `Hole` appears exactly 3×: the structure decl + 2 sub construction sites
+        // (`param diameter` / `Assembly` contain no `Hole` substring).
+        let hole = occurrences(source, "Hole");
+        assert_eq!(hole.len(), 3, "1 structure decl + 2 sub construction sites");
+        // hole[0]=`structure Hole` decl token, hole[1]=`sub a = Hole`,
+        // hole[2]=`sub b = Hole`.
+
+        let spans = collect_structure_name_spans(source, &parsed, "Hole");
+        assert_eq!(
+            spans,
+            vec![
+                span_of(hole[0], "Hole"),
+                span_of(hole[1], "Hole"),
+                span_of(hole[2], "Hole"),
+            ],
+            "decl token + both sub-use tokens, ascending, each covering exactly `Hole`"
+        );
+    }
+
+    // --- κ step-3 (task 4210): cross-file structure references from any signal cursor ---
+
+    /// Sort `Location`s by (uri, start line, start char) so cross-file reference
+    /// sets can be compared order-independently — the producer's emission order is
+    /// an implementation detail; the *set* of Locations is the contract.
+    fn sorted_locations(mut locs: Vec<Location>) -> Vec<Location> {
+        locs.sort_by(|a, b| {
+            a.uri
+                .as_str()
+                .cmp(b.uri.as_str())
+                .then(a.range.start.line.cmp(&b.range.start.line))
+                .then(a.range.start.character.cmp(&b.range.start.character))
+        });
+        locs
+    }
+
+    /// Build the `Location` for the whole-word `text` token starting at byte
+    /// `start` in `source`, paired with `uri`.
+    fn loc_at(uri: Url, source: &str, start: usize, text: &str) -> Location {
+        Location {
+            uri,
+            range: span_to_range(source, span_of(start, text)),
+        }
+    }
+
+    #[test]
+    fn compute_references_cross_file_same_set_from_all_three_signal_cursors() {
+        // CANONICAL SIGNAL (PRD boundary row 8): `Hole` declared in parts.ri,
+        // imported + constructed (`sub hole = Hole`) in main.ri. Find-references
+        // from ANY of the three signal cursor positions — the parts.ri decl token,
+        // the main.ri `import parts.Hole` entity token, or the main.ri
+        // `sub hole = Hole` construction site — must surface the SAME cross-file
+        // reference set: parts.ri decl token + main.ri import entity token +
+        // main.ri sub-use token (3 Locations, correct uris/ranges).
+        let (docs, resolver) = canonical_workspace();
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+        let parsed_main = reify_syntax::parse(MAIN_SRC, ModulePath::single("main"));
+
+        let parts_decl = occurrences(PARTS_SRC, "Hole")[0]; // `structure Hole`
+        let main_import = occurrences(MAIN_SRC, "Hole")[0]; // `import parts.Hole`
+        let main_use = occurrences(MAIN_SRC, "Hole")[1]; // `sub hole = Hole`
+        let expected = sorted_locations(vec![
+            loc_at(parts_uri(), PARTS_SRC, parts_decl, "Hole"),
+            loc_at(main_uri(), MAIN_SRC, main_import, "Hole"),
+            loc_at(main_uri(), MAIN_SRC, main_use, "Hole"),
+        ]);
+
+        // (a) cursor on the main.ri `sub hole = Hole` construction site.
+        let pos_a = offset_to_position(MAIN_SRC, main_use as u32);
+        let got_a = compute_references_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            pos_a,
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("(a) cursor on cross-file sub use resolves to a cross-file reference set");
+        assert_eq!(sorted_locations(got_a), expected, "(a) sub-use cursor");
+
+        // (b) cursor on the parts.ri `structure Hole` declaration token.
+        let pos_b = offset_to_position(PARTS_SRC, parts_decl as u32);
+        let got_b = compute_references_cross_file(
+            PARTS_SRC,
+            &parsed_parts,
+            &parts_uri(),
+            pos_b,
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("(b) cursor on home declaration resolves to a cross-file reference set");
+        assert_eq!(sorted_locations(got_b), expected, "(b) declaration cursor");
+
+        // (c) cursor on the main.ri `import parts.Hole` entity token.
+        let pos_c = offset_to_position(MAIN_SRC, main_import as u32);
+        let got_c = compute_references_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            pos_c,
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("(c) cursor on import entity token resolves to a cross-file reference set");
+        assert_eq!(sorted_locations(got_c), expected, "(c) import entity cursor");
+    }
+
+    #[test]
+    fn compute_references_cross_file_exclude_declaration_drops_home_decl_token() {
+        // include_declaration=false drops ONLY the parts.ri home declaration token,
+        // leaving the two main.ri use Locations (import entity token + sub use).
+        let (docs, resolver) = canonical_workspace();
+        let parsed_main = reify_syntax::parse(MAIN_SRC, ModulePath::single("main"));
+
+        let main_import = occurrences(MAIN_SRC, "Hole")[0];
+        let main_use = occurrences(MAIN_SRC, "Hole")[1];
+        let expected = sorted_locations(vec![
+            loc_at(main_uri(), MAIN_SRC, main_import, "Hole"),
+            loc_at(main_uri(), MAIN_SRC, main_use, "Hole"),
+        ]);
+
+        let pos = offset_to_position(MAIN_SRC, main_use as u32);
+        let got = compute_references_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            pos,
+            false,
+            &docs,
+            &resolver,
+        )
+        .expect("cross-file references resolve with include_declaration=false");
+        assert_eq!(
+            sorted_locations(got),
+            expected,
+            "include_declaration=false drops the parts.ri home decl token"
+        );
+    }
+
+    // --- κ step-5 (task 4210): cross-file scope soundness ---
+
+    #[test]
+    fn compute_references_cross_file_excludes_same_name_different_module() {
+        // Invariant 1 (scope soundness): a DIFFERENT module's same-named `Hole`
+        // must NOT be swept into the reference set when renaming parts.ri's
+        // `Hole`. `other.ri` imports `widgets.Hole` (resolving — via the mock —
+        // to a DIFFERENT file than parts.ri) and constructs it. Even though the
+        // entity NAME matches, importer matching keys on the RESOLVED home URI,
+        // so `other.ri`'s import token and `sub w = Hole()` use are excluded.
+        // The legitimate importer `main.ri` (which imports `parts.Hole`) still
+        // contributes — proving the resolver distinguishes the two modules.
+        let other_src = "import widgets.Hole\nstructure X {\n    sub w = Hole()\n}";
+        let widgets_uri = Url::parse("file:///proj/widgets.ri").unwrap();
+        let other_uri = Url::parse("file:///proj/other.ri").unwrap();
+
+        let docs = workspace_docs(&[
+            (parts_uri(), PARTS_SRC),
+            (main_uri(), MAIN_SRC),
+            (other_uri.clone(), other_src),
+        ]);
+        let mut map = HashMap::new();
+        map.insert("parts".to_string(), (parts_uri(), PARTS_SRC.to_string()));
+        map.insert(
+            "widgets".to_string(),
+            (widgets_uri, PARTS_SRC.to_string()),
+        );
+        let resolver = mock_resolver(map);
+
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+        let parts_decl = occurrences(PARTS_SRC, "Hole")[0];
+        let main_import = occurrences(MAIN_SRC, "Hole")[0];
+        let main_use = occurrences(MAIN_SRC, "Hole")[1];
+        // EXACT expected set: parts.ri decl + main.ri import token + main.ri use.
+        // NOTHING from other.ri (different module).
+        let expected = sorted_locations(vec![
+            loc_at(parts_uri(), PARTS_SRC, parts_decl, "Hole"),
+            loc_at(main_uri(), MAIN_SRC, main_import, "Hole"),
+            loc_at(main_uri(), MAIN_SRC, main_use, "Hole"),
+        ]);
+
+        // Rename from the parts.ri declaration token.
+        let pos = offset_to_position(PARTS_SRC, parts_decl as u32);
+        let got = compute_references_cross_file(
+            PARTS_SRC,
+            &parsed_parts,
+            &parts_uri(),
+            pos,
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("declaration cursor resolves to a cross-file reference set");
+        assert_eq!(
+            sorted_locations(got),
+            expected,
+            "other.ri's `import widgets.Hole` (different module) must be excluded"
+        );
+    }
+
+    #[test]
+    fn compute_references_cross_file_aliased_import_contributes_entity_token_only() {
+        // Aliased import: `import parts.Hole as Bore` binds the entity `Hole`
+        // under the DISTINCT local name `Bore`. Renaming parts.ri's `Hole` must
+        // touch the import ENTITY token (`Hole`) — it names the renamed entity —
+        // but NOT the alias token (`Bore`) nor the `sub _ = Bore()` construction
+        // sites, which reference the alias binding, not the entity itself.
+        let aliased_src = "import parts.Hole as Bore\nstructure Y {\n    sub h = Bore()\n}";
+        let aliased_uri = Url::parse("file:///proj/aliased.ri").unwrap();
+
+        let docs = workspace_docs(&[(parts_uri(), PARTS_SRC), (aliased_uri.clone(), aliased_src)]);
+        let mut map = HashMap::new();
+        map.insert("parts".to_string(), (parts_uri(), PARTS_SRC.to_string()));
+        let resolver = mock_resolver(map);
+
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+        let parts_decl = occurrences(PARTS_SRC, "Hole")[0];
+        // `Hole` appears exactly once in aliased.ri — the import entity token in
+        // `import parts.Hole as Bore`. The alias `Bore` and its `sub h = Bore()`
+        // use are a distinct binding and contribute nothing.
+        let aliased_entity = occurrences(aliased_src, "Hole");
+        assert_eq!(
+            aliased_entity.len(),
+            1,
+            "aliased.ri: only the import entity token spells `Hole`"
+        );
+        let expected = sorted_locations(vec![
+            loc_at(parts_uri(), PARTS_SRC, parts_decl, "Hole"),
+            loc_at(aliased_uri.clone(), aliased_src, aliased_entity[0], "Hole"),
+        ]);
+
+        // Rename from the parts.ri declaration token.
+        let pos = offset_to_position(PARTS_SRC, parts_decl as u32);
+        let got = compute_references_cross_file(
+            PARTS_SRC,
+            &parsed_parts,
+            &parts_uri(),
+            pos,
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("declaration cursor resolves to a cross-file reference set");
+        assert_eq!(
+            sorted_locations(got),
+            expected,
+            "aliased import contributes only the entity token `Hole`, not the alias or its uses"
+        );
+    }
+
+    // --- κ step-7 (task 4210): cross-file prepare_rename lifts the refusal ---
+
+    /// The `RenameTarget` for the whole-word `text` token starting at byte
+    /// `start` in `source`: range over the token, placeholder = `text`.
+    fn rename_target_at(source: &str, start: usize, text: &str) -> RenameTarget {
+        RenameTarget {
+            range: span_to_range(source, span_of(start, text)),
+            placeholder: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn prepare_rename_cross_file_lifts_cross_module_refusal() {
+        // κ lifts the single-file cross-module refusal (is_renameable returns
+        // None for structure/imported names): prepare_rename over the import
+        // graph returns a rename target — range over the cursor token,
+        // placeholder = current name — for a structure home reached from ANY of
+        // the three signal cursors: the parts.ri decl token, the main.ri
+        // `sub hole = Hole()` construction site, and the `import parts.Hole`
+        // entity token.
+        let (_docs, resolver) = canonical_workspace();
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+        let parsed_main = reify_syntax::parse(MAIN_SRC, ModulePath::single("main"));
+
+        // (a) parts.ri `structure Hole` declaration token.
+        let parts_decl = occurrences(PARTS_SRC, "Hole")[0];
+        let got_a = prepare_rename_cross_file(
+            PARTS_SRC,
+            &parsed_parts,
+            &parts_uri(),
+            offset_to_position(PARTS_SRC, parts_decl as u32),
+            &resolver,
+        )
+        .expect("(a) cross-module refusal lifted on the home declaration token");
+        assert_eq!(got_a, rename_target_at(PARTS_SRC, parts_decl, "Hole"), "(a)");
+
+        // (b) main.ri `sub hole = Hole()` construction-site use.
+        let main_use = occurrences(MAIN_SRC, "Hole")[1];
+        let got_b = prepare_rename_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            offset_to_position(MAIN_SRC, main_use as u32),
+            &resolver,
+        )
+        .expect("(b) cross-module refusal lifted on the imported sub use");
+        assert_eq!(got_b, rename_target_at(MAIN_SRC, main_use, "Hole"), "(b)");
+
+        // (c) main.ri `import parts.Hole` entity token.
+        let main_import = occurrences(MAIN_SRC, "Hole")[0];
+        let got_c = prepare_rename_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            offset_to_position(MAIN_SRC, main_import as u32),
+            &resolver,
+        )
+        .expect("(c) cross-module refusal lifted on the import entity token");
+        assert_eq!(got_c, rename_target_at(MAIN_SRC, main_import, "Hole"), "(c)");
+    }
+
+    #[test]
+    fn prepare_rename_cross_file_refuses_keyword_type_and_unresolved() {
+        // The cross-file producer keeps the single-file refusals: a keyword, a
+        // type-annotation position (OUT of κ scope), and a word that resolves to
+        // neither a local binding nor a resolvable structure all return None.
+        let (_docs, resolver) = canonical_workspace();
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+
+        // (a) keyword `structure` — never a rename target.
+        let kw = occurrences(PARTS_SRC, "structure")[0];
+        assert!(
+            prepare_rename_cross_file(
+                PARTS_SRC,
+                &parsed_parts,
+                &parts_uri(),
+                offset_to_position(PARTS_SRC, kw as u32),
+                &resolver,
+            )
+            .is_none(),
+            "(a) keyword `structure` is not renameable"
+        );
+
+        // (b) type-annotation position `Length` — type positions are OUT of κ.
+        let ty = occurrences(PARTS_SRC, "Length")[0];
+        assert!(
+            prepare_rename_cross_file(
+                PARTS_SRC,
+                &parsed_parts,
+                &parts_uri(),
+                offset_to_position(PARTS_SRC, ty as u32),
+                &resolver,
+            )
+            .is_none(),
+            "(b) a type-annotation position (`Length`) is not a κ rename target"
+        );
+
+        // (c) an imported structure use whose import does NOT resolve (the
+        //     canonical resolver maps only `parts`, not `ghost`) → neither a
+        //     local binding nor a resolvable structure.
+        let ghost_src = "import ghost.Widget\nstructure Z {\n    sub w = Widget()\n}";
+        let parsed_ghost = reify_syntax::parse(ghost_src, ModulePath::single("ghost_user"));
+        let ghost_uri = Url::parse("file:///proj/ghost_user.ri").unwrap();
+        let widget_use = occurrences(ghost_src, "Widget")[1]; // `sub w = Widget()`
+        assert!(
+            prepare_rename_cross_file(
+                ghost_src,
+                &parsed_ghost,
+                &ghost_uri,
+                offset_to_position(ghost_src, widget_use as u32),
+                &resolver,
+            )
+            .is_none(),
+            "(c) an unresolvable imported structure use is not renameable"
+        );
+    }
+
+    // --- κ step-9 (task 4210): cross-file rename WorkspaceEdit (Invariant 5) ---
+
+    /// Apply LSP `TextEdit`s to `source`, splicing in DESCENDING start order so
+    /// earlier byte offsets stay valid as later ones are replaced (mirrors
+    /// `compute_rename_edit_is_valid_and_reparses_clean`).
+    fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
+        let mut to_apply: Vec<(usize, usize, &str)> = edits
+            .iter()
+            .map(|e| {
+                (
+                    position_to_offset(source, e.range.start),
+                    position_to_offset(source, e.range.end),
+                    e.new_text.as_str(),
+                )
+            })
+            .collect();
+        to_apply.sort_by_key(|e| std::cmp::Reverse(e.0));
+        let mut buffer = source.to_string();
+        for (start, end, text) in &to_apply {
+            buffer.replace_range(*start..*end, text);
+        }
+        buffer
+    }
+
+    #[test]
+    fn compute_rename_cross_file_two_file_workspace_edit_reparses_clean() {
+        // CANONICAL SIGNAL: rename Hole→Bore from the main.ri construction site.
+        // The WorkspaceEdit must carry BOTH files: parts.ri (the structure decl
+        // token) and main.ri (the import entity token + the sub construction
+        // site), every edit new_text="Bore". Applying each file's edits and
+        // re-parsing must yield ZERO errors (Invariant 5): `structure Bore`,
+        // `import parts.Bore`, and `sub hole = Bore()` are all valid.
+        let (docs, resolver) = canonical_workspace();
+        let parsed_main = reify_syntax::parse(MAIN_SRC, ModulePath::single("main"));
+        let main_use = occurrences(MAIN_SRC, "Hole")[1]; // `sub hole = Hole()`
+
+        let edit = compute_rename_cross_file(
+            MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            offset_to_position(MAIN_SRC, main_use as u32),
+            "Bore",
+            &docs,
+            &resolver,
+        )
+        .expect("cross-file rename yields a WorkspaceEdit");
+
+        let changes = edit.changes.expect("changes present");
+        assert_eq!(changes.len(), 2, "edit spans both parts.ri and main.ri");
+
+        let parts_edits = changes.get(&parts_uri()).expect("parts.ri edits present");
+        assert_eq!(parts_edits.len(), 1, "parts.ri: 1 edit (structure decl token)");
+        assert!(
+            parts_edits.iter().all(|e| e.new_text == "Bore"),
+            "every parts.ri edit writes Bore"
+        );
+        let main_edits = changes.get(&main_uri()).expect("main.ri edits present");
+        assert_eq!(main_edits.len(), 2, "main.ri: 2 edits (import token + sub use)");
+        assert!(
+            main_edits.iter().all(|e| e.new_text == "Bore"),
+            "every main.ri edit writes Bore"
+        );
+
+        // Invariant 5: apply per-file edits, re-parse, assert ZERO errors in BOTH.
+        let parts_after = apply_edits(PARTS_SRC, parts_edits);
+        let main_after = apply_edits(MAIN_SRC, main_edits);
+        let parts_reparsed = reify_syntax::parse(&parts_after, ModulePath::single("parts"));
+        assert!(
+            parts_reparsed.errors.is_empty(),
+            "parts.ri re-parses clean after rename: {:?}\n{parts_after}",
+            parts_reparsed.errors
+        );
+        let main_reparsed = reify_syntax::parse(&main_after, ModulePath::single("main"));
+        assert!(
+            main_reparsed.errors.is_empty(),
+            "main.ri re-parses clean after rename: {:?}\n{main_after}",
+            main_reparsed.errors
+        );
+        // The renamed tokens are concretely present in both buffers.
+        assert!(
+            parts_after.contains("structure Bore"),
+            "parts.ri now declares `structure Bore`: {parts_after}"
+        );
+        assert!(
+            main_after.contains("import parts.Bore"),
+            "main.ri import renamed to `parts.Bore`: {main_after}"
+        );
+        assert!(
+            main_after.contains("= Bore()"),
+            "main.ri construction site renamed to `Bore()`: {main_after}"
+        );
+    }
+
+    #[test]
+    fn compute_rename_cross_file_rejects_invalid_new_names() {
+        // An illegal new_name must be refused (None) BEFORE any edit — else the
+        // multi-file buffer no longer re-parses cleanly (the re-parse-clean half
+        // of Invariant 5).
+        let (docs, resolver) = canonical_workspace();
+        let parsed_main = reify_syntax::parse(MAIN_SRC, ModulePath::single("main"));
+        let pos = offset_to_position(MAIN_SRC, occurrences(MAIN_SRC, "Hole")[1] as u32);
+
+        // Sanity: a legal identifier is accepted (so the refusals attribute to
+        // the new_name, not the cursor).
+        assert!(
+            compute_rename_cross_file(
+                MAIN_SRC,
+                &parsed_main,
+                &main_uri(),
+                pos,
+                "Bore",
+                &docs,
+                &resolver
+            )
+            .is_some(),
+            "a legal identifier new_name is accepted"
+        );
+        for bad in ["2x", "let", "foo bar", ""] {
+            assert!(
+                compute_rename_cross_file(
+                    MAIN_SRC,
+                    &parsed_main,
+                    &main_uri(),
+                    pos,
+                    bad,
+                    &docs,
+                    &resolver
+                )
+                .is_none(),
+                "illegal new_name {bad:?} must be refused"
+            );
+        }
+    }
+}
+
