@@ -42,8 +42,7 @@ use reify_core::ValueCellId;
 use reify_ir::{ExportFormat, Value};
 use reify_stdlib::loop_closure::loop_residual_twist;
 use reify_test_support::{
-    collect_errors, errors_only, make_simple_engine, parse_and_compile_with_stdlib,
-    MockGeometryKernel,
+    collect_errors, errors_only, parse_and_compile_with_stdlib, MockGeometryKernel,
 };
 
 /// Absolute path to the closed 2-prismatic inverse-dynamics example fixture.
@@ -174,15 +173,17 @@ fn closed_2prismatic_virtual_work_identity() {
 // KIN-OFFSET β1: closed 4-bar loop-residual tests (B4 signal, task 4428)
 // ──────────────────────────────────────────────────────────────────────────────
 //
-// Grashof crank-rocker: crank a=40mm (shortest), coupler b=120mm, rocker c=120mm,
-// ground d=140mm. Grashof check: s+l = 40+140 = 180 ≤ p+q = 120+120 = 240 ✓.
+// Grashof crank-rocker: crank a=40mm (shortest), coupler b=120mm,
+// rocker c=116.282484506mm (the EXACT length closing the loop at θ_input=45°
+// with the coupler straight — see the .ri header), ground d=140mm.
+// Grashof check: s+l = 40+140 = 180 ≤ p+q = 116.2825+120 = 236.2825 ✓.
 //
 // Pivot offsets (task 4331 surface):
 //   j_crank       – revolute at A = world origin, pivot=(0,0,0)
 //   j_coupler     – revolute, pivot=(40mm,0,0) in crank frame (= crank length a)
 //   j_coupler_tip – revolute fixed-like tip, pivot=(120mm,0,0) in coupler frame (= coupler b)
 //   j_rocker      – revolute, pivot=(140mm,0,0) in world frame (= ground length d)
-//   j_rocker_tip  – revolute fixed-like tip, pivot=(120mm,0,0) in rocker frame (= rocker c)
+//   j_rocker_tip  – revolute fixed-like tip, pivot=(116.282484506mm,0,0) in rocker frame (= rocker c)
 //
 // chain_a = [j_crank, j_coupler, j_coupler_tip] → FK reaches pivot C via crank+coupler
 // chain_b = [j_rocker, j_rocker_tip]            → FK reaches pivot C via rocker
@@ -225,9 +226,16 @@ fn closed_4bar_live_loop_residual() {
         errors_only(&compiled)
     );
 
-    // Eval to get joint Value cells.
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
+    // Eval to get joint Value cells. Mirror the production engine setup
+    // (reify-cli main.rs / gui engine.rs): checker + mock kernel, PLUS
+    // register_compute_fns so the `@optimized("dynamics::inverse_dynamics")`
+    // target resolves to its trampoline instead of emitting an
+    // unregistered-target Error diagnostic.
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let result = engine.build(&compiled, ExportFormat::Step);
     let eval_errors = collect_errors(&result.diagnostics);
     assert!(
         eval_errors.is_empty(),
@@ -268,7 +276,7 @@ fn closed_4bar_live_loop_residual() {
         + twist_45[4] * twist_45[4]
         + twist_45[5] * twist_45[5])
     .sqrt();
-    // Expected off-closure mismatch: ≈ 0.186 m at θ1=45°, θ2=θ3=0 (esc-4146-280 §0 gap)
+    // Expected off-closure mismatch: ≈ 0.182 m at θ1=45°, θ2=θ3=0 (esc-4146-280 §0 gap)
     assert!(
         linear_norm_45 > 1e-3,
         "loop residual at θ_crank=45° (off-closure) must be ≫ solver tolerance (1 µm), \
@@ -328,11 +336,16 @@ fn closed_4bar_loop_closes_consistently() {
         errors_only(&compiled).is_empty(),
         "closed_4bar_idyn.ri should compile clean"
     );
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
+    // Same engine setup as the sibling tests (see closed_4bar_live_loop_residual).
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let result = engine.build(&compiled, ExportFormat::Step);
     assert!(
         collect_errors(&result.diagnostics).is_empty(),
-        "eval should produce no Error diagnostics"
+        "eval should produce no Error diagnostics, got: {:#?}",
+        collect_errors(&result.diagnostics)
     );
 
     let v = &result.values;
@@ -356,14 +369,18 @@ fn closed_4bar_loop_closes_consistently() {
     // so the solver has enough DOFs to close the loop. Use index 0 (j_rocker) as the
     // primary free DOF and index 1 (j_rocker_tip) as secondary.
     let chain_b = vec![j_rocker, j_rocker_tip];
-    // Warm-start: near-zero is reasonable for the assembled Grashof crank-rocker
-    // at θ_input=45°. The rocker angle is approximately atan2(28.3, 140-28.3+...) ≈ 0.2 rad.
+    // Warm-start near the ASSEMBLED configuration (an "approximate assembled
+    // guess"). With the coupler straight at θ_input=45°, pivot C sits at
+    // (113.137, 113.137) mm, so the assembled rocker angle is
+    // atan2(113.137, 113.137−140) ≈ 1.804 rad, and orientation closure puts the
+    // rocker tip at θ_crank − θ_rocker ≈ −1.019 rad. Seed near (not at) the
+    // solution so Newton does real work.
     let vals_b_initial = vec![
-        JointValue::Scalar(0.2), // j_rocker warm-start near assembled position
-        JointValue::Scalar(0.0), // j_rocker_tip at 0
+        JointValue::Scalar(1.8),  // j_rocker warm-start near assembled position
+        JointValue::Scalar(-1.0), // j_rocker_tip near assembled tip angle
     ];
     let free_b = vec![0usize, 1usize]; // both chain_b slots free
-    let strategy = StartStrategy::WarmStart(vec![0.2, 0.0]);
+    let strategy = StartStrategy::WarmStart(vec![1.8, -1.0]);
     let cfg = NewtonConfig::default();
 
     let outcome = solve_loop_closure(
