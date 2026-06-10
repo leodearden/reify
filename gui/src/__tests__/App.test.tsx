@@ -3315,6 +3315,10 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
   it('clicking a tessellation diagnostic row in the panel triggers setScrollToLocation', async () => {
     render(() => <App />);
     await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
+    // Seed main.ri as active so this remains a pure in-file navigation test
+    // (avoids incidentally exercising the cross-file open path added in γ task-4403).
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.openFile({ path: 'main.ri', content: '' });
 
     tessellationDiagnosticsCallback!([
       {
@@ -3429,6 +3433,10 @@ describe('App compile diagnostics end-to-end wiring', () => {
   it('clicking a diagnostic row triggers navigation via setScrollToLocation', async () => {
     render(() => <App />);
     await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+    // Seed helper.ri as active so this remains a pure in-file navigation test
+    // (warningDiag.file_path = 'helper.ri'; avoids cross-file open path added in γ task-4403).
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.openFile({ path: 'helper.ri', content: '' });
 
     compileDiagnosticsCallback!([warningDiag]);
 
@@ -3481,6 +3489,49 @@ describe('App compile diagnostics end-to-end wiring', () => {
       expect(badge).toBeTruthy();
       expect(badge!.textContent).toMatch(/1 error/i);
     });
+  });
+
+  it('γ task-4403: cross-file navigate activates file, scrolls, and panel stays expanded', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Seed: main.ri active, helper.ri also open but not active
+    capturedEditorStore.openFile({ path: 'main.ri', content: '' });
+    capturedEditorStore.openFile({ path: 'helper.ri', content: '' });
+    capturedEditorStore.setActiveFile('main.ri');
+
+    // Fire a compile diagnostic on helper.ri (the non-active file)
+    compileDiagnosticsCallback!([{
+      file_path: 'helper.ri',
+      line: 5, column: 2, end_line: 5, end_column: 10,
+      severity: 'Error',
+      message: 'cross-file nav integration test',
+      code: null,
+    }]);
+
+    await waitFor(() => expect(screen.getByTestId('diagnostics-count')).toBeTruthy());
+
+    // Expand the panel via badge click
+    fireEvent.click(screen.getByTestId('diagnostics-count'));
+    await waitFor(() => expect(screen.getByTestId('diagnostics-panel').getAttribute('data-collapsed')).toBe('false'));
+
+    // Click the diagnostic row → triggers cross-file navigation
+    const row = document.querySelector('[data-testid="diagnostic-row"]') as HTMLElement;
+    expect(row).toBeTruthy();
+    fireEvent.click(row!);
+
+    // Active file must switch to helper.ri
+    await waitFor(() => {
+      expect(capturedEditorStore.state.activeFile).toBe('helper.ri');
+    });
+
+    // Scroll target must be set to the helper.ri location
+    const loc = capturedEditorScrollToLocation?.();
+    expect(loc).toMatchObject({ file_path: 'helper.ri', line: 5, column: 2, end_line: 5, end_column: 10 });
+
+    // Panel must stay expanded (docked design — no modal to dismiss)
+    expect(screen.getByTestId('diagnostics-panel').getAttribute('data-collapsed')).toBe('false');
   });
 });
 
