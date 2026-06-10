@@ -316,6 +316,18 @@ MOD_DECL_RE = re.compile(r'\bmod\s+([A-Za-z_][A-Za-z0-9_]*)')
 all_names = set(by_name.keys())
 hits = defaultdict(lambda: defaultdict(int))  # name -> path -> count
 
+# Build the set of names that actually appear as module declarations in the
+# corpus.  The `NAME::` path-qualifier skip (below) is scoped to this set so
+# that a future fn whose name coincidentally matches an unrelated type's
+# path-prefix is never incorrectly excluded.
+mod_decl_names = {
+    m.group(1)
+    for prepped in prepped_cache.values()
+    for line in prepped
+    if line
+    for m in MOD_DECL_RE.finditer(line)
+}
+
 for path_str, prepped in prepped_cache.items():
     for line in prepped:
         if not line:
@@ -332,24 +344,17 @@ for path_str, prepped in prepped_cache.items():
             if m.span() in mod_spans:
                 continue
             # Skip `NAME::` path-qualifier references (module or type path), but
-            # preserve turbofish `NAME::<T>()` calls (`::` followed by `<`).
+            # only when NAME is known to be a module (appears in mod_decl_names).
+            # This prevents a fn whose name coincidentally matches an unrelated
+            # path-prefix from being silently dropped.  Turbofish `NAME::<T>()`
+            # calls (`::` followed by `<`) are preserved as real calls.
             # v1 accepted limitation: whitespace between NAME and `::`, or a `::`
             # split across lines, is not detected — same approximation posture as
             # the rest of the script.
-            #
-            # Blast-radius verified against the full workspace (crates/reify-*/src,
-            # ~390 files): the only callers that flip from >0 to 0 are the two
-            # name==module collision cases this fix targets (compute_cache_key and
-            # significance_filter).  No fn whose sole reference happens to be a
-            # NAME::CONST path expression for an unrelated type is affected because
-            # in practice no such fn exists in the corpus — every fn whose name
-            # matches a `NAME::` token also has a `pub mod NAME;` declaration (the
-            # collision pattern).  If that ever changes, scope this skip to names
-            # that also appear in mod_decl_names (a set built once from all
-            # `pub mod` declarations across the corpus).
-            after = line[m.end():m.end() + 3]
-            if after.startswith("::") and not after.startswith("::<"):
-                continue
+            if word in mod_decl_names:
+                after = line[m.end():m.end() + 3]
+                if after.startswith("::") and not after.startswith("::<"):
+                    continue
             hits[word][path_str] += 1
 
 results = []
