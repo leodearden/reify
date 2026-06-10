@@ -321,6 +321,19 @@ fn constitutive_law_input_struct_is_retired() {
         found
     );
 
+    // ── positive control: a known-retained struct IS in `templates` ───────────
+    // This guards the absence assertion above — if `structure def` blocks were
+    // ever routed to a different field, `found.is_none()` would trivially pass
+    // even with the struct still present.  Asserting FEAMaterialInput (kept per
+    // PRD §5) proves that structs DO land in `module.templates`, so the negative
+    // probe is meaningful rather than vacuous.
+    assert!(
+        module.templates.iter().any(|t| t.name == "FEAMaterialInput"),
+        "FEAMaterialInput should be present in std/solver/elastic templates \
+         (retained per PRD §5); absence would make the ConstitutiveLawInput \
+         negative probe above untrustworthy"
+    );
+
     // ── positive regression: direct-pass still compiles clean ─────────────────
     let good_src = r#"
 structure DirectPassRegression {
