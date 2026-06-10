@@ -123,4 +123,22 @@ export ORCHESTRATOR_YAML
 assert "(e) orchestrator.yaml has NO active CARGO_MAKEFLAGS: YAML key line" \
     bash -c '! grep -E "^[[:space:]]*CARGO_MAKEFLAGS[[:space:]]*:" "$ORCHESTRATOR_YAML"'
 
+# ---------------------------------------------------------------------------
+# (f) Default FIFO path contract: task role with REIFY_JOBSERVER_TASK_FIFO unset
+#     → env comment references the default path /tmp/reify-jobserver-task
+#     (matches the default in scripts/jobserver-balancer.py:36-41).
+#
+#     Hermetic because /tmp/reify-jobserver-task is almost never a FIFO on the
+#     test host; if the daemon IS running, this case passes trivially (export
+#     line instead of unset comment, but default-path contract still confirmed).
+#     We assert default path appears somewhere in the CARGO_MAKEFLAGS output line.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (f) task role + REIFY_JOBSERVER_TASK_FIFO unset → default path /tmp/reify-jobserver-task ---"
+_PLAN_F="$(DF_VERIFY_ROLE=task bash "$VERIFY" test --print-plan 2>/dev/null || true)"
+export _PLAN_F
+
+assert "(f) default path: CARGO_MAKEFLAGS output line references /tmp/reify-jobserver-task" \
+    bash -c 'printf "%s\n" "$_PLAN_F" | grep "CARGO_MAKEFLAGS" | grep -qF "/tmp/reify-jobserver-task"'
+
 test_summary

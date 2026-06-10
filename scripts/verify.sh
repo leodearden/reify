@@ -422,6 +422,7 @@ apply_env() {
     # Role→FIFO selection: merge → REIFY_JOBSERVER_MERGE_FIFO (default /tmp/reify-jobserver-merge)
     #                       task  → REIFY_JOBSERVER_TASK_FIFO  (default /tmp/reify-jobserver-task)
     # Defaults/var-names match scripts/jobserver-balancer.py (α, task 4516).
+    local _jb_fifo
     if [ "$DF_VERIFY_ROLE" = "merge" ]; then
         _jb_fifo="${REIFY_JOBSERVER_MERGE_FIFO:-/tmp/reify-jobserver-merge}"
     else
