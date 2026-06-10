@@ -164,3 +164,74 @@ pub fn tensegrity_load_analysis(
 ) -> Result<TensegrityLoadSolve, TensegrityLoadError> {
     Err(TensegrityLoadError::DimensionMismatch)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assembly::test_support::assert_close;
+
+    // (1) x-aligned bar with an axial relative tip displacement: the force
+    //     delta is dN = (EA/L)·du. c = (1,0,0), du = u1 − u0 = (du,0,0), so
+    //     c·du = du and dN = (EA/L)·du.
+    #[test]
+    fn axial_force_delta_x_aligned_axial_disp() {
+        let e = 2.0e11_f64;
+        let a = 1.5e-4_f64;
+        let l = 3.0_f64;
+        let nodes = [[0.0, 0.0, 0.0], [l, 0.0, 0.0]];
+        let section = BarSection { youngs_modulus: e, area: a };
+        let du = 0.01_f64; // node 1 displaced +du along x
+        let u_local = [0.0, 0.0, 0.0, du, 0.0, 0.0];
+        let dn = bar_axial_force_delta(&nodes, &section, &u_local);
+        let expected = e * a / l * du; // (EA/L)·du
+        assert_close(dn, expected, 1e-12, "dN = (EA/L)·du for axial disp");
+    }
+
+    // (2) x-aligned bar with a purely transverse relative displacement: the
+    //     axial projection is zero, so dN = 0 (to first order K_e carries no
+    //     transverse force).
+    #[test]
+    fn axial_force_delta_x_aligned_transverse_disp_is_zero() {
+        let e = 2.0e11_f64;
+        let a = 1.5e-4_f64;
+        let l = 3.0_f64;
+        let nodes = [[0.0, 0.0, 0.0], [l, 0.0, 0.0]];
+        let section = BarSection { youngs_modulus: e, area: a };
+        // node 1 displaced in y and z only — no component along c.
+        let u_local = [0.0, 0.0, 0.0, 0.0, 0.02, -0.03];
+        let dn = bar_axial_force_delta(&nodes, &section, &u_local);
+        assert_close(dn, 0.0, 1e-9, "dN = 0 for purely transverse disp");
+    }
+
+    // (3) oblique 45° bar projects the relative displacement onto the unit
+    //     direction cosine c = (1/√2, 1/√2, 0): an x-only tip displacement du
+    //     contributes c·du = du/√2, so dN = (EA/L)·du/√2. With E=A=1, d=2
+    //     (L=2√2) and du=1 this is exactly 1/4.
+    #[test]
+    fn axial_force_delta_oblique_45deg_projects_onto_cosine() {
+        let d = 2.0_f64;
+        let l = d * 2.0_f64.sqrt();
+        let e = 1.0_f64;
+        let a = 1.0_f64;
+        let nodes = [[0.0, 0.0, 0.0], [d, d, 0.0]];
+        let section = BarSection { youngs_modulus: e, area: a };
+        let u_local = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]; // node 1 disp (1,0,0)
+        let dn = bar_axial_force_delta(&nodes, &section, &u_local);
+        let expected = e * a / l * (1.0 / 2.0_f64.sqrt()); // (EA/L)·(c·du)
+        assert_close(dn, expected, 1e-12, "oblique dN projects onto cosine");
+        assert_close(expected, 0.25, 1e-12, "sanity: expected == 1/4");
+    }
+
+    // (4) rigid-body translation: both nodes displaced by the same vector, so
+    //     the relative displacement u1 − u0 = 0 and dN = 0 regardless of the
+    //     bar orientation. Guards against using absolute (not relative) disp.
+    #[test]
+    fn axial_force_delta_rigid_translation_is_zero() {
+        let nodes = [[0.0, 0.0, 0.0], [3.0, 4.0, 0.0]]; // L = 5
+        let section = BarSection { youngs_modulus: 1.0e6, area: 0.01 };
+        let t = [0.07_f64, -0.02, 0.05];
+        let u_local = [t[0], t[1], t[2], t[0], t[1], t[2]];
+        let dn = bar_axial_force_delta(&nodes, &section, &u_local);
+        assert_close(dn, 0.0, 1e-9, "dN = 0 under rigid-body translation");
+    }
+}
