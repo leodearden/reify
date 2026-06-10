@@ -567,4 +567,133 @@ mod tests {
         let t = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
         assert!(eval_analysis("safety_factor", &[t]).unwrap().is_undef());
     }
+
+    // ── stress_invariants tests ─────────────────────────────────────────────
+
+    /// Helper: get a field value from a StructureInstance by name.
+    fn si_field(v: &Value, field_name: &str) -> Value {
+        match v {
+            Value::StructureInstance(data) => data
+                .fields
+                .get(&field_name.to_string())
+                .cloned()
+                .unwrap_or_else(|| panic!("field '{}' missing from StructureInstance", field_name)),
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    /// `stress_invariants` is a recognised name: `eval_analysis` must return `Some`
+    /// (even with no args — the function is known, dispatch returns `Some(Undef)`).
+    #[test]
+    fn stress_invariants_name_is_recognised() {
+        assert!(
+            eval_analysis("stress_invariants", &[]).is_some(),
+            "stress_invariants must be a recognised analysis name (returns Some)"
+        );
+        assert!(
+            eval_analysis("stress_invariants", &[]).unwrap().is_undef(),
+            "stress_invariants([]) must return Some(Undef) (wrong arity)"
+        );
+    }
+
+    /// Diagonal dimensionless tensor [[100,0,0],[0,50,0],[0,0,25]]:
+    ///   I1 = trace = 175
+    ///   I2 = 100·50 + 50·25 + 25·100 − 0 = 8750
+    ///   I3 = det  = 100·50·25 = 125000
+    /// All invariants should be `Value::Real` (dimensionless tensor).
+    #[test]
+    fn stress_invariants_diagonal_dimensionless() {
+        let tensor =
+            make_matrix(&[&[100.0, 0.0, 0.0], &[0.0, 50.0, 0.0], &[0.0, 0.0, 25.0]]);
+        let result = eval_analysis("stress_invariants", &[tensor]).unwrap();
+        match &result {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.type_name, "StressInvariants",
+                    "type_name must be 'StressInvariants', got {:?}",
+                    data.type_name
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+        assert_real_approx!(si_field(&result, "i1"), 175.0);
+        assert_real_approx!(si_field(&result, "i2"), 8750.0);
+        assert_real_approx!(si_field(&result, "i3"), 125000.0);
+    }
+
+    /// Hydrostatic dimensioned tensor [[p,0,0],[0,p,0],[0,0,p]] (PRESSURE):
+    ///   I1 = 3p  (PRESSURE)
+    ///   I2 = 3p² (PRESSURE²)
+    ///   I3 = p³  (PRESSURE³)
+    #[test]
+    fn stress_invariants_hydrostatic_pressure() {
+        let p = 100e6_f64; // 100 MPa
+        let tensor = make_dimensioned_matrix(
+            &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("stress_invariants", &[tensor]).unwrap();
+        match &result {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "StressInvariants");
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+        let dim2 = DimensionVector::PRESSURE.mul(&DimensionVector::PRESSURE);
+        let dim3 = dim2.mul(&DimensionVector::PRESSURE);
+        // I1 = 3p (PRESSURE)
+        assert_scalar_approx!(si_field(&result, "i1"), 3.0 * p, DimensionVector::PRESSURE);
+        // I2 = 3p² (PRESSURE²)
+        assert_scalar_approx!(si_field(&result, "i2"), 3.0 * p * p, dim2);
+        // I3 = p³ (PRESSURE³)
+        assert_scalar_approx!(si_field(&result, "i3"), p * p * p, dim3);
+    }
+
+    /// General symmetric tensor [[2,1,0],[1,3,1],[0,1,2]] (dimensionless):
+    ///   I1 = 2+3+2 = 7
+    ///   I2 = (2·3+3·2+2·2) − (1²+1²+0²) = 16 − 2 = 14
+    ///   I3 = det = 2·(3·2−1·1) − 1·(1·2−1·0) + 0 = 2·5−2 = 8
+    #[test]
+    fn stress_invariants_general_symmetric_dimensionless() {
+        let tensor =
+            make_matrix(&[&[2.0, 1.0, 0.0], &[1.0, 3.0, 1.0], &[0.0, 1.0, 2.0]]);
+        let result = eval_analysis("stress_invariants", &[tensor]).unwrap();
+        match &result {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "StressInvariants");
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+        assert_real_approx!(si_field(&result, "i1"), 7.0);
+        assert_real_approx!(si_field(&result, "i2"), 14.0);
+        assert_real_approx!(si_field(&result, "i3"), 8.0);
+    }
+
+    /// Wrong arity / non-matrix / non-3×3 → `Some(Value::Undef)`.
+    #[test]
+    fn stress_invariants_bad_args_return_undef() {
+        // Too many args
+        let t = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]]);
+        assert!(
+            eval_analysis("stress_invariants", &[t.clone(), t.clone()])
+                .unwrap()
+                .is_undef(),
+            "two args must return Undef"
+        );
+        // Non-matrix arg
+        assert!(
+            eval_analysis("stress_invariants", &[Value::Real(42.0)])
+                .unwrap()
+                .is_undef(),
+            "scalar arg must return Undef"
+        );
+        // 2×2 matrix
+        let m2x2 = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
+        assert!(
+            eval_analysis("stress_invariants", &[m2x2])
+                .unwrap()
+                .is_undef(),
+            "2×2 matrix must return Undef"
+        );
+    }
 }
