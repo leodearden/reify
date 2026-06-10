@@ -221,6 +221,53 @@ describe('rename (step-5 RED → step-6 GREEN)', () => {
   });
 });
 
+// ── step-7: RED folding ───────────────────────────────────────────────────────
+//
+// Asserts (pure frontend, no LSP):
+//   - foldedRanges(view.state) has at least one range after Ctrl-Shift-[ at the
+//     cursor position inside a structure block.
+//   - visible-line count drops vs. the unfolded buffer.
+//
+// step-7 RED: keyboard dispatch may not drive CM foldKeymap in jsdom (risk R1).
+// step-8 GREEN: if needed, fall back to asserting the binding and calling run().
+
+describe('folding (step-7 RED → step-8 GREEN)', () => {
+  it('Ctrl-Shift-[ folds the structure block at the cursor', async () => {
+    harness = await setupBridgeHarness();
+    dispatch = makeDispatch(harness.handler);
+    renderEditorInHarness(harness);
+
+    await dispatch('open_file', { path: FIXTURE_PATH, content: FIXTURE });
+    await flushMacrotasks(0);
+
+    const view = window.__REIFY_DEBUG__!.editorView!;
+    expect(view.state.doc.length).toBeGreaterThan(0);
+
+    // Count lines before folding
+    const linesBefore = view.state.doc.lines;
+
+    // Position cursor at start of `structure PartA {` (line 0 = CM line 1, offset 0)
+    view.dispatch({ selection: { anchor: 0 } });
+
+    // Focus and dispatch Ctrl-Shift-[ (foldCode from foldKeymap)
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '[', ctrlKey: true, shiftKey: true, bubbles: true }),
+    );
+    await flushMacrotasks(0);
+
+    // Assert: at least one range is folded
+    let foldCount = 0;
+    const { foldedRanges } = await import('@codemirror/language');
+    foldedRanges(view.state).between(0, view.state.doc.length, () => { foldCount++; });
+    expect(foldCount).toBeGreaterThan(0);
+
+    // The visible-content line count drops when a block is folded
+    // (foldedRanges replaces a range with a single placeholder line)
+    const linesAfter = view.state.doc.lines;
+    expect(linesAfter).toBeLessThan(linesBefore);
+  });
+});
+
 // ── step-3: RED find-references ───────────────────────────────────────────────
 //
 // Asserts two things:
