@@ -73,10 +73,134 @@ impl MeshToVoxelOptions {
 
 #[cfg(test)]
 mod tests {
-    use super::MeshToVoxelOptions;
+    use super::{MeshToVoxelOptions, VOXELS_PER_LONGEST_AXIS};
+    use reify_ir::Mesh;
     // Import the authoritative sentinel — not a hand-copied literal — so this
     // test fails loudly if reify_eval::NO_OPTIONS ever drifts (ESC-3433-117).
     use reify_eval::NO_OPTIONS;
+
+    // -----------------------------------------------------------------------
+    // honest_floor tests (step-1 RED)
+    // -----------------------------------------------------------------------
+    //
+    // All tests are cfg-unconditional — honest_floor is pure arithmetic with
+    // no FFI dependency, so it must compile and run in all build modes.
+    //
+    // Assertions use geometric inequalities rather than exact float literals
+    // to avoid machine-epsilon brittleness.
+
+    /// Helper: build a closed box mesh centred at the origin from ±half extents.
+    /// 8 corner vertices, 12 outward-wound triangles.
+    fn box_mesh(hx: f32, hy: f32, hz: f32) -> Mesh {
+        let v: Vec<f32> = vec![
+            -hx, -hy, -hz, // 0
+             hx, -hy, -hz, // 1
+             hx,  hy, -hz, // 2
+            -hx,  hy, -hz, // 3
+            -hx, -hy,  hz, // 4
+             hx, -hy,  hz, // 5
+             hx,  hy,  hz, // 6
+            -hx,  hy,  hz, // 7
+        ];
+        #[rustfmt::skip]
+        let i: Vec<u32> = vec![
+            // Bottom (-Z)
+            0, 2, 1,  0, 3, 2,
+            // Top (+Z)
+            4, 5, 6,  4, 6, 7,
+            // Front (-Y)
+            0, 1, 5,  0, 5, 4,
+            // Back (+Y)
+            2, 3, 7,  2, 7, 6,
+            // Left (-X)
+            0, 4, 7,  0, 7, 3,
+            // Right (+X)
+            1, 2, 6,  1, 6, 5,
+        ];
+        Mesh { vertices: v, indices: i, normals: None }
+    }
+
+    /// A closed 2.0-unit cube (vertices at ±1.0):
+    /// - honest_floor returns Some
+    /// - voxel_size > 0.0 and finite
+    /// - voxel_size == 2.0 / VOXELS_PER_LONGEST_AXIS (longest extent = 2.0)
+    /// - band covers the interior: narrow_band * voxel_size >= 1.0 (half of 2.0)
+    #[test]
+    fn honest_floor_cube_2unit() {
+        let mesh = box_mesh(1.0, 1.0, 1.0); // extent 2.0 × 2.0 × 2.0
+        let opts = MeshToVoxelOptions::honest_floor(&mesh)
+            .expect("honest_floor must return Some for a valid closed cube");
+
+        assert!(opts.voxel_size > 0.0, "voxel_size must be positive");
+        assert!(opts.voxel_size.is_finite(), "voxel_size must be finite");
+
+        let expected_h = 2.0 / VOXELS_PER_LONGEST_AXIS;
+        assert_eq!(
+            opts.voxel_size, expected_h,
+            "voxel_size must equal longest_extent / VOXELS_PER_LONGEST_AXIS; \
+             expected {expected_h}, got {}",
+            opts.voxel_size
+        );
+
+        // Band must reach the interior: narrow_band × voxel_size >= half-extent (1.0 mm).
+        let band_depth = opts.narrow_band * opts.voxel_size;
+        assert!(
+            band_depth >= 1.0,
+            "band depth (narrow_band={} × voxel_size={}) = {} must cover \
+             the interior (>= 1.0); band does NOT reach the centre",
+            opts.narrow_band, opts.voxel_size, band_depth
+        );
+    }
+
+    /// A non-cube box 2×4×6 units (longest axis = 6):
+    /// - voxel_size == 6.0 / VOXELS_PER_LONGEST_AXIS
+    /// - band covers the deepest interior (half of shortest extent = 1.0):
+    ///   narrow_band * voxel_size >= 1.0
+    #[test]
+    fn honest_floor_non_cube_box() {
+        let mesh = box_mesh(1.0, 2.0, 3.0); // extent 2 × 4 × 6
+        let opts = MeshToVoxelOptions::honest_floor(&mesh)
+            .expect("honest_floor must return Some for a valid non-cube box");
+
+        let expected_h = 6.0 / VOXELS_PER_LONGEST_AXIS;
+        assert_eq!(
+            opts.voxel_size, expected_h,
+            "voxel_size must use the longest axis (6.0); \
+             expected {expected_h}, got {}",
+            opts.voxel_size
+        );
+
+        // Shortest axis half-extent = 1.0; band must cover it.
+        let band_depth = opts.narrow_band * opts.voxel_size;
+        assert!(
+            band_depth >= 1.0,
+            "band depth {} must cover the shortest half-extent (1.0); \
+             narrow_band={}, voxel_size={}",
+            band_depth, opts.narrow_band, opts.voxel_size
+        );
+    }
+
+    /// Empty mesh (no vertices) → None.
+    #[test]
+    fn honest_floor_empty_mesh_returns_none() {
+        let mesh = Mesh { vertices: vec![], indices: vec![], normals: None };
+        assert!(
+            MeshToVoxelOptions::honest_floor(&mesh).is_none(),
+            "honest_floor must return None for an empty mesh"
+        );
+    }
+
+    /// Degenerate mesh (all vertices coincident → zero bbox extent) → None.
+    #[test]
+    fn honest_floor_degenerate_mesh_returns_none() {
+        // All 8 "vertices" at the origin — extent is 0 on every axis.
+        let v: Vec<f32> = vec![0.0_f32; 8 * 3];
+        let mesh = Mesh { vertices: v, indices: vec![0, 1, 2], normals: None };
+        assert!(
+            MeshToVoxelOptions::honest_floor(&mesh).is_none(),
+            "honest_floor must return None for a degenerate (zero-extent) mesh"
+        );
+    }
 
     /// ESC-3433-117 carry-forward: a default `MeshToVoxelOptions` must NOT hash
     /// to `NO_OPTIONS` (the real sentinel from `reify-eval::realization_cache`).
