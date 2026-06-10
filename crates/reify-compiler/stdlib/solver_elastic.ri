@@ -430,17 +430,24 @@ pub structure def FEAMaterialInput {
 // ── ConstitutiveLawInput ──────────────────────────────────────────────────────
 //
 // Type-coercion shim for passing any `ConstitutiveLaw` conformer (isotropic,
-// orthotropic, transverse-isotropic) to `solve_elastic_static`. The Reify
-// overload resolver uses exact type equality; a concrete structure like
-// `OrthotropicMaterial(...)` has compile-time type
-// `StructureRef("OrthotropicMaterial")`, which does not match the declared
-// `TraitObject("ConstitutiveLaw")` at a fn call site.
+// orthotropic, transverse-isotropic) to `solve_elastic_static`.
 //
-// Workaround (same pattern as FEAMaterialInput):
-//   1. Wrap the law: `let ci = ConstitutiveLawInput(law: mat)`
-//      (structure ctors accept any value — no call-site type check)
-//   2. Pass `ci.law` — whose compile-time type is `ConstitutiveLaw` (the
-//      declared param type) — to `solve_elastic_static`. Exact match. ✓
+// As of task γ/4441, `trait ElasticMaterial : ConstitutiveLaw` holds and the
+// conformance post-pass (`phase_fn_arg_conformance` → `satisfies_trait_bound` →
+// `trait_satisfies`) walks refinement chains transitively — so `Steel_AISI_1045`
+// and every other `ElasticMaterial` conformer may now be passed DIRECTLY to
+// `solve_elastic_static` without this wrapper.  The wrapper is VESTIGIAL and
+// retained only for backwards compatibility; task δ removes it and migrates
+// callers.
+//
+// Historical context (δ/3780, now superseded by γ):
+//   The load order (materials_fea before constitutive) once forbade
+//   `trait ElasticMaterial : ConstitutiveLaw`; task γ relocated the
+//   ConstitutiveLaw marker to materials_fea.ri (above ElasticMaterial) so the
+//   supertrait no longer requires a forward-reference. Wrapper-coercion was
+//   chosen at δ because that stdlib-scope solution was the cheapest path at the
+//   time — no compiler changes were needed and the wrapper pattern already
+//   existed (FEAMaterialInput).
 //
 // This is the δ/3780 scalar-lift surface: a bare ConstitutiveLaw is
 // auto-lifted to a homogeneous ConstantField by the trampoline so a single
@@ -448,14 +455,8 @@ pub structure def FEAMaterialInput {
 // transverse-isotropic) cases. Heterogeneous Field<Point3,AnisotropicMaterial>
 // call-surface is deferred to task ε.
 //
-// Q3 design decision (δ/3780): wrapper-coercion was chosen over the PRD's
-// "coercion at lowering" because lowering changes require reify-compiler Rust
-// changes outside this task's stdlib scope. The load order
-// (materials_fea before constitutive) also forbids
-// `trait ElasticMaterial : ConstitutiveLaw`.
-//
-// TODO(trait-coerce): remove this struct and pass material directly once the
-// type checker supports trait-object coercion at fn call sites.
+// TODO(task-δ): remove this struct once task δ migrates all callers to pass
+// material directly.
 pub structure def ConstitutiveLawInput {
     param law : ConstitutiveLaw
 }
@@ -481,22 +482,28 @@ pub structure def ConstitutiveLawInput {
 //
 // Signature notes:
 //
-//   `material : ConstitutiveLaw` (task δ/3780 generalisation):
+//   `material : ConstitutiveLaw` (task δ/3780 generalisation, γ/4441 direct-pass):
 //     Accepts any conforming structure: isotropic (`ElasticMaterial` conformers),
 //     orthotropic (`OrthotropicMaterial`), or transverse-isotropic
 //     (`TransverseIsotropicMaterial`). The trampoline auto-lifts the single
 //     homogeneous ConstitutiveLaw to a `ConstantField` — the scalar auto-lift
 //     mechanism — so a single solve path handles the homogeneous case.
 //
-//     Call-site coercion: because the overload resolver uses exact type equality,
-//     callers must wrap their material in `ConstitutiveLawInput(law: mat)` and
-//     pass `ci.law`. Structure ctors accept any value, so
-//     `ConstitutiveLawInput(law: OrthotropicMaterial(...)).law` (and the isotropic
-//     `ConstitutiveLawInput(law: Steel_AISI_1045()).law`) both satisfy the
-//     `TraitObject("ConstitutiveLaw")` param type. See ConstitutiveLawInput doc.
+//     Direct passing (task γ/4441): the `material : ConstitutiveLaw` param is a
+//     trait-object scalar, which the overload resolver treats as a WILDCARD
+//     (matches any arg type). A post-pass (`phase_fn_arg_conformance` →
+//     `check_fn_arg_conformance` → `satisfies_trait_bound` → `trait_satisfies`)
+//     then validates conformance by walking trait refinement chains transitively.
+//     Because `trait ElasticMaterial : ConstitutiveLaw` now holds (γ/4441),
+//     `Steel_AISI_1045()` (and every other `ElasticMaterial` conformer) may be
+//     passed DIRECTLY — no `ConstitutiveLawInput` wrapper required.
+//     `OrthotropicMaterial` and `TransverseIsotropicMaterial` (: ConstitutiveLaw
+//     directly) also pass without a wrapper.
 //
-//     Q3 resolution (δ/3780): wrapper-coercion chosen over PRD "coercion at
-//     lowering" (out of scope for stdlib-only task). See ConstitutiveLawInput doc.
+//     Legacy wrapper (vestigial, removed in task δ): callers that still wrap via
+//     `ConstitutiveLawInput(law: mat).law` continue to compile — `ci.law` has
+//     declared type `ConstitutiveLaw`, which is an exact match.  Task δ migrates
+//     those callers to the direct-pass form.
 //
 //     Heterogeneous `Field<Point3<Length>, AnisotropicMaterial>` call-surface
 //     deferred to task ε.
