@@ -183,8 +183,10 @@ tracking head:
 
 ## 9. Rejected artifact-reuse alternatives (pre-empts "can't we reuse the warm build?")
 
-The instinct to reuse the merge worker's *live* warm `target/` is natural; it does not work, for
-layered reasons. Recorded here so the question is not re-litigated.
+The instinct to reuse the merge worker's *live* warm `target/` is natural; for *this* lane it does
+not pay off, for layered reasons. (CoW reflink reuse *is* worthwhile — but on the merge lane's
+verify pool, not here; see (b) and warmer-builds PRD §10.) Recorded so the question is not
+re-litigated.
 
 - **(a) Live shared `target/`** — **rejected.** Two failures, both re-creating the contention we're
   removing: cargo takes a target-dir build lock, so the two lanes' builds **serialize / block each
@@ -194,28 +196,38 @@ layered reasons. Recorded here so the question is not re-litigated.
   warmer-builds §11 L150 ("concurrent cargo on one `target/` is unsafe… single-consumer only because
   the lane is serial"), L179, L180.
 
-- **(b) reflink / CoW snapshot of the post-advance `target/`** — **rejected: filesystem can't.**
-  Measured this session: the box is **ext4 everywhere** (root `/dev/nvme0n1p5`; the worktree store
-  `data_lv_1` = `/dev/mapper/vgroup0-data1`), and `cp --reflink` **fails**. There is no cheap CoW
-  snapshot; a real copy is ~177 GB.
+- **(b) reflink / CoW snapshot of the post-advance `target/`** — **possible now, but not worth it
+  for *this* lane.** `xfsprogs` is installed, so an XFS (or loop-backed XFS) volume gives real
+  reflink — a cheap CoW snapshot of a warm `target/` *is* achievable (the box is ext4 today — root
+  `/dev/nvme0n1p5`, worktree store `data_lv_1` = `/dev/mapper/vgroup0-data1`, where `cp --reflink`
+  fails — so it needs that XFS volume first). But the offline lane is **single-flight, narrow-cone
+  scoped, and self-warming**: there is no pool of concurrent verifies, so no base to amortize across
+  K slots, and its dedicated worktree (§8) is already warm at head after run one. CoW base-sharing is
+  a *disk* optimization that pays off across a **pool** of lanes — i.e. on the **merge lane** (see
+  warmer-builds PRD §10, "Future-lever note — per-host parallel warm verifies"), not for a single
+  self-warming offline lane. Reflinking a base across paths also hits the **path-sensitivity trap**
+  (base at path X, snapshot at path Y → fingerprints invalidate → full recompile; warmer-builds
+  invariant 2) unless each snapshot is bind-mounted to a canonical path — overhead this lane has no
+  reason to take on.
 
-- **(c) overlayfs (CoW-on-ext4)** — **rejected.** overlayfs *would* give copy-on-write semantics on
-  ext4, but: it requires a **frozen, read-only-stable lowerdir** (kernel contract: mutating the
-  lower under a live mount is *undefined behavior*), and the merge worker **mutates its `target/`
-  continuously** (back-to-back per Phase 0) — there is no stable window to overlay the live tree.
-  Freezing a lower requires a copy = (b)'s 177 GB on ext4. Even granted a frozen lower, overlayfs
-  shares **storage, not fingerprints** — crates that differ between the lower's tree and head still
-  recompile (the expensive part is unsaved; only disk is). Add cargo/overlayfs friction (hardlink
-  copy-up breakage, mtime-fingerprint quirks, rename-across-layer edges) on a lane whose whole value
-  is *predictable, boring* background runs.
+- **(c) overlayfs** — **rejected (and now moot).** overlayfs *would* give copy-on-write on any FS,
+  but it requires a **frozen, read-only-stable lowerdir** (kernel contract: mutating the lower under
+  a live mount is *undefined behavior*), and the merge worker **mutates its `target/` continuously**
+  (back-to-back per Phase 0) — there is no stable window to overlay the live tree; freezing a lower
+  needs a copy anyway. And it shares **storage, not fingerprints** — crates that differ still
+  recompile (only disk is saved) — with cargo/overlayfs friction (hardlink copy-up breakage,
+  mtime-fingerprint quirks, rename-across-layer edges). With XFS reflink available (b), a reflink
+  *snapshot* is the cleaner CoW primitive regardless; overlayfs has no remaining role.
 
-- **Strategic:** all three try to solve a non-problem. The dedicated worktree (§8) **self-warms
-  after run one** and never needs the merge artifacts post-bootstrap; the only genuine prize — disk —
-  is already bounded by narrow-scoping + Phase 3, and the cacheable dependency rlibs are **already
-  shared by sccache** (exactly the category sccache covers; the diverging bin/test artifacts are
-  exactly the category it can't, and the one that would thrash). Artifact reuse is fragile *and*
-  unnecessary. The right reuse boundary is **machinery + trigger event + shared sccache**, not the
-  artifact tree.
+- **Strategic:** for *this* lane the conclusion is unchanged — use the dedicated self-warming
+  worktree (§8). It **self-warms after run one** and never needs the merge artifacts post-bootstrap;
+  the only genuine prize — disk — is already bounded by narrow-cone scoping + Phase 3, and the
+  cacheable dependency rlibs are **already shared by sccache** (the diverging bin/test artifacts are
+  exactly the category sccache can't cover, and the one that would thrash). The right reuse boundary
+  here is **machinery + trigger event + shared sccache**, not the artifact tree. CoW reflink reuse is
+  real and worthwhile — but on the *merge* lane's verify pool (warmer-builds §10 Future-lever note),
+  where a shared base amortizes across K concurrent slots; this single-flight offline lane is not
+  that case.
 
 ## 10. Ownership / cross-repo seam
 
