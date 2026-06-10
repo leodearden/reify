@@ -139,7 +139,7 @@ impl MeshToVoxelOptions {
             }
         }
         let longest = extents[0].max(extents[1]).max(extents[2]);
-        if !(longest > 0.0) {
+        if longest <= 0.0 {
             return None;
         }
 
