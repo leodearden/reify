@@ -566,3 +566,69 @@ describe('DiagnosticsPanel span-less interactivity (β/4402)', () => {
     expect(onNavigate).toHaveBeenCalledWith(diagC);
   });
 });
+
+describe('DiagnosticsPanel span-less location placeholder + greying (β/4402)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  // Two diagnostics with DISTINCT messages so grouping-ON doesn't collapse them.
+  // A = span-less (has_location: false, with real-looking file_path/line/column).
+  // B = line-tied (has_location: true).
+  function makeLocationSet() {
+    const diagA: DiagnosticEntry = {
+      ...makeDiag('Error', {
+        message: 'span-less location test A',
+        has_location: false,
+        file_path: 'mod.ri',
+        line: 1,
+        column: 1,
+      }),
+      source: 'compile',
+    };
+    const diagB: DiagnosticEntry = {
+      ...makeDiag('Warning', {
+        message: 'line-tied location test B',
+        has_location: true,
+        file_path: 'main.ri',
+        line: 10,
+        column: 3,
+      }),
+      source: 'compile',
+    };
+    return { diagA, diagB };
+  }
+
+  it('row A (has_location:false) location cell shows em-dash "—" not file:line:col', () => {
+    const { diagA, diagB } = makeLocationSet();
+    renderDocked({ collapsed: false, diagnostics: [diagA, diagB] });
+    const rowA = screen.getByText(/span-less location test A/).closest('[data-testid="diagnostic-row"]') as HTMLElement;
+    const locCell = rowA.querySelector('[data-testid="diagnostic-location"]') as HTMLElement;
+    expect(locCell).toBeTruthy();
+    expect(locCell.textContent).toBe('—');
+    expect(locCell.textContent).not.toContain('mod.ri');
+  });
+
+  it('row A (has_location:false) row carries the rowSpanless CSS class', () => {
+    const { diagA, diagB } = makeLocationSet();
+    renderDocked({ collapsed: false, diagnostics: [diagA, diagB] });
+    const rowA = screen.getByText(/span-less location test A/).closest('[data-testid="diagnostic-row"]') as HTMLElement;
+    expect(rowA.classList.contains(styles.rowSpanless)).toBe(true);
+  });
+
+  it('row B (has_location:true) location cell shows file:line:col', () => {
+    const { diagA, diagB } = makeLocationSet();
+    renderDocked({ collapsed: false, diagnostics: [diagA, diagB] });
+    const rowB = screen.getByText(/line-tied location test B/).closest('[data-testid="diagnostic-row"]') as HTMLElement;
+    const locCell = rowB.querySelector('[data-testid="diagnostic-location"]') as HTMLElement;
+    expect(locCell).toBeTruthy();
+    expect(locCell.textContent).toContain('main.ri:10:3');
+  });
+
+  it('row B (has_location:true) row does NOT carry the rowSpanless CSS class', () => {
+    const { diagA, diagB } = makeLocationSet();
+    renderDocked({ collapsed: false, diagnostics: [diagA, diagB] });
+    const rowB = screen.getByText(/line-tied location test B/).closest('[data-testid="diagnostic-row"]') as HTMLElement;
+    expect(rowB.classList.contains(styles.rowSpanless)).toBe(false);
+  });
+});
