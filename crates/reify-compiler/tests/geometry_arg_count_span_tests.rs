@@ -285,14 +285,16 @@ fn chamfer_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn fillet_arg_count_diagnostic_has_span_label() {
-    // fillet() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    // fillet() accepts 2 args (all-edges) or 3 args (curated edges); passing 1
+    // should produce a labeled diagnostic naming both valid arities (mirrors the
+    // multi-arity message convention used by mirror() in geometry.rs).
     assert_arg_count_label(
         r#"
             structure S {
                 let f = fillet(box(10mm, 10mm, 10mm))
             }
         "#,
-        "fillet() expects 2 arguments",
+        "fillet() expects 2 or 3 arguments",
     );
 }
 

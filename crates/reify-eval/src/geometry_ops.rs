@@ -280,6 +280,15 @@ pub(crate) fn eval_all_args_to_f64(
 ///     edges (`E_EMPTY_SELECTION`) guard — which distinguishes "selector
 ///     present but resolved to nothing" from "no selector at all" — is the
 ///     eval arm's job, NOT this structural resolver's.
+// `#[allow(dead_code)]`: forward-looking selection-resolver seam. The legacy
+// eval arm (`compile_geometry_op`'s `ModifyKind::Fillet`) cannot call it because
+// the parent solid's `Value::GeometryHandle` is not realized in phase P2 (it
+// enters `values` only in P3 — see the task-3205 plan), so that arm inlines a
+// kernel_handle-only extraction. The full cross-solid resolver is consumed by
+// engine-unified-build-dag η/ε (tasks 4360/4358), whose in-loop driver has the
+// realized parent handle. Exercised now by the `resolve_subhandle_list_*` unit
+// tests below.
+#[allow(dead_code)]
 pub(crate) fn resolve_subhandle_list(
     arg: &reify_ir::Value,
     parent: &reify_ir::Value,
@@ -700,11 +709,13 @@ pub(crate) fn compile_geometry_op(
                     // back-compat form. `args` is shared-borrowed (compatible
                     // with the closure's shared borrow of `args`).
                     let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
-                    // Release the closure's `&mut diagnostics` borrow so this
-                    // arm can push its own EmptyEdgeSelection diagnostic. The
-                    // arm always returns, so `eval_arg` is never reused after
-                    // this point on the Fillet path.
-                    drop(eval_arg);
+                    // No explicit `drop(eval_arg)` is needed to release the
+                    // closure's `&mut diagnostics` borrow: `eval_arg` is not used
+                    // again on the Fillet path after the `radius` call above, so
+                    // NLL ends its borrow here — letting the empty-selection arm
+                    // below push its own EmptyEdgeSelection diagnostic. (An
+                    // explicit `drop` of the non-Drop closure trips
+                    // `clippy::drop_non_drop`.)
                     match edges_expr {
                         // 2-arg form: no selector → empty edges = all-edges
                         // back-compat (legacy `fillet(solid, radius)`).
