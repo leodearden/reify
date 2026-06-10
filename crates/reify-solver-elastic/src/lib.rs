@@ -664,11 +664,42 @@ pub use form_find_free::{ForceDensitySpec, FreeFormError, FreeFormResult, form_f
 // layer-2's D = CᵀQC and the buckling dense eigensolver. Kernel-only (no .ri /
 // stdlib / trampoline wiring in this task, per plan.json design_decisions).
 pub use prestress_stability::{StabilityError, StabilityResult, analyze_prestress_stability};
-// Task 3798: Tensegrity T3b — load analysis with tension-only active-set (slack
-// cables). PRD: docs/prds/v0_6/tensegrity-structures.md §6 / Tier-3 leaf T3b.
-// Pure numeric kernel behind the dedicated `solver::tensegrity_load` ComputeNode
-// target; the Value-cracking trampoline lives in reify-eval's
-// compute_targets/tensegrity_load.rs.
+/// Task 3798: Tensegrity T3b — load analysis with tension-only active-set (slack
+/// cables). PRD: `docs/prds/v0_6/tensegrity-structures.md` §6 / Tier-3 leaf T3b.
+/// Pure numeric kernel behind the dedicated `solver::tensegrity_load` ComputeNode
+/// target; the Value-cracking trampoline lives in reify-eval's
+/// `compute_targets/tensegrity_load.rs`.
+///
+/// API-surface pin (a single taut cable under a unit axial pull):
+///
+/// ```
+/// use reify_solver_elastic::{
+///     BarMember, BarSection, MemberKind, TensegrityLoadOptions, tensegrity_load_analysis,
+/// };
+///
+/// // Cable 0—1: node 0 anchored, node 1 free. With E = A = L = 1 and prestress
+/// // N0 = 1, a unit axial pull moves the tip u_x = P·L/(E·A) = 1 and the cable
+/// // carries N0 + P = 2 — it stays taut, so nothing slackens.
+/// let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+/// let members = [BarMember {
+///     nodes: (0, 1),
+///     kind: MemberKind::Cable,
+///     section: BarSection { youngs_modulus: 1.0, area: 1.0 },
+///     prestress: 1.0,
+/// }];
+/// let loads = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+/// let fixed = [0];
+///
+/// let solve = tensegrity_load_analysis(
+///     &nodes, &members, &loads, &fixed, &TensegrityLoadOptions::default(),
+/// )
+/// .expect("a single taut cable is feasible");
+///
+/// assert!((solve.displacements[1][0] - 1.0).abs() < 1e-6);
+/// assert!((solve.member_forces[0] - 2.0).abs() < 1e-6);
+/// assert_eq!(solve.slack, vec![false]);
+/// assert!(solve.converged);
+/// ```
 pub use tensegrity_load::{
     BarMember, TensegrityLoadError, TensegrityLoadOptions, TensegrityLoadSolve,
     tensegrity_load_analysis,

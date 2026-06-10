@@ -164,12 +164,19 @@ pub struct TensegrityLoadSolve {
 /// Returns the solved [`TensegrityLoadSolve`] on success, or a
 /// [`TensegrityLoadError`] describing why the input is infeasible.
 ///
-/// **Stub** (Tensegrity T3b prerequisite): the public surface compiles and is
-/// nameable from in-crate and `tests/` integration tests, but the behaviour is
-/// not yet implemented — every call returns
-/// [`TensegrityLoadError::DimensionMismatch`], so the behavioural tests added
-/// in later steps start RED. The real implementation lands incrementally in the
-/// TDD steps that follow.
+/// # Errors
+///
+/// - [`TensegrityLoadError::DimensionMismatch`] — `loads.len() != nodes.len()`,
+///   or a member endpoint / support index lies outside `0..nodes.len()`.
+/// - [`TensegrityLoadError::EmptyFreeSet`] — every node is anchored, so there is
+///   no free DOF to solve for.
+/// - [`TensegrityLoadError::SingularSystem`] — an inner CG pass failed to
+///   converge (a singular or ill-conditioned reduced tangent system).
+/// - [`TensegrityLoadError::ActiveSetDidNotConverge`] — the tension-only active
+///   set did not reach a fixed point within `options.max_active_set_iters`
+///   passes (the PRD §11 Q5 defensive guard; drop-only monotonicity makes this
+///   unreachable for the shipped policy, so it signals a bug or a future
+///   non-monotone reactivation rule rather than an expected runtime path).
 pub fn tensegrity_load_analysis(
     nodes: &[[f64; 3]],
     members: &[BarMember],
@@ -177,7 +184,36 @@ pub fn tensegrity_load_analysis(
     fixed_nodes: &[usize],
     options: &TensegrityLoadOptions,
 ) -> Result<TensegrityLoadSolve, TensegrityLoadError> {
+    let n_nodes = nodes.len();
     let n_members = members.len();
+
+    // ---- Up-front validation (never panic; never silently mis-solve) -------
+    // The per-node external load vector must cover every node exactly.
+    if loads.len() != n_nodes {
+        return Err(TensegrityLoadError::DimensionMismatch);
+    }
+    // Every member endpoint must be an in-range node index (else the assembly
+    // below would index out of bounds).
+    for member in members {
+        let (j, k) = member.nodes;
+        if j >= n_nodes || k >= n_nodes {
+            return Err(TensegrityLoadError::DimensionMismatch);
+        }
+    }
+    // Every support index must be in range; record the anchored set while we
+    // are here so the free-set check below is one pass.
+    let mut is_fixed = vec![false; n_nodes];
+    for &node in fixed_nodes {
+        if node >= n_nodes {
+            return Err(TensegrityLoadError::DimensionMismatch);
+        }
+        is_fixed[node] = true;
+    }
+    // There must be at least one free DOF: an all-anchored (or node-less)
+    // problem has nothing to solve for.
+    if n_nodes == 0 || is_fixed.iter().all(|&f| f) {
+        return Err(TensegrityLoadError::EmptyFreeSet);
+    }
 
     // Tension-only active set: start with every member active and drop any
     // active cable whose total force goes compressive, re-solving until a pass
@@ -195,6 +231,13 @@ pub fn tensegrity_load_analysis(
         iterations += 1;
         let (disp, conv) =
             solve_active_pass(nodes, members, &active, loads, fixed_nodes, options)?;
+
+        // A pass whose inner CG did not converge ⇒ a singular / ill-conditioned
+        // reduced tangent system. Surface it rather than reporting a
+        // silently-wrong displacement field.
+        if !conv {
+            return Err(TensegrityLoadError::SingularSystem);
+        }
 
         // Drop any active cable that has gone compressive (struts carry
         // compression and are never dropped).
@@ -214,6 +257,15 @@ pub fn tensegrity_load_analysis(
         if !dropped_any {
             // Fixed point: no active cable went slack this pass.
             break (disp, conv);
+        }
+
+        // §11 Q5 defensive cap. Drop-only monotonicity guarantees a fixed point
+        // in ≤ #cables passes, so reaching the cap means a bug (or a future
+        // non-monotone reactivation policy) is cycling — surface the diagnostic
+        // instead of spinning. Checked only after a pass that dropped a cable,
+        // so a problem whose natural count equals the cap still converges.
+        if iterations >= options.max_active_set_iters {
+            return Err(TensegrityLoadError::ActiveSetDidNotConverge { iterations });
         }
     };
 
