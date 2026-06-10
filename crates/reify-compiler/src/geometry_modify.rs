@@ -111,17 +111,44 @@ pub(crate) fn compile_modify_op(
             diagnostics,
             sub_ops,
         ),
-        // fillet(target, radius)
-        "fillet" => compile_modify_2arg(
-            "fillet",
-            ModifyKind::Fillet,
-            "radius",
-            compiled_args,
-            target,
-            expr_span,
-            diagnostics,
-            sub_ops,
-        ),
+        // fillet(target, radius)             — 2-arg all-edges back-compat
+        // fillet(target, edges, radius)      — 3-arg curated edge selection
+        "fillet" => match compiled_args.len() {
+            2 => compile_modify_2arg(
+                "fillet",
+                ModifyKind::Fillet,
+                "radius",
+                compiled_args,
+                target,
+                expr_span,
+                diagnostics,
+                sub_ops,
+            ),
+            3 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Fillet,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("edges".to_string(), it.next().unwrap()),
+                        ("radius".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            }
+            // No range-arity helper exists (only exact/at_least), so emit a labeled
+            // diagnostic mirroring check_arg_count_*'s format. fillet accepts only the
+            // 2-arg all-edges form or the 3-arg curated-edges form.
+            got => {
+                diagnostics.push(
+                    Diagnostic::error(format!("fillet() expects 2 or 3 arguments, got {got}"))
+                        .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+                );
+                None
+            }
+        },
         _ => unreachable!("compile_modify_op called with non-modify name: {}", name),
     }
 }
