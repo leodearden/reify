@@ -786,8 +786,9 @@ build_plan() {
     # pipefail`, a *bare* `kill ...; true` poisons the exit code: bash aborts the
     # trap body at the failing kill BEFORE reaching `true`, flipping a fully
     # passing run (rc=0 after "all checks passed") to rc=1 (regression from
-    # commit 9b398f7a26; esc-3993-22). An `if` *condition* is exempt from set -e,
-    # so `if kill ...; then :; fi` swallows the no-such-process failure without
+    # commit 9b398f7a26; esc-3993-22, independently reproduced under bash 5.2 as
+    # esc-4431-30). An `if` *condition* is exempt from set -e, so
+    # `if kill ...; then :; fi` swallows the no-such-process failure without
     # aborting — and still reaps the job on the fail path (kill succeeds → `:`).
     # NOTE: "|| true" is intentionally avoided here — the npm ci hardening test
     # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
