@@ -8,9 +8,8 @@
  * Design decision: focused integration harness (real bridge + real stores +
  * real affordance components), NOT a full App mount. See plan.json design_decisions.
  *
- * step-1: RED smoke — harness mounts, open_file returns fixture content,
- *         editorView is live, keyboard round-trips {ok:true}.
- * step-2: GREEN — implement mount internals.
+ * Each test drives a specific affordance through the real bridge and asserts
+ * both the request sent to the backend and the effect applied in the app.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -96,21 +95,9 @@ afterEach(() => {
   harness = undefined as unknown as HarnessSetup;
 });
 
-/**
- * step-1: RED smoke — drives real bridge+stores+Editor end-to-end in jsdom.
- * step-2: GREEN — harness mount internals implemented in ideAffordancesHarness.tsx.
- *
- * step-3: RED find-references — asserts textDocument/references request AND
- *         FindUsesPanel rows. Fails at rows assertion because step-3 does NOT
- *         wire FindUsesPanel yet (renderEditorInHarness renders only Editor).
- * step-4: GREEN — adds renderEditorWithFindUsesPanel to the harness; test updated
- *         to use it and the rows assertion passes.
- */
-
-// ── step-1: RED smoke ─────────────────────────────────────────────────────────
+// ── smoke ─────────────────────────────────────────────────────────────────────
 //
 // Drives the REAL bridge + REAL stores + REAL Editor end-to-end in jsdom.
-// GREEN is implemented in step-2 (harness mount internals).
 
 describe('IDE affordances harness — smoke (step-1/step-2)', () => {
   it('open_file returns fixture content, editorView is live, keyboard round-trips', async () => {
@@ -146,20 +133,15 @@ describe('IDE affordances harness — smoke (step-1/step-2)', () => {
   });
 });
 
-// ── step-5: RED rename ────────────────────────────────────────────────────────
+// ── rename ────────────────────────────────────────────────────────────────────
 //
 // Asserts:
 //   (faces backend)  textDocument/prepareRename then textDocument/rename with the
 //                    new name and correct 0-based position.
-//   (faces frontend) editor buffer after rename: PartA.width → newWidth (both
-//                    declaration and use rewritten), PartB.width unchanged.
-//
-// The LSP mock router already returns contract-faithful responses for
-// prepareRename and rename (implemented in harness pre-1). This test goes RED
-// if any part of the inline-rename flow does not work in jsdom. step-6 wires
-// whatever is missing.
+//   (faces frontend) editor buffer: PartA.width occurrences rewritten; PartB.width
+//                    unchanged (frontend correctly applies the server-provided WorkspaceEdit).
 
-describe('rename (step-5 RED → step-6 GREEN)', () => {
+describe('rename', () => {
   it('F2 renames PartA.width occurrences only, leaving PartB.width untouched', async () => {
     harness = await setupBridgeHarness();
     dispatch = makeDispatch(harness.handler);
@@ -225,18 +207,18 @@ describe('rename (step-5 RED → step-6 GREEN)', () => {
   });
 });
 
-// ── step-7: RED folding ───────────────────────────────────────────────────────
+// ── folding ───────────────────────────────────────────────────────────────────
 //
 // Asserts (pure frontend, no LSP):
-//   - foldedRanges(view.state) has at least one range after Ctrl-Shift-[ at the
-//     cursor position inside a structure block.
-//   - visible-line count drops vs. the unfolded buffer.
+//   - The Ctrl-Shift-[ binding is registered in the keymap facet.
+//   - foldedRanges(view.state) has at least one range after invoking the binding.
 //
-// step-7 RED: keyboard dispatch may not drive CM foldKeymap in jsdom (risk R1).
-// step-8 GREEN: if needed, fall back to asserting the binding and calling run().
+// Note: synthetic keydown does not drive CodeMirror keymaps in jsdom; the test
+// asserts the binding is registered and invokes run() directly on the EditorView
+// — consistent with the Editor.test.tsx fallback pattern.
 
-describe('folding (step-7 RED → step-8 GREEN)', () => {
-  it('Ctrl-Shift-[ folds the structure block at the cursor', async () => {
+describe('folding', () => {
+  it('Ctrl-Shift-[ binding is registered and folds at cursor when invoked', async () => {
     harness = await setupBridgeHarness();
     dispatch = makeDispatch(harness.handler);
     renderEditorInHarness(harness);
@@ -247,57 +229,39 @@ describe('folding (step-7 RED → step-8 GREEN)', () => {
     const view = window.__REIFY_DEBUG__!.editorView!;
     expect(view.state.doc.length).toBeGreaterThan(0);
 
-    // Count lines before folding
-    const linesBefore = view.state.doc.lines;
-
     // Position cursor at start of `structure PartA {` (line 0 = CM line 1, offset 0)
     view.dispatch({ selection: { anchor: 0 } });
 
-    // step-7 RED: synthetic Ctrl-Shift-[ keydown does NOT drive CM foldKeymap
-    // in jsdom (risk R1 confirmed). Dispatch it as primary attempt, then assert
-    // via the keymap-facet fallback (plan §R1 fallback).
-    view.contentDOM.dispatchEvent(
-      new KeyboardEvent('keydown', { key: '[', ctrlKey: true, shiftKey: true, bubbles: true }),
-    );
-    await flushMacrotasks(0);
-
-    // step-8 GREEN fallback: find Ctrl-Shift-[ binding in keymap facet + run it.
-    // (The keyboard dispatch above leaves foldCount=0 in jsdom; the run() call
-    //  is the contract-faithful alternative per plan design_decision §R1.)
+    // Find Ctrl-Shift-[ binding in keymap facet and invoke it directly.
+    // (Synthetic keydown does not drive CodeMirror keymaps in jsdom.)
     const { foldedRanges } = await import('@codemirror/language');
     const { keymap } = await import('@codemirror/view');
     const allBindings = view.state.facet(keymap).flat();
     const foldBinding = allBindings.find((b) => b.key === 'Ctrl-Shift-[');
     expect(foldBinding).toBeDefined(); // confirms the binding is registered
-    foldBinding!.run!(view); // invoke foldCode at the cursor
+    foldBinding!.run!(view);
     await flushMacrotasks(0);
 
     // Assert: at least one range is folded
     let foldCount = 0;
     foldedRanges(view.state).between(0, view.state.doc.length, () => { foldCount++; });
     expect(foldCount).toBeGreaterThan(0);
-    // linesBefore is still valid as a doc-line count; folding doesn't change the
-    // doc text — it changes the STATE facet. Just verify foldCount > 0.
-    void linesBefore; // suppress unused-variable lint
   });
 });
 
-// ── step-3: RED find-references ───────────────────────────────────────────────
+// ── find-references ───────────────────────────────────────────────────────────
 //
-// Asserts two things:
+// Asserts:
 //   (faces backend)  lsp_request recorder captured textDocument/references with
 //                    the cursor position and includeDeclaration:true.
 //   (faces frontend) FindUsesPanel is populated — 2 find-use-row elements.
-//
-// step-3 RED: renderEditorInHarness only (no FindUsesPanel) → rows.length fails.
-// step-4 GREEN: import/use renderEditorWithFindUsesPanel from harness.
 
-describe('find-references (step-3 RED → step-4 GREEN)', () => {
+describe('find-references', () => {
   it('Shift+F12 sends textDocument/references and populates FindUsesPanel with 2 rows', async () => {
     harness = await setupBridgeHarness();
     dispatch = makeDispatch(harness.handler);
 
-    // step-4 GREEN: render Editor + FindUsesPanel with onShowReferences wiring.
+    // Render Editor + FindUsesPanel with onShowReferences wiring.
     renderEditorWithFindUsesPanel(harness);
 
     // Open the two-structure fixture.
@@ -339,24 +303,20 @@ describe('find-references (step-3 RED → step-4 GREEN)', () => {
   });
 });
 
-// ── step-9: RED command palette ───────────────────────────────────────────────
+// ── command palette ───────────────────────────────────────────────────────────
 //
 // Asserts:
 //   (frontend) palette container is observable via data-testid 'command-palette'
-//              after Ctrl+Shift+P (without focusing the editor — risk R2).
+//              after Ctrl+Shift+P (without focusing the editor — risk R2 bypass).
 //   (frontend) at least one command row with data-testid 'command-palette-item'.
 //   (frontend) clicking the first row runs the command and closes the palette.
-//
-// Goes RED at step-9: CommandPalette.tsx has no data-testid attributes yet.
-// step-10 GREEN: add testids to CommandPalette.tsx; harness already wires the palette.
 
-describe('command palette (step-9 RED → step-10 GREEN)', () => {
+describe('command palette', () => {
   it('Ctrl+Shift+P opens the palette; a command row is runnable', async () => {
     harness = await setupBridgeHarness();
     dispatch = makeDispatch(harness.handler);
 
-    // step-10 GREEN: renderEditorWithPalette wires useKeyboardShortcuts(onCommandPalette)
-    // and renders the real CommandPalette when the signal fires.
+    // Render Editor + CommandPalette with useKeyboardShortcuts(onCommandPalette) wired.
     const { lastCommandRan } = renderEditorWithPalette(harness);
 
     await dispatch('open_file', { path: FIXTURE_PATH, content: FIXTURE });
@@ -369,7 +329,6 @@ describe('command palette (step-9 RED → step-10 GREEN)', () => {
     await flushMacrotasks(0);
 
     // (faces frontend) palette container must be observable via data-testid.
-    // FAILS at step-9: CommandPalette.tsx has no data-testid attributes.
     const palette = document.querySelector('[data-testid="command-palette"]');
     expect(palette).not.toBeNull();
 
@@ -390,23 +349,18 @@ describe('command palette (step-9 RED → step-10 GREEN)', () => {
   });
 });
 
-// ── step-11: RED hover-sync ───────────────────────────────────────────────────
+// ── hover-sync ────────────────────────────────────────────────────────────────
 //
 // Asserts:
 //   (frontend) mouseenter on DesignTree tree-row-PartA sets
 //              store_state().selection.hoveredEntity === 'PartA'.
 //   (frontend) the row gains data-hovered='true' (driven by hoveredEntity prop).
-//
-// Goes RED at step-11: renderEditorWithDesignTree does NOT wire onHover to
-//   selectionStore.hoverEntity (intentional stub — wired in step-12 GREEN).
 
-describe('hover-sync (step-11 RED → step-12 GREEN)', () => {
+describe('hover-sync', () => {
   it('mouseenter on tree-row-PartA sets hoveredEntity in store and marks row data-hovered', async () => {
     harness = await setupBridgeHarness();
     dispatch = makeDispatch(harness.handler);
 
-    // step-11 RED: harness renders DesignTree with FIXTURE_TREE but onHover is
-    // not wired to selectionStore.hoverEntity — store stays null.
     renderEditorWithDesignTree(harness);
 
     await dispatch('open_file', { path: FIXTURE_PATH, content: FIXTURE });
@@ -421,38 +375,30 @@ describe('hover-sync (step-11 RED → step-12 GREEN)', () => {
     await flushMacrotasks(0);
 
     // (faces frontend) store: hoveredEntity must be set to 'PartA'.
-    // FAILS at step-11: onHover is () => {} — selectionStore.hoverEntity not called.
     const storeResult = await dispatch('store_state', {}) as any;
     expect(storeResult.selection.hoveredEntity).toBe('PartA');
 
     // (faces frontend) DOM: row should carry data-hovered='true'.
-    // Also fails at step-11 because hoveredEntity prop is null (not reactive to store).
     expect(partARow!.getAttribute('data-hovered')).toBe('true');
   });
 });
 
-// ── step-13: RED combined session ─────────────────────────────────────────────
+// ── combined session ──────────────────────────────────────────────────────────
 //
-// The integration gate: one it() that exercises all five affordances in sequence
+// Integration gate: one it() that exercises all five affordances in sequence
 // through the real bridge:
-//   1. rename   (F2 → PartA.width → newWidth)
+//   1. rename    (F2 → PartA.width → newWidth)
 //   2. find-refs (Shift+F12)
-//   3. folding  (Ctrl+Shift+[)
-//   4. palette  (Ctrl+Shift+P → run command)
-//   5. hover    (mouseenter on tree-row-PartA)
+//   3. folding   (Ctrl+Shift+[, via keymap-facet fallback)
+//   4. palette   (Ctrl+Shift+P → run command)
+//   5. hover     (mouseenter on tree-row-PartA)
 // Finally asserts list_console_errors count === 0.
-//
-// Goes RED at step-13: renderAllAffordances is a stub (Editor+FindUsesPanel only).
-//   Palette assertion fails because useKeyboardShortcuts is not registered.
-// step-14 GREEN: full implementation adds palette + DesignTree.
 
-describe('combined session — all five affordances (step-13 RED → step-14 GREEN)', () => {
+describe('combined session — all five affordances', () => {
   it('rename → find-refs → folding → palette → hover all work in one open_file session', async () => {
     harness = await setupBridgeHarness();
     dispatch = makeDispatch(harness.handler);
 
-    // step-13 RED stub: only Editor + FindUsesPanel.
-    // step-14 GREEN: full renderAllAffordances with palette + DesignTree.
     const { lastCommandRan } = renderAllAffordances(harness);
 
     await dispatch('open_file', { path: FIXTURE_PATH, content: FIXTURE });
@@ -497,13 +443,11 @@ describe('combined session — all five affordances (step-13 RED → step-14 GRE
     foldedRanges(view.state).between(0, view.state.doc.length, () => { foldCount++; });
     expect(foldCount).toBeGreaterThan(0);
 
-    // 4. Command palette: Ctrl+Shift+P — FAILS at step-13 RED.
-    //    renderAllAffordances stub does not register useKeyboardShortcuts,
-    //    so Ctrl+Shift+P fires but no handler opens the palette.
+    // 4. Command palette: Ctrl+Shift+P.
     await dispatch('keyboard', { key: 'P', ctrl: true, shift: true });
     await flushMacrotasks(0);
     const palette = document.querySelector('[data-testid="command-palette"]');
-    expect(palette).not.toBeNull(); // ← RED at step-13
+    expect(palette).not.toBeNull();
 
     const paletteItems = document.querySelectorAll('[data-testid="command-palette-item"]');
     expect(paletteItems.length).toBeGreaterThan(0);

@@ -144,7 +144,10 @@ export function createLspResponseFor(method: string, paramsJson: string): string
 
     case 'textDocument/rename': {
       // WorkspaceEdit: ONLY rewrite PartA's occurrences (lines 1 and 5).
-      // PartB's width (lines 11 and 15) is intentionally absent — scope test.
+      // PartB's width (lines 11 and 15) is absent from the server response.
+      // This verifies the frontend correctly applies a server-provided scoped
+      // WorkspaceEdit — not that the backend computes the correct rename scope
+      // (backend scope logic is covered by reify-lsp unit tests).
       let newName = 'RENAMED';
       try {
         const p = JSON.parse(paramsJson) as { newName?: string };
@@ -216,20 +219,26 @@ export function createLspResponseFor(method: string, paramsJson: string): string
 // ── Affordance component rendering ───────────────────────────────────────────
 
 /**
+ * Stub Tauri IPC calls that fire on the edit debounce / save to prevent
+ * real IPC noise during tests. Call once at the top of each render helper.
+ */
+function stubBridgeIpc(): void {
+  vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
+  vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+}
+
+/**
  * Renders the real Editor component with the harness editorStore.
  *
  * Must be called AFTER setupBridgeHarness() so that window.__REIFY_DEBUG__ is
  * already set; Editor's onMount then immediately registers ctx.editorView.
  *
- * Spies on bridge.updateSource to avoid real Tauri IPC on the edit debounce.
  * Returns the render result (for cleanup via @solidjs/testing-library cleanup()).
  */
 export function renderEditorInHarness(
   harness: HarnessSetup,
 ): ReturnType<typeof render> {
-  // Prevent real Tauri IPC when the 300ms edit debounce fires after tests.
-  vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
-  vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+  stubBridgeIpc();
 
   return render(() => (
     <Editor store={harness.editorStore} />
@@ -254,8 +263,7 @@ export function renderEditorWithFindUsesPanel(
   findUsesResults: () => ReferenceResult[];
   setFindUsesOpen: (v: boolean) => void;
 } {
-  vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
-  vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+  stubBridgeIpc();
 
   const [findUsesOpen, setFindUsesOpen] = createSignal(false);
   const [findUsesResults, setFindUsesResults] = createSignal<ReferenceResult[]>([]);
@@ -351,8 +359,7 @@ export function renderEditorWithPalette(harness: HarnessSetup): {
   paletteOpen: () => boolean;
   lastCommandRan: () => string | null;
 } {
-  vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
-  vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+  stubBridgeIpc();
 
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [lastCommandRan, setLastCommandRan] = createSignal<string | null>(null);
@@ -392,8 +399,8 @@ export function renderEditorWithPalette(harness: HarnessSetup): {
 /**
  * Renders Editor + DesignTree with the fixture entity tree.
  *
- * step-11 RED: onHover is NOT wired to selectionStore — hover assertions fail.
- * step-12 GREEN: onHover is wired to selectionStore.hoverEntity — tests pass.
+ * onHover is wired to selectionStore.hoverEntity so hoveredEntity tracks the
+ * pointer position and the row's data-hovered prop updates reactively.
  *
  * Must be called AFTER setupBridgeHarness().
  */
@@ -401,8 +408,7 @@ export function renderEditorWithDesignTree(harness: HarnessSetup): {
   renderResult: ReturnType<typeof render>;
   viewStateMock: ViewStateStore;
 } {
-  vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
-  vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+  stubBridgeIpc();
 
   const viewStateMock = makeDesignTreeViewStateMock();
 
@@ -412,8 +418,6 @@ export function renderEditorWithDesignTree(harness: HarnessSetup): {
       <DesignTree
         tree={FIXTURE_TREE}
         viewStateStore={viewStateMock}
-        // step-12 GREEN: wire onHover → selectionStore.hoverEntity so the store
-        // reflects hover and the row's data-hovered prop updates reactively.
         onHover={(path) => harness.selectionStore.hoverEntity(path)}
         hoveredEntity={harness.selectionStore.state.hoveredEntity}
       />
@@ -428,7 +432,7 @@ export function renderEditorWithDesignTree(harness: HarnessSetup): {
 /**
  * Renders all five affordance components in a single root.
  *
- * step-14 GREEN full implementation:
+ * Full affordance root:
  *   - Editor (rename, find-refs, folding keymaps)
  *   - FindUsesPanel (wired via onShowReferences callback)
  *   - CommandPalette (opened by useKeyboardShortcuts Ctrl+Shift+P)
@@ -443,8 +447,7 @@ export function renderAllAffordances(harness: HarnessSetup): {
   findUsesResults: () => ReferenceResult[];
   lastCommandRan: () => string | null;
 } {
-  vi.spyOn(bridge, 'updateSource').mockResolvedValue(undefined as any);
-  vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+  stubBridgeIpc();
 
   const [findUsesOpen, setFindUsesOpen] = createSignal(false);
   const [findUsesResults, setFindUsesResults] = createSignal<ReferenceResult[]>([]);
