@@ -15,7 +15,7 @@
  *    or opens the inline field via injected UI callbacks.
  */
 import type { EditorView } from '@codemirror/view';
-import type { PrepareRenameResult, Range, WorkspaceEdit } from './lspClient';
+import type { PrepareRenameResult, Range, TextEdit, WorkspaceEdit } from './lspClient';
 import { lspRangeToCmRange } from './lspRange';
 
 /**
@@ -96,11 +96,11 @@ export interface WorkspaceEditDeps {
   /** Returns true when `uri` is currently open in an editor buffer. */
   isOpen(uri: string): boolean;
   /** Apply edits to the currently active CM view (the single reused EditorView). */
-  applyActive(uri: string, edits: WorkspaceEdit['changes'][string]): void;
+  applyActive(uri: string, edits: TextEdit[]): void;
   /** Apply edits to an open-but-inactive buffer (not the current CM view). */
-  applyOpenInactive(uri: string, edits: WorkspaceEdit['changes'][string]): void;
+  applyOpenInactive(uri: string, edits: TextEdit[]): void;
   /** Write edits for a completely closed file directly to disk. */
-  applyClosed(uri: string, edits: WorkspaceEdit['changes'][string]): void;
+  applyClosed(uri: string, edits: TextEdit[]): void;
 }
 
 /**
@@ -217,6 +217,21 @@ export interface RenameUi {
 }
 
 /**
+ * Callback type for the injected multi-file edit applicator.
+ *
+ * `view`      — the live CodeMirror EditorView (for the active file).
+ * `edit`      — the FULL WorkspaceEdit, potentially spanning multiple URIs.
+ * `activeUri` — the URI that was active when the rename was initiated.
+ *
+ * The callback is responsible for routing each URI's edits to the appropriate
+ * sink (active CM view, inactive open buffer, or disk write).  If omitted,
+ * renameCommand falls back to the single-uri `applyWorkspaceEdit` (original
+ * behaviour, preserves backward-compat for callers that don't need cross-file
+ * routing).
+ */
+export type ApplyEditFn = (view: EditorView, edit: WorkspaceEdit, activeUri: string) => void;
+
+/**
  * Create a CodeMirror Command for F2 rename.
  *
  * Returns a `(view) => boolean` suitable for keymap.of in Editor.tsx. It reads
@@ -227,21 +242,19 @@ export interface RenameUi {
  *    non-renameable position (keyword/literal/builtin/type/decl/cross-module)
  *    performs ZERO edits — only a transient message.
  *  - non-null target → ui.promptNewName(...). On submit, rename() is requested
- *    and its WorkspaceEdit applied via applyWorkspaceEdit (one CM dispatch that
- *    flows through Editor.tsx's updateListener → backend sync + didChange).
+ *    and its WorkspaceEdit applied via the injected `applyEdit` callback (which
+ *    routes the edit across ALL changed files). When `applyEdit` is omitted the
+ *    original single-uri `applyWorkspaceEdit` is used as the fallback.
  *
- * Always returns true so the F2 key is consumed. The async request can outlive
- * the editor or a file switch (the EditorView is reused across files — its doc is
- * swapped in place), so both the prompt-open and apply steps re-check that the URI
- * is still current (and the apply step also checks view.dom.isConnected) before
- * touching the buffer; a stale apply would corrupt the newly-active file. A
- * server-rejected name (rename → null) closes the field and surfaces a transient
- * ui.showRenameFailed message rather than dropping the rename silently.
+ * Always returns true so the F2 key is consumed. Both the prompt-open and
+ * apply steps re-check that the URI is still current (and the apply step also
+ * checks view.dom.isConnected) so stale applies never corrupt the active buffer.
  */
 export function renameCommand(
   uriGetter: () => string,
   client: RenameClient,
   ui: RenameUi,
+  applyEdit?: ApplyEditFn,
 ): (view: EditorView) => boolean {
   return (view: EditorView): boolean => {
     const head = view.state.selection.main.head;
@@ -281,7 +294,15 @@ export function renameCommand(
                   ui.showRenameFailed(view);
                   return;
                 }
-                applyWorkspaceEdit(view, edit, uri);
+                if (applyEdit) {
+                  // Injected multi-file applicator: routes each URI's edits to
+                  // the right sink (active CM view / open buffer / disk).
+                  applyEdit(view, edit, uri);
+                } else {
+                  // Fallback: single-uri apply (backward-compat for tests/callers
+                  // that don't supply the cross-file routing callback).
+                  applyWorkspaceEdit(view, edit, uri);
+                }
               })
               .catch((err) => console.warn('rename: failed to apply edit', err));
           },
