@@ -705,6 +705,25 @@ pub(crate) fn resolve_assoc_type_name(
 ///
 /// A trait absent from `trait_registry` answers `false` — it cannot declare the
 /// member it does not define.
+///
+/// SCOPE LIMITATION (task 3974 ιₑ — trait refinement NOT handled; follow-up
+/// esc-3974-201): this scans only the trait's OWN `required_members`/`defaults`,
+/// not its transitive refinement closure (`CompiledTrait.refinements`). Reify
+/// DOES support trait refinement (`trait HasSkin : HasMaterial { … }`), and
+/// neither `CompiledTrait`'s member lists nor `TopologyTemplate.trait_bounds` are
+/// flattened — inherited assoc types are materialised only at conformance-check
+/// time by `trait_requirements::collect_all_requirements` (which walks
+/// `.refinements` recursively). Consequently an assoc type inherited purely
+/// through refinement (declared on a super-trait, never re-declared on the
+/// directly-named bound) is INVISIBLE to this predicate: at the `declaring_traits`
+/// site in [`resolve_qualified_assoc_type`] a valid `Beam::Material` would be
+/// reported as "no associated type" rather than resolving; conversely, listing
+/// both a child trait and its ancestor as explicit bounds could double-count and
+/// spuriously flag ambiguity. This task's param-only signal/example use directly
+/// declared assoc types. A correct fix must resolve declaration through the
+/// refinement closure WITH per-origin dedup (the deduped-by-name
+/// `collect_all_requirements` output collapses distinct origins, so it cannot by
+/// itself answer the ambiguity question) — deferred to the esc-3974-201 follow-up.
 fn trait_declares_assoc_type(
     trait_registry: &HashMap<String, &CompiledTrait>,
     trait_name: &str,
@@ -826,6 +845,9 @@ pub(crate) fn resolve_qualified_assoc_type(
     };
 
     // The conformed traits of `base` that declare an assoc type named `member`.
+    // NOTE: directly-named bounds with an OWN declaration of `member` only —
+    // refinement-inherited assoc types are not seen here (see the SCOPE
+    // LIMITATION on `trait_declares_assoc_type`; follow-up esc-3974-201).
     let declaring_traits: Vec<&str> = template
         .trait_bounds
         .iter()
@@ -2295,6 +2317,97 @@ mod tests {
             },
             span: reify_core::SourceSpan::new(0, 0),
         }
+    }
+
+    // ── task 3974 ιₑ: defensive guards in `resolve_qualified_assoc_type` ──────
+    // The lowering always produces a bare `Named` base with no type args, so the
+    // two leading guards (non-`Named` base; `Named` base WITH type args) are
+    // unreachable in practice. They emit a DEFINED `UnresolvedType` diagnostic
+    // (rather than panicking) should a future grammar/lowering change produce
+    // another shape. These tests pin that contract — a message/code regression or
+    // a silent-`None` change would be caught here. (review suggestion 3)
+    //
+    // Both guards return before any registry access, so empty registries suffice.
+
+    #[test]
+    fn qualified_assoc_non_named_base_emits_unresolved_type() {
+        // base is an integer literal, not a structure name.
+        let base = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::IntegerLiteral(3),
+            span: reify_core::SourceSpan::new(0, 0),
+        };
+        let templates: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let traits: HashMap<String, &CompiledTrait> = HashMap::new();
+        let type_params: HashSet<String> = HashSet::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let resolved = resolve_qualified_assoc_type(
+            &base,
+            None,
+            "Material",
+            reify_core::SourceSpan::new(0, 0),
+            &templates,
+            &traits,
+            &type_params,
+            &mut diagnostics,
+        );
+
+        assert_eq!(resolved, None, "a non-Named base must not resolve");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one guard diagnostic; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::UnresolvedType));
+        assert!(
+            diagnostics[0].message.contains("must be a structure name"),
+            "guard message should explain the base shape; got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn qualified_assoc_base_with_type_args_emits_unresolved_type() {
+        // base is `Beam<T>` — a Named WITH type arguments.
+        let base = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Beam".to_string(),
+                type_args: vec![named_type_expr("T")],
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        };
+        let templates: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let traits: HashMap<String, &CompiledTrait> = HashMap::new();
+        let type_params: HashSet<String> = HashSet::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let resolved = resolve_qualified_assoc_type(
+            &base,
+            None,
+            "Material",
+            reify_core::SourceSpan::new(0, 0),
+            &templates,
+            &traits,
+            &type_params,
+            &mut diagnostics,
+        );
+
+        assert_eq!(resolved, None, "a base with type args must not resolve");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one guard diagnostic; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::UnresolvedType));
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("must not have type arguments"),
+            "guard message should explain the type-args rejection; got: {:?}",
+            diagnostics[0].message
+        );
     }
 
     #[test]

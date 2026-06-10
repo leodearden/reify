@@ -361,3 +361,70 @@ fn example_file_qualified_assoc_compiles_and_resolves() {
         "`Beam::(HasMaterial::Material)` should resolve to Type::StructureRef(\"IotaSteel\")"
     );
 }
+
+// ─── Amendment: declared-but-unbound poison path (anti-cascade) ───────────────
+
+/// Declared-but-unbound: `Beam` conforms to `HasMaterial` (which declares
+/// `type Material`) but never binds `type Material = …`. The producer side
+/// already reports this once as `TraitAssocTypeNotBound`; the consumer
+/// `param m : Beam::Material` must NOT pile on a second diagnostic. Inside
+/// `resolve_qualified_assoc_type`, exactly one conformed trait declares
+/// `Material` (so the bare path is taken), but `template.assoc_types` has no
+/// entry for it — `resolved_member()`'s `.unwrap_or(Type::Error)` branch fires
+/// and the helper returns `Some(Type::Error)`, which flows through the entity.rs
+/// `Some(t) => t` arm so `m` types as `Type::Error` (the poison sentinel), not
+/// `Type::Real`.
+///
+/// This pins the most heavily-documented-yet-previously-untested behaviour of the
+/// helper: a future refactor that emitted a duplicate Unresolved/Ambiguous
+/// diagnostic at the consumer, or poisoned to a concrete `Type::Real`, would fail
+/// here.
+#[test]
+fn declared_but_unbound_qualified_assoc_poisons_to_error_without_cascade() {
+    let source = r#"
+trait HasMaterial { type Material }
+structure def Beam : HasMaterial {
+}
+structure def UseBeam {
+    param m : Beam::Material
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    // Producer root cause: Beam fails to bind the required associated type. This
+    // is the ONLY error the program should produce.
+    assert!(
+        any_diag_has_code(&errors, DiagnosticCode::TraitAssocTypeNotBound),
+        "expected the producer-side TraitAssocTypeNotBound for Beam's unbound \
+         `type Material`; got: {:?}",
+        errors
+    );
+    // Anti-cascade: the consumer site (`Beam::Material`) adds NO second diagnostic
+    // — neither a spurious UnresolvedType nor a (wrong) AmbiguousAssocType.
+    assert!(
+        !any_diag_has_code(&errors, DiagnosticCode::AmbiguousAssocType)
+            && !any_diag_has_code(&errors, DiagnosticCode::UnresolvedType),
+        "the consumer `Beam::Material` must not emit a second Unresolved/Ambiguous \
+         diagnostic for the declared-but-unbound case (anti-cascade); got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseBeam")
+        .expect("UseBeam template should be compiled");
+    let m_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "m")
+        .expect("value cell 'm' should exist");
+    assert_eq!(
+        m_cell.cell_type,
+        Type::Error,
+        "declared-but-unbound `Beam::Material` should poison `m` to Type::Error \
+         (the anti-cascade sentinel), not fall back to Type::Real; got: {:?}",
+        m_cell.cell_type
+    );
+}
