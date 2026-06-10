@@ -125,13 +125,16 @@ verify_runners:
 # Drift detector (ι): compare local vs remote verdict after every Nth land.
 verify_drift_check_every_n_lands: 20
 #
-# sccache shared backend (redis at leo-workstation...:6380) is HELD, NOT enabled:
-# the D6 parity proof was run WITHOUT it, and it needs a workstation sccache-server
-# restart to take effect. Enable as a separate, re-proven step:
-#   sccache:
-#     enabled: true
-#     backend_env:
-#       SCCACHE_REDIS: redis://leo-workstation.tailb08a6b.ts.net:6380
+# sccache shared backend (κ): both hosts share a redis cache so the laptop free-rides
+# the workstation's warm compilation artifacts. ENABLED 2026-06-10 alongside the C enable.
+# Requires the workstation sccache server to be (re)started with this backend (the running
+# server's backend is fixed at start). Correctness: sccache is input-hashed (caches
+# compilation, not verdicts); the drift detector (every 20 lands) is the standing fidelity
+# guarantee for this env change (the D6 parity was proven pre-sccache).
+sccache:
+  enabled: true
+  backend_env:
+    SCCACHE_REDIS: redis://leo-workstation.tailb08a6b.ts.net:6380
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Trailing-24h spend ceiling. Default $200 was a backstop from before the
