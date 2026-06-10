@@ -4173,30 +4173,31 @@ impl Engine {
                                 (name, plan_output_repr(registry, plan, operation))
                             }
                             Some(plan) => {
-                                // Task 4050 step-8: the MULTI-STAGE CONVERSION
-                                // EXECUTOR. A non-empty `plan.conversions` chain
-                                // names the repr crossings to perform before the
-                                // final op runs on `plan.kernel`. v0.3-ε executes
-                                // exactly one crossing — BRep→Mesh via the source
-                                // kernel's `tessellate` — so every stage must
-                                // classify as `ConversionProjection::Tessellate`
-                                // (step-6); any other stage surfaces as a
-                                // realization-failed diagnostic (mirroring the
-                                // kernel-error arm below) rather than a panic. Since
-                                // the only ε-executable projection is BRep→Mesh, a
-                                // multi-stage chain necessarily contains a
-                                // non-`(BRep,Mesh)` stage and is rejected here, so
-                                // the single-stage "tessellate each parent once"
-                                // walk below is correct for every chain that passes.
+                                // Task 4422 step-4: restructured MULTI-STAGE
+                                // CONVERSION EXECUTOR. A non-empty `plan.conversions`
+                                // chain names the repr crossings to perform before the
+                                // final op runs on `plan.kernel`. The recipe is:
                                 //
-                                // For the surviving single BRep→Mesh stage and each
-                                // prior-stage input handle of the op: tessellate the
-                                // handle on the stage's source kernel → Mesh, then
-                                // ingest the Mesh on the target kernel (`plan.kernel`)
-                                // → a fresh handle. The converted handles are
-                                // substituted as the op's inputs and the op then runs
-                                // on `plan.kernel` via the common execute path below.
-                                // (Intermediate caching: step-12; rollback: step-14.)
+                                //   BRep→Mesh (tessellate on source kernel) +
+                                //   Mesh→Voxel-or-Mesh (ingest_mesh on plan.kernel)
+                                //
+                                // run EXACTLY ONCE per op-input parent for the whole
+                                // chain regardless of stage count. Mesh is the
+                                // universal interchange: the final ingest into
+                                // plan.kernel realises Mesh→Mesh (Manifold) or
+                                // Mesh→Voxel (OpenVDB) depending on plan.kernel.
+                                //
+                                // Phase 1 validates every stage via
+                                // `v03_conversion_projection`: an unknown crossing
+                                // surfaces as a realization-failed diagnostic rather
+                                // than a panic. Phase 2 executes the single
+                                // tessellate+ingest recipe per parent, keying the
+                                // intermediate cache at the chain's terminal `to`.
+                                // This reduces to the prior behaviour for the 1-stage
+                                // BRep→Mesh chain, so cross_kernel_handoff and all
+                                // inline conversion-path/caching/rollback tests stay
+                                // GREEN. (Intermediate caching: step-12; rollback:
+                                // step-14.)
 
                                 // The target kernel must be present in the map.
                                 if !kernels.contains_key(plan.kernel.as_str()) {
@@ -4220,9 +4221,9 @@ impl Engine {
                                     break;
                                 }
 
-                                // Per-stage tessellation tolerance for each BRep→Mesh
-                                // source projection (default-tess tolerance when the
-                                // caller threaded no demanded tolerance).
+                                // Tessellation tolerance for the BRep→Mesh source
+                                // projection (default-tess tolerance when the caller
+                                // threaded no demanded tolerance).
                                 let per_stage_tol = per_stage_tolerance_for_plan(
                                     plan,
                                     demanded_tol.unwrap_or(Engine::DEFAULT_TESSELLATION_TOLERANCE),
@@ -4232,40 +4233,86 @@ impl Engine {
                                 let parents: Vec<GeometryHandleId> =
                                     parent_handles_for_op(&geom_op).as_slice().to_vec();
 
-                                // Walk the chain: tessellate (source) then ingest
-                                // (target) each input, recording old→new id pairs.
                                 let mut substitution: HashMap<GeometryHandleId, GeometryHandleId> =
                                     HashMap::new();
                                 let mut conversion_error: Option<String> = None;
-                                'convert: for (stage_kernel, from, to) in &plan.conversions {
-                                    if crate::dispatcher::v03_conversion_projection(*from, *to)
-                                        .is_none()
-                                    {
-                                        conversion_error = Some(format!(
-                                            "conversion stage {from:?}→{to:?} for op '{operation:?}' \
-                                         is not executable in v0.3-ε (only BRep→Mesh \
-                                         tessellation is supported)",
-                                        ));
-                                        break 'convert;
+
+                                // ── Phase 1: validate stages + find source ────────
+                                // Walk the chain as a VALIDATION gate. Each stage
+                                // must classify as a known ConversionProjection:
+                                // - Tessellate: records the source kernel name (the
+                                //   kernel that tessellates BRep → Mesh).
+                                // - Voxelize: realised by ingest_mesh on plan.kernel
+                                //   below; no separate action needed here.
+                                // Unknown stage → graceful degradation.
+                                let mut tessellate_source: Option<&'static str> = None;
+                                // Terminal `to` drives the intermediate cache key
+                                // (Mesh for 1-stage BRep→Mesh, Voxel for 2-stage).
+                                // Safe: this arm is only reached for non-empty chains.
+                                let terminal_to = plan
+                                    .conversions
+                                    .last()
+                                    .map(|(_, _, to)| *to)
+                                    .unwrap_or(ReprKind::Mesh);
+                                for (stage_kernel, from, to) in &plan.conversions {
+                                    use crate::dispatcher::{
+                                        ConversionProjection, v03_conversion_projection,
+                                    };
+                                    match v03_conversion_projection(*from, *to) {
+                                        None => {
+                                            conversion_error = Some(format!(
+                                                "conversion stage {from:?}→{to:?} for op \
+                                                 '{operation:?}' is not executable in v0.3-β \
+                                                 (supported: BRep→Mesh, Mesh→Voxel)",
+                                            ));
+                                            break;
+                                        }
+                                        Some(ConversionProjection::Tessellate) => {
+                                            tessellate_source =
+                                                Some((*stage_kernel).as_registry_name());
+                                        }
+                                        Some(ConversionProjection::Voxelize) => {
+                                            // Realised by ingest_mesh on plan.kernel
+                                            // in phase 2; no separate step here.
+                                        }
                                     }
-                                    let source_name = (*stage_kernel).as_registry_name();
-                                    for &pid in &parents {
+                                }
+                                if conversion_error.is_none() && tessellate_source.is_none() {
+                                    conversion_error = Some(format!(
+                                        "internal error: conversion chain for op \
+                                         '{operation:?}' has no Tessellate stage (no \
+                                         BRep→Mesh source kernel found in plan.conversions)"
+                                    ));
+                                }
+
+                                // ── Phase 2: tessellate + ingest once per parent ──
+                                // For each parent: tessellate on the Tessellate-stage
+                                // source kernel → Mesh, then ingest the Mesh into
+                                // plan.kernel → fresh handle. The ingest call voxelises
+                                // when plan.kernel is an OpenVDB kernel (Mesh→Voxel)
+                                // and is a trivial Mesh→Mesh pass-through when
+                                // plan.kernel is a Manifold/similar kernel.
+                                if conversion_error.is_none() {
+                                    let source_name =
+                                        tessellate_source.expect("checked above");
+                                    'convert: for &pid in &parents {
                                         // Task 4050 step-12: the intermediate cache
                                         // key for THIS input — distinct per input
-                                        // (local step index) and stable across
-                                        // rebuilds (see `conversion_intermediate_entity_id`).
-                                        let intermediate_entity = conversion_intermediate_entity_id(
-                                            &realization_id.entity,
-                                            pid,
-                                            &realization_step_ids,
-                                        );
+                                        // (stable across rebuilds; see
+                                        // `conversion_intermediate_entity_id`).
+                                        let intermediate_entity =
+                                            conversion_intermediate_entity_id(
+                                                &realization_id.entity,
+                                                pid,
+                                                &realization_step_ids,
+                                            );
                                         // Consult the cache BEFORE any kernel work. A
                                         // hit returns the previously-ingested
                                         // target-kernel handle (Copy); reuse its id
                                         // and skip the redundant tessellate+ingest.
                                         if let Some(&cached) = realization_cache.lookup(
                                             &intermediate_entity,
-                                            *to,
+                                            terminal_to,
                                             per_stage_tol,
                                             NO_OPTIONS,
                                         ) {
@@ -4273,17 +4320,20 @@ impl Engine {
                                             continue;
                                         }
                                         // Cache miss: tessellate on the source kernel
-                                        // (`&self`); the borrow is released before the
+                                        // (`&self`); borrow released before the
                                         // `&mut` ingest borrow below.
                                         let mesh = match kernels.get(source_name) {
-                                            Some(src) => match src.tessellate(pid, per_stage_tol) {
-                                                Ok(mesh) => mesh,
-                                                Err(e) => {
-                                                    conversion_error =
-                                                        Some(format!("tessellation error: {e}"));
-                                                    break 'convert;
+                                            Some(src) => {
+                                                match src.tessellate(pid, per_stage_tol) {
+                                                    Ok(mesh) => mesh,
+                                                    Err(e) => {
+                                                        conversion_error = Some(format!(
+                                                            "tessellation error: {e}"
+                                                        ));
+                                                        break 'convert;
+                                                    }
                                                 }
-                                            },
+                                            }
                                             None => {
                                                 conversion_error = Some(format!(
                                                     "internal error: conversion source kernel \
@@ -4294,6 +4344,8 @@ impl Engine {
                                             }
                                         };
                                         // Ingest into the target kernel (`&mut`).
+                                        // For a Manifold kernel this is Mesh→Mesh;
+                                        // for an OpenVDB kernel this is Mesh→Voxel.
                                         let ingested = kernels
                                             .get_mut(plan.kernel.as_str())
                                             .expect("plan.kernel presence checked above")
@@ -4313,14 +4365,14 @@ impl Engine {
                                                 };
                                                 realization_cache.insert(
                                                     &intermediate_entity,
-                                                    *to,
+                                                    terminal_to,
                                                     per_stage_tol,
                                                     NO_OPTIONS,
                                                     intermediate_handle,
                                                 );
                                                 intermediate_cache_inserts.push((
                                                     intermediate_entity,
-                                                    *to,
+                                                    terminal_to,
                                                     per_stage_tol,
                                                 ));
                                                 substitution.insert(pid, handle.id);
@@ -4351,8 +4403,8 @@ impl Engine {
                                 // Point the final op at the converted handles and
                                 // route it to the target kernel via the common
                                 // execute path. `plan_output_repr` of the final op on
-                                // `plan.kernel` (=Mesh) becomes this op's produced
-                                // repr.
+                                // `plan.kernel` becomes this op's produced repr
+                                // (Mesh for Manifold, Voxel for OpenVDB).
                                 substitute_op_parents(&mut geom_op, &substitution);
                                 (
                                     plan.kernel.clone(),
