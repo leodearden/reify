@@ -70,6 +70,55 @@ fn eval_std_tolerancing_surface_example_succeeds() {
         stdout.contains("finish_ok = true"),
         "stdout should contain 'finish_ok = true' (sf.value > 0mm: 1.6µm > 0mm → true);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+
+    // ── α new-type exercises: nominal_zone reads off the new GD&T types ────────
+    // VALUE-pinning anchors (mirror the conforms_mmc / finish_ok style, NOT the
+    // value-agnostic it7_width style): each nominal_zone must materialise its real
+    // scalar, so we pin the exact printed value.  A name-only `contains("soa_zone")`
+    // substring would still pass if nominal_zone regressed to `undef` — the eval
+    // printer prints the cell name either way — which is the very thing these
+    // exercises claim to cover.  These are zero-departure nominal zones, so
+    // efz(tol, condition, 0mm) == tol exactly (clean pass-through, no float drift),
+    // printed by the eval engine in metres:
+    //   soa_zone    = 0.05mm → 0.00005 m  — StraightnessOfAxis (FOS axis form variant)
+    //   runout_zone = 0.02mm → 0.00002 m  — CircularRunout with a required datum_refs
+    //   prof_zone   = 0.03mm → 0.00003 m  — ProfileOfSurfaceRelated with a required datum_refs
+    assert!(
+        stdout.contains("soa_zone = 0.00005 m"),
+        "stdout should contain 'soa_zone = 0.00005 m' (StraightnessOfAxis.nominal_zone = 0.05mm, not undef);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("runout_zone = 0.00002 m"),
+        "stdout should contain 'runout_zone = 0.00002 m' (CircularRunout.nominal_zone = 0.02mm w/ datum_refs, not undef);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("prof_zone = 0.00003 m"),
+        "stdout should contain 'prof_zone = 0.00003 m' (ProfileOfSurfaceRelated.nominal_zone = 0.03mm w/ datum_refs, not undef);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // ── α zone_shape param-order fix: value-pins for Location/Orientation callouts ──
+    // `zone_shape` is declared *beyond* its refined trait (LocationTolerance /
+    // OrientationTolerance do not declare it) and therefore requires placement
+    // BEFORE `material_condition` to avoid the binder misbinding `nominal_zone`
+    // to undef (same workaround as datum_refs in Runout/Profile…Related).
+    // These pins catch a regression if zone_shape is ever reordered back after
+    // material_condition in the tolerancing.ri declaration.
+    //
+    //   pos_zone = efz(0.1mm, MMC, 0mm) = 0.1mm = 0.0001 m
+    //     Position with explicit MMC — proves the beyond-trait zone_shape param
+    //     does not corrupt nominal_zone when material_condition is explicit.
+    //   par_zone = efz(0.04mm, RFS, 0mm) = 0.04mm = 0.00004 m
+    //     Parallelism with IMPLICIT material_condition (RFS default) — the critical
+    //     case: without the param-order fix, the binder misbinds material_condition
+    //     to undef when zone_shape follows it, producing par_zone = undef.
+    assert!(
+        stdout.contains("pos_zone = 0.0001 m"),
+        "stdout should contain 'pos_zone = 0.0001 m' (Position.nominal_zone = 0.1mm under MMC, not undef — zone_shape param-order fix);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("par_zone = 0.00004 m"),
+        "stdout should contain 'par_zone = 0.00004 m' (Parallelism.nominal_zone = 0.04mm under RFS default, not undef — zone_shape param-order fix);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }
 
 /// Test B: `reify check examples/tolerancing/std_tolerancing_surface.ri`
