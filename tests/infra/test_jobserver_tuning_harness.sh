@@ -612,4 +612,169 @@ PY
 assert "derive_constants: split/poll/epsilon/timeout/utilization derived correctly" \
     test "$_b5_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 6: evaluate_acceptance() — four synthetic scenarios
+#
+# (a) all runs clear floors in all 3 regimes (warm+cold) → ok=True, no ESCAPE_VALVE
+# (b) utilization < threshold in one regime → ok=False
+# (c) worst-case cold task at implicit-only > MAX_SANE_TIMEOUT → ok=True but
+#     a structured FINDING with code ESCAPE_VALVE is emitted (§10.4)
+# (d) a sum != nproc snapshot in occupancy series → TOKEN_CONSERVATION finding
+#
+# Asserts the measure→derive→ASSERT gate logic over synthetic numbers.
+# Fails: evaluate_acceptance absent → AttributeError.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 6: evaluate_acceptance() acceptance gate ---"
+
+_b6_exit=0
+{
+python3 - "$HARNESS" <<'PY'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("jth", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+NPROC_F = 32
+THRESHOLD = 0.70   # utilization floor the derived dict will carry
+
+# Reusable derived dict (matches the synthetic measurements from Block 5)
+DERIVED = {
+    "merge_baseline":        24,
+    "task_baseline":         8,
+    "poll_interval":         0.10,
+    "epsilon":               1,
+    "task_timeout_secs":     180,
+    "merge_timeout_secs":    360,
+    "utilization_threshold": THRESHOLD,
+}
+
+def _run(service, regime, cache, busy, merge_wall, task_wall, occ_sum=NPROC_F, exit_124=0):
+    return {
+        "service":        service,
+        "regime":         regime,
+        "cache_state":    cache,
+        "busy_fraction":  busy,
+        "occupancy":      [{"merge": occ_sum, "task": 0, "sum": occ_sum, "timestamp": 1.0}],
+        "merge_wall":     merge_wall,
+        "task_wall":      task_wall,
+        "exit_124_count": exit_124,
+        "nproc":          NPROC_F,
+    }
+
+# Helper: build a full 12-run record with all regimes clearing the threshold
+def _good_measurements():
+    return {
+        "nproc": NPROC_F,
+        "runs": [
+            _run("single-pool","just-task",  "warm", 0.875, 0.0,  90.0),
+            _run("single-pool","just-task",  "cold", 0.800, 0.0, 120.0),
+            _run("single-pool","just-merge", "warm", 0.900, 240.0, 0.0),
+            _run("single-pool","just-merge", "cold", 0.880, 220.0, 0.0),
+            _run("single-pool","mixed",      "warm", 0.820, 210.0, 100.0),
+            _run("single-pool","mixed",      "cold", 0.780, 230.0, 115.0),
+            _run("dual-pool",  "just-task",  "warm", 0.875, 0.0,  88.0),
+            _run("dual-pool",  "just-task",  "cold", 0.800, 0.0, 118.0),
+            _run("dual-pool",  "just-merge", "warm", 0.900, 235.0, 0.0),
+            _run("dual-pool",  "just-merge", "cold", 0.870, 215.0, 0.0),
+            _run("dual-pool",  "mixed",      "warm", 0.840, 205.0,  92.0),
+            _run("dual-pool",  "mixed",      "cold", 0.790, 225.0, 110.0),
+        ],
+    }
+
+# ── (a) All clear → ok=True, no ESCAPE_VALVE finding ─────────────────────────
+m_good = _good_measurements()
+ok_a, findings_a = mod.evaluate_acceptance(m_good, DERIVED)
+
+if not ok_a:
+    errors.append("(a) all-clear: expected ok=True, got False")
+escape_findings = [f for f in findings_a if f.get("code") == "ESCAPE_VALVE"]
+if escape_findings:
+    errors.append(f"(a) all-clear: unexpected ESCAPE_VALVE finding: {escape_findings}")
+
+# ── (b) Utilization below threshold in one regime → ok=False ─────────────────
+# Inject a run where busy_fraction < THRESHOLD
+m_bad_util = dict(_good_measurements())
+m_bad_util["runs"] = list(m_bad_util["runs"])  # copy
+# Replace single-pool just-task warm with a below-threshold run
+m_bad_util["runs"] = [
+    r if not (r["service"] == "single-pool" and r["regime"] == "just-task"
+              and r["cache_state"] == "warm")
+    else _run("single-pool","just-task","warm", THRESHOLD - 0.10, 0.0, 90.0)
+    for r in m_bad_util["runs"]
+]
+ok_b, findings_b = mod.evaluate_acceptance(m_bad_util, DERIVED)
+
+if ok_b:
+    errors.append("(b) below-threshold: expected ok=False, got True")
+util_findings = [f for f in findings_b
+                 if f.get("code") in ("UTILIZATION_FAIL", "UTILIZATION_LOW",
+                                      "UTILIZATION")]
+if not util_findings:
+    errors.append("(b) below-threshold: no utilization finding in results")
+
+# ── (c) worst-case cold task > MAX_SANE_TIMEOUT → escape-valve FINDING ────────
+# Build a record where single-pool just-task cold has a huge wall-clock
+huge_wall = mod.MAX_SANE_TIMEOUT + 600.0   # safely beyond the sane ceiling
+m_insane = dict(_good_measurements())
+m_insane["runs"] = [
+    r if not (r["service"] == "single-pool" and r["regime"] == "just-task"
+              and r["cache_state"] == "cold")
+    else _run("single-pool","just-task","cold", 0.80, 0.0, huge_wall)
+    for r in m_insane["runs"]
+]
+# Derive updated constants for this record
+derived_c = mod.derive_constants(m_insane)
+
+ok_c, findings_c = mod.evaluate_acceptance(m_insane, derived_c)
+
+# Escape valve: finding MUST be emitted but ok should still be True (§10.4
+# — the finding IS the honest signal, not a hard fail)
+escape_c = [f for f in findings_c if f.get("code") == "ESCAPE_VALVE"]
+if not escape_c:
+    errors.append(
+        f"(c) insane timeout: expected ESCAPE_VALVE finding for "
+        f"task_wall={huge_wall:.0f}s > MAX_SANE_TIMEOUT={mod.MAX_SANE_TIMEOUT}"
+    )
+if not ok_c:
+    errors.append(
+        "(c) insane timeout: expected ok=True (escape-valve is honest surfacing, "
+        "not a hard fail); got ok=False"
+    )
+
+# ── (d) Occupancy sum != nproc → TOKEN_CONSERVATION finding ──────────────────
+m_bad_sum = dict(_good_measurements())
+m_bad_sum["runs"] = [
+    r if not (r["service"] == "single-pool" and r["regime"] == "just-task"
+              and r["cache_state"] == "warm")
+    else {**r, "occupancy": [{"merge": NPROC_F - 2, "task": 0, "sum": NPROC_F - 2,
+                               "timestamp": 1.0}]}
+    for r in m_bad_sum["runs"]
+]
+_ok_d, findings_d = mod.evaluate_acceptance(m_bad_sum, DERIVED)
+
+token_findings = [f for f in findings_d
+                  if f.get("code") in ("TOKEN_CONSERVATION", "TOKEN_LEAK",
+                                       "CONSERVATION")]
+if not token_findings:
+    errors.append(
+        f"(d) sum!=nproc: expected a token-conservation finding, "
+        f"got findings={[f.get('code') for f in findings_d]}"
+    )
+
+if errors:
+    for e in errors:
+        print("FAIL:", e, file=sys.stderr)
+    raise SystemExit(1)
+
+print("evaluate_acceptance: all assertions passed")
+PY
+} || _b6_exit=$?
+
+assert "evaluate_acceptance: ok/findings correct for all four synthetic scenarios" \
+    test "$_b6_exit" -eq 0
+
 test_summary
