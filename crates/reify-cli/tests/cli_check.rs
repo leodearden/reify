@@ -349,3 +349,107 @@ fn check_objective_no_conflict_exits_success_without_mnemonic() {
         "stderr should not contain 'E_OBJECTIVE_CONFLICT', got: {stderr}"
     );
 }
+
+// ── task 4488 θ: --strict flag (step-7 RED integration tests) ────────────────
+
+/// (1) `check --strict bracket_indeterminate.ri` → failure + names the
+/// indeterminate constraint; must NOT contain the legacy summary line.
+#[test]
+fn check_strict_indeterminate_exits_failure_naming_constraint() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--strict",
+        &common::fixture_path("bracket_indeterminate.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "reify check --strict should exit non-zero when constraints are \
+         indeterminate.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Strict check failed"),
+        "stdout should contain 'Strict check failed', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Bracket#constraint[1]"),
+        "stdout should name 'Bracket#constraint[1]', got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("No constraints violated"),
+        "stdout must NOT contain 'No constraints violated' in strict mode, got: {stdout}"
+    );
+}
+
+/// (2) `check --strict bracket_all_indeterminate.ri` → failure + names BOTH
+/// indeterminate constraints.
+#[test]
+fn check_strict_all_indeterminate_lists_all() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--strict",
+        &common::fixture_path("bracket_all_indeterminate.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "reify check --strict should exit non-zero when all constraints are \
+         indeterminate.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Bracket#constraint[0]"),
+        "stdout should name 'Bracket#constraint[0]', got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Bracket#constraint[1]"),
+        "stdout should name 'Bracket#constraint[1]', got: {stdout}"
+    );
+}
+
+/// (3) `check --strict bracket.ri` (all satisfied) → success; strict must not
+/// break the happy path.
+#[test]
+fn check_strict_all_satisfied_still_exits_success() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--strict",
+        &common::fixture_path("bracket.ri"),
+    ]);
+
+    assert!(
+        status.success(),
+        "reify check --strict should exit 0 when all constraints are satisfied.\
+         \nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "stdout should contain 'All constraints satisfied.', got: {stdout}"
+    );
+}
+
+/// (4) `check bracket_indeterminate.ri` (no flag) → success + byte-identical
+/// legacy line; explicit opt-in guard.
+#[test]
+fn check_indeterminate_without_strict_unchanged() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        &common::fixture_path("bracket_indeterminate.ri"),
+    ]);
+
+    assert!(
+        status.success(),
+        "reify check (no --strict) should exit 0 for indeterminate constraints.\
+         \nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("No constraints violated (1 indeterminate)."),
+        "stdout should contain the exact legacy summary 'No constraints violated \
+         (1 indeterminate).', got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Strict check failed"),
+        "stdout must NOT contain 'Strict check failed' without --strict, got: {stdout}"
+    );
+}
+
+// ── end task 4488 θ step-7 ───────────────────────────────────────────────────
