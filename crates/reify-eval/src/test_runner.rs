@@ -542,5 +542,4 @@ constraint def Positive {
             "sentinel target must not be registered"
         );
     }
-
 }
