@@ -1794,6 +1794,9 @@ mod tests {
     /// import path to `parts.ri`. Returned together so each cross-file test can
     /// drive the collectors from any of the three signal cursor positions.
     #[allow(dead_code)]
+    // test helper; the `impl Fn` closure can't live in a type alias, so the
+    // tuple-with-resolver return shape stays inline behind an allow.
+    #[allow(clippy::type_complexity)]
     fn canonical_workspace() -> (Vec<(Url, String)>, impl Fn(&str) -> Option<(Url, String)>) {
         let docs = workspace_docs(&[(parts_uri(), PARTS_SRC), (main_uri(), MAIN_SRC)]);
         let mut map = HashMap::new();
