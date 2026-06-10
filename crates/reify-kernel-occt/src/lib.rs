@@ -6479,6 +6479,35 @@ mod tests {
         );
     }
 
+    /// Overloads 2 & 3 cpp/ffi smoke (FFI level): the directional and
+    /// on-surface offset variants each build a non-null wire from a planar arc.
+    ///
+    /// The PRD bar for overloads 2 & 3 is only "non-Undef Curve" — the precise
+    /// radius signal is overload-1's job. Overload 3 supplies a direction
+    /// vector; overload 2 supplies a reference surface (a box face).
+    #[test]
+    fn make_offset_curve_directional_and_on_surface_smoke() {
+        use std::f64::consts::FRAC_PI_4;
+        let arc = ffi::ffi::make_arc_wire(
+            0.0, 0.0, 0.0, 0.01, -FRAC_PI_4, FRAC_PI_4, 0.0, 0.0, 1.0,
+        )
+        .expect("make_arc_wire should build a radius-10mm arc");
+
+        // Overload 3: directional offset (direction = +Z).
+        let directional = ffi::ffi::make_offset_curve_directional(&arc, 0.002, 0.0, 0.0, 1.0)
+            .expect("make_offset_curve_directional should succeed");
+        assert!(!directional.is_null(), "directional offset should be non-null");
+
+        // Overload 2: offset on a reference surface (a face of a box).
+        let boxx = ffi::ffi::make_box(0.02, 0.02, 0.02).expect("make_box");
+        let faces = ffi::ffi::get_faces(&boxx).expect("get_faces on box");
+        assert!(ffi::ffi::shape_vec_len(&faces) >= 1, "box should have faces");
+        let face = ffi::ffi::shape_vec_at(&faces, 0).expect("first box face");
+        let on_surface = ffi::ffi::make_offset_curve_on_surface(&arc, 0.002, &face)
+            .expect("make_offset_curve_on_surface should succeed");
+        assert!(!on_surface.is_null(), "on-surface offset should be non-null");
+    }
+
     // --- Query tests ---
 
     #[test]
