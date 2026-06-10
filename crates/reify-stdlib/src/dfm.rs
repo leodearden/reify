@@ -238,6 +238,21 @@ fn draft_violation(severity: Severity) -> Diagnostic {
     }
 }
 
+/// Build the code-less undercut diagnostic.
+///
+/// Always [`Severity::Error`] — an undercut means the part physically cannot release
+/// from the mold (a hard manufacturability failure per PRD §2.3), so the rule's
+/// declared severity does not apply. Takes no severity argument and ignores `args`.
+/// Emitted when element 1 of `min_draft_angle`'s result List is `Bool(true)`.
+fn undercut_violation() -> Diagnostic {
+    Diagnostic::error(
+        "E_DFM_UNDERCUT: re-entrant wall — the part cannot release from the mold; \
+         eliminate the undercut, add a side-action or lifter, or redesign the affected \
+         geometry"
+            .to_string(),
+    )
+}
+
 /// Build the code-less E_DFM_BUILD_VOLUME usage-error diagnostic for a
 /// `fits_build_volume` that evaluated to `Value::Undef`.
 ///
@@ -335,7 +350,10 @@ pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
                 if let Some(Value::Bool(true)) = items.get(0) {
                     diags.push(draft_violation(rule_severity(args)));
                 }
-                // Element 1: undercut — intentionally deferred to step-6.
+                // Element 1: undercut — always Error, independent of the rule tag.
+                if let Some(Value::Bool(true)) = items.get(1) {
+                    diags.push(undercut_violation());
+                }
             }
             diags
         }
