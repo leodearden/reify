@@ -22,7 +22,7 @@ import type { NavEntry } from '../hooks/useNavHistory';
 import type { createEditorStore } from '../stores/editorStore';
 import type { FileData, SourceLocation, DiagnosticInfo } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
-import { isSameFile, normalizePath, pathToUri } from '../utils/pathUtils';
+import { isSameFile, normalizePath, pathToUri, workspaceRootUriForFile } from '../utils/pathUtils';
 import styles from './Editor.module.css';
 
 // Intentionally shared by both the backend source-sync debounce (updateSource)
@@ -498,9 +498,13 @@ export function Editor(props: EditorProps) {
       window.__REIFY_DEBUG__.editorView = view;
     }
 
-    // Initialize LSP, send 'initialized' notification, then open the document
+    // Initialize LSP, send 'initialized' notification, then open the document.
+    // Pass the workspace root URI (directory of the active .ri file) so the
+    // backend sets workspace_root and activates κ cross-file references/rename.
+    // When no file is active, workspaceRootUriForFile returns undefined which
+    // preserves the existing single-file fallback behaviour.
     lspClient
-      .initialize()
+      .initialize(workspaceRootUriForFile(activeFile))
       .then(() => lspClient.initialized())
       .then(() => {
         if (activeFile) {
