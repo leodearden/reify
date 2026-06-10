@@ -1580,8 +1580,16 @@ pub(super) fn check_phase_check_members_against_requirements(
         }
         let trait_declared_type = match &default.kind {
             DefaultKind::Param { cell_type, .. } => cell_type,
-            // Annotated Let handled in step-4; unannotated Let/Constraint/Fn/AssocType skip.
-            _ => continue,
+            DefaultKind::Let { cell_type: Some(ty), .. } => ty,
+            // Unannotated let: declared type is the inferred expr type, NOT computed for names
+            // colliding with a structure member (pre-register Pass 2 skips structure_members
+            // names, checker.rs:596) — mirrors structure_let_members holding only annotated
+            // conformer lets (:257). Closing this gap would require compiling the trait-let
+            // expression against the conformer scope — deferred.
+            DefaultKind::Let { cell_type: None, .. }
+            | DefaultKind::Constraint(_)
+            | DefaultKind::Fn(_)
+            | DefaultKind::AssocType(_) => continue,
         };
         let Some(conformer_type) =
             structure_param_members.get(name).or_else(|| structure_let_members.get(name))
