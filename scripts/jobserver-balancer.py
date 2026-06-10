@@ -82,6 +82,22 @@ except ValueError as _exc:
     )
     sys.exit(1)
 
+# PLACEHOLDER pending ε (PRD §10): idle-reset window (consecutive idle ticks
+# before redistributing back to the seeded baseline).  A small default lets
+# the idle-reset path be exercised quickly in tests via the env override.
+# The ε harness will tune the final value for production.
+_idle_reset_raw: str = os.environ.get("REIFY_JOBSERVER_IDLE_RESET_TICKS", "10")
+try:
+    IDLE_RESET_TICKS: int = int(_idle_reset_raw)
+    if IDLE_RESET_TICKS < 1:
+        raise ValueError("must be >= 1")
+except ValueError as _exc:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_IDLE_RESET_TICKS={_idle_reset_raw!r}: {_exc}\n"
+        f"  Set to a positive integer >= 1\n"
+    )
+    sys.exit(1)
+
 # Token byte: '+' (0x2b) — matches the retired printf/tr seeder for byte-level
 # compatibility with the canary and any downstream tools.
 TOKEN_BYTE: bytes = b"+"
