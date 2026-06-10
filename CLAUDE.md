@@ -66,22 +66,22 @@ Prefer the orchestrator's merge queue (`/merge-queue`) to land a task branch. Wh
 
 The test-execution phase is governed by two complementary admission controls that compose in sequence: **`psi_gate()`** (pressure-reactive backoff) → **held-slot semaphore** (hard concurrency cap) → run passes.
 
-- **`psi_gate()`** (`scripts/verify.sh` L146–245): pressure-reactive admission backoff. Reads `/proc/pressure/cpu` avg10 and blocks until CPU pressure drops below a threshold (default 50 %) and a spacing window (default 20 s) has elapsed. Guards **test × compile** contention — any concurrent verify phase counts, not just test passes.
+- **`psi_gate()`** (`scripts/verify.sh`): pressure-reactive admission backoff. Reads `/proc/pressure/cpu` avg10 and blocks until CPU pressure drops below a threshold (default 50 %) and a spacing window (default 20 s) has elapsed. Guards **test × compile** contention — any concurrent verify phase counts, not just test passes.
 - **Held-slot semaphore** (`scripts/lib_test_semaphore.sh`): hard **test × test** concurrency cap. Holds an exclusive flock on FD 9 across all test passes so at most **N** verifies run their test-execution phase simultaneously (default `N=1`). Compile, check, clippy, infra steps, and `psi_gate()` itself are **outside** the gated region.
 
-**Compose order (PRD §2 D2):** `psi-wait` → `acquire-slot` → `run-test-passes-with-slot-held` → `release-slot`. The `@@SEMAPHORE_ACQUIRE@@` sentinel is emitted by `add_test_passes()` (`verify.sh` L676) AFTER the `psi_gate()` entry, so the slot is not occupied during a pressure wait. `@@SEMAPHORE_RELEASE@@` (L730) marks the end of the gated region. Both sentinels are handled in the executor (L935–944) and annotated by `--print-plan` (L914–918).
+**Compose order (PRD §2 D2):** `psi-wait` → `acquire-slot` → `run-test-passes-with-slot-held` → `release-slot`. The `@@SEMAPHORE_ACQUIRE@@` sentinel is emitted by `add_test_passes()` (`verify.sh`) AFTER the `psi_gate()` entry, so the slot is not occupied during a pressure wait. `@@SEMAPHORE_RELEASE@@` marks the end of the gated region. Both sentinels are handled in the executor and annotated by `--print-plan`.
 
-**Knobs** (`scripts/lib_test_semaphore.sh` L17–22):
+**Knobs** (`scripts/lib_test_semaphore.sh`):
 - **`REIFY_TEST_SEMAPHORE_CONCURRENCY`** — slot count N (default `1`)
 - **`REIFY_TEST_SEMAPHORE_WAIT`** — max seconds to wait for a slot (default `1800`)
 - **`REIFY_TEST_SEMAPHORE_LOCK`** — base path for slot files (default `${TMPDIR:-/tmp}/reify-test-semaphore-$(id -u).lock`)
 - **`REIFY_TEST_SEMAPHORE_DISABLE`** — set to `1` for a total bypass (no slot acquired)
 
-**`DF_VERIFY_ROLE=merge` exemption (PRD §2 D5):** both `psi_gate()` (`verify.sh` L173) and `test_semaphore_acquire` (`lib_test_semaphore.sh` L59) skip acquisition when `DF_VERIFY_ROLE=merge`. The merge gate **never waits behind a task slot**. This exemption fires on both paths: the orchestrator queue merge path (orchestrator injects `DF_VERIFY_ROLE=merge`) and the local `land.sh`/`pre-merge-commit` path.
+**`DF_VERIFY_ROLE=merge` exemption (PRD §2 D5):** both `psi_gate()` (`verify.sh`) and `test_semaphore_acquire` (`lib_test_semaphore.sh`) skip acquisition when `DF_VERIFY_ROLE=merge`. The merge gate **never waits behind a task slot**. This exemption fires on both paths: the orchestrator queue merge path (orchestrator injects `DF_VERIFY_ROLE=merge`) and the local `land.sh`/`pre-merge-commit` path.
 
-**Backpressure — exit 75 (EX_TEMPFAIL):** when no slot is acquired within `REIFY_TEST_SEMAPHORE_WAIT` seconds, `test_semaphore_acquire` returns 75 and `verify.sh` propagates `return 75` (L240) — the same EX_TEMPFAIL `psi_gate()` emits on timeout. The orchestrator treats exit 75 as retry-capped transient infra (same class as OCCT-slot/ENOSPC) and requeues the task; no spurious task failure occurs. **No dark-factory / orchestrator-code change is required** (PRD §6/§7): `DF_VERIFY_ROLE=merge` injection and exit-75 requeue are pre-existing orchestrator behaviours the semaphore reuses verbatim.
+**Backpressure — exit 75 (EX_TEMPFAIL):** when no slot is acquired within `REIFY_TEST_SEMAPHORE_WAIT` seconds, `test_semaphore_acquire` returns 75 and `verify.sh` propagates `return 75` — the same EX_TEMPFAIL `psi_gate()` emits on timeout. The orchestrator treats exit 75 as retry-capped transient infra (same class as OCCT-slot/ENOSPC) and requeues the task; no spurious task failure occurs. **No dark-factory / orchestrator-code change is required** (PRD §6/§7): `DF_VERIFY_ROLE=merge` injection and exit-75 requeue are pre-existing orchestrator behaviours the semaphore reuses verbatim.
 
-Canonical reference: `docs/prds/test-run-concurrency-semaphore.md` (§1 motivation, §2 design decisions D1/D2/D5/D6, §6 no-dark-factory-change, §7 seam table). PRD §2 originally cited `verify.sh:161` (merge bypass) and `verify.sh:228` (exit-75); those paths are now at L173 and L240 — cite the PRD for full prose, stable function names for durable code links.
+Canonical reference: `docs/prds/test-run-concurrency-semaphore.md` (§1 motivation, §2 design decisions D1/D2/D5/D6, §6 no-dark-factory-change, §7 seam table). PRD §2 originally cited `verify.sh:161` (merge bypass) and `verify.sh:228` (exit-75) — those lines have since drifted; prefer stable function names (`psi_gate`, `test_semaphore_acquire`, `@@SEMAPHORE_ACQUIRE@@`/`@@SEMAPHORE_RELEASE@@`) over line numbers for durable code links.
 
 ## Memory Usage
 
