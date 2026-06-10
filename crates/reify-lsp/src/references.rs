@@ -1253,6 +1253,68 @@ mod tests {
         (span.start as usize) >= lo && (span.end as usize) <= hi
     }
 
+    // ─── κ (task 4210): cross-file references + rename scaffolding ────────────
+    //
+    // The CANONICAL SIGNAL (PRD boundary row 8): a `Hole` structure declared in
+    // `parts.ri` is imported and constructed (`sub hole = Hole`) in `main.ri`.
+    // Renaming `Hole`→`Bore` once must update the home declaration, the import
+    // entity token, AND the `sub` construction site — across both files — and
+    // both must re-parse clean. These fixtures + helpers mirror goto_def's
+    // `mock_resolver` pattern so the pure cross-file collectors are unit-testable
+    // with an in-memory workspace + an injectable import resolver (no filesystem).
+
+    /// parts.ri — the home module declaring `structure Hole`.
+    #[allow(dead_code)]
+    const PARTS_SRC: &str = "structure Hole {\n    param diameter: Length = 10mm\n}";
+
+    /// main.ri — imports `parts.Hole` and constructs it via `sub hole = Hole`.
+    #[allow(dead_code)]
+    const MAIN_SRC: &str = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole\n}";
+
+    /// URI of the home module (`parts.ri`).
+    #[allow(dead_code)]
+    fn parts_uri() -> Url {
+        Url::parse("file:///proj/parts.ri").unwrap()
+    }
+
+    /// URI of the importing module (`main.ri`).
+    #[allow(dead_code)]
+    fn main_uri() -> Url {
+        Url::parse("file:///proj/main.ri").unwrap()
+    }
+
+    /// Build a `workspace_docs` open-document snapshot — the multi-document
+    /// workspace view the cross-file collectors scan for importers — from named
+    /// `(uri, source)` pairs.
+    #[allow(dead_code)]
+    fn workspace_docs(docs: &[(Url, &str)]) -> Vec<(Url, String)> {
+        docs.iter()
+            .map(|(uri, src)| (uri.clone(), (*src).to_string()))
+            .collect()
+    }
+
+    /// Build a mock `resolve_import` closure mapping an import dot-path
+    /// (e.g. `"parts"`) to its `(target_uri, target_source)`, mirroring
+    /// goto_def tests' `mock_resolver`. Returns `None` for an unknown path.
+    #[allow(dead_code)]
+    fn mock_resolver(
+        map: HashMap<String, (Url, String)>,
+    ) -> impl Fn(&str) -> Option<(Url, String)> {
+        move |path: &str| map.get(path).cloned()
+    }
+
+    /// The canonical two-file workspace: `parts.ri` + `main.ri` as a
+    /// `workspace_docs` snapshot, paired with a resolver that maps the `parts`
+    /// import path to `parts.ri`. Returned together so each cross-file test can
+    /// drive the collectors from any of the three signal cursor positions.
+    #[allow(dead_code)]
+    fn canonical_workspace() -> (Vec<(Url, String)>, impl Fn(&str) -> Option<(Url, String)>) {
+        let docs = workspace_docs(&[(parts_uri(), PARTS_SRC), (main_uri(), MAIN_SRC)]);
+        let mut map = HashMap::new();
+        map.insert("parts".to_string(), (parts_uri(), PARTS_SRC.to_string()));
+        (docs, mock_resolver(map))
+    }
+
     // --- step-3: collect_references basic single binding ---
 
     #[test]
