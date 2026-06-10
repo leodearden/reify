@@ -39,9 +39,11 @@ fn stdlib_loads_generic_fn_clean() {
     }
 
     // std.fields must contain a function named "identity" with type_params.
+    // Note: ModulePath::Display joins segments with "/" (not "."), so
+    // ModulePath::from_dotted("std.fields") displays as "std/fields".
     let fields_module = stdlib
         .iter()
-        .find(|m| m.path.to_string() == "std.fields")
+        .find(|m| m.path.to_string() == "std/fields")
         .expect("std.fields module must be present in stdlib");
 
     let identity_fn = fields_module
