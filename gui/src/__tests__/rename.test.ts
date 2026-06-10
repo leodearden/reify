@@ -84,13 +84,16 @@ describe('applyTextEditsToString', () => {
 
   it('applies multiple non-overlapping ascending edits without offset drift (right-to-left)', () => {
     // source: "struct Foo { sub x: Bar }\n"
+    //          0123456789012345678901234
+    //                    1111111111222222
     // edit 1: line 0, char 7..10 ("Foo") → "Baz"
-    // edit 2: line 0, char 21..24 ("Bar") → "Baz"
+    // edit 2: line 0, char 20..23 ("Bar") → "Baz"
+    //   ('B'=20, 'a'=21, 'r'=22, ' '=23)
     // Both should be replaced independently.
     const source = 'struct Foo { sub x: Bar }\n';
     const result = applyTextEditsToString(source, [
       { range: { start: { line: 0, character: 7 }, end: { line: 0, character: 10 } }, newText: 'Baz' },
-      { range: { start: { line: 0, character: 21 }, end: { line: 0, character: 24 } }, newText: 'Baz' },
+      { range: { start: { line: 0, character: 20 }, end: { line: 0, character: 23 } }, newText: 'Baz' },
     ]);
     expect(result).toBe('struct Baz { sub x: Baz }\n');
   });

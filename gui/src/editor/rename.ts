@@ -19,6 +19,73 @@ import type { PrepareRenameResult, Range, WorkspaceEdit } from './lspClient';
 import { lspRangeToCmRange } from './lspRange';
 
 /**
+ * Apply an array of LSP TextEdits to a plain string, returning the result.
+ *
+ * This is the pure core for closed/inactive-file edits: it does NOT need
+ * CodeMirror or Tauri — just a source string and LSP TextEdit objects.
+ *
+ * Algorithm:
+ * 1. Build a line-start offset table for the source string.
+ * 2. Sort edits by start offset DESCENDING so earlier edits don't shift the
+ *    byte positions of later (higher-indexed) edits.
+ * 3. Splice each edit (start offset → end offset replaced with newText).
+ *
+ * Character offsets beyond the line end are clamped to the line end (same
+ * semantics as lspPositionToOffset / applyWorkspaceEdit) so malformed server
+ * responses don't throw.
+ *
+ * @param source  The current file content as a string.
+ * @param edits   LSP TextEdits with 0-based line/character positions.
+ * @returns       The updated string.
+ */
+export function applyTextEditsToString(
+  source: string,
+  edits: Array<{
+    range: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+    };
+    newText: string;
+  }>,
+): string {
+  if (edits.length === 0) return source;
+
+  // Build line-start offset table.
+  // lineStarts[i] = offset in `source` where line i (0-based) begins.
+  const lineStarts: number[] = [0];
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] === '\n') {
+      lineStarts.push(i + 1);
+    }
+  }
+
+  /** Map (0-based line, 0-based character) → clamped string offset. */
+  function posToOffset(line: number, character: number): number {
+    const lineStart = lineStarts[line] ?? source.length;
+    // Clamp character to the end of the line (next lineStart - 1, or source.length).
+    const lineEnd =
+      line + 1 < lineStarts.length ? lineStarts[line + 1] - 1 : source.length;
+    return Math.min(lineStart + character, lineEnd);
+  }
+
+  // Sort descending by start offset so each splice doesn't invalidate later offsets.
+  const sorted = [...edits].sort((a, b) => {
+    const aOff = posToOffset(a.range.start.line, a.range.start.character);
+    const bOff = posToOffset(b.range.start.line, b.range.start.character);
+    return bOff - aOff; // descending
+  });
+
+  let result = source;
+  for (const edit of sorted) {
+    const from = posToOffset(edit.range.start.line, edit.range.start.character);
+    const to = posToOffset(edit.range.end.line, edit.range.end.character);
+    result = result.slice(0, from) + edit.newText + result.slice(to);
+  }
+
+  return result;
+}
+
+/**
  * Apply an LSP WorkspaceEdit's edits for `uri` to the editor as one transaction.
  *
  * Each LSP TextEdit range (0-based line/character) is mapped to CodeMirror
