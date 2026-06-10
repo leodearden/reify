@@ -2105,7 +2105,7 @@ impl OcctKernel {
                 ffi::ffi::boolean_common(l, r)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
-            GeometryOp::Fillet { target, radius } => {
+            GeometryOp::Fillet { target, radius, .. } => {
                 let shape = self.get_shape(*target)?;
                 let r = extract_f64(radius)?;
                 if !(r.is_finite() && r > 0.0) {
@@ -4521,6 +4521,7 @@ mod tests {
             .unwrap();
         let result = kernel.execute(&GeometryOp::Fillet {
             target: box_h.id,
+            edges: vec![],
             radius: Value::Real(0.0),
         });
         match result {
@@ -4668,6 +4669,7 @@ mod tests {
             .unwrap();
         let result = kernel.execute(&GeometryOp::Fillet {
             target: box_h.id,
+            edges: vec![],
             radius: Value::Real(f64::NAN),
         });
         match result {
@@ -4689,6 +4691,7 @@ mod tests {
             .unwrap();
         let result = kernel.execute(&GeometryOp::Fillet {
             target: box_h.id,
+            edges: vec![],
             radius: Value::Real(f64::INFINITY),
         });
         match result {
@@ -5088,6 +5091,7 @@ mod tests {
         // Radius 100.0 is much larger than any edge of the 10x10x10 box
         let result = kernel.execute(&GeometryOp::Fillet {
             target: box_h.id,
+            edges: vec![],
             radius: Value::Real(100.0),
         });
         match result {

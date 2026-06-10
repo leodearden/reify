@@ -9915,6 +9915,7 @@ mod tests {
             Case {
                 op: GeometryOp::Fillet {
                     target: GeometryHandleId(7),
+                    edges: vec![],
                     radius: Value::Real(0.001),
                 },
                 expected: vec![GeometryHandleId(7)],
@@ -10294,6 +10295,7 @@ mod tests {
             Case {
                 op: GeometryOp::Fillet {
                     target: h(1),
+                    edges: vec![],
                     radius: r(0.001),
                 },
                 expected: Operation::ModifyFillet,

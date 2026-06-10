@@ -802,6 +802,7 @@ mod tests {
         // Fillet is the canonical local feature — task 7's scope.
         assert_seeds_nothing(&GeometryOp::Fillet {
             target: fake_target(),
+            edges: vec![],
             radius: Value::Real(0.001),
         });
     }

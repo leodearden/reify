@@ -582,8 +582,14 @@ pub enum GeometryOp {
         right: GeometryHandleId,
     },
     /// Fillet (round) edges by radius.
+    ///
+    /// `edges` is the curated selection of edges to round. An **empty** list is
+    /// the all-edges back-compat path (legacy 2-arg `fillet(solid, radius)`); a
+    /// non-empty list names the specific edges to round (3-arg
+    /// `fillet(solid, edges, radius)`).
     Fillet {
         target: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
         radius: Value,
     },
     /// Chamfer edges by distance.
@@ -6347,6 +6353,7 @@ mod tests {
                 "Fillet",
                 GeometryOp::Fillet {
                     target: GeometryHandleId(1),
+                    edges: vec![],
                     radius: Value::Real(0.001),
                 },
             ),

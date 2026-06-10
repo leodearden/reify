@@ -1911,6 +1911,7 @@ mod tests {
         let fillet_h = handle
             .execute(&GeometryOp::Fillet {
                 target: union_h.id,
+                edges: vec![],
                 radius: Value::Real(2.0),
             })
             .unwrap();
@@ -2084,6 +2085,7 @@ mod tests {
         let fillet_h = handle
             .execute_async(&GeometryOp::Fillet {
                 target: union_h.id,
+                edges: vec![],
                 radius: Value::Real(2.0),
             })
             .await

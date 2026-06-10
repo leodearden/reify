@@ -160,7 +160,7 @@ fn fillet_through_full_eval_pipeline() {
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {
-        GeometryOp::Fillet { target, radius } => {
+        GeometryOp::Fillet { target, radius, .. } => {
             assert_eq!(
                 *target, target_handle,
                 "Fillet target should be handle from op 0 ({:?}), got {:?}",
@@ -205,7 +205,7 @@ fn fillet_modify_only_needs_radius_arg() {
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {
-        GeometryOp::Fillet { target, radius } => {
+        GeometryOp::Fillet { target, radius, .. } => {
             assert_eq!(
                 *target, target_handle,
                 "Fillet target should be handle from op 0 ({:?}), got {:?}",

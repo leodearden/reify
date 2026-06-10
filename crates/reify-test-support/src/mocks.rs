@@ -3174,13 +3174,14 @@ mod tests {
         let handle = kernel
             .execute(&GeometryOp::Fillet {
                 target: target.id,
+                edges: vec![],
                 radius: Value::length(0.005),
             })
             .unwrap();
 
         assert_eq!(handle.id, GeometryHandleId(2));
         match &kernel.operations()[1].op {
-            GeometryOp::Fillet { target, radius } => {
+            GeometryOp::Fillet { target, radius, .. } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert_eq!(*radius, Value::length(0.005));
             }

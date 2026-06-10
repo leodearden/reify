@@ -599,6 +599,7 @@ pub(crate) fn compile_geometry_op(
             match kind {
                 reify_compiler::ModifyKind::Fillet => Ok(reify_ir::GeometryOp::Fillet {
                     target: target_id,
+                    edges: vec![],
                     radius: eval_arg("radius")?,
                 }),
                 reify_compiler::ModifyKind::Chamfer => Ok(reify_ir::GeometryOp::Chamfer {
