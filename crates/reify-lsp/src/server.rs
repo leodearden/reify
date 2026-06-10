@@ -440,32 +440,64 @@ impl LanguageServer for ReifyLanguageServer {
         let uri = params.text_document.uri;
         let position = params.position;
 
-        // Brief read lock: snapshot the document text, then drop it before the
-        // (CPU-only) parse + scope walk — mirrors hover/document_symbol.
+        // κ (task 4210): prepare_rename now resolves cross-file structure homes via
+        // the same workspace rig as goto_definition. The single-file α producer
+        // keeps its exact refusal surface (Invariant 4 — keywords/literals/builtins/
+        // types/declaration names); the cross-file producer lifts the refusal ONLY
+        // for structures reachable through the import graph. None passes through so
+        // the editor refuses the rename.
         let state = self.state.read().await;
         let doc = match state.documents.get(&uri) {
             Some(doc) => doc,
             None => return Ok(None),
         };
+        let workspace_root = state.workspace_root.clone();
+        let stdlib_path = state.stdlib_path.clone();
+        let open_docs = state.documents.snapshot_as_path_map();
         drop(state);
 
-        // Reuse the per-document cached parse (one parse per edit) — prelude-aware
-        // for AST-shape consistency with the rest of reify-lsp.
-        let text = doc.text.clone();
-        let parsed = doc.parsed_module();
+        let target = match tokio::task::spawn_blocking(move || {
+            let parsed = doc.parsed_module();
+            let primary_source = doc.text.as_str();
+            if let Some(root) = workspace_root {
+                let stdlib_root =
+                    stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
+                let resolver = reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                let resolve_import = |import_path: &str| -> Option<(Url, String)> {
+                    let path = resolver.resolve_import_path(import_path).ok()?;
+                    let source = open_docs
+                        .get(&path)
+                        .cloned()
+                        .or_else(|| std::fs::read_to_string(&path).ok())?;
+                    let target_uri = Url::from_file_path(&path).ok()?;
+                    Some((target_uri, source))
+                };
+                crate::references::prepare_rename_cross_file(
+                    primary_source,
+                    &parsed,
+                    &uri,
+                    position,
+                    &resolve_import,
+                )
+            } else {
+                crate::references::prepare_rename(primary_source, &parsed, position)
+            }
+        })
+        .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("prepare_rename blocking task failed: {e}");
+                None
+            }
+        };
 
-        // Forward to the α producer: it returns None for every non-renameable
-        // position (keywords/literals/builtins/types/declaration names/cross-module
-        // symbols), which is Invariant 4's refusal surface. None passes through so
-        // the editor refuses the rename.
-        Ok(
-            crate::references::prepare_rename(&text, &parsed, position).map(|target| {
-                PrepareRenameResponse::RangeWithPlaceholder {
-                    range: target.range,
-                    placeholder: target.placeholder,
-                }
-            }),
-        )
+        Ok(target.map(|target| {
+            PrepareRenameResponse::RangeWithPlaceholder {
+                range: target.range,
+                placeholder: target.placeholder,
+            }
+        }))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -473,23 +505,64 @@ impl LanguageServer for ReifyLanguageServer {
         let position = params.text_document_position.position;
         let new_name = params.new_name;
 
+        // κ (task 4210): rename now produces a cross-file WorkspaceEdit via the same
+        // workspace rig as goto_definition. new_name validation + the re-parse-clean
+        // guarantee (Invariant 5) live in the producers, so the handler stays a thin
+        // forwarder; Ok(None) is preserved for unknown uri / non-renameable cursor /
+        // invalid new_name.
         let state = self.state.read().await;
         let doc = match state.documents.get(&uri) {
             Some(doc) => doc,
             None => return Ok(None),
         };
+        let workspace_root = state.workspace_root.clone();
+        let stdlib_path = state.stdlib_path.clone();
+        let open_docs = state.documents.snapshot_as_path_map();
+        let workspace_docs: Vec<(Url, String)> = state
+            .documents
+            .iter()
+            .map(|(u, d)| (u.clone(), d.text.clone()))
+            .collect();
         drop(state);
 
-        // Reuse the per-document cached parse (one parse per edit).
-        let text = doc.text.clone();
-        let parsed = doc.parsed_module();
-
-        // compute_rename validates new_name and guarantees a re-parse-clean edit
-        // (Invariant 5); it returns None for unknown/non-renameable positions and
-        // invalid names, so the handler is a thin forwarder.
-        Ok(crate::references::compute_rename(
-            &text, &parsed, &uri, position, &new_name,
-        ))
+        let edit = match tokio::task::spawn_blocking(move || {
+            let parsed = doc.parsed_module();
+            let primary_source = doc.text.as_str();
+            if let Some(root) = workspace_root {
+                let stdlib_root =
+                    stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
+                let resolver = reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                let resolve_import = |import_path: &str| -> Option<(Url, String)> {
+                    let path = resolver.resolve_import_path(import_path).ok()?;
+                    let source = open_docs
+                        .get(&path)
+                        .cloned()
+                        .or_else(|| std::fs::read_to_string(&path).ok())?;
+                    let target_uri = Url::from_file_path(&path).ok()?;
+                    Some((target_uri, source))
+                };
+                crate::references::compute_rename_cross_file(
+                    primary_source,
+                    &parsed,
+                    &uri,
+                    position,
+                    &new_name,
+                    &workspace_docs,
+                    &resolve_import,
+                )
+            } else {
+                crate::references::compute_rename(primary_source, &parsed, &uri, position, &new_name)
+            }
+        })
+        .await
+        {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("rename blocking task failed: {e}");
+                None
+            }
+        };
+        Ok(edit)
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
