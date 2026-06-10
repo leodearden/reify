@@ -240,3 +240,79 @@ structure def S : T {
         errors,
     );
 }
+
+// ── Cycle 2: annotated-Let arm + cross-kind override ──────────────────────────
+//
+// (a) POSITIVE `param_override_of_annotated_trait_let_default_incompatible_errors`:
+//     `trait T { let y : Length = 5mm }` + `structure def S : T { param y : Mass }`
+//     → expect ≥1 error containing "type mismatch for trait member 'y'".
+//     After step-2 the loop handles only DefaultKind::Param (`_ => continue`), so
+//     this still FAILS → RED.
+//
+// (b) NEGATIVE guard `param_override_of_annotated_trait_let_default_compatible_conforms`:
+//     `trait T { let y : Length = 5mm }` + `structure def S : T { param y : Length }`
+//     → NO "type mismatch for trait member" (§10 row 11 override idiom).
+//     Must remain GREEN both before and after step-4.
+
+// ── (a) POSITIVE: cross-kind incompatible override — conformer param vs annotated trait let
+/// A conformer `param y : Mass` collides with a trait annotated-let default
+/// `let y : Length = 5mm`. The collision check must fire (cross-kind, Mass ≠ Length).
+///
+/// ## RED before step-4
+/// After step-2 the defaults loop only covers `DefaultKind::Param`; the annotated-Let arm
+/// is `_ => continue`. This test fails until step-4 extends the match.
+#[test]
+fn param_override_of_annotated_trait_let_default_incompatible_errors() {
+    let source = r#"
+trait T {
+    let y : Length = 5mm
+}
+structure def S : T {
+    param y : Mass
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait member 'y'")),
+        "expected ≥1 Severity::Error containing \"type mismatch for trait member 'y'\" \
+         (cross-kind collision: conformer param Mass vs trait annotated-let Length); got: {:?}",
+        errors,
+    );
+}
+
+// ── (b) NEGATIVE guard: compatible cross-kind override (§10 row 11) ──────────────
+
+/// `trait T { let y : Length = 5mm }` + `structure def S : T { param y : Length }`
+/// — the conformer param overrides a derived trait let with a compatible measured value.
+/// `implicitly_converts_to(Length, Length)` is true → no "type mismatch for trait member".
+///
+/// This is §10 row 11: a conformer can upgrade a trait `let` default to a settable `param`
+/// as long as the type is compatible.
+///
+/// Must remain GREEN both before and after step-4.
+#[test]
+fn param_override_of_annotated_trait_let_default_compatible_conforms() {
+    let source = r#"
+trait T {
+    let y : Length = 5mm
+}
+structure def S : T {
+    param y : Length
+}
+"#;
+    let module = compile_source(source);
+
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait member")),
+        "compatible cross-kind override (conformer param Length over trait let Length) \
+         must NOT produce \"type mismatch for trait member\"; all diagnostics: {:?}",
+        module.diagnostics,
+    );
+}
