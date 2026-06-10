@@ -1434,4 +1434,108 @@ mod tests {
         assert_eq!(levels[1], vec![b]);
         assert_eq!(levels[2], vec![c]);
     }
+
+    // --- check_dag_complete positive tests (step-1) ---
+
+    /// (a) realization→realization: producer P before consumer C in exec_order → Ok(())
+    #[test]
+    fn check_dag_complete_realization_to_realization_ordered_ok() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::check_dag_complete;
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer
+        let c_id = RealizationNodeId::new(e, 1); // consumer
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // Producer has no deps
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
+        // Consumer reads producer
+        traces.insert(
+            NodeId::Realization(c_id.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // exec_order: producer first, consumer second
+        let exec_order = vec![p_id, c_id];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        assert!(result.is_ok(), "expected Ok(()), got: {:?}", result);
+    }
+
+    /// (b) value→realization: value cell reads producer realization; producer present → Ok(())
+    #[test]
+    fn check_dag_complete_value_to_realization_producer_present_ok() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::check_dag_complete;
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer realization
+        let selector = ValueCellId::new(e, "sel");
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // Producer realization
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
+        // Value (selector) reads the producer realization
+        traces.insert(
+            NodeId::Value(selector.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // exec_order contains the producer
+        let exec_order = vec![p_id];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        assert!(result.is_ok(), "expected Ok(()), got: {:?}", result);
+    }
+
+    /// (c) constraint→realization: constraint reads producer realization; producer present → Ok(())
+    #[test]
+    fn check_dag_complete_constraint_to_realization_producer_present_ok() {
+        use crate::deps::DependencyTrace;
+        use crate::dirty::check_dag_complete;
+        use reify_core::RealizationNodeId;
+        use std::collections::HashMap;
+
+        let e = "E";
+        let p_id = RealizationNodeId::new(e, 0); // producer realization
+        let k = ConstraintNodeId::new(e, 0);
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // Producer realization
+        traces.insert(
+            NodeId::Realization(p_id.clone()),
+            DependencyTrace::default(),
+        );
+        // Constraint reads the producer realization
+        traces.insert(
+            NodeId::Constraint(k.clone()),
+            DependencyTrace {
+                realization_reads: vec![p_id.clone()],
+                reads: vec![],
+            },
+        );
+
+        // exec_order contains the producer
+        let exec_order = vec![p_id];
+
+        let result = check_dag_complete(&traces, &exec_order);
+        assert!(result.is_ok(), "expected Ok(()), got: {:?}", result);
+    }
 }
