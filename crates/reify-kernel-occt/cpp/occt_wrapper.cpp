@@ -42,6 +42,7 @@
 // OCCT loft / offset / shell / thicken
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
+#include <BRepOffsetAPI_MakeOffset.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <TopTools_ListOfShape.hxx>
 
@@ -2351,6 +2352,54 @@ std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
+        return result;
+    });
+}
+
+// --- Offset curve (offset_curve ι) ---
+
+// Planar offset of a curve (wire) by `distance`, producing a fresh concentric
+// wire.  Backs the `offset_curve(curve, distance)` modify op (overload 1).
+//
+// Convention: a POSITIVE `distance` grows the curve outward (a radius-10mm arc
+// becomes radius-12mm when offset by 2mm).  BRepOffsetAPI_MakeOffset's
+// positive-offset side depends on the spine wire's orientation and plane
+// normal, so rather than hard-code a sign we pick whichever signed offset
+// yields the LONGER wire (outward ⇒ larger radius/perimeter for a planar arc).
+// `IsOpenResult=true` keeps an open arc spine open (single concentric edge,
+// no end caps) so the result stays a clean curve.
+std::unique_ptr<OcctShape> make_offset_curve(const OcctShape& shape, double distance) {
+    return wrap_occt_call("make_offset_curve", [&]() {
+        if (shape.shape.ShapeType() != TopAbs_WIRE) {
+            throw std::runtime_error("make_offset_curve: shape must be a wire");
+        }
+        TopoDS_Wire wire = TopoDS::Wire(shape.shape);
+
+        auto build_offset = [&](double signed_off) -> TopoDS_Shape {
+            BRepOffsetAPI_MakeOffset maker(wire, GeomAbs_Arc, Standard_True);
+            maker.Perform(signed_off);
+            if (!maker.IsDone()) {
+                throw std::runtime_error(
+                    "make_offset_curve: BRepOffsetAPI_MakeOffset failed");
+            }
+            return maker.Shape();
+        };
+        auto length_of = [](const TopoDS_Shape& s) -> double {
+            GProp_GProps props;
+            BRepGProp::LinearProperties(s, props);
+            return props.Mass();
+        };
+
+        GProp_GProps spine_props;
+        BRepGProp::LinearProperties(wire, spine_props);
+        const double spine_len = spine_props.Mass();
+
+        TopoDS_Shape positive = build_offset(distance);
+        TopoDS_Shape chosen =
+            (length_of(positive) >= spine_len) ? positive : build_offset(-distance);
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = chosen;
         return result;
     });
 }

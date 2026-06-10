@@ -695,6 +695,11 @@ pub mod ffi {
             face_indices: &Vec<u32>,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        // --- Offset curve (offset_curve ι) ---
+        /// Planar offset of a curve (wire) by `distance` → fresh concentric
+        /// wire. Positive `distance` grows the curve outward (overload 1).
+        fn make_offset_curve(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
+
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
