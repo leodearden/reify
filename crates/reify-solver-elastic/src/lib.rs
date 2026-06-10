@@ -447,6 +447,8 @@ pub mod form_find;
 pub mod form_find_free;
 // Task 3796: Tensegrity T2 — self-stress & prestress-stability analysis kernel.
 pub mod prestress_stability;
+// Task 3798: Tensegrity T3b — load analysis with tension-only active-set.
+pub mod tensegrity_load;
 pub mod geometric_stiffness;
 pub mod interpolation;
 // Task 3868: κ — additive joint-stiffness kernel (PRD compliant-joints-flexures.md §7.2).
@@ -662,3 +664,12 @@ pub use form_find_free::{ForceDensitySpec, FreeFormError, FreeFormResult, form_f
 // layer-2's D = CᵀQC and the buckling dense eigensolver. Kernel-only (no .ri /
 // stdlib / trampoline wiring in this task, per plan.json design_decisions).
 pub use prestress_stability::{StabilityError, StabilityResult, analyze_prestress_stability};
+// Task 3798: Tensegrity T3b — load analysis with tension-only active-set (slack
+// cables). PRD: docs/prds/v0_6/tensegrity-structures.md §6 / Tier-3 leaf T3b.
+// Pure numeric kernel behind the dedicated `solver::tensegrity_load` ComputeNode
+// target; the Value-cracking trampoline lives in reify-eval's
+// compute_targets/tensegrity_load.rs.
+pub use tensegrity_load::{
+    BarMember, TensegrityLoadError, TensegrityLoadOptions, TensegrityLoadSolve,
+    tensegrity_load_analysis,
+};
