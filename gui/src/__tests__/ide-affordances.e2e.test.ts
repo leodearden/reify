@@ -142,6 +142,85 @@ describe('IDE affordances harness — smoke (step-1/step-2)', () => {
   });
 });
 
+// ── step-5: RED rename ────────────────────────────────────────────────────────
+//
+// Asserts:
+//   (faces backend)  textDocument/prepareRename then textDocument/rename with the
+//                    new name and correct 0-based position.
+//   (faces frontend) editor buffer after rename: PartA.width → newWidth (both
+//                    declaration and use rewritten), PartB.width unchanged.
+//
+// The LSP mock router already returns contract-faithful responses for
+// prepareRename and rename (implemented in harness pre-1). This test goes RED
+// if any part of the inline-rename flow does not work in jsdom. step-6 wires
+// whatever is missing.
+
+describe('rename (step-5 RED → step-6 GREEN)', () => {
+  it('F2 renames PartA.width occurrences only, leaving PartB.width untouched', async () => {
+    harness = await setupBridgeHarness();
+    dispatch = makeDispatch(harness.handler);
+    renderEditorWithFindUsesPanel(harness);
+
+    await dispatch('open_file', { path: FIXTURE_PATH, content: FIXTURE });
+    await flushMacrotasks(0);
+
+    // Verify content before rename: both structures have `width`
+    const view = window.__REIFY_DEBUG__!.editorView!;
+    expect(view.state.doc.length).toBeGreaterThan(0);
+    const before = view.state.doc.toString();
+    expect(before).toContain('param width = 10.0'); // PartA.width decl
+    expect(before).toContain('param width = 5.0');  // PartB.width decl
+
+    // Position cursor on PartA.width declaration: LSP line:1, char:8 → CM line:2
+    const offset = view.state.doc.line(2).from + 8;
+    view.dispatch({ selection: { anchor: offset } });
+
+    // Dispatch F2 on contentDOM to trigger renameCommand
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F2', bubbles: true }),
+    );
+
+    // Flush async: prepareRename resolves → promptNewName called → input field
+    await flushMacrotasks(0);
+
+    // Find the inline rename field (data-testid='rename-field')
+    const renameField = document.querySelector('[data-testid="rename-field"]') as HTMLInputElement | null;
+    expect(renameField).not.toBeNull();
+    expect(renameField!.value).toBe('width'); // pre-filled with placeholder
+
+    // Type the new name and submit via Enter
+    renameField!.value = 'newWidth';
+    renameField!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    // Flush async: rename() resolves → applyWorkspaceEdit → CM doc updated
+    await flushMacrotasks(0);
+
+    // (faces backend) textDocument/prepareRename with correct position
+    const prepareCall = harness.lspCalls.find((c) => c.method === 'textDocument/prepareRename');
+    expect(prepareCall).toBeDefined();
+    const prepareParams = prepareCall!.params as { textDocument: { uri: string }; position: { line: number; character: number } };
+    expect(prepareParams.textDocument.uri).toBe(`file://${FIXTURE_PATH}`);
+    expect(prepareParams.position.line).toBe(1);
+    expect(prepareParams.position.character).toBe(8);
+
+    // (faces backend) textDocument/rename with newWidth + correct position
+    const renameCall = harness.lspCalls.find((c) => c.method === 'textDocument/rename');
+    expect(renameCall).toBeDefined();
+    const renameParams = renameCall!.params as { textDocument: { uri: string }; position: { line: number; character: number }; newName: string };
+    expect(renameParams.textDocument.uri).toBe(`file://${FIXTURE_PATH}`);
+    expect(renameParams.position.line).toBe(1);
+    expect(renameParams.position.character).toBe(8);
+    expect(renameParams.newName).toBe('newWidth');
+
+    // (faces frontend) buffer: PartA.width → newWidth; PartB.width unchanged
+    const after = view.state.doc.toString();
+    expect(after).toContain('param newWidth = 10.0');  // PartA decl renamed
+    expect(after).toContain('x_size = newWidth');       // PartA use renamed
+    expect(after).toContain('param width = 5.0');       // PartB decl unchanged
+    expect(after).toContain('radius = width / 2');      // PartB use unchanged
+  });
+});
+
 // ── step-3: RED find-references ───────────────────────────────────────────────
 //
 // Asserts two things:
