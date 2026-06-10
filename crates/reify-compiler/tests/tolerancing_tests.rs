@@ -299,12 +299,15 @@ fn geometric_tolerance_trait_and_subtrait_hierarchy() {
     );
 }
 
-// ─── step-11: all 14 GD&T types + Datum present ──────────────────────────────
+// ─── step-11: all GD&T types + Datum present ─────────────────────────────────
 
-/// Step 11: All 14 GD&T structure defs + Datum are present as templates.
-/// Angularity has a 'nominal_angle' value cell.
+/// Step 11: All GD&T structure defs + Datum are present as templates.
+/// The set is 17 GD&T types after the α restructure (the original 14 plus
+/// StraightnessOfAxis, ProfileOfSurfaceRelated, ProfileOfLineRelated); the count
+/// is intentionally NOT baked into the test name so future additions (γ/δ) don't
+/// re-stale it. Angularity has a 'nominal_angle' value cell.
 #[test]
-fn all_fourteen_gdt_types_and_datum_present() {
+fn all_gdt_types_and_datum_present() {
     let module = load_stdlib_module();
 
     let template_names: Vec<&str> = module.templates.iter().map(|t| t.name.as_str()).collect();
