@@ -414,7 +414,7 @@ fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
 
 /// Usage line printed to stderr for any `reify check` usage error.
 const CHECK_USAGE: &str =
-    "Usage: reify check [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
+    "Usage: reify check [--strict] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
@@ -422,11 +422,16 @@ fn cmd_check(args: &[String]) -> ExitCode {
     // `--purpouse` fails loud instead of being silently treated as a file path.
     let mut purpose_values: Vec<String> = Vec::new();
     let mut cfg_values: Vec<String> = Vec::new();
+    let mut strict = false;
     let mut file: Option<&str> = None;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
         match a {
+            "--strict" => {
+                strict = true;
+                i += 1;
+            }
             "--purpose" => {
                 if i + 1 >= args.len() {
                     eprintln!("Error: --purpose requires a value");
@@ -530,20 +535,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        match outcome {
-            ConstraintOutcome::AllSatisfied => {
-                println!("All constraints satisfied.");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeIndeterminate(n) => {
-                println!("No constraints violated ({n} indeterminate).");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeViolated => {
-                println!("Some constraints violated.");
-                ExitCode::FAILURE
-            }
-        }
+        return finish_check(&outcome, &result.constraint_results, strict, &mut std::io::stdout());
     } else {
         // --purpose path: replicates the canonical
         // eval → activate_purpose → check_constraints_with_values sequence
@@ -647,20 +639,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // Same outcome → summary + exit-code mapping as the no-purpose path,
         // so a purpose-injected violation behaves identically to a structure
         // constraint violation in stdout and shell exit semantics.
-        match outcome {
-            ConstraintOutcome::AllSatisfied => {
-                println!("All constraints satisfied.");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeIndeterminate(n) => {
-                println!("No constraints violated ({n} indeterminate).");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeViolated => {
-                println!("Some constraints violated.");
-                ExitCode::FAILURE
-            }
-        }
+        finish_check(&outcome, &constraint_results, strict, &mut std::io::stdout())
     }
 }
 
