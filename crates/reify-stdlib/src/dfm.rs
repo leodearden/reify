@@ -186,6 +186,38 @@ fn build_volume_violation(severity: Severity) -> Diagnostic {
     }
 }
 
+/// Resolve the rule's declared severity from `args` for the new geometry-check arms.
+///
+/// Scans `args` position-independently via [`parse_dfm_severity`]
+/// (a bare `DFMSeverity` enum or a DFMRule structure-instance), defaulting to
+/// [`Severity::Warning`] when no tag is present. Distinct from the fits-specific
+/// positional [`dfm_severity`] (which reads `args.get(2)`) — the new arms receive
+/// only the rule tag in `args` without a positional [part, env, tag] prefix.
+fn rule_severity(args: &[Value]) -> Severity {
+    args.iter().find_map(parse_dfm_severity).unwrap_or(Severity::Warning)
+}
+
+/// Build the code-less overhang VIOLATION diagnostic at `severity`.
+///
+/// Mirrors [`build_volume_violation`]: code-less message-prefix convention;
+/// `{I,W,E}_DFM_OVERHANG` names the PRD's diagnostic code. Emitted when
+/// `unsupported_overhang_faces` returns `Bool(true)` (faces dip below the build plane).
+fn overhang_violation(severity: Severity) -> Diagnostic {
+    let msg = |prefix: char| {
+        format!(
+            "{prefix}_DFM_OVERHANG: face dips below the build plane — \
+             the part has unsupported overhanging geometry that exceeds the \
+             process self-support angle; add support structures or redesign the \
+             overhanging features"
+        )
+    };
+    match severity {
+        Severity::Info => Diagnostic::info(msg('I')),
+        Severity::Warning => Diagnostic::warning(msg('W')),
+        Severity::Error => Diagnostic::error(msg('E')),
+    }
+}
+
 /// Build the code-less E_DFM_BUILD_VOLUME usage-error diagnostic for a
 /// `fits_build_volume` that evaluated to `Value::Undef`.
 ///
@@ -228,35 +260,56 @@ fn build_volume_usage_error(args: &[Value]) -> Diagnostic {
 /// BOTH the success and `Value::Undef` paths, and short-circuits to an empty `Vec` for
 /// any non-DFM `name` (the guard dispatches before `result` is inspected).
 ///
-/// - Success path — a `fits_build_volume` that constructed fine but evaluated to
-///   `Value::Bool(false)` is a build-volume VIOLATION (the rule holds, the design
-///   breaks it): one diagnostic at the rule's declared [`dfm_severity`]. A
-///   `Bool(true)` design fits and surfaces nothing.
-/// - Usage-error path — `Value::Undef` is a malformed call (wrong arity, a
-///   non-BoundingBox part/envelope, or a malformed optional severity/rule tag): one
-///   [`Severity::Error`] diagnostic whose detail is pinpointed to the offending
-///   argument (see [`build_volume_usage_error`]), independent of any severity tag.
+/// Dispatches on `name`:
 ///
-/// DUPLICATE EMISSION: this classifier is stateless and re-runs on every
-/// evaluation, so a persistently-violating `fits_build_volume` (re-evaluated each
-/// frame or inside a loop) pushes a fresh `{I,W,E}_DFM_BUILD_VOLUME` diagnostic on
-/// every call — there is no dedup here. This matches the flexure violation
-/// warnings (`W_FlexureYielding` is likewise re-emitted per eval); only the
-/// flexure Info *advisory* carries a once-per-session dedup, and that lives in the
-/// reify-expr emission layer, not the classifier. If build-volume diagnostic spam
-/// becomes user-facing, fold it into that same session-scoped dedup follow-up
-/// rather than adding state here.
+/// - `"fits_build_volume"` — build-volume extent check (problem-flag polarity inverted:
+///   `Bool(false)` = violation, `Bool(true)` = fits). Success path: `Bool(false)` →
+///   one `{I,W,E}_DFM_BUILD_VOLUME` at the rule's declared [`dfm_severity`]; `Bool(true)`
+///   → nothing. Usage-error path: `Value::Undef` → one [`Severity::Error`] diagnostic
+///   pinpointed to the offending argument (see [`build_volume_usage_error`]).
+///
+/// - `"unsupported_overhang_faces"` — overhang check (problem-flag polarity: `Bool(true)`
+///   = overhang violation present, `Bool(false)` = conforms). `Bool(true)` → one
+///   `{I,W,E}_DFM_OVERHANG` at the rule's declared [`rule_severity`] (default Warning);
+///   `Bool(false)` → nothing. The verdict is pre-computed upstream by γ; δ receives it
+///   as a bare Bool and does NOT re-examine numeric thresholds.
+///
+/// - `"min_draft_angle"` — draft-angle / undercut check. Result is
+///   `Value::List([Bool(draft_violation), Bool(has_undercut)])`. Each element is
+///   independent: `draft_violation = true` → one `{I,W,E}_DFM_DRAFT` at the rule's
+///   declared [`rule_severity`]; `has_undercut = true` → one `E_DFM_UNDERCUT` (ALWAYS
+///   [`Severity::Error`], independent of the rule tag — an undercut means the part
+///   cannot physically release from the mold). Both true → two diagnostics; `[false,
+///   false]` → nothing. A non-List result emits nothing (defensive).
+///
+/// - Any other name → empty (non-DFM builtin, ignored).
+///
+/// NOTE — problem-flag polarity for the new arms (`Bool(true)` = violation) deliberately
+/// differs from `fits_build_volume`'s predicate polarity (`Bool(true)` = fits). γ must
+/// encode the correct polarity for each arm.
+///
+/// DUPLICATE EMISSION: this classifier is stateless and re-runs on every evaluation;
+/// see the `fits_build_volume` note for the dedup rationale.
 pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
-    if name != "fits_build_volume" {
-        return Vec::new();
+    match name {
+        "fits_build_volume" => {
+            let mut diags = Vec::new();
+            match result {
+                Value::Bool(false) => diags.push(build_volume_violation(dfm_severity(args))),
+                Value::Undef => diags.push(build_volume_usage_error(args)),
+                _ => {}
+            }
+            diags
+        }
+        "unsupported_overhang_faces" => {
+            let mut diags = Vec::new();
+            if let Value::Bool(true) = result {
+                diags.push(overhang_violation(rule_severity(args)));
+            }
+            diags
+        }
+        _ => Vec::new(),
     }
-    let mut diags = Vec::new();
-    match result {
-        Value::Bool(false) => diags.push(build_volume_violation(dfm_severity(args))),
-        Value::Undef => diags.push(build_volume_usage_error(args)),
-        _ => {}
-    }
-    diags
 }
 
 #[cfg(test)]
