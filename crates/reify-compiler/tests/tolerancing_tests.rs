@@ -522,6 +522,70 @@ fn profile_callouts_split_datumless_and_related() {
     }
 }
 
+// ─── α: FOS location/orientation callouts carry a zone_shape discriminator ───
+
+/// α: Position and the three orientation callouts (Parallelism, Perpendicularity,
+/// Angularity) each gain a `zone_shape` Param cell typed Enum("ZoneShape").
+/// Concentricity and Symmetry are deliberately EXCLUDED — they were removed in
+/// ASME Y14.5-2018 and have inherently fixed zone shapes, so a discriminator is
+/// meaningless. This test pins both the inclusion set and the exclusion set.
+///
+/// RED before step-10: zone_shape is not present on any callout yet.
+#[test]
+fn fos_location_orientation_callouts_carry_zone_shape() {
+    let module = load_stdlib_module();
+
+    // Inclusion set: Position + 3 orientation callouts carry zone_shape : ZoneShape.
+    for name in &["Position", "Parallelism", "Perpendicularity", "Angularity"] {
+        let t = module
+            .templates
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' template", name));
+        let zs = t
+            .value_cells
+            .iter()
+            .find(|vc| vc.kind == ValueCellKind::Param && vc.id.member == "zone_shape")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} must have a 'zone_shape' Param cell, got params: {:?}",
+                    name,
+                    t.value_cells
+                        .iter()
+                        .filter(|vc| vc.kind == ValueCellKind::Param)
+                        .map(|vc| &vc.id.member)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            zs.cell_type,
+            Type::Enum("ZoneShape".to_string()),
+            "{}.zone_shape must be Type::Enum(\"ZoneShape\"), got {:?}",
+            name,
+            zs.cell_type
+        );
+    }
+
+    // Exclusion set: Concentricity / Symmetry must NOT carry zone_shape.
+    for name in &["Concentricity", "Symmetry"] {
+        let t = module
+            .templates
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' template", name));
+        assert!(
+            !t.value_cells.iter().any(|vc| vc.id.member == "zone_shape"),
+            "{} must NOT have a 'zone_shape' cell (fixed-shape, Y14.5-2018-removed), \
+             got cells: {:?}",
+            name,
+            t.value_cells
+                .iter()
+                .map(|vc| &vc.id.member)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 // ─── step-13: SurfaceFinish, Fit, ISOToleranceGrade, Conforms ────────────────
 
 /// Step 13: SurfaceFinish, Fit, ISOToleranceGrade templates exist with correct
