@@ -745,7 +745,138 @@ def evaluate_acceptance(measurements: dict, derived: dict) -> tuple:
     return ok, findings
 
 
-# Stubs for later steps (implemented in steps 12, 14).
+def render_report(
+    measurements: dict,
+    derived: dict,
+    ok: bool,
+    findings: list,
+) -> str:
+    """Render a markdown tuning report for the A/B campaign.
+
+    Returns a markdown string containing:
+      - Baseline (single-pool A) vs Balancer (dual-pool B) comparison section
+      - Per-regime tables (just-task, just-merge, mixed) with warm/cold rows
+      - Derived-constants block (merge_baseline, task_baseline, poll_interval,
+        epsilon, task_timeout_secs, merge_timeout_secs, utilization_threshold)
+      - Findings/escape-valve section
+    """
+    nproc = measurements["nproc"]
+    runs  = measurements.get("runs", [])
+
+    def _runs(service=None, regime=None, cache=None):
+        return [
+            r for r in runs
+            if (service is None or r["service"] == service)
+            and (regime is None or r["regime"] == regime)
+            and (cache is None or r["cache_state"] == cache)
+        ]
+
+    lines: list = []
+
+    # ── Title ─────────────────────────────────────────────────────────────────
+    lines.append("# Jobserver Balancer ε Tuning Report")
+    lines.append("")
+    lines.append(
+        f"PRD: `docs/prds/jobserver-merge-priority-balancer.md` §9/§10  "
+    )
+    lines.append(f"nproc: **{nproc}**  ")
+    lines.append(f"MARGIN: **{MARGIN}**  ")
+    lines.append(f"Acceptance: **{'PASS' if ok else 'FAIL'}**")
+    lines.append("")
+
+    # ── A/B Overview ──────────────────────────────────────────────────────────
+    lines.append("## A/B Comparison: single-pool (baseline) vs dual-pool (balancer)")
+    lines.append("")
+    lines.append(
+        "Baseline **single-pool** (A): single FIFO seeded to nproc, no balancer.  "
+    )
+    lines.append(
+        "Balancer **dual-pool** (B): merge + task FIFOs managed by `jobserver-balancer.py`.  "
+    )
+    lines.append("")
+
+    # ── Per-regime tables ─────────────────────────────────────────────────────
+    for regime in REGIMES:
+        lines.append(f"## Regime: {regime}")
+        lines.append("")
+        lines.append(
+            "| service | cache_state | busy_fraction | merge_wall_s | "
+            "task_wall_s | exit_124 |"
+        )
+        lines.append(
+            "|---------|-------------|---------------|--------------|"
+            "------------|----------|"
+        )
+        for service in (SERVICE_SINGLE_POOL, SERVICE_DUAL_POOL):
+            for cache in (CACHE_WARM, CACHE_COLD):
+                matching = _runs(service=service, regime=regime, cache=cache)
+                for r in matching:
+                    lines.append(
+                        f"| {service} | {cache} | "
+                        f"{r['busy_fraction']:.4f} | "
+                        f"{r['merge_wall']:.1f} | "
+                        f"{r['task_wall']:.1f} | "
+                        f"{r['exit_124_count']} |"
+                    )
+        lines.append("")
+
+    # ── Derived-constants block ───────────────────────────────────────────────
+    lines.append("## Derived Constants")
+    lines.append("")
+    lines.append(
+        "These values replace the PLACEHOLDER defaults in "
+        "`scripts/jobserver-balancer.py`."
+    )
+    lines.append("")
+    lines.append("| constant | value |")
+    lines.append("|----------|-------|")
+    for key in (
+        "merge_baseline",
+        "task_baseline",
+        "poll_interval",
+        "epsilon",
+        "task_timeout_secs",
+        "merge_timeout_secs",
+        "utilization_threshold",
+    ):
+        val = derived.get(key, "n/a")
+        lines.append(f"| {key} | {val} |")
+    lines.append("")
+    lines.append(
+        f"Split: merge_baseline={derived.get('merge_baseline', '?')} + "
+        f"task_baseline={derived.get('task_baseline', '?')} = {nproc} (nproc)  "
+    )
+    lines.append(
+        f"Merge-favored: "
+        f"{derived.get('merge_baseline', 0) > derived.get('task_baseline', 0)}  "
+    )
+    lines.append("")
+
+    # ── Findings / escape-valve section ──────────────────────────────────────
+    lines.append("## Findings")
+    lines.append("")
+    if findings:
+        for f in findings:
+            severity_tag = f.get("severity", "info").upper()
+            code = f.get("code", "UNKNOWN")
+            msg  = f.get("message", "")
+            lines.append(f"- **[{severity_tag}] {code}**: {msg}")
+    else:
+        lines.append("_No findings — all acceptance gates cleared._")
+    lines.append("")
+    lines.append(
+        f"Overall acceptance: **{'PASS' if ok else 'FAIL'}**  "
+    )
+    lines.append(
+        "(escape-valve findings are soft warnings; only hard-fail findings set "
+        "acceptance to FAIL)"
+    )
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# Stubs for later steps (implemented in step 14).
 
 
 def main() -> None:
