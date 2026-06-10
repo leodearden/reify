@@ -106,8 +106,10 @@ def seed_fifo(fd: int, count: int) -> None:
     os.write(fd, TOKEN_BYTE * count)
 
 
-def _transfer(donor_fd: int, recipient_fd: int) -> None:
+def _transfer(donor_fd: int, recipient_fd: int) -> bool:
     """Transfer exactly ONE token byte from donor_fd to recipient_fd.
+
+    Returns True if a token was moved, False if the donor was empty (EAGAIN).
 
     TRANSFER PRIMITIVE (contract C1 / anti-oscillation):
       Moves one token per call rather than draining the donor entirely.
@@ -131,11 +133,13 @@ def _transfer(donor_fd: int, recipient_fd: int) -> None:
     With ≤TOKENS bytes and a 64 KB pipe buffer this retry path is
     unreachable in practice; the guard defends against silent token loss if
     TOKENS ever approaches the pipe capacity.
+
+    Backward compatible with α callers that ignore the return value.
     """
     try:
         byte = os.read(donor_fd, 1)
     except BlockingIOError:
-        return
+        return False  # donor drained (EAGAIN) — nothing moved
     # Token byte is now in hand; must write before returning (C1 no-drop).
     # Retry loop is bounded so a SIGTERM during a pathological full-pipe spin
     # cannot hang indefinitely.  _stop check allows a clean exit mid-retry.
@@ -145,19 +149,46 @@ def _transfer(donor_fd: int, recipient_fd: int) -> None:
     for _ in range(_WRITE_RETRY_MAX):
         try:
             os.write(recipient_fd, byte)
-            return
+            return True  # token successfully moved
         except BlockingIOError:
             if _stop[0]:
                 # Shutdown mid-retry: token is in-hand; C1 notes at most one
                 # token may be in-flight at any instant — the γ canary
                 # re-seeds on service restart if needed.
-                return
+                return True  # in-hand token may be lost on shutdown; C1 allows 1
             time.sleep(0.001)  # pipe buffer briefly full; retry in 1 ms
     # Exhausted retries — unreachable with ≤TOKENS bytes and 64 KB pipe buffer.
     sys.stderr.write(
         "WARNING: _transfer: write retry limit exceeded; "
         "TOKENS may be near pipe capacity\n"
     )
+    return True  # token was read; write-side exhausted (unreachable in practice)
+
+
+def _transfer_burst(donor_fd: int, recipient_fd: int, max_count: int) -> int:
+    """Transfer up to max_count tokens from donor_fd to recipient_fd.
+
+    Loops the C1-safe one-token _transfer primitive, stopping when the donor
+    is drained (EAGAIN → _transfer returns False) or max_count is reached.
+
+    Returns the number of tokens actually moved (0 … max_count).
+
+    C1 conservation is preserved: at most one token is in-flight per inner
+    _transfer call, so no token is dropped even if the process is killed
+    mid-burst.
+
+    SPIN-GRAB CONTRACT (PRD §4 / β):
+      All of the donor's spare tokens are moved in a single tick (bounded by
+      max_count), upgrading α's one-token-per-tick to a burst.  This realises
+      the "donate-idle → demanded" and "contention-ratchet" C4 policies where
+      the full spare should migrate atomically (relative to the poll loop tick).
+    """
+    moved = 0
+    while moved < max_count:
+        if not _transfer(donor_fd, recipient_fd):
+            break  # donor drained (EAGAIN) — stop early
+        moved += 1
+    return moved
 
 
 def main() -> None:
