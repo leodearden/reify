@@ -70,6 +70,7 @@ pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
 pub(crate) use ice::*;
 pub(crate) use list_helpers::*;
+pub(crate) use analysis_signatures::*;
 pub(crate) use joint_signatures::*;
 pub(crate) use math_signatures::*;
 pub(crate) use scope::*;
