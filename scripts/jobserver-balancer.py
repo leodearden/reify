@@ -191,6 +191,65 @@ def _transfer_burst(donor_fd: int, recipient_fd: int, max_count: int) -> int:
     return moved
 
 
+def decide(
+    free_merge: int,
+    free_task: int,
+    tokens: int,
+    baseline_merge: int,
+    baseline_task: int,
+    epsilon: int,
+    idle_ticks: int,
+    idle_threshold: int,
+) -> tuple:
+    """Pure C4 policy function: given current FIFO state, return the action to take.
+
+    Returns (action, count) where:
+        action ∈ {"none", "m2t", "t2m"}
+        count  = number of tokens to move (0 for "none")
+
+    Branch order (critical — idle checked FIRST before demand branches):
+      1. IDLE (sum_free == tokens): all tokens free, nobody holding
+         - idle_ticks >= idle_threshold → reset toward baseline
+         - else → ("none", 0) — wait out the window
+      2. MERGE-DEMANDED (free_merge==0 and free_task>0):
+         → ("t2m", free_task) — move all task spare to merge
+         (unifies just-merge donate-idle and contention ratchet;
+          monotone: merge never gives back while 0-free)
+      3. TASK-DEMANDED (free_task==0 and free_merge>epsilon):
+         → ("m2t", free_merge - epsilon) — give back spare, retain ε in merge
+         (ε give-back buffer: merge keeps warm reservation)
+      4. OTHERWISE (both-0 contention / both-free with epsilon margin) → ("none", 0)
+
+    Invariants by construction:
+      - free_merge==0 → NEVER returns "m2t" (give-back requires free_merge>epsilon)
+      - Monotone: contested state drifts toward merge=tokens, task=0
+    """
+    sum_free = free_merge + free_task
+
+    # ── Branch 1: IDLE — all tokens free, nobody holding ──────────────────
+    if sum_free == tokens:
+        if idle_ticks >= idle_threshold:
+            # Reset toward seeded baseline partition
+            if free_merge > baseline_merge:
+                return ("m2t", free_merge - baseline_merge)
+            if free_task > baseline_task:
+                return ("t2m", free_task - baseline_task)
+        return ("none", 0)
+
+    # ── Branch 2: MERGE-DEMANDED — merge is 0-free, task has spare ────────
+    # (just-merge donate-idle + contention ratchet, unified)
+    if free_merge == 0 and free_task > 0:
+        return ("t2m", free_task)
+
+    # ── Branch 3: TASK-DEMANDED — task is 0-free, merge has spare > ε ─────
+    # (give-back: retains ε in merge as warm reservation buffer)
+    if free_task == 0 and free_merge > epsilon:
+        return ("m2t", free_merge - epsilon)
+
+    # ── Branch 4: otherwise — contention / at-ε / both-free mid-ratchet ──
+    return ("none", 0)
+
+
 def main() -> None:
     """Daemon entry point: create/seed/hold FIFOs, run control loop."""
 
