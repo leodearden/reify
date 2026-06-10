@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
-import { applyWorkspaceEdit, applyTextEditsToString, renameCommand } from '../editor/rename';
+import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand } from '../editor/rename';
 import type { RenameClient, RenameUi } from '../editor/rename';
 import type { WorkspaceEdit } from '../editor/lspClient';
 import { flushMacrotasks } from './test-utils';
@@ -160,6 +160,106 @@ describe('applyTextEditsToString', () => {
     // or to end of 'abc' (char 3). Result should not throw and should replace 'abc'.
     expect(result).not.toBeNull();
     expect(result.startsWith('X')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyWorkspaceEditAcrossFiles — routing orchestrator (DI mocks, no I/O)
+// ---------------------------------------------------------------------------
+
+describe('applyWorkspaceEditAcrossFiles', () => {
+  const ACTIVE_URI = 'file:///proj/main.ri';
+  const OPEN_URI = 'file:///proj/lib.ri';
+  const CLOSED_URI = 'file:///proj/other.ri';
+
+  const EDIT_A = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: 'AAA' }];
+  const EDIT_B = [{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 3 } }, newText: 'BBB' }];
+  const EDIT_C = [{ range: { start: { line: 2, character: 0 }, end: { line: 2, character: 3 } }, newText: 'CCC' }];
+
+  function makeDeps(openUris: string[] = [ACTIVE_URI, OPEN_URI]) {
+    const applyActive = vi.fn();
+    const applyOpenInactive = vi.fn();
+    const applyClosed = vi.fn();
+    const isOpen = vi.fn((uri: string) => openUris.includes(uri));
+    return { applyActive, applyOpenInactive, applyClosed, isOpen };
+  }
+
+  it('routes the active URI to applyActive', () => {
+    const edit: WorkspaceEdit = { changes: { [ACTIVE_URI]: EDIT_A } };
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyActive).toHaveBeenCalledOnce();
+    expect(deps.applyActive).toHaveBeenCalledWith(ACTIVE_URI, EDIT_A);
+    expect(deps.applyOpenInactive).not.toHaveBeenCalled();
+    expect(deps.applyClosed).not.toHaveBeenCalled();
+  });
+
+  it('routes an open-inactive URI to applyOpenInactive (isOpen returns true)', () => {
+    const edit: WorkspaceEdit = { changes: { [OPEN_URI]: EDIT_B } };
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyOpenInactive).toHaveBeenCalledOnce();
+    expect(deps.applyOpenInactive).toHaveBeenCalledWith(OPEN_URI, EDIT_B);
+    expect(deps.applyActive).not.toHaveBeenCalled();
+    expect(deps.applyClosed).not.toHaveBeenCalled();
+  });
+
+  it('routes a closed URI to applyClosed (isOpen returns false)', () => {
+    const edit: WorkspaceEdit = { changes: { [CLOSED_URI]: EDIT_C } };
+    const deps = makeDeps(); // CLOSED_URI not in open set
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyClosed).toHaveBeenCalledOnce();
+    expect(deps.applyClosed).toHaveBeenCalledWith(CLOSED_URI, EDIT_C);
+    expect(deps.applyActive).not.toHaveBeenCalled();
+    expect(deps.applyOpenInactive).not.toHaveBeenCalled();
+  });
+
+  it('routes all three URIs correctly in a multi-uri edit', () => {
+    const edit: WorkspaceEdit = {
+      changes: {
+        [ACTIVE_URI]: EDIT_A,
+        [OPEN_URI]: EDIT_B,
+        [CLOSED_URI]: EDIT_C,
+      },
+    };
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyActive).toHaveBeenCalledOnce();
+    expect(deps.applyActive).toHaveBeenCalledWith(ACTIVE_URI, EDIT_A);
+    expect(deps.applyOpenInactive).toHaveBeenCalledOnce();
+    expect(deps.applyOpenInactive).toHaveBeenCalledWith(OPEN_URI, EDIT_B);
+    expect(deps.applyClosed).toHaveBeenCalledOnce();
+    expect(deps.applyClosed).toHaveBeenCalledWith(CLOSED_URI, EDIT_C);
+  });
+
+  it('skips a URI with an empty edit list (no call to any sink)', () => {
+    const edit: WorkspaceEdit = {
+      changes: {
+        [ACTIVE_URI]: [], // empty — must be skipped
+        [CLOSED_URI]: EDIT_C,
+      },
+    };
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyActive).not.toHaveBeenCalled(); // empty list → skip
+    expect(deps.applyClosed).toHaveBeenCalledWith(CLOSED_URI, EDIT_C);
+  });
+
+  it('does nothing when changes is absent', () => {
+    const edit: WorkspaceEdit = {};
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyActive).not.toHaveBeenCalled();
+    expect(deps.applyOpenInactive).not.toHaveBeenCalled();
+    expect(deps.applyClosed).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call isOpen for the active URI (routing is by identity first)', () => {
+    const edit: WorkspaceEdit = { changes: { [ACTIVE_URI]: EDIT_A } };
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    // isOpen should NOT have been consulted for the active URI
+    expect(deps.isOpen).not.toHaveBeenCalledWith(ACTIVE_URI);
   });
 });
 
