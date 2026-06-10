@@ -85,7 +85,27 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
     let youngs_modulus = crack_scalar(&value_inputs[2], "youngs_modulus")?;
     let area = crack_scalar(&value_inputs[3], "area")?;
     let loads = crack_loads(&value_inputs[4])?;
-    let supports = crack_supports(&value_inputs[5]);
+    let supports = crack_supports(&value_inputs[5], nodes.len())?;
+
+    // Length guards — reject silently-wrong inputs before building members. The
+    // member/kind/prestress zip below would otherwise truncate to the shortest,
+    // quietly solving a smaller problem than the caller described.
+    if prestress.len() != member_pairs.len() {
+        return Err(format!(
+            "E_TensegrityLoadInfeasible: prestress length {} does not match the member \
+             count {} (struts + cables); supply one prestress force per member.",
+            prestress.len(),
+            member_pairs.len()
+        ));
+    }
+    if loads.len() != nodes.len() {
+        return Err(format!(
+            "E_TensegrityLoadInfeasible: loads length {} does not match the node count \
+             {}; supply one force vector per node.",
+            loads.len(),
+            nodes.len()
+        ));
+    }
 
     // Broadcast the shared (E, A) section across every member (v1 decision). A
     // fresh BarSection per member keeps this independent of BarSection's Copy/
@@ -131,8 +151,9 @@ fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
     };
 
     let nodes = crack_nodes(fields.get(&"nodes".to_string()))?;
-    let struts = crack_index_pairs(fields.get(&"struts".to_string()), "struts")?;
-    let cables = crack_index_pairs(fields.get(&"cables".to_string()), "cables")?;
+    let n = nodes.len();
+    let struts = crack_index_pairs(fields.get(&"struts".to_string()), n, "struts")?;
+    let cables = crack_index_pairs(fields.get(&"cables".to_string()), n, "cables")?;
 
     // Struts first, then cables — `prestress[i]` aligns with this order.
     let mut members = Vec::with_capacity(struts.len() + cables.len());
@@ -183,10 +204,14 @@ fn crack_nodes(v: Option<&Value>) -> Result<Vec<[f64; 3]>, String> {
     Ok(out)
 }
 
-/// Crack a `List<List<Int>>` connectivity field into index pairs. Range-checking
-/// against the node count is left to the kernel (step-12 adds a located
-/// trampoline-level guard).
-fn crack_index_pairs(v: Option<&Value>, field: &str) -> Result<Vec<(usize, usize)>, String> {
+/// Crack a `List<List<Int>>` connectivity field into index pairs, range-checking
+/// each endpoint against the node count `n` so an out-of-range member index is a
+/// located trampoline-level error rather than a generic kernel `DimensionMismatch`.
+fn crack_index_pairs(
+    v: Option<&Value>,
+    n: usize,
+    field: &str,
+) -> Result<Vec<(usize, usize)>, String> {
     let list = match v {
         Some(Value::List(pairs)) => pairs,
         other => {
@@ -212,7 +237,10 @@ fn crack_index_pairs(v: Option<&Value>, field: &str) -> Result<Vec<(usize, usize
                 ));
             }
         };
-        out.push((from as usize, to as usize));
+        out.push((
+            check_index(from, n, &format!("Tensegrity.{field}[{i}] start"))?,
+            check_index(to, n, &format!("Tensegrity.{field}[{i}] end"))?,
+        ));
     }
     Ok(out)
 }
@@ -282,19 +310,32 @@ fn crack_loads(v: &Value) -> Result<Vec<[f64; 3]>, String> {
     Ok(out)
 }
 
-/// Crack a `List<Int>` of support node indices. Range-checking is left to the
-/// kernel (step-12 adds a located trampoline-level guard).
-fn crack_supports(v: &Value) -> Vec<usize> {
-    match v {
-        Value::List(items) => items
-            .iter()
-            .filter_map(|item| match item {
-                Value::Int(a) => Some(*a as usize),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
+/// Crack a `List<Int>` of support node indices, range-checking each against the
+/// node count `n`. A non-list, a non-integer entry, or an out-of-range index is
+/// a located trampoline-level error (so e.g. a support index past the node array
+/// surfaces "… index 99 is out of range 0..3" rather than a generic kernel
+/// `DimensionMismatch`).
+fn crack_supports(v: &Value, n: usize) -> Result<Vec<usize>, String> {
+    let list = match v {
+        Value::List(items) => items,
+        other => {
+            return Err(format!(
+                "E_TensegrityLoadInfeasible: supports must be a list of integer node indices, got {other:?}"
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, item) in list.iter().enumerate() {
+        match item {
+            Value::Int(a) => out.push(check_index(*a, n, &format!("supports[{i}]"))?),
+            other => {
+                return Err(format!(
+                    "E_TensegrityLoadInfeasible: supports[{i}] must be an integer node index, got {other:?}"
+                ));
+            }
+        }
     }
+    Ok(out)
 }
 
 /// Extract an f64 from a Scalar (any dimension) or a bare Real.
@@ -304,6 +345,20 @@ fn scalar_f64(v: &Value) -> Option<f64> {
         Value::Real(r) => Some(*r),
         _ => None,
     }
+}
+
+/// Range-check a signed node index against `0..n`, returning a located
+/// `… index N is out of range 0..n` error (the `form_find::check_index`
+/// discipline). A negative index — or one at/after the node count — is rejected
+/// here rather than wrapping to a huge `usize` and indexing out of bounds in the
+/// kernel.
+fn check_index(idx: i64, n: usize, ctx: &str) -> Result<usize, String> {
+    if idx < 0 || idx as usize >= n {
+        return Err(format!(
+            "E_TensegrityLoadInfeasible: {ctx} index {idx} is out of range 0..{n}"
+        ));
+    }
+    Ok(idx as usize)
 }
 
 // ── result construction ──────────────────────────────────────────────────────
@@ -320,10 +375,11 @@ fn build_result(solve: &TensegrityLoadSolve) -> Value {
     let member_forces = super::scalar_list(&solve.member_forces, DimensionVector::FORCE);
     let member_force_deltas =
         super::scalar_list(&solve.member_force_deltas, DimensionVector::FORCE);
-    // step-10 stub: the slack mask is emitted all-`false` here (correct for the
-    // no-slack happy path). step-12 wires the real `solve.slack` mask so the
-    // slackening case flags its dropped cable.
-    let slack: Vec<Value> = solve.slack.iter().map(|_| Value::Bool(false)).collect();
+    // The tension-only active set marks dropped (slack) cables in `solve.slack`;
+    // surface that mask verbatim. The kernel already zeroes a slack cable's
+    // `member_forces` entry (its total tension fell to 0), so the FORCE list
+    // above carries the zeroed force without any extra handling here.
+    let slack: Vec<Value> = solve.slack.iter().map(|&s| Value::Bool(s)).collect();
 
     let fields: PersistentMap<String, Value> = [
         ("displacements".to_string(), Value::List(displacements)),
@@ -347,11 +403,32 @@ fn build_result(solve: &TensegrityLoadSolve) -> Value {
 }
 
 /// Human-readable cause for a kernel [`TensegrityLoadError`] (appended after the
-/// `E_TensegrityLoadInfeasible:` prefix).
-///
-/// step-10 placeholder: a `Debug` rendering of the variant. step-12 replaces
-/// this with friendly per-variant phrases (the `form_find::describe()`
-/// discipline).
+/// `E_TensegrityLoadInfeasible:` prefix), mirroring the `form_find::describe()`
+/// discipline. Returns `String` (not `&'static str`) because
+/// [`TensegrityLoadError::ActiveSetDidNotConverge`] interpolates its iteration
+/// count. Most of these are pre-empted by the located trampoline guards above;
+/// the arms remain so every kernel-side variant maps to a friendly phrase
+/// instead of a `Debug` rendering.
 fn describe(e: TensegrityLoadError) -> String {
-    format!("{e:?}")
+    match e {
+        TensegrityLoadError::DimensionMismatch => {
+            "input dimensions disagree — loads must supply one force vector per node \
+             and every member endpoint / support index must lie within the node set"
+                .to_string()
+        }
+        TensegrityLoadError::EmptyFreeSet => {
+            "every node is anchored — there is no free node to solve for".to_string()
+        }
+        TensegrityLoadError::SingularSystem => {
+            "singular tangent system — the inner CG solve did not converge (a free \
+             node with no taut load path to a support, or an ill-conditioned reduced \
+             stiffness once slack cables were dropped)"
+                .to_string()
+        }
+        TensegrityLoadError::ActiveSetDidNotConverge { iterations } => format!(
+            "tension-only active set did not reach a fixed point within {iterations} \
+             passes (the PRD §11 Q5 cap) — drop-only monotonicity should converge in \
+             at most #cables passes, so this signals a non-monotone active-set policy"
+        ),
+    }
 }
