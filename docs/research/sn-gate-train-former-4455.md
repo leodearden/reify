@@ -160,3 +160,23 @@ This is a human call; the automated gate leaves 1705–1708 deferred per the MAR
 ## Terminal action
 
 **Classification: MARGINAL** → leave tasks 1705–1708 **deferred** + info-escalate to Leo with the above numbers.
+
+---
+
+## Resolution (2026-06-09, human — Leo, via esc-4455-16)
+
+**Decision: GO at N=3** — `merge.train_max_members = 3`.
+
+The MARGINAL classification was confirmed a **false positive**: all 4 "followed by
+fix-forward" detections traced to the single coincidental, unrelated infra commit
+`d99d4bf71e` (orchestrator config cleanup) that merely fell within 24 h of the
+clusters. The true task-coupling failure rate is 0/253 (N≥2) and 0/104 (N≥3);
+s(3)=0.962 clears the 0.40 upper marginal band by a wide margin on a non-thin
+sample (n=104).
+
+Dark-factory tasks 1705–1708 were flipped to pending and the A′ train former was
+built with `train_max_members=3` (1705 done, merged `8c39ff54`); the integration
+gate 1708 closed 2026-06-10 with a real reify train landing N≥2 tasks on a single
+union verify (merged `92472857`). The gate behaved as designed: the deterministic
+inequality was clear, judgment was needed only on attribution ambiguity, and the
+marginal band correctly routed that to a human.
