@@ -2186,7 +2186,8 @@ fn field_or(val: &Value, name: &str, fallback: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use faer::sparse::SparseRowMat;
-    use reify_core::{DimensionVector, Severity};
+    use reify_core::{Diagnostic, DimensionVector, Severity};
+    use reify_stdlib::dynamics::mass_props::resolve_density_strict;
     use reify_ir::{StructureInstanceData, StructureTypeId, Value};
     use reify_solver_elastic::assembly::test_support::promote_tets_to_p2;
     use reify_solver_elastic::{DirichletBc, EigenSolverOptions, IsotropicElastic};
@@ -4844,6 +4845,104 @@ mod tests {
             matches!(ok.outcome, ComputeOutcome::Completed { .. }),
             "a fresh handle must Complete; got {:?}",
             ok.outcome,
+        );
+    }
+
+    // ── task-4470: cross-path density convergence ────────────────────────────
+
+    /// Helper: build a body `Value::StructureInstance` whose `material` field
+    /// is the given material value (for feeding to `resolve_body_density`).
+    fn body_with_material(material: Value) -> Value {
+        struct_instance(
+            "Body",
+            vec![("material".to_string(), material)],
+        )
+    }
+
+    /// task-4470 step-3 (RED → GREEN in step-4): assert that a single
+    /// `ElasticMaterial` Value with a positive dimensioned-Scalar `density`
+    /// yields **identical** density values from both the modal and dynamics
+    /// resolution paths, and that the two paths diverge by design at the
+    /// missing-density tail (modal strict → E_ModalNoMassMatrix; dynamics →
+    /// 1000 kg/m³ water + W_DynamicsDefaultDensity).
+    ///
+    /// RED: `crate::dynamics_ops::resolve_body_density` is private until
+    /// step-4 bumps it to `pub(crate)` → compile error.
+    #[test]
+    fn cross_path_density_convergence_modal_equals_dynamics() {
+        // ── shared positive-density material ────────────────────────────────
+        let material = material_with_density(Some(7850.0));
+
+        // (1) Modal path: extract_density_or_degenerate reads the density
+        //     directly from the material Value.
+        let modal_rho = match extract_density_or_degenerate(&material) {
+            Ok(rho) => rho,
+            Err(_) => panic!("positive density must pass the modal guard"),
+        };
+
+        // (2) Dynamics path: resolve_body_density reads body.material.density
+        //     via body_material_density / cell_f64.
+        let body = body_with_material(material.clone());
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let dyn_rho = crate::dynamics_ops::resolve_body_density(&body, None, &mut diags);
+
+        // (3) Both paths must return the same value.
+        assert!(
+            (modal_rho - 7850.0).abs() < 1e-9,
+            "modal path must return 7850.0; got {modal_rho}",
+        );
+        assert!(
+            (dyn_rho - 7850.0).abs() < 1e-9,
+            "dynamics path must return 7850.0; got {dyn_rho}",
+        );
+        assert!(
+            (modal_rho - dyn_rho).abs() < 1e-9,
+            "modal and dynamics paths must agree; modal={modal_rho} dyn={dyn_rho}",
+        );
+        // Both agree with the shared rung-walk.
+        let strict_rho = resolve_density_strict(None, Some(7850.0))
+            .map(|(d, _)| d)
+            .expect("material rung must return Some");
+        assert!(
+            (modal_rho - strict_rho).abs() < 1e-9,
+            "modal rho must equal resolve_density_strict result; modal={modal_rho} strict={strict_rho}",
+        );
+        assert!(
+            (dyn_rho - strict_rho).abs() < 1e-9,
+            "dynamics rho must equal resolve_density_strict result; dyn={dyn_rho} strict={strict_rho}",
+        );
+        // No diagnostic emitted on the positive-density path.
+        assert!(
+            diags.is_empty(),
+            "no diagnostics expected on the positive-density dynamics path; got {diags:?}",
+        );
+
+        // ── tail divergence by design ────────────────────────────────────────
+
+        // (4) Modal STRICT tail: missing density → E_ModalNoMassMatrix, never water.
+        let missing_material = material_with_density(None);
+        match extract_density_or_degenerate(&missing_material) {
+            Err(outcome) => assert_no_mass_degenerate(outcome),
+            Ok(d) => panic!("missing density must short-circuit; got Ok({d})"),
+        }
+
+        // (5) Dynamics water tail: bare body with no material density → 1000 kg/m³
+        //     + W_DynamicsDefaultDensity warning (dynamics path is unchanged).
+        let bare_body = struct_instance("Body", vec![]);
+        let mut water_diags: Vec<Diagnostic> = Vec::new();
+        let water_rho =
+            crate::dynamics_ops::resolve_body_density(&bare_body, None, &mut water_diags);
+        assert!(
+            (water_rho - 1000.0).abs() < 1e-9,
+            "bare body must fall back to 1000 kg/m³ water; got {water_rho}",
+        );
+        let has_water_warning = water_diags.iter().any(|d| {
+            d.code
+                == Some(reify_core::DiagnosticCode::DynamicsDefaultDensity)
+        });
+        assert!(
+            has_water_warning,
+            "dynamics water tail must emit W_DynamicsDefaultDensity; got {water_diags:?}",
         );
     }
 }
