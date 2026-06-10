@@ -133,6 +133,14 @@ SERVICE_DUAL_POOL = "dual-pool"
 CACHE_WARM = "warm"
 CACHE_COLD = "cold"
 
+# Minimum absolute floor for the derived utilization_threshold.
+# Prevents a degenerate baseline (e.g. all runs near-idle) from producing a
+# threshold so low that any real-world record would pass trivially.
+# The value 0.50 means "at least 50 % CPU utilisation under a parallel
+# compilation load"; records below this floor represent either a mis-configured
+# host or a fundamentally broken measurement and should be flagged.
+MIN_UTILIZATION_THRESHOLD: float = 0.50
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pure functions
@@ -579,9 +587,12 @@ def derive_constants(measurements: dict) -> dict:
         for r in _filter(SERVICE_SINGLE_POOL, REGIME_JUST_TASK, CACHE_WARM)
     ]
     if baseline_jt_fracs:
-        utilization_threshold = min(baseline_jt_fracs) * _UTIL_SLACK
+        utilization_threshold = max(
+            min(baseline_jt_fracs) * _UTIL_SLACK,
+            MIN_UTILIZATION_THRESHOLD,
+        )
     else:
-        utilization_threshold = 0.5  # conservative fallback
+        utilization_threshold = MIN_UTILIZATION_THRESHOLD  # conservative fallback
 
     # ── 4. baseline split ────────────────────────────────────────────────────
     # Derive from average task-pool token occupancy in dual-pool just-task runs.
