@@ -245,6 +245,105 @@ mod tests {
         }
     }
 
+    /// 3-arg `fillet(solid, edges, radius)` is recognised by `compile_modify_op`
+    /// and lowered to named args `[target, edges, radius]` (curated edge selection).
+    #[test]
+    fn compile_modify_op_fillet_3arg_builds_curated_edge_args() {
+        let args: Vec<CompiledExpr> =
+            vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result =
+            compile_modify_op("fillet", args, target.clone(), span, &mut diagnostics, vec![]);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op fillet (3-arg) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Fillet,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "edges", "radius"]);
+            }
+            other => panic!("expected Modify(Fillet) with 3 args, got {:?}", other),
+        }
+    }
+
+    /// 2-arg `fillet(solid, radius)` through `compile_modify_op` is unchanged
+    /// (back-compat): named args `[target, radius]`, no `edges` slot.
+    #[test]
+    fn compile_modify_op_fillet_2arg_back_compat_through_dispatcher() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result =
+            compile_modify_op("fillet", args, target.clone(), span, &mut diagnostics, vec![]);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op fillet (2-arg) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Fillet,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "radius"]);
+            }
+            other => panic!("expected Modify(Fillet) with 2 args, got {:?}", other),
+        }
+    }
+
+    /// `fillet` accepts only 2 or 3 args: a 1-arg and a 4-arg call each return
+    /// None and emit ≥1 arity diagnostic.
+    #[test]
+    fn compile_modify_op_fillet_rejects_1arg_and_4arg() {
+        let span = SourceSpan::new(10, 20);
+        // 1 arg → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> = vec![scalar_literal(1.0)];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result =
+                compile_modify_op("fillet", args, GeomRef::Step(0), span, &mut diagnostics, vec![]);
+            assert!(result.is_none(), "expected None for 1-arg fillet");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 1-arg fillet"
+            );
+        }
+        // 4 args → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> = vec![
+                scalar_literal(1.0),
+                scalar_literal(2.0),
+                scalar_literal(3.0),
+                scalar_literal(4.0),
+            ];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result =
+                compile_modify_op("fillet", args, GeomRef::Step(0), span, &mut diagnostics, vec![]);
+            assert!(result.is_none(), "expected None for 4-arg fillet");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 4-arg fillet"
+            );
+        }
+    }
+
     #[test]
     fn compile_modify_2arg_rejects_wrong_arg_count_with_label() {
         let args: Vec<CompiledExpr> = vec![scalar_literal(1.0)]; // only 1 arg, need 2
