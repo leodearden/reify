@@ -32,8 +32,10 @@ use std::collections::{BTreeMap, HashSet};
 
 use reify_eval::{DispatchPlan, dispatcher, kernel_registry};
 use reify_ir::{
-    CapabilityDescriptor, GeometryError, GeometryKernel, KernelId, Mesh, Operation, ReprKind,
+    CapabilityDescriptor, GeometryKernel, KernelId, Mesh, Operation, ReprKind,
 };
+#[cfg(not(has_openvdb))]
+use reify_ir::GeometryError;
 use reify_kernel_openvdb::register::openvdb_capability_descriptor;
 use reify_kernel_openvdb::OpenVdbKernel;
 
