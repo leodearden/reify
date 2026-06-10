@@ -630,7 +630,7 @@ wrap_subshell() {
 # Emit a single nextest (or cargo-test fallback) pass.
 # selector: "--workspace" (full-workspace) or "-p crate1 -p crate2 ..." (narrowed/release)
 # rel: "" (debug) or " --release"
-# outer_timeout: e.g. "90m" or "75m"
+# outer_timeout: e.g. "60m" or "75m"
 # Task 4451: replaces emit_gated_ungated; the flock-gated OCCT pass is dropped.
 # OCCT crates are now included in the pool; the nextest occt test-group (max-threads=4)
 # bounds their intra-run concurrency for FD/memory headroom.
@@ -660,14 +660,17 @@ add_test_passes() {
     # merge gate (esc-4178 / esc-4180 cluster killed the debug nextest mid-compile at
     # the old 30m). sccache shares rustc output across worktrees, so warm runs finish
     # well inside these — the larger caps only bite a genuinely cold cache.
-    # Bumped 2026-06-09 (task #4447): debug outer_timeout 60m→90m.
+    # Phase 1's persistent warm merge worktree (κ = dark_factory:1692, landed at
+    # 8eceebc7e7) ensures warm verifies finish inside 60m; task #4447's debug
+    # outer_timeout 60m→90m bump is retired (task 4453) and the debug budget is
+    # restored to its pre-bump 60m value.
     # NOTE: the outer timeouts are asserted in tests/infra/test_occt_flock_gate.sh
     # (Test 17) — keep them in sync.
     for profile in "${PROFILES[@]}"; do
         if [ "$profile" = "release" ]; then
             rel=" --release"; outer_timeout="75m"
         else
-            rel=""; outer_timeout="90m"
+            rel=""; outer_timeout="60m"
         fi
 
         if [ "$profile" = "release" ]; then
