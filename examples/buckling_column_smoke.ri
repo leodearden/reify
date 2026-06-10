@@ -20,7 +20,7 @@
 //
 // Type-coercion notes (same pattern as fea_cantilever_smoke.ri):
 //   - FEAMaterialInput wrapper for material (ElasticMaterial type coercion)
-//   - LoadCase bundle for loads/supports (List<Real> placeholder type coercion)
+//   - LoadCase bundle for loads/supports (List<Load>/List<Support> — task ζ/4444)
 //   - BucklingOptions() passed explicitly (phase-order default limitation)
 //
 // See fea_cantilever_smoke.ri for the full rationale on each coercion.
@@ -40,7 +40,7 @@ structure BucklingColumnSmoke {
     // Support: pin-pin — fixed supports at both ends (lateral restraint).
     let base_support = FixedSupport(target: "base")
 
-    // Bundle loads + supports via LoadCase (List<Real> type coercion).
+    // Bundle loads + supports via LoadCase (List<Load>/List<Support>).
     let lc = LoadCase(
         name: "buckling_smoke",
         loads: [tip_load],
