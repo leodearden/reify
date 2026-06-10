@@ -122,9 +122,9 @@ pub type RotationalStiffness = Real
 //                           placeholder for `Range<Angle>` because the
 //                           `Range<Angle>` parameterized type has no arm in
 //                           `type_resolution.rs::resolve_parameterized_
-//                           builtin_type` today; same placeholder posture
-//                           as `fea_multi_case.ri:90 loads : List<Real>`
-//                           with TODO(load-trait). See TODO(range-angle-type)
+//                           builtin_type` today (a similar placeholder in
+//                           `fea_multi_case.ri` was since tightened to
+//                           `List<Load>` — task ζ/4444). See TODO(range-angle-type)
 //                           below.
 //   at_yield              — true iff `max_stress >= material.yield_stress`.
 //                           PRB ctors emit `W_FlexureYielding` (PRD §5.3)
