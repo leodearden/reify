@@ -7200,10 +7200,10 @@ mod tests {
     #[test]
     fn iso_it_tolerance_out_of_envelope_emits_tolerancing_error_into_sink() {
         // Grade 25 is outside IT5–IT18 → iso_it_tolerance returns Value::Undef.
-        // After wiring tolerancing_diagnose into emit_undef_builtin_diagnostics
-        // the sink must receive exactly one Severity::Error whose message
-        // contains "E_TolerancingOutOfEnvelope".
-        // RED: this test FAILS today because tolerancing_diagnose is not yet wired.
+        // tolerancing_diagnose is wired into emit_undef_builtin_diagnostics as
+        // the fifth classifier arm (after dynamics_diagnose), so the sink now
+        // receives exactly one Severity::Error whose message contains
+        // "E_TolerancingOutOfEnvelope". GREEN: wiring is live.
         let expr = iso_it_tolerance_call_expr(vec![
             Value::Int(25),
             mm_val(30.0),  // 30mm nominal_min
