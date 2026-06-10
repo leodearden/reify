@@ -616,11 +616,15 @@ const App: Component = () => {
   function handleNavigateToDiagnostic(d: DiagnosticEntry) {
     // Delegate to the exported, dependency-injected function (γ task-4403).
     // Panel stays open after navigation (docked design — no modal to dismiss).
+    // .catch handles unexpected synchronous throws from store/signal calls that
+    // bypass the internal try/catch (which only wraps the disk-read path).
     void navigateToDiagnostic(d, {
       store: editorStore,
       openFile: bridgeOpenFile,
       setScrollToLocation,
       showToast,
+    }).catch((err: unknown) => {
+      showToast(`Navigation error: ${errorMessage(err)}`, 'error');
     });
   }
 
