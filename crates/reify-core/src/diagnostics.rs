@@ -227,6 +227,23 @@ pub enum DiagnosticCode {
     /// accepted. Non-fatal — the op is still lowered (mirrors [`GeometryUnbounded`]).
     /// See `docs/prds/geometry-primitive-constructors.md` task α.
     GeometryProfileRequired,
+    /// Origin: the eval `ModifyKind::Fillet` 3-arg arm in
+    /// `crates/reify-eval/src/geometry_ops.rs` (curated-fillet anti-zero-edges guard).
+    /// Canonical message form:
+    /// `"fillet(...): edge selector resolved to zero edges"`.
+    ///
+    /// Emitted as a `Severity::Error` when a *present* (3-arg
+    /// `fillet(solid, edges, radius)`) edge selector resolves to an **empty**
+    /// vector. This is a hard user error: the op must NEVER silently fall through
+    /// to the all-edges path (which would fake-complete the build with an
+    /// unintended geometry — the task-3295 trap). The 2-arg back-compat form
+    /// `fillet(solid, radius)` has no selector argument, so its empty edge list
+    /// legitimately means all-edges and does NOT emit this code.
+    ///
+    /// The PRD-prose mnemonic is `E_EMPTY_SELECTION` (see
+    /// `docs/prds/geometry-modify-sweep-completion.md`); per the `E_*` → Error
+    /// severity convention this is always a blocking error.
+    EmptyEdgeSelection,
     /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
     /// Replaces canonical messages:
     /// - `"constraint <id> violated"` (Bool(false) branch, Severity::Error)
