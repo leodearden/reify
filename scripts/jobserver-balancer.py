@@ -23,6 +23,7 @@ import fcntl
 import os
 import signal
 import struct
+import sys
 import termios
 import time
 
@@ -36,17 +37,47 @@ MERGE_FIFO: str = os.environ.get(
 TASK_FIFO: str = os.environ.get(
     "REIFY_JOBSERVER_TASK_FIFO", "/tmp/reify-jobserver-task"
 )
-TOKENS: int = int(
-    os.environ.get("REIFY_JOBSERVER_TOKENS", str(len(os.sched_getaffinity(0))))
+_tokens_raw: str = os.environ.get(
+    "REIFY_JOBSERVER_TOKENS", str(len(os.sched_getaffinity(0)))
 )
+try:
+    TOKENS: int = int(_tokens_raw)
+    if TOKENS < 1:
+        raise ValueError("must be >= 1")
+except ValueError as _exc:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_TOKENS={_tokens_raw!r}: {_exc}\n"
+        f"  Set to a positive integer (detected nproc="
+        f"{len(os.sched_getaffinity(0))})\n"
+    )
+    sys.exit(1)
+
 # PLACEHOLDER: ε (task α-ε of PRD §10) will tune this based on measurement.
-POLL_INTERVAL: float = float(
-    os.environ.get("REIFY_JOBSERVER_POLL_INTERVAL", "0.1")
-)
+_MIN_POLL_INTERVAL: float = 0.001  # 1 ms — below this is a misconfiguration
+_poll_raw: str = os.environ.get("REIFY_JOBSERVER_POLL_INTERVAL", "0.1")
+try:
+    POLL_INTERVAL: float = float(_poll_raw)
+    if POLL_INTERVAL < _MIN_POLL_INTERVAL:
+        raise ValueError(f"must be >= {_MIN_POLL_INTERVAL}")
+except ValueError as _exc:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_POLL_INTERVAL={_poll_raw!r}: {_exc}\n"
+        f"  Set to a float >= {_MIN_POLL_INTERVAL}\n"
+    )
+    sys.exit(1)
 
 # Token byte: '+' (0x2b) — matches the retired printf/tr seeder for byte-level
 # compatibility with the canary and any downstream tools.
 TOKEN_BYTE: bytes = b"+"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Module-level stop flag — set by SIGTERM/SIGINT handler in main().
+# Defined at module scope so _transfer() can check it during the write-retry
+# spin: a SIGTERM that fires while the daemon is mid-retry would otherwise be
+# ignored until the write succeeds (unreachable in production, but bounded
+# here for correctness).
+# ──────────────────────────────────────────────────────────────────────────────
+_stop: list = [False]
 
 
 def fionread(fd: int) -> int:
@@ -106,12 +137,27 @@ def _transfer(donor_fd: int, recipient_fd: int) -> None:
     except BlockingIOError:
         return
     # Token byte is now in hand; must write before returning (C1 no-drop).
-    while True:
+    # Retry loop is bounded so a SIGTERM during a pathological full-pipe spin
+    # cannot hang indefinitely.  _stop check allows a clean exit mid-retry.
+    # With ≤TOKENS bytes and a 64 KB pipe buffer this path is unreachable in
+    # production; the cap + flag are purely a defensive bound.
+    _WRITE_RETRY_MAX = 1000
+    for _ in range(_WRITE_RETRY_MAX):
         try:
             os.write(recipient_fd, byte)
             return
         except BlockingIOError:
+            if _stop[0]:
+                # Shutdown mid-retry: token is in-hand; C1 notes at most one
+                # token may be in-flight at any instant — the γ canary
+                # re-seeds on service restart if needed.
+                return
             time.sleep(0.001)  # pipe buffer briefly full; retry in 1 ms
+    # Exhausted retries — unreachable with ≤TOKENS bytes and 64 KB pipe buffer.
+    sys.stderr.write(
+        "WARNING: _transfer: write retry limit exceeded; "
+        "TOKENS may be near pipe capacity\n"
+    )
 
 
 def main() -> None:
@@ -147,8 +193,7 @@ def main() -> None:
     seed_fifo(task_fd,  task_baseline)
 
     # ── Signal handling: clean exit on SIGTERM/SIGINT ─────────────────────────
-    _stop = [False]
-
+    # Uses the module-level _stop flag (also checked by _transfer's write-retry).
     def _handler(signum: int, frame: object) -> None:  # noqa: ANN001
         _stop[0] = True
 
