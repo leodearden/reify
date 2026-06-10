@@ -246,8 +246,12 @@ fn parse_and_compile_with_cfg(
         parent_dir.join("crates/reify-compiler/stdlib"),
     );
 
-    let compiled =
-        reify_compiler::module_dag::compile_entry_with_stdlib_cfg(&parsed, &resolver, cfg);
+    let compiled = reify_compiler::module_dag::compile_entry_with_stdlib_cfg_checked(
+        &parsed,
+        &resolver,
+        cfg,
+        &SimpleConstraintChecker,
+    );
 
     for diag in &compiled.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
