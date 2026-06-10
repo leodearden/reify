@@ -440,32 +440,64 @@ impl LanguageServer for ReifyLanguageServer {
         let uri = params.text_document.uri;
         let position = params.position;
 
-        // Brief read lock: snapshot the document text, then drop it before the
-        // (CPU-only) parse + scope walk — mirrors hover/document_symbol.
+        // κ (task 4210): prepare_rename now resolves cross-file structure homes via
+        // the same workspace rig as goto_definition. The single-file α producer
+        // keeps its exact refusal surface (Invariant 4 — keywords/literals/builtins/
+        // types/declaration names); the cross-file producer lifts the refusal ONLY
+        // for structures reachable through the import graph. None passes through so
+        // the editor refuses the rename.
         let state = self.state.read().await;
         let doc = match state.documents.get(&uri) {
             Some(doc) => doc,
             None => return Ok(None),
         };
+        let workspace_root = state.workspace_root.clone();
+        let stdlib_path = state.stdlib_path.clone();
+        let open_docs = state.documents.snapshot_as_path_map();
         drop(state);
 
-        // Reuse the per-document cached parse (one parse per edit) — prelude-aware
-        // for AST-shape consistency with the rest of reify-lsp.
-        let text = doc.text.clone();
-        let parsed = doc.parsed_module();
+        let target = match tokio::task::spawn_blocking(move || {
+            let parsed = doc.parsed_module();
+            let primary_source = doc.text.as_str();
+            if let Some(root) = workspace_root {
+                let stdlib_root =
+                    stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
+                let resolver = reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                let resolve_import = |import_path: &str| -> Option<(Url, String)> {
+                    let path = resolver.resolve_import_path(import_path).ok()?;
+                    let source = open_docs
+                        .get(&path)
+                        .cloned()
+                        .or_else(|| std::fs::read_to_string(&path).ok())?;
+                    let target_uri = Url::from_file_path(&path).ok()?;
+                    Some((target_uri, source))
+                };
+                crate::references::prepare_rename_cross_file(
+                    primary_source,
+                    &parsed,
+                    &uri,
+                    position,
+                    &resolve_import,
+                )
+            } else {
+                crate::references::prepare_rename(primary_source, &parsed, position)
+            }
+        })
+        .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("prepare_rename blocking task failed: {e}");
+                None
+            }
+        };
 
-        // Forward to the α producer: it returns None for every non-renameable
-        // position (keywords/literals/builtins/types/declaration names/cross-module
-        // symbols), which is Invariant 4's refusal surface. None passes through so
-        // the editor refuses the rename.
-        Ok(
-            crate::references::prepare_rename(&text, &parsed, position).map(|target| {
-                PrepareRenameResponse::RangeWithPlaceholder {
-                    range: target.range,
-                    placeholder: target.placeholder,
-                }
-            }),
-        )
+        Ok(target.map(|target| {
+            PrepareRenameResponse::RangeWithPlaceholder {
+                range: target.range,
+                placeholder: target.placeholder,
+            }
+        }))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -473,23 +505,64 @@ impl LanguageServer for ReifyLanguageServer {
         let position = params.text_document_position.position;
         let new_name = params.new_name;
 
+        // κ (task 4210): rename now produces a cross-file WorkspaceEdit via the same
+        // workspace rig as goto_definition. new_name validation + the re-parse-clean
+        // guarantee (Invariant 5) live in the producers, so the handler stays a thin
+        // forwarder; Ok(None) is preserved for unknown uri / non-renameable cursor /
+        // invalid new_name.
         let state = self.state.read().await;
         let doc = match state.documents.get(&uri) {
             Some(doc) => doc,
             None => return Ok(None),
         };
+        let workspace_root = state.workspace_root.clone();
+        let stdlib_path = state.stdlib_path.clone();
+        let open_docs = state.documents.snapshot_as_path_map();
+        let workspace_docs: Vec<(Url, String)> = state
+            .documents
+            .iter()
+            .map(|(u, d)| (u.clone(), d.text.clone()))
+            .collect();
         drop(state);
 
-        // Reuse the per-document cached parse (one parse per edit).
-        let text = doc.text.clone();
-        let parsed = doc.parsed_module();
-
-        // compute_rename validates new_name and guarantees a re-parse-clean edit
-        // (Invariant 5); it returns None for unknown/non-renameable positions and
-        // invalid names, so the handler is a thin forwarder.
-        Ok(crate::references::compute_rename(
-            &text, &parsed, &uri, position, &new_name,
-        ))
+        let edit = match tokio::task::spawn_blocking(move || {
+            let parsed = doc.parsed_module();
+            let primary_source = doc.text.as_str();
+            if let Some(root) = workspace_root {
+                let stdlib_root =
+                    stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
+                let resolver = reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                let resolve_import = |import_path: &str| -> Option<(Url, String)> {
+                    let path = resolver.resolve_import_path(import_path).ok()?;
+                    let source = open_docs
+                        .get(&path)
+                        .cloned()
+                        .or_else(|| std::fs::read_to_string(&path).ok())?;
+                    let target_uri = Url::from_file_path(&path).ok()?;
+                    Some((target_uri, source))
+                };
+                crate::references::compute_rename_cross_file(
+                    primary_source,
+                    &parsed,
+                    &uri,
+                    position,
+                    &new_name,
+                    &workspace_docs,
+                    &resolve_import,
+                )
+            } else {
+                crate::references::compute_rename(primary_source, &parsed, &uri, position, &new_name)
+            }
+        })
+        .await
+        {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("rename blocking task failed: {e}");
+                None
+            }
+        };
+        Ok(edit)
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
@@ -497,29 +570,75 @@ impl LanguageServer for ReifyLanguageServer {
         let position = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
 
-        // Brief read lock: snapshot the document, then release before the
-        // (pure, CPU-only, single-file) reference walk — mirrors document_symbol.
-        // β is single-file: no spawn_blocking and no cross-file/filesystem
-        // resolution (unlike goto_definition); collect_references is a cheap
-        // in-memory AST walk scoped to one entity body.
+        // κ (task 4210): references now follow the import graph. Assemble the same
+        // cross-file rig as goto_definition — workspace_root + ModuleResolver +
+        // resolve_import (editor buffer over disk) + the open-document snapshot —
+        // and move the parsing + blocking filesystem I/O off the async worker.
         let state = self.state.read().await;
         let doc = match state.documents.get(&uri) {
             Some(doc) => doc,
             None => return Ok(None),
         };
+        let workspace_root = state.workspace_root.clone();
+        let stdlib_path = state.stdlib_path.clone();
+        // Snapshot open documents twice: a path-keyed map for resolve_import's
+        // editor-buffer-over-disk fallback, and a (Url, String) list as the
+        // multi-document workspace view the cross-file collector scans for
+        // importers of the home module.
+        let open_docs = state.documents.snapshot_as_path_map();
+        let workspace_docs: Vec<(Url, String)> = state
+            .documents
+            .iter()
+            .map(|(u, d)| (u.clone(), d.text.clone()))
+            .collect();
         drop(state);
 
-        // Reuse the per-document cached parse (one parse per edit).
-        let text = doc.text.clone();
-        let parsed = doc.parsed_module();
-
-        Ok(crate::references::compute_references(
-            &text,
-            &parsed,
-            &uri,
-            position,
-            include_declaration,
-        ))
+        let locations = match tokio::task::spawn_blocking(move || {
+            let parsed = doc.parsed_module();
+            let primary_source = doc.text.as_str();
+            if let Some(root) = workspace_root {
+                let stdlib_root =
+                    stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
+                let resolver = reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                let resolve_import = |import_path: &str| -> Option<(Url, String)> {
+                    let path = resolver.resolve_import_path(import_path).ok()?;
+                    let source = open_docs
+                        .get(&path)
+                        .cloned()
+                        .or_else(|| std::fs::read_to_string(&path).ok())?;
+                    let target_uri = Url::from_file_path(&path).ok()?;
+                    Some((target_uri, source))
+                };
+                crate::references::compute_references_cross_file(
+                    primary_source,
+                    &parsed,
+                    &uri,
+                    position,
+                    include_declaration,
+                    &workspace_docs,
+                    &resolve_import,
+                )
+            } else {
+                // No workspace root — single-file references (cross-module symbols
+                // remain refused, as before κ).
+                crate::references::compute_references(
+                    primary_source,
+                    &parsed,
+                    &uri,
+                    position,
+                    include_declaration,
+                )
+            }
+        })
+        .await
+        {
+            Ok(locs) => locs,
+            Err(e) => {
+                tracing::error!("references blocking task failed: {e}");
+                None
+            }
+        };
+        Ok(locations)
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -1697,6 +1816,203 @@ mod tests {
             unknown.is_none(),
             "references for an unknown URI must return Ok(None)"
         );
+    }
+
+    #[tokio::test]
+    async fn references_handler_follows_imports_across_files() {
+        // κ (task 4210): the `references` handler now follows the import graph.
+        // Mirror goto_definition_resolves_imported_symbol_across_files: parts.ri on
+        // disk declares `structure Hole`; main.ri (open) imports + constructs it.
+        // Find-references on the main.ri `Hole` use must span BOTH files — proving
+        // the handler assembles the workspace rig (workspace_root + ModuleResolver +
+        // resolve_import + workspace_docs) and calls the cross-file collector rather
+        // than the single-file producer (which refuses cross-module symbols).
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        let tmp_dir =
+            std::env::temp_dir().join(format!("reify-lsp-refs-xfile-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        std::fs::write(tmp_dir.join("parts.ri"), parts_source).unwrap();
+
+        let root_uri = Url::from_file_path(&tmp_dir).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // main.ri uses the parenthesized constructor `Hole()` so the construction
+        // site lowers to a SubDecl carrying structure_name="Hole" (the bare
+        // `sub hole = Hole` form is a syntax error and never lowers to a SubDecl).
+        let main_source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole()\n}";
+        let main_uri = Url::from_file_path(tmp_dir.join("main.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: main_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: main_source.to_string(),
+                },
+            })
+            .await;
+
+        // Cursor on the main.ri `Hole` use in `sub hole = Hole()` (line 2, col 15).
+        let locations = server
+            .references(ref_params(main_uri.clone(), Position::new(2, 15), true))
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        let locations =
+            locations.expect("cross-file references should resolve for the imported Hole use");
+        assert_eq!(
+            locations.len(),
+            3,
+            "home decl + import entity token + sub use = 3 cross-file Locations, got {locations:?}"
+        );
+        assert!(
+            locations.iter().any(|l| l.uri.path().ends_with("parts.ri")),
+            "references must include a parts.ri Location (the structure decl), got {locations:?}"
+        );
+        assert!(
+            locations.iter().any(|l| l.uri.path().ends_with("main.ri")),
+            "references must include main.ri Locations (import entity + sub use), got {locations:?}"
+        );
+        // The parts.ri Location points at `structure Hole` on line 0.
+        let parts_loc = locations
+            .iter()
+            .find(|l| l.uri.path().ends_with("parts.ri"))
+            .unwrap();
+        assert_eq!(
+            parts_loc.range.start.line, 0,
+            "parts.ri Location is the structure Hole decl on line 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_rename_and_rename_follow_imports_across_files() {
+        // κ (task 4210): prepare_rename + rename now follow the import graph. The
+        // formerly-refused cross-module symbol `Hole` becomes renameable, and the
+        // rename emits a multi-file WorkspaceEdit that re-parses clean (Invariant 5).
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        let tmp_dir =
+            std::env::temp_dir().join(format!("reify-lsp-rename-xfile-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        std::fs::write(tmp_dir.join("parts.ri"), parts_source).unwrap();
+
+        let root_uri = Url::from_file_path(&tmp_dir).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let main_source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole()\n}";
+        let main_uri = Url::from_file_path(tmp_dir.join("main.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: main_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: main_source.to_string(),
+                },
+            })
+            .await;
+
+        // (a) prepare_rename on the main.ri `Hole` use (line 2, col 15) — the
+        // single-file cross-module refusal is lifted.
+        let prepared = server
+            .prepare_rename(TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
+                position: Position::new(2, 15),
+            })
+            .await
+            .unwrap();
+
+        // (b) rename Hole→Bore from the same cursor.
+        let edit = server
+            .rename(rename_params(main_uri.clone(), 2, 15, "Bore"))
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // (a) assertions: a cross-module structure use is now a rename target.
+        match prepared {
+            Some(PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. }) => {
+                assert_eq!(
+                    placeholder, "Hole",
+                    "placeholder is the current name of the cross-module symbol"
+                );
+            }
+            other => panic!(
+                "prepare_rename must lift the cross-module refusal and return a target, got {other:?}"
+            ),
+        }
+
+        // (b) assertions: a multi-file WorkspaceEdit keyed by BOTH files.
+        let changes = edit
+            .expect("cross-file rename returns a WorkspaceEdit")
+            .changes
+            .expect("changes present");
+        let parts_key = changes
+            .keys()
+            .find(|u| u.path().ends_with("parts.ri"))
+            .expect("changes keyed by parts.ri (the home declaration)")
+            .clone();
+        let main_key = changes
+            .keys()
+            .find(|u| u.path().ends_with("main.ri"))
+            .expect("changes keyed by main.ri (import entity + sub use)")
+            .clone();
+        assert!(
+            changes.values().flatten().all(|e| e.new_text == "Bore"),
+            "every edit writes the new name Bore"
+        );
+        assert_eq!(
+            changes.get(&parts_key).unwrap().len(),
+            1,
+            "parts.ri: 1 edit (the structure Hole decl token)"
+        );
+        assert_eq!(
+            changes.get(&main_key).unwrap().len(),
+            2,
+            "main.ri: 2 edits (import entity token + sub use)"
+        );
+
+        // Invariant 5: applying each file's edits yields a buffer that re-parses
+        // clean (no new ERROR/recovery nodes) — `structure Bore`, `import
+        // parts.Bore`, and `sub hole = Bore()` are all valid.
+        for (key, original) in [(&parts_key, parts_source), (&main_key, main_source)] {
+            let mut buffer = original.to_string();
+            let mut edits = changes.get(key).unwrap().clone();
+            edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+            for e in edits.iter().rev() {
+                let start = crate::convert::position_to_offset(&buffer, e.range.start);
+                let end = crate::convert::position_to_offset(&buffer, e.range.end);
+                buffer.replace_range(start..end, &e.new_text);
+            }
+            let reparsed = reify_syntax::parse(&buffer, reify_core::ModulePath::single("test"));
+            assert!(
+                reparsed.errors.is_empty(),
+                "renamed buffer for {key} must re-parse clean (Invariant 5): {:?}\n{buffer}",
+                reparsed.errors
+            );
+        }
     }
 
     #[tokio::test]
