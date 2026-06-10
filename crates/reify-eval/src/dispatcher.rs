@@ -151,7 +151,7 @@ pub fn is_long_chain_realization(
 ///
 /// # Integration status
 ///
-/// TODO(task-2642): wire this builder into the realization timing loop
+/// TODO(task-3445): wire this builder into the realization timing loop
 /// in `geometry_ops.rs` once the kernel-registry mechanism + OCCT adapter
 /// migration lands. Until then, `long_chain_diagnostic` is scaffolding
 /// — public API with no in-tree caller — exactly mirroring the scope
