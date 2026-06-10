@@ -95,6 +95,31 @@ max_turns:
 fairness:
   scheduler_v2: true
 
+# ── Lever C (multi-host post-merge verify) — STAGED, NOT ENABLED ──────────────
+# leo-laptop is fully provisioned as a second verify host (2026-06-10): toolchain
+# fingerprint-identical (rustc 1.96.0 ac68faa20, see dark-factory
+# docs/verdict-parity-report.md), transport proven (git push leo-laptop
+# <sha>:refs/merge-verify/<id> + ssh leo-laptop orchestrator verify-merge),
+# shared sccache redis at leo-workstation.tailb08a6b.ts.net:6380.
+# DO NOT UNCOMMENT YET: the operator enable path (verify_runners config key,
+# RemoteRunner pool construction, K-from-config) does not exist in orchestrator
+# code — dark_factory task 1716 builds it; OrchestratorConfig has extra='ignore'
+# so an early block would be SILENTLY INERT, not an error. Enable checklist:
+# dark-factory plans/lever-c-enable-path-gap-2026-06-10.md. Schema below is the
+# PROPOSAL given to 1716 — reconcile with the landed schema before uncommenting.
+#
+# verify_runners:
+#   - name: laptop
+#     ssh_host: leo-laptop
+#     git_remote: leo-laptop          # remote in THIS repo -> laptop:/home/leo/src/reify
+#     config_path: /home/leo/.config/orchestrator/reify-laptop.yaml
+# drift_check_every_n_lands: 20       # ι cadence (+ nightly), per PRD §10 Open Q2
+# sccache:
+#   enabled: true
+#   backend_env:
+#     SCCACHE_REDIS: redis://leo-workstation.tailb08a6b.ts.net:6380
+# ──────────────────────────────────────────────────────────────────────────────
+
 # Trailing-24h spend ceiling. Default $200 was a backstop from before the
 # multi-account failover landed — with Anthropic's per-account caps as the
 # real spend governor, the orch-level dollar guard just trips during normal
