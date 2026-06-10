@@ -498,4 +498,109 @@ mod tests {
         let dn = bar_axial_force_delta(&nodes, &section, &u_local);
         assert_close(dn, 0.0, 1e-9, "dN = 0 under rigid-body translation");
     }
+
+    // ---- Validation / active-set guard tests (PRD §11 Q5) -----------------
+
+    /// Build a cable [`BarMember`] joining `j`–`k`. Shared by the guard tests.
+    fn cable(j: usize, k: usize, e: f64, a: f64, prestress: f64) -> BarMember {
+        BarMember {
+            nodes: (j, k),
+            kind: MemberKind::Cable,
+            section: BarSection { youngs_modulus: e, area: a },
+            prestress,
+        }
+    }
+
+    /// Tight inner-CG guard options with a caller-chosen active-set cap. The
+    /// guard problems are tiny (≤ 3 nodes), so CG converges in a few iterations.
+    fn guard_options(max_active_set_iters: usize) -> TensegrityLoadOptions {
+        TensegrityLoadOptions {
+            max_active_set_iters,
+            cg: CgSolverOptions { tolerance: 1.0e-12, max_iter: 1000 },
+            slack_tol: 0.0,
+        }
+    }
+
+    // (a) `loads.len()` must equal `nodes.len()`: a short loads vector is a
+    //     DimensionMismatch. The kernel must validate up-front rather than
+    //     silently dropping the missing per-node forces.
+    #[test]
+    fn dimension_mismatch_loads_length() {
+        let nodes = vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [4.0, 0.0, 0.0]];
+        let members = vec![
+            cable(0, 1, 200.0e9, 1.0e-4, 5_000.0),
+            cable(1, 2, 200.0e9, 1.0e-4, 5_000.0),
+        ];
+        let loads = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]; // 2 ≠ 3 nodes
+        let fixed_nodes = vec![0, 2];
+        let result =
+            tensegrity_load_analysis(&nodes, &members, &loads, &fixed_nodes, &guard_options(64));
+        assert!(
+            matches!(result, Err(TensegrityLoadError::DimensionMismatch)),
+            "loads.len() != nodes.len() must be DimensionMismatch, got {result:?}",
+        );
+    }
+
+    // (a′) A member referencing a node index outside `0..nodes.len()` is a
+    //      DimensionMismatch, caught up-front before any assembly indexing.
+    #[test]
+    fn dimension_mismatch_member_node_index_out_of_range() {
+        let nodes = vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        let members = vec![cable(0, 5, 200.0e9, 1.0e-4, 5_000.0)]; // node 5 ∉ 0..2
+        let loads = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let fixed_nodes = vec![0];
+        let result =
+            tensegrity_load_analysis(&nodes, &members, &loads, &fixed_nodes, &guard_options(64));
+        assert!(
+            matches!(result, Err(TensegrityLoadError::DimensionMismatch)),
+            "out-of-range member node index must be DimensionMismatch, got {result:?}",
+        );
+    }
+
+    // (b) Every node fixed ⇒ no free DOF to solve for ⇒ EmptyFreeSet.
+    #[test]
+    fn empty_free_set_all_nodes_fixed() {
+        let nodes = vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        let members = vec![cable(0, 1, 200.0e9, 1.0e-4, 5_000.0)];
+        let loads = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let fixed_nodes = vec![0, 1]; // both (all) nodes anchored
+        let result =
+            tensegrity_load_analysis(&nodes, &members, &loads, &fixed_nodes, &guard_options(64));
+        assert!(
+            matches!(result, Err(TensegrityLoadError::EmptyFreeSet)),
+            "all-fixed problem must be EmptyFreeSet, got {result:?}",
+        );
+    }
+
+    // (c) The §11 Q5 active-set cap. The slackening collinear-cable problem
+    //     needs two passes (drop, then confirm the fixed point); capping at one
+    //     pass trips the ActiveSetDidNotConverge{iterations} guard instead of
+    //     letting the loop reach its natural fixed point.
+    #[test]
+    fn active_set_did_not_converge_when_cap_below_natural_count() {
+        let l = 2.0_f64;
+        let e = 200.0e9_f64;
+        let a = 1.0e-4_f64;
+        let n0 = 5_000.0_f64;
+        let p = 3.0 * n0;
+        let nodes = vec![[0.0, 0.0, 0.0], [l, 0.0, 0.0], [2.0 * l, 0.0, 0.0]];
+        let members = vec![cable(0, 1, e, a, n0), cable(1, 2, e, a, n0)];
+        let loads = vec![[0.0, 0.0, 0.0], [p, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let fixed_nodes = vec![0, 2];
+        let result = tensegrity_load_analysis(
+            &nodes,
+            &members,
+            &loads,
+            &fixed_nodes,
+            &guard_options(1), // natural count is 2 ⇒ a cap of 1 trips the guard
+        );
+        assert!(
+            matches!(
+                result,
+                Err(TensegrityLoadError::ActiveSetDidNotConverge { iterations: 1 })
+            ),
+            "cap below natural count must be ActiveSetDidNotConverge{{ iterations: 1 }}, \
+             got {result:?}",
+        );
+    }
 }
