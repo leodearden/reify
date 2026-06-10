@@ -50,6 +50,16 @@ use crate::form_find::MemberKind;
 use crate::geometric_stiffness::bar_tangent_stiffness;
 use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
 
+/// Diagonal magnitude seeded at an orphan fixed node's DOFs so the Dirichlet
+/// row-elimination has a stored diagonal to overwrite.
+///
+/// The value is physically inert: a grounded DOF belongs to a fixed support, so
+/// `apply_dirichlet_row_elimination` unconditionally sets its diagonal to `1.0`
+/// and pins its displacement to `0` regardless of what is seeded here. A unit
+/// value (rather than a near-zero epsilon) keeps the pre-elimination matrix
+/// well-conditioned and survives any sparse-builder zero-pruning.
+const GROUNDING_DIAGONAL: f64 = 1.0;
+
 /// A single pin-jointed bar or cable member in a tensegrity load problem.
 ///
 /// The kernel keeps a general per-member [`BarSection`] so per-member section
@@ -169,40 +179,90 @@ pub fn tensegrity_load_analysis(
 ) -> Result<TensegrityLoadSolve, TensegrityLoadError> {
     let n_members = members.len();
 
-    // All members active. The tension-only active-set drop loop is added in a
-    // later step; for now this is a single linear pass over every member.
-    let active = vec![true; n_members];
+    // Tension-only active set: start with every member active and drop any
+    // active cable whose total force goes compressive, re-solving until a pass
+    // drops nothing. The drop is monotone (a slack cable is never re-added), so
+    // the active set strictly shrinks and the loop terminates in at most
+    // `#cables` passes. K_g is held *linear-about-prestress*: every pass builds
+    // K_g from the fixed form-found `member.prestress`, never the load-updated
+    // force (PRD §10), so the converged post-drop deflection equals the reduced
+    // linear system with the slack cables removed.
+    let mut active = vec![true; n_members];
+    let mut slack = vec![false; n_members];
+    let mut iterations = 0usize;
 
-    let (displacements, converged) =
-        solve_active_pass(nodes, members, &active, loads, fixed_nodes, options)?;
+    let (displacements, converged) = loop {
+        iterations += 1;
+        let (disp, conv) =
+            solve_active_pass(nodes, members, &active, loads, fixed_nodes, options)?;
 
-    // Per-member total force N_i = prestress_i + dN_i (every member active here,
-    // so no slack zeroing yet).
+        // Drop any active cable that has gone compressive (struts carry
+        // compression and are never dropped).
+        let mut dropped_any = false;
+        for (i, member) in members.iter().enumerate() {
+            if !active[i] || member.kind != MemberKind::Cable {
+                continue;
+            }
+            let total = member.prestress + member_force_delta(nodes, member, &disp);
+            if total < -options.slack_tol {
+                active[i] = false;
+                slack[i] = true;
+                dropped_any = true;
+            }
+        }
+
+        if !dropped_any {
+            // Fixed point: no active cable went slack this pass.
+            break (disp, conv);
+        }
+    };
+
+    // Final per-member forces: slack cables report 0 with delta = −prestress
+    // (their total force fell to zero); active members report prestress + dN on
+    // the converged displacement field.
     let mut member_forces = vec![0.0_f64; n_members];
     let mut member_force_deltas = vec![0.0_f64; n_members];
     for (i, member) in members.iter().enumerate() {
-        let (j, k) = member.nodes;
-        let u_local = [
-            displacements[j][0],
-            displacements[j][1],
-            displacements[j][2],
-            displacements[k][0],
-            displacements[k][1],
-            displacements[k][2],
-        ];
-        let dn = bar_axial_force_delta(&[nodes[j], nodes[k]], &member.section, &u_local);
-        member_force_deltas[i] = dn;
-        member_forces[i] = member.prestress + dn;
+        if slack[i] {
+            member_forces[i] = 0.0;
+            member_force_deltas[i] = -member.prestress;
+        } else {
+            let dn = member_force_delta(nodes, member, &displacements);
+            member_force_deltas[i] = dn;
+            member_forces[i] = member.prestress + dn;
+        }
     }
 
     Ok(TensegrityLoadSolve {
         displacements,
         member_forces,
         member_force_deltas,
-        slack: vec![false; n_members],
-        active_set_iterations: 1,
+        slack,
+        active_set_iterations: iterations,
         converged,
     })
+}
+
+/// Axial force delta `dN` for `member` evaluated on a displacement field.
+///
+/// Gathers the member's two nodal displacements into the local 6-vector and
+/// defers to [`bar_axial_force_delta`]. The total member force is
+/// `prestress + dN`.
+fn member_force_delta(
+    nodes: &[[f64; 3]],
+    member: &BarMember,
+    displacements: &[[f64; 3]],
+) -> f64 {
+    let (j, k) = member.nodes;
+    let u_local = [
+        displacements[j][0],
+        displacements[j][1],
+        displacements[j][2],
+        displacements[k][0],
+        displacements[k][1],
+        displacements[k][2],
+    ];
+    bar_axial_force_delta(&[nodes[j], nodes[k]], &member.section, &u_local)
 }
 
 /// One linear solve over the currently-active members.
@@ -225,21 +285,48 @@ fn solve_active_pass(
 ) -> Result<(Vec<[f64; 3]>, bool), TensegrityLoadError> {
     let n_nodes = nodes.len();
 
-    // Per-active-member connectivity + tangent stiffness. Both Vecs outlive the
-    // `AssemblyElement` borrows below.
-    let mut conns: Vec<[usize; 2]> = Vec::new();
+    // Per-active-member connectivity + tangent stiffness, plus the 1-node
+    // grounding stabilisers appended below. `conns` is heterogeneous (2-node
+    // bars and 1-node grounders), so it owns `Vec<usize>` connectivity; both
+    // Vecs outlive the `AssemblyElement` borrows further down.
+    let mut conns: Vec<Vec<usize>> = Vec::new();
     let mut k_mats: Vec<ElementStiffness> = Vec::new();
+    let mut connected = vec![false; n_nodes];
     for (m, member) in members.iter().enumerate() {
         if !active[m] {
             continue;
         }
         let (j, k) = member.nodes;
-        conns.push([j, k]);
+        connected[j] = true;
+        connected[k] = true;
+        conns.push(vec![j, k]);
         k_mats.push(bar_tangent_stiffness(
             &[nodes[j], nodes[k]],
             &member.section,
             member.prestress,
         ));
+    }
+
+    // Grounding stabilisers for *orphan* fixed nodes — support nodes that no
+    // active member touches. This happens when a fixed node's only members are
+    // all dropped as slack (e.g. the far anchor of a collinear cable string once
+    // the relieved cable is removed). `apply_dirichlet_row_elimination` requires
+    // a stored diagonal at every constrained DOF (the FEA-assembled-K invariant,
+    // Task 2916), but an orphan node contributes no stiffness entries, so the BC
+    // pass would otherwise panic on a missing `K[i][i]`. Each orphan fixed node
+    // gets a 1-node element seeding a diagonal at its three DOFs. The magnitude
+    // is physically inert: row-elimination overwrites every fixed DOF's diagonal
+    // with 1.0 and pins its displacement to 0, so this only guarantees the
+    // diagonal exists — it changes no force or displacement in the solve.
+    for &node in fixed_nodes {
+        if node < n_nodes && !connected[node] {
+            let mut ground = ElementStiffness::zeros(3);
+            ground.data[0] = GROUNDING_DIAGONAL; // (0, 0)
+            ground.data[4] = GROUNDING_DIAGONAL; // (1, 1)
+            ground.data[8] = GROUNDING_DIAGONAL; // (2, 2)
+            conns.push(vec![node]);
+            k_mats.push(ground);
+        }
     }
 
     let elements: Vec<AssemblyElement<'_>> = conns

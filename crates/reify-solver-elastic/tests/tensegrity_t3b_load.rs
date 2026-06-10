@@ -115,30 +115,35 @@ fn no_slack_prestressed_string_transverse_load() {
     );
 }
 
-/// Independent reduced-topology reference: assemble ONLY cable `(0,1)` (the one
-/// that stays taut after the slack cable is dropped), pin nodes 0 and 2, apply
-/// the axial load `P` at node 1, and solve with the public assembly/CG
-/// primitives. Returns `u_x[1]`. This is the exact linear system the
-/// tension-only active set must converge to after dropping cable `(1,2)` —
-/// computed without touching `tensegrity_load_analysis`, so it is a genuine
-/// cross-check of the kernel's post-drop deflection.
+/// Independent reduced-topology reference: the exact linear system the
+/// tension-only active set must converge to after cable `(1,2)` is dropped.
+///
+/// Once `(1,2)` slackens, only cable `(0,1)` carries load and node 2 is
+/// disconnected (it leaves the system with its sole cable), so the reduced
+/// topology is a single cable spanning anchor node 0 → loaded node 1 — modelled
+/// here as a 2-node system with node 0 pinned and the axial load `P` at node 1.
+/// (Keeping node 2 in this reference and pinning it would constrain an orphan
+/// DOF with no stored stiffness diagonal, which the row-elimination BC cannot
+/// eliminate; the kernel handles that case internally by grounding orphan fixed
+/// nodes, but this independent reference avoids the degeneracy by construction.)
+/// Returns `u_x[1]`, computed without touching `tensegrity_load_analysis`, so it
+/// is a genuine cross-check of the kernel's post-drop deflection.
 fn reduced_single_cable_ux1(l: f64, e: f64, a: f64, n0: f64, p: f64) -> f64 {
-    let nodes = [[0.0, 0.0, 0.0], [l, 0.0, 0.0], [2.0 * l, 0.0, 0.0]];
+    let nodes = [[0.0, 0.0, 0.0], [l, 0.0, 0.0]];
     let section = BarSection { youngs_modulus: e, area: a };
     let kt = bar_tangent_stiffness(&[nodes[0], nodes[1]], &section, n0);
     let conn = [0usize, 1];
     let elem = AssemblyElement { id: 0, connectivity: &conn, k_e: &kt };
-    let mut k = assemble_global_stiffness(3, &[elem], AssemblyMode::Deterministic);
+    let mut k = assemble_global_stiffness(2, &[elem], AssemblyMode::Deterministic);
 
-    let mut f = vec![0.0_f64; 9];
+    let mut f = vec![0.0_f64; 6];
     apply_point_load(&mut f, 1, [p, 0.0, 0.0]);
 
-    // Pin nodes 0 and 2 in all three axes.
+    // Pin node 0 in all three axes (node 1 is fully held by the cable's axial +
+    // geometric stiffness, so the reduced system is non-singular).
     let mut bcs: Vec<DirichletBc> = Vec::new();
-    for &node in &[0usize, 2usize] {
-        for axis in 0..3 {
-            bcs.push(DirichletBc { dof: 3 * node + axis, value: 0.0 });
-        }
+    for axis in 0..3 {
+        bcs.push(DirichletBc { dof: axis, value: 0.0 });
     }
     apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
 
