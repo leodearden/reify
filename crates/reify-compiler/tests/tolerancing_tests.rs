@@ -310,9 +310,10 @@ fn all_fourteen_gdt_types_and_datum_present() {
     let template_names: Vec<&str> = module.templates.iter().map(|t| t.name.as_str()).collect();
 
     let expected_gdt_and_datum = [
-        // Form (4)
+        // Form (4 + StraightnessOfAxis FOS variant, α)
         "Flatness",
         "Straightness",
+        "StraightnessOfAxis",
         "Circularity",
         "Cylindricity",
         // Orientation (3)
@@ -356,6 +357,57 @@ fn all_fourteen_gdt_types_and_datum_present() {
         "Angularity should have 'nominal_angle' value cell, got: {:?}",
         angularity
             .value_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── α: StraightnessOfAxis FOS form variant ──────────────────────────────────
+
+/// α: `StraightnessOfAxis` is a FormTolerance variant for the FOS-derived axis.
+/// It refines FormTolerance (no datum), carries the standard tolerance_value /
+/// feature / material_condition Param cells, and — because the axis tolerance
+/// zone is inherently Ø — carries NO `zone_shape` discriminator cell.
+///
+/// RED before step-4: StraightnessOfAxis does not exist.
+#[test]
+fn straightness_of_axis_is_fos_form_variant() {
+    let module = load_stdlib_module();
+
+    let soa = module
+        .templates
+        .iter()
+        .find(|t| t.name == "StraightnessOfAxis")
+        .expect("expected 'StraightnessOfAxis' template");
+
+    assert!(
+        soa.trait_bounds.contains(&"FormTolerance".to_string()),
+        "StraightnessOfAxis should have 'FormTolerance' in trait_bounds, got: {:?}",
+        soa.trait_bounds
+    );
+
+    let param_names: Vec<&str> = soa
+        .value_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Param)
+        .map(|vc| vc.id.member.as_str())
+        .collect();
+    for name in &["tolerance_value", "feature", "material_condition"] {
+        assert!(
+            param_names.contains(name),
+            "StraightnessOfAxis missing Param '{}', params: {:?}",
+            name,
+            param_names
+        );
+    }
+
+    // Axis zone is inherently Ø → no zone_shape discriminator.
+    assert!(
+        !soa.value_cells.iter().any(|vc| vc.id.member == "zone_shape"),
+        "StraightnessOfAxis must NOT have a 'zone_shape' cell (axis zone is inherently Ø), \
+         got cells: {:?}",
+        soa.value_cells
             .iter()
             .map(|vc| &vc.id.member)
             .collect::<Vec<_>>()
@@ -648,11 +700,11 @@ fn full_module_integrity() {
             .collect::<Vec<_>>()
     );
 
-    // 19 templates: DimensionalTolerance(1) + 14 GD&T + Datum(1) + SurfaceFinish(1) + Fit(1) + ISOToleranceGrade(1)
+    // 20 templates: DimensionalTolerance(1) + 14 GD&T + StraightnessOfAxis(1, α) + Datum(1) + SurfaceFinish(1) + Fit(1) + ISOToleranceGrade(1)
     assert_eq!(
         module.templates.len(),
-        19,
-        "expected 19 templates, got: {:?}",
+        20,
+        "expected 20 templates, got: {:?}",
         module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 
