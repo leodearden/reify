@@ -117,6 +117,13 @@ structure SmokeDirect {
 /// accept `Steel_AISI_1045()` with zero `TypeNotConformingToTrait` diagnostics.
 /// Guards against the supertrait `ElasticMaterial : ConstitutiveLaw` accidentally
 /// perturbing the `ElasticMaterial` param on the sibling solver.
+///
+/// loads/supports are typed `[PointLoad(...)]` / `[FixedSupport(...)]` (not bare
+/// `[1.0]` `List<Real>` fillers) because task ζ/4444 tightened `solve_buckling`'s
+/// `loads : List<Load>` / `supports : List<Support>` — the same enforcement the
+/// sibling tests already exercise for `solve_elastic_static`. The probe here is
+/// still the `material` param; the typed fillers merely satisfy the now-enforced
+/// list-element conformance so this test isolates the material slot.
 #[test]
 fn solve_buckling_still_compiles_with_direct_material() {
     let source = r#"
@@ -126,8 +133,8 @@ structure BucklingPreserve {
         1000mm,
         100mm,
         100mm,
-        [1.0],
-        [1.0],
+        [PointLoad(point: "tip", force: 1000.0)],
+        [FixedSupport(target: "root")],
         BucklingOptions()
     )
 }
