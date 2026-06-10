@@ -79,6 +79,29 @@ test_semaphore_acquire() {
         return 64
     fi
 
+    # Validate WAIT is a non-negative integer.  A non-numeric value would
+    # silently corrupt the bash arithmetic _deadline=$(( _start + WAIT )) in a
+    # sourced caller that runs without set -e (exit status 1 from (( )) leaves
+    # _deadline empty, then [ "$_now" -ge "$_deadline" ] throws "integer
+    # expression expected" on every pass, producing a noisy spin).
+    case "$WAIT" in
+        ''|*[!0-9]*)
+            echo "lib_test_semaphore.sh: REIFY_TEST_SEMAPHORE_WAIT must be a non-negative integer (got '${WAIT}')" >&2
+            return 64
+            ;;
+    esac
+
+    # Preflight: flock is required for slot acquisition.  The main-guard also
+    # checks this for direct-exec usage, but the sourced path (verify.sh/β) must
+    # fail fast here too — without this check a missing flock causes every
+    # `flock -xn 9` to return 127 (treated as "slot busy"), spinning until
+    # REIFY_TEST_SEMAPHORE_WAIT (default 1800s) elapses with no diagnostic.
+    # Mirrors cargo-test-occt-gated.sh:100-104.
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "lib_test_semaphore.sh: flock not found on PATH — cannot acquire test slot" >&2
+        return 1
+    fi
+
     # Validate lock parent directory.
     local _LOCK_PARENT
     _LOCK_PARENT="$(dirname "$LOCK")"
@@ -93,6 +116,11 @@ test_semaphore_acquire() {
 
     # N-slot shuffle-acquire loop.
     # Deadline checked BEFORE sleep (copy of cargo-test-occt-gated.sh:214-223).
+    # NOTE: The shuffle-acquire loop, deadline logic, and FD-9 invariant below
+    # are mirrored from scripts/cargo-test-occt-gated.sh:148-224.  A bug fix
+    # here (e.g. the 2026-04-20 FD-9 wedge class) MUST also be applied there,
+    # and vice versa.  cargo-test-occt-gated.sh is outside this task's scope so
+    # the reciprocal comment cannot be added here; see the task notes.
     local _start _deadline _acq _ORDER _SLOT _SLOT_FILE
     _start="$(date +%s)"
     _deadline=$(( _start + WAIT ))
