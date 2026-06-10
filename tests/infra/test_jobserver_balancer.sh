@@ -623,4 +623,76 @@ assert "_transfer_burst: (b) capped burst moves exactly max_count" \
 assert "_transfer_burst: (c) C1 conservation holds across all cases" \
     test "$_b7_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 8: decide() merge-demanded branch + monotonicity invariant (test-8)
+#   Loads jobserver-balancer.py via importlib heredoc.
+#
+#   (a) For each free_task k in 1..tokens-1, with free_merge==0 (merge demanded),
+#       decide() must return ("t2m", k) — all task spare moves to merge.
+#   (b) MONOTONICITY sweep: for ALL (free_merge=0, free_task=0..tokens),
+#       both idle_ticks < threshold AND idle_ticks >= threshold, decide() must
+#       NEVER return action "m2t" (merge never donates back while 0-free).
+#
+#   RED: decide() does not exist yet.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 8: decide() merge-demanded branch + monotonicity ---"
+
+_b8_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+TOKENS = 8
+baseline_task  = max(1, TOKENS // 4)   # 2
+baseline_merge = TOKENS - baseline_task  # 6
+epsilon        = 1
+threshold      = 5
+
+errors = []
+
+# ── (a) merge-demanded branch: free_merge==0, free_task=k ─────────────────
+for k in range(1, TOKENS):
+    action, count = mod.decide(
+        free_merge=0, free_task=k,
+        tokens=TOKENS, baseline_merge=baseline_merge,
+        baseline_task=baseline_task, epsilon=epsilon,
+        idle_ticks=0, idle_threshold=threshold,
+    )
+    if action != "t2m" or count != k:
+        errors.append(
+            f"(a) free_task={k}: got ({action!r},{count}), want ('t2m',{k})"
+        )
+
+# ── (b) MONOTONICITY: free_merge==0 → decide never returns "m2t" ──────────
+for free_task in range(0, TOKENS + 1):
+    for idle_ticks in [0, threshold - 1, threshold, threshold + 2]:
+        action, count = mod.decide(
+            free_merge=0, free_task=free_task,
+            tokens=TOKENS, baseline_merge=baseline_merge,
+            baseline_task=baseline_task, epsilon=epsilon,
+            idle_ticks=idle_ticks, idle_threshold=threshold,
+        )
+        if action == "m2t":
+            errors.append(
+                f"(b) monotonicity broken: free_merge=0, free_task={free_task}, "
+                f"idle_ticks={idle_ticks} → ({action!r},{count})"
+            )
+
+if errors:
+    sys.stderr.write("FAIL decide() merge-demanded/monotonicity:\n"
+                     + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: decide() merge-demanded + monotonicity")
+PY
+} || _b8_exit=$?
+assert "decide(): merge-demanded branch returns (t2m, free_task) for all k in 1..tokens-1" \
+    test "$_b8_exit" -eq 0
+assert "decide(): monotonicity — free_merge==0 never returns action 'm2t'" \
+    test "$_b8_exit" -eq 0
+
 test_summary
