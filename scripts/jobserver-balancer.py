@@ -80,9 +80,18 @@ def seed_fifo(fd: int, count: int) -> None:
 def main() -> None:
     """Daemon entry point: create/seed/hold FIFOs, run control loop."""
 
-    # ── Compute baseline partition (impl-3 refines this) ─────────────────────
-    # PLACEHOLDER: ε will tune the exact split (PRD §10).  For α any valid
-    # merge-favored partition works: task ~1/4, merge ~3/4, both >= 1.
+    # ── Compute baseline partition ────────────────────────────────────────────
+    # PLACEHOLDER pending ε's measurement harness (PRD §4 C4 / §10):
+    #   task_baseline  = max(1, TOKENS // 4)   (~1/4 of pool, minimum 1)
+    #   merge_baseline = TOKENS - task_baseline (~3/4 of pool)
+    #
+    # Invariants guaranteed by construction:
+    #   merge_baseline > task_baseline  (merge-favored, PRD §4 C4)
+    #   task_baseline  >= 1              (non-starving; prevents idle thrash)
+    #   merge + task   == TOKENS         (C1 token conservation)
+    #
+    # Tests assert the PARTITION PROPERTY, not a guessed numeric value, so
+    # ε's retune will not break them.  For TOKENS=32: 24/8.  For TOKENS=4: 3/1.
     task_baseline = max(1, TOKENS // 4)
     merge_baseline = TOKENS - task_baseline  # sum == TOKENS by construction (C1)
 
