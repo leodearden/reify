@@ -216,6 +216,10 @@ pub(crate) fn phase_entities(
             reify_ast::Declaration::Module(_) => {
                 // No entity to build from a module declaration.
             }
+            reify_ast::Declaration::Default(_) => {
+                // No entity to build from a default declaration (task A: accept and ignore).
+                // The "not yet wired" Warning is emitted in step-6.
+            }
         }
     }
 }

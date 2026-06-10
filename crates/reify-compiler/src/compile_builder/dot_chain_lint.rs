@@ -159,6 +159,9 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
         Declaration::TypeAlias(t) => walk_annotations(&t.annotations, diagnostics),
         // A module declaration has no annotations and no embedded expressions.
         Declaration::Module(_) => {}
+        // A default declaration has no annotations and no embedded dot-chain expressions
+        // to walk in task A (the RHS is accepted but not compiled; task B).
+        Declaration::Default(_) => {}
     }
 }
 
