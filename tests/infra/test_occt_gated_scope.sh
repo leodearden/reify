@@ -177,47 +177,101 @@ assert "workspace nextest pass is wrapped in 'timeout --kill-after=60 [0-9]+m'" 
     bash -c "printf '%s' \"\$FULL_WS_DEBUG\" | grep -qE 'timeout[[:space:]]+--kill-after=60[[:space:]]+[0-9]+m[[:space:]]'"
 
 # ---------------------------------------------------------------------------
-# Tests 9–11 (task 4503/γ): --config plan assertions for the env-driven occt
-# nextest group cap (REIFY_OCCT_NEXTEST_MAX_THREADS, default 24).
+# Tests 9–12 (task 4503/γ): --config-file plan assertions for the env-driven
+# occt nextest group cap (REIFY_OCCT_NEXTEST_MAX_THREADS, default 24).
 #
-# Guard: assertions are only meaningful when the plan actually uses cargo
-# nextest run.  When NEXTEST=0 the plan uses cargo test (no --config support),
-# so skip the value/dialability checks (vacuous pass).  We check presence of
-# `cargo nextest run` in TEST_PLAN_SEGS as the guard.
+# Mechanism: scripts/gen-nextest-config.sh generates a full copy of
+# .config/nextest.toml with the occt literal rewritten to the resolved cap,
+# and prints the temp path to stdout.  scripts/verify.sh passes that path as
+# `cargo nextest run ... --config-file <tmp>`.
+#
+# NOTE: the broken cargo-config form `--config 'test-groups.occt.max-threads=N'`
+# (the step-3 mechanism) is a NO-OP for nextest test-groups — it overrides CARGO
+# config, not nextest's own test-groups (verified on nextest 0.9.136).  That form
+# must not be re-shipped; see regression guard below.
+#
+# Guard: plan-shape assertions are only meaningful when the plan actually uses
+# cargo nextest run.  When NEXTEST=0 the plan uses cargo test (no --config-file
+# support), so skip the plan-shape checks (vacuous pass).
 # ---------------------------------------------------------------------------
 PLAN_HAS_NEXTEST="$(printf '%s\n' "$TEST_PLAN_SEGS" | grep -c 'cargo nextest run' || true)"
+GEN_CFG="$REPO_ROOT/scripts/gen-nextest-config.sh"
 
 echo ""
-echo "--- Tests 9–11 (task 4503/γ): --config 'test-groups.occt.max-threads=N' in nextest plan lines ---"
+echo "--- Tests 9–12 (task 4503/γ): --config-file plan assertions for env-driven occt cap ---"
 
-# Test 9: every cargo nextest run line carries the --config flag (substring check).
-assert "every 'cargo nextest run' plan line carries '--config' with 'test-groups.occt.max-threads='" \
+# Test 9 (plan-shape): every cargo nextest run line carries --config-file <path>
+# where the path contains the reify-nextest-occt prefix from gen-nextest-config.sh.
+assert "every 'cargo nextest run' plan line carries '--config-file' with 'reify-nextest-occt' path" \
     bash -c "
         if [ '${PLAN_HAS_NEXTEST}' -eq 0 ]; then exit 0; fi
         bad=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" \
             | grep 'cargo nextest run' \
-            | grep -v 'test-groups.occt.max-threads=' || true)
+            | grep -v -- '--config-file.*reify-nextest-occt' || true)
         [ -z \"\$bad\" ]
     "
 
-# Test 10: default value is 24 when REIFY_OCCT_NEXTEST_MAX_THREADS is unset.
-# We re-use TEST_PLAN_SEGS (already built without REIFY_OCCT_NEXTEST_MAX_THREADS
-# set — the standard default).
-assert "default plan contains 'test-groups.occt.max-threads=24' (REIFY_OCCT_NEXTEST_MAX_THREADS unset)" \
+# Regression guard: NO cargo nextest run line may carry the broken Cargo-config form.
+# cargo --config overrides CARGO configuration only; test-groups is a nextest config
+# key and --config is a silent no-op for it (verified empirically on nextest 0.9.136).
+assert "NO 'cargo nextest run' line carries the broken cargo-config form --config test-groups.occt.max-threads" \
     bash -c "
-        if [ '${PLAN_HAS_NEXTEST}' -eq 0 ]; then exit 0; fi
-        printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'test-groups.occt.max-threads=24'
+        bad=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" \
+            | grep 'cargo nextest run' \
+            | grep -F -- \"--config 'test-groups.occt.max-threads\" || true)
+        [ -z \"\$bad\" ]
     "
 
-# Test 11: dialability — override REIFY_OCCT_NEXTEST_MAX_THREADS=7 produces value 7.
-PLAN_SEGS_DIAL="$(REIFY_OCCT_NEXTEST_MAX_THREADS=7 bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null | grep -v '^#')"
-export PLAN_SEGS_DIAL
-PLAN_DIAL_HAS_NEXTEST="$(printf '%s\n' "$PLAN_SEGS_DIAL" | grep -c 'cargo nextest run' || true)"
+# Test 10 (behavioral gold, default): gen-nextest-config.sh with
+# REIFY_OCCT_NEXTEST_MAX_THREADS unset produces a config file that makes
+# 'cargo nextest show-config test-groups' report 'group: occt (max threads = 24)'.
+# Guarded on nextest being available (vacuous pass when absent, mirroring the
+# NEXTEST tolerance in the plan-shape tests above).
+HAVE_NEXTEST=0
+if cargo nextest --version >/dev/null 2>&1; then
+    HAVE_NEXTEST=1
+fi
 
-assert "REIFY_OCCT_NEXTEST_MAX_THREADS=7 plan contains 'test-groups.occt.max-threads=7' (dialability)" \
+assert "gen-nextest-config.sh default: 'cargo nextest show-config' reports 'group: occt (max threads = 24)'" \
     bash -c "
-        if [ '${PLAN_DIAL_HAS_NEXTEST}' -eq 0 ]; then exit 0; fi
-        printf '%s\n' \"\$PLAN_SEGS_DIAL\" | grep -q 'test-groups.occt.max-threads=7'
+        if [ '${HAVE_NEXTEST}' -eq 0 ]; then exit 0; fi
+        cfg=\$(env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        out=\$(cd \"${REPO_ROOT}\" && cargo nextest show-config test-groups --config-file \"\$cfg\" 2>/dev/null || true)
+        rm -f \"\$cfg\"
+        printf '%s\n' \"\$out\" | grep -qF 'group: occt (max threads = 24)'
+    "
+
+# Test 11 (behavioral gold, override): REIFY_OCCT_NEXTEST_MAX_THREADS=7 produces
+# a config that makes show-config report 'group: occt (max threads = 7)'.
+assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_MAX_THREADS=7: show-config reports 'group: occt (max threads = 7)'" \
+    bash -c "
+        if [ '${HAVE_NEXTEST}' -eq 0 ]; then exit 0; fi
+        cfg=\$(REIFY_OCCT_NEXTEST_MAX_THREADS=7 bash \"${GEN_CFG}\")
+        out=\$(cd \"${REPO_ROOT}\" && cargo nextest show-config test-groups --config-file \"\$cfg\" 2>/dev/null || true)
+        rm -f \"\$cfg\"
+        printf '%s\n' \"\$out\" | grep -qF 'group: occt (max threads = 7)'
+    "
+
+# Test 12a (fallback, no nextest required): gen-nextest-config.sh default output
+# contains the TOML literal 'occt = { max-threads = 24 }' so the mechanism has
+# coverage even when nextest is absent from PATH.
+assert "gen-nextest-config.sh default: output file contains TOML 'occt = { max-threads = 24 }'" \
+    bash -c "
+        cfg=\$(env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        rc=0
+        grep -qF 'occt = { max-threads = 24 }' \"\$cfg\" || rc=1
+        rm -f \"\$cfg\"
+        exit \$rc
+    "
+
+# Test 12b: override REIFY_OCCT_NEXTEST_MAX_THREADS=7 produces 'occt = { max-threads = 7 }'.
+assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_MAX_THREADS=7: output file contains TOML 'occt = { max-threads = 7 }'" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NEXTEST_MAX_THREADS=7 bash \"${GEN_CFG}\")
+        rc=0
+        grep -qF 'occt = { max-threads = 7 }' \"\$cfg\" || rc=1
+        rm -f \"\$cfg\"
+        exit \$rc
     "
 
 test_summary
