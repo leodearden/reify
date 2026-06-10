@@ -1416,6 +1416,23 @@ fn cmd_lsp() -> ExitCode {
     }
 }
 
+/// Pure exit-decision helper for `reify check`.
+///
+/// Returns `true` when the overall outcome should cause a non-zero exit:
+/// - [`ConstraintOutcome::SomeViolated`] always fails.
+/// - [`ConstraintOutcome::SomeIndeterminate`] fails only when `strict` is `true`.
+/// - [`ConstraintOutcome::AllSatisfied`] never fails.
+///
+/// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
+/// unit-testable; callers convert to `ExitCode` at the boundary.
+fn check_fails(outcome: &ConstraintOutcome, strict: bool) -> bool {
+    match outcome {
+        ConstraintOutcome::SomeViolated => true,
+        ConstraintOutcome::SomeIndeterminate(_) => strict,
+        ConstraintOutcome::AllSatisfied => false,
+    }
+}
+
 /// Outcome of constraint checking.
 #[derive(Debug, PartialEq)]
 enum ConstraintOutcome {
