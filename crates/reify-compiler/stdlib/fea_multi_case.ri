@@ -17,15 +17,13 @@
 //
 // Encoding deviations from the PRD:
 //   1. PRD writes `loads : List<Load>` and `supports : List<Support>`.
-//      The `Load` and `Support` marker traits are now declared in the
-//      dedicated earlier module `std.fea.types` (loaded before
-//      `std.solver.elastic` in `stdlib_loader.rs`), which lets
-//      `solve_elastic_static` reference `List<Load>` / `List<Support>`.
-//      `LoadCase.loads` / `LoadCase.supports` remain `List<Real>` for now
-//      (tightening LoadCase is a clean follow-up — see TODO(load-trait)
-//      below).  Runtime type-checking is shallow kind-match only, so
-//      `List<Real>` silently accepts a `Value::List` of load/support
-//      `Value::StructureInstance`s without runtime rejection.
+//      The `Load` and `Support` marker traits are declared in the dedicated
+//      earlier module `std.fea.types` (loaded before `std.solver.elastic`
+//      in `stdlib_loader.rs`).  `LoadCase.loads` and `LoadCase.supports` are
+//      now typed `List<Load>` and `List<Support>` respectively (task ζ/4444),
+//      matching the PRD.  Conformance is enforced at compile time: a non-`Load`
+//      element in `loads` or a non-`Support` element in `supports` emits
+//      `TypeNotConformingToTrait`.
 //   2. `LoadCase` has no `constraint` blocks: neither `loads` nor `supports`
 //      can be validated for non-emptiness or uniqueness at the struct level
 //      (constraint clauses evaluate per-instance scalar predicates; they
@@ -58,14 +56,13 @@
 //                No constraint here because collection-invariants can't be
 //                expressed as per-instance scalar predicates.
 //   `loads`    — list of applied loads (point loads, pressure loads, etc.)
-//                produced by the runtime load constructors `point_load`,
-//                `pressure_load`, etc. Typed `List<Real>` as a placeholder
-//                pending `trait def Load` (see header note 1 and
-//                TODO(load-trait) below).
+//                typed `List<Load>`.  Each element must conform to `trait Load`
+//                (e.g. `PointLoad`, `PressureLoad`, `Gravity`).  Conformance
+//                is enforced at compile time (task ζ/4444).
 //   `supports` — list of boundary-condition supports (fixed, pinned, etc.)
-//                produced by the runtime support constructors `fixed_support`,
-//                `pinned_support`, etc. Typed `List<Real>` as a placeholder
-//                pending `trait def Support` (TODO(load-trait)).
+//                typed `List<Support>`.  Each element must conform to `trait
+//                Support` (e.g. `FixedSupport`).  Conformance is enforced at
+//                compile time (task ζ/4444).
 //   `options`  — optional solver-knob override; `none` uses the
 //                solver-default `ElasticOptions()` for this case.  Providing
 //                per-case options lets callers vary mesh size or iteration
@@ -77,25 +74,18 @@ structure def LoadCase {
     // task #2).
     param name : String
 
-    // Applied loads for this case.  Each element is a `Value::StructureInstance`
-    // produced by `PointLoad(...)`, `PressureLoad(...)`, etc. (structure defs
-    // declared below — SIR-α/β wave-1/2) or a kind-tagged Map from remaining
-    // name-dispatched builtins (`traction_load`, `body_force`, `gravity`).
-    //
-    // TODO(load-trait): replace `List<Real>` with `List<Load>` once all
-    // load constructors are migrated to structure defs conforming to
-    // `trait Load { }` (now in `std.fea.types`).  This tightening is a
-    // clean follow-up; `solve_elastic_static` has already been tightened.
-    param loads : List<Real>
+    // Applied loads for this case.  Each element must conform to `trait Load`
+    // (e.g. `PointLoad(...)`, `PressureLoad(...)`, `Gravity(...)`).  Structure
+    // defs conforming to `Load` are declared below (SIR-α/β wave-1/2).
+    // Conformance is enforced at compile time: a non-`Load` element emits
+    // `TypeNotConformingToTrait` (task ζ/4444).
+    param loads : List<Load>
 
-    // Boundary-condition supports for this case.  Each element is a runtime
-    // kind-tagged Map produced by `fixed_support`, `pinned_support`, etc.
-    //
-    // TODO(load-trait): replace `List<Real>` with `List<Support>` once the
-    // kind-constructor builtins are annotated.  `trait Support { }` now
-    // lives in `std.fea.types`; `solve_elastic_static` has already been
-    // tightened.
-    param supports : List<Real>
+    // Boundary-condition supports for this case.  Each element must conform
+    // to `trait Support` (e.g. `FixedSupport(...)`).  Conformance is enforced
+    // at compile time: a non-`Support` element emits `TypeNotConformingToTrait`
+    // (task ζ/4444).
+    param supports : List<Support>
 
     // Optional solver-knob override for this case.  `none` instructs
     // `solve_load_cases` to apply the solver-default `ElasticOptions()`
@@ -285,9 +275,8 @@ structure def MultiCaseResult {
 // in `stdlib_loader.rs`).  Conforming structure defs in THIS file get their
 // trait bindings from the growing prelude which carries `std.fea.types` by
 // the time `std.fea.multi_case` compiles.  `Real`/`String` placeholders in
-// the structure defs follow the precedent set by `LoadCase.loads : List<Real>`
-// (header note 1 above) — dimension-typed slots tighten in follow-up waves once
-// the dimensional type aliases land.
+// the structure defs are dimension-typed slots that tighten in follow-up waves
+// once the dimensional type aliases land.
 
 // PointLoad — wave-1 replacement for the `point_load` builtin (loads.rs).
 // Field defaults let bare `PointLoad()` calls succeed (covers SIR-α boundary

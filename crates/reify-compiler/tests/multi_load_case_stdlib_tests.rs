@@ -136,8 +136,10 @@ fn loadcase_struct_has_correct_param_shape() {
 
     let expected: &[(&str, Type)] = &[
         ("name", Type::String),
-        ("loads", Type::List(Box::new(Type::Real))),
-        ("supports", Type::List(Box::new(Type::Real))),
+        // After task ζ/4444: loads is List<Load> (List<TraitObject("Load")>), not List<Real>.
+        ("loads", Type::List(Box::new(Type::TraitObject("Load".to_string())))),
+        // After task ζ/4444: supports is List<Support> (List<TraitObject("Support")>), not List<Real>.
+        ("supports", Type::List(Box::new(Type::TraitObject("Support".to_string())))),
         (
             "options",
             Type::Option(Box::new(Type::StructureRef("ElasticOptions".to_string()))),
