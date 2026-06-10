@@ -2344,6 +2344,24 @@ mod tests {
         assert_eq!(s, "\"GeometryProfileRequired\"");
     }
 
+    // --- EmptyEdgeSelection tests (geom-modify curated-fillet task 3205) ---
+    // Pairs with the anti-zero-edges guard in the eval ModifyKind::Fillet 3-arg
+    // arm: a present (3-arg) edge selector that resolves to an empty vector emits
+    // a blocking diagnostic with this code instead of silently filleting all edges.
+
+    /// `DiagnosticCode::EmptyEdgeSelection` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the GeometryUnbounded
+    /// shape so a future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_empty_edge_selection_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::EmptyEdgeSelection);
+        assert_eq!(d.code, Some(DiagnosticCode::EmptyEdgeSelection));
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::EmptyEdgeSelection),
+            "EmptyEdgeSelection"
+        );
+    }
+
     // --- Shadowing tests (task 2310 — spec §8.5) ---
     // Pairs with the lint pass in
     // `crates/reify-compiler/src/compile_builder/shadow_lint.rs`.
