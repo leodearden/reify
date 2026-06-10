@@ -1045,6 +1045,11 @@ mod tests {
         edges: Vec<GeometryHandleId>,
         faces: Vec<GeometryHandleId>,
         responses: HashMap<GeometryHandleId, Value>,
+        /// Mesh returned by `tessellate`. Defaults to an empty mesh
+        /// (no vertices, no indices, no normals) so existing per-face tests
+        /// are unaffected — the curved conservative-bound fold is a no-op
+        /// when `normals` is `None` or the mesh is empty.
+        mesh: Mesh,
     }
 
     impl CountingKernel {
@@ -1055,6 +1060,7 @@ mod tests {
                 edges: Vec::new(),
                 faces: Vec::new(),
                 responses: HashMap::new(),
+                mesh: Mesh { vertices: vec![], indices: vec![], normals: None },
             }
         }
 
@@ -1070,6 +1076,14 @@ mod tests {
 
         fn with_response(mut self, id: GeometryHandleId, value: Value) -> Self {
             self.responses.insert(id, value);
+            self
+        }
+
+        /// Stage a `Mesh` to be returned by `tessellate`. Use in
+        /// curved-conservative-bound tests (step-5, step-7) to inject vertex
+        /// normals without touching the BRep-face response map.
+        fn with_mesh(mut self, mesh: Mesh) -> Self {
+            self.mesh = mesh;
             self
         }
 
@@ -1138,7 +1152,7 @@ mod tests {
             _handle: GeometryHandleId,
             _tolerance: f64,
         ) -> Result<Mesh, TessError> {
-            unimplemented!("CountingKernel does not implement tessellate")
+            Ok(self.mesh.clone())
         }
 
         fn extract_edges(
