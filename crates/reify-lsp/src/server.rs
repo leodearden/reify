@@ -1823,6 +1823,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepare_rename_and_rename_follow_imports_across_files() {
+        // κ (task 4210): prepare_rename + rename now follow the import graph. The
+        // formerly-refused cross-module symbol `Hole` becomes renameable, and the
+        // rename emits a multi-file WorkspaceEdit that re-parses clean (Invariant 5).
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        let tmp_dir =
+            std::env::temp_dir().join(format!("reify-lsp-rename-xfile-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        std::fs::write(tmp_dir.join("parts.ri"), parts_source).unwrap();
+
+        let root_uri = Url::from_file_path(&tmp_dir).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let main_source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole()\n}";
+        let main_uri = Url::from_file_path(tmp_dir.join("main.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: main_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: main_source.to_string(),
+                },
+            })
+            .await;
+
+        // (a) prepare_rename on the main.ri `Hole` use (line 2, col 15) — the
+        // single-file cross-module refusal is lifted.
+        let prepared = server
+            .prepare_rename(TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: main_uri.clone(),
+                },
+                position: Position::new(2, 15),
+            })
+            .await
+            .unwrap();
+
+        // (b) rename Hole→Bore from the same cursor.
+        let edit = server
+            .rename(rename_params(main_uri.clone(), 2, 15, "Bore"))
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // (a) assertions: a cross-module structure use is now a rename target.
+        match prepared {
+            Some(PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. }) => {
+                assert_eq!(
+                    placeholder, "Hole",
+                    "placeholder is the current name of the cross-module symbol"
+                );
+            }
+            other => panic!(
+                "prepare_rename must lift the cross-module refusal and return a target, got {other:?}"
+            ),
+        }
+
+        // (b) assertions: a multi-file WorkspaceEdit keyed by BOTH files.
+        let changes = edit
+            .expect("cross-file rename returns a WorkspaceEdit")
+            .changes
+            .expect("changes present");
+        let parts_key = changes
+            .keys()
+            .find(|u| u.path().ends_with("parts.ri"))
+            .expect("changes keyed by parts.ri (the home declaration)")
+            .clone();
+        let main_key = changes
+            .keys()
+            .find(|u| u.path().ends_with("main.ri"))
+            .expect("changes keyed by main.ri (import entity + sub use)")
+            .clone();
+        assert!(
+            changes.values().flatten().all(|e| e.new_text == "Bore"),
+            "every edit writes the new name Bore"
+        );
+        assert_eq!(
+            changes.get(&parts_key).unwrap().len(),
+            1,
+            "parts.ri: 1 edit (the structure Hole decl token)"
+        );
+        assert_eq!(
+            changes.get(&main_key).unwrap().len(),
+            2,
+            "main.ri: 2 edits (import entity token + sub use)"
+        );
+
+        // Invariant 5: applying each file's edits yields a buffer that re-parses
+        // clean (no new ERROR/recovery nodes) — `structure Bore`, `import
+        // parts.Bore`, and `sub hole = Bore()` are all valid.
+        for (key, original) in [(&parts_key, parts_source), (&main_key, main_source)] {
+            let mut buffer = original.to_string();
+            let mut edits = changes.get(key).unwrap().clone();
+            edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+            for e in edits.iter().rev() {
+                let start = crate::convert::position_to_offset(&buffer, e.range.start);
+                let end = crate::convert::position_to_offset(&buffer, e.range.end);
+                buffer.replace_range(start..end, &e.new_text);
+            }
+            let reparsed = reify_syntax::parse(&buffer, reify_core::ModulePath::single("test"));
+            assert!(
+                reparsed.errors.is_empty(),
+                "renamed buffer for {key} must re-parse clean (Invariant 5): {:?}\n{buffer}",
+                reparsed.errors
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn server_captures_published_diagnostics() {
         let (service, _socket) = test_service();
         let server = service.inner();
