@@ -86,6 +86,56 @@ export function applyTextEditsToString(
 }
 
 /**
+ * Dependency-injected sinks for routing a multi-file WorkspaceEdit.
+ *
+ * Keeping the sinks as a plain object makes the orchestrator unit-testable
+ * without CodeMirror or Tauri — exactly like the existing RenameClient/RenameUi
+ * injection pattern.
+ */
+export interface WorkspaceEditDeps {
+  /** Returns true when `uri` is currently open in an editor buffer. */
+  isOpen(uri: string): boolean;
+  /** Apply edits to the currently active CM view (the single reused EditorView). */
+  applyActive(uri: string, edits: WorkspaceEdit['changes'][string]): void;
+  /** Apply edits to an open-but-inactive buffer (not the current CM view). */
+  applyOpenInactive(uri: string, edits: WorkspaceEdit['changes'][string]): void;
+  /** Write edits for a completely closed file directly to disk. */
+  applyClosed(uri: string, edits: WorkspaceEdit['changes'][string]): void;
+}
+
+/**
+ * Route a WorkspaceEdit's per-URI edits to the appropriate sink.
+ *
+ * Routing logic per URI:
+ *  - uri === activeUri         → deps.applyActive (uses the live CM view)
+ *  - deps.isOpen(uri) === true → deps.applyOpenInactive (buffer update + persist)
+ *  - else                      → deps.applyClosed (direct disk write)
+ *
+ * URIs with an absent or empty edit list are silently skipped.
+ * Pure routing — no I/O of its own.
+ */
+export function applyWorkspaceEditAcrossFiles(
+  edit: WorkspaceEdit,
+  activeUri: string,
+  deps: WorkspaceEditDeps,
+): void {
+  const changes = edit.changes;
+  if (!changes) return;
+
+  for (const [uri, edits] of Object.entries(changes)) {
+    if (!edits || edits.length === 0) continue;
+
+    if (uri === activeUri) {
+      deps.applyActive(uri, edits);
+    } else if (deps.isOpen(uri)) {
+      deps.applyOpenInactive(uri, edits);
+    } else {
+      deps.applyClosed(uri, edits);
+    }
+  }
+}
+
+/**
  * Apply an LSP WorkspaceEdit's edits for `uri` to the editor as one transaction.
  *
  * Each LSP TextEdit range (0-based line/character) is mapped to CodeMirror
