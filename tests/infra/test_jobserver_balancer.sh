@@ -282,19 +282,28 @@ time.sleep(30)
 PY
 _b4_consumer_pid=$!
 
-# Wait for the consumer to drain the task pool (FIONREAD(task) == 0)
+# Wait for the consumer to finish draining the task pool.
+# We do NOT poll FIONREAD(task)==0 from outside: the daemon's donate-idle tick
+# refills the drained pool back to 1 within one POLL_INTERVAL (0.02s), so the
+# transient 0-free window is far shorter than the bash detector's ~80ms
+# effective sample period and would be missed on most runs (flaky).  Instead we
+# gate on the consumer's held-count file becoming non-empty: the consumer writes
+# its held count AFTER draining to EAGAIN and BEFORE its 30s hold, so a non-empty
+# file (held > 0) proves it actually grabbed tokens — the demand signal.
 _b4_task_drained=0
 _b4_t0=$(date +%s)
 while true; do
-    _b4_t_now=$(fionread "$_TASK_FIFO" 2>/dev/null || echo -1)
-    if [ "$_b4_t_now" -eq 0 ]; then
-        _b4_task_drained=1; break
+    if [ -s "$_b4_consumer_held_file" ]; then
+        _b4_held_now=$(cat "$_b4_consumer_held_file" 2>/dev/null || echo 0)
+        if [ "$_b4_held_now" -gt 0 ]; then
+            _b4_task_drained=1; break
+        fi
     fi
     [ $(( $(date +%s) - _b4_t0 )) -ge 5 ] && break
     sleep 0.05
 done
 
-assert "consumer drained task pool to 0 (demand signal established)" \
+assert "consumer drained task pool (held > 0, demand signal established)" \
     test "$_b4_task_drained" -eq 1
 
 # Now wait for the balancer to migrate tokens from merge → task
@@ -360,19 +369,23 @@ time.sleep(30)
 PY
 _b4_consumer_pid2=$!
 
-# Wait for consumer to drain merge pool
+# Wait for consumer to finish draining the merge pool — gate on the held-count
+# file (same race fix as dir-1: the transient FIONREAD(merge)==0 state is
+# refilled by donate-idle within one poll tick and is not reliably observable).
 _b4_merge_drained=0
 _b4_t0=$(date +%s)
 while true; do
-    _b4_m_now=$(fionread "$_MERGE_FIFO" 2>/dev/null || echo -1)
-    if [ "$_b4_m_now" -eq 0 ]; then
-        _b4_merge_drained=1; break
+    if [ -s "$_b4_consumer_held_file2" ]; then
+        _b4_held_now2=$(cat "$_b4_consumer_held_file2" 2>/dev/null || echo 0)
+        if [ "$_b4_held_now2" -gt 0 ]; then
+            _b4_merge_drained=1; break
+        fi
     fi
     [ $(( $(date +%s) - _b4_t0 )) -ge 5 ] && break
     sleep 0.05
 done
 
-assert "consumer drained merge pool to 0 (demand signal established)" \
+assert "consumer drained merge pool (held > 0, demand signal established)" \
     test "$_b4_merge_drained" -eq 1
 
 # Wait for balancer to migrate tokens from task → merge
