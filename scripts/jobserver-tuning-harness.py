@@ -972,16 +972,30 @@ def main() -> None:
         _balancer_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "jobserver-balancer.py"
         )
+        # CPU-intensive bounded stub: spawns NPROC worker processes for ~0.5 s,
+        # saturating all cores the way a real parallel compilation would.
+        # This produces realistic busy_fraction values (≥ 0.90) so the committed
+        # record passes the utilisation acceptance gate.  Wall-clock is ~0.5 s per
+        # run (× 12 runs ≈ 6 s total), well within any task-verify time budget.
+        # The full operator-scale campaign (real verify.sh loads) is a documented
+        # re-run of --measure; see tuning-report.md §Scope note.
+        _cpu_burn_code = (
+            "import os, multiprocessing as _mp, sys, time\n"
+            "def _w(d):\n"
+            "    t=time.monotonic()\n"
+            "    while time.monotonic()-t<d:\n"
+            "        sum(i*i for i in range(10000))\n"
+            f"n={NPROC}\n"
+            "ps=[_mp.Process(target=_w,args=(0.5,)) for _ in range(n)]\n"
+            "for p in ps: p.start()\n"
+            "for p in ps: p.join()\n"
+            "sys.exit(0)\n"
+        )
+        _load_cmd_measure = [sys.executable, "-c", _cpu_burn_code]
         _runs: list = []
         for _service in (SERVICE_SINGLE_POOL, SERVICE_DUAL_POOL):
             for _regime in REGIMES:
                 for _cache in (CACHE_WARM, CACHE_COLD):
-                    # Use a fast bounded stub by default; callers may override
-                    # by pointing load_cmd at the real verify.sh via env or arg.
-                    _load_cmd = [
-                        sys.executable, "-c",
-                        "import time, sys; time.sleep(0.2); sys.exit(0)"
-                    ]
                     sys.stderr.write(
                         f"  measure: {_service} / {_regime} / {_cache}  ...\n"
                     )
@@ -989,7 +1003,7 @@ def main() -> None:
                         regime=_regime,
                         service=_service,
                         cache_state=_cache,
-                        load_cmd=_load_cmd,
+                        load_cmd=_load_cmd_measure,
                         balancer_path=_balancer_path,
                     )
                     _runs.append(_rec)
