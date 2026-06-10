@@ -403,6 +403,17 @@ fn check_gitignored(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> 
     })
 }
 
+/// Returns `true` when every `meta.files` entry is tracked on `MAIN_BASE`
+/// (via [`crate::GitOps::path_tracked_on`]) AND the files list is non-empty.
+///
+/// The non-empty guard prevents false-low downgrades for tasks with no declared
+/// deliverables. Used by both the merged-arm (b) rescue and the git-diff-leg
+/// deliverable-presence rescue so the corroboration predicate lives in one place
+/// and cannot drift between the two sites.
+fn all_files_tracked_on_main(ctx: &AuditContext, meta: &TaskMetadata) -> bool {
+    !meta.files.is_empty() && meta.files.iter().all(|p| ctx.git.path_tracked_on(MAIN_BASE, p))
+}
+
 /// Per-task corroboration. Returns `Some(Finding)` if the task is
 /// phantom-done, `None` if the provenance corroborates cleanly.
 fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
@@ -473,6 +484,14 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
                 // unresolvable, but the work is demonstrably on main.
                 // Downgrade to Low so the operator can inspect without it
                 // escalating as a genuine phantom-done.
+                //
+                // Substring-match note: `--grep` is a bare substring/regex
+                // match, so a short or numerically-colliding task_id (e.g. "42"
+                // matching commits for "4242") can suppress a genuine
+                // phantom-done. Task IDs in this project are 4-digit integers,
+                // so collisions are very rare, and the design decision for this
+                // task accepted the bias toward fewer false-Highs. Operators
+                // should inspect Low findings on short-ID tasks manually.
                 {
                     let siblings = ctx.git.log_grep(MAIN_BASE, &meta.task_id);
                     if !siblings.is_empty() {
@@ -506,37 +525,35 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
                 }
 
                 // (b) Deliverable-presence rescue for the merged Ok(false) arm.
-                // Mirrors the git-diff leg's path_tracked_on rescue: if every
-                // metadata.files entry resolves to a tracked path on main, the
-                // work landed even though the runs.db row is missing (stale or
-                // rebuilt provenance). Downgrade to Low.
-                if !meta.files.is_empty() {
-                    let all_present = meta.files.iter().all(|p| ctx.git.path_tracked_on(MAIN_BASE, p));
-                    if all_present {
-                        return Some(Finding {
-                            pattern: Pattern::P5PhantomDone,
-                            severity: Severity::Low,
-                            task_id: meta.task_id.clone(),
-                            summary: format!(
-                                "deliverable present on main (every metadata.files entry \
-                                 resolves to a tracked path); no task_completed event in \
-                                 runs.db — stale/rebuilt provenance, not phantom-done (task {})",
-                                meta.task_id
-                            ),
-                            evidence: vec![
-                                EvidenceRef::MetadataFiles {
-                                    entries: meta.files.clone(),
-                                },
-                                EvidenceRef::RunsDb {
-                                    table: "events".to_string(),
-                                    key: format!(
-                                        "task_id={} AND event_type=task_completed",
-                                        meta.task_id
-                                    ),
-                                },
-                            ],
-                        });
-                    }
+                // Uses all_files_tracked_on_main (shared with the git-diff leg)
+                // so the two sites cannot drift: if every metadata.files entry
+                // resolves to a tracked path on main, the work landed even
+                // though the runs.db row is missing (stale or rebuilt
+                // provenance). Downgrade to Low.
+                if all_files_tracked_on_main(ctx, meta) {
+                    return Some(Finding {
+                        pattern: Pattern::P5PhantomDone,
+                        severity: Severity::Low,
+                        task_id: meta.task_id.clone(),
+                        summary: format!(
+                            "deliverable present on main (every metadata.files entry \
+                             resolves to a tracked path); no task_completed event in \
+                             runs.db — stale/rebuilt provenance, not phantom-done (task {})",
+                            meta.task_id
+                        ),
+                        evidence: vec![
+                            EvidenceRef::MetadataFiles {
+                                entries: meta.files.clone(),
+                            },
+                            EvidenceRef::RunsDb {
+                                table: "events".to_string(),
+                                key: format!(
+                                    "task_id={} AND event_type=task_completed",
+                                    meta.task_id
+                                ),
+                            },
+                        ],
+                    });
                 }
 
                 return Some(Finding {
@@ -635,6 +652,14 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
     // surfaces the actual landing commit(s). If the union of those sibling
     // diffs covers every missing path, downgrade to Low and cite each
     // contributing sibling SHA. Memory: project_unblock_convergent_ff_worktree_reap.md.
+    //
+    // Substring-match note: the pure-reachability fallback (below) fires
+    // whenever siblings is non-empty, which intercepts before the
+    // deliverable-presence rescue. A short or colliding task_id can therefore
+    // produce a false-low on a genuine phantom-done by matching an unrelated
+    // commit. Task IDs here are 4-digit integers; this risk is accepted per the
+    // task-4464 design decision (bias toward fewer false-Highs). Operators
+    // should inspect Low findings on short-ID tasks manually.
     let siblings = ctx.git.log_grep(MAIN_BASE, &meta.task_id);
     if !siblings.is_empty() {
         let mut sibling_covered: Vec<String> = Vec::new();
@@ -676,7 +701,7 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
         // commit IS reachable on main. The claimed commit may be unresolvable /
         // the diff unreliable, but the work demonstrably landed. Downgrade to Low
         // so the operator can inspect without it escalating as phantom-done.
-        // Cite the first contributing sibling (or all siblings if none contributed).
+        // Cite all contributing siblings (or all siblings if none contributed).
         let cite_commits: Vec<EvidenceRef> = if !contributing.is_empty() {
             contributing
                 .iter()
@@ -735,14 +760,11 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
     // genuinely_absent would incorrectly downgrade to Low for tasks whose sole
     // missing file happens to be gitignored (check_gitignored handles the
     // separate Medium breadcrumb for the gitignored aspect).
-    let genuinely_absent: Vec<String> = meta
-        .files
-        .iter()
-        .filter(|p| !ctx.git.path_tracked_on(MAIN_BASE, p))
-        .cloned()
-        .collect();
-
-    if genuinely_absent.is_empty() {
+    //
+    // all_files_tracked_on_main is called first so genuinely_absent is only
+    // computed (and path_tracked_on called per-file a second time) on the High
+    // path, where the absent list is needed as evidence.
+    if all_files_tracked_on_main(ctx, meta) {
         return Some(Finding {
             pattern: Pattern::P5PhantomDone,
             severity: Severity::Low,
@@ -754,14 +776,20 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
                     .to_string(),
             // Cite `missing` (files not in the claimed commit's diff, all
             // verified present on main via path_tracked_on) as the stale-
-            // provenance locator. `genuinely_absent` is empty here so citing
-            // it would produce an uninformative empty list; the operator
-            // instead sees which paths the stale commit was supposed to cover.
+            // provenance locator; `genuinely_absent` is empty here so citing
+            // it would produce an uninformative empty list.
             evidence: vec![EvidenceRef::MetadataFiles {
                 entries: missing.clone(),
             }],
         });
     }
+
+    let genuinely_absent: Vec<String> = meta
+        .files
+        .iter()
+        .filter(|p| !ctx.git.path_tracked_on(MAIN_BASE, p))
+        .cloned()
+        .collect();
 
     Some(build_high_finding(
         meta,
