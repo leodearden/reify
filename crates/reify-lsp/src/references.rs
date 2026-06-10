@@ -1375,33 +1375,68 @@ fn resolve_cross_file_home(
     None
 }
 
-/// Collect the structure-name reference spans an importing document `doc_source`
-/// contributes for an entity named `name`: the import entity token (within each
-/// `import` statement that exposes `name`) plus every same-file `sub _ = name`
-/// construction site, ascending by `span.start`.
+/// Collect the structure-name reference spans an importing document
+/// `doc_source` contributes for an entity named `name` homed at `home_uri`:
+/// the import entity token plus (for non-aliased imports) every same-file
+/// `sub _ = name` construction site, ascending by `span.start`.
 ///
-/// κ step-4 matches by the exposed entity NAME only (`Entity`/`Destructured`);
-/// resolved-URI scope soundness (so a same-named entity from a DIFFERENT module
-/// is excluded) and aliased-import handling are layered on in κ step-6.
-fn collect_importer_structure_references(doc_source: &str, name: &str) -> Vec<SourceSpan> {
+/// SCOPE SOUNDNESS (Invariant 1, κ step-6): an import contributes ONLY when
+/// `resolve_import(import.path)` resolves to `home_uri` — never by a bare
+/// entity-name match. Two different modules can both export a `Hole`; keying on
+/// the resolved target file (plus the entity name) is what keeps a same-named
+/// entity from a DIFFERENT module out of the renamed set.
+///
+/// Aliased vs non-aliased imports differ:
+/// - `import home.Name` / `import home.{Name, …}` (non-aliased) bind `Name`
+///   locally, so the import entity token AND every same-file `sub _ = Name`
+///   construction site are part of the entity's reference set.
+/// - `import home.Name as Alias` binds the entity under a DISTINCT local name;
+///   only the entity token (`Name`) names the renamed entity — the alias token
+///   and its `sub _ = Alias` uses are a separate binding and are excluded.
+fn collect_importer_structure_references(
+    doc_source: &str,
+    name: &str,
+    home_uri: &Url,
+    resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
+) -> Vec<SourceSpan> {
     let parsed = reify_syntax::parse(doc_source, reify_core::ModulePath::single("_importer"));
     let mut spans = Vec::new();
-    let mut imports_name = false;
+    // Whether `name` is imported under that SAME local name (non-aliased) — only
+    // then do this document's `sub _ = name` construction sites belong to the set.
+    let mut exposes_under_same_name = false;
     for decl in &parsed.declarations {
-        if let Declaration::Import(import) = decl
-            && import_exposes_entity(&import.kind, name)
-        {
-            imports_name = true;
-            spans.push(name_token_span(doc_source, import.span, name));
+        let Declaration::Import(import) = decl else {
+            continue;
+        };
+        // Resolved-URI scope soundness: an import that resolves to a different
+        // module (or fails to resolve) never contributes, even when the entity
+        // name coincides.
+        if resolve_import(&import.path).is_none_or(|(uri, _)| uri != *home_uri) {
+            continue;
+        }
+        match &import.kind {
+            ImportKind::Entity(n) if n == name => {
+                spans.push(name_token_span(doc_source, import.span, name));
+                exposes_under_same_name = true;
+            }
+            ImportKind::Destructured(names) if names.iter().any(|n| n == name) => {
+                spans.push(name_token_span(doc_source, import.span, name));
+                exposes_under_same_name = true;
+            }
+            ImportKind::EntityAliased { entity, .. } if entity == name => {
+                // Entity token only — the alias is a distinct local binding, so
+                // its construction sites are NOT part of this entity's set.
+                spans.push(name_token_span(doc_source, import.span, name));
+            }
+            _ => {}
         }
     }
-    // Only a document that actually imports `name` contributes construction sites.
-    if !imports_name {
-        return Vec::new();
-    }
-    for decl in &parsed.declarations {
-        if let Some(members) = entity_members(decl) {
-            collect_sub_structure_uses(members, doc_source, name, 0, &mut spans);
+    // Construction sites only when imported under the same (non-aliased) name.
+    if exposes_under_same_name {
+        for decl in &parsed.declarations {
+            if let Some(members) = entity_members(decl) {
+                collect_sub_structure_uses(members, doc_source, name, 0, &mut spans);
+            }
         }
     }
     spans.sort_by_key(|s| s.start);
@@ -1477,12 +1512,18 @@ pub fn compute_references_cross_file(
                 });
             }
 
-            // Every OTHER open document that imports the home entity.
+            // Every OTHER open document that imports the home entity (matched by
+            // RESOLVED home URI, never raw import path — Invariant 1).
             for (doc_uri, doc_source) in workspace_docs {
                 if *doc_uri == home_uri {
                     continue; // home-file references already collected above
                 }
-                for span in collect_importer_structure_references(doc_source, &name) {
+                for span in collect_importer_structure_references(
+                    doc_source,
+                    &name,
+                    &home_uri,
+                    resolve_import,
+                ) {
                     locations.push(Location {
                         uri: doc_uri.clone(),
                         range: span_to_range(doc_source, span),
