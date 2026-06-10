@@ -1,12 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
+import { createRoot } from 'solid-js';
 import type { GuiState } from '../types';
+import type { DiagnosticEntry } from '../panels';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
+import { createEditorStore } from '../stores/editorStore';
 
 // Mock Tauri APIs before any component imports
 vi.mock('@tauri-apps/api/core', () => ({
@@ -154,7 +157,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE } from '../App';
+import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -6377,5 +6380,68 @@ describe('App warm-pool debug panel placement (task 4279)', () => {
 
     expect(screen.queryByTestId('warm-pool-debug-panel')).toBeNull();
     expect(screen.queryByTestId('warm-pool-debug-overlay')).toBeNull();
+  });
+});
+
+// ── navigateToDiagnostic unit tests (task-4403 γ) ────────────────────────────
+
+function makeDiagnosticEntry(overrides: Partial<DiagnosticEntry> = {}): DiagnosticEntry {
+  return {
+    file_path: 'main.ri',
+    line: 5, column: 2, end_line: 5, end_column: 10,
+    severity: 'Error', message: 'test error', code: null, source: 'compile',
+    ...overrides,
+  };
+}
+
+describe('navigateToDiagnostic unit tests (task-4403 γ)', () => {
+  it('has_location===false → setScrollToLocation, bridge openFile, and store.setActiveFile are NOT called', async () => {
+    await createRoot(async (dispose) => {
+      const store = createEditorStore();
+      store.openFile({ path: 'main.ri', content: '' });
+      const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
+
+      const openFileSpy = vi.fn().mockResolvedValue({ path: 'main.ri', content: '' });
+      const setScrollToLocationSpy = vi.fn();
+      const showToastSpy = vi.fn();
+
+      await navigateToDiagnostic(
+        makeDiagnosticEntry({ file_path: 'main.ri', has_location: false }),
+        { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy },
+      );
+
+      expect(setScrollToLocationSpy).not.toHaveBeenCalled();
+      expect(openFileSpy).not.toHaveBeenCalled();
+      expect(setActiveFileSpy).not.toHaveBeenCalled();
+
+      dispose();
+    });
+  });
+
+  it('same-file diagnostic → setScrollToLocation called once with span; bridge openFile and store.setActiveFile NOT called', async () => {
+    await createRoot(async (dispose) => {
+      const store = createEditorStore();
+      store.openFile({ path: 'main.ri', content: '' });
+      const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
+
+      const openFileSpy = vi.fn();
+      const setScrollToLocationSpy = vi.fn();
+      const showToastSpy = vi.fn();
+
+      const diag = makeDiagnosticEntry({
+        file_path: 'main.ri',
+        line: 7, column: 4, end_line: 7, end_column: 9,
+      });
+      await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
+
+      expect(setScrollToLocationSpy).toHaveBeenCalledTimes(1);
+      expect(setScrollToLocationSpy).toHaveBeenCalledWith({
+        file_path: 'main.ri', line: 7, column: 4, end_line: 7, end_column: 9,
+      });
+      expect(openFileSpy).not.toHaveBeenCalled();
+      expect(setActiveFileSpy).not.toHaveBeenCalled();
+
+      dispose();
+    });
   });
 });

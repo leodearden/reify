@@ -97,6 +97,64 @@ import type { PersistentViewState } from './types';
 import styles from './App.module.css';
 
 export const NEW_FILE_TEMPLATE = '// New design\n';
+
+/** Minimal structural interface required by {@link navigateToDiagnostic}.
+ *  Using a structural interface keeps the function testable without depending
+ *  on the concrete createEditorStore return type. */
+export interface NavigateToDiagnosticStore {
+  state: {
+    activeFile: string | null;
+    openFiles: Pick<FileData, 'path'>[];
+  };
+  setActiveFile: (path: string) => void;
+  openFile: (file: FileData) => void;
+}
+
+/**
+ * Navigate the editor to a diagnostic location.
+ *
+ * Extracted from handleNavigateToDiagnostic so it is dependency-injected and
+ * unit-testable without rendering App. Follows the precedent of
+ * gotoDefinitionCommand / resolveAndNavigate (task 4206).
+ *
+ * Logic (implemented incrementally across γ steps):
+ *  (1) Refuse span-less diagnostics (has_location === false) — strict === false
+ *      so absent/undefined or true keep navigating (α's default-true contract).
+ *  (2) Same-file: call setScrollToLocation only.
+ *  (3) Already-open cross-file: setActiveFile then setScrollToLocation (step-4).
+ *  (4) Not-open cross-file: openFile from disk then setScrollToLocation (step-6).
+ *  (5) Open failure: error toast; no scroll (step-8).
+ */
+export async function navigateToDiagnostic(
+  d: DiagnosticEntry,
+  deps: {
+    store: NavigateToDiagnosticStore;
+    openFile: (path: string) => Promise<FileData>;
+    setScrollToLocation: (loc: SourceLocation) => void;
+    showToast: (message: string, type: ToastMessage['type']) => void;
+  },
+): Promise<void> {
+  // (1) Refuse synthetic span-less diagnostics.
+  if (d.has_location === false) return;
+
+  const loc: SourceLocation = {
+    file_path: d.file_path,
+    line: d.line,
+    column: d.column,
+    end_line: d.end_line,
+    end_column: d.end_column,
+  };
+
+  const active = deps.store.state.activeFile;
+  if (!(active && isSameFile(d.file_path, active))) {
+    // Cross-file branches: implemented in steps 4, 6, 8.
+  }
+
+  // All non-error paths fall through here so the scroll fires AFTER any
+  // file-switch, guaranteeing the Editor sees the swapped doc first.
+  deps.setScrollToLocation(loc);
+}
+
 const MIN_PANEL_WIDTH = 150;
 const MIN_PANEL_HEIGHT = 80;
 const CHAT_MIN_HEIGHT = 160;
@@ -542,8 +600,14 @@ const App: Component = () => {
   }
 
   function handleNavigateToDiagnostic(d: DiagnosticEntry) {
-    setScrollToLocation({ file_path: d.file_path, line: d.line, column: d.column, end_line: d.end_line, end_column: d.end_column });
+    // Delegate to the exported, dependency-injected function (γ task-4403).
     // Panel stays open after navigation (docked design — no modal to dismiss).
+    void navigateToDiagnostic(d, {
+      store: editorStore,
+      openFile: bridgeOpenFile,
+      setScrollToLocation,
+      showToast,
+    });
   }
 
   // Refs for splitter max-width clamping
