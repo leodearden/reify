@@ -1712,9 +1712,12 @@ pub(crate) fn compile_expr_guarded(
                     // `is_geometry_kinematic_query` → `is_geometry_topology_selector` →
                     // `is_geometry_query` → `is_geometry_function` →
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
+                    // `is_dynamics_constructor` →
                     // first-arg fallback. The five geometry-name families plus the
-                    // RBD-β `is_dynamics_query` family (task 3829) are pinned disjoint
-                    // in `units.rs::tests::{geometry,dynamics}_query_names_are_disjoint_from_other_families`,
+                    // RBD-β `is_dynamics_query` family (task 3829) and the task-4278
+                    // `is_dynamics_constructor` family are pinned disjoint in
+                    // `units.rs::tests::{geometry,dynamics}_query_names_are_disjoint_from_other_families`
+                    // and `dynamics_constructor_names_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates.
                     let resolved = ResolvedFunction {
@@ -1800,6 +1803,19 @@ pub(crate) fn compile_expr_guarded(
                         // default would mismatch — the first arg is the body (a
                         // `Solid` / structure), not a `MassProperties`. Mirrors
                         // the `is_geometry_query_helper => Type::Bool` arm.
+                        Type::StructureRef("MassProperties".to_string())
+                    } else if is_dynamics_constructor(name) {
+                        // point_mass(mass) / mass_properties(mass, com, inertia):
+                        // task-4278 dynamics-constructor builtins, dispatched at
+                        // eval time by `reify_stdlib::dynamics::eval_dynamics`.
+                        // The result type is `MassProperties` — set up-front so
+                        // the cell typechecks. Without this arm the first-arg
+                        // fallback would infer `Scalar<Mass>` for
+                        // `point_mass(2.5kg)`, tripping `value_type_kind_matches`
+                        // at eval time. Uniform `StructureRef("MassProperties")`
+                        // result (mirrors the `is_dynamics_query` arm above).
+                        // Pinned disjoint from all sibling families by
+                        // `dynamics_constructor_names_are_disjoint_from_other_families`.
                         Type::StructureRef("MassProperties".to_string())
                     } else if is_affine_map_constructor(name) {
                         // affine_scale / affine_shear_* / affine_translate /

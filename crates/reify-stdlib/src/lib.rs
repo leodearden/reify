@@ -75,6 +75,27 @@ pub use geometry::diagnose as geometry_diagnose;
 /// the yielding / out-of-range warnings fire on a successfully constructed joint.
 pub use flexures::flexure_diagnose;
 
+/// Public re-export of the single canonical body-mass resolver (task 4278).
+///
+/// Called by `inverse_dynamics` (both open-chain and closed-chain dispatch
+/// paths) and by the `dynamics_diagnose` hook.  Task 4271 (modal bridge) uses
+/// this as the stable single read-path so every mass consumer shares it.
+///
+/// Returns `Some(MassProperties StructureInstance)` when `body.solid` is a
+/// `MassProperties` StructureInstance; returns `None` for any unresolvable
+/// solid (plain geometry, wrong type, missing key).
+pub use dynamics::eval::resolve_body_mass;
+
+/// Public re-export of the inverse_dynamics Undef-path diagnostic classifier
+/// (task 4278).
+///
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to
+/// push `DynamicsBodyMassUnresolved` into the `EvalContext` sink when an
+/// `inverse_dynamics` call returns `Value::Undef` because a spanning-tree body
+/// has no resolvable mass. Mirrors the `stackup_diagnose` / `fea_diagnose` /
+/// `geometry_diagnose` pattern.
+pub use dynamics::eval::diagnose as dynamics_diagnose;
+
 /// Public re-export of the von Mises scalar kernel for cross-crate reuse.
 ///
 /// Called by `crates/reify-expr/src/field_reductions.rs` in the
