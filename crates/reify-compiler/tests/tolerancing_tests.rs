@@ -53,18 +53,18 @@ fn stdlib_file_parses_and_compiles_without_errors() {
     );
 }
 
-// ─── step-5: all 4 enums with correct variants ───────────────────────────────
+// ─── step-5: all 5 enums with correct variants ───────────────────────────────
 
-/// Step 5: All 4 enums are present with correct variant counts and specific
-/// variant names for MaterialCondition.
+/// Step 5: All 5 enums are present with correct variant counts and specific
+/// variant names for MaterialCondition and ZoneShape.
 #[test]
-fn all_four_enums_with_correct_variants() {
+fn all_five_enums_with_correct_variants() {
     let module = load_stdlib_module();
 
     assert_eq!(
         module.enum_defs.len(),
-        4,
-        "expected exactly 4 enums, got: {:?}",
+        5,
+        "expected exactly 5 enums, got: {:?}",
         module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
     );
 
@@ -127,6 +127,27 @@ fn all_four_enums_with_correct_variants() {
         "SurfaceDirection should have 6 variants, got: {:?}",
         sd.variants
     );
+
+    // ZoneShape: 2 variants (Width, Cylindrical) — FOS zone-shape discriminator (α)
+    let zs = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "ZoneShape")
+        .expect("expected 'ZoneShape' enum");
+    assert_eq!(
+        zs.variants.len(),
+        2,
+        "ZoneShape should have 2 variants, got: {:?}",
+        zs.variants
+    );
+    for variant in &["Width", "Cylindrical"] {
+        assert!(
+            zs.variants.contains(&variant.to_string()),
+            "ZoneShape missing variant '{}', variants: {:?}",
+            variant,
+            zs.variants
+        );
+    }
 }
 
 // ─── step-7: DimensionalTolerance structure correctness ───────────────────────
@@ -607,11 +628,11 @@ fn full_module_integrity() {
         errors
     );
 
-    // 4 enums
+    // 5 enums
     assert_eq!(
         module.enum_defs.len(),
-        4,
-        "expected 4 enums (MaterialCondition, FitCategory, SurfaceParameter, SurfaceDirection), got: {:?}",
+        5,
+        "expected 5 enums (MaterialCondition, FitCategory, SurfaceParameter, SurfaceDirection, ZoneShape), got: {:?}",
         module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
     );
 
