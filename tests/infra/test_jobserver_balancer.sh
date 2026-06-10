@@ -323,15 +323,27 @@ assert "balancer migrated tokens from merge → task pool (donate-idle dir-1)" \
     test "$_b4_migrated_to_task" -eq 1
 
 # Conservation: consumer_held + fionread(merge) + fionread(task) == TOKENS
-# Use fionread_pair to read BOTH FIFOs in one python3 process, preventing the
+# Use fionread_pair to read BOTH FIFOs in one python3 process, minimising the
 # race where a daemon transfer fires between two sequential fionread() calls.
-_b4_pair=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
-_b4_merge_now=$(echo "$_b4_pair" | awk '{print $1}')
-_b4_task_now=$(echo  "$_b4_pair" | awk '{print $2}')
-_b4_held=$(cat "$_b4_consumer_held_file" 2>/dev/null || echo 0)
+# Additionally retry up to 3 times with a 10 ms gap: C1 is only guaranteed at
+# tick boundaries, not mid-transfer (token is in-hand between donor read and
+# recipient write), so a single sample in the narrow in-flight window can read
+# TOKENS-1.  In steady state (both pools > 0) no transfers fire, so retrying
+# quickly eliminates the transient without weakening the invariant.
+_b4_conserved=0
+for _b4_retry in 1 2 3; do
+    _b4_pair=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+    _b4_merge_now=$(echo "$_b4_pair" | awk '{print $1}')
+    _b4_task_now=$(echo  "$_b4_pair" | awk '{print $2}')
+    _b4_held=$(cat "$_b4_consumer_held_file" 2>/dev/null || echo 0)
+    if [ $(( _b4_held + _b4_merge_now + _b4_task_now )) -eq "$_FIXTURE_TOKENS" ]; then
+        _b4_conserved=1; break
+    fi
+    sleep 0.01
+done
 
 assert "C1: consumer_held + fionread(merge) + fionread(task) == TOKENS (dir-1)" \
-    test $(( _b4_held + _b4_merge_now + _b4_task_now )) -eq "$_FIXTURE_TOKENS"
+    test "$_b4_conserved" -eq 1
 
 # Clean up direction-1
 kill "$_b4_consumer_pid" 2>/dev/null || true
@@ -343,7 +355,14 @@ _cleanup_balancer
 echo ""
 echo "--- Block 4: donate-idle migration — direction 2 (consumer drains merge) ---"
 
-start_balancer 4 0.02
+# Use TOKENS=8 (merge_baseline=6, task_baseline=2) so the consumer can drain all
+# 6 merge tokens while leaving 2 free task tokens.  After one donation the daemon
+# reaches stable state (merge=1, task=1): both pools > 0, no further transfers,
+# and fionread(merge) > 0 is a stable post-condition rather than an oscillating
+# 0/1 value.  With TOKENS=4 the consumer leaves only 1 free token after drain and
+# the daemon bounces it merge↔task every tick (acknowledged α oscillation; C4
+# hysteresis is β's scope), making the "migrated to merge" assertion racy.
+start_balancer 8 0.02
 wait_for_seed 10 || true
 
 _b4_consumer_held_file2=$(mktemp)
@@ -403,14 +422,24 @@ done
 assert "balancer migrated tokens from task → merge pool (donate-idle dir-2)" \
     test "$_b4_migrated_to_merge" -eq 1
 
-# Conservation — atomic pair read (same race fix as dir-1)
-_b4_pair2=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
-_b4_merge_now2=$(echo "$_b4_pair2" | awk '{print $1}')
-_b4_task_now2=$(echo  "$_b4_pair2" | awk '{print $2}')
-_b4_held2=$(cat "$_b4_consumer_held_file2" 2>/dev/null || echo 0)
+# Conservation — atomic pair read + retry (same race guard as dir-1).
+# With TOKENS=8 the steady state is merge=1, task=1, consumer_held=6 and no
+# active transfers, so the retry is effectively a no-op; it is kept for
+# consistency with dir-1 and as a cheap safety net.
+_b4_conserved2=0
+for _b4d2_retry in 1 2 3; do
+    _b4_pair2=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+    _b4_merge_now2=$(echo "$_b4_pair2" | awk '{print $1}')
+    _b4_task_now2=$(echo  "$_b4_pair2" | awk '{print $2}')
+    _b4_held2=$(cat "$_b4_consumer_held_file2" 2>/dev/null || echo 0)
+    if [ $(( _b4_held2 + _b4_merge_now2 + _b4_task_now2 )) -eq "$_FIXTURE_TOKENS" ]; then
+        _b4_conserved2=1; break
+    fi
+    sleep 0.01
+done
 
 assert "C1: consumer_held + fionread(merge) + fionread(task) == TOKENS (dir-2)" \
-    test $(( _b4_held2 + _b4_merge_now2 + _b4_task_now2 )) -eq "$_FIXTURE_TOKENS"
+    test "$_b4_conserved2" -eq 1
 
 kill "$_b4_consumer_pid2" 2>/dev/null || true
 wait "$_b4_consumer_pid2" 2>/dev/null || true
