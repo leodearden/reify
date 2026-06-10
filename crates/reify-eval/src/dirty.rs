@@ -1856,6 +1856,12 @@ mod tests {
     /// a message containing "assert_dag_complete".
     ///
     /// RED until step-6 adds assert_dag_complete_from_graph.
+    ///
+    /// Gated on `debug_assertions` to match `assert_dag_complete_from_graph`,
+    /// which is compiled only under `debug_assertions` (the wrapper disappears
+    /// entirely in release builds, so the test must too — otherwise the import
+    /// fails to resolve under `--release`).
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "assert_dag_complete")]
     fn assert_dag_complete_from_graph_panics_on_reversed_cross_sub_exec_order() {
