@@ -1555,6 +1555,50 @@ pub(super) fn check_phase_check_members_against_requirements(
             }
         }
     }
+    // Conformance collision rule (PRD v0_6 type-hygiene §7.4, task η): a conformer member
+    // colliding with a DEFAULTED trait member (which never enters ctx.requirements) must
+    // implicitly_converts_to the trait's declared type — closing the silent-accept gap
+    // (probe-7: scalar override vs tensor-defaulted trait param). Compatible collision stays
+    // legal (override idiom); mirrors the kind-agnostic inject-skip in check_phase_inject_defaults.
+    //
+    // Guard: skip defaults whose name is already covered by a requirement in ctx.requirements.
+    // A sub-trait can override a parent's `param x : Option<T> = none` default with a REQUIRED
+    // `param x : T` (no default), putting BOTH the requirement and the old default into the
+    // merged ctx. The requirements loop above already validates the conformer's `x` against the
+    // required type T; re-checking it against Option<T> from the default would fire a false
+    // positive. Example: RotaryPort `param max_torque : Torque` (required) shadows MotivePort
+    // `param max_torque : Option<Torque> = none` (default).
+    let required_names: std::collections::HashSet<&str> =
+        ctx.requirements.iter().map(|r| r.name.as_str()).collect();
+    for default in &ctx.defaults {
+        let Some(name) = default.name.as_deref() else {
+            continue;
+        };
+        // Name is already handled by the requirements loop — skip to avoid false positives.
+        if required_names.contains(name) {
+            continue;
+        }
+        let trait_declared_type = match &default.kind {
+            DefaultKind::Param { cell_type, .. } => cell_type,
+            // Annotated Let handled in step-4; unannotated Let/Constraint/Fn/AssocType skip.
+            _ => continue,
+        };
+        let Some(conformer_type) =
+            structure_param_members.get(name).or_else(|| structure_let_members.get(name))
+        else {
+            continue;
+        };
+        if !implicitly_converts_to(conformer_type, trait_declared_type) {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "type mismatch for trait member '{}': expected {}, got {}",
+                    name, trait_declared_type, conformer_type
+                ))
+                .with_code(DiagnosticCode::TypeMismatchForTraitMember)
+                .with_label(DiagnosticLabel::new(structure.span, "type mismatch")),
+            );
+        }
+    }
 }
 
 /// Phase 6 of trait conformance checking: inject trait defaults for non-overridden members.
