@@ -3206,4 +3206,29 @@ pub struct DiagnosticInfo {
     pub severity: String,
     pub message: String,
     pub code: Option<String>,
+    /// Whether this diagnostic carries a real, line-tied source span.
+    ///
+    /// `true` means the `line`/`column`/`end_line`/`end_column` fields reflect an
+    /// actual span from the compiled source (non-empty `Diagnostic::labels`).
+    /// `false` means the positions are synthetic (hardcoded 1/1/1/1) and do NOT
+    /// point at a meaningful source location — e.g. module-level hot-reload staleness
+    /// errors where no span is available.
+    ///
+    /// Consumers (β span-less render, γ span-less refusal) use this flag to avoid
+    /// navigating the editor to a fake line 1 for span-less diagnostics.
+    ///
+    /// **Wire default:** a JSON payload that omits `has_location` deserializes as
+    /// `true` (line-tied) to preserve backward compatibility with older serializers
+    /// and un-updated consumers.
+    #[cfg_attr(feature = "serde", serde(default = "default_has_location"))]
+    pub has_location: bool,
+}
+
+/// Serde default for [`DiagnosticInfo::has_location`]: `true` (line-tied).
+///
+/// Returning `true` makes a JSON payload that omits `has_location` deserialize as
+/// line-tied, preserving backward-compat for older serializers and un-updated consumers.
+#[cfg(feature = "serde")]
+fn default_has_location() -> bool {
+    true
 }

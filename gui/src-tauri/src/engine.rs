@@ -2171,6 +2171,7 @@ impl EngineSession {
                     severity: "Error".to_owned(),
                     message: msg.clone(),
                     code: Some("hot-reload-error".to_owned()),
+                    has_location: false,
                 });
             }
             // One-snapshot invariant (task 4258): surface the failing buffer as
@@ -2376,6 +2377,7 @@ impl EngineSession {
                 severity: "Error".to_owned(),
                 message: msg.clone(),
                 code: Some("hot-reload-error".to_owned()),
+                has_location: false,
             });
         }
 
@@ -4596,6 +4598,7 @@ fn diagnostics_to_info(
                 severity: diag.severity.as_wire_str().to_owned(),
                 message: diag.message.clone(),
                 code: None,
+                has_location: !diag.labels.is_empty(),
             }
         })
         .collect()

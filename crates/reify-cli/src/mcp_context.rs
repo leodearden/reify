@@ -245,6 +245,7 @@ impl ReifyToolContext for CliToolContext {
                 severity: diag.severity.as_wire_str().to_owned(),
                 message: diag.message.clone(),
                 code: None,
+                has_location: !diag.labels.is_empty(),
             });
         }
 
