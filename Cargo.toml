@@ -118,6 +118,35 @@ tracing = "0.1"
 faer = { version = "0.24", default-features = false, features = ["std", "sparse"] }
 
 # ---------------------------------------------------------------------------
+# Lean debuginfo for dev and test binaries (task 4450, PRD §9 β / §12 Q2)
+#
+# Problem: Linux default split-debuginfo = "off" embeds full DWARF into EACH
+# of ~745 dev/test binaries, duplicating dependency debug data across every
+# binary → fat target/ directory + slower links.
+#
+# Mechanism: split-debuginfo = "unpacked" moves each compilation unit's DWARF
+# into a companion .dwo file instead of embedding it in the ELF binary.
+# Effect: (A) link input shrinks (linker no longer has to merge DWARF from all
+# object files into the final binary), (B) dependency debug data is shared
+# across binaries rather than duplicated (one .dwo per .rlib TU, not per
+# binary), so target/ shrinks substantially. Backtraces still resolve
+# file:line via split-DWARF symbolication — verified by the
+# crates/reify-test-support/tests/debuginfo_backtrace.rs integration test.
+#
+# Fallback (PRD §12 Q2): if split-DWARF symbolication degrades on the host
+# (debuginfo_backtrace test goes RED), switch to debug = 1 (line-tables-only,
+# embedded) instead. debug = 1 guarantees file:line and still shrinks vs
+# debug = 2 (full), though less than unpacked. The posture test in
+# tests/infra/test_lean_debuginfo_profile.sh covers both branches.
+#
+# Coverage: `test` profile inherits `dev`, so this one table trims BOTH the
+# dev binaries (reify, reify-audit) AND all ~745 inherited test binaries —
+# maximal target/ shrink, matching PRD "dev tests" intent. wasm/non-Linux dev
+# builds treat split-debuginfo = "unpacked" as benign / no-op.
+[profile.dev]
+split-debuginfo = "unpacked"
+
+# ---------------------------------------------------------------------------
 # Debug-profile optimisation for heavy numeric dependencies (task 4055)
 #
 # faer 0.24's Lanczos + dense gevd paths are ~500–1000× slower in unoptimised
