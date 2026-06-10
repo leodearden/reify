@@ -58,7 +58,7 @@ fn top_level_default_emits_not_yet_wired_warning() {
 #[test]
 fn purpose_nested_default_emits_not_yet_wired_warning() {
     let source = r#"
-purpose Exploration {
+purpose Exploration() {
     default Material = steel
 }
 "#;
