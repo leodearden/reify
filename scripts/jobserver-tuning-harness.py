@@ -42,6 +42,7 @@ Environment variables (all optional, with sensible defaults)
 import argparse
 import fcntl
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -244,7 +245,279 @@ def is_timeout(returncode: int) -> bool:
     return returncode == 124
 
 
-# Stubs for later steps (implemented in steps 6, 8, 10, 12, 14).
+def _read_proc_stat() -> str:
+    """Return the aggregate 'cpu  …' line from /proc/stat."""
+    try:
+        with open("/proc/stat", "r") as f:
+            for line in f:
+                if line.startswith("cpu "):
+                    return line.strip()
+    except OSError:
+        pass
+    # Fallback for non-Linux / test environments
+    return "cpu  0 0 0 0 0 0 0 0 0 0"
+
+
+def _prepare_cache(cache_state: str) -> None:
+    """Prepare sccache for warm or cold run.
+
+    warm : no-op (cache already primed)
+    cold : stop sccache server (best-effort), clear SCCACHE_CACHE_DIR, zero stats
+    """
+    if cache_state != CACHE_COLD:
+        return
+    subprocess.run(
+        ["sccache", "--stop-server"],
+        capture_output=True,
+        timeout=15,
+    )
+    if os.path.exists(SCCACHE_CACHE_DIR):
+        shutil.rmtree(SCCACHE_CACHE_DIR, ignore_errors=True)
+    subprocess.run(
+        ["sccache", "--zero-stats"],
+        capture_output=True,
+        timeout=15,
+    )
+
+
+def _provision_service(
+    service: str,
+    tokens: int,
+    balancer_path: str,
+) -> dict:
+    """Provision jobserver infrastructure in user space (no systemctl).
+
+    Returns an infra dict:
+        merge_fifo      : str  — path to merge-pool FIFO
+        task_fifo       : str  — path to task-pool FIFO (dummy for single-pool)
+        balancer_pid    : int | None — PID of background balancer (dual-pool only)
+        _balancer_proc  : Popen | None
+        _fds_to_close   : list[int]
+        _paths_to_unlink: list[str]
+    """
+    import tempfile as _tempfile
+
+    paths_to_unlink: list = []
+    fds_to_close: list = []
+
+    if service == SERVICE_SINGLE_POOL:
+        # One FIFO seeded with `tokens` tokens; dummy FIFO represents empty
+        # task pool (single-pool has no concept of separate pools).
+        single_path = _tempfile.mktemp(prefix="/tmp/harness-single-")
+        dummy_path  = _tempfile.mktemp(prefix="/tmp/harness-dummy-")
+        os.mkfifo(single_path)
+        os.mkfifo(dummy_path)
+        paths_to_unlink.extend([single_path, dummy_path])
+
+        single_fd = os.open(single_path, os.O_RDWR | os.O_NONBLOCK)
+        dummy_fd  = os.open(dummy_path,  os.O_RDWR | os.O_NONBLOCK)
+        fds_to_close.extend([single_fd, dummy_fd])
+
+        os.write(single_fd, b"\x00" * tokens)
+
+        return {
+            "merge_fifo":       single_path,
+            "task_fifo":        dummy_path,
+            "balancer_pid":     None,
+            "_balancer_proc":   None,
+            "_fds_to_close":    fds_to_close,
+            "_paths_to_unlink": paths_to_unlink,
+        }
+
+    elif service == SERVICE_DUAL_POOL:
+        merge_path = _tempfile.mktemp(prefix="/tmp/harness-merge-")
+        task_path  = _tempfile.mktemp(prefix="/tmp/harness-task-")
+        paths_to_unlink.extend([merge_path, task_path])
+
+        env = os.environ.copy()
+        env.update({
+            "REIFY_JOBSERVER_MERGE_FIFO":    merge_path,
+            "REIFY_JOBSERVER_TASK_FIFO":     task_path,
+            "REIFY_JOBSERVER_TOKENS":        str(tokens),
+            "REIFY_JOBSERVER_POLL_INTERVAL": "0.05",
+        })
+        proc = subprocess.Popen(
+            [sys.executable, balancer_path],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Wait for FIFOs to appear and be seeded (up to 10 s)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if os.path.exists(merge_path) and os.path.exists(task_path):
+                try:
+                    mfd = os.open(merge_path, os.O_RDONLY | os.O_NONBLOCK)
+                    tfd = os.open(task_path,  os.O_RDONLY | os.O_NONBLOCK)
+                    try:
+                        total = _fionread(mfd) + _fionread(tfd)
+                    finally:
+                        os.close(mfd)
+                        os.close(tfd)
+                    if total == tokens:
+                        break
+                except OSError:
+                    pass
+            time.sleep(0.05)
+
+        return {
+            "merge_fifo":       merge_path,
+            "task_fifo":        task_path,
+            "balancer_pid":     proc.pid,
+            "_balancer_proc":   proc,
+            "_fds_to_close":    fds_to_close,
+            "_paths_to_unlink": paths_to_unlink,
+        }
+
+    else:
+        raise ValueError(f"Unknown service: {service!r}")
+
+
+def _teardown_service(infra: dict) -> None:
+    """Tear down provisioned jobserver infrastructure."""
+    proc = infra.get("_balancer_proc")
+    if proc is not None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+
+    for fd in infra.get("_fds_to_close", []):
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    for path in infra.get("_paths_to_unlink", []):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def run_regime(
+    regime: str,
+    service: str,
+    cache_state: str,
+    load_cmd: list = None,
+    balancer_path: str = None,
+    nproc: int = None,
+    tokens: int = None,
+) -> dict:
+    """Run one measurement regime and return a structured result record.
+
+    Parameters
+    ----------
+    regime       : REGIME_JUST_TASK | REGIME_JUST_MERGE | REGIME_MIXED
+    service      : SERVICE_SINGLE_POOL | SERVICE_DUAL_POOL
+    cache_state  : CACHE_WARM | CACHE_COLD
+    load_cmd     : command list for the verify load (real verify.sh or a stub)
+    balancer_path: path to jobserver-balancer.py (default: sibling script)
+    nproc        : override NPROC for this run
+    tokens       : total token count (default: nproc)
+
+    Returns
+    -------
+    dict with keys:
+        service, regime, cache_state, busy_fraction, occupancy,
+        merge_wall, task_wall, exit_124_count, nproc
+    """
+    if nproc is None:
+        nproc = NPROC
+    if tokens is None:
+        tokens = nproc
+    if load_cmd is None:
+        raise ValueError("load_cmd must be provided")
+    if balancer_path is None:
+        balancer_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "jobserver-balancer.py"
+        )
+
+    _prepare_cache(cache_state)
+
+    stat_before = _read_proc_stat()
+    infra = _provision_service(service, tokens, balancer_path)
+
+    occupancy_samples: list = []
+    merge_wall = 0.0
+    task_wall = 0.0
+    exit_124_count = 0
+
+    try:
+        # Sample occupancy before loads
+        try:
+            occupancy_samples.append(
+                sample_pool_occupancy(infra["merge_fifo"], infra["task_fifo"])
+            )
+        except Exception:
+            pass
+
+        # Run loads for this regime
+        if regime == REGIME_JUST_TASK:
+            elapsed, rc = timed_run(load_cmd)
+            task_wall = elapsed
+            if is_timeout(rc):
+                exit_124_count += 1
+
+        elif regime == REGIME_JUST_MERGE:
+            elapsed, rc = timed_run(load_cmd)
+            merge_wall = elapsed
+            if is_timeout(rc):
+                exit_124_count += 1
+
+        elif regime == REGIME_MIXED:
+            e_merge, rc_merge = timed_run(load_cmd)
+            merge_wall = e_merge
+            if is_timeout(rc_merge):
+                exit_124_count += 1
+            e_task, rc_task = timed_run(load_cmd)
+            task_wall = e_task
+            if is_timeout(rc_task):
+                exit_124_count += 1
+
+        else:
+            raise ValueError(f"Unknown regime: {regime!r}")
+
+        # Sample occupancy after loads
+        try:
+            occupancy_samples.append(
+                sample_pool_occupancy(infra["merge_fifo"], infra["task_fifo"])
+            )
+        except Exception:
+            pass
+
+        # Ensure at least one occupancy sample
+        if not occupancy_samples:
+            occupancy_samples = [
+                {"merge": 0, "task": 0, "sum": 0, "timestamp": time.monotonic()}
+            ]
+
+    finally:
+        _teardown_service(infra)
+
+    stat_after = _read_proc_stat()
+    fraction, _busy_cores = busy_fraction(stat_before, stat_after, nproc)
+
+    return {
+        "service":        service,
+        "regime":         regime,
+        "cache_state":    cache_state,
+        "busy_fraction":  fraction,
+        "occupancy":      occupancy_samples,
+        "merge_wall":     merge_wall,
+        "task_wall":      task_wall,
+        "exit_124_count": exit_124_count,
+        "nproc":          nproc,
+    }
+
+
+# Stubs for later steps (implemented in steps 8, 10, 12, 14).
 
 
 def main() -> None:
