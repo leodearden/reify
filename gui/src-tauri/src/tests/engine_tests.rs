@@ -2867,6 +2867,13 @@ fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
         .expect("injected 'no-label-stress' not found");
 
     assert_eq!((d.line, d.column, d.end_line, d.end_column), (1, 1, 1, 1));
+
+    // has_location must be false for a labelless diagnostic (empty labels → no real span).
+    // RED until step-5 adds the field to DiagnosticInfo and sets it in diagnostics_to_info.
+    assert_eq!(
+        d.has_location, false,
+        "labelless diagnostic (empty labels) must set has_location = false"
+    );
 }
 
 // --- Multibyte UTF-8 cross-validation ---

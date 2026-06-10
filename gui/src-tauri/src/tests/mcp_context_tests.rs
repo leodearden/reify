@@ -690,6 +690,13 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
 
     // code field passthrough: hardcoded None in the mapping closure (see doc comment)
     assert!(first.code.is_none(), "expected code to be None");
+
+    // has_location must be true for a spanned warning (non-empty labels → real source span).
+    // RED until step-5 adds the field to DiagnosticInfo and sets it in diagnostics_to_info.
+    assert_eq!(
+        first.has_location, true,
+        "spanned warning (non-empty labels) must set has_location = true"
+    );
 }
 
 /// Cross-transport parity test (step-7): the MCP-dispatch surface for
