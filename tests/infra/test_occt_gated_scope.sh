@@ -176,4 +176,48 @@ echo "--- Test 8 (task 4451): workspace nextest pass is wrapped in outer timeout
 assert "workspace nextest pass is wrapped in 'timeout --kill-after=60 [0-9]+m'" \
     bash -c "printf '%s' \"\$FULL_WS_DEBUG\" | grep -qE 'timeout[[:space:]]+--kill-after=60[[:space:]]+[0-9]+m[[:space:]]'"
 
+# ---------------------------------------------------------------------------
+# Tests 9–11 (task 4503/γ): --config plan assertions for the env-driven occt
+# nextest group cap (REIFY_OCCT_NEXTEST_MAX_THREADS, default 24).
+#
+# Guard: assertions are only meaningful when the plan actually uses cargo
+# nextest run.  When NEXTEST=0 the plan uses cargo test (no --config support),
+# so skip the value/dialability checks (vacuous pass).  We check presence of
+# `cargo nextest run` in TEST_PLAN_SEGS as the guard.
+# ---------------------------------------------------------------------------
+PLAN_HAS_NEXTEST="$(printf '%s\n' "$TEST_PLAN_SEGS" | grep -c 'cargo nextest run' || true)"
+
+echo ""
+echo "--- Tests 9–11 (task 4503/γ): --config 'test-groups.occt.max-threads=N' in nextest plan lines ---"
+
+# Test 9: every cargo nextest run line carries the --config flag (substring check).
+assert "every 'cargo nextest run' plan line carries '--config' with 'test-groups.occt.max-threads='" \
+    bash -c "
+        if [ '${PLAN_HAS_NEXTEST}' -eq 0 ]; then exit 0; fi
+        bad=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" \
+            | grep 'cargo nextest run' \
+            | grep -v 'test-groups.occt.max-threads=' || true)
+        [ -z \"\$bad\" ]
+    "
+
+# Test 10: default value is 24 when REIFY_OCCT_NEXTEST_MAX_THREADS is unset.
+# We re-use TEST_PLAN_SEGS (already built without REIFY_OCCT_NEXTEST_MAX_THREADS
+# set — the standard default).
+assert "default plan contains 'test-groups.occt.max-threads=24' (REIFY_OCCT_NEXTEST_MAX_THREADS unset)" \
+    bash -c "
+        if [ '${PLAN_HAS_NEXTEST}' -eq 0 ]; then exit 0; fi
+        printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'test-groups.occt.max-threads=24'
+    "
+
+# Test 11: dialability — override REIFY_OCCT_NEXTEST_MAX_THREADS=7 produces value 7.
+PLAN_SEGS_DIAL="$(REIFY_OCCT_NEXTEST_MAX_THREADS=7 bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null | grep -v '^#')"
+export PLAN_SEGS_DIAL
+PLAN_DIAL_HAS_NEXTEST="$(printf '%s\n' "$PLAN_SEGS_DIAL" | grep -c 'cargo nextest run' || true)"
+
+assert "REIFY_OCCT_NEXTEST_MAX_THREADS=7 plan contains 'test-groups.occt.max-threads=7' (dialability)" \
+    bash -c "
+        if [ '${PLAN_DIAL_HAS_NEXTEST}' -eq 0 ]; then exit 0; fi
+        printf '%s\n' \"\$PLAN_SEGS_DIAL\" | grep -q 'test-groups.occt.max-threads=7'
+    "
+
 test_summary
