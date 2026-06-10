@@ -30,21 +30,19 @@ pub use stackup::diagnose as stackup_diagnose;
 /// `Value::Undef` result is a usage error.
 pub use dfm::diagnose as dfm_diagnose;
 
-/// Public re-export of the ISO tolerancing diagnostic classifier (task α).
+/// Public re-export of the ISO tolerancing diagnostic classifier (task α/4461).
 ///
 /// Flags `iso_it_tolerance` out-of-envelope calls (well-typed args that fall
 /// outside IT5–IT18 / ≤500 mm) with a `Severity::Error` Diagnostic.
 /// Returns `None` for valid calls, for `effective_tolerance_zone`, and for
 /// non-tolerancing names.
 ///
-/// Wiring this into `reify-expr`'s diagnostic sink (like `stackup_diagnose`
-/// at `reify-expr/src/lib.rs:1271`) is a deferred consumer hookup outside α's
-/// two-file scope; α ships the classifier + re-export, unit-tested in isolation.
-///
-/// TODO(sibling β/ε): add `tolerancing_diagnose` to the builtin fallthrough
-/// arm in `reify-expr/src/lib.rs` (mirror the `stackup_diagnose` call at
-/// `:1271`) so out-of-envelope `iso_it_tolerance` calls surface as user-visible
-/// `Severity::Error` diagnostics rather than silent `Value::Undef` returns.
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm
+/// (`emit_undef_builtin_diagnostics`, next to `stackup_diagnose`) to push a
+/// `Severity::Error` into the `EvalContext` sink when a well-typed but
+/// out-of-envelope `iso_it_tolerance` returns `Value::Undef`. Mirrors the
+/// `stackup_diagnose` / `fea_diagnose` / `geometry_diagnose` /
+/// `dynamics_diagnose` pattern.
 pub use tolerancing::diagnose as tolerancing_diagnose;
 
 /// Public re-export of the multi-load-case FEA error classifier.

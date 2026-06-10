@@ -849,12 +849,12 @@ structure def ProbeNeg {
 /// IT4, which is below the supported IT5–IT18 range), iso_it_tolerance returns
 /// Value::Undef and the derived `tolerance_value` let resolves to Undef.
 ///
-/// NOTE: tolerancing_diagnose is not yet wired into reify-expr (the sibling β/ε
-/// TODO in reify-stdlib/src/lib.rs), so E_TolerancingOutOfEnvelope does not fire
-/// as an eval diagnostic. The observable behavior is a missing/Undef cell.
-///
-/// This test pins the current Undef behavior and will need updating when
-/// tolerancing_diagnose is wired and the diagnostic fires.
+/// NOTE: tolerancing_diagnose is now wired into reify-expr's eval-time
+/// Undef-diagnosis fallthrough (`emit_undef_builtin_diagnostics`, task 4461
+/// step-2). The eval diagnostic is pinned by
+/// `iso_it_tolerance_grade_25_out_of_envelope_emits_eval_error_diagnostic`.
+/// This test continues to pin the compile-clean + Undef-cell assertions, which
+/// are orthogonal to (and unaffected by) the eval-diagnostic wiring.
 #[test]
 fn iso_tolerance_grade_out_of_envelope_undef() {
     // IT4 is below IT5 — iso_it_tolerance returns Undef, so the derived let is Undef.
@@ -904,10 +904,9 @@ structure def Probe {
             // Expected: iso_it_tolerance returns Undef for out-of-envelope grade 4
         }
         None => {
-            // Acceptable current behavior: tolerancing_diagnose is not yet wired into
-            // reify-expr, so iso_it_tolerance may omit the Undef cell rather than
-            // surfacing it. Will need updating when tolerancing_diagnose fires.
-            // (Sub-component presence confirmed above via probe_g_keys.)
+            // The Undef cell may be elided by the evaluator (observable as a missing
+            // entry rather than an explicit Undef). This is distinct from a
+            // sub-component resolution failure (confirmed above via probe_g_keys).
         }
         Some(other) => panic!(
             "out-of-envelope grade 4 should yield Undef tolerance_value, got {:?}",
