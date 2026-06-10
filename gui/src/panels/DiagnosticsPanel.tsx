@@ -209,7 +209,7 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
                 const lineTied = isLineTied(group.diagnostic);
                 return (
                 <div
-                  class={styles.row}
+                  class={`${styles.row}${lineTied ? '' : ` ${styles.rowSpanless}`}`}
                   data-testid="diagnostic-row"
                   onClick={lineTied ? () => props.onNavigate(group.diagnostic) : undefined}
                   role={lineTied ? 'button' : undefined}
@@ -230,7 +230,10 @@ export const DiagnosticsPanel: Component<DiagnosticsPanelProps> = (props) => {
                   >
                     {group.diagnostic.source}
                   </span>
-                  <span class={styles.location}>{locationLabel(group.diagnostic)}</span>
+                  <span
+                    data-testid="diagnostic-location"
+                    class={styles.location}
+                  >{lineTied ? locationLabel(group.diagnostic) : '—'}</span>
                   <span class={styles.message}>{group.diagnostic.message}</span>
                   <Show when={group.count > 1}>
                     <span
