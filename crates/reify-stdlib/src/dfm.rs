@@ -1012,4 +1012,66 @@ mod tests {
         );
         assert!(diags.is_empty(), "a conforming draft result surfaces no diagnostic");
     }
+
+    // ─── step-5 RED: diagnose — undercut (always Error) + combined ────────────
+
+    #[test]
+    fn diagnose_undercut_only_is_always_error_even_with_warning_tag() {
+        // List([Bool(false), Bool(true)]) + DFMSeverity.Warning → ONE Error diagnostic
+        // (undercut ignores the rule's severity — always Error).
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Warning")],
+            &draft_result(false, true),
+        );
+        assert_eq!(diags.len(), 1, "exactly one undercut diagnostic");
+        assert_eq!(
+            diags[0].severity,
+            Severity::Error,
+            "undercut is always Error even when tag is Warning"
+        );
+        assert!(
+            diags[0].message.contains("E_DFM_UNDERCUT"),
+            "undercut carries E_DFM_UNDERCUT prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_undercut_only_is_always_error_even_with_info_tag() {
+        // Lock severity-independence: Info tag still emits Error for undercut.
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Info")],
+            &draft_result(false, true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error, "undercut is always Error even when tag is Info");
+        assert!(
+            diags[0].message.contains("E_DFM_UNDERCUT"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_draft_and_undercut_combined_emits_two_diagnostics() {
+        // List([Bool(true), Bool(true)]) + DFMSeverity.Warning → TWO diagnostics:
+        // one W_DFM_DRAFT (Warning) AND one E_DFM_UNDERCUT (Error).
+        let diags = diagnose(
+            "min_draft_angle",
+            &[dfm_sev("Warning")],
+            &draft_result(true, true),
+        );
+        assert_eq!(diags.len(), 2, "two diagnostics: draft + undercut");
+        // One diagnostic must be Warning/W_DFM_DRAFT, the other Error/E_DFM_UNDERCUT.
+        let has_draft = diags.iter().any(|d| {
+            d.severity == Severity::Warning && d.message.contains("W_DFM_DRAFT")
+        });
+        let has_undercut = diags.iter().any(|d| {
+            d.severity == Severity::Error && d.message.contains("E_DFM_UNDERCUT")
+        });
+        assert!(has_draft, "one W_DFM_DRAFT Warning diagnostic present");
+        assert!(has_undercut, "one E_DFM_UNDERCUT Error diagnostic present");
+    }
 }
