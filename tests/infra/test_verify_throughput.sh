@@ -64,6 +64,7 @@ make_branch_fixture() {
             exit 1
         }
     done < <(grep -E 'source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
+                 | grep -v '^[[:space:]]*#' \
                  | sed 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|' || true)
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
