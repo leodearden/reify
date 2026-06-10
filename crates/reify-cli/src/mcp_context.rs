@@ -1431,8 +1431,17 @@ mod tests {
     /// fixture is known to produce at least one labelled compile Error with a
     /// real source span.
     ///
-    /// RED until step-5 adds `has_location` to `DiagnosticInfo` and sets
-    /// `has_location: !diag.labels.is_empty()` at the CLI construction site.
+    /// **False-branch coverage note:** the `has_location == false` path (labelless
+    /// diagnostic → false) is NOT tested here.  The CLI has no `inject_diagnostic_for_test`
+    /// equivalent, and no existing real-compiler fixture is known to produce a
+    /// labelless `compiled.diagnostics` entry (compile-time name-resolution errors,
+    /// which `bracket_compile_error.ri` triggers, always carry a label).  The false
+    /// branch is covered by the engine-side test
+    /// `get_diagnostics_labelless_fallback_unchanged_after_optimization`
+    /// (engine_tests.rs), which exercises the IDENTICAL predicate
+    /// `!diag.labels.is_empty()`.  The CLI site at `mcp_context.rs:248` uses
+    /// exactly that expression; a regression that hardcodes `true` there would be
+    /// caught by a code review of the one changed line.
     #[test]
     fn get_diagnostics_has_location_true_for_spanned_error() {
         let ctx = fresh_ctx();
