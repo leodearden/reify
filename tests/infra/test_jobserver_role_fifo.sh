@@ -109,4 +109,18 @@ assert "(d) isolation: merge role + only task FIFO present: 'CARGO_MAKEFLAGS lef
 assert "(d) isolation: merge role + only task FIFO present: no active 'export CARGO_MAKEFLAGS' line" \
     bash -c '! printf "%s\n" "$_PLAN_D" | grep -q "export CARGO_MAKEFLAGS"'
 
+# ---------------------------------------------------------------------------
+# (e) orchestrator.yaml has NO active CARGO_MAKEFLAGS: key (ownership move C3)
+#     verify.sh apply_env is now the SINGLE source of CARGO_MAKEFLAGS.
+#     Matches only a real YAML key line (^\s*CARGO_MAKEFLAGS\s*:); ignores
+#     comment prose that mentions CARGO_MAKEFLAGS.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (e) orchestrator.yaml: no active CARGO_MAKEFLAGS: key (ownership move C3) ---"
+ORCHESTRATOR_YAML="$REPO_ROOT/orchestrator.yaml"
+export ORCHESTRATOR_YAML
+
+assert "(e) orchestrator.yaml has NO active CARGO_MAKEFLAGS: YAML key line" \
+    bash -c '! grep -E "^[[:space:]]*CARGO_MAKEFLAGS[[:space:]]*:" "$ORCHESTRATOR_YAML"'
+
 test_summary
