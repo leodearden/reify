@@ -631,12 +631,55 @@ pub fn faces_by_normal<K: GeometryKernel + ?Sized>(
 /// the selector's semantics; update the fixture accordingly.
 pub(crate) const WALL_WINDOW_RAD: f64 = std::f64::consts::FRAC_PI_4;
 
-/// Tessellation tolerance (metres) used when sampling curved faces for the
-/// conservative overhang / draft scalar bounds.  This is a *sampling density*
-/// parameter, **not** a numeric-accuracy floor — the bound is conservative at
-/// any positive tolerance value (finer sampling can only worsen, never improve,
-/// the reported worst-dip / min-draft).
-const OVERHANG_TESS_TOLERANCE: f64 = 1e-3;
+/// Tessellation tolerance (metres) shared by both the overhang and draft DFM
+/// selectors when sampling curved faces for their conservative scalar bounds.
+/// This is a *sampling density* parameter, **not** a numeric-accuracy floor —
+/// the bound is conservative at any positive tolerance value (finer sampling
+/// can only worsen, never improve, the reported worst-dip / min-draft).
+///
+/// **Per-call cost note:** `tessellate` is called once per selector invocation
+/// regardless of whether the BRep contains curved faces.  For purely planar
+/// solids this is a no-op at the mesh level (the fold finds no normals to
+/// process), but the kernel call itself is not skipped.  If the call overhead
+/// becomes measurable, a future optimisation can query face-type metadata first
+/// and skip tessellation for all-planar shapes.
+///
+/// **Kernel contract:** `Mesh.normals`, when `Some`, must contain
+/// *per-facet outward normals* — one outward normal per triangle vertex,
+/// consistent in orientation with `FaceNormal` (outward = away from the solid
+/// interior).  Smoothed or averaged vertex normals violate the conservative-
+/// bound invariant: averaged normals at wall/floor seams can fall into the
+/// wall window when neither adjacent face is a true wall, producing a
+/// misleading `signed_min_draft` or a spurious `has_undercut`.  If a kernel
+/// emits smoothed normals, derive facet normals from `vertices`+`indices`
+/// via cross-product instead.
+const DFM_TESS_TOLERANCE: f64 = 1e-3;
+
+/// Iterate the per-facet normals in `mesh`, normalising each, and call `f`
+/// with `dot3(n_facet, dir)` for every non-degenerate facet normal.
+///
+/// This is the shared tessellate-fold kernel for both
+/// [`unsupported_overhang_faces`] and [`min_draft_angle`]: both functions
+/// read `Mesh.normals` in the same `chunks(3) → f32→f64 cast → normalize3`
+/// pattern but apply different reduction closures (max-dip vs min-draft/
+/// undercut).  Extracting the loop here removes the duplication so the
+/// orientation convention and conservative-bound logic live in one place.
+///
+/// The `Mesh.normals` kernel contract (per-facet outward, unsmoothed) is
+/// stated on [`DFM_TESS_TOLERANCE`].  When `mesh.normals` is `None` or
+/// empty, `f` is never called (no-op).  Degenerate (near-zero) facet
+/// normals are silently skipped.
+fn fold_mesh_facet_dots(mesh: &reify_ir::Mesh, dir: [f64; 3], mut f: impl FnMut(f64)) {
+    let Some(ns) = &mesh.normals else { return };
+    for chunk in ns.chunks(3) {
+        if chunk.len() == 3 {
+            let nf = [chunk[0] as f64, chunk[1] as f64, chunk[2] as f64];
+            if let Some(nf_unit) = normalize3(nf) {
+                f(dot3(nf_unit, dir));
+            }
+        }
+    }
+}
 
 /// Return the subset of faces whose outward normal is "unsupported" in the
 /// additive-manufacturing sense, together with the worst (largest) overhang
@@ -649,9 +692,11 @@ const OVERHANG_TESS_TOLERANCE: f64 = 1e-3;
 /// The per-face *dip* is defined as
 /// `asin(clamp(−n · build_dir, −1, 1)) ∈ [−π/2, π/2]`.  Positive dip means
 /// the face points downward (overhang); negative dip means it points upward
-/// (self-supporting).  `worst_dip` is the maximum over **all** faces
-/// (including non-overhang faces), seeded at `f64::NEG_INFINITY` (empty face
-/// list returns `NEG_INFINITY`; closed solids always have faces).
+/// (self-supporting).  `worst_dip` is the maximum over **all** BRep faces
+/// and tessellated facet normals, seeded at `f64::NEG_INFINITY`.  The seeded
+/// value is returned only when both the BRep face list and the tessellation
+/// yield no normals; closed solids always have faces, so this is a
+/// theoretical edge case in practice.
 ///
 /// For curved faces the scalar `worst_dip` is additionally refined by
 /// per-vertex normals from `kernel.tessellate` (conservative bound — finer
@@ -720,26 +765,20 @@ pub fn unsupported_overhang_faces<K: GeometryKernel + ?Sized>(
         }
     }
 
-    // Conservative tessellate fold: refine worst_dip from per-vertex normals.
-    // Mesh.normals is outward per-vertex (same orientation convention as FaceNormal).
+    // Conservative tessellate fold: refine worst_dip from per-facet normals.
     // A tessellate error or absent normals is a no-op (per-face result stands).
     // The unsupported FACE SET is not updated here — Mesh has no per-face
     // attribution (documented v1 limitation; per-region overhang maps are
     // out of scope per PRD §5).
-    if let Ok(mesh) = kernel.tessellate(handle, OVERHANG_TESS_TOLERANCE)
-        && let Some(ns) = &mesh.normals
-    {
-        for chunk in ns.chunks(3) {
-            if chunk.len() == 3 {
-                let nf = [chunk[0] as f64, chunk[1] as f64, chunk[2] as f64];
-                if let Some(nf_unit) = normalize3(nf) {
-                    let dip = (-dot3(nf_unit, b)).clamp(-1.0, 1.0).asin();
-                    if dip > worst_dip {
-                        worst_dip = dip;
-                    }
-                }
+    // Kernel contract: Mesh.normals must be per-facet outward unsmoothed normals
+    // (see DFM_TESS_TOLERANCE doc).
+    if let Ok(mesh) = kernel.tessellate(handle, DFM_TESS_TOLERANCE) {
+        fold_mesh_facet_dots(&mesh, b, |d| {
+            let dip = (-d).clamp(-1.0, 1.0).asin();
+            if dip > worst_dip {
+                worst_dip = dip;
             }
-        }
+        });
     }
 
     Ok((unsupported, worst_dip))
@@ -823,28 +862,21 @@ pub fn min_draft_angle<K: GeometryKernel + ?Sized>(
     }
 
     // Conservative tessellate fold: lower min_draft / set undercut flag from
-    // per-vertex facet normals. A tessellate error or absent normals is a no-op.
-    if let Ok(mesh) = kernel.tessellate(handle, OVERHANG_TESS_TOLERANCE)
-        && let Some(ns) = &mesh.normals
-    {
-        for chunk in ns.chunks(3) {
-            if chunk.len() == 3 {
-                let nf = [chunk[0] as f64, chunk[1] as f64, chunk[2] as f64];
-                if let Some(nf_unit) = normalize3(nf) {
-                    let d = dot3(nf_unit, p);
-                    if d.abs() < wall_sin {
-                        let delta =
-                            std::f64::consts::FRAC_PI_2 - d.clamp(-1.0, 1.0).acos();
-                        if delta < min_draft {
-                            min_draft = delta;
-                        }
-                        if d < 0.0 {
-                            has_undercut = true;
-                        }
-                    }
+    // per-facet normals. A tessellate error or absent normals is a no-op.
+    // Kernel contract: Mesh.normals must be per-facet outward unsmoothed normals
+    // (see DFM_TESS_TOLERANCE doc).
+    if let Ok(mesh) = kernel.tessellate(handle, DFM_TESS_TOLERANCE) {
+        fold_mesh_facet_dots(&mesh, p, |d| {
+            if d.abs() < wall_sin {
+                let delta = std::f64::consts::FRAC_PI_2 - d.clamp(-1.0, 1.0).acos();
+                if delta < min_draft {
+                    min_draft = delta;
+                }
+                if d < 0.0 {
+                    has_undercut = true;
                 }
             }
-        }
+        });
     }
 
     // No wall-window face seen → return +π/2 sentinel (trivially conforms).
@@ -1289,6 +1321,10 @@ mod tests {
         /// are unaffected — the curved conservative-bound fold is a no-op
         /// when `normals` is `None` or the mesh is empty.
         mesh: Mesh,
+        /// When `true`, `tessellate` returns `Err(TessellationFailed)` instead
+        /// of `Ok(mesh)`. Use in tests that verify the tessellate-error-is-no-op
+        /// path.
+        fail_tessellate: bool,
     }
 
     impl CountingKernel {
@@ -1300,6 +1336,7 @@ mod tests {
                 faces: Vec::new(),
                 responses: HashMap::new(),
                 mesh: Mesh { vertices: vec![], indices: vec![], normals: None },
+                fail_tessellate: false,
             }
         }
 
@@ -1323,6 +1360,13 @@ mod tests {
         /// normals without touching the BRep-face response map.
         fn with_mesh(mut self, mesh: Mesh) -> Self {
             self.mesh = mesh;
+            self
+        }
+
+        /// Make `tessellate` return `Err(TessellationFailed)`. Use to verify
+        /// that a tessellate failure is a no-op for both DFM selectors.
+        fn with_fail_tessellate(mut self) -> Self {
+            self.fail_tessellate = true;
             self
         }
 
@@ -1391,6 +1435,11 @@ mod tests {
             _handle: GeometryHandleId,
             _tolerance: f64,
         ) -> Result<Mesh, TessError> {
+            if self.fail_tessellate {
+                return Err(TessError::TessellationFailed(
+                    "CountingKernel: tessellate stubbed to fail".into(),
+                ));
+            }
             Ok(self.mesh.clone())
         }
 
@@ -2701,6 +2750,75 @@ mod tests {
             signed_min_draft.to_degrees()
         );
         assert!(has_undercut, "re-entrant facet must set has_undercut=true");
+    }
+
+    // ── Tessellate-error-is-no-op tests (suggestion 5 coverage) ─────────────
+
+    /// When `tessellate` returns `Err`, `unsupported_overhang_faces` must
+    /// still succeed and return the per-BRep-face result unchanged.
+    ///
+    /// Fixture: one face with n=(√3/2,0,−1/2) → per-face worst_dip ≈ 30°.
+    /// With `fail_tessellate` the mesh fold path is skipped entirely,
+    /// so worst_dip stays at ~30° and the selector returns `Ok`.
+    #[test]
+    fn overhang_tessellate_error_is_noop() {
+        let face_ids = vec![GeometryHandleId(801)];
+        let sqrt3_over2 = (3.0_f64).sqrt() / 2.0;
+
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(sqrt3_over2, 0.0, -0.5))
+            .with_fail_tessellate();
+        let handle = GeometryHandleId(1);
+
+        let (_faces, worst_dip) =
+            unsupported_overhang_faces(&mut kernel, handle, [0.0, 0.0, 1.0], 20f64.to_radians())
+                .expect("tessellate failure must not propagate — selector must succeed");
+
+        // Per-face result stands: worst_dip ≈ 30° (not lowered or invalidated).
+        let expected = 30f64.to_radians();
+        assert!(
+            (worst_dip - expected).abs() < 1e-9,
+            "tessellate error must be no-op: worst_dip must stay ≈ 30° (got {} rad = {}°)",
+            worst_dip,
+            worst_dip.to_degrees()
+        );
+    }
+
+    /// When `tessellate` returns `Err`, `min_draft_angle` must still succeed
+    /// and return the per-BRep-face result unchanged.
+    ///
+    /// Fixture: one wall face n=(cos10°,0,sin10°) → per-face δ=+10°, no undercut.
+    /// With `fail_tessellate` the mesh fold is skipped, so signed_min_draft
+    /// stays at +10° and has_undercut stays false.
+    #[test]
+    fn draft_tessellate_error_is_noop() {
+        let face_ids = vec![GeometryHandleId(811)];
+        let cos10 = 10f64.to_radians().cos();
+        let sin10 = 10f64.to_radians().sin();
+
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], face_normal_json(cos10, 0.0, sin10))
+            .with_fail_tessellate();
+        let handle = GeometryHandleId(1);
+
+        let (signed_min_draft, has_undercut) =
+            min_draft_angle(&mut kernel, handle, [0.0, 0.0, 1.0])
+                .expect("tessellate failure must not propagate — selector must succeed");
+
+        // Per-face result stands: signed_min_draft ≈ +10°, no undercut.
+        let expected = 10f64.to_radians();
+        assert!(
+            (signed_min_draft - expected).abs() < 1e-9,
+            "tessellate error must be no-op: min_draft must stay ≈ +10° (got {} rad = {}°)",
+            signed_min_draft,
+            signed_min_draft.to_degrees()
+        );
+        assert!(
+            !has_undercut,
+            "tessellate error must be no-op: has_undercut must stay false"
+        );
     }
 
     // ── Two sub-handles at the same (parent, kind, index) but different
