@@ -41,6 +41,7 @@ Environment variables (all optional, with sensible defaults)
 
 import argparse
 import fcntl
+import math
 import os
 import shutil
 import struct
@@ -517,7 +518,111 @@ def run_regime(
     }
 
 
-# Stubs for later steps (implemented in steps 8, 10, 12, 14).
+def derive_constants(measurements: dict) -> dict:
+    """Derive balancer constants from a completed A/B measurements record.
+
+    Returns a dict with:
+        merge_baseline       : int   — merge-favored token count (> task_baseline)
+        task_baseline        : int   — task token count (≥ 1)
+        poll_interval        : float — ≥ MIN_POLL_INTERVAL
+        epsilon              : int   — ≥ 1 (give-back buffer)
+        task_timeout_secs    : int   — ceil(worst_case_cold_task × MARGIN)
+        merge_timeout_secs   : int   — ceil(measured_merge_full_alloc × MARGIN)
+        utilization_threshold: float — derived from the baseline just-task capture
+    """
+    nproc = measurements["nproc"]
+    runs  = measurements.get("runs", [])
+
+    def _filter(service, regime, cache=None):
+        return [
+            r for r in runs
+            if r["service"] == service
+            and r["regime"] == regime
+            and (cache is None or r["cache_state"] == cache)
+        ]
+
+    # ── 1. task_timeout_secs ─────────────────────────────────────────────────
+    # Worst-case cold task wall-clock from the single-pool (implicit-token-only)
+    # baseline under cold sccache.  This is the canonical reference: the
+    # task verify with all tokens available and no cached artifacts.
+    # (PRD: "task timeout budget ≥ measured worst-case cold task verify at
+    # implicit-token-only WITH margin".)
+    cold_task_walls = [
+        r["task_wall"]
+        for r in _filter(SERVICE_SINGLE_POOL, REGIME_JUST_TASK, CACHE_COLD)
+        if r["task_wall"] > 0
+    ]
+    worst_case_cold_task = max(cold_task_walls) if cold_task_walls else 0.0
+    task_timeout_secs = math.ceil(worst_case_cold_task * MARGIN)
+
+    # ── 2. merge_timeout_secs ────────────────────────────────────────────────
+    # Measured merge wall-clock at full allocation = single-pool just-merge warm
+    # (all nproc tokens available to the merge, no task competition).
+    merge_walls_full = [
+        r["merge_wall"]
+        for r in _filter(SERVICE_SINGLE_POOL, REGIME_JUST_MERGE, CACHE_WARM)
+        if r["merge_wall"] > 0
+    ]
+    measured_merge_full = max(merge_walls_full) if merge_walls_full else 0.0
+    merge_timeout_secs = math.ceil(measured_merge_full * MARGIN)
+
+    # ── 3. utilization_threshold ─────────────────────────────────────────────
+    # Derived from the minimum busy_fraction across the baseline (single-pool)
+    # just-task warm runs.  Scaled down by UTIL_SLACK (10%) to allow variance.
+    _UTIL_SLACK = 0.9
+    baseline_jt_fracs = [
+        r["busy_fraction"]
+        for r in _filter(SERVICE_SINGLE_POOL, REGIME_JUST_TASK, CACHE_WARM)
+    ]
+    if baseline_jt_fracs:
+        utilization_threshold = min(baseline_jt_fracs) * _UTIL_SLACK
+    else:
+        utilization_threshold = 0.5  # conservative fallback
+
+    # ── 4. baseline split ────────────────────────────────────────────────────
+    # Derive from average task-pool token occupancy in dual-pool just-task runs.
+    # If those tokens were ≥ nproc//2, task pool is heavily used → keep nproc//4.
+    # This preserves the merge-favored property while tracking actual usage.
+    dual_task_occs = [
+        sample["task"]
+        for r in _filter(SERVICE_DUAL_POOL, REGIME_JUST_TASK)
+        for sample in r.get("occupancy", [])
+    ]
+    if dual_task_occs:
+        avg_task_occ = sum(dual_task_occs) / len(dual_task_occs)
+        task_baseline = max(1, min(int(math.ceil(avg_task_occ)), nproc - 1))
+    else:
+        task_baseline = max(1, nproc // 4)
+
+    merge_baseline = nproc - task_baseline
+
+    # Guard: enforce merge-favored (merge > task)
+    if merge_baseline <= task_baseline:
+        task_baseline = max(1, nproc // 4)
+        merge_baseline = nproc - task_baseline
+
+    # ── 5. poll_interval ─────────────────────────────────────────────────────
+    # Conservative: 2× the minimum detectable interval.  In production this
+    # would be tuned from the occupancy time-series; here we use MIN_POLL_INTERVAL
+    # doubled as the safe default derived from the harness constant.
+    poll_interval = MIN_POLL_INTERVAL * 2.0
+
+    # ── 6. epsilon ───────────────────────────────────────────────────────────
+    # Minimum give-back buffer: 1 for up to 32 cores; scale up for larger hosts.
+    epsilon = max(1, nproc // 32)
+
+    return {
+        "merge_baseline":        merge_baseline,
+        "task_baseline":         task_baseline,
+        "poll_interval":         poll_interval,
+        "epsilon":               epsilon,
+        "task_timeout_secs":     task_timeout_secs,
+        "merge_timeout_secs":    merge_timeout_secs,
+        "utilization_threshold": utilization_threshold,
+    }
+
+
+# Stubs for later steps (implemented in steps 10, 12, 14).
 
 
 def main() -> None:
