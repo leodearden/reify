@@ -693,8 +693,8 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
 
     // has_location must be true for a spanned warning (non-empty labels → real source span).
     // RED until step-5 adds the field to DiagnosticInfo and sets it in diagnostics_to_info.
-    assert_eq!(
-        first.has_location, true,
+    assert!(
+        first.has_location,
         "spanned warning (non-empty labels) must set has_location = true"
     );
 }

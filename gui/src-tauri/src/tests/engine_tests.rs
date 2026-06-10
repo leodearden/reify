@@ -2870,8 +2870,8 @@ fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
 
     // has_location must be false for a labelless diagnostic (empty labels → no real span).
     // RED until step-5 adds the field to DiagnosticInfo and sets it in diagnostics_to_info.
-    assert_eq!(
-        d.has_location, false,
+    assert!(
+        !d.has_location,
         "labelless diagnostic (empty labels) must set has_location = false"
     );
 }
@@ -11494,8 +11494,8 @@ fn staleness_api_record_reload_error_appends_diagnostic() {
     // has_location must be false: the live-edit synthetic site hardcodes line/col=1
     // with no real source span (engine.rs:2370 producer).
     // RED until step-5 adds the field to DiagnosticInfo and sets has_location: false there.
-    assert_eq!(
-        error_diags[0].has_location, false,
+    assert!(
+        !error_diags[0].has_location,
         "live-edit synthetic reload-error diagnostic must have has_location = false (no real span)"
     );
 }
@@ -11539,8 +11539,8 @@ fn staleness_api_cold_start_reload_error_has_no_location() {
         "cold-start reload-error diagnostic must carry code 'hot-reload-error'"
     );
     // has_location must be false: the cold-start producer also hardcodes line/col=1.
-    assert_eq!(
-        error_diags[0].has_location, false,
+    assert!(
+        !error_diags[0].has_location,
         "cold-start synthetic reload-error diagnostic must have has_location = false (no real span)"
     );
 }
