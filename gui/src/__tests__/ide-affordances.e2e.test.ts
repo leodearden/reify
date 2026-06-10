@@ -249,22 +249,32 @@ describe('folding (step-7 RED → step-8 GREEN)', () => {
     // Position cursor at start of `structure PartA {` (line 0 = CM line 1, offset 0)
     view.dispatch({ selection: { anchor: 0 } });
 
-    // Focus and dispatch Ctrl-Shift-[ (foldCode from foldKeymap)
+    // step-7 RED: synthetic Ctrl-Shift-[ keydown does NOT drive CM foldKeymap
+    // in jsdom (risk R1 confirmed). Dispatch it as primary attempt, then assert
+    // via the keymap-facet fallback (plan §R1 fallback).
     view.contentDOM.dispatchEvent(
       new KeyboardEvent('keydown', { key: '[', ctrlKey: true, shiftKey: true, bubbles: true }),
     );
     await flushMacrotasks(0);
 
+    // step-8 GREEN fallback: find Ctrl-Shift-[ binding in keymap facet + run it.
+    // (The keyboard dispatch above leaves foldCount=0 in jsdom; the run() call
+    //  is the contract-faithful alternative per plan design_decision §R1.)
+    const { foldedRanges } = await import('@codemirror/language');
+    const { keymap } = await import('@codemirror/view');
+    const allBindings = view.state.facet(keymap).flat();
+    const foldBinding = allBindings.find((b) => b.key === 'Ctrl-Shift-[');
+    expect(foldBinding).toBeDefined(); // confirms the binding is registered
+    foldBinding!.run!(view); // invoke foldCode at the cursor
+    await flushMacrotasks(0);
+
     // Assert: at least one range is folded
     let foldCount = 0;
-    const { foldedRanges } = await import('@codemirror/language');
     foldedRanges(view.state).between(0, view.state.doc.length, () => { foldCount++; });
     expect(foldCount).toBeGreaterThan(0);
-
-    // The visible-content line count drops when a block is folded
-    // (foldedRanges replaces a range with a single placeholder line)
-    const linesAfter = view.state.doc.lines;
-    expect(linesAfter).toBeLessThan(linesBefore);
+    // linesBefore is still valid as a doc-line count; folding doesn't change the
+    // doc text — it changes the STATE facet. Just verify foldCount > 0.
+    void linesBefore; // suppress unused-variable lint
   });
 });
 
