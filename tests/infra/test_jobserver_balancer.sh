@@ -134,6 +134,51 @@ assert "scripts/jobserver-balancer.py is executable" \
 assert "first line is '#!/usr/bin/env python3'" \
     bash -c "head -1 '$BALANCER' | grep -qxF '#!/usr/bin/env python3'"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 2: dual-FIFO seeding + conservation (C1) + custodian (C5) (test-2)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 2: dual-FIFO seeding + C1 conservation + C5 custodian ---"
+
+_cleanup_balancer   # ensure clean state from any prior run
+
+start_balancer 4 0.05
+_B2_SEEDED=0
+
+if wait_for_seed 10; then
+    _B2_SEEDED=1
+fi
+
+assert "merge FIFO exists as a named pipe" \
+    test -p "$_MERGE_FIFO"
+
+assert "task FIFO exists as a named pipe" \
+    test -p "$_TASK_FIFO"
+
+assert "daemon seeded both FIFOs within timeout" \
+    test "$_B2_SEEDED" -eq 1
+
+# Read token counts from the two pools
+_b2_m=$(fionread "$_MERGE_FIFO")
+_b2_t=$(fionread "$_TASK_FIFO")
+
+assert "FIONREAD(merge) + FIONREAD(task) == TOKENS immediately after seed" \
+    test $(( _b2_m + _b2_t )) -eq "$_FIXTURE_TOKENS"
+
+assert "daemon process is still alive (C5 custodian holds FDs)" \
+    kill -0 "$_BALANCER_PID"
+
+# Brief pause (a few poll intervals) then check token conservation again
+sleep 0.3
+
+_b2_m2=$(fionread "$_MERGE_FIFO")
+_b2_t2=$(fionread "$_TASK_FIFO")
+
+assert "sum still == TOKENS after a few poll intervals (buffered tokens persist)" \
+    test $(( _b2_m2 + _b2_t2 )) -eq "$_FIXTURE_TOKENS"
+
+_cleanup_balancer
+
 # (More assertion blocks are appended by subsequent TDD steps.)
 
 test_summary
