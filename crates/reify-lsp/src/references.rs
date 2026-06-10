@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use reify_ast::{
-    ConnectDecl, Declaration, Expr, ExprKind, ForallConnectBody, ForallConstraintBody,
+    ConnectDecl, Declaration, Expr, ExprKind, ForallConnectBody, ForallConstraintBody, ImportKind,
     MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, StringPart, SubDecl, WhereClause,
 };
 use reify_core::SourceSpan;
@@ -1254,7 +1254,6 @@ pub fn compute_document_highlights(
 /// dedicated traversal is the only way to surface them (κ design decision). The
 /// home declaration token is located via goto_def's `find_declaration_name_span`
 /// so a structure's rename/reference token is uniform with go-to-definition.
-#[allow(dead_code)] // wired into compute_references_cross_file in step-4
 fn collect_structure_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> Vec<SourceSpan> {
     let mut spans = Vec::new();
     // Home declaration token (`structure Name` / `occurrence def Name` / …),
@@ -1281,7 +1280,6 @@ fn collect_structure_name_spans(source: &str, parsed: &ParsedModule, name: &str)
 /// The emitted span is `name_token_span(source, sub.span, name)`: the first
 /// whole-word `name` token within the `sub` statement, i.e. the structure-name
 /// (construction) token in `sub binding = Name(...)`.
-#[allow(dead_code)] // reached via collect_structure_name_spans (wired in step-4)
 fn collect_sub_structure_uses(
     members: &[MemberDecl],
     source: &str,
@@ -1304,6 +1302,196 @@ fn collect_sub_structure_uses(
         for_each_child_scope(member, |child| {
             collect_sub_structure_uses(child, source, name, depth + 1, out);
         });
+    }
+}
+
+/// Whether import `kind` brings an entity named `name` into local scope under
+/// that SAME name — the non-aliased forms (`import m.Name`, `import m.{Name,…}`).
+/// Aliased imports (`import m.Name as Other`) bind a DISTINCT local name and are
+/// handled separately (κ step-6), so they return `false` here.
+fn import_exposes_entity(kind: &ImportKind, name: &str) -> bool {
+    match kind {
+        ImportKind::Entity(n) => n == name,
+        ImportKind::Destructured(names) => names.iter().any(|n| n == name),
+        ImportKind::EntityAliased { .. } | ImportKind::Module | ImportKind::Aliased { .. } => false,
+    }
+}
+
+/// What the cursor resolves to for the κ cross-file producers.
+enum CrossFileHome {
+    /// A local value-member binding (`param`/`let`/`auto`/`sub`/`port`) — the
+    /// single-file producers own it unchanged.
+    ValueMember,
+    /// A structure declaration named `name`, homed in document `uri` whose full
+    /// `source` is carried so the home-file collector can run over it.
+    Structure { uri: Url, name: String, source: String },
+}
+
+/// Resolve the cursor (`offset` + the identifier `word` under it) to a cross-file
+/// home (κ step-4): a local value-member binding, a structure declared in THIS
+/// document, or a structure reached through an `import`.
+///
+/// Resolution order is deliberate: value-member bindings win first (so the
+/// single-file semantics of `param`/`let`/`auto`/`sub`/`port` are untouched),
+/// then a same-file declaration name, then an imported entity name resolved via
+/// the injected `resolve_import` closure. The import arm covers BOTH the cursor
+/// sitting on an `import` entity token and on a `sub _ = Name` construction site,
+/// since both carry the same `word`. Returns `None` when the word names none of
+/// these (keyword, literal, unresolved/cross-module word).
+fn resolve_cross_file_home(
+    primary_source: &str,
+    primary_parsed: &ParsedModule,
+    primary_uri: &Url,
+    offset: usize,
+    word: &str,
+    resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
+) -> Option<CrossFileHome> {
+    // 1. A local value-member binding keeps its exact single-file semantics.
+    if collect_references_at(primary_source, primary_parsed, offset, word, true).is_some() {
+        return Some(CrossFileHome::ValueMember);
+    }
+    // 2. A structure declared in THIS document → home is the current file.
+    if crate::goto_def::find_declaration_name_span(primary_source, word).is_some() {
+        return Some(CrossFileHome::Structure {
+            uri: primary_uri.clone(),
+            name: word.to_string(),
+            source: primary_source.to_string(),
+        });
+    }
+    // 3. An imported (non-aliased) entity → resolve to its home module via the
+    //    injected closure.
+    for decl in &primary_parsed.declarations {
+        if let Declaration::Import(import) = decl
+            && import_exposes_entity(&import.kind, word)
+            && let Some((home_uri, home_source)) = resolve_import(&import.path)
+        {
+            return Some(CrossFileHome::Structure {
+                uri: home_uri,
+                name: word.to_string(),
+                source: home_source,
+            });
+        }
+    }
+    None
+}
+
+/// Collect the structure-name reference spans an importing document `doc_source`
+/// contributes for an entity named `name`: the import entity token (within each
+/// `import` statement that exposes `name`) plus every same-file `sub _ = name`
+/// construction site, ascending by `span.start`.
+///
+/// κ step-4 matches by the exposed entity NAME only (`Entity`/`Destructured`);
+/// resolved-URI scope soundness (so a same-named entity from a DIFFERENT module
+/// is excluded) and aliased-import handling are layered on in κ step-6.
+fn collect_importer_structure_references(doc_source: &str, name: &str) -> Vec<SourceSpan> {
+    let parsed = reify_syntax::parse(doc_source, reify_core::ModulePath::single("_importer"));
+    let mut spans = Vec::new();
+    let mut imports_name = false;
+    for decl in &parsed.declarations {
+        if let Declaration::Import(import) = decl
+            && import_exposes_entity(&import.kind, name)
+        {
+            imports_name = true;
+            spans.push(name_token_span(doc_source, import.span, name));
+        }
+    }
+    // Only a document that actually imports `name` contributes construction sites.
+    if !imports_name {
+        return Vec::new();
+    }
+    for decl in &parsed.declarations {
+        if let Some(members) = entity_members(decl) {
+            collect_sub_structure_uses(members, doc_source, name, 0, &mut spans);
+        }
+    }
+    spans.sort_by_key(|s| s.start);
+    spans
+}
+
+/// Cross-file find-references over the import graph (κ, task 4210).
+///
+/// Resolves the cursor to a structure "home" — a local declaration name, an
+/// `import` entity token, or a `sub _ = Name` construction site — then unions:
+/// the home document's declaration token + same-file construction sites, and,
+/// for every OTHER document in `workspace_docs` that imports the home entity,
+/// that document's import entity token + construction sites. Each span is mapped
+/// to an LSP [`Location`] in its document. `include_declaration` controls whether
+/// the home declaration token is part of the set, mirroring the single-file
+/// [`compute_references`] contract.
+///
+/// When the cursor is on a local VALUE-member binding the call delegates to the
+/// single-file [`compute_references`] (value members keep single-file scope).
+/// Returns `None` when the cursor resolves to neither a value member nor a
+/// resolvable structure.
+///
+/// PURE: the open-document set arrives as `workspace_docs` and target resolution
+/// as the injected `resolve_import` closure (mirroring goto_def), so the whole
+/// cross-file scope is unit-testable with an in-memory workspace + mock resolver.
+pub fn compute_references_cross_file(
+    primary_source: &str,
+    primary_parsed: &ParsedModule,
+    primary_uri: &Url,
+    pos: Position,
+    include_declaration: bool,
+    workspace_docs: &[(Url, String)],
+    resolve_import: &dyn Fn(&str) -> Option<(Url, String)>,
+) -> Option<Vec<Location>> {
+    let offset = position_to_offset(primary_source, pos);
+    let (_word_start, word) = find_word_at_offset(primary_source, offset)?;
+
+    match resolve_cross_file_home(
+        primary_source,
+        primary_parsed,
+        primary_uri,
+        offset,
+        word,
+        resolve_import,
+    )? {
+        // A local value-member binding keeps exact single-file semantics.
+        CrossFileHome::ValueMember => compute_references(
+            primary_source,
+            primary_parsed,
+            primary_uri,
+            pos,
+            include_declaration,
+        ),
+        CrossFileHome::Structure {
+            uri: home_uri,
+            name,
+            source: home_source,
+        } => {
+            let mut locations = Vec::new();
+
+            // Home document: declaration token + same-file construction sites.
+            let home_parsed =
+                reify_syntax::parse(&home_source, reify_core::ModulePath::single("_home"));
+            let home_decl = crate::goto_def::find_declaration_name_span(&home_source, &name);
+            for span in collect_structure_name_spans(&home_source, &home_parsed, &name) {
+                // include_declaration=false drops the home declaration token.
+                if !include_declaration && Some(span) == home_decl {
+                    continue;
+                }
+                locations.push(Location {
+                    uri: home_uri.clone(),
+                    range: span_to_range(&home_source, span),
+                });
+            }
+
+            // Every OTHER open document that imports the home entity.
+            for (doc_uri, doc_source) in workspace_docs {
+                if *doc_uri == home_uri {
+                    continue; // home-file references already collected above
+                }
+                for span in collect_importer_structure_references(doc_source, &name) {
+                    locations.push(Location {
+                        uri: doc_uri.clone(),
+                        range: span_to_range(doc_source, span),
+                    });
+                }
+            }
+
+            Some(locations)
+        }
     }
 }
 
@@ -1344,9 +1532,17 @@ mod tests {
     #[allow(dead_code)]
     const PARTS_SRC: &str = "structure Hole {\n    param diameter: Length = 10mm\n}";
 
-    /// main.ri — imports `parts.Hole` and constructs it via `sub hole = Hole`.
+    /// main.ri — imports `parts.Hole` and constructs it via `sub hole = Hole()`.
+    ///
+    /// The constructor uses the PARENTHESIZED form `Hole()` (not the bare
+    /// `sub hole = Hole` the PRD row-8 shorthand writes): the bare, paren-less
+    /// form is a Reify *syntax error*, so it never lowers to a `SubDecl` and
+    /// carries no `structure_name` for the κ collector to surface. `Hole()` is a
+    /// valid construction site (Hole's only `param` has a default), lowers to
+    /// `SubDecl { structure_name: "Hole", .. }`, and the rename target
+    /// `sub hole = Bore()` re-parses clean (Invariant 5).
     #[allow(dead_code)]
-    const MAIN_SRC: &str = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole\n}";
+    const MAIN_SRC: &str = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole()\n}";
 
     /// URI of the home module (`parts.ri`).
     #[allow(dead_code)]
@@ -2994,3 +3190,4 @@ structure Assembly {
         );
     }
 }
+
