@@ -516,11 +516,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     }
                     let result = reify_stdlib::eval_builtin(&function.name, &evaluated_args);
                     // Post-Undef builtin diagnostics: when a stackup / multi-load-
-                    // case (`linear_combine`) / AffineMap-constructor builtin returns
-                    // `Value::Undef`, classify and emit its specific diagnostic into
-                    // the ctx sink. The three name families are disjoint, so at most
-                    // one diagnose helper fires for a single Undef. Consolidated into
-                    // one `#[inline(never)]` helper so the owned `Diagnostic` locals
+                    // case (`linear_combine`) / AffineMap-constructor / inverse-
+                    // dynamics / iso_it_tolerance builtin returns `Value::Undef`,
+                    // classify and emit its specific diagnostic into the ctx sink.
+                    // The five name families are disjoint, so at most one diagnose
+                    // helper fires for a single Undef. Consolidated into one
+                    // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
                     // frame — keeping the 2 MiB test-thread stack under
                     // `MAX_RECURSION_DEPTH` (pinned by
@@ -1540,8 +1541,9 @@ fn interp_render(value: &Value) -> String {
 }
 
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
-/// FEA (`linear_combine`, task #10), and AffineMap constructors (PRD §4.2,
-/// task β) — for a builtin call whose `result` is `Value::Undef`.
+/// FEA (`linear_combine`, task #10), AffineMap constructors (PRD §4.2, task β),
+/// inverse-dynamics body mass, and ISO tolerancing — for a builtin call whose
+/// `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -1552,10 +1554,11 @@ fn interp_render(value: &Value) -> String {
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
-/// The three name families (stackup math builtins / `"linear_combine"` /
-/// `affine_*` constructors) are disjoint, so at most one of the three classifiers
-/// returns `Some` for any single `Undef`; each returns `None` for every other
-/// name or for valid input, making this a cheap no-op for ordinary builtins.
+/// The five name families (stackup math builtins / `"linear_combine"` /
+/// `affine_*` constructors / inverse-dynamics / `"iso_it_tolerance"`) are
+/// disjoint, so at most one of the five classifiers returns `Some` for any
+/// single `Undef`; each returns `None` for every other name or for valid input,
+/// making this a cheap no-op for ordinary builtins.
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
     if !matches!(result, Value::Undef) {
@@ -1579,6 +1582,13 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     }
     // Inverse-dynamics Undef: body has no resolvable mass.
     if let Some(diag) = reify_stdlib::dynamics_diagnose(name, args) {
+        sink.borrow_mut().push(diag);
+    }
+    // ISO 286-1 tolerancing: out-of-envelope iso_it_tolerance (grade outside
+    // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
+    // Severity::Error instead of a silent Undef. Post-Undef-only, same
+    // (name,&[Value])->Option<Diagnostic> shape as stackup/fea/geometry/dynamics.
+    if let Some(diag) = reify_stdlib::tolerancing_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
 }
