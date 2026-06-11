@@ -1378,23 +1378,46 @@ fn impulse_force_constrains_impulse_positive() {
             .collect::<Vec<_>>()
     );
 
+    // `0 * 1N * 1s` does NOT constant-fold to a single Scalar literal. Unlike
+    // the single-token unit literal `0N` (which lowers to one
+    // `Literal(Scalar { si_value: 0.0, FORCE })`), the dimensioned-zero
+    // *product* `0 * 1N * 1s` lowers to a left-nested `Mul`-chain
+    // `(0 * 1N) * 1s` whose overall `result_type` is `Scalar<Impulse>`
+    // (N·s = kg·m·s⁻¹). The matcher therefore accepts EITHER the unfolded
+    // zero-valued Impulse-dimensioned product OR a future folded single
+    // `Literal(Scalar { 0.0, IMPULSE })` (forward-compatible if a constant-fold
+    // pass lands later).
+    fn is_zero_valued(expr: &CompiledExpr) -> bool {
+        match &expr.kind {
+            CompiledExprKind::Literal(Value::Int(0)) => true,
+            CompiledExprKind::Literal(Value::Real(v)) => *v == 0.0,
+            CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => *si_value == 0.0,
+            // `0 * x` (or `x * 0`) is zero — recurse through the Mul-chain.
+            CompiledExprKind::BinOp {
+                op: BinOp::Mul,
+                left,
+                right,
+            } => is_zero_valued(left) || is_zero_valued(right),
+            _ => false,
+        }
+    }
+
+    let impulse_dim_ty = Type::Scalar {
+        dimension: DimensionVector::IMPULSE,
+    };
     let matched = template.constraints.iter().any(|c| {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "impulse") {
+                if *op != BinOp::Gt
+                    || !collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == "impulse")
+                {
                     return false;
                 }
-                match &right.kind {
-                    // Dimensioned-zero `0 * 1N * 1s` lowers to a Scalar literal of
-                    // dimension Impulse (N·s = kg·m·s⁻¹), mirroring StepForce's
-                    // `magnitude > 0N` → Literal(Scalar { si_value: 0.0, FORCE }).
-                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                        if *si_value == 0.0 && *dimension == DimensionVector::IMPULSE =>
-                    {
-                        true
-                    }
-                    _ => false,
-                }
+                // RHS must be a zero-valued expression of dimension Impulse:
+                // the `0 * 1N * 1s` dimensioned-zero positivity bound.
+                right.result_type == impulse_dim_ty && is_zero_valued(right)
             }
             _ => false,
         }

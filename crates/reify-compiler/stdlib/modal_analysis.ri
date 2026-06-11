@@ -510,16 +510,11 @@ structure def StepForce : ForcingFunction {
 //              `ModalOptions.reference_direction` precedent. The `direction`
 //              unit-vector carries the sign; `impulse` carries the positive
 //              scalar magnitude.
-//   impulse  — the positive scalar impulse (momentum transfer).
-//              FIXME(impulse-dim): encoded as `Real` PLACEHOLDER for the
-//              unrepresentable `ImpulseDim` = N·s = momentum =
-//              MASS·LENGTH·TIME⁻¹ (not in NAMED_DIMENSIONS —
-//              reify-types/src/dimension.rs:444-505 scanned). Same
-//              placeholder convention as `Mode.frequency : Real` (modal_
-//              analysis.ri:188) waiting for `Scalar<Frequency>`. The
-//              constraint `impulse > 0` (bare `0`, not `0unit`, because
-//              `impulse : Real`) works per the `n_modes > 0` precedent on
-//              `Int`-typed `n_modes`.
+//   impulse  — the positive scalar impulse (momentum transfer). Typed as
+//              `Impulse` = N·s = momentum = kg·m·s⁻¹, registered in
+//              NAMED_DIMENSIONS (crates/reify-core/src/dimension.rs, task 4548).
+//              The `direction` unit-vector carries the sign; `impulse` carries
+//              the positive scalar magnitude.
 //   time     — the time of the delta-function impulse application. Any real
 //              time is valid; negative values support pre-loaded-history
 //              simulations.
@@ -528,17 +523,17 @@ structure def StepForce : ForcingFunction {
 structure def ImpulseForce : ForcingFunction {
     param at : String
     param direction : Vector3<Dimensionless>
-    param impulse : Real
+    param impulse : Impulse
     param time : Time
 
-    // `impulse : Real` (PLACEHOLDER for ImpulseDim = N·s) uses bare `0`
-    // because the field is Real-typed — same shape as `n_modes > 0` on
-    // Int-typed `n_modes` (modal_analysis.ri:365). By convention, `direction`
-    // carries the sign (unit vector); `impulse` carries the positive scalar
-    // magnitude. Declaring the lower bound at the structure-def level follows
-    // the task-2544 explicit-contract convention (same rationale as
-    // `StepForce.magnitude > 0N` above).
-    constraint impulse > 0
+    // `impulse : Impulse` uses the dimensioned-zero form `0 * 1N * 1s`
+    // (N·s = kg·m·s⁻¹ = Impulse) because polymorphic-zero has not landed —
+    // same convention as `frequency > 0Hz` on the Frequency-typed
+    // HarmonicForce.frequency and `StepForce.magnitude > 0N` above. By
+    // convention, `direction` carries the sign (unit vector); `impulse` carries
+    // the positive scalar magnitude. Declaring the lower bound at the
+    // structure-def level follows the task-2544 explicit-contract convention.
+    constraint impulse > 0 * 1N * 1s
 
     // NOTE — explicitly NOT constrained:
     //   at        : String — no scalar invariant expressible on a String placeholder
