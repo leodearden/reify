@@ -122,7 +122,10 @@ fn ignore_attr(line: &str) -> Option<IgnoreForm> {
 
 /// §8.2 canonical citation: a `#` immediately followed by a run of 1..=5 ASCII
 /// digits whose run length is ≤5 (the char after the run is not a digit, so a
-/// 6-digit number is not matched on its 5-digit prefix).
+/// 6-digit number is not matched on its 5-digit prefix) AND whose value is ≥1.
+/// An all-zero run (`#0`, `#00`) is rejected — task ids start at 1, so a `#0`
+/// cite is not canonical and falls through to the structural `untracked`
+/// classification (mirrors the ≥1 guard in [`extract_cites`]).
 fn has_canonical_cite(line: &str) -> bool {
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -133,7 +136,9 @@ fn has_canonical_cite(line: &str) -> bool {
                 j += 1;
             }
             let run = j - (i + 1);
-            if (1..=5).contains(&run) {
+            // ≥1 guard: the run must carry a non-zero digit (`#0`/`#00` → 0 → not
+            // a valid task id). `#007` (= 7) is still canonical.
+            if (1..=5).contains(&run) && bytes[i + 1..j].iter().any(|&b| b != b'0') {
                 return true;
             }
         }
@@ -146,7 +151,11 @@ fn has_canonical_cite(line: &str) -> bool {
 /// line, in source order. Mirrors [`has_canonical_cite`]'s `#`+digit-run scan
 /// but parses each 1..=5-digit run to `u32` (runs of length 0 or >5 are
 /// skipped, so `#abc`, a bare `#`, and a 6-digit `#123456` yield nothing —
-/// consistent with the canonical-cite recogniser). `#0` parses to `0`.
+/// consistent with the canonical-cite recogniser). The id-0 case (`#0`, `#00`)
+/// is also skipped — task ids start at 1, so a `#0` cite is not a valid id and
+/// is dropped here (keeping it lock-step with [`has_canonical_cite`]'s ≥1 guard,
+/// so `#0` classifies structurally as `untracked` rather than spuriously
+/// `unknown-id`).
 fn extract_cites(line: &str) -> Vec<u32> {
     let bytes = line.as_bytes();
     let mut out = Vec::new();
@@ -160,8 +169,11 @@ fn extract_cites(line: &str) -> Vec<u32> {
             let run = j - (i + 1);
             if (1..=5).contains(&run) {
                 // `line[i + 1..j]` is a 1..=5-digit ASCII run; it always fits
-                // in u32 (max 99999), so the parse cannot fail.
-                if let Ok(id) = line[i + 1..j].parse::<u32>() {
+                // in u32 (max 99999), so the parse cannot fail. Skip id 0 (`#0`,
+                // `#00`) — task ids start at 1, so it is not a valid cite.
+                if let Ok(id) = line[i + 1..j].parse::<u32>()
+                    && id >= 1
+                {
                     out.push(id);
                 }
                 i = j; // skip past the consumed digit run
@@ -731,6 +743,9 @@ mod tests {
         assert!(!has_canonical_cite("#123456 six digits"));
         // Space between `#` and digits.
         assert!(!has_canonical_cite("# 42"));
+        // All-zero runs (`#0`, `#00`) are not valid task ids (ids start at 1).
+        assert!(!has_canonical_cite("// TODO(#0): x"));
+        assert!(!has_canonical_cite("see #00 here"));
     }
 
     // -------------------------------------------------------------------
@@ -743,8 +758,8 @@ mod tests {
         assert_eq!(extract_cites("// TODO(#42): x"), vec![42]);
         // Multiple bare cites in source order.
         assert_eq!(extract_cites("see #1 and #200"), vec![1, 200]);
-        // `#0` is a valid 1-digit run → 0.
-        assert_eq!(extract_cites("#0"), vec![0]);
+        // Leading zeros are tolerated as long as the value is ≥1 (`#007` → 7).
+        assert_eq!(extract_cites("// TODO(#007): x"), vec![7]);
     }
 
     #[test]
@@ -756,6 +771,10 @@ mod tests {
         // A 6-digit run exceeds the 1..=5 window (consistent with
         // has_canonical_cite) → no cite (not a 5-digit prefix match).
         assert_eq!(extract_cites("#123456"), Vec::<u32>::new());
+        // An all-zero run is not a valid task id (ids start at 1) → no cite, so
+        // `#0` falls through to the structural `untracked` classification.
+        assert_eq!(extract_cites("#0"), Vec::<u32>::new());
+        assert_eq!(extract_cites("// TODO(#00): x"), Vec::<u32>::new());
     }
 
     // -------------------------------------------------------------------
