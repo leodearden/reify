@@ -454,12 +454,60 @@ def run_mixed_concurrent(
 import json as _json_module
 
 
+# Production-faithful verify.sh invocations (actions + scope):
+#   merge — `all --scope all`: matches the hooks/pre-merge-commit gate
+#           (profile=both comes from DF_VERIFY_ROLE=merge, verify.sh role default).
+#   task  — `test --scope all --include-infra`: orchestrator.yaml's task
+#           test_command uses --scope branch, but the η branch touches no Rust,
+#           so a branch-scope verify here would be near-empty and useless as
+#           the ζ′ slowest-task-wall floor.  --scope all is the conservative
+#           heavy-task instrument (≡ a task whose branch touched core crates).
+MERGE_VERIFY_ARGS = ["all", "--scope", "all"]
+TASK_VERIFY_ARGS = ["test", "--scope", "all", "--include-infra"]
+
+
+def make_verify_cmd(
+    role: str,
+    action_args: list,
+    timeout_min: int,
+    merge_fifo: str,
+    task_fifo: str,
+    verify_sh: str,
+) -> list:
+    """Build one real verify.sh campaign command.
+
+    Two things MUST be routed through the environment for the measurement to
+    be valid:
+      - DF_VERIFY_ROLE — selects profile default + psi/semaphore exemptions.
+      - REIFY_JOBSERVER_{MERGE,TASK}_FIFO — verify.sh selects its jobserver
+        FIFO from these (role→var, default = the LIVE /tmp dual-pool FIFOs).
+        Without them the single-pool baseline run would silently draw from
+        the live dual-pool service, turning the A/B into dual-vs-dual.
+
+    The standing outer-timeout budget (debug 60m / release 75m) is applied
+    via `timeout --kill-after=60 <timeout_min>m` so exit-124 is observable
+    for criterion (c).
+    """
+    return [
+        "env",
+        f"DF_VERIFY_ROLE={role}",
+        f"REIFY_JOBSERVER_MERGE_FIFO={merge_fifo}",
+        f"REIFY_JOBSERVER_TASK_FIFO={task_fifo}",
+        "timeout",
+        "--kill-after=60",
+        f"{timeout_min}m",
+        "bash",
+        verify_sh,
+    ] + list(action_args)
+
+
 def _run_campaign(
     output_path: str,
     ntasks: int = 1,
     cache_state: str = "warm",
     utilization_threshold: float = 0.85,
     sampler_interval: float = 5.0,
+    task_repo: str = None,
 ) -> None:
     """Capture REAL same-instrument A/B measurements and write JSON.
 
@@ -482,29 +530,48 @@ def _run_campaign(
     deployed host with the dual-pool reify-jobserver.service active.  The
     single-pool baseline is self-provisioned in a private tmpdir and torn down
     automatically; it does NOT touch the live service.
+
+    task_repo is REQUIRED when ntasks > 0: the task verifies must run from a
+    SEPARATE checkout.  Merge and task verify.sh both cd to their own
+    REPO_ROOT; sharing one checkout means sharing one cargo target/ — the
+    concurrent builds would serialize on cargo's build-dir lock and criteria
+    (a)/(d) would measure lock-waiting, not jobserver contention.
     """
     repo_root = pathlib.Path(__file__).parent.parent.resolve()
     verify_sh = str(repo_root / "scripts" / "verify.sh")
     balancer_path = str(pathlib.Path(__file__).parent / "jobserver-balancer.py")
 
+    if ntasks > 0:
+        if not task_repo:
+            raise RuntimeError(
+                "--task-repo is required when ntasks > 0: task verifies must "
+                "run from a separate checkout (own cargo target/), or the "
+                "merge and task builds serialize on cargo's build-dir lock "
+                "and the contention measurement is invalid."
+            )
+        task_verify_sh = str(
+            pathlib.Path(task_repo).resolve() / "scripts" / "verify.sh"
+        )
+        if not os.path.exists(task_verify_sh):
+            raise RuntimeError(f"--task-repo has no verify.sh: {task_verify_sh}")
+    else:
+        task_verify_sh = verify_sh
+
     nproc = _harness.NPROC
 
-    # Build the command lists with standing timeout budgets
-    # merge: DF_VERIFY_ROLE=merge, release budget 75m
-    # task:  DF_VERIFY_ROLE=task,  debug budget 60m
-    _merge_env = {"DF_VERIFY_ROLE": "merge"}
-    _task_env = {"DF_VERIFY_ROLE": "task"}
-
-    def _make_verify_cmd(role: str, timeout_min: int) -> list:
-        env_prefix = [f"{k}={v}" for k, v in ({"DF_VERIFY_ROLE": role}).items()]
-        return [
-            "env", f"DF_VERIFY_ROLE={role}",
-            "timeout", "--kill-after=60", f"{timeout_min}m",
-            "bash", verify_sh,
+    def _cmds_for(merge_fifo: str, task_fifo: str) -> "tuple[list, list]":
+        """Merge + task command lists with the run's FIFOs routed in."""
+        merge_cmd = make_verify_cmd(
+            "merge", MERGE_VERIFY_ARGS, 75, merge_fifo, task_fifo, verify_sh
+        )
+        task_cmds = [
+            make_verify_cmd(
+                "task", TASK_VERIFY_ARGS, 60, merge_fifo, task_fifo,
+                task_verify_sh,
+            )
+            for _ in range(ntasks)
         ]
-
-    merge_cmd = _make_verify_cmd("merge", 75)
-    task_cmds = [_make_verify_cmd("task", 60) for _ in range(ntasks)]
+        return merge_cmd, task_cmds
 
     sys.stderr.write(
         f"[η --run] Starting A/B campaign: {ntasks} task(s), "
@@ -524,8 +591,14 @@ def _run_campaign(
     }
     try:
         sys.stderr.write("[η --run] Running baseline mixed concurrent…\n")
+        # Pre-balancer single-pool world: ONE shared FIFO that every verify
+        # (merge and task role alike) draws from — both role vars point at
+        # the seeded single FIFO.  The dummy task FIFO exists only so the
+        # sampler has a second path to watch (stays 0).
+        single = infra_a["merge_fifo"]
+        merge_cmd_a, task_cmds_a = _cmds_for(single, single)
         baseline_rec = run_mixed_concurrent(
-            merge_cmd, task_cmds, fifos_a,
+            merge_cmd_a, task_cmds_a, fifos_a,
             sampler_interval=sampler_interval,
             service=_harness.SERVICE_SINGLE_POOL,
             cache_state=cache_state,
@@ -546,8 +619,9 @@ def _run_campaign(
         )
     fifos_b = {"merge_fifo": merge_fifo_live, "task_fifo": task_fifo_live}
     sys.stderr.write("[η --run] Running dual-pool mixed concurrent…\n")
+    merge_cmd_b, task_cmds_b = _cmds_for(merge_fifo_live, task_fifo_live)
     dualpool_rec = run_mixed_concurrent(
-        merge_cmd, task_cmds, fifos_b,
+        merge_cmd_b, task_cmds_b, fifos_b,
         sampler_interval=sampler_interval,
         service=_harness.SERVICE_DUAL_POOL,
         cache_state=cache_state,
@@ -603,6 +677,14 @@ def main() -> None:
         "--sampler-interval", type=float, default=5.0,
         dest="sampler_interval",
         help="Seconds between FIONREAD samples (default: 5.0)",
+    )
+    p_run.add_argument(
+        "--task-repo", dest="task_repo", default=None,
+        help=(
+            "Checkout the task verifies run from (REQUIRED when --ntasks > 0; "
+            "must be a separate checkout with its own cargo target/, or the "
+            "concurrent builds serialize on cargo's build-dir lock)"
+        ),
     )
 
     p_evaluate = sub.add_parser(
@@ -665,7 +747,14 @@ def main() -> None:
 
     # ── --run: capture REAL same-instrument A/B measurements ─────────────
     if args.mode == "run":
-        _run_campaign(args.output)
+        _run_campaign(
+            args.output,
+            ntasks=args.ntasks,
+            cache_state=args.cache_state,
+            utilization_threshold=args.utilization_threshold,
+            sampler_interval=args.sampler_interval,
+            task_repo=args.task_repo,
+        )
         sys.exit(0)
 
 

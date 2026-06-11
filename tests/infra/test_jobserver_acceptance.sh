@@ -556,4 +556,92 @@ assert "--report output contains ζ′/4520 budget floor section" \
 
 rm -f "$_fix_ok" "$_fix_fail" "$_report_out"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 6: campaign command construction (step-13 capstone-readiness fixes)
+#   Pins the three defects that made the first capstone attempt exit 64
+#   instantly and would have invalidated the A/B:
+#     6a — make_verify_cmd carries a verify.sh ACTION (verify.sh exits 64
+#          "missing action" without one) + the role + the timeout budget.
+#     6b — make_verify_cmd routes the run's FIFOs into the env
+#          (REIFY_JOBSERVER_{MERGE,TASK}_FIFO); without these the baseline
+#          run silently draws from the LIVE dual-pool FIFOs (dual-vs-dual).
+#     6c — _run_campaign REFUSES ntasks > 0 without --task-repo (same
+#          checkout ⇒ shared cargo target/ ⇒ builds serialize on the
+#          build-dir lock ⇒ contention never measured).
+#     6d — main()'s run dispatch passes the parsed flags through to
+#          _run_campaign (a cold run must not be silently labeled warm).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 6: campaign command construction (make_verify_cmd + task-repo guard) ---"
+
+_b6_exit=0
+{
+python3 - "$ACCEPT" <<'PY'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("ja", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+cmd = mod.make_verify_cmd(
+    "merge", mod.MERGE_VERIFY_ARGS, 75,
+    "/fake/merge-fifo", "/fake/task-fifo", "/fake/verify.sh",
+)
+
+# 6a: action + role + timeout budget present
+if "all" not in cmd[cmd.index("/fake/verify.sh"):]:
+    errors.append("(6a) merge cmd missing the 'all' verify.sh action")
+if "DF_VERIFY_ROLE=merge" not in cmd:
+    errors.append("(6a) merge cmd missing DF_VERIFY_ROLE=merge")
+if "75m" not in cmd:
+    errors.append("(6a) merge cmd missing the 75m standing budget")
+if "--scope" not in cmd or "timeout" not in cmd:
+    errors.append("(6a) merge cmd missing --scope / timeout wrapper")
+
+# 6b: both FIFO env vars routed in
+if "REIFY_JOBSERVER_MERGE_FIFO=/fake/merge-fifo" not in cmd:
+    errors.append("(6b) merge-pool FIFO env var not injected")
+if "REIFY_JOBSERVER_TASK_FIFO=/fake/task-fifo" not in cmd:
+    errors.append("(6b) task-pool FIFO env var not injected")
+
+# task-role variant: action 'test', 60m budget
+tcmd = mod.make_verify_cmd(
+    "task", mod.TASK_VERIFY_ARGS, 60,
+    "/fake/merge-fifo", "/fake/task-fifo", "/fake/verify.sh",
+)
+if "test" not in tcmd[tcmd.index("/fake/verify.sh"):]:
+    errors.append("(6a) task cmd missing the 'test' verify.sh action")
+if "DF_VERIFY_ROLE=task" not in tcmd or "60m" not in tcmd:
+    errors.append("(6a) task cmd missing role / 60m budget")
+
+# 6c: _run_campaign refuses ntasks > 0 without task_repo (raises before
+# provisioning anything — hermetically safe to call)
+try:
+    mod._run_campaign("/dev/null", ntasks=1, task_repo=None)
+    errors.append("(6c) _run_campaign accepted ntasks=1 without task_repo")
+except RuntimeError as e:
+    if "task-repo" not in str(e):
+        errors.append(f"(6c) wrong refusal message: {e}")
+
+for e in errors:
+    print(f"  FAIL: {e}")
+sys.exit(1 if errors else 0)
+PY
+} || _b6_exit=$?
+assert "make_verify_cmd carries action/role/budget/FIFO env; task-repo guard refuses" \
+    test "$_b6_exit" -eq 0
+
+# 6d: run dispatch passes the parsed flags through (grep-the-source — the
+# call site must thread ntasks/cache_state/threshold/sampler/task_repo, not
+# call _run_campaign(args.output) bare as the original step-12 wiring did)
+_b6d_src="$ACCEPT"
+assert "main() run dispatch threads ntasks through to _run_campaign" \
+    bash -c "grep -A8 'args.mode == \"run\"' '$_b6d_src' | grep -q 'ntasks=args.ntasks'"
+assert "main() run dispatch threads cache_state through to _run_campaign" \
+    bash -c "grep -A8 'args.mode == \"run\"' '$_b6d_src' | grep -q 'cache_state=args.cache_state'"
+assert "main() run dispatch threads task_repo through to _run_campaign" \
+    bash -c "grep -A8 'args.mode == \"run\"' '$_b6d_src' | grep -q 'task_repo=args.task_repo'"
+
 test_summary
