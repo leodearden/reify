@@ -91,6 +91,52 @@ use super::*;
 /// pre-pass (entity.rs:~531) and `register_guarded_names` (guards.rs:~183).
 /// Formerly also referenced via `is_solid_geometry_param` — that wrapper was
 /// retired in GHR-γ (task 3605).
+/// Returns `true` if `expr` is syntactically a selector-producing expression:
+/// - A direct call to one of the 7 predicate/all selector constructors
+///   (`faces`, `edges`, `faces_by_normal`, `faces_by_area`, `edges_by_length`,
+///   `edges_at_height`, `edges_parallel_to`) or the Named-leaf constructors
+///   (`face`, `edge`, `solid_body`, added by task 4119 δ).
+/// - A nested selector composition (`union`/`intersect`/`difference`) whose
+///   operands are themselves selector exprs (recursive).
+///
+/// IMPORTANT: does NOT include `split`, `adjacent_faces`, or `shared_edges` —
+/// those produce `Type::List(Geometry)`, not a composable `Value::Selector`.
+/// Called by `is_geometry_let` to detect when `union`/`difference` operands
+/// are selector-valued and thus MUST NOT route to the CSG path.
+fn is_selector_expr(expr: &reify_ast::Expr, functions: &[CompiledFunction]) -> bool {
+    let (name, args) = match &expr.kind {
+        reify_ast::ExprKind::FunctionCall {
+            name,
+            args,
+            ..
+        } => (name.as_str(), args.as_slice()),
+        _ => return false,
+    };
+
+    // User-defined functions shadow any builtin: if a function with this name
+    // is in scope, the call is not guaranteed to produce a Selector.
+    if functions.iter().any(|f| f.name == name) {
+        return false;
+    }
+
+    match name {
+        // ── 7 predicate/all selector constructors (task 4118 γ) ─────────────
+        "faces" | "edges" | "faces_by_normal" | "faces_by_area" | "edges_by_length"
+        | "edges_at_height" | "edges_parallel_to" => true,
+        // ── Named-leaf constructors (task 4119 δ) ───────────────────────────
+        "face" | "edge" | "solid_body" => true,
+        // ── Selector composition (recursive) ────────────────────────────────
+        // "union" and "difference" are also CSG names, so we recurse to check
+        // that at least one operand is itself a selector expr before committing.
+        // "intersect" is not a geometry function (never reached CSG path), but
+        // we still validate that its operands look like selectors for clarity.
+        "union" | "intersect" | "difference" => {
+            args.iter().any(|arg| is_selector_expr(arg, functions))
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn is_geometry_let(
     expr: &reify_ast::Expr,
     functions: &[CompiledFunction],
@@ -109,6 +155,15 @@ pub(crate) fn is_geometry_let(
                 // still flow into compile_geometry_call's sweep arm and get
                 // its strict "expects exactly 2 arguments" diagnostic.
                 && !(name == "sweep" && args.len() == 4)
+                // Task 4119 δ: disambiguate CSG `union`/`intersection`/`difference`
+                // (geometry boolean ops) from selector-composition `union`/`difference`
+                // (selector algebra combinators). When ANY operand is syntactically a
+                // selector-producing expression the call routes to the value-typing path
+                // where E_SELECTOR_KIND_MISMATCH is checked. Mirrors the sweep-arity
+                // guard above. `intersect` is never a geometry function so it never
+                // reaches this arm; the guard only fires for the three CSG names.
+                && !(matches!(name.as_str(), "union" | "intersection" | "difference")
+                    && args.iter().any(|a| is_selector_expr(a, functions)))
         }
         // No `!functions.iter().any(...)` guard needed: `known_geometry_lets` is
         // populated only from let-binding names (never function names), and an Ident
