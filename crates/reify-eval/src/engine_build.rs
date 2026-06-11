@@ -5496,6 +5496,40 @@ impl Engine {
         }
     }
 
+    /// Build-time mechanism-mass pre-derivation pass (task 4472, rung (b)).
+    ///
+    /// Iterates all entries in `values`, calls
+    /// [`crate::dynamics_ops::derive_mechanism_mass_props`] on each, and
+    /// writes back any `Some(patched)` results after the iteration loop (so
+    /// the immutable borrow from `values.iter()` is fully released before the
+    /// mutable insert). Non-mechanism cells and mechanism cells with no
+    /// geometry-backed body are silently skipped (the `None`-means-skip
+    /// post-process contract).
+    ///
+    /// Takes `kernel: &dyn GeometryKernel` (immutable — the derivation pass
+    /// only issues read-only KGQ round-trips and does not mutate the kernel);
+    /// `run_post_processes` reborrows its `&mut dyn` kernel as `&*kernel`.
+    /// Wired into `run_post_processes` AFTER the selector passes (resolves the
+    /// task-3620 ordering guard — see the comment in `run_post_processes`).
+    fn post_process_mechanism_mass_props(
+        values: &mut ValueMap,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Collect all patched (id, value) pairs first, then insert — avoids
+        // holding the immutable `values.iter()` borrow while mutating `values`.
+        let patches: Vec<(reify_core::identity::ValueCellId, reify_ir::Value)> = values
+            .iter()
+            .filter_map(|(id, v)| {
+                crate::dynamics_ops::derive_mechanism_mass_props(v, kernel, diagnostics)
+                    .map(|patched| (id.clone(), patched))
+            })
+            .collect();
+        for (id, patched) in patches {
+            values.insert(id, patched);
+        }
+    }
+
     /// Post-process value cells for a template after `execute_realization_ops`
     /// has populated `named_steps`, dispatching the whole-handle geometry
     /// queries `volume` / `area` / `centroid` / `bounding_box` on a
@@ -5635,6 +5669,16 @@ impl Engine {
             table,
             diagnostics,
         );
+        // Mechanism-mass pre-derivation pass (task 4472, rung (b)).
+        // Placed AFTER the selector passes because this pass issues a LIVE
+        // (non-deferred) kernel query per geometry-backed mechanism body. Running
+        // it before the selector passes would risk reading a body whose value a
+        // selector post-process has not yet populated. The above selector passes
+        // complete before this call, so all body values are stable.
+        // (This is the task-3620 wiring referenced by the ordering-guard comment
+        // above, limited to mechanism bodies; post_process_body_mass_props's
+        // pre-selector position and task-4538 re-evaluation note are unchanged.)
+        Engine::post_process_mechanism_mass_props(values, &*kernel, diagnostics);
     }
 
     /// Post-process value cells for a template after `execute_realization_ops`
