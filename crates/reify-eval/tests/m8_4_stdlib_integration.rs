@@ -606,7 +606,7 @@ fn io_export_smoke() {
 /// `mass = volume(geometry) * material.density`, where
 ///   - `geometry = box(100mm, 50mm, 10mm)` → analytic volume 5e-5 m³
 ///   - `material.density ≈ 7850 kg/m³` (runtime-read from the `material` StructureInstance slot)
-///   → `mass ≈ 0.3925 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
+///     → `mass ≈ 0.3925 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
 ///
 /// Requires the real-OCCT `Engine::build()` path — `post_process_geometry_queries` runs
 /// only on the build path with a registered kernel. Skips cleanly when OCCT is unavailable.
