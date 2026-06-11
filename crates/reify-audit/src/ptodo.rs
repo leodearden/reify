@@ -219,6 +219,96 @@ fn is_swept_ext(path: &str) -> bool {
         || lower.ends_with(".js")
 }
 
+// -----------------------------------------------------------------------
+// §8.3 per-file classification
+// -----------------------------------------------------------------------
+
+/// The four structural-lane finding kinds α emits (all Medium severity). The
+/// §8.3 `kind` token is carried as a stable summary prefix under the single
+/// [`Pattern::PTodo`](crate::Pattern::PTodo) variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// A TODO-family marker with no task citation at all.
+    Untracked,
+    /// A marker citing a task in a banned form (Greek / PRD-relative / legacy).
+    MalformedCite,
+    /// Prose claiming the work is tracked elsewhere, with no canonical cite.
+    PhantomTracking,
+    /// A bare `#[ignore]` attribute (no reason string).
+    BareIgnore,
+}
+
+impl Kind {
+    /// The §8.3 kind token, used as the finding summary prefix.
+    fn as_str(self) -> &'static str {
+        match self {
+            Kind::Untracked => "untracked",
+            Kind::MalformedCite => "malformed-cite",
+            Kind::PhantomTracking => "phantom-tracking",
+            Kind::BareIgnore => "bare-ignore",
+        }
+    }
+}
+
+/// §8 per-file classification: scan `content` line-by-line and return one
+/// `(line_no, kind, marker_text)` entry per offending line (1-based line
+/// numbers, `marker_text` is the trimmed line). `is_rust` gates the `.rs`-only
+/// macro and `#[ignore]` rules.
+///
+/// Precedence per line (first match wins; at most one entry per line):
+/// 1. `ptodo:allow` inline escape → the line is skipped entirely (§6.8).
+/// 2. `#[ignore]` (`.rs`): bare → `BareIgnore`; reason-bearing → no entry
+///    (deferred to γ). Checked before comment markers so a reason string is
+///    not misread as a marker.
+/// 3. comment marker (all exts): canonical `#NNNN` → no entry (tracked, β
+///    liveness-checks); malformed cite → `MalformedCite`; else `Untracked`.
+/// 4. stub macro (`.rs`): a canonical cite on this line OR the line directly
+///    above → no entry (above-line lookback); else `Untracked`.
+/// 5. phantom phrase with no canonical cite → `PhantomTracking`.
+fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
+    let mut out = Vec::new();
+    let mut prev: Option<&str> = None;
+    for (i, line) in content.lines().enumerate() {
+        let line_no = i + 1;
+
+        // (1) inline escape — opt this line out of the whole sweep.
+        if line_escaped(line) {
+            prev = Some(line);
+            continue;
+        }
+
+        let has_canon = has_canonical_cite(line);
+
+        if is_rust && let Some(form) = ignore_attr(line) {
+            // (2) #[ignore] (.rs only). Reason-bearing forms defer to γ.
+            if form == IgnoreForm::Bare {
+                out.push((line_no, Kind::BareIgnore, line.trim().to_string()));
+            }
+        } else if find_comment_marker(line).is_some() {
+            // (3) comment markers (all swept exts).
+            if has_canon {
+                // canonical cite → tracked; liveness deferred to β.
+            } else if has_malformed_cite(line) {
+                out.push((line_no, Kind::MalformedCite, line.trim().to_string()));
+            } else {
+                out.push((line_no, Kind::Untracked, line.trim().to_string()));
+            }
+        } else if is_rust && find_macro_stub(line) {
+            // (4) stub macros (.rs only) with above-line cite lookback.
+            let cited_above = prev.is_some_and(has_canonical_cite);
+            if !has_canon && !cited_above {
+                out.push((line_no, Kind::Untracked, line.trim().to_string()));
+            }
+        } else if phantom_phrase(line) && !has_canon {
+            // (5) phantom tracking — claim of tracking with no canonical cite.
+            out.push((line_no, Kind::PhantomTracking, line.trim().to_string()));
+        }
+
+        prev = Some(line);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
