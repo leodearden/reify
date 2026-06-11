@@ -1613,6 +1613,30 @@ pub(crate) fn compile_expr_guarded(
                         padded_args.extend(default_exprs);
                         return build_user_function_call_expr(name, padded_args, result_type);
                     }
+                    // NoMatch-arm secondary resolution (task 4118 γ, coercion
+                    // site #1: param-binding). A `Selector(k)` argument coerces
+                    // one-directionally to a `List<Geometry>` param (task 4117 β
+                    // `type_compatible`), but `resolve_function_overload` matches
+                    // by exact equality and rejected it. Retry with the β
+                    // coercion (mirroring `try_default_padding` above) and, on a
+                    // unique non-generic match, wrap each Selector arg in
+                    // `ResolveSelector`. See esc-4118-61.
+                    if let Some(matched_fn) =
+                        coerce::try_selector_coerced_overload(&named_candidates, &arg_types)
+                    {
+                        if let Some(msg) = deprecation_message(&matched_fn.annotations) {
+                            emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
+                        }
+                        let result_type = matched_fn.return_type.clone();
+                        let coerced_args: Vec<CompiledExpr> = compiled_args
+                            .into_iter()
+                            .zip(matched_fn.params.iter())
+                            .map(|(arg, (_, param_ty))| {
+                                coerce::coerce_selector_arg(arg, param_ty)
+                            })
+                            .collect();
+                        return build_user_function_call_expr(name, coerced_args, result_type);
+                    }
                     // User functions with this name exist, but none match — error with candidates
                     let candidate_sigs: Vec<String> = named_candidates
                         .iter()
