@@ -444,6 +444,31 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_TAG_STALE`
     /// (see `docs/prds/topology-selectors.md` task 6).
     TopologyTagStale,
+    /// Origin: `crates/reify-compiler/src/units.rs` (`selector_composition_result_type`),
+    /// called from `crates/reify-compiler/src/expr.rs` (selector-composition ladder arm).
+    /// Emitted as an `Error` when a selector composition (`union`/`intersect`/`difference`)
+    /// violates the K1 kind-closure invariant (all operands must share the same
+    /// `SelectorKind`).
+    ///
+    /// Two message variants are emitted under this code (distinguished by message text):
+    ///
+    /// 1. **Mixed-kind composition** — all operands are selectors but of different kinds
+    ///    (e.g. `Face` and `Edge`):
+    ///    `"selector composition kind mismatch: cannot compose <KindA> and <KindB>"`
+    ///    Label at the composition call site: `"mixed-kind selector composition"`.
+    ///
+    /// 2. **Non-selector operand mixed with selectors** — at least one operand is not a
+    ///    `Type::Selector` at all (e.g. `union(faces(b), box(…))`):
+    ///    `"selector composition requires all operands to be selectors; N non-selector \
+    ///     operand(s) found"`
+    ///    Label at the composition call site: `"non-selector operand in selector composition"`.
+    ///
+    /// Exactly one diagnostic is emitted per composition call site in both cases; the
+    /// result type is inferred as `Type::Selector(first_kind)` for downstream anti-cascade.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_SELECTOR_KIND_MISMATCH`
+    /// (see `docs/prds/topology-selector-value-type.md` §11.2).
+    SelectorKindMismatch,
     /// Origin: `crates/reify-eval/src/topology_attribute_resolver.rs::resolve_unique_by_attribute`.
     /// Emitted as a `Warning` when the v0.2 attribute-based selector resolver matches
     /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute

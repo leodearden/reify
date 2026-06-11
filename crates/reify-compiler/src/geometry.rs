@@ -91,6 +91,75 @@ use super::*;
 /// pre-pass (entity.rs:~531) and `register_guarded_names` (guards.rs:~183).
 /// Formerly also referenced via `is_solid_geometry_param` — that wrapper was
 /// retired in GHR-γ (task 3605).
+///
+/// Returns `true` if `expr` is syntactically a selector-producing expression:
+/// - A direct call to one of the 7 predicate/all selector constructors
+///   (`faces`, `edges`, `faces_by_normal`, `faces_by_area`, `edges_by_length`,
+///   `edges_at_height`, `edges_parallel_to`) or the Named-leaf constructors
+///   (`face`, `edge`, `solid_body`, added by task 4119 δ).
+/// - A nested selector composition (`union`/`intersect`/`difference`) whose
+///   operands are themselves selector exprs (recursive).
+///
+/// IMPORTANT: does NOT include `split`, `adjacent_faces`, or `shared_edges` —
+/// those produce `Type::List(Geometry)`, not a composable `Value::Selector`.
+/// Called by `is_geometry_let` to detect when `union`/`difference` operands
+/// are selector-valued and thus MUST NOT route to the CSG path.
+///
+/// # Known limitation — Ident operands are not recognised
+///
+/// This detector is **purely syntactic**: it only returns `true` for
+/// `ExprKind::FunctionCall` nodes.  For any other expr kind — including
+/// `ExprKind::Ident` — it returns `false`.
+///
+/// Consequence: a composition whose operands are all selector-typed *identifiers*
+/// (e.g. `let u = union(top, big)` where `top` and `big` are let-bound selector
+/// names) is NOT detected as a selector composition.  `is_geometry_let` therefore
+/// still returns `true` for it, and the call is misrouted to the CSG
+/// `compile_boolean_op` path, giving the user a confusing geometry-type error.
+///
+/// Fixing this would require threading a `known_selector_lets` accumulator
+/// through `entity.rs`'s multi-pass let registration — a change broader than
+/// this task's scope.  All task-4119-δ signals (BT1/BT2/BT3/BT8) work because
+/// at least one operand is a *direct* selector `FunctionCall`; only the
+/// all-ident-operand case is affected (task 4119 δ design decision "KNOWN
+/// LIMITATION", deferred follow-up).
+///
+/// The test `is_geometry_let_all_ident_operands_still_treated_as_csg` documents
+/// and pins this behaviour so any future fix is a visible, deliberate change.
+fn is_selector_expr(expr: &reify_ast::Expr, functions: &[CompiledFunction]) -> bool {
+    let (name, args) = match &expr.kind {
+        reify_ast::ExprKind::FunctionCall {
+            name,
+            args,
+            ..
+        } => (name.as_str(), args.as_slice()),
+        _ => return false,
+    };
+
+    // User-defined functions shadow any builtin: if a function with this name
+    // is in scope, the call is not guaranteed to produce a Selector.
+    if functions.iter().any(|f| f.name == name) {
+        return false;
+    }
+
+    match name {
+        // ── 7 predicate/all selector constructors (task 4118 γ) ─────────────
+        "faces" | "edges" | "faces_by_normal" | "faces_by_area" | "edges_by_length"
+        | "edges_at_height" | "edges_parallel_to" => true,
+        // ── Named-leaf constructors (task 4119 δ) ───────────────────────────
+        "face" | "edge" | "solid_body" => true,
+        // ── Selector composition (recursive) ────────────────────────────────
+        // "union" and "difference" are also CSG names, so we recurse to check
+        // that at least one operand is itself a selector expr before committing.
+        // "intersect" is not a geometry function (never reached CSG path), but
+        // we still validate that its operands look like selectors for clarity.
+        "union" | "intersect" | "difference" => {
+            args.iter().any(|arg| is_selector_expr(arg, functions))
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn is_geometry_let(
     expr: &reify_ast::Expr,
     functions: &[CompiledFunction],
@@ -98,17 +167,37 @@ pub(crate) fn is_geometry_let(
 ) -> bool {
     match &expr.kind {
         reify_ast::ExprKind::FunctionCall { name, args, .. } => {
+            // Disambiguate the CSG `sweep(profile, path) -> Solid` (docs §3,
+            // 2-ary geometry) from the kinematic
+            // `sweep(mechanism, joint, range, steps) -> List<Snapshot>`
+            // (docs §13.4, 4-ary eval-time builtin) by arity. The 4-arg
+            // form is not a geometry let — it routes through eval-time
+            // dispatch where the kinematic arm resolves it. Other arities
+            // still flow into compile_geometry_call's sweep arm and get
+            // its strict "expects exactly 2 arguments" diagnostic.
+            let is_kinematic_sweep = name == "sweep" && args.len() == 4;
+            // Task 4119 δ: disambiguate CSG `union`/`difference` (geometry boolean
+            // ops) from selector-composition `union`/`intersect`/`difference`
+            // (selector algebra combinators). When ANY operand is syntactically a
+            // selector-producing expression the call routes to the value-typing path
+            // where E_SELECTOR_KIND_MISMATCH is checked. Mirrors the sweep-arity
+            // guard above.
+            // NOTE: "intersect" (selector combinator) ≠ "intersection" (CSG); they
+            // are distinct names. "intersect" is never a geometry function so it
+            // cannot reach this arm — but including it in the guard keeps this list
+            // in sync with `units.rs`'s selector_composition_result_type (which
+            // handles "union"|"intersect"|"difference"). "intersection" is the CSG
+            // name and is intentionally absent: a call like `intersection(faces(b),…)`
+            // is a misuse of the CSG op, not a selector composition; routing it to
+            // is_geometry_function gives the user a geometry-type error rather than
+            // a silent Undef via the selector path.
+            let is_selector_composition =
+                matches!(name.as_str(), "union" | "intersect" | "difference")
+                    && args.iter().any(|a| is_selector_expr(a, functions));
             is_geometry_function(name)
                 && !functions.iter().any(|f| f.name == *name)
-                // Disambiguate the CSG `sweep(profile, path) -> Solid` (docs §3,
-                // 2-ary geometry) from the kinematic
-                // `sweep(mechanism, joint, range, steps) -> List<Snapshot>`
-                // (docs §13.4, 4-ary eval-time builtin) by arity. The 4-arg
-                // form is not a geometry let — it routes through eval-time
-                // dispatch where the kinematic arm resolves it. Other arities
-                // still flow into compile_geometry_call's sweep arm and get
-                // its strict "expects exactly 2 arguments" diagnostic.
-                && !(name == "sweep" && args.len() == 4)
+                && !is_kinematic_sweep
+                && !is_selector_composition
         }
         // No `!functions.iter().any(...)` guard needed: `known_geometry_lets` is
         // populated only from let-binding names (never function names), and an Ident
@@ -2784,6 +2873,153 @@ mod tests {
                  falls through"
             );
         }
+    }
+
+    // --- step-1 (task 4119 δ): is_geometry_let selector-call routing ---
+
+    /// `is_geometry_let` must return FALSE for `union`/`difference` when ANY
+    /// operand is a direct selector constructor call (`faces(b)`, `edges(b)`,
+    /// etc.), so those compositions route to the value-typing path (and later
+    /// emit `E_SELECTOR_KIND_MISMATCH` for mixed kinds) rather than the CSG
+    /// `compile_boolean_op` path.
+    ///
+    /// At the same time it must STILL return TRUE for CSG `union`/`difference`
+    /// whose operands are pure geometry (e.g. `box(…)`, `union(box(…), box(…))`).
+    ///
+    /// `intersect` is NOT a geometry function (`GEOMETRY_FUNCTION_NAMES` does
+    /// not include it) so it already routes to the value path regardless.
+    #[test]
+    fn is_geometry_let_selector_operand_excludes_union_difference() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+
+        // --- selector-operand cases (must NOT be geometry lets) ---
+
+        // union(faces(b), edges(b)) — mixed-kind but the operands are selector calls
+        let union_sel = {
+            let faces_b = make_call_with_arity("faces", 1);
+            let edges_b = make_call_with_arity("edges", 1);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "union".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![faces_b, edges_b],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            !is_geometry_let(&union_sel, &functions, &known),
+            "union(faces(b), edges(b)) must NOT be a geometry let — \
+             selector operands divert to the value-typing path"
+        );
+
+        // difference(faces(b), faces_by_normal(b, …)) — same-kind, both selector calls
+        let diff_sel = {
+            let faces_b = make_call_with_arity("faces", 1);
+            let fbn = make_call_with_arity("faces_by_normal", 3);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "difference".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![faces_b, fbn],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            !is_geometry_let(&diff_sel, &functions, &known),
+            "difference(faces(b), faces_by_normal(b,...)) must NOT be a geometry let — \
+             selector operands divert to the value-typing path"
+        );
+
+        // --- CSG cases (must STILL be geometry lets) ---
+
+        // union(box(…), box(…)) — both operands are geometry constructors
+        let union_csg = {
+            let box1 = make_call_with_arity("box", 3);
+            let box2 = make_call_with_arity("box", 3);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "union".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![box1, box2],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            is_geometry_let(&union_csg, &functions, &known),
+            "union(box(…), box(…)) must STILL be a geometry let — CSG path preserved"
+        );
+
+        // difference(box(…), cylinder(…)) — geometry operands
+        let diff_csg = {
+            let box1 = make_call_with_arity("box", 3);
+            let cyl = make_call_with_arity("cylinder", 2);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "difference".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![box1, cyl],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            is_geometry_let(&diff_csg, &functions, &known),
+            "difference(box(…), cylinder(…)) must STILL be a geometry let — CSG path preserved"
+        );
+    }
+
+    // --- step-1 (task 4119 δ): Ident operand known-limitation pin ---
+
+    /// Documents the known limitation that `is_selector_expr` is purely
+    /// syntactic and does NOT recognise `Ident` operands.  When BOTH operands
+    /// of a `union`/`difference` are Ident expressions (e.g. `union(top, big)`
+    /// where `top` and `big` are selector-typed let bindings), `is_selector_expr`
+    /// returns `false` for each and `is_geometry_let` returns `true` — the call
+    /// is mis-routed to the CSG `compile_boolean_op` path.
+    ///
+    /// This test ASSERTS the current (limited) behaviour so that any future fix
+    /// — threading `known_selector_lets` through entity.rs — is a visible,
+    /// deliberate change rather than an accidental regression of the CSG path.
+    #[test]
+    fn is_geometry_let_all_ident_operands_still_treated_as_csg() {
+        let functions: Vec<CompiledFunction> = vec![];
+        // `known_geometry_lets` does NOT contain "top" or "big" (they are not
+        // geometry lets), so the Ident arms return false for them.  The selector
+        // let names ("top", "big") are not in this set.
+        let known: HashSet<&str> = HashSet::new();
+
+        // Build: union(top, big) where both operands are Idents.
+        let top = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident("top".to_string()),
+            span: reify_core::SourceSpan::new(0, 3),
+        };
+        let big = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident("big".to_string()),
+            span: reify_core::SourceSpan::new(4, 7),
+        };
+        let union_ident = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "union".to_string(),
+                arg_names: vec![None, None],
+                args: vec![top, big],
+            },
+            span: reify_core::SourceSpan::new(0, 12),
+        };
+
+        // KNOWN LIMITATION (task 4119 δ): both operands are Idents → is_selector_expr
+        // returns false for each → is_selector_composition is false → union(top, big)
+        // is still treated as a CSG geometry let.  A future fix that threads
+        // known_selector_lets would change this assertion to `false`.
+        assert!(
+            is_geometry_let(&union_ident, &functions, &known),
+            "KNOWN LIMITATION: union(top, big) with Ident operands is mis-classified \
+             as a geometry let (CSG path) because is_selector_expr only inspects \
+             FunctionCall nodes, not Ident nodes — see is_selector_expr rustdoc"
+        );
     }
 
     // --- compile_geometry_call: Conditional emits Error (task 3395) ---

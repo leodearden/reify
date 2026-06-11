@@ -194,6 +194,19 @@ pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     // it returns a multi-output List<Geometry>, matching the topology-selector
     // eval path (try_eval_topology_selector / execute_split).
     "split",
+    // Task 4119 δ — Named-leaf constructors for the three SelectorKind variants.
+    // `face(geometry, name) -> Selector(Face)`, `edge(geometry, name) ->
+    // Selector(Edge)`, `solid_body(geometry, name) -> Selector(Body)`.
+    // These join the topology-selector family (not GEOMETRY_FUNCTION_NAMES) so
+    // they route through the value-typing path (selector_composition_result_type
+    // / topology_selector_result_type) and are excluded from CSG geometry-let
+    // routing by `is_selector_expr` in geometry.rs.
+    // NOTE: `body` is intentionally absent — it is the RBD mechanism constructor
+    // in JOINT_TYPED_FN_NAMES (→ StructureRef("Mechanism")).  `solid_body` is
+    // the PRD §11.1 alternative name, verified free across all family lists.
+    "face",
+    "edge",
+    "solid_body",
 ];
 
 pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
@@ -258,6 +271,13 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         // result type as the edge/face selectors; eval dispatch via
         // TopologySelectorHelper::Split in try_eval_topology_selector.
         "split" => Type::List(Box::new(Type::Geometry)),
+        // Task 4119 δ — Named-leaf constructors (PRD §11.1).
+        // `face(geometry, name)` / `edge(geometry, name)` / `solid_body(geometry, name)`
+        // each return the per-kind Selector type.  `body` is NOT listed here —
+        // it remains the RBD mechanism constructor (StructureRef("Mechanism")).
+        "face" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "edge" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "solid_body" => Type::Selector(reify_core::ty::SelectorKind::Body),
         "center_of_mass" => Type::point3(Type::length()),
         "moment_of_inertia" => Type::tensor(
             2,
@@ -268,6 +288,130 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         ),
         _ => return None,
     })
+}
+
+/// Classify `union`/`intersect`/`difference` calls whose operands are
+/// `Type::Selector(kind)` — the selector-composition algebra (task 4119 δ).
+///
+/// Enforces the **K1 kind-closure invariant** at compile time: all operands must
+/// carry the SAME `reify_core::ty::SelectorKind`.  On mismatch emits exactly one
+/// [`DiagnosticCode::SelectorKindMismatch`] (`E_SELECTOR_KIND_MISMATCH`) diagnostic
+/// naming both kinds (using `SelectorKind`'s `Display` impl, e.g. `"FaceSelector"`
+/// and `"EdgeSelector"`); returns `Some(Type::Selector(first_kind))` as the
+/// anti-cascade result so downstream type-checks receive a valid selector type and
+/// do not cascade.
+///
+/// Returns `None` for:
+/// - any name other than `union`, `intersect`, or `difference` (caller falls through)
+/// - calls whose selector-type operands are ALL non-`Selector` types (the CSG
+///   `union(box, box)` / `difference(box, box)` cases — caller falls through to
+///   `is_geometry_function`)
+///
+/// **Arity** — `difference` is strictly binary (exactly 2 operands); passing the
+/// wrong arity emits an `E_SELECTOR_KIND_MISMATCH` error at compile time.
+/// `union` and `intersect` are variadic (≥ 2 operands); the ≥-2 floor is enforced
+/// at eval time by the `args.len() < 2` gate in `try_eval_topology_selector` (the
+/// compile-time path cannot see a sub-2-arity call that passes kind-checking, so
+/// no compile-time guard is needed for them).
+///
+/// Inserted as a ladder arm **before** `is_geometry_function` in
+/// `crates/reify-compiler/src/expr.rs` so that selector compositions are given their
+/// correct `Type::Selector(k)` result type before the function-name-based fallback
+/// assigns `Type::dimensionless_scalar()`.
+pub(crate) fn selector_composition_result_type(
+    name: &str,
+    compiled_args: &[CompiledExpr],
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    if !matches!(name, "union" | "intersect" | "difference") {
+        return None;
+    }
+
+    // Collect the `reify_core::ty::SelectorKind` from every selector-typed arg.
+    // If no arg is a Selector type, this is a CSG call — return None so the caller
+    // falls through to `is_geometry_function`.
+    let selector_kinds: Vec<reify_core::ty::SelectorKind> = compiled_args
+        .iter()
+        .filter_map(|arg| match &arg.result_type {
+            Type::Selector(k) => Some(*k),
+            _ => None,
+        })
+        .collect();
+
+    if selector_kinds.is_empty() {
+        return None;
+    }
+
+    let first_kind = selector_kinds[0];
+
+    // Arity gate for `difference`: it is strictly binary (exactly 2 operands).
+    // Emitting here (before the kind check) ensures the user sees an actionable
+    // error rather than a silent Undef at eval when the arity gate in
+    // `try_eval_topology_selector` returns None.  `union`/`intersect` are variadic
+    // (≥ 2) — their sub-2 floor is eval-gated and documented in the rustdoc above.
+    if name == "difference" && compiled_args.len() != 2 {
+        let n = compiled_args.len();
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "selector `difference` requires exactly 2 operands, got {n}"
+            ))
+            .with_code(DiagnosticCode::SelectorKindMismatch)
+            .with_label(DiagnosticLabel::new(
+                call_span,
+                format!("expected 2 operands, got {n}"),
+            )),
+        );
+        return Some(Type::Selector(first_kind)); // anti-cascade
+    }
+
+    // Reject non-Selector operands mixed with Selector operands.  A call like
+    // `union(faces(b), box(…))` routes here (because faces(b) is_selector_expr),
+    // but `box(…)` has a non-Selector type — that is always a user error.  Without
+    // this check the function would return Some(Selector(Face)) from the K1 path
+    // below, compile silently, and only fail at eval when reconstruct_selector_value
+    // returns None and the cell is left at Undef.  Emit E_SELECTOR_KIND_MISMATCH at
+    // compile time instead.
+    let non_selector_count = compiled_args
+        .iter()
+        .filter(|arg| !matches!(&arg.result_type, Type::Selector(_)))
+        .count();
+    if non_selector_count > 0 {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "selector composition requires all operands to be selectors; \
+                 {non_selector_count} non-selector operand(s) found",
+            ))
+            .with_code(DiagnosticCode::SelectorKindMismatch)
+            .with_label(DiagnosticLabel::new(
+                call_span,
+                "non-selector operand in selector composition",
+            )),
+        );
+        return Some(Type::Selector(first_kind)); // anti-cascade
+    }
+
+    // Check K1: all selector operands must share the same kind.
+    if let Some(&mismatch_kind) = selector_kinds.iter().find(|&&k| k != first_kind) {
+        // Emit exactly ONE E_SELECTOR_KIND_MISMATCH naming both kinds.
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "selector composition kind mismatch: cannot compose {} and {}",
+                first_kind, mismatch_kind,
+            ))
+            .with_code(DiagnosticCode::SelectorKindMismatch)
+            .with_label(DiagnosticLabel::new(
+                call_span,
+                "mixed-kind selector composition",
+            )),
+        );
+        // Anti-cascade: return first_kind's type so downstream checks receive a valid
+        // (if wrong-kind) selector type and do not cascade.
+        return Some(Type::Selector(first_kind));
+    }
+
+    // All selector operands have the same kind — valid K1 composition.
+    Some(Type::Selector(first_kind))
 }
 
 /// The complete set of AffineMap **constructor** free-function names recognised
@@ -2838,6 +2982,54 @@ mod tests {
     #[test]
     fn split_is_not_a_geometry_kinematic_query() {
         assert!(!is_geometry_kinematic_query("split"));
+    }
+
+    // --- Named-leaf constructors (task 4119 δ, step-8 GREEN) -----------------
+    //
+    // `face(geometry, name) -> Selector(Face)`, `edge(geometry, name) ->
+    // Selector(Edge)`, `solid_body(geometry, name) -> Selector(Body)` join the
+    // topology-selector family.  `body` is intentionally absent (RBD ctor).
+
+    #[test]
+    fn is_geometry_topology_selector_recognises_face_edge_solid_body() {
+        assert!(is_geometry_topology_selector("face"));
+        assert!(is_geometry_topology_selector("edge"));
+        assert!(is_geometry_topology_selector("solid_body"));
+    }
+
+    #[test]
+    fn topology_selector_result_type_named_ctors() {
+        assert_eq!(
+            topology_selector_result_type("face"),
+            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Face))
+        );
+        assert_eq!(
+            topology_selector_result_type("edge"),
+            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge))
+        );
+        assert_eq!(
+            topology_selector_result_type("solid_body"),
+            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Body))
+        );
+    }
+
+    /// Guard: `body` must NOT be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+    /// `body` is the RBD mechanism constructor (JOINT_TYPED_FN_NAMES →
+    /// StructureRef("Mechanism")); `solid_body` is the Named-leaf BodySelector
+    /// ctor (PRD §11.1).  This test catches any accidental future collision.
+    #[test]
+    fn body_is_not_a_topology_selector_solid_body_is_the_named_ctor() {
+        assert!(
+            !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&"body"),
+            "`body` must NOT be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES — it is the \
+             RBD mechanism constructor (JOINT_TYPED_FN_NAMES); use `solid_body` \
+             for the Named-leaf BodySelector ctor (PRD §11.1)"
+        );
+        assert!(
+            is_geometry_topology_selector("solid_body"),
+            "`solid_body` must be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES (the Named-leaf \
+             BodySelector ctor, PRD §11.1)"
+        );
     }
 
     /// Disjointness regression-lock for the §13 joint-constructor family
