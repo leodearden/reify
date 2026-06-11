@@ -253,4 +253,66 @@ mod tests {
         // A bare canonical cite.
         assert!(!has_malformed_cite("resolved in #4553"));
     }
+
+    // -------------------------------------------------------------------
+    // §8.3 phantom-tracking phrases (case-insensitive)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn phantom_phrase_positives() {
+        // All four normative phrases.
+        assert!(phantom_phrase("this is tracked separately"));
+        assert!(phantom_phrase("// tracked as a follow-up task"));
+        assert!(phantom_phrase("tracked in project memory for later"));
+        assert!(phantom_phrase("a follow-up task will handle this"));
+        // Mixed-case variant — matching is case-insensitive.
+        assert!(phantom_phrase("// Tracked As A Follow-Up task"));
+    }
+
+    #[test]
+    fn phantom_phrase_negative() {
+        // Ordinary prose that mentions tracking but not a phantom phrase.
+        assert!(!phantom_phrase("// the tracker walks the working tree"));
+    }
+
+    // -------------------------------------------------------------------
+    // §6.8 inline escape — `ptodo:allow`
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn line_escaped_detects_marker() {
+        assert!(line_escaped("// TODO: leave me  // ptodo:allow"));
+        assert!(!line_escaped("// TODO: flag me"));
+    }
+
+    // -------------------------------------------------------------------
+    // §6.8 allowlist prefixes
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn allowlist_membership() {
+        // The detector's own crate (pattern strings + committed fixtures).
+        assert!(is_allowlisted("crates/reify-audit/src/p2_consumer_stub.rs"));
+        // The #[ignore]-extraction tool and its tests.
+        assert!(is_allowlisted("crates/reify-test-support/src/ignore_hygiene.rs"));
+        assert!(is_allowlisted(
+            "crates/reify-test-support/tests/ignore_reason_hygiene.rs"
+        ));
+        // An ordinary crate source path is NOT allowlisted.
+        assert!(!is_allowlisted("crates/reify-ast/src/decl.rs"));
+    }
+
+    // -------------------------------------------------------------------
+    // §6.8 swept extensions
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn swept_extension_membership() {
+        for p in ["a.rs", "b.ri", "c.sh", "d.py", "e.ts", "f.tsx", "g.js"] {
+            assert!(is_swept_ext(p), "{p} should be a swept extension");
+        }
+        for p in ["a.md", "b.toml", "c.yaml", "d.json"] {
+            assert!(!is_swept_ext(p), "{p} should NOT be a swept extension");
+        }
+    }
 }
