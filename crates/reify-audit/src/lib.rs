@@ -131,11 +131,22 @@ pub enum Pattern {
     /// See task 4140 / esc-4137-196 and
     /// `docs/architecture-audit/f-infra-design.md` §5 P5.
     P5LivePathStranded,
-    /// PTODO — TODO-tracking-invariant (structural lane, task α): a TODO-family
-    /// marker not backed by a canonical `#NNNN` task citation. The §8.3 finding
-    /// `kind` (untracked / malformed-cite / phantom-tracking / bare-ignore) is
-    /// carried as a stable summary prefix rather than a per-kind variant.
-    /// See `docs/prds/reify-audit-ptodo-detector.md` §8.
+    /// PTODO — TODO-tracking-invariant: a TODO-family marker that is not backed
+    /// by a *live* canonical `#NNNN` task citation. The §8.3 finding `kind` is
+    /// carried as a stable summary prefix rather than a per-kind variant. Two
+    /// lanes emit under this one variant, all Medium severity:
+    /// - **Structural lane (task α)** — a marker with no canonical cite at all:
+    ///   `untracked` / `malformed-cite` / `phantom-tracking` / `bare-ignore`.
+    /// - **Liveness lane (task β)** — a canonical cite resolved against
+    ///   `.taskmaster/tasks/tasks.db`: `orphaned` (cited status is terminal —
+    ///   done / cancelled — summary carries the id + status) or `unknown-id`
+    ///   (the cite parses but the id is absent from the DB).
+    ///
+    /// The liveness lane degrades fail-soft (§6.7): when the task DB is missing
+    /// or unreadable it is skipped with a single stderr breadcrumb and the
+    /// structural lane still runs in full (the exit class is unchanged).
+    /// See `docs/prds/reify-audit-ptodo-detector.md` §8 (grammar) / §6.7
+    /// (degradation).
     PTodo,
 }
 

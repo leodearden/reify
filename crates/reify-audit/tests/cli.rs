@@ -14,6 +14,8 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use std::time::Duration;
 
+mod common;
+
 // -----------------------------------------------------------------------
 // Fixture helpers
 // -----------------------------------------------------------------------
@@ -1479,6 +1481,262 @@ mod cli {
             none_mentions("scenario10_allowlisted.rs"),
             "allowlisted nested file (crates/reify-audit/ prefix) must yield no finding; findings:\n{:#}",
             serde_json::Value::Array(findings.clone())
+        );
+    }
+
+    /// §6.7 PTODO liveness degradation (end-to-end): `--pattern PTODO` over a
+    /// repo with a cited marker and an untracked marker but NO
+    /// `.taskmaster/tasks/tasks.db` must (1) emit the EXACT §6.7 breadcrumb on
+    /// stderr, (2) still surface the untracked structural finding in the JSON,
+    /// and (3) exit 0 — never 125 (125 is reserved for arg/IO misconfig, not an
+    /// absent optional substrate). `.taskmaster/` is untracked, so this absent-DB
+    /// path is the common case during worktree verify.
+    ///
+    /// RED until step-12 emits the breadcrumb; the structural finding and exit 0
+    /// already hold under step-10's silent skip, so the breadcrumb assertions
+    /// are the only failing ones.
+    #[test]
+    fn ptodo_degrades_fail_soft_when_tasks_db_absent() {
+        // Repo holds ONLY the two markers (so ls-files is exactly that set);
+        // the tasks-file/runs-db live in a separate aux dir, never tracked. No
+        // .taskmaster/tasks/tasks.db is created anywhere → the liveness lane
+        // degrades fail-soft.
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        std::fs::write(repo.path().join("cited.rs"), "// TODO(#4444): orphan-or-not\n")
+            .expect("write cited.rs");
+        std::fs::write(repo.path().join("untracked.rs"), "// TODO: wire this\n")
+            .expect("write untracked.rs");
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "PTODO",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern PTODO with no tasks.db");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        // (3) Fail-soft: all findings Medium → exit 0, never 125.
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "DB-absent degradation must exit 0, never 125; got {:?}\nstderr:\n{stderr}",
+            out.status.code()
+        );
+
+        // (1) The EXACT §6.7 breadcrumb. The path between the anchors is the
+        // resolved <repo>/.taskmaster/tasks/tasks.db, asserted via its stable
+        // tail rather than pinned literally (tempdir prefix varies).
+        assert!(
+            stderr.contains("reify-audit: tasks.db unreachable at '"),
+            "missing breadcrumb prefix; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("' — PTODO liveness degraded; structural checks still run"),
+            "missing breadcrumb suffix; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(".taskmaster/tasks/tasks.db"),
+            "breadcrumb must name the resolved tasks.db path; stderr:\n{stderr}"
+        );
+
+        // (2) The structural lane is unaffected: the untracked finding still
+        // parses out of the same stderr stream (the breadcrumb is a leading
+        // diagnostic line that parse_findings_from_stderr skips).
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.iter().any(|f| {
+                f["task_id"].as_str() == Some("untracked.rs")
+                    && f["summary"].as_str().is_some_and(|s| s.starts_with("untracked:"))
+            }),
+            "untracked structural finding must survive degradation; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        // The cited marker yields no finding (β skipped, α suppresses cited lines).
+        assert!(
+            !findings.iter().any(|f| f["task_id"].as_str() == Some("cited.rs")),
+            "cited file must yield no finding when the DB is absent; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+    }
+
+    /// §8.3 orphaned end-to-end: `--pattern PTODO` over a repo with a cited
+    /// marker (#4444) and an untracked marker, resolved against an UNTRACKED
+    /// `<repo>/.taskmaster/tasks/tasks.db` (seeded AFTER the git commit, so it
+    /// mirrors the untracked-in-worktree reality) whose task 4444 = `done`. The
+    /// JSON must carry an `orphaned` finding for the cited file (summary names
+    /// `#4444` + `done`) alongside the untracked structural finding, exit 0, and
+    /// emit no degradation breadcrumb (the DB is present and readable).
+    #[test]
+    fn ptodo_orphaned_cite_resolved_against_default_tasks_db() {
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        std::fs::write(
+            repo.path().join("cited.rs"),
+            "// TODO(#4444): wire the orphaned-cite path\n",
+        )
+        .expect("write cited.rs");
+        std::fs::write(repo.path().join("untracked.rs"), "// TODO: wire this\n")
+            .expect("write untracked.rs");
+        git_init_commit_all(repo.path());
+
+        // Seed the DB at the DEFAULT path AFTER the commit → untracked, as in a
+        // real worktree. Task 4444 is terminal (done) → the cite is orphaned.
+        crate::common::schema::seed_tasks_db_at(
+            &repo.path().join(".taskmaster/tasks/tasks.db"),
+            &[("master", 4444, "done")],
+        );
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "PTODO",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern PTODO with seeded default tasks.db");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "orphaned finding is Medium → exit 0; got {:?}\nstderr:\n{stderr}",
+            out.status.code()
+        );
+
+        let findings = parse_findings_from_stderr(&stderr);
+
+        // The orphaned cite: a PTodo/Medium finding at cited.rs whose summary
+        // names the id and the terminal status.
+        let orphaned = findings
+            .iter()
+            .find(|f| f["task_id"].as_str() == Some("cited.rs"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected orphaned finding for cited.rs; findings:\n{:#}",
+                    serde_json::Value::Array(findings.clone())
+                )
+            });
+        assert_eq!(orphaned["pattern"].as_str(), Some("PTodo"));
+        assert_eq!(orphaned["severity"].as_str(), Some("Medium"));
+        let summary = orphaned["summary"].as_str().unwrap_or("");
+        assert!(summary.starts_with("orphaned:"), "summary: {summary}");
+        assert!(summary.contains("#4444"), "summary must name the id: {summary}");
+        assert!(summary.contains("done"), "summary must name the status: {summary}");
+
+        // The structural untracked finding coexists.
+        assert!(
+            findings.iter().any(|f| {
+                f["task_id"].as_str() == Some("untracked.rs")
+                    && f["summary"].as_str().is_some_and(|s| s.starts_with("untracked:"))
+            }),
+            "untracked structural finding must coexist; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        // DB present and readable → no degradation breadcrumb.
+        assert!(
+            !stderr.contains("PTODO liveness degraded"),
+            "no degradation breadcrumb when the DB is present; stderr:\n{stderr}"
+        );
+    }
+
+    /// §6.7 env override: with NO default-path DB but `REIFY_PTODO_TASKS_DB`
+    /// (set via `Command::env` — never in-process `set_var`, which is unsafe
+    /// under edition 2024) pointing at an aux-dir DB whose task 4444 = `done`,
+    /// the orphaned finding still appears — proving the override is honored over
+    /// the (absent) default path, with no degradation breadcrumb.
+    #[test]
+    fn ptodo_env_override_redirects_tasks_db() {
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        std::fs::write(
+            repo.path().join("cited.rs"),
+            "// TODO(#4444): wire the orphaned-cite path\n",
+        )
+        .expect("write cited.rs");
+        git_init_commit_all(repo.path());
+
+        // The default path <repo>/.taskmaster/tasks/tasks.db is intentionally
+        // ABSENT; the override DB lives in the aux dir instead.
+        let override_db = aux.path().join("override-tasks.db");
+        crate::common::schema::seed_tasks_db_at(&override_db, &[("master", 4444, "done")]);
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .env("REIFY_PTODO_TASKS_DB", &override_db)
+            .args([
+                "--pattern",
+                "PTODO",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit with REIFY_PTODO_TASKS_DB override");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "exit 0; stderr:\n{stderr}"
+        );
+
+        let findings = parse_findings_from_stderr(&stderr);
+        let orphaned = findings
+            .iter()
+            .find(|f| f["task_id"].as_str() == Some("cited.rs"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "env override must resolve the cite → orphaned finding; findings:\n{:#}",
+                    serde_json::Value::Array(findings.clone())
+                )
+            });
+        let summary = orphaned["summary"].as_str().unwrap_or("");
+        assert!(summary.starts_with("orphaned:"), "summary: {summary}");
+        assert!(summary.contains("#4444"), "summary: {summary}");
+        assert!(summary.contains("done"), "summary: {summary}");
+
+        // The override DB is present → the default path's absence does NOT
+        // degrade the lane.
+        assert!(
+            !stderr.contains("PTODO liveness degraded"),
+            "override DB is present → no degradation; stderr:\n{stderr}"
         );
     }
 }

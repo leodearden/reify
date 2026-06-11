@@ -1,15 +1,32 @@
-//! PTODO — TODO-tracking-invariant detector (structural lane, task α).
+//! PTODO — TODO-tracking-invariant detector (structural lane α + liveness lane β).
 //!
-//! Scans the working tree for TODO-family markers that are not backed by a
-//! canonical `#NNNN` task citation, emitting Medium-severity findings. The
-//! grammar lives in pure `&str -> result` functions (mirroring P2's
-//! `line_matches_stub`/`scan_file_added_lines` split, no `regex` dependency
-//! per design §12); only file enumeration (`GitOps::ls_files`) and content
-//! reads (`std::fs::read_to_string`) touch IO, inside [`check`].
+//! Scans the working tree for TODO-family markers and classifies each through
+//! two lanes, all emitting Medium-severity findings:
 //!
-//! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar).
+//! - **Structural lane (α)** — markers not backed by a canonical `#NNNN` task
+//!   citation: `untracked` / `malformed-cite` / `phantom-tracking` /
+//!   `bare-ignore`. The grammar lives in pure `&str -> result` functions
+//!   (mirroring P2's `line_matches_stub`/`scan_file_added_lines` split, no
+//!   `regex` dependency per design §12).
+//! - **Liveness lane (β)** — every canonical `#NNNN` cite the structural lane
+//!   treats as "tracked" is resolved against `.taskmaster/tasks/tasks.db`
+//!   (opened read-only): a cite whose status is terminal (done / cancelled) →
+//!   `orphaned`; a cite absent from the DB → `unknown-id`. Per §8.2 one live
+//!   cite suffices to track a marker. The lane degrades fail-soft (§6.7): a
+//!   missing/unreadable DB is skipped with a single stderr breadcrumb while the
+//!   structural lane still runs in full.
+//!
+//! A single precedence-correct `scan_file` pass feeds both lanes so they
+//! never drift. Only file enumeration (`GitOps::ls_files`), content reads
+//! (`std::fs::read_to_string`), and the read-only task-DB open touch IO, inside
+//! [`check`].
+//!
+//! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
+//! §6.7 (liveness degradation contract).
 
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use rusqlite::OptionalExtension;
+use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------
 // §8.1 marker recognition (pure, hand-rolled — no `regex` dep per design §12)
@@ -60,7 +77,7 @@ fn find_comment_marker(line: &str) -> Option<&'static str> {
 }
 
 /// §8.1 Rust stub macros: `todo!(` / `unimplemented!(`. Pure substring scan;
-/// the `.rs`-only gating lives in [`classify_file`]. A line whose trimmed start
+/// the `.rs`-only gating lives in [`scan_file`]. A line whose trimmed start
 /// is a `//` comment (`//`, `///`, `//!`) is prose, not a real stub — a
 /// commented-out or doc-comment mention (`// todo!() example`) does not fire
 /// (mirrors the doc-comment skip in [`ignore_attr`]).
@@ -80,7 +97,7 @@ enum IgnoreForm {
     WithReason,
 }
 
-/// §8.1 ignore attributes (`.rs` only — gating in [`classify_file`]): a trimmed
+/// §8.1 ignore attributes (`.rs` only — gating in [`scan_file`]): a trimmed
 /// line that starts with `#[ignore`. `///`/`//!` doc-comment prose mentioning
 /// the attribute does not fire. `]` immediately after → `Bare`; `=` →
 /// `WithReason`.
@@ -105,7 +122,10 @@ fn ignore_attr(line: &str) -> Option<IgnoreForm> {
 
 /// §8.2 canonical citation: a `#` immediately followed by a run of 1..=5 ASCII
 /// digits whose run length is ≤5 (the char after the run is not a digit, so a
-/// 6-digit number is not matched on its 5-digit prefix).
+/// 6-digit number is not matched on its 5-digit prefix) AND whose value is ≥1.
+/// An all-zero run (`#0`, `#00`) is rejected — task ids start at 1, so a `#0`
+/// cite is not canonical and falls through to the structural `untracked`
+/// classification (mirrors the ≥1 guard in [`extract_cites`]).
 fn has_canonical_cite(line: &str) -> bool {
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -116,13 +136,53 @@ fn has_canonical_cite(line: &str) -> bool {
                 j += 1;
             }
             let run = j - (i + 1);
-            if (1..=5).contains(&run) {
+            // ≥1 guard: the run must carry a non-zero digit (`#0`/`#00` → 0 → not
+            // a valid task id). `#007` (= 7) is still canonical.
+            if (1..=5).contains(&run) && bytes[i + 1..j].iter().any(|&b| b != b'0') {
                 return true;
             }
         }
         i += 1;
     }
     false
+}
+
+/// §8.2 cite extraction (β liveness lane): every canonical `#NNNN` id on the
+/// line, in source order. Mirrors [`has_canonical_cite`]'s `#`+digit-run scan
+/// but parses each 1..=5-digit run to `u32` (runs of length 0 or >5 are
+/// skipped, so `#abc`, a bare `#`, and a 6-digit `#123456` yield nothing —
+/// consistent with the canonical-cite recogniser). The id-0 case (`#0`, `#00`)
+/// is also skipped — task ids start at 1, so a `#0` cite is not a valid id and
+/// is dropped here (keeping it lock-step with [`has_canonical_cite`]'s ≥1 guard,
+/// so `#0` classifies structurally as `untracked` rather than spuriously
+/// `unknown-id`).
+fn extract_cites(line: &str) -> Vec<u32> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'#' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            let run = j - (i + 1);
+            if (1..=5).contains(&run) {
+                // `line[i + 1..j]` is a 1..=5-digit ASCII run; it always fits
+                // in u32 (max 99999), so the parse cannot fail. Skip id 0 (`#0`,
+                // `#00`) — task ids start at 1, so it is not a valid cite.
+                if let Ok(id) = line[i + 1..j].parse::<u32>()
+                    && id >= 1
+                {
+                    out.push(id);
+                }
+                i = j; // skip past the consumed digit run
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 /// `true` when `c` is a Greek-block letter (U+0370..=U+03FF) — the banned
@@ -190,7 +250,7 @@ const PHANTOM_PHRASES: &[&str] = &[
 
 /// §8.3 phantom-tracking detection: `true` when the line contains any of the
 /// [`PHANTOM_PHRASES`] (case-insensitive). The no-canonical-cite precondition
-/// is applied by the caller ([`classify_file`]).
+/// is applied by the caller ([`scan_file`]).
 fn phantom_phrase(line: &str) -> bool {
     let lower = line.to_lowercase();
     PHANTOM_PHRASES.iter().any(|p| lower.contains(p))
@@ -268,22 +328,40 @@ impl Kind {
     }
 }
 
-/// §8 per-file classification: scan `content` line-by-line and return one
-/// `(line_no, kind, marker_text)` entry per offending line (1-based line
+/// The unified per-line classification produced by [`scan_file`]. A given line
+/// is either *structurally* offending (no canonical cite → α's domain) or
+/// *cited* (a canonical `#NNNN` marker → β's liveness domain). At most one
+/// variant per line; lines matching neither produce no entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LineClass {
+    /// A structural finding kind (α) — constructed by [`scan_file`].
+    Structural(Kind),
+    /// A tracked marker carrying one or more canonical `#NNNN` cites (β) — the
+    /// liveness lane resolves these ids against the task DB.
+    Cited(Vec<u32>),
+}
+
+/// §8 per-file scan: walk `content` line-by-line and return one `(line_no,
+/// class, marker_text)` entry per offending OR tracked line (1-based line
 /// numbers, `marker_text` is the trimmed line). `is_rust` gates the `.rs`-only
-/// macro and `#[ignore]` rules.
+/// macro and `#[ignore]` rules. This is the single precedence-correct pass
+/// shared by the structural lane and the liveness lane (both driven from
+/// [`check`]) so the two never drift.
 ///
 /// Precedence per line (first match wins; at most one entry per line):
 /// 1. `ptodo:allow` inline escape → the line is skipped entirely (§6.8).
-/// 2. `#[ignore]` (`.rs`): bare → `BareIgnore`; reason-bearing → no entry
-///    (deferred to γ). Checked before comment markers so a reason string is
+/// 2. `#[ignore]` (`.rs`): bare → `Structural(BareIgnore)`; reason-bearing → no
+///    entry (deferred to γ — intentionally NOT cite-checked, so its `#N` reason
+///    ids never reach β). Checked before comment markers so a reason string is
 ///    not misread as a marker.
-/// 3. comment marker (all exts): canonical `#NNNN` → no entry (tracked, β
-///    liveness-checks); malformed cite → `MalformedCite`; else `Untracked`.
+/// 3. comment marker (all exts): canonical `#NNNN` → `Cited(on-line cites)`
+///    (tracked → β liveness-checks); malformed cite → `Structural(MalformedCite)`;
+///    else `Structural(Untracked)`.
 /// 4. stub macro (`.rs`): a canonical cite on this line OR the line directly
-///    above → no entry (above-line lookback); else `Untracked`.
-/// 5. phantom phrase with no canonical cite → `PhantomTracking`.
-fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
+///    above → `Cited(this-line ∪ above-line cites)` (above-line lookback for the
+///    `// #NNNN` \ `todo!()` convention); else `Structural(Untracked)`.
+/// 5. phantom phrase with no canonical cite → `Structural(PhantomTracking)`.
+fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
     let mut out = Vec::new();
     let mut prev: Option<&str> = None;
     for (i, line) in content.lines().enumerate() {
@@ -298,28 +376,40 @@ fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
         let has_canon = has_canonical_cite(line);
 
         if is_rust && let Some(form) = ignore_attr(line) {
-            // (2) #[ignore] (.rs only). Reason-bearing forms defer to γ.
+            // (2) #[ignore] (.rs only). Reason-bearing forms defer to γ and are
+            // NOT cite-checked (their #N reason ids are γ's job, not β's).
             if form == IgnoreForm::Bare {
-                out.push((line_no, Kind::BareIgnore, line.trim().to_string()));
+                out.push((line_no, LineClass::Structural(Kind::BareIgnore), line.trim().to_string()));
             }
         } else if find_comment_marker(line).is_some() {
             // (3) comment markers (all swept exts).
             if has_canon {
-                // canonical cite → tracked; liveness deferred to β.
+                // canonical cite → tracked; β resolves the on-line cites. No
+                // above-line lookback here (that is a stub-macro convention),
+                // so an unrelated cite on the prior line cannot mask this one.
+                out.push((line_no, LineClass::Cited(extract_cites(line)), line.trim().to_string()));
             } else if has_malformed_cite(line) {
-                out.push((line_no, Kind::MalformedCite, line.trim().to_string()));
+                out.push((line_no, LineClass::Structural(Kind::MalformedCite), line.trim().to_string()));
             } else {
-                out.push((line_no, Kind::Untracked, line.trim().to_string()));
+                out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
         } else if is_rust && find_macro_stub(line) {
             // (4) stub macros (.rs only) with above-line cite lookback.
             let cited_above = prev.is_some_and(has_canonical_cite);
-            if !has_canon && !cited_above {
-                out.push((line_no, Kind::Untracked, line.trim().to_string()));
+            if has_canon || cited_above {
+                // tracked via on-line or above-line cite → β resolves the union.
+                let mut ids = extract_cites(line);
+                if let Some(p) = prev {
+                    ids.extend(extract_cites(p));
+                }
+                dedup_in_place(&mut ids);
+                out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
+            } else {
+                out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
         } else if phantom_phrase(line) && !has_canon {
             // (5) phantom tracking — claim of tracking with no canonical cite.
-            out.push((line_no, Kind::PhantomTracking, line.trim().to_string()));
+            out.push((line_no, LineClass::Structural(Kind::PhantomTracking), line.trim().to_string()));
         }
 
         prev = Some(line);
@@ -327,59 +417,253 @@ fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
     out
 }
 
+/// Order-preserving in-place dedup of cite ids. Cite lists are tiny (1–2
+/// elements), so the O(n²) membership scan is cheaper than a `HashSet`.
+fn dedup_in_place(ids: &mut Vec<u32>) {
+    let mut seen: Vec<u32> = Vec::new();
+    ids.retain(|id| {
+        if seen.contains(id) {
+            false
+        } else {
+            seen.push(*id);
+            true
+        }
+    });
+}
+
+// -----------------------------------------------------------------------
+// §6.7 liveness lane — task-DB path resolution
+// -----------------------------------------------------------------------
+
+/// §6.7 task-DB path resolution: the `REIFY_PTODO_TASKS_DB` env override (used
+/// verbatim when set and non-empty), else `<project_root>/.taskmaster/tasks/
+/// tasks.db`. `std::env::var_os` is a *read*, which is safe under edition 2024
+/// (unlike `set_var`); tests exercise the override only via subprocess env.
+fn tasks_db_path(project_root: &Path) -> PathBuf {
+    if let Some(v) = std::env::var_os("REIFY_PTODO_TASKS_DB")
+        && !v.is_empty()
+    {
+        return PathBuf::from(v);
+    }
+    project_root.join(".taskmaster/tasks/tasks.db")
+}
+
+/// §6.7 read-only open of the task DB. `SQLITE_OPEN_READ_ONLY` never creates
+/// the file and errors when it is absent (the degradation trigger), and dodges
+/// the URI `file:…?mode=ro` path-escaping fragility on tempdir paths. An
+/// existing-but-unreadable DB surfaces later as a prepare error in
+/// [`resolve_liveness`], which also degrades.
+fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
+    rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+}
+
+/// §8.4 terminal statuses: a cite resolving to one of these is "dead" and
+/// orphans its marker. Every other present status (pending / in-progress /
+/// blocked / deferred) is live (η later flips orphaned to High; β keeps all
+/// liveness kinds Medium).
+fn is_terminal_status(status: &str) -> bool {
+    status == "done" || status == "cancelled"
+}
+
+/// §8.2/§8.3 liveness resolution: per cited marker, resolve each `#NNNN` id's
+/// status against the task DB and classify.
+///
+/// §8.2 multi-cite rule — "one live cite suffices for tracking": if ANY cite
+/// resolves to a present non-terminal status the marker is tracked and emits
+/// nothing. Otherwise every dead cite is explained — a present terminal cite
+/// (done / cancelled) → one `orphaned` finding (summary carries `#id` +
+/// status); an absent cite → one `unknown-id` finding. All findings are
+/// [`Pattern::PTodo`] / [`Severity::Medium`] (§8.4) with `task_id = path` and a
+/// single [`EvidenceRef::File`] ref.
+///
+/// A statement-prepare error (missing `tasks` table / corrupt DB) is propagated
+/// as `Err` so [`check`] degrades fail-soft (§6.7) instead of panicking.
+// G-allow: test-facing thin wrapper over `resolve_liveness_keyed`. MUST stay `pub` (not `pub(crate)`/`#[cfg(test)]`): its sole caller is the tests/ptodo.rs integration test — a SEPARATE crate that cannot see crate-private or cfg(test)-gated items — while production `check` calls the keyed variant directly.
+pub fn resolve_liveness(
+    conn: &rusqlite::Connection,
+    cited: &[(String, usize, Vec<u32>, String)],
+) -> rusqlite::Result<Vec<Finding>> {
+    Ok(resolve_liveness_keyed(conn, cited)?
+        .into_iter()
+        .map(|(_path, _line, finding)| finding)
+        .collect())
+}
+
+/// Internal variant of [`resolve_liveness`] that tags each finding with its
+/// `(path, line)` sort key, so [`check`] can merge the liveness findings with
+/// the structural ones into a single deterministic `(path, line)`-ordered
+/// stream. [`resolve_liveness`] is the thin public wrapper that drops the keys;
+/// the findings and their order are identical either way.
+fn resolve_liveness_keyed(
+    conn: &rusqlite::Connection,
+    cited: &[(String, usize, Vec<u32>, String)],
+) -> rusqlite::Result<Vec<(String, usize, Finding)>> {
+    // §6.7 normative (PRD `reify-audit-ptodo-detector.md` line 181, "rows
+    // filtered to `tag='master'`"): the reify task DB uses the single canonical
+    // `master` tag context, so a cite is resolved ONLY there. Consequence — an id
+    // that exists solely under a non-master tag is invisible to this query and
+    // classifies as `unknown-id` (neither tracked nor orphaned); this is the
+    // intended master-only semantics, pinned by the integration test
+    // `liveness::non_master_tag_resolves_as_unknown_id` (tests/ptodo.rs). Should a
+    // multi-tag task DB ever be introduced, revisit this filter alongside §8.2.
+    let mut stmt = conn.prepare("SELECT status FROM tasks WHERE tag = 'master' AND id = ?1")?;
+    let mut out = Vec::new();
+
+    for (path, line, ids, text) in cited {
+        // Resolve every cite once; remember each id's status (None = absent).
+        let mut resolved: Vec<(u32, Option<String>)> = Vec::with_capacity(ids.len());
+        let mut any_live = false;
+        for &id in ids {
+            let status: Option<String> = stmt
+                .query_row(rusqlite::params![id], |row| row.get::<_, String>(0))
+                .optional()?;
+            if status.as_deref().is_some_and(|s| !is_terminal_status(s)) {
+                any_live = true;
+            }
+            resolved.push((id, status));
+        }
+
+        // §8.2: a single live cite tracks the whole marker → no finding.
+        if any_live {
+            continue;
+        }
+
+        for (id, status) in resolved {
+            let finding = match status {
+                // Present and — since !any_live — necessarily terminal → orphaned.
+                Some(s) => liveness_finding(
+                    path,
+                    format!("orphaned: line {line}: #{id} status={s}: {text}"),
+                ),
+                // Absent → unknown-id.
+                None => liveness_finding(
+                    path,
+                    format!("unknown-id: line {line}: #{id}: {text}"),
+                ),
+            };
+            out.push((path.clone(), *line, finding));
+        }
+    }
+
+    Ok(out)
+}
+
+/// Build a Medium PTODO liveness [`Finding`] at `path` with the given summary.
+fn liveness_finding(path: &str, summary: String) -> Finding {
+    Finding {
+        pattern: Pattern::PTodo,
+        severity: Severity::Medium,
+        summary,
+        task_id: path.to_string(),
+        evidence: vec![EvidenceRef::File { path: path.to_string() }],
+    }
+}
+
 // -----------------------------------------------------------------------
 // §5 detector entry point — working-tree sweep
 // -----------------------------------------------------------------------
 
-/// PTODO structural-lane sweep (§5/§8). Enumerates tracked files via the git
-/// seam ([`GitOps::ls_files`](crate::GitOps::ls_files)), keeps only swept
-/// extensions that are not allowlisted (§6.8), reads each file's **working-tree**
-/// content directly (`std::fs::read_to_string` — only enumeration is a git
-/// dependency; the lane "runs everywhere, including worktrees"), and classifies
-/// each line via [`classify_file`].
+/// PTODO sweep (§5/§8) — both lanes. Enumerates tracked files via the git seam
+/// ([`GitOps::ls_files`](crate::GitOps::ls_files)), keeps only swept extensions
+/// that are not allowlisted (§6.8), reads each file's **working-tree** content
+/// directly (`std::fs::read_to_string` — only enumeration is a git dependency;
+/// the lane "runs everywhere, including worktrees"), and classifies each line via
+/// the single [`scan_file`] pass.
 ///
-/// Every offending line becomes one Medium-severity [`Finding`] whose `task_id`
-/// is the file path and whose summary is the §8.3 `"<kind>: line N: <text>"`
-/// prefix form. Unreadable paths (deleted / binary / permission) are skipped
-/// fail-safe. Findings are returned in deterministic `(path, line_no)` order.
+/// That one pass feeds both lanes: [`LineClass::Structural`] lines become α
+/// structural findings; [`LineClass::Cited`] markers are resolved against the
+/// task DB by the β liveness lane. The task DB is opened read-only at
+/// [`tasks_db_path`]; when it is absent or unreadable the liveness lane is
+/// skipped and only the structural findings are returned (the §6.7 fail-soft
+/// breadcrumb is wired in a later step).
+///
+/// Every finding is Medium severity with `task_id` = file path and a summary of
+/// the §8.3 `"<kind>: line N: <text>"` prefix form. Unreadable paths (deleted /
+/// binary / permission) are skipped fail-safe. Findings are returned in
+/// deterministic `(path, line)` order across both lanes.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    // (path, line_no, kind, marker_text) for every offending line.
-    let mut hits: Vec<(String, usize, Kind, String)> = Vec::new();
+    // Structural offenders (α) and cited markers (β) from the single scan_file
+    // pass, kept separate so each feeds its own lane.
+    let mut struct_hits: Vec<(String, usize, Kind, String)> = Vec::new();
+    let mut cited: Vec<(String, usize, Vec<u32>, String)> = Vec::new();
 
     for path in ctx.git.ls_files() {
         if !is_swept_ext(&path) || is_allowlisted(&path) {
             continue;
         }
-        // Structural lane reads the working tree directly (only enumeration is
-        // a git seam). Skip unreadable paths fail-safe.
+        // Read the working tree directly (only enumeration is a git seam). Skip
+        // unreadable paths fail-safe.
         let content = match std::fs::read_to_string(ctx.project_root.join(&path)) {
             Ok(c) => c,
             Err(_) => continue,
         };
         let is_rust = path.ends_with(".rs");
-        for (line_no, kind, text) in classify_file(&content, is_rust) {
-            hits.push((path.clone(), line_no, kind, text));
+        for (line_no, class, text) in scan_file(&content, is_rust) {
+            match class {
+                LineClass::Structural(kind) => struct_hits.push((path.clone(), line_no, kind, text)),
+                LineClass::Cited(ids) => cited.push((path.clone(), line_no, ids, text)),
+            }
         }
     }
 
-    // Deterministic ordering: (path, line_no). Line numbers are excluded from
-    // the task_id identity but kept in the human-readable summary detail.
-    hits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-    hits.into_iter()
-        .map(|(path, line_no, kind, text)| Finding {
-            pattern: Pattern::PTodo,
-            severity: Severity::Medium,
-            summary: format!("{}: line {}: {}", kind.as_str(), line_no, text),
-            task_id: path.clone(),
-            evidence: vec![EvidenceRef::File { path }],
+    // α structural findings, each tagged with its (path, line) sort key.
+    let mut keyed: Vec<(String, usize, Finding)> = struct_hits
+        .into_iter()
+        .map(|(path, line_no, kind, text)| {
+            let finding = Finding {
+                pattern: Pattern::PTodo,
+                severity: Severity::Medium,
+                summary: format!("{}: line {}: {}", kind.as_str(), line_no, text),
+                task_id: path.clone(),
+                evidence: vec![EvidenceRef::File { path: path.clone() }],
+            };
+            (path, line_no, finding)
         })
-        .collect()
+        .collect();
+
+    // β liveness lane: open the task DB read-only; on success resolve the
+    // collected cites and merge the findings in. A missing/unreadable DB (open
+    // error) OR a prepare/probe failure on an existing-but-corrupt DB (resolve
+    // error) degrades the lane fail-soft (§6.7): exactly one stderr breadcrumb
+    // naming the resolved path, then the structural findings are returned
+    // unchanged. The exit class is untouched (Medium-neutral) — 125 is reserved
+    // for genuine arg/IO misconfig, never an absent optional substrate.
+    let db_path = tasks_db_path(&ctx.project_root);
+    match open_tasks_db(&db_path).and_then(|conn| resolve_liveness_keyed(&conn, &cited)) {
+        Ok(live) => keyed.extend(live),
+        Err(_) => eprintln!(
+            "reify-audit: tasks.db unreachable at '{}' — PTODO liveness degraded; structural checks still run",
+            db_path.display()
+        ),
+    }
+
+    // Deterministic merged order across both lanes: (path, line). A given line
+    // yields at most one lane's entry (scan_file emits one LineClass per line),
+    // so there is no cross-lane tie; the stable sort preserves the per-marker
+    // multi-cite order within a line.
+    keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    keyed.into_iter().map(|(_path, _line, finding)| finding).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test-only derivation of the structural lane: [`scan_file`] filtered to its
+    /// [`LineClass::Structural`] entries (the `Cited` markers — β's domain — drop
+    /// out), yielding one `(line_no, kind, text)` per structurally-offending line.
+    /// Production [`check`] drives [`scan_file`] directly (it needs the `Cited`
+    /// markers this filter discards), so this "structural = scan_file ∩ Structural"
+    /// view lives here purely to exercise α's precedence unit tests.
+    fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
+        scan_file(content, is_rust)
+            .into_iter()
+            .filter_map(|(line_no, class, text)| match class {
+                LineClass::Structural(kind) => Some((line_no, kind, text)),
+                LineClass::Cited(_) => None,
+            })
+            .collect()
+    }
 
     // -------------------------------------------------------------------
     // §8.1 marker recognition — comment markers
@@ -453,6 +737,38 @@ mod tests {
         assert!(!has_canonical_cite("#123456 six digits"));
         // Space between `#` and digits.
         assert!(!has_canonical_cite("# 42"));
+        // All-zero runs (`#0`, `#00`) are not valid task ids (ids start at 1).
+        assert!(!has_canonical_cite("// TODO(#0): x"));
+        assert!(!has_canonical_cite("see #00 here"));
+    }
+
+    // -------------------------------------------------------------------
+    // §8.2 cite extraction (β liveness lane) — `extract_cites`
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn extract_cites_collects_all_canonical_ids() {
+        // A single parenthesised cite.
+        assert_eq!(extract_cites("// TODO(#42): x"), vec![42]);
+        // Multiple bare cites in source order.
+        assert_eq!(extract_cites("see #1 and #200"), vec![1, 200]);
+        // Leading zeros are tolerated as long as the value is ≥1 (`#007` → 7).
+        assert_eq!(extract_cites("// TODO(#007): x"), vec![7]);
+    }
+
+    #[test]
+    fn extract_cites_rejects_non_cites() {
+        // `#` followed by non-digits → no cite.
+        assert_eq!(extract_cites("#abc"), Vec::<u32>::new());
+        // A bare `#` at line end → no cite.
+        assert_eq!(extract_cites("bare #"), Vec::<u32>::new());
+        // A 6-digit run exceeds the 1..=5 window (consistent with
+        // has_canonical_cite) → no cite (not a 5-digit prefix match).
+        assert_eq!(extract_cites("#123456"), Vec::<u32>::new());
+        // An all-zero run is not a valid task id (ids start at 1) → no cite, so
+        // `#0` falls through to the structural `untracked` classification.
+        assert_eq!(extract_cites("#0"), Vec::<u32>::new());
+        assert_eq!(extract_cites("// TODO(#00): x"), Vec::<u32>::new());
     }
 
     // -------------------------------------------------------------------
@@ -574,6 +890,55 @@ mod tests {
             (10, Kind::Untracked, "todo!(\"later\")".to_string()),
         ];
         assert_eq!(got, expected);
+    }
+
+    // -------------------------------------------------------------------
+    // §8 unified scan — `scan_file` (Structural + Cited) (β liveness lane)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn scan_file_emits_cited_and_structural() {
+        // is_rust=true so the macro / #[ignore] rules are live.
+        let lines = [
+            "// TODO(#4553): x",          // 1 comment marker + canonical cite -> Cited([4553])
+            "// #42",                     // 2 cite-only, no marker -> no entry (prev for 3)
+            "    todo!()",                // 3 stub macro, cite directly above -> Cited([42])
+            "    #[ignore = \"see #42\"]", // 4 reason-bearing ignore -> no entry (deferred to γ)
+            "// TODO: wire this",         // 5 marker, no cite -> Structural(Untracked)
+            "// TODO(#5): x  // ptodo:allow", // 6 inline escape on a cited line -> skipped
+        ];
+        let content = lines.join("\n");
+
+        let got = scan_file(&content, true);
+        let expected: Vec<(usize, LineClass, String)> = vec![
+            (1, LineClass::Cited(vec![4553]), "// TODO(#4553): x".to_string()),
+            (3, LineClass::Cited(vec![42]), "todo!()".to_string()),
+            (5, LineClass::Structural(Kind::Untracked), "// TODO: wire this".to_string()),
+        ];
+        assert_eq!(got, expected);
+
+        // Regression: classify_file is exactly scan_file filtered to its
+        // Structural variants — the Cited markers (1, 3) and the suppressed
+        // lines (2, 4, 6) drop out, leaving byte-identical α output.
+        let classified = classify_file(&content, true);
+        let expected_structural: Vec<(usize, Kind, String)> =
+            vec![(5, Kind::Untracked, "// TODO: wire this".to_string())];
+        assert_eq!(classified, expected_structural);
+    }
+
+    // -------------------------------------------------------------------
+    // §6.7 task-DB path resolution (β liveness lane) — `tasks_db_path`
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn tasks_db_path_defaults_under_project_root() {
+        // With REIFY_PTODO_TASKS_DB unset (the normal cargo-test env), the path
+        // resolves to <project_root>/.taskmaster/tasks/tasks.db. The env-override
+        // branch is covered end-to-end by the subprocess test (no unsafe set_var).
+        assert_eq!(
+            tasks_db_path(std::path::Path::new("/repo")),
+            std::path::PathBuf::from("/repo/.taskmaster/tasks/tasks.db"),
+        );
     }
 
     #[test]
