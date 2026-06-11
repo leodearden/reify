@@ -2658,6 +2658,17 @@ impl Engine {
                 &state.snapshot.graph,
                 &state.trace_map,
             );
+            // δ consumes ONLY `pass.diagnostics` here; `pass.schedule`
+            // (`Vec<NodeId>`) and `pass.residue` (`HashSet<NodeId>`) are
+            // intentionally materialized then dropped. In δ the driver is purely
+            // the cycle-contract gate — the schedule is consumed by ε's executors
+            // once they replace the legacy build loop, so it is built now to keep
+            // `run_unified_pass` a single (schedule, residue, diagnostics) entry
+            // point across both stages. The discard cost is O(V+E) and rides the
+            // UnifiedDag path ONLY, which is gated OFF by default (LegacyMultiPass
+            // ⇒ this whole block is skipped), so the production default pays
+            // nothing. A diagnostics-only entry point was weighed and declined: it
+            // would fork the driver right before ε needs the full triple back.
             diagnostics.extend(pass.diagnostics);
         }
 
