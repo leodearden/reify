@@ -422,8 +422,7 @@ const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<bind
 /// the [`RepresentationWithin`] path uses `Engine::with_registered_kernel +
 /// check()`.  Neither path calls [`configured_eval_engine`] nor registers the
 /// FEA/buckling/modal compute trampolines
-/// ([`reify_eval::compute_targets::register_compute_fns`] /
-/// [`reify_eval::register_shell_extract_compute_fns`]).
+/// ([`register_compute_trampolines`]).
 ///
 /// Consequence: `@optimized("solver::elastic_static")` FEA-result constraints
 /// (e.g. `constraint peak_stress < limit` over `result.max_von_mises`) evaluate
@@ -828,8 +827,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
     // the solve runs correctly here without `.with_solver`.  See `build_is_success`
     // for the (c) exit-code gate.
     let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
-    reify_eval::compute_targets::register_compute_fns(&mut engine);
-    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    register_compute_trampolines(&mut engine);
     let result = engine.build(&compiled, format);
 
     let outcome = report_eval_output(
@@ -889,6 +887,17 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 }
 
+/// Register all FEA/buckling/modal and shell-extract compute trampolines on `engine`.
+///
+/// This is the single source of truth for the trampoline set shared between
+/// `cmd_build` (solver-free, calls this directly) and [`configured_eval_engine`]
+/// (full solver).  Adding a new trampoline here automatically covers both paths and
+/// prevents silent drift between them.
+fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
+    reify_eval::compute_targets::register_compute_fns(engine);
+    reify_eval::register_shell_extract_compute_fns(engine);
+}
+
 /// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
 /// wire the production [`reify_constraints::SolverRegistry`] and register all
 /// compute trampolines so `@optimized` targets dispatch correctly.
@@ -902,24 +911,24 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// Both the geometry branch (`with_registered_kernel + build()`) and the plain
 /// branch (`Engine::new(None) + eval()`) share this setup; only the constructor
 /// and the terminal `build()`/`eval()` call differ.  Factoring the shared setup
-/// here eliminates the duplicated `.with_solver` + `register_compute_fns` block
-/// that would otherwise appear verbatim in each branch.
+/// here eliminates the duplicated `.with_solver` + [`register_compute_trampolines`]
+/// block that would otherwise appear verbatim in each branch.
 ///
-/// Both the FEA/buckling/modal trampolines (`register_compute_fns`) and the
-/// shell-extract trampoline (`register_shell_extract_compute_fns`) are registered
-/// here, mirroring the GUI's call pair (gui/src-tauri/src/engine.rs).  Without
-/// the shell-extract registration, shell-classified `@optimized("solver::elastic_static")`
-/// solves would hit `DispatchError::Failed` in `insert_shell_extract_upstream` and
-/// emit a misleading "falling back to tet meshing" warning even though the FEA
-/// trampoline independently re-classifies and runs the correct shell solve.
+/// Both the FEA/buckling/modal trampolines and the shell-extract trampoline are
+/// registered here via [`register_compute_trampolines`], mirroring the GUI's call
+/// pair (gui/src-tauri/src/engine.rs).  Without the shell-extract registration,
+/// shell-classified `@optimized("solver::elastic_static")` solves would hit
+/// `DispatchError::Failed` in `insert_shell_extract_upstream` and emit a misleading
+/// "falling back to tet meshing" warning even though the FEA trampoline independently
+/// re-classifies and runs the correct shell solve.
 ///
-/// NOTE: `cmd_build` intentionally does NOT use this helper — it registers only
-/// compute trampolines (without `.with_solver`) to preserve cmd_build's solver-free
-/// posture for `auto`-param fixtures.  See the comment in `cmd_build` for rationale.
+/// NOTE: `cmd_build` intentionally does NOT use this helper — it calls
+/// [`register_compute_trampolines`] directly (without `.with_solver`) to preserve
+/// cmd_build's solver-free posture for `auto`-param fixtures.  See the comment in
+/// `cmd_build` for rationale.
 fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
     let mut engine = engine.with_solver(Box::new(reify_constraints::SolverRegistry::production()));
-    reify_eval::compute_targets::register_compute_fns(&mut engine);
-    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    register_compute_trampolines(&mut engine);
     engine
 }
 
