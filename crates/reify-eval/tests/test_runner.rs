@@ -275,7 +275,29 @@ fn run_tests_fea_constraint_not_indeterminate() {
 
     assert_eq!(results.len(), 1, "expected exactly one @test result");
 
-    // Direct dispatch proof: trampoline ran — body-inline fallback was NOT hit.
+    // PRIMARY / LOAD-BEARING assertion (task-spec pin): the constraint fired with a
+    // definite verdict (Pass or Fail), not silently Indeterminate.
+    //
+    // Causal chain: build_test_engine registers solver::elastic_static trampoline →
+    // Engine::check calls eval() first → ComputeNode dispatches to real FEA solver →
+    // max_von_mises ≈ 6 MPa → `result.max_von_mises > 0Pa` = Satisfied → status = Pass.
+    //
+    // Pre-4468 regression path: no trampoline → body-inline fallback → Value::Undef →
+    // `Undef > 0Pa` = Indeterminate → status = Indeterminate.  This assertion catches that.
+    assert_ne!(
+        results[0].status,
+        reify_eval::TestStatus::Indeterminate,
+        "FEA constraint evaluated to Indeterminate \
+         — trampoline result was Undef (4468 regression); diagnostics: {:?}",
+        results[0].diagnostics
+    );
+
+    // SECONDARY / BEST-EFFORT diagnostic probe: if the fallback string appears it
+    // confirms no trampoline was dispatched.  This check is NOT the load-bearing guard —
+    // it is complementary to the status assertion above.  If the exact message wording
+    // drifts in a future refactor, the status != Indeterminate check above is the
+    // definitive regression pin and this assertion becomes a no-op rather than a
+    // false-positive.
     assert!(
         results[0]
             .diagnostics
@@ -283,15 +305,6 @@ fn run_tests_fea_constraint_not_indeterminate() {
             .all(|d| !d.message.contains("no registered compute trampoline")),
         "run_tests emitted 'no registered compute trampoline' fallback \
          — trampoline not dispatched; diagnostics: {:?}",
-        results[0].diagnostics
-    );
-
-    // Task-spec pin: constraint fired (Pass/Fail), not silently Indeterminate.
-    assert_ne!(
-        results[0].status,
-        reify_eval::TestStatus::Indeterminate,
-        "FEA constraint evaluated to Indeterminate \
-         — trampoline result was Undef (4468 regression); diagnostics: {:?}",
         results[0].diagnostics
     );
 }
