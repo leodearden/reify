@@ -16,7 +16,8 @@ mod common;
 mod ptodo {
 
 use reify_audit::{
-    AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern, Severity,
+    AuditContext, EvidenceRef, Finding, GitCommit, MockGitOps, MockJCodemunchOps, Pattern,
+    Severity,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -350,6 +351,161 @@ mod tests {
         assert!(
             findings2.is_empty(),
             "live cite (#4444 pending) must yield no finding; got {findings2:?}"
+        );
+    }
+
+    /// ζ inverse lane: end-to-end `check()` integration. Seeds an on-disk DB
+    /// with a non-terminal (pending) task whose metadata.files lists:
+    ///   - a DELETED path (mock: absent from tracked, git has history)
+    ///   - an EXISTING directory (mock: dir-prefix of a tracked file → FP guard)
+    ///   - a TO-BE-CREATED path (mock: absent from tracked, git has no history)
+    ///
+    /// Asserts exactly one `task-cites-deleted-path` finding for the deleted
+    /// path (carrying the task id, path, and commit sha), and NONE for the
+    /// directory or to-be-created path. Also asserts that structural findings
+    /// from a co-seeded untracked.rs still coexist.
+    ///
+    /// This is the RED counterpart: `check()` does NOT yet call `resolve_inverse`,
+    /// so zero inverse findings are returned even though the DB is populated.
+    /// The RED assertion (finding count == 1 for the deleted path) will FAIL.
+    #[test]
+    fn check_runs_inverse_lane_for_deleted_metadata_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // Structural offender that must coexist with the inverse finding.
+        write_file(root, "untracked.rs", "// TODO: wire this\n");
+
+        // Seed the on-disk tasks DB with a pending task whose metadata.files
+        // names a deleted path, an existing directory, and a new (never) path.
+        crate::common::schema::seed_tasks_db_at_with_metadata(
+            &root.join(".taskmaster/tasks/tasks.db"),
+            &[("master", 99, "pending", r#"{"files":["crates/deleted/mod.rs","crates/existing","crates/new_module.rs"]}"#)],
+        );
+
+        // tracked set: contains a file under "crates/existing" (dir prefix FP
+        // guard), but NOT "crates/deleted/mod.rs" (deleted) or "crates/new_module.rs".
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec![
+            "untracked.rs".to_string(),
+            "crates/existing/src/lib.rs".to_string(),
+        ]);
+
+        // Git history: deleted path has a commit; new path has none (never existed).
+        git.set_last_commit_for_path(
+            "crates/deleted/mod.rs",
+            reify_audit::GitCommit {
+                sha: "deadbeef".to_string(),
+                subject: "delete crates/deleted/mod.rs".to_string(),
+            },
+        );
+        // "crates/new_module.rs" is NOT set in the mock → returns None → no finding.
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        // Structural finding must still be present.
+        assert!(
+            findings.iter().any(|f| {
+                f.evidence.iter().any(|e| matches!(e, EvidenceRef::File { path } if path == "untracked.rs"))
+                    && f.summary.starts_with("untracked:")
+            }),
+            "structural untracked finding must be present; findings={findings:?}"
+        );
+
+        // Inverse: exactly one task-cites-deleted-path finding for the deleted path.
+        let inverse_findings: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.summary.starts_with("task-cites-deleted-path:"))
+            .collect();
+        assert_eq!(
+            inverse_findings.len(),
+            1,
+            "expected exactly one task-cites-deleted-path finding; got {findings:?}"
+        );
+        let inv = inverse_findings[0];
+        assert_eq!(inv.pattern, Pattern::PTodo, "pattern: {inv:?}");
+        assert_eq!(inv.severity, Severity::Medium, "severity: {inv:?}");
+        assert_eq!(inv.task_id, "99", "task_id must be the task id: {inv:?}");
+        assert!(
+            inv.summary.contains("crates/deleted/mod.rs"),
+            "summary must contain the path: {}",
+            inv.summary
+        );
+        assert!(
+            inv.summary.contains("deadbeef"),
+            "summary must contain the commit sha: {}",
+            inv.summary
+        );
+
+        // FP guard: no finding for the directory "crates/existing".
+        assert!(
+            !findings.iter().any(|f| f.summary.contains("crates/existing")),
+            "no finding must reference the existing directory; findings={findings:?}"
+        );
+
+        // To-be-created: no finding for "crates/new_module.rs".
+        assert!(
+            !findings.iter().any(|f| f.summary.contains("crates/new_module.rs")),
+            "no finding for a never-existed path; findings={findings:?}"
+        );
+    }
+
+    /// ζ degrade-together: with NO tasks.db at the default path, the inverse
+    /// lane (like the liveness lane) must produce NO `task-cites-deleted-path`
+    /// finding — both lanes degrade under the single existing DB-absent breadcrumb.
+    #[test]
+    fn check_inverse_degrades_when_tasks_db_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(root, "untracked.rs", "// TODO: wire this\n");
+        // NB: no tasks.db seeded → DB absent → both liveness + inverse degrade.
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec!["untracked.rs".to_string()]);
+        // Even if git knows about a deleted path, the inverse lane must not fire
+        // when the DB is absent (the task row can't be read, so no finding).
+        git.set_last_commit_for_path(
+            "crates/deleted/mod.rs",
+            reify_audit::GitCommit {
+                sha: "deadbeef".to_string(),
+                subject: "delete crates/deleted/mod.rs".to_string(),
+            },
+        );
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        assert!(
+            !findings.iter().any(|f| f.summary.starts_with("task-cites-deleted-path:")),
+            "no inverse finding may be emitted when tasks.db is absent; findings={findings:?}"
         );
     }
 
