@@ -41,6 +41,7 @@ pub mod p1_producer_orphan;
 pub mod pdead_dead_code;
 pub mod puntested;
 pub mod player;
+pub mod ptodo;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 
