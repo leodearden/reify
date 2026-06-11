@@ -41,6 +41,80 @@ pub use solvespace::SolveSpaceSolver;
 use reify_core::{Diagnostic, DiagnosticCode};
 use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction, Value};
 
+/// Classify `Value::Undef` by leaf-ValueRef definedness.
+///
+/// Returns:
+/// - `(true, names)` — at least one leaf is `Undef`; `names` lists the undefined
+///   cell names (deduped, stable declaration order) via `ValueCellId::Display`.
+/// - `(false, kinds)` — all leaves are defined (or the expression has no ValueRefs);
+///   `kinds` lists the distinct `value_kind_label` strings of the defined leaf values
+///   (deduped, stable declaration order).
+fn classify_undef<'a>(
+    expr: &reify_ir::CompiledExpr,
+    values: &'a reify_ir::ValueMap,
+) -> (bool, Vec<String>) {
+    let leaf_ids = expr.collect_value_refs();
+    let mut undef_names: Vec<String> = Vec::new();
+    let mut defined_kinds: Vec<String> = Vec::new();
+
+    for id in &leaf_ids {
+        let v = values.get_or_undef(id);
+        if v.is_undef() {
+            let name = id.to_string();
+            if !undef_names.contains(&name) {
+                undef_names.push(name);
+            }
+        } else {
+            let kind = value_kind_label(&v);
+            if !defined_kinds.contains(&kind) {
+                defined_kinds.push(kind);
+            }
+        }
+    }
+
+    if !undef_names.is_empty() {
+        (true, undef_names)
+    } else {
+        (false, defined_kinds)
+    }
+}
+
+/// A short human-readable label for the kind of a defined `Value`.
+fn value_kind_label(v: &Value) -> String {
+    match v {
+        Value::Bool(_) => "Bool".to_string(),
+        Value::Int(_) => "Int".to_string(),
+        Value::Real(_) => "Real".to_string(),
+        Value::String(_) => "String".to_string(),
+        Value::Scalar { dimension, .. } => format!("Scalar<{}>", dimension),
+        Value::Enum { type_name, .. } => format!("Enum<{}>", type_name),
+        Value::Tensor(_) => "Tensor".to_string(),
+        Value::Matrix(_) => "Matrix".to_string(),
+        Value::List(_) => "List".to_string(),
+        Value::Set(_) => "Set".to_string(),
+        Value::Map(_) => "Map".to_string(),
+        Value::Option(_) => "Option".to_string(),
+        Value::Point(_) => "Point".to_string(),
+        Value::Vector(_) => "Vector".to_string(),
+        Value::Complex { .. } => "Complex".to_string(),
+        Value::Orientation { .. } => "Orientation".to_string(),
+        Value::Frame { .. } => "Frame".to_string(),
+        Value::Transform { .. } => "Transform".to_string(),
+        Value::Plane { .. } => "Plane".to_string(),
+        Value::Axis { .. } => "Axis".to_string(),
+        Value::BoundingBox { .. } => "BoundingBox".to_string(),
+        Value::Range { .. } => "Range".to_string(),
+        Value::Field { .. } => "Field".to_string(),
+        Value::Lambda { .. } => "Lambda".to_string(),
+        Value::SampledField(_) => "SampledField".to_string(),
+        Value::StructureInstance(_) => "StructureInstance".to_string(),
+        Value::GeometryHandle { .. } => "GeometryHandle".to_string(),
+        Value::AffineMap { .. } => "AffineMap".to_string(),
+        Value::Selector(_) => "Selector".to_string(),
+        Value::Undef => "Undef".to_string(),
+    }
+}
+
 /// Simple constraint checker for M1: evaluates constraint expressions
 /// and checks whether they are satisfied (true), violated (false), or
 /// indeterminate (undef input).
@@ -72,18 +146,40 @@ impl ConstraintChecker for SimpleConstraintChecker {
                             ],
                         },
                     ),
-                    Value::Undef => (
-                        Satisfaction::Indeterminate,
-                        ConstraintDiagnostics {
-                            messages: vec![
-                                Diagnostic::warning(format!(
-                                    "constraint {} indeterminate: undefined inputs",
+                    Value::Undef => {
+                        let (has_undef, names) = classify_undef(expr, input.values);
+                        let msg = if has_undef {
+                            format!(
+                                "constraint {} indeterminate: undefined inputs: {}",
+                                id,
+                                names.join(", ")
+                            )
+                        } else {
+                            // All leaves are defined but the operator produced Undef.
+                            // Step-4 will replace this fallback with a kind list.
+                            if names.is_empty() {
+                                format!(
+                                    "constraint {} indeterminate: operator undefined for these operand kinds",
                                     id
-                                ))
-                                .with_code(DiagnosticCode::ConstraintIndeterminate),
-                            ],
-                        },
-                    ),
+                                )
+                            } else {
+                                format!(
+                                    "constraint {} indeterminate: operator undefined for these operand kinds: {}",
+                                    id,
+                                    names.join(", ")
+                                )
+                            }
+                        };
+                        (
+                            Satisfaction::Indeterminate,
+                            ConstraintDiagnostics {
+                                messages: vec![
+                                    Diagnostic::warning(msg)
+                                        .with_code(DiagnosticCode::ConstraintIndeterminate),
+                                ],
+                            },
+                        )
+                    }
                     _ => (
                         Satisfaction::Violated,
                         ConstraintDiagnostics {
