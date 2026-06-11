@@ -450,9 +450,11 @@ mod tests {
 
     use crate::cache::NodeId;
     use crate::deps::DependencyTrace;
-    use crate::graph::EvaluationGraph;
+    use crate::graph::{EvaluationGraph, ValueCellNode};
+    use reify_compiler::ValueCellKind;
     use reify_core::{
-        ConstraintNodeId, DiagnosticCode, RealizationNodeId, ResolutionNodeId, ValueCellId,
+        ConstraintNodeId, ContentHash, DiagnosticCode, RealizationNodeId, ResolutionNodeId, Type,
+        ValueCellId,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -861,6 +863,112 @@ mod tests {
             cycle_diags(&result).len(),
             0,
             "acyclic realization must not emit E_EVAL_CYCLE"
+        );
+    }
+
+    /// All `E_EVAL_UNRESOLVED` diagnostics in a result, in emission order.
+    fn unresolved_diags(result: &UnifiedPassResult) -> Vec<&Diagnostic> {
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::EvalUnresolved))
+            .collect()
+    }
+
+    /// Insert a value cell node of the given kind (auto-guard fixture helper).
+    fn insert_cell(graph: &mut EvaluationGraph, id: &ValueCellId, kind: ValueCellKind) {
+        graph.value_cells.insert(
+            id.clone(),
+            ValueCellNode {
+                id: id.clone(),
+                kind,
+                cell_type: Type::Real,
+                default_expr: None,
+                content_hash: ContentHash::of_str(&id.to_string()),
+            },
+        );
+    }
+
+    /// Task 4357 δ (step-13): the geometry-backed-constraint-on-auto class. A
+    /// constraint whose `realization_reads` reaches a realization whose `reads`
+    /// include an AUTO value cell (the transitive auto-read closure) must emit
+    /// exactly one `E_EVAL_UNRESOLVED` naming the constraint, with the graph
+    /// otherwise ACYCLIC (residue empty, NO E_EVAL_CYCLE). A sibling constraint
+    /// whose backing realization reads only NON-auto cells emits nothing.
+    ///
+    /// RED until step-14 lands the auto-read closure guard.
+    #[test]
+    fn unified_pass_geometry_backed_constraint_on_auto_is_unresolved() {
+        let e = "E";
+        let a = ValueCellId::new(e, "a"); // AUTO cell
+        let p = ValueCellId::new(e, "p"); // non-auto param
+        let r_auto = RealizationNodeId::new(e, 0); // reads the auto cell
+        let r_plain = RealizationNodeId::new(e, 1); // reads only the param
+        let c_unres = ConstraintNodeId::new(e, 0); // geometry-backed by r_auto
+        let c_ok = ConstraintNodeId::new(e, 1); // geometry-backed by r_plain
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        traces.insert(NodeId::Value(a.clone()), trace(vec![], vec![]));
+        traces.insert(NodeId::Value(p.clone()), trace(vec![], vec![]));
+        traces.insert(
+            NodeId::Realization(r_auto.clone()),
+            trace(vec![a.clone()], vec![]),
+        );
+        traces.insert(
+            NodeId::Realization(r_plain.clone()),
+            trace(vec![p.clone()], vec![]),
+        );
+        traces.insert(
+            NodeId::Constraint(c_unres.clone()),
+            trace(vec![], vec![r_auto.clone()]),
+        );
+        traces.insert(
+            NodeId::Constraint(c_ok.clone()),
+            trace(vec![], vec![r_plain.clone()]),
+        );
+
+        let mut graph = EvaluationGraph::default();
+        insert_cell(&mut graph, &a, ValueCellKind::Auto { free: false });
+        insert_cell(&mut graph, &p, ValueCellKind::Param);
+
+        let result = run_unified_pass(&graph, &traces);
+
+        // Graph is acyclic: empty residue, no cycle diagnostics.
+        assert!(
+            result.residue.is_empty(),
+            "graph must be acyclic; residue={:?}",
+            result.residue
+        );
+        assert_eq!(
+            cycle_diags(&result).len(),
+            0,
+            "no E_EVAL_CYCLE on an acyclic graph"
+        );
+
+        // Exactly one E_EVAL_UNRESOLVED, naming the geometry-on-auto constraint.
+        let unres = unresolved_diags(&result);
+        assert_eq!(
+            unres.len(),
+            1,
+            "exactly one E_EVAL_UNRESOLVED expected; got {:?}",
+            result
+                .diagnostics
+                .iter()
+                .map(|d| (d.code, d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let nc_unres = NodeId::Constraint(c_unres.clone());
+        let nc_ok = NodeId::Constraint(c_ok.clone());
+        assert!(
+            unres[0].message.contains(&nc_unres.describe()),
+            "unresolved diagnostic must name the geometry-on-auto constraint ({}); got: {}",
+            nc_unres.describe(),
+            unres[0].message
+        );
+        assert!(
+            !unres[0].message.contains(&nc_ok.describe()),
+            "the non-auto-backed constraint must NOT be reported; got: {}",
+            unres[0].message
         );
     }
 }
