@@ -1123,6 +1123,51 @@ mod tests {
     }
 
     #[test]
+    fn impulse_has_kg_m_per_s_exponents() {
+        // Impulse = N·s = momentum = kg·m·s⁻¹. Mirrors the
+        // moment_of_inertia_has_kg_m_squared_exponents / mass_density_* shape.
+        let imp = DimensionVector::IMPULSE;
+        assert_eq!(imp, DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -1)]));
+        assert_eq!(imp.canonical_name(), Some("Impulse"));
+    }
+
+    #[test]
+    fn impulse_is_distinct_from_force_and_energy() {
+        // FORCE is kg·m·s⁻²; ENERGY is kg·m²·s⁻²; IMPULSE is kg·m·s⁻¹. The
+        // s-exponent (and, for energy, the m-exponent) distinguishes them —
+        // pin the distinction so a future edit cannot silently collapse them.
+        assert_ne!(DimensionVector::IMPULSE, DimensionVector::FORCE);
+        assert_ne!(DimensionVector::IMPULSE, DimensionVector::ENERGY);
+    }
+
+    #[test]
+    fn impulse_and_momentum_are_registered_as_dimension_aliases() {
+        // Impulse (J = ∫F dt) and momentum (p = m·v) are dimensionally identical
+        // (kg·m·s⁻¹): ONE DimensionVector, two registered names. Both names must
+        // map to IMPULSE in NAMED_DIMENSIONS. "Impulse" is canonical (placed
+        // first); "Momentum" is the dimension-alias (placed after), so the
+        // first-match scan in canonical_name() returns "Impulse". Mirrors the
+        // Curvature/AbsorptionCoeff and TranslationalStiffness/Stiffness
+        // alias precedent.
+        let impulse_registered = NAMED_DIMENSIONS
+            .iter()
+            .any(|(dim, name)| *name == "Impulse" && *dim == DimensionVector::IMPULSE);
+        let momentum_registered = NAMED_DIMENSIONS
+            .iter()
+            .any(|(dim, name)| *name == "Momentum" && *dim == DimensionVector::IMPULSE);
+        assert!(
+            impulse_registered,
+            "NAMED_DIMENSIONS must contain (DimensionVector::IMPULSE, \"Impulse\")"
+        );
+        assert!(
+            momentum_registered,
+            "NAMED_DIMENSIONS must contain (DimensionVector::IMPULSE, \"Momentum\")"
+        );
+        // First-match scan order → canonical name is "Impulse", not "Momentum".
+        assert_eq!(DimensionVector::IMPULSE.canonical_name(), Some("Impulse"));
+    }
+
+    #[test]
     fn money_constant_populates_slot_9() {
         // Slot 9 must be ONE; all other slots must be ZERO.
         assert_eq!(DimensionVector::MONEY.0[9], Rational::ONE);
