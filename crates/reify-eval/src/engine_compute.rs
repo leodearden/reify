@@ -1836,4 +1836,30 @@ mod tests {
         assert!(observed.1, "cancel handle must be visible");
         assert!(observed.2, "pre-cancelled handle must show is_cancelled==true in context");
     }
+
+    // ── α: RealizedContent + RealizationReadHandle content accessors ─────────
+    // Step-1 RED: RealizedContent, new(), content_hash field, content() do not
+    // yet exist — this block fails to compile until step-2 lands them.
+
+    #[test]
+    fn handle_new_stores_content_hash_and_content_accessor_returns_it() {
+        use std::sync::Arc;
+        use reify_core::ContentHash;
+        use reify_ir::Mesh;
+
+        let h = RealizationReadHandle::new(
+            RealizationNodeId::new("n", 0),
+            ContentHash(7),
+            Some(RealizedContent::SurfaceMesh(Arc::new(Mesh {
+                vertices: vec![],
+                indices: vec![],
+                normals: None,
+            }))),
+        );
+        assert_eq!(h.content_hash, ContentHash(7), "content_hash field must be stored");
+        assert!(
+            matches!(h.content(), Some(RealizedContent::SurfaceMesh(_))),
+            "content() must return the stored variant",
+        );
+    }
 }
