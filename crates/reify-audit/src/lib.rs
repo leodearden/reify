@@ -131,6 +131,12 @@ pub enum Pattern {
     /// See task 4140 / esc-4137-196 and
     /// `docs/architecture-audit/f-infra-design.md` §5 P5.
     P5LivePathStranded,
+    /// PTODO — TODO-tracking-invariant (structural lane, task α): a TODO-family
+    /// marker not backed by a canonical `#NNNN` task citation. The §8.3 finding
+    /// `kind` (untracked / malformed-cite / phantom-tracking / bare-ignore) is
+    /// carried as a stable summary prefix rather than a per-kind variant.
+    /// See `docs/prds/reify-audit-ptodo-detector.md` §8.
+    PTodo,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim

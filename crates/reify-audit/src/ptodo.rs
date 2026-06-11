@@ -9,6 +9,8 @@
 //!
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar).
 
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+
 // -----------------------------------------------------------------------
 // §8.1 marker recognition (pure, hand-rolled — no `regex` dep per design §12)
 // -----------------------------------------------------------------------
@@ -307,6 +309,56 @@ fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
         prev = Some(line);
     }
     out
+}
+
+// -----------------------------------------------------------------------
+// §5 detector entry point — working-tree sweep
+// -----------------------------------------------------------------------
+
+/// PTODO structural-lane sweep (§5/§8). Enumerates tracked files via the git
+/// seam ([`GitOps::ls_files`](crate::GitOps::ls_files)), keeps only swept
+/// extensions that are not allowlisted (§6.8), reads each file's **working-tree**
+/// content directly (`std::fs::read_to_string` — only enumeration is a git
+/// dependency; the lane "runs everywhere, including worktrees"), and classifies
+/// each line via [`classify_file`].
+///
+/// Every offending line becomes one Medium-severity [`Finding`] whose `task_id`
+/// is the file path and whose summary is the §8.3 `"<kind>: line N: <text>"`
+/// prefix form. Unreadable paths (deleted / binary / permission) are skipped
+/// fail-safe. Findings are returned in deterministic `(path, line_no)` order.
+pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+    // (path, line_no, kind, marker_text) for every offending line.
+    let mut hits: Vec<(String, usize, Kind, String)> = Vec::new();
+
+    for path in ctx.git.ls_files() {
+        if !is_swept_ext(&path) || is_allowlisted(&path) {
+            continue;
+        }
+        // Structural lane reads the working tree directly (only enumeration is
+        // a git seam). Skip unreadable paths fail-safe.
+        let content = match std::fs::read_to_string(ctx.project_root.join(&path)) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let is_rust = path.ends_with(".rs");
+        for (line_no, kind, text) in classify_file(&content, is_rust) {
+            hits.push((path.clone(), line_no, kind, text));
+        }
+    }
+
+    // Deterministic ordering: (path, line_no). Line numbers are excluded from
+    // the task_id identity but kept in the human-readable summary detail.
+    hits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    hits.into_iter()
+        .map(|(path, line_no, kind, text)| Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            summary: format!("{}: line {}: {}", kind.as_str(), line_no, text),
+            task_id: path.clone(),
+            evidence: vec![EvidenceRef::File { path }],
+        })
+        .collect()
 }
 
 #[cfg(test)]
