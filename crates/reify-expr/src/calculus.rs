@@ -183,38 +183,82 @@ fn validate_differentiable_field<'a>(
     Some((domain_type, codomain_type))
 }
 
-pub(crate) fn compute_gradient(field_val: &Value) -> Value {
-    let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "gradient") {
-        Some(pair) => pair,
-        None => return Value::Undef,
-    };
-
-    // Determine dimensionality and validate scalar domain quantity
+/// Compute the result-codomain type for the gradient operator.
+///
+/// Returns `Some(result_codomain)` when:
+/// - `codomain_type` is scalar (`Real`, `Int`, or `Scalar { .. }`), **and**
+/// - `domain_type` is scalar (`1D → n = 1`) or `Point { n, scalar }` (`nD → n`).
+///
+/// For `n == 1` returns the gradient quantity directly (scalar derivative);
+/// for `n > 1` wraps it in `Type::Vector { n, quantity: gradient_quantity }`.
+///
+/// Returns `None` for non-scalar codomains or non-scalar/non-Point domains,
+/// matching the `Value::Undef` path in the existing validate-and-reject logic.
+///
+/// Used by both the Sampled eager-lower path (ε) and the existing
+/// Analytical/Composed path, so the codomain computation is a single source
+/// of truth and the D6 typing is guaranteed identical across both paths.
+fn gradient_result_codomain(domain_type: &Type, codomain_type: &Type) -> Option<Type> {
+    // Codomain must be scalar; propagate None for non-scalar.
+    scalar_dimension(codomain_type)?;
+    // Determine n from domain.
     let n = match domain_type {
         _ if scalar_dimension(domain_type).is_some() => 1,
         Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
-        _ => return Value::Undef,
+        _ => return None,
     };
-
-    // Compute gradient quantity type: codomain_dim / domain_dim.
-    // Fallback: DIMENSIONLESS Scalar normalizes to Real, else clone codomain.
     let gradient_quantity = dim_quotient_type(
         scalar_dimension(codomain_type),
         domain_dimension(domain_type),
         1,
         dimensionless_fallback(codomain_type),
     );
-
-    // Construct result codomain type:
-    // 1D → gradient_quantity (scalar derivative with correct R/Q dimension)
-    // nD → Vector{n, gradient_quantity}
-    let result_codomain = if n == 1 {
+    Some(if n == 1 {
         gradient_quantity
     } else {
         Type::Vector {
             n,
             quantity: Box::new(gradient_quantity),
         }
+    })
+}
+
+pub(crate) fn compute_gradient(field_val: &Value) -> Value {
+    // ε: Sampled eager-lower — dispatch when the field carries a real SampledField payload.
+    // A Sampled source with any other lambda slot (e.g. Value::Lambda, the malformed case in
+    // gradient_tests.rs::gradient_sampled_field_returns_undef) falls through to
+    // validate_differentiable_field, which hard-rejects Sampled → Value::Undef (unchanged).
+    if let Value::Field {
+        source: FieldSourceKind::Sampled,
+        lambda,
+        domain_type,
+        codomain_type,
+    } = field_val
+    {
+        if let Value::SampledField(sf) = lambda.as_ref() {
+            if let Some(result_codomain) = gradient_result_codomain(domain_type, codomain_type) {
+                let out = crate::sampled_fd::sampled_differential(
+                    sf,
+                    crate::sampled_fd::DifferentialOp::Gradient,
+                );
+                return Value::Field {
+                    domain_type: domain_type.clone(),
+                    codomain_type: result_codomain,
+                    source: FieldSourceKind::Sampled,
+                    lambda: Arc::new(Value::SampledField(out)),
+                };
+            }
+        }
+    }
+
+    let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "gradient") {
+        Some(pair) => pair,
+        None => return Value::Undef,
+    };
+
+    let result_codomain = match gradient_result_codomain(domain_type, codomain_type) {
+        Some(c) => c,
+        None => return Value::Undef,
     };
 
     // Return a gradient field: source=Gradient, lambda slot stores the original field.
@@ -376,6 +420,37 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
     }
 }
 
+/// Compute the result-codomain type for the laplacian operator.
+///
+/// Returns `Some(result_codomain)` when:
+/// - `domain_type` is scalar (1D) or `Point { n, scalar }` (nD), **and**
+/// - `codomain_type` is scalar (`Real`, `Int`, or `Scalar { .. }`).
+///
+/// The result codomain is always a scalar quotient: `codomain_dim / domain_dim²`
+/// (i.e. `dim_quotient_type` with `domain_exponent = 2`).
+///
+/// Returns `None` for non-scalar domain or codomain, matching the `Value::Undef`
+/// path in the existing validate-and-reject logic.
+///
+/// Used by both the Sampled eager-lower path (ε) and the existing
+/// Analytical/Composed path to guarantee identical D6 typing across both paths.
+fn laplacian_result_codomain(domain_type: &Type, codomain_type: &Type) -> Option<Type> {
+    // Domain must be scalar or Point{n, scalar}.
+    match domain_type {
+        _ if scalar_dimension(domain_type).is_some() => {}
+        Type::Point { quantity, .. } if scalar_dimension(quantity).is_some() => {}
+        _ => return None,
+    }
+    // Codomain must be scalar.
+    scalar_dimension(codomain_type)?;
+    Some(dim_quotient_type(
+        scalar_dimension(codomain_type),
+        domain_dimension(domain_type),
+        2,
+        dimensionless_fallback(codomain_type),
+    ))
+}
+
 /// Compute the Laplacian of a scalar field.
 ///
 /// Returns a new scalar Field with `FieldSourceKind::Laplacian` whose lambda slot stores
@@ -385,44 +460,53 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
 /// - Argument must be an Analytical or Composed Field
 /// - Domain must be scalar or `Point{n, scalar}`
 /// - Codomain must be scalar (Real, Int, or Scalar)
+///
+/// For `FieldSourceKind::Sampled` with a real `Value::SampledField` lambda slot, the
+/// operator eager-lowers (ε): dispatches `sampled_differential(Laplacian)` and returns a
+/// `source:Sampled` output field indistinguishable to `sample()`/`max()` from any other
+/// Sampled scalar field.  A Sampled source with any other lambda slot falls through to
+/// the existing `validate_differentiable_field` reject → `Value::Undef`.
 pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
+    // ε: Sampled eager-lower — dispatch when the field carries a real SampledField payload.
+    if let Value::Field {
+        source: FieldSourceKind::Sampled,
+        lambda,
+        domain_type,
+        codomain_type,
+    } = field_val
+    {
+        if let Value::SampledField(sf) = lambda.as_ref() {
+            if let Some(result_codomain) = laplacian_result_codomain(domain_type, codomain_type) {
+                let out = crate::sampled_fd::sampled_differential(
+                    sf,
+                    crate::sampled_fd::DifferentialOp::Laplacian,
+                );
+                return Value::Field {
+                    domain_type: domain_type.clone(),
+                    codomain_type: result_codomain,
+                    source: FieldSourceKind::Sampled,
+                    lambda: Arc::new(Value::SampledField(out)),
+                };
+            }
+        }
+    }
+
     let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "laplacian") {
         Some(pair) => pair,
         None => return Value::Undef,
     };
 
-    // Domain can be 1D scalar or nD Point
-    match domain_type {
-        _ if scalar_dimension(domain_type).is_some() => {}
-        Type::Point { quantity, .. } if scalar_dimension(quantity).is_some() => {}
-        _ => {
+    let result_codomain = match laplacian_result_codomain(domain_type, codomain_type) {
+        Some(c) => c,
+        None => {
             #[cfg(debug_assertions)]
             eprintln!(
-                "[reify-expr] laplacian: unsupported domain type {:?}",
-                domain_type
+                "[reify-expr] laplacian: unsupported domain {:?} or codomain {:?}",
+                domain_type, codomain_type
             );
             return Value::Undef;
         }
-    }
-
-    // Codomain must be scalar
-    if scalar_dimension(codomain_type).is_none() {
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "[reify-expr] laplacian: codomain must be scalar, got {:?}",
-            codomain_type
-        );
-        return Value::Undef;
-    }
-
-    // Compute result codomain type: codomain_dim / domain_dim².
-    // Preserve-codomain fallback: downgrade dimensionless Scalar to Real, else keep codomain.
-    let result_codomain = dim_quotient_type(
-        scalar_dimension(codomain_type),
-        domain_dimension(domain_type),
-        2,
-        dimensionless_fallback(codomain_type),
-    );
+    };
 
     // Result: scalar field with dimensionally-correct codomain.
     // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization. (task 4551)

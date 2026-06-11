@@ -610,11 +610,13 @@ fn gradient_field_with_undef_lambda_returns_undef() {
     );
 }
 
-/// Gradient of a Sampled field returns Undef.
+/// Gradient of a Sampled field with a non-SampledField lambda slot (malformed) returns Undef.
 ///
-/// Sampled fields don't have a callable lambda — they are data-driven.
-/// Gradient requires perturbation at arbitrary points, which is only
-/// possible with Analytical or Composed sources.
+/// After ε, `compute_gradient` eager-lowers a Sampled field whose lambda slot holds a real
+/// `Value::SampledField` payload.  This test covers the malformed case: source=Sampled but
+/// the lambda slot is a `Value::Lambda` (callable, not a data payload) — the dispatch falls
+/// through to `validate_differentiable_field`, which hard-rejects `FieldSourceKind::Sampled`
+/// and returns `Value::Undef`.  The test body and assertion are unchanged.
 #[test]
 fn gradient_sampled_field_returns_undef() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
