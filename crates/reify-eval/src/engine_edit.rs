@@ -1601,10 +1601,6 @@ impl Engine {
                     continue;
                 }
 
-                // task 4530: the count changed → instance cells will be added/removed
-                // and forall constraints re-emitted for this sub.
-                structural_mutation = true;
-
                 // Helper closure: resolve a collection count value to an integer.
                 // Returns (count, optional warning diagnostic).
                 // Value::Undef is treated as 0 without warning — it represents an undetermined
@@ -1649,6 +1645,15 @@ impl Engine {
                 let (new_count, new_warn) = resolve_count(&new_count_val, "new");
                 if let Some(w) = new_warn {
                     diagnostics.push(w);
+                }
+                // task 4530 (amend): gate structural_mutation on the resolved integer
+                // count changing, not on raw Value inequality. Raw values can differ
+                // while resolving to the same instance count: e.g. old=Value::Undef
+                // and new=Value::Int(0) both resolve to 0 via resolve_count, so no
+                // cells are added or removed and the O(graph) dep-structure rebuild
+                // is wasted work. Only mark structural when the actual counts differ.
+                if old_count != new_count {
+                    structural_mutation = true;
                 }
                 for i in 0..new_count {
                     let scoped_entity =
@@ -1945,6 +1950,17 @@ impl Engine {
         //
         // Mirrors edit_source step-15 (engine_edit.rs:3326-3331).
         // When false (plain param edits), the cheap snapshot-only path is kept.
+        //
+        // NOTE — grow-then-read gap (pre-existing, tactical fix scope):
+        // The dep-structure rebuild happens here, at the END of the edit_param
+        // call that grew the collection. Grown instances' forall constraints are
+        // present in the new reverse_index for SUBSEQUENT edit_param calls, but
+        // are NOT solved within this call. A caller that does edit_param(n, +N)
+        // and then reads EvalResult without issuing a further edit will see
+        // newly-grown auto params as unsolved (Value::Undef). This is intentional
+        // at the tactical-fix level; a future unified-DAG driver (θ2) will close
+        // the gap by re-evaluating grown instances within the same pass that
+        // grows them.
         if structural_mutation {
             let compiled_fields = Arc::clone(&self.compiled_fields);
             let new_reverse_index =
