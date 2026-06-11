@@ -1458,18 +1458,38 @@ pub(crate) fn compile_expr_guarded(
 
                 // Pass 1: assign named args to their target param slot.
                 // Unknown named args (no matching param) are handled below (lenient __arg{i}).
+                // Duplicate named args (same param named twice) emit a diagnostic; last-write-wins
+                // as a graceful fallback so compilation can continue.
                 for (call_idx, arg_name) in arg_names.iter().enumerate() {
                     if let Some(pname) = arg_name
                         && let Some(pidx) =
                             params.iter().position(|(n, _)| *n == pname.as_str())
                     {
+                        if param_arg[pidx].is_some() {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "duplicate named argument '{}' in call to '{}'; \
+                                     parameter supplied more than once",
+                                    pname, name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "argument supplied more than once",
+                                )),
+                            );
+                        }
                         param_arg[pidx] = Some(call_idx);
                     }
                 }
 
                 // Pass 2: assign positional (None) args to the next
-                // uncovered declaration-order param slot.
+                // uncovered declaration-order param slot.  Over-arity positional
+                // args (beyond the param count) are collected into
+                // `extra_positional_idxs` and appended to ordered_args below as
+                // `__arg{call_idx}` — matching the lenient fallback for unknown
+                // named args and preserving the pre-task-4522 IR representation.
                 let mut next_slot = 0usize;
+                let mut extra_positional_idxs: Vec<usize> = Vec::new();
                 for (call_idx, arg_name) in arg_names.iter().enumerate() {
                     if arg_name.is_none() {
                         // Advance past any named-bound slots.
@@ -1479,9 +1499,11 @@ pub(crate) fn compile_expr_guarded(
                         if next_slot < nparams {
                             param_arg[next_slot] = Some(call_idx);
                             next_slot += 1;
+                        } else {
+                            // Over-arity positional arg: no param slot remaining.
+                            // Preserve pre-task-4522 IR representation (__arg{i}).
+                            extra_positional_idxs.push(call_idx);
                         }
-                        // Extra positional args beyond param count: dropped
-                        // (same semantics as the old params.get(i) None path).
                     }
                 }
 
@@ -1505,6 +1527,14 @@ pub(crate) fn compile_expr_guarded(
                             compiled_args[call_idx].clone(),
                         ));
                     }
+                }
+                // Lenient fallback: over-arity positional args appended as
+                // __arg{call_idx}, matching the unknown-named-arg fallback above.
+                for call_idx in extra_positional_idxs {
+                    ordered_args.push((
+                        format!("__arg{}", call_idx),
+                        compiled_args[call_idx].clone(),
+                    ));
                 }
 
                 // Compute defaults: uncovered params with a default_expr.

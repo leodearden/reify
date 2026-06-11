@@ -79,9 +79,14 @@ fn named_arg_beyond_trait_param_binds_by_name_not_position() {
     let values = reify_test_support::eval_source(SOURCE).values;
 
     let zr_id = ValueCellId::new("Probe", "zr");
-    let zr = values
-        .get(&zr_id)
-        .unwrap_or_else(|| panic!("Probe.zr must be present in eval result; present keys: ???"));
+    let zr = values.get(&zr_id).unwrap_or_else(|| {
+        let mut present_keys: Vec<String> =
+            values.iter().map(|(k, _)| k.to_string()).collect();
+        present_keys.sort();
+        panic!(
+            "Probe.zr must be present in eval result; present keys: {present_keys:?}"
+        )
+    });
 
     match zr {
         Value::Scalar { si_value, dimension } => {
