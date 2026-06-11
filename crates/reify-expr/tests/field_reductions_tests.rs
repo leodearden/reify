@@ -2450,3 +2450,232 @@ fn reductions_on_vonmises_field_with_partial_nan_windows_skip_nan() {
         "argmax(VonMises field with partial NaN) should skip NaN and return coord 1.0 m"
     );
 }
+
+// ── Step S1 (MaxShear): max / min reduce a MaxShear-derived Sampled field ───
+//
+// These tests are RED before the MaxShear arm is implemented in
+// `field_reductions.rs` (returns Value::Undef at the catch-all).
+// After step-4 they become GREEN.
+//
+// Uniaxial window convention: window_i = [σ_i, 0, 0, 0, 0, 0, 0, 0, 0].
+// For a uniaxial tensor the only non-zero principal stress is σ_xx,
+// so max_shear = σ_xx / 2 exactly.
+
+/// `max` / `min` over a MaxShear-source field whose lambda is a 1-D Sampled
+/// tensor field (directly constructed, bypassing `compute_max_shear` wrapping).
+///
+/// Uniaxial windows: σ_xx = {100e6, 250e6, 175e6} → τ_max = σ/2 =
+/// {50e6, 125e6, 87.5e6}. Expected: max = 125e6 Pa, min = 50e6 Pa.
+///
+/// **RED before step-4**: MaxShear arm returns `Value::Undef`.
+#[test]
+fn max_min_max_shear_derived_sampled_field_returns_correct_extremum() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Build the inner Sampled tensor field (stride-9 uniaxial windows).
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+
+    // Directly construct the MaxShear-source field (lambda = inner tensor field).
+    let (maxshear_field, maxshear_field_type) = make_field_with_source(
+        length.clone(),
+        pressure.clone(),
+        FieldSourceKind::MaxShear,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max(maxshear_field) should be 125e6 Pa (= 250e6 / 2)
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(maxshear_field.clone(), maxshear_field_type.clone())],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar {
+            si_value: 125e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(MaxShear field) should return 125e6 Pa (τ_max of σ=250e6 window)"
+    );
+
+    // min(maxshear_field) should be 50e6 Pa (= 100e6 / 2)
+    let min_expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(maxshear_field, maxshear_field_type)],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Scalar {
+            si_value: 50e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "min(MaxShear field) should return 50e6 Pa (τ_max of σ=100e6 window)"
+    );
+}
+
+/// `argmax` / `argmin` over a MaxShear-source 1-D field with LENGTH domain.
+///
+/// Same inner field as above: σ = {100e6, 250e6, 175e6} → τ = {50e6, 125e6, 87.5e6}.
+/// argmax → index 1 → coord 1.0 m; argmin → index 0 → coord 0.0 m.
+///
+/// **RED before step-4**.
+#[test]
+fn argmax_argmin_max_shear_field_1d_returns_coord() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+    let (maxshear_field, maxshear_field_type) = make_field_with_source(
+        length.clone(),
+        pressure.clone(),
+        FieldSourceKind::MaxShear,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → index 1 → coord 1.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(maxshear_field.clone(), maxshear_field_type.clone())],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(MaxShear 1-D field) should return coord at projected max (index 1 → 1.0 m)"
+    );
+
+    // argmin → index 0 → coord 0.0 m
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(maxshear_field, maxshear_field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(MaxShear 1-D field) should return coord at projected min (index 0 → 0.0 m)"
+    );
+}
+
+/// Partial-NaN skip: windows [NaN×9, uniaxial(250e6), NaN×9] →
+/// projected τ = [NaN, 125e6, NaN] → max = 125e6 Pa, argmax → coord 1.0 m.
+///
+/// **RED before step-4**.
+#[test]
+fn reductions_on_max_shear_field_with_partial_nan_windows_skip_nan() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let sf = make_sampled_tensor_1d(
+        "partial_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            [f64::NAN; 9],           // out-of-solid sentinel
+            uniaxial_window(250e6),  // finite: τ_max = 125e6 Pa
+            [f64::NAN; 9],           // out-of-solid sentinel
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(sf, length.clone());
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        pressure.clone(),
+        FieldSourceKind::MaxShear,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max → the single finite projected window: 125e6 Pa
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar {
+            si_value: 125e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(MaxShear field with partial NaN) should skip NaN and return 125e6 Pa"
+    );
+
+    // argmax → the finite window at axis index 1 → coord 1.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(MaxShear field with partial NaN) should skip NaN and return coord 1.0 m"
+    );
+}
+
+/// Defensive: all four reductions return `Value::Undef` when the MaxShear
+/// field's lambda is NOT a Sampled `Value::Field` (e.g. `Value::Undef`).
+///
+/// Pins the `project_max_shear_sampled` level-1 defensive arm (non-Sampled
+/// lambda → None → Undef).
+#[test]
+fn all_reductions_on_max_shear_field_with_non_sampled_lambda_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        pressure,
+        FieldSourceKind::MaxShear,
+        Value::Undef,
+    );
+    assert_all_reductions_undef(field, field_type, "MaxShear with non-Sampled lambda (Undef)");
+}
