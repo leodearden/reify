@@ -1436,20 +1436,84 @@ pub(crate) fn compile_expr_guarded(
                     .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
                     .map(|vc| (vc.id.member.as_str(), vc.default_expr.as_ref()))
                     .collect();
+                // --- By-name binder (task-4522) ---
+                // Named arg `p` binds to the template param named `p`;
+                // positional (None) args fill the next declaration-order
+                // param not already bound by a named arg.  ordered_args is
+                // emitted in template param-declaration order; uncovered
+                // params with a default_expr contribute to `defaults`.
+                //
+                // All-positional behaviour (all arg_names == None) is
+                // identical to the previous positional-only code, so
+                // existing zero-arg and all-positional SIR ctor tests are
+                // unaffected.
+                //
+                // Unknown named-arg (no matching param): appended as
+                // __arg{i} in ordered_args (lenient; preserves existing IR
+                // handling and avoids a new panic for out-of-scope case).
+                let nparams = params.len();
+                // param_arg[pidx] = Some(call_arg_index) when param pidx
+                // is bound by a call arg; None when uncovered.
+                let mut param_arg: Vec<Option<usize>> = vec![None; nparams];
+
+                // Pass 1: assign named args to their target param slot.
+                for (call_idx, arg_name) in arg_names.iter().enumerate() {
+                    if let Some(pname) = arg_name {
+                        if let Some(pidx) =
+                            params.iter().position(|(n, _)| *n == pname.as_str())
+                        {
+                            param_arg[pidx] = Some(call_idx);
+                        }
+                        // Unknown named arg: handled below (lenient __arg{i}).
+                    }
+                }
+
+                // Pass 2: assign positional (None) args to the next
+                // uncovered declaration-order param slot.
+                let mut next_slot = 0usize;
+                for (call_idx, arg_name) in arg_names.iter().enumerate() {
+                    if arg_name.is_none() {
+                        // Advance past any named-bound slots.
+                        while next_slot < nparams && param_arg[next_slot].is_some() {
+                            next_slot += 1;
+                        }
+                        if next_slot < nparams {
+                            param_arg[next_slot] = Some(call_idx);
+                            next_slot += 1;
+                        }
+                        // Extra positional args beyond param count: dropped
+                        // (same semantics as the old params.get(i) None path).
+                    }
+                }
+
+                // Build ordered_args in template param-declaration order.
                 let mut ordered_args: Vec<(String, CompiledExpr)> =
                     Vec::with_capacity(compiled_args.len());
-                for (i, arg) in compiled_args.iter().enumerate() {
-                    let pname = params
-                        .get(i)
-                        .map(|(n, _)| (*n).to_string())
-                        .unwrap_or_else(|| format!("__arg{}", i));
-                    ordered_args.push((pname, arg.clone()));
+                for (pidx, (pname, _)) in params.iter().enumerate() {
+                    if let Some(call_idx) = param_arg[pidx] {
+                        ordered_args
+                            .push(((*pname).to_string(), compiled_args[call_idx].clone()));
+                    }
                 }
-                let covered = ordered_args.len();
+                // Lenient fallback: unknown named args (no matching param)
+                // are appended as __arg{i} to preserve existing IR handling.
+                for (call_idx, arg_name) in arg_names.iter().enumerate() {
+                    if let Some(pname) = arg_name {
+                        if !params.iter().any(|(n, _)| *n == pname.as_str()) {
+                            ordered_args.push((
+                                format!("__arg{}", call_idx),
+                                compiled_args[call_idx].clone(),
+                            ));
+                        }
+                    }
+                }
+
+                // Compute defaults: uncovered params with a default_expr.
                 let defaults: Vec<(String, CompiledExpr)> = params
                     .iter()
-                    .skip(covered)
-                    .filter_map(|(n, d)| d.map(|e| ((*n).to_string(), e.clone())))
+                    .enumerate()
+                    .filter(|(pidx, _)| param_arg[*pidx].is_none())
+                    .filter_map(|(_, (n, d))| d.map(|e| ((*n).to_string(), e.clone())))
                     .collect();
                 // Collect the template's Let cells in declaration order (task-4342):
                 // each Let's compiled expr is stored in `default_expr`; the ctor
