@@ -113,6 +113,252 @@ pub(crate) fn compute_argmin(field_val: &Value) -> Value {
     compute_argextremum(field_val, true)
 }
 
+// ─── Bounded reductions: max/min/argmax/argmin(field, bounds: BoundingBox) ───
+
+/// Compute `max(field, bounds)` — return the maximum codomain value of a
+/// `Sampled`-source field restricted to grid nodes inside `bounds`.
+///
+/// `Analytical`/`Composed` grid-sampling is implemented in step-4 of
+/// task 4561.  All other source kinds return `Value::Undef`.
+pub(crate) fn compute_max_bounded(
+    field: &Value,
+    bounds: &Value,
+    ctx: &crate::EvalContext<'_>,
+) -> Value {
+    compute_bounded_extremum(field, bounds, false, ctx)
+}
+
+/// Compute `min(field, bounds)` — symmetric with [`compute_max_bounded`].
+pub(crate) fn compute_min_bounded(
+    field: &Value,
+    bounds: &Value,
+    ctx: &crate::EvalContext<'_>,
+) -> Value {
+    compute_bounded_extremum(field, bounds, true, ctx)
+}
+
+/// Compute `argmax(field, bounds)` — return the domain coord at the maximum
+/// within `bounds` for a `Sampled`-source field.
+pub(crate) fn compute_argmax_bounded(
+    field: &Value,
+    bounds: &Value,
+    ctx: &crate::EvalContext<'_>,
+) -> Value {
+    compute_bounded_argextremum(field, bounds, false, ctx)
+}
+
+/// Compute `argmin(field, bounds)` — symmetric with [`compute_argmax_bounded`].
+pub(crate) fn compute_argmin_bounded(
+    field: &Value,
+    bounds: &Value,
+    ctx: &crate::EvalContext<'_>,
+) -> Value {
+    compute_bounded_argextremum(field, bounds, true, ctx)
+}
+
+/// Shared body for `compute_max_bounded` / `compute_min_bounded`.
+///
+/// # Sampled sub-region
+///
+/// Clips the grid to nodes whose per-axis coord ∈ [lo[k], hi[k]] inclusive
+/// (raw SI f64, first `n = axis_grids.len()` bbox axes used).  Non-finite
+/// data values are skipped via [`argmax_argmin_index`].  Empty sub-region
+/// (no in-bounds nodes, or all non-finite) → `Value::Undef`.
+///
+/// # Analytical / Composed
+///
+/// Grid-sampler over the bounding box (task 4561 step-4, not yet
+/// implemented here).  Returns `Value::Undef` until step-4 lands.
+///
+/// # Other sources
+///
+/// `VonMises`/`Imported`/derived sources → `Value::Undef`.
+fn compute_bounded_extremum(
+    field: &Value,
+    bounds: &Value,
+    find_min: bool,
+    _ctx: &crate::EvalContext<'_>,
+) -> Value {
+    let (codomain_type, source, lambda) = match field {
+        Value::Field { codomain_type, source, lambda, .. } => (codomain_type, source, lambda),
+        _ => return Value::Undef,
+    };
+
+    let (lo, hi) = match bbox_coords(bounds) {
+        Some(pair) => pair,
+        None => return Value::Undef,
+    };
+
+    match source {
+        FieldSourceKind::Sampled => match lambda.as_ref() {
+            Value::SampledField(sf) => {
+                reduce_sampled_extremum_bounded(sf, &lo, &hi, codomain_type, find_min)
+            }
+            _ => Value::Undef,
+        },
+        // Analytical/Composed: grid-sampler deferred to step-4.
+        // 1-arg form remains honest-Undef (compute_extremum above).
+        FieldSourceKind::Analytical | FieldSourceKind::Composed => Value::Undef,
+        _ => Value::Undef,
+    }
+}
+
+/// Shared body for `compute_argmax_bounded` / `compute_argmin_bounded`.
+fn compute_bounded_argextremum(
+    field: &Value,
+    bounds: &Value,
+    find_min: bool,
+    _ctx: &crate::EvalContext<'_>,
+) -> Value {
+    let (domain_type, source, lambda) = match field {
+        Value::Field { domain_type, source, lambda, .. } => (domain_type, source, lambda),
+        _ => return Value::Undef,
+    };
+
+    let (lo, hi) = match bbox_coords(bounds) {
+        Some(pair) => pair,
+        None => return Value::Undef,
+    };
+
+    match source {
+        FieldSourceKind::Sampled => match lambda.as_ref() {
+            Value::SampledField(sf) => {
+                reduce_sampled_argextremum_bounded(sf, &lo, &hi, domain_type, find_min)
+            }
+            _ => Value::Undef,
+        },
+        // Analytical/Composed: deferred to step-4.
+        FieldSourceKind::Analytical | FieldSourceKind::Composed => Value::Undef,
+        _ => Value::Undef,
+    }
+}
+
+/// Extract `(lo_coords, hi_coords)` as `Vec<f64>` from a `Value::BoundingBox`.
+///
+/// The BoundingBox min/max corners are `Value::Point` of 3 components;
+/// each component is `Value::Real` (dimensionless) or
+/// `Value::Scalar { .. }` (dimensioned).  SI f64 is extracted via
+/// [`Value::as_f64`].
+///
+/// Returns `None` if `bounds` is not a `BoundingBox`, or if any component
+/// fails `as_f64()`.
+fn bbox_coords(bounds: &Value) -> Option<(Vec<f64>, Vec<f64>)> {
+    let (min_pt, max_pt) = match bounds {
+        Value::BoundingBox { min, max } => (min.as_ref(), max.as_ref()),
+        _ => return None,
+    };
+
+    let extract = |pt: &Value| -> Option<Vec<f64>> {
+        match pt {
+            Value::Point(components) => components.iter().map(|c| c.as_f64()).collect(),
+            _ => None,
+        }
+    };
+
+    Some((extract(min_pt)?, extract(max_pt)?))
+}
+
+/// Clip a `SampledField` to nodes within `[lo, hi]` (inclusive, per-axis)
+/// and return the extremum codomain value.
+///
+/// `n = sf.axis_grids.len()` axes are checked; only the first `n` entries
+/// of `lo`/`hi` are used.  Returns `Value::Undef` on empty sub-region or
+/// shape mismatch.
+fn reduce_sampled_extremum_bounded(
+    sf: &SampledField,
+    lo: &[f64],
+    hi: &[f64],
+    codomain_type: &reify_core::Type,
+    find_min: bool,
+) -> Value {
+    let n = sf.axis_grids.len();
+    if lo.len() < n || hi.len() < n {
+        return Value::Undef;
+    }
+
+    let mut axis_lengths = [0usize; MAX_AXES];
+    for (k, g) in sf.axis_grids.iter().enumerate().take(n) {
+        axis_lengths[k] = g.len();
+    }
+    let expected_len: usize = axis_lengths[..n].iter().product();
+    if sf.data.len() != expected_len {
+        return Value::Undef;
+    }
+
+    let mut in_bounds_values: Vec<f64> = Vec::new();
+    for linear in 0..sf.data.len() {
+        let per_axis = decompose_index(linear, &axis_lengths[..n]);
+        let mut ok = true;
+        for k in 0..n {
+            let coord = sf.axis_grids[k][per_axis[k]];
+            if coord < lo[k] || coord > hi[k] {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            in_bounds_values.push(sf.data[linear]);
+        }
+    }
+
+    match argmax_argmin_index(&in_bounds_values, find_min) {
+        Some(best_idx) => wrap_codomain(in_bounds_values[best_idx], codomain_type),
+        None => Value::Undef,
+    }
+}
+
+/// Clip a `SampledField` to nodes within `[lo, hi]` (inclusive, per-axis)
+/// and return the domain coord at the extremum.
+fn reduce_sampled_argextremum_bounded(
+    sf: &SampledField,
+    lo: &[f64],
+    hi: &[f64],
+    domain_type: &reify_core::Type,
+    find_min: bool,
+) -> Value {
+    let n = sf.axis_grids.len();
+    if lo.len() < n || hi.len() < n {
+        return Value::Undef;
+    }
+
+    let mut axis_lengths = [0usize; MAX_AXES];
+    for (k, g) in sf.axis_grids.iter().enumerate().take(n) {
+        axis_lengths[k] = g.len();
+    }
+    let expected_len: usize = axis_lengths[..n].iter().product();
+    if sf.data.len() != expected_len {
+        return Value::Undef;
+    }
+
+    let mut in_bounds_values: Vec<f64> = Vec::new();
+    let mut in_bounds_coords: Vec<[f64; MAX_AXES]> = Vec::new();
+
+    for linear in 0..sf.data.len() {
+        let per_axis = decompose_index(linear, &axis_lengths[..n]);
+        let mut ok = true;
+        let mut coords_si = [0.0f64; MAX_AXES];
+        for k in 0..n {
+            let coord = sf.axis_grids[k][per_axis[k]];
+            coords_si[k] = coord;
+            if coord < lo[k] || coord > hi[k] {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            in_bounds_values.push(sf.data[linear]);
+            in_bounds_coords.push(coords_si);
+        }
+    }
+
+    match argmax_argmin_index(&in_bounds_values, find_min) {
+        Some(best_idx) => {
+            wrap_coord_for_domain(&in_bounds_coords[best_idx][..n], domain_type)
+        }
+        None => Value::Undef,
+    }
+}
+
 /// Shared body for `compute_max` / `compute_min`. `find_min == true`
 /// selects the minimum, `false` selects the maximum.
 fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
