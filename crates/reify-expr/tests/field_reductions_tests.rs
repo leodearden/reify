@@ -829,23 +829,27 @@ fn all_reductions_on_imported_field_return_undef() {
 
 /// `max`/`min`/`argmax`/`argmin` over a derived source that is NOT yet
 /// fully handled (still deferred) return `Value::Undef`. Using
-/// `PrincipalStresses` as the representative still-deferred source after
-/// both `VonMises` (task 4085) and `MaxShear` (task 4543) were promoted to
-/// fully-handled source kinds.
+/// `Gradient` as the representative still-deferred source after
+/// `VonMises` (task 4085), `MaxShear` (task 4543), and `PrincipalStresses`
+/// (task 4562) were promoted to fully-handled source kinds.
 ///
 /// This test is the surviving "other derived sources stay deferred" pin.
-/// It was repurposed VonMises → MaxShear in task 4085 step S5, and
-/// MaxShear → PrincipalStresses in task 4543 step S5.
-/// PrincipalStresses is the next still-deferred pointwise derived kind
-/// (→ task 4562).
+/// Retarget history:
+///   - VonMises → MaxShear (task 4085 step S5)
+///   - MaxShear → PrincipalStresses (task 4543 step S5)
+///   - PrincipalStresses → Gradient (task 4562 step-5)
+///
+/// Gradient (a differential operator) is deferred to the
+/// differential-field-reductions PRD; it is and remains Undef in
+/// `compute_extremum`/`compute_argextremum` via the `_ => Undef` fall-through.
 #[test]
 fn all_reductions_on_derived_non_vonmises_field_return_undef() {
     let (field, field_type) =
-        make_constant_real_analytical_field(FieldSourceKind::PrincipalStresses);
+        make_constant_real_analytical_field(FieldSourceKind::Gradient);
     assert_all_reductions_undef(
         field,
         field_type,
-        "derived (PrincipalStresses — still deferred → task 4562)",
+        "derived (Gradient — still deferred → differential-field-reductions PRD)",
     );
 }
 
