@@ -88,7 +88,11 @@ fn body_label(body: &Value) -> String {
 /// `try_eval_body_mass_props` (deferred-kernel dispatch path) so the ladder and
 /// the diagnostic are single-sourced regardless of whether the geometric query
 /// is available.
-fn resolve_body_density(
+///
+/// `pub(crate)` so the modal_ops cross-path convergence test (task 4470 step-3)
+/// can feed the same material Value to both the modal and dynamics resolution
+/// paths without duplicating the ladder logic.
+pub(crate) fn resolve_body_density(
     body: &Value,
     density_arg: Option<&Value>,
     diagnostics: &mut Vec<Diagnostic>,

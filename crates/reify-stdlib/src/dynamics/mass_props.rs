@@ -7,7 +7,10 @@
 //! owns the `Value`/diagnostic/kernel wiring that calls into this module).
 //!
 //! Two responsibilities:
-//!   * [`resolve_density`] — the fn-level density priority ladder
+//!   * [`resolve_density_strict`] — the shared explicit→material rung-walk,
+//!     returning `None` when neither source is present (strict / no-water tail).
+//!   * [`resolve_density`] — thin wrapper over `resolve_density_strict` that
+//!     adds the `DEFAULT_DENSITY_KG_M3` water tail used by `body_mass_props`
 //!     (explicit arg > body `Material` density > default water).
 //!   * `uniform_box_inertia` (added in step-4) — the closed-form analytic
 //!     ground-truth mass/com/inertia for a uniform-density box, the value the
@@ -42,6 +45,32 @@ pub enum DensitySource {
     DefaultWater,
 }
 
+/// Walk the explicit→material priority ladder and return the winning rung, or
+/// `None` if neither source is present (strict / no-water tail).
+///
+/// This is the **single canonical definition** of the density rung-walk.
+/// Both `body_mass_props` (via [`resolve_density`]) and modal FEA (via
+/// `extract_density_or_degenerate`) delegate here so the ladder is defined in
+/// exactly one place; callers differ only in how they handle the `None` tail:
+///
+/// * [`resolve_density`] maps `None → (DEFAULT_DENSITY_KG_M3, DefaultWater)`.
+/// * `modal_ops::extract_density_or_degenerate` maps `None → E_ModalNoMassMatrix`
+///   (eigenfrequencies scale with √(1/ρ); a silent ρ=1000 would yield
+///   plausible-but-wrong physics).
+///
+/// Like [`resolve_density`] this is pure `f64` selection — no validation of
+/// the magnitude (a non-positive or `NaN` density is returned verbatim).
+pub fn resolve_density_strict(
+    explicit: Option<f64>,
+    material: Option<f64>,
+) -> Option<(f64, DensitySource)> {
+    if let Some(rho) = explicit {
+        Some((rho, DensitySource::Explicit))
+    } else {
+        material.map(|rho| (rho, DensitySource::Material))
+    }
+}
+
 /// Resolve the mass density for `body_mass_props` via the fn-level priority
 /// ladder (PRD §5.4): an explicit `density` argument wins; failing that, the
 /// body's `Material` density; failing that, the [`DEFAULT_DENSITY_KG_M3`] water
@@ -52,14 +81,12 @@ pub enum DensitySource {
 /// This is pure `f64` selection — no validation of the magnitude (a non-positive
 /// or `NaN` density is returned verbatim; physical validity of the resulting
 /// inertia is enforced downstream by the existing MassProperties PSD hook).
+///
+/// Implemented as a thin wrapper over [`resolve_density_strict`] so the
+/// explicit→material ladder is defined in exactly one place.
 pub fn resolve_density(explicit: Option<f64>, material: Option<f64>) -> (f64, DensitySource) {
-    if let Some(rho) = explicit {
-        (rho, DensitySource::Explicit)
-    } else if let Some(rho) = material {
-        (rho, DensitySource::Material)
-    } else {
-        (DEFAULT_DENSITY_KG_M3, DensitySource::DefaultWater)
-    }
+    resolve_density_strict(explicit, material)
+        .unwrap_or((DEFAULT_DENSITY_KG_M3, DensitySource::DefaultWater))
 }
 
 /// Closed-form mass/center-of-mass/inertia of a uniform-density axis-aligned
@@ -124,6 +151,79 @@ mod tests {
         let (rho, src) = resolve_density(None, None);
         assert_eq!(rho, 1000.0, "must fall back to the 1000 kg/m³ water default");
         assert_eq!(src, DensitySource::DefaultWater);
+    }
+
+    // ── resolve_density_strict — strict (None) tail ──────────────────────────
+
+    #[test]
+    fn strict_explicit_density_wins_over_material() {
+        // (a) explicit Some(2700) beats material Some(7850): the explicit
+        // `density` arg is the highest ladder rung.
+        let result = resolve_density_strict(Some(2700.0), Some(7850.0));
+        assert_eq!(
+            result,
+            Some((2700.0, DensitySource::Explicit)),
+            "explicit rung must win verbatim"
+        );
+    }
+
+    #[test]
+    fn strict_material_density_used_when_no_explicit() {
+        // (b) explicit None, material Some(7850) -> Material rung.
+        let result = resolve_density_strict(None, Some(7850.0));
+        assert_eq!(
+            result,
+            Some((7850.0, DensitySource::Material)),
+            "material rung must be used when no explicit arg"
+        );
+    }
+
+    #[test]
+    fn strict_returns_none_when_neither_present() {
+        // (c) explicit None, material None -> STRICT tail: no water fallback.
+        let result = resolve_density_strict(None, None);
+        assert_eq!(result, None, "strict tail must return None, not water");
+    }
+
+    #[test]
+    fn strict_shared_rung_walk_invariant() {
+        // (d) Invariant: for the explicit and material rungs,
+        //     resolve_density_strict(e, m) == Some(resolve_density(e, m)).
+        //     At the empty tail the two functions diverge by design:
+        //     resolve_density(None,None) == (1000.0, DefaultWater)
+        //     resolve_density_strict(None,None) == None.
+
+        // explicit rung — both agree
+        let strict_e = resolve_density_strict(Some(2700.0), Some(7850.0));
+        let water_e = resolve_density(Some(2700.0), Some(7850.0));
+        assert_eq!(
+            strict_e,
+            Some(water_e),
+            "on the explicit rung strict and water wrappers must agree"
+        );
+
+        // material rung — both agree
+        let strict_m = resolve_density_strict(None, Some(7850.0));
+        let water_m = resolve_density(None, Some(7850.0));
+        assert_eq!(
+            strict_m,
+            Some(water_m),
+            "on the material rung strict and water wrappers must agree"
+        );
+
+        // empty tail — intentional divergence
+        let strict_none = resolve_density_strict(None, None);
+        let (water_rho, water_src) = resolve_density(None, None);
+        assert_eq!(strict_none, None, "strict tail must be None");
+        assert_eq!(
+            water_rho, 1000.0,
+            "water wrapper must fall back to 1000 kg/m³"
+        );
+        assert_eq!(
+            water_src,
+            DensitySource::DefaultWater,
+            "water wrapper must report DefaultWater"
+        );
     }
 
     // ── uniform_box_inertia analytic ground truth ────────────────────────────
