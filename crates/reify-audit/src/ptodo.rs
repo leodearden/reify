@@ -509,6 +509,141 @@ fn is_terminal_status(status: &str) -> bool {
     status == "done" || status == "cancelled"
 }
 
+// -----------------------------------------------------------------------
+// §6.3 inverse lane — non-terminal tasks citing git-deleted metadata.files paths
+// -----------------------------------------------------------------------
+
+/// §6.3 inverse-lane membership test: returns `true` when `path` (trailing-
+/// slash-tolerant) is "present in the tracked set" — i.e. it equals a tracked
+/// file OR is a directory prefix of some tracked file (a tracked file starts
+/// with `path + "/"`). Strips at most one trailing `/` before the checks.
+///
+/// This guard suppresses the critical FP class where `metadata.files` names
+/// a DIRECTORY that still exists (e.g. `crates/reify-audit/tests`): a
+/// directory is never a member of the `git ls-files` set, yet
+/// `git log -1 -- <dir>` returns non-empty — without this guard, every
+/// directory citation would produce a false-positive finding.
+fn path_present_in_tracked(path: &str, tracked: &std::collections::HashSet<String>) -> bool {
+    // Strip at most one trailing slash for both exact-match and prefix checks.
+    let path = path.trim_end_matches('/');
+    if tracked.contains(path) {
+        return true;
+    }
+    // Directory-prefix membership: some tracked file lives under `path/`.
+    let prefix = format!("{}/", path);
+    tracked.iter().any(|f| f.starts_with(&prefix))
+}
+
+/// §6.3 inverse lane: for each non-terminal master task, check each cited
+/// `metadata.files` path. A path absent from `tracked` (not an exact tracked
+/// file and not a directory prefix of one) is checked for git history via
+/// [`crate::GitOps::last_commit_for_path`]:
+///
+/// - `Some(commit)` → the path was deleted → emit a Medium [`Pattern::PTodo`]
+///   `task-cites-deleted-path` finding carrying the task id, the path, and
+///   the last-touching commit.
+/// - `None` → path never existed → presumed to-be-created → pass (no finding).
+///
+/// Fail-soft on DB errors (propagated as `Err` so the caller's
+/// `and_then`-based degradation handles them alongside the liveness lane).
+/// NULL/malformed/missing `metadata` → empty files list → graceful (no panic).
+///
+/// Findings are sorted by (task_id, path) for determinism; deleted paths are
+/// by definition absent from `tracked` so they never share a key with the
+/// structural/liveness (path, line) findings.
+// G-allow: test-facing thin pub fn (mirrors resolve_liveness's pattern). MUST stay `pub`: its sole callers are the tests/ptodo.rs integration test binary (a SEPARATE crate — cannot see crate-private items) and check() (same module); `pub(crate)` would break the integration test, `#[cfg(test)]` would hide it from the same external caller.
+pub fn resolve_inverse(
+    conn: &rusqlite::Connection,
+    git: &dyn crate::GitOps,
+    tracked: &std::collections::HashSet<String>,
+) -> rusqlite::Result<Vec<Finding>> {
+    let mut stmt =
+        conn.prepare("SELECT id, status, metadata FROM tasks WHERE tag = 'master'")?;
+
+    let rows: Vec<(i64, String, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut out: Vec<Finding> = Vec::new();
+
+    for (id, status, metadata_opt) in rows {
+        if is_terminal_status(&status) {
+            continue;
+        }
+
+        // Parse metadata.files: NULL / malformed / missing key → empty, graceful.
+        let files: Vec<String> = metadata_opt
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
+            .and_then(|v| v.get("files").and_then(|a| a.as_array()).cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+
+        for path in files {
+            if path_present_in_tracked(&path, tracked) {
+                continue;
+            }
+            // Path absent from tracked set — check git history (fail-safe: None
+            // on any git error → no false positive).
+            if let Some(commit) = git.last_commit_for_path(&path) {
+                out.push(Finding {
+                    pattern: Pattern::PTodo,
+                    severity: Severity::Medium,
+                    task_id: id.to_string(),
+                    summary: format!(
+                        "task-cites-deleted-path: task #{id} cites deleted path '{path}' (last touched {sha})",
+                        sha = commit.sha,
+                    ),
+                    evidence: vec![
+                        EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
+                        EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
+                    ],
+                });
+            }
+            // None → path never existed → presumed to-be-created → pass.
+        }
+    }
+
+    // Deterministic order: (task_id parsed as integer, path). Deleted paths are
+    // absent from `tracked` so there is no cross-lane sort key collision.
+    out.sort_by(|a, b| {
+        let id_a = a.task_id.parse::<i64>().unwrap_or(i64::MAX);
+        let id_b = b.task_id.parse::<i64>().unwrap_or(i64::MAX);
+        let path_a = a
+            .evidence
+            .iter()
+            .find_map(|e| {
+                if let EvidenceRef::MetadataFiles { entries } = e {
+                    entries.first().cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        let path_b = b
+            .evidence
+            .iter()
+            .find_map(|e| {
+                if let EvidenceRef::MetadataFiles { entries } = e {
+                    entries.first().cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        id_a.cmp(&id_b).then(path_a.cmp(&path_b))
+    });
+
+    Ok(out)
+}
+
 /// §8.2/§8.3 liveness resolution: per cited marker, resolve each `#NNNN` id's
 /// status against the task DB and classify.
 ///
