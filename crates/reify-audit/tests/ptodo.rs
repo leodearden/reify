@@ -11,6 +11,8 @@
 //! In-memory rusqlite + MockJCodemunchOps satisfy `AuditContext` (the
 //! structural lane issues no SQL and no jcodemunch queries).
 
+mod common;
+
 mod ptodo {
 
 use reify_audit::{
@@ -149,4 +151,102 @@ mod tests {
     }
 }
 
+}
+
+// -----------------------------------------------------------------------
+// §8.2/§8.3 liveness lane — resolve_liveness against a seeded tasks table
+// -----------------------------------------------------------------------
+//
+// These tests drive `ptodo::resolve_liveness` directly against an in-memory
+// `tasks` table (common::schema::seed_tasks_db), with NO filesystem and NO
+// real task DB. They pin the §8.2 multi-cite rule and the §8.3 orphaned /
+// unknown-id taxonomy (both Medium).
+
+mod liveness {
+    use crate::common::schema::{insert_task, seed_tasks_db};
+    use reify_audit::{EvidenceRef, Pattern, Severity};
+
+    /// Build a single cited-marker tuple `(path, line, ids, text)` — the shape
+    /// `check` collects from `scan_file`'s `Cited` entries.
+    fn marker(path: &str, line: usize, ids: &[u32], text: &str) -> (String, usize, Vec<u32>, String) {
+        (path.to_string(), line, ids.to_vec(), text.to_string())
+    }
+
+    #[test]
+    fn orphaned_done_carries_id_and_status() {
+        let conn = seed_tasks_db();
+        insert_task(&conn, "master", 4444, "done");
+
+        let cited = vec![marker("a.rs", 2, &[4444], "// TODO(#4444): x")];
+        let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
+
+        assert_eq!(findings.len(), 1, "one orphaned finding; got {findings:?}");
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PTodo);
+        assert_eq!(f.severity, Severity::Medium);
+        assert!(f.summary.starts_with("orphaned:"), "summary: {}", f.summary);
+        assert!(f.summary.contains("#4444"), "summary must carry id: {}", f.summary);
+        assert!(f.summary.contains("done"), "summary must carry status: {}", f.summary);
+        assert_eq!(f.task_id, "a.rs");
+        assert!(
+            matches!(&f.evidence[..], [EvidenceRef::File { path }] if path == "a.rs"),
+            "evidence must be a single File ref at the path: {:?}",
+            f.evidence
+        );
+    }
+
+    #[test]
+    fn orphaned_cancelled_is_terminal() {
+        let conn = seed_tasks_db();
+        insert_task(&conn, "master", 10, "cancelled");
+
+        let cited = vec![marker("b.rs", 1, &[10], "// TODO(#10): y")];
+        let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
+
+        assert_eq!(findings.len(), 1, "got {findings:?}");
+        assert!(findings[0].summary.starts_with("orphaned:"), "{}", findings[0].summary);
+        assert!(findings[0].summary.contains("cancelled"), "{}", findings[0].summary);
+        assert!(findings[0].summary.contains("#10"), "{}", findings[0].summary);
+    }
+
+    #[test]
+    fn live_statuses_emit_no_finding() {
+        let conn = seed_tasks_db();
+        insert_task(&conn, "master", 1, "pending");
+        insert_task(&conn, "master", 2, "in-progress");
+
+        let cited = vec![
+            marker("p.rs", 1, &[1], "// TODO(#1): a"),
+            marker("p.rs", 2, &[2], "// TODO(#2): b"),
+        ];
+        let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
+
+        assert!(findings.is_empty(), "live cites must not orphan; got {findings:?}");
+    }
+
+    #[test]
+    fn absent_id_is_unknown_id() {
+        let conn = seed_tasks_db();
+        // id 999 is never seeded.
+        let cited = vec![marker("c.rs", 5, &[999], "// TODO(#999): z")];
+        let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
+
+        assert_eq!(findings.len(), 1, "got {findings:?}");
+        assert!(findings[0].summary.starts_with("unknown-id:"), "{}", findings[0].summary);
+        assert!(findings[0].summary.contains("#999"), "{}", findings[0].summary);
+    }
+
+    #[test]
+    fn one_live_cite_suffices_for_multi_cite_marker() {
+        let conn = seed_tasks_db();
+        insert_task(&conn, "master", 4444, "done");
+        insert_task(&conn, "master", 5555, "pending");
+
+        // A single marker citing one terminal (done) AND one live (pending) id
+        // → tracked → NO finding (§8.2 "one live cite suffices").
+        let cited = vec![marker("m.rs", 3, &[4444, 5555], "// TODO(#4444, #5555): x")];
+        let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
+
+        assert!(findings.is_empty(), "one live cite suffices; got {findings:?}");
+    }
 }
