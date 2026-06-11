@@ -450,4 +450,55 @@ mod tests {
             assert!((gz - 4.0).abs() < 1e-12, "node {g}: grad_z = {gz}");
         }
     }
+
+    // ── step-3: laplacian of a quadratic scalar field is exact ───────────────
+
+    /// 1D laplacian: f(x) = x² ⟹ ∇²f = 2 everywhere.
+    /// Central second difference is exact for quadratics; one-sided 3-point
+    /// form (f[0]-2f[1]+f[2])/h² also equals 2 for f=x², so all nodes pass.
+    #[test]
+    fn laplacian_1d_quadratic_exact() {
+        // ≥4 nodes so we exercise both interior and boundary nodes
+        let sf = make_1d_scalar(5, 1.0, |x| x * x);
+        let out = sampled_differential(&sf, DifferentialOp::Laplacian);
+
+        // out_stride = 1 (scalar), data.len() == grid_count
+        assert_eq!(out.data.len(), 5);
+
+        // Grid geometry preserved bit-for-bit
+        assert_eq!(out.kind, SampledGridKind::Regular1D);
+        assert_eq!(out.axis_grids, sf.axis_grids);
+        assert_eq!(out.spacing, sf.spacing);
+        assert_eq!(out.bounds_min, sf.bounds_min);
+        assert_eq!(out.bounds_max, sf.bounds_max);
+
+        for (g, &val) in out.data.iter().enumerate() {
+            assert!(
+                (val - 2.0).abs() < 1e-12,
+                "node {g}: laplacian = {val}, expected 2.0"
+            );
+        }
+    }
+
+    /// 2D laplacian: f(x,y) = x² + 2y² ⟹ ∇²f = 2 + 4 = 6 everywhere,
+    /// including all four boundary rows/columns.
+    #[test]
+    fn laplacian_2d_quadratic_exact() {
+        let nx = 5;
+        let ny = 4;
+        let sf = make_2d_scalar(nx, ny, 0.5, 0.5, |x, y| x * x + 2.0 * y * y);
+        let out = sampled_differential(&sf, DifferentialOp::Laplacian);
+
+        let grid_count = nx * ny;
+        assert_eq!(out.data.len(), grid_count);
+        assert_eq!(out.kind, SampledGridKind::Regular2D);
+        assert_eq!(out.axis_grids, sf.axis_grids);
+
+        for (g, &val) in out.data.iter().enumerate() {
+            assert!(
+                (val - 6.0).abs() < 1e-12,
+                "node {g}: laplacian = {val}, expected 6.0"
+            );
+        }
+    }
 }
