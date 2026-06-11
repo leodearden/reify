@@ -61,6 +61,19 @@ impl BuildScheduler {
     /// enabled. When the feature is disabled (the default), this always returns
     /// `LegacyMultiPass` regardless of the env value — the env gate is inert
     /// without the feature, so production builds opt in deliberately.
+    ///
+    /// # Unit-test coverage
+    ///
+    /// This thin env-reading wrapper delegates to the pure
+    /// [`BuildScheduler::from_env_value`] parser, which carries the exhaustive
+    /// string→scheduler cases (`build_scheduler_from_env_value_parsing`). Mirroring
+    /// the codebase convention (`warm_pool::WarmStatePool::from_env_or_default`,
+    /// `dispatcher` long-chain threshold), the wrapper is intentionally NOT
+    /// unit-tested with `std::env::set_var`/`remove_var` — both are `unsafe` in
+    /// Rust 2024 and race-prone across parallel tests. BOTH configurations are
+    /// still pinned without env mutation: the feature-off inert path
+    /// (`from_env_is_inert_legacy_without_feature`) and the feature-on delegation
+    /// (`from_env_feature_on_delegates_to_parser_over_real_env`).
     pub fn from_env() -> Self {
         #[cfg(feature = "unified-dag")]
         {
@@ -497,6 +510,21 @@ fn unresolved_diagnostics(
 /// O(V+E) and makes realization↔realization cycles safe. Order-insensitive — the
 /// result is consulted only via `contains`, so it never leaks `HashMap`
 /// iteration order into the diagnostic vector.
+///
+/// # Known limitation (intentional δ scope)
+///
+/// The closure follows ONLY realization→realization (`realization_reads`) edges
+/// and tests each realization's DIRECT `reads` for auto-ness. It does NOT chase
+/// value-cell→value-cell read chains: a realization that reads a NON-auto `let`
+/// cell which itself transitively depends on an auto param is NOT tainted, so a
+/// constraint backed only through such a value chain emits no
+/// `E_EVAL_UNRESOLVED`. This is deliberate — the δ contract requires auto to be
+/// reached through a realization's DIRECT read, and the pure structural pass
+/// stops here: telling a value-chain-to-auto the solver would legitimately settle
+/// apart from one it would not is solver-aware reasoning that belongs to ε's
+/// executors + the `DeterminacyState::Determined` readiness gate, not δ's planner.
+/// Extending the seed to taint value→value-to-auto chains (with a covering test)
+/// is the additive ε refinement if that class should also be declined.
 fn realizations_reaching_auto(
     graph: &EvaluationGraph,
     traces: &HashMap<NodeId, DependencyTrace>,
@@ -586,6 +614,34 @@ mod tests {
     #[test]
     fn build_scheduler_default_is_legacy() {
         assert_eq!(BuildScheduler::default(), BuildScheduler::LegacyMultiPass);
+    }
+
+    /// Task 4357 δ (amendment #3): direct coverage of the PRODUCTION
+    /// [`BuildScheduler::from_env`] wrapper in the DEFAULT (feature-off) build —
+    /// the configuration that actually ships and that `verify.sh` exercises. With
+    /// `unified-dag` disabled the env gate is inert, so `from_env()` ALWAYS yields
+    /// `LegacyMultiPass` regardless of `REIFY_BUILD_SCHEDULER`. The result is
+    /// constant ⇒ NO `std::env::set_var` needed ⇒ fully parallel-safe (the
+    /// codebase deliberately avoids `set_var`: `unsafe` in Rust 2024, race-prone).
+    #[cfg(not(feature = "unified-dag"))]
+    #[test]
+    fn from_env_is_inert_legacy_without_feature() {
+        assert_eq!(BuildScheduler::from_env(), BuildScheduler::LegacyMultiPass);
+    }
+
+    /// Task 4357 δ (amendment #3): direct coverage of the PRODUCTION
+    /// [`BuildScheduler::from_env`] wrapper in the feature-ON build. Pins that
+    /// `from_env` reads the `REIFY_BUILD_SCHEDULER` env var (via `ENV_VAR`) and
+    /// delegates to the pure parser, WITHOUT mutating the process env (`set_var`
+    /// is `unsafe` in Rust 2024 + race-prone): the wrapper must equal the parser
+    /// applied to the current real env value. Catches a regression that renamed
+    /// the env var or stopped delegating to `from_env_value`.
+    #[cfg(feature = "unified-dag")]
+    #[test]
+    fn from_env_feature_on_delegates_to_parser_over_real_env() {
+        let expected =
+            BuildScheduler::from_env_value(std::env::var(BuildScheduler::ENV_VAR).ok().as_deref());
+        assert_eq!(BuildScheduler::from_env(), expected);
     }
 
     // --- run_unified_pass driver tests (step-7+) ---
