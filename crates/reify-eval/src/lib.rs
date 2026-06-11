@@ -2368,4 +2368,70 @@ structure S {
             "journal must record exactly as many events as were drained"
         );
     }
+
+    /// β-inject pass-through proof: injecting the real `SimpleConstraintChecker`
+    /// through `compile_with_stdlib_checked` is a compile-time no-op.
+    ///
+    /// At compile time, the `ValueMap` is empty (all cells are `Undef`). Any
+    /// constraint expression referencing a cell evaluates to `Value::Undef` →
+    /// `Satisfaction::Indeterminate` under both the `CompileTimeIndeterminateChecker`
+    /// stub AND the real `SimpleConstraintChecker`. The resolver's feasibility
+    /// rule (only `Violated` rejects) treats both as feasible, so the
+    /// `auto_type_substitution` and diagnostics are byte-identical.
+    ///
+    /// This test establishes β-readiness: the seam exists and is wired through
+    /// to `phase_auto_type_param_resolution`; the real checker can be injected
+    /// without changing compile-time selection outcomes.
+    ///
+    /// Uses `reify-constraints` (dev-dep) and `compile_with_stdlib_checked` (the
+    /// new `*_checked` entry point from task 4432 step-2).
+    #[test]
+    fn compile_with_stdlib_checked_real_checker_is_noop_at_compile_time() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ModulePath;
+
+        // Fixture: an `auto:` structure with a cell-dependent constraint so
+        // that the resolver runs and produces a non-trivial substitution.
+        // Cell `d` is Undef at compile time → constraint evaluates to Undef →
+        // Indeterminate under both stub and real checker.
+        let source = r#"
+            trait Seal {}
+            structure def GasketSeal : Seal { param d : Real = 2.0 }
+            structure def Bearing<T: Seal> { param seal : T }
+            structure def Assembly { sub b = Bearing<auto: Seal>() }
+        "#;
+
+        let parsed = reify_compiler::parse_with_stdlib(
+            source,
+            ModulePath::single("test_beta_inject_noop"),
+        );
+
+        let stub_result = reify_compiler::compile_with_stdlib(&parsed);
+        let real_result =
+            reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+
+        // auto_type_substitution must be byte-identical.
+        assert_eq!(
+            real_result.auto_type_substitution,
+            stub_result.auto_type_substitution,
+            "real checker must produce identical auto_type_substitution to stub at compile time"
+        );
+
+        // Diagnostics must be identical (compare severity + message pairs).
+        let stub_diags: Vec<_> = stub_result
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.message.clone()))
+            .collect();
+        let real_diags: Vec<_> = real_result
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.message.clone()))
+            .collect();
+        assert_eq!(
+            real_diags,
+            stub_diags,
+            "real checker must produce identical diagnostics to stub at compile time"
+        );
+    }
 }

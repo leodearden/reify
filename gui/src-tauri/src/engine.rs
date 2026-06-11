@@ -727,7 +727,10 @@ fn compile_single_file_with_stdlib(
         let file_path = module_key(module_name);
         return Err(parse_errs_to_payload(&parsed.errors, &file_path, content));
     }
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let compiled = reify_compiler::compile_with_stdlib_checked(
+        &parsed,
+        &reify_constraints::SimpleConstraintChecker,
+    );
     let has_errors = compiled
         .diagnostics
         .iter()
@@ -904,7 +907,11 @@ fn compile_entry_with_imports(
         .collect();
 
     let ctx = reify_compiler::PreludeContext::new(&prelude_refs);
-    let mut compiled = reify_compiler::compile_with_prelude_context(&parsed, &ctx);
+    let mut compiled = reify_compiler::compile_with_prelude_context_checked(
+        &parsed,
+        &ctx,
+        &reify_constraints::SimpleConstraintChecker,
+    );
 
     // Surface compile errors.
     let has_errors = compiled

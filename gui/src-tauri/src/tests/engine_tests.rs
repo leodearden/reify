@@ -12082,3 +12082,70 @@ fn build_gui_state_live_edit_same_file_content_is_failing_buffer_warning_positio
         bad_lines.len()
     );
 }
+
+// ── β-inject no-op-contract guard ─────────────────────────────────────────────
+
+/// No-op-contract pin for the GUI single-file compile path (β-inject step-7).
+///
+/// Loads an `auto:` source through `EngineSession::load_from_source` (which
+/// routes to `compile_single_file_with_stdlib`) and asserts that:
+/// 1. `auto_type_substitution` is non-empty — `auto:` resolution ran and
+///    produced a result.
+/// 2. The single type-param `T` was resolved to `ORingSeal` — the sole
+///    `Seal`-conformant candidate in the fixture.
+///
+/// This test is GREEN before step-8 (stub checker wired in engine.rs) and MUST
+/// stay GREEN after step-8 injects the real `SimpleConstraintChecker`.  The
+/// no-op invariant (empty ValueMap → Indeterminate for every cell-dependent
+/// constraint → feasible under both stub and real checker) guarantees this.
+///
+/// If this test fails after step-8, the no-op invariant was violated —
+/// investigate the fixture constraints.
+#[test]
+fn gui_auto_type_resolution_no_op_contract() {
+    let source = r#"
+        trait Seal {}
+        structure def ORingSeal : Seal { param d : Real = 10.0 }
+        structure def Bearing<T: Seal> { param bore : Real = 25.0 }
+        structure def Assembly { sub b = Bearing<auto: Seal>() }
+    "#;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let _state = session
+        .load_from_source(source, "beta_inject_no_op")
+        .expect("load_from_source should succeed on valid auto: source");
+
+    let compiled = session
+        .core_state_for_test()
+        .compiled()
+        .expect("compiled module must be present after successful load");
+
+    // The substitution must be non-empty: auto: resolution ran.
+    assert!(
+        !compiled.auto_type_substitution.as_slice().is_empty(),
+        "expected non-empty auto_type_substitution after auto: resolution; got: {:?}",
+        compiled.auto_type_substitution.as_slice()
+    );
+
+    // The type-param T of Bearing resolves to the single Seal candidate ORingSeal.
+    assert_eq!(
+        compiled.auto_type_substitution.as_slice(),
+        &[("T".to_string(), "ORingSeal".to_string())],
+        "expected auto: Seal to resolve to ORingSeal (the only Seal-conformant candidate)"
+    );
+
+    // No error diagnostics.
+    let error_count = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .count();
+    assert_eq!(
+        error_count, 0,
+        "expected no compile errors; got: {:?}",
+        compiled.diagnostics
+    );
+}

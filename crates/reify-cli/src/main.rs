@@ -170,7 +170,7 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         return Err(ExitCode::FAILURE);
     }
 
-    let mut compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let mut compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
 
     // Enforce module-path declaration (spec §7.1/§7.2, task γ).
     // parsed.path == ModulePath::single(module_name) by construction (PRD D-6).
@@ -246,8 +246,12 @@ fn parse_and_compile_with_cfg(
         parent_dir.join("crates/reify-compiler/stdlib"),
     );
 
-    let compiled =
-        reify_compiler::module_dag::compile_entry_with_stdlib_cfg(&parsed, &resolver, cfg);
+    let compiled = reify_compiler::module_dag::compile_entry_with_stdlib_cfg_checked(
+        &parsed,
+        &resolver,
+        cfg,
+        &SimpleConstraintChecker,
+    );
 
     for diag in &compiled.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
