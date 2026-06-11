@@ -30,6 +30,7 @@
 //!      `ByNormal { dir: +z, tol_rad: 1° }` leaf.
 //!    - `DirectionalSelectors.vert` is `Value::Selector(Edge)` with a
 //!      `ByParallel { axis: +z, tol_rad: 1° }` leaf.
+//!
 //!    The handle COUNTS (1 top face / 4 z-parallel edges) are verified through
 //!    `topology_selectors::resolve` by the resolve() unit tests and the
 //!    `single(faces_by_normal(...))` golden (`selector_coercion_golden.rs`).
