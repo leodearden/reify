@@ -2101,8 +2101,8 @@ impl Engine {
         //      Symmetric across all three NodeId variants currently produced
         //      by `diff_*` helpers — Value, Constraint, Realization — via
         //      the shared `checkout_added_warm_seeds` helper. Resolution is
-        //      not yet in any `diff_*` helper (see TODO(resolution-diff)
-        //      above); ComputeNode is not yet a NodeId variant. The pool API
+        //      not yet in any `diff_*` helper (tracked by task 4552);
+        //      ComputeNode is not yet a NodeId variant. The pool API
         //      itself is variant-agnostic, so any future variant slots in
         //      as a single additional call to the helper.
         let mut pending_warm_seeds = PendingWarmSeedsGuard::new(&mut self.warm_pool);
@@ -2286,8 +2286,8 @@ impl Engine {
         // `donate_with_cost` so the pool→cache reinsert half of the
         // round-trip (run_compute_dispatch's cache-miss → pool fallback)
         // can restore both warm state and cost on the next dispatch.
-        // Resolution is not yet in any `diff_*` helper (see
-        // TODO(resolution-diff) above), so it does not donate today.
+        // Resolution is not yet in any `diff_*` helper (tracked by
+        // task 4552), so it does not donate today.
         for id in &changed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }

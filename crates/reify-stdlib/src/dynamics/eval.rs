@@ -342,7 +342,7 @@ fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3]
 /// Rung precedences (highest first):
 /// (a) **Explicit MassProperties** — `body.solid` is a `MassProperties`
 ///     StructureInstance → `Some(solid.clone())`.
-/// (b) **Derived geometry×density** — documented TODO(3620 tail / task 4271):
+/// (b) **Derived geometry×density** — documented TODO(3620 tail / task 4472):
 ///     real-geometry solid with density; stub returns `None`.
 /// (c) **Unresolvable** — missing `solid` key, wrong type, non-MassProperties
 ///     StructureInstance → `None`.
@@ -357,7 +357,7 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
     let solid = map_get(bm, "solid")?;
     match solid {
         Value::StructureInstance(d) if d.type_name == "MassProperties" => Some(solid.clone()),
-        // TODO(3620 tail / task 4271): real-geometry×density derived rung
+        // TODO(3620 tail / task 4472): real-geometry×density derived rung
         _ => None,
     }
 }

@@ -1328,7 +1328,7 @@ impl OcctKernelHandle {
     ///
     /// Safe to call from within a tokio async execution context.
     ///
-    /// # TODO
+    /// # Design note
     ///
     /// This method intentionally does not use [`send_request_async`](Self::send_request_async)
     /// because its channel-death semantics differ: a dead kernel is treated as
@@ -1348,7 +1348,7 @@ impl OcctKernelHandle {
     ///
     /// Safe to call from within a tokio async execution context.
     ///
-    /// # TODO
+    /// # Design note
     ///
     /// This method intentionally does not use [`send_request_async`](Self::send_request_async)
     /// because its channel-death semantics differ: failure is silently ignored

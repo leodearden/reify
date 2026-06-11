@@ -845,7 +845,6 @@ impl ConstraintDef {
     ///
     /// Callers can use this instead of scanning `annotations` manually.
     /// Symmetric with `TopologyTemplate::is_test()`.
-    // TODO: Once constraint-def lowering lands, this moves to CompiledConstraintDef::is_test.
     pub fn is_test(&self) -> bool {
         has_test_annotation(&self.annotations)
     }

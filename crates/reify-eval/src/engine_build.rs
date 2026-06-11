@@ -5451,12 +5451,15 @@ impl Engine {
     /// name, an unresolvable body arg) are left untouched — the geometry_ops
     /// `None`-means-skip contract.
     ///
-    /// The geometric fields (`mass`/`com`/`inertia`) stay the deferred
-    /// `Value::Undef` sentinel until the KGQ kernel query
-    /// (`moment_of_inertia`, task 3620) is wired by the supervisor — see
-    /// `try_eval_body_mass_props`'s `TODO(3620)`. The existing MassProperties
+    /// The KGQ kernel query is wired (task 4237 / KGQ-λ): when the body
+    /// resolves to a `Value::GeometryHandle`,
+    /// [`crate::dynamics_ops::try_eval_body_mass_props`] routes the
+    /// Volume / CenterOfMass / InertiaTensor queries through the kernel, so
+    /// the geometric fields (`mass`/`com`/`inertia`) carry real values.
+    /// Bodies without a geometry handle (and kernel-error downgrades) keep
+    /// the deferred `Value::Undef` sentinel; the existing MassProperties
     /// PSD hook (engine_eval.rs) classifies an `Undef` inertia as `Skip`, so
-    /// the deferred instance is neither clobbered nor flagged.
+    /// such instances are neither clobbered nor flagged.
     ///
     /// Takes `kernel: &dyn GeometryKernel` (immutable — the dispatch only holds
     /// the kernel for the future geometric query and does not mutate it);
@@ -5603,6 +5606,7 @@ impl Engine {
         // it, yielding incorrect geometry — at which point this call likely must
         // move AFTER the selector passes (or gain an explicit dependency
         // ordering). Do not wire 3620 without revisiting this ordering.
+        // (re-evaluation owned by task 4538)
         // GHR-ζ (task 3608): whole-handle geometry-query dispatch
         // (volume / area / centroid / bounding_box). Added here — rather than a
         // separate explicit call at each build / build_snapshot /

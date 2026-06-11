@@ -169,7 +169,7 @@
 //! `Freshness::Final` state, independent of output value shape).
 //!
 //! TODO: thread `StructureRegistry` through the trampoline signature (tracked
-//! as a future refinement) once ComputeFn/ComputeOutcome are moved into reify-ir.
+//! by task 4552) once ComputeFn/ComputeOutcome are moved into reify-ir.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;

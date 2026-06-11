@@ -342,7 +342,6 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// key is kept for structural symmetry with `available_defaults` (which uses the same
 /// `(String, AvailableDefaultKind)` shape) and to reserve per-kind slots without a cache
 /// redesign if a future pass adds `Param`-inference.
-/// TODO(future-kinds): revert to `HashMap<String, CompiledExpr>` if no second kind is added.
 ///
 /// # PASS 2 COMPILE-ERROR SUPPRESSION (`pass2_compile_errors`, task 1914 / task 2158)
 ///

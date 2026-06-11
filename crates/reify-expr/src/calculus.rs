@@ -226,7 +226,7 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
     // via Arc::clone.  A full O(1) wrap requires callers to pass Arc<Value> so
     // the entire source field can be ref-counted rather than cloned.  This needs
     // the evaluator's `evaluated_args: Vec<Value>` to become `Vec<Arc<Value>>`
-    // — a broader architectural change tracked as a follow-up task.
+    // — a broader architectural change (tracked by task 4551).
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -296,7 +296,7 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
     );
 
     // Result: scalar field with dimensionally-correct codomain.
-    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization. (task 4551)
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -367,7 +367,7 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
     );
 
     // Result: vector field with dimensionally-correct codomain.
-    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization. (task 4551)
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: Type::vec3(result_component),
@@ -425,7 +425,7 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
     );
 
     // Result: scalar field with dimensionally-correct codomain.
-    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization. (task 4551)
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,

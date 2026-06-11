@@ -2275,7 +2275,8 @@ fn divergence_sample_dimensional_correctness_returns_scalar() {
 /// un-ignore serves as a concrete, executable spec for the required fix.
 #[test]
 #[ignore = "known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
-            losing the 1/Length result dimension; expected Value::Scalar{1/Length}"]
+            losing the 1/Length result dimension; expected Value::Scalar{1/Length}; \
+            fix owned by task 4373 (real-dimensionless α)"]
 fn divergence_sample_mixed_length_to_real_placeholder() {
     let domain = Type::point3(Type::Scalar {
         dimension: DimensionVector::LENGTH,
@@ -2588,7 +2589,8 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
 /// un-ignore serves as a concrete, executable spec for the required fix.
 #[test]
 #[ignore = "known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
-            losing the 1/Length\u{00b2} result dimension; expected Value::Scalar{1/Length\u{00b2}}"]
+            losing the 1/Length\u{00b2} result dimension; expected Value::Scalar{1/Length\u{00b2}}; \
+            fix owned by task 4373 (real-dimensionless α)"]
 fn laplacian_sample_mixed_length_to_real_placeholder() {
     let domain = Type::point3(Type::Scalar {
         dimension: DimensionVector::LENGTH,

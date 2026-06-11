@@ -302,16 +302,14 @@ fn wrap_value_for_driving_joint(joint: &Value, v_si: f64) -> Option<Value> {
     match kind {
         "prismatic" => Some(Value::length(v_si)),
         "revolute" => Some(Value::angle(v_si)),
-        // 3-DOF planar joint: defense-in-depth explicit deferral arm.
+        // 3-DOF planar joint: defense-in-depth explicit arm.
         // Today this arm is unreachable: driving_joint_kind rejects planar
         // before this function is ever called (it short-circuits to Undef
         // at the joint-kind guard). The explicit arm keeps the two sweep
         // dispatch sites symmetric (mirrors step-6's change in
-        // driving_joint_kind) and provides a documented breadcrumb: if a
-        // future change ever expands driving_joint_kind to multi-DOF kinds,
-        // this function's f64 v_si signature still can't wrap a 3-element
-        // List, so the TODO comment will guide that contributor to the PRD
-        // v0.2 kinematic task 2 refactor (taskmaster #2670).
+        // driving_joint_kind). Multi-DOF driving-joint sweep is currently
+        // unowned by design (KCC kept single-DOF; see task 4552 hygiene
+        // backlog); this arm is defense-in-depth/unreachable.
         "planar" => None,
         _ => None,
     }

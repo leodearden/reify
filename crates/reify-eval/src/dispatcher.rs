@@ -229,14 +229,9 @@ pub fn long_chain_diagnostic(
 ///
 /// # Integration status
 ///
-/// TODO(task-3435/δ): wire this builder into the dispatcher's `None`-return
-/// path in op-execution once the multi-kernel dispatch surface lands (PRD
-/// `docs/prds/v0_3/multi-kernel-phase-3.md` §8 DAG; consumers δ/ε =
-/// IDs 3435/3436). Until then, `no_kernel_chain_diagnostic` is scaffolding
-/// — public API with no in-tree caller — exactly mirroring the scope
-/// boundary documented at the module level and the `long_chain_diagnostic`
-/// precedent (task 2646). Greppable callout intentionally duplicated here so
-/// a future wiring pass can locate the seam without re-reading module docs.
+/// Wired: `engine_build.rs` calls this builder on the dispatcher's
+/// `None`-return path in op-execution (the BFS-exhausted case), so the
+/// diagnostic reaches users whenever no kernel + conversion chain exists.
 ///
 /// # Severity rationale
 ///

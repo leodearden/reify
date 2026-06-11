@@ -292,15 +292,15 @@ pub fn per_joint_jacobian_local(joint: &Value) -> Option<[f64; 6]> {
 /// `chain.len() != values.len()`, or any `chain_transform` along the way
 /// produces `None`.
 ///
-/// TODO(KCC-γ step-12): Sphere slots currently contribute 4 raw-storage
-/// columns (matching `flat_len = 4`).  The redundant fourth column reflects
-/// the off-manifold direction in unit-quaternion storage; step-12's solver
-/// wiring switches to 3 body-frame angular tangent columns
-/// (`δq = renormalize(q ⊗ exp(½·δω))`) per the dof_count = 3 manifold and
-/// composes the off-manifold projection via `renormalize_quaternion` after
-/// each Newton step.  Until that wiring lands, the redundant column is
-/// damped harmlessly by `transform_at`'s `normalize_quaternion` call (which
-/// projects every spherical input back to S³).
+/// Sphere slots contribute 4 raw-storage columns (matching `flat_len = 4`).
+/// This is the shipped, PRD-ratified contract (§5.3) — no switch to 3
+/// body-frame angular tangent columns is pending.  The redundant fourth
+/// column reflects the off-manifold direction in unit-quaternion storage;
+/// the solver damps it with per-component Tikhonov regularization
+/// (`NewtonConfig::regularization_per_diag`, applied to the `JᵀJ` diagonal
+/// in `solve_normal_equations`) and projects each iterate back to S³ via
+/// the closure-internal `renormalize_quaternion` (see
+/// `loop_closure_solver.rs`).
 pub fn chain_jacobian_fd(
     chain: &[Value],
     values: &[JointValue],
