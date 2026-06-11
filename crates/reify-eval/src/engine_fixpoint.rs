@@ -413,18 +413,30 @@ fn eval_cycle_diagnostic(scc: &[NodeId], adjacency: &HashMap<NodeId, Vec<NodeId>
 
 /// Geometry-backed-constraint-on-auto guard (→ `E_EVAL_UNRESOLVED`).
 ///
-/// For each constraint (visited in `DebugOrd` order for determinism), walk its
-/// transitive auto-read closure — the backing realizations named by
-/// `realization_reads`, then each realization's own `reads` (value cells) and
-/// `realization_reads` (nested realizations), recursively. If the closure
-/// reaches any auto value cell ([`EvaluationGraph::is_auto_cell`]), the unified
-/// pass declines to solve that constraint and emits one `E_EVAL_UNRESOLVED`.
+/// For each constraint (visited in `DebugOrd` order for determinism), the guard
+/// asks whether the constraint's transitive geometry-backed read closure — the
+/// backing realizations named by `realization_reads`, then each realization's own
+/// `reads` (value cells) and `realization_reads` (nested realizations),
+/// recursively — reaches any auto value cell ([`EvaluationGraph::is_auto_cell`]).
+/// If so, the unified pass declines to solve that constraint and emits one
+/// `E_EVAL_UNRESOLVED`.
+///
+/// The per-realization "does its closure reach an auto cell?" classification is
+/// computed ONCE up front by [`realizations_reaching_auto`] and shared across all
+/// constraints, so a realization sub-DAG common to many constraints is walked at
+/// most once — keeping the guard O(V+E) rather than O(constraints × realizations)
+/// on designs with many constraints over shared geometry.
 ///
 /// An independent classifier: it never touches the cycle residue.
 fn unresolved_diagnostics(
     graph: &EvaluationGraph,
     traces: &HashMap<NodeId, DependencyTrace>,
 ) -> Vec<Diagnostic> {
+    // Classify every realization's auto-reachability ONCE, shared across all
+    // constraints (the previous per-constraint walk re-classified shared
+    // realization sub-DAGs — O(constraints × realizations)).
+    let reaches_auto = realizations_reaching_auto(graph, traces);
+
     let constraints = debug_ord_sorted(
         traces
             .keys()
@@ -433,7 +445,13 @@ fn unresolved_diagnostics(
     );
     let mut out = Vec::new();
     for c in constraints {
-        if constraint_reaches_auto(&c, graph, traces) {
+        // Unresolved iff ANY backing realization's closure reaches an auto cell.
+        let reaches = traces.get(&c).is_some_and(|tr| {
+            tr.realization_reads
+                .iter()
+                .any(|r| reaches_auto.contains(r))
+        });
+        if reaches {
             out.push(
                 Diagnostic::error(format!(
                     "unresolved constraint: {} transitively depends on auto parameter(s) \
@@ -447,34 +465,57 @@ fn unresolved_diagnostics(
     out
 }
 
-/// True if `constraint`'s transitive geometry-backed read closure reaches any
-/// auto value cell. Bounded by a visited-set over realizations to stay O(V+E).
-fn constraint_reaches_auto(
-    constraint: &NodeId,
+/// Classify every realization in `traces` ONCE by whether its transitive
+/// geometry-backed read closure (following `realization_reads` edges) reaches a
+/// realization that directly reads an auto value cell
+/// ([`EvaluationGraph::is_auto_cell`]).
+///
+/// Returns the set of realizations whose closure reaches an auto cell. A
+/// constraint is unresolved iff ANY realization in its `realization_reads` is in
+/// this set — equivalent to the old per-constraint closure walk, but each
+/// realization is classified at most once per pass (shared memo), so C
+/// constraints over a common R-realization sub-DAG cost O(V+E), not O(C·R).
+///
+/// Computed as backward reachability: seed the worklist with the realizations
+/// that DIRECTLY read an auto cell, then propagate along reader edges (if `R`
+/// reads `R'` and `R'` reaches auto, so does `R`). The visited-set bound keeps it
+/// O(V+E) and makes realization↔realization cycles safe. Order-insensitive — the
+/// result is consulted only via `contains`, so it never leaks `HashMap`
+/// iteration order into the diagnostic vector.
+fn realizations_reaching_auto(
     graph: &EvaluationGraph,
     traces: &HashMap<NodeId, DependencyTrace>,
-) -> bool {
-    let mut visited: HashSet<RealizationNodeId> = HashSet::new();
-    // Seed the walk from the constraint's backing realizations.
-    let mut stack: Vec<RealizationNodeId> = match traces.get(constraint) {
-        Some(tr) => tr.realization_reads.clone(),
-        None => return false,
-    };
-    while let Some(r) = stack.pop() {
-        if !visited.insert(r.clone()) {
-            continue;
-        }
-        let Some(rtr) = traces.get(&NodeId::Realization(r)) else {
+) -> HashSet<RealizationNodeId> {
+    // Reader edges (reverse of `realization_reads`) + the directly-auto seed set,
+    // both built in a single pass over the trace map.
+    let mut readers: HashMap<RealizationNodeId, Vec<RealizationNodeId>> = HashMap::new();
+    let mut reaches: HashSet<RealizationNodeId> = HashSet::new();
+    let mut stack: Vec<RealizationNodeId> = Vec::new();
+    for (node, tr) in traces {
+        let NodeId::Realization(r) = node else {
             continue;
         };
-        // Any auto value cell directly read by this realization closes the case.
-        if rtr.reads.iter().any(|vc| graph.is_auto_cell(vc)) {
-            return true;
+        // Seed: a realization that DIRECTLY reads an auto cell reaches auto.
+        if tr.reads.iter().any(|vc| graph.is_auto_cell(vc)) && reaches.insert(r.clone()) {
+            stack.push(r.clone());
         }
-        // Otherwise recurse through nested geometry-backed realizations.
-        stack.extend(rtr.realization_reads.iter().cloned());
+        // Reader edge: `r` reads each `rr`, so taint on `rr` propagates to `r`.
+        for rr in &tr.realization_reads {
+            readers.entry(rr.clone()).or_default().push(r.clone());
+        }
     }
-    false
+    // Propagate auto-reachability backward: anything that reads a reaches-auto
+    // realization also reaches auto. Visited-set (`reaches`) bounds it to O(V+E).
+    while let Some(r) = stack.pop() {
+        if let Some(rs) = readers.get(&r) {
+            for reader in rs {
+                if reaches.insert(reader.clone()) {
+                    stack.push(reader.clone());
+                }
+            }
+        }
+    }
+    reaches
 }
 
 #[cfg(test)]
