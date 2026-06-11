@@ -256,6 +256,29 @@ fn phantom_phrase(line: &str) -> bool {
     PHANTOM_PHRASES.iter().any(|p| lower.contains(p))
 }
 
+/// §8.3 γ blocker-prose needles — matched case-insensitively (against a
+/// lowercased copy of the reason), except `RED:` which is matched
+/// case-sensitively against the original to avoid the `required:` false
+/// positive (the substring `red:` appears in `required:` when lowercased).
+///
+/// Trailing spaces on `until ` and `once ` are part of the §8.3 grammar and
+/// provide a crude word boundary (so `until` at end-of-string does not match).
+const BLOCKER_PROSE: &[&str] = &["pending", "not yet", "until ", "once ", "blocked"];
+
+/// §8.3 γ: `true` when `reason` contains a blocker-prose needle.
+///
+/// The check is applied to the EXTRACTED reason, not the whole `#[ignore]`
+/// line. Five tokens are matched case-insensitively; `RED:` is matched
+/// case-sensitively to guard against `required:` false positives.
+fn has_blocker_prose(reason: &str) -> bool {
+    let lower = reason.to_lowercase();
+    if BLOCKER_PROSE.iter().any(|n| lower.contains(n)) {
+        return true;
+    }
+    // `RED:` case-sensitive — `required:` must not match.
+    reason.contains("RED:")
+}
+
 /// §6.8 inline escape: a line carrying the literal `ptodo:allow` opts out of
 /// the whole sweep for that line (an intentional, reviewed marker).
 fn line_escaped(line: &str) -> bool {
