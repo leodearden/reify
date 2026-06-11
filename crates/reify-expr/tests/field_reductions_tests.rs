@@ -23,8 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_core::{ContentHash, DimensionVector, Type};
-use reify_ir::{CompiledExpr, CompiledExprKind, FieldSourceKind, InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Value, ValueMap};
+use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Value, ValueMap};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -165,6 +165,107 @@ fn wrap_sampled_field(sf: SampledField, domain: Type, codomain: Type) -> (Value,
         codomain: Box::new(codomain),
     };
     (field, field_type)
+}
+
+// ── Bounded-reduction test fixtures ─────────────────────────────────────────
+
+/// Build a `Value::BoundingBox` whose three corner components are either
+/// `Value::Real` (dimensionless) or `Value::Scalar { dimension: dim }`
+/// (dimensioned).
+///
+/// Pass `DimensionVector::DIMENSIONLESS` to get Real components; pass e.g.
+/// `DimensionVector::LENGTH` to get dimensioned Scalar components.
+///
+/// The box is always a 3-component `Value::Point`, matching the canonical
+/// `bounding_box(solid)` shape. For n-D field tests (n < 3), only the first
+/// n axes are inspected by the bounded reductions.
+fn make_bbox(min: [f64; 3], max: [f64; 3], dim: DimensionVector) -> Value {
+    let make_comp = |v: f64| -> Value {
+        if dim.is_dimensionless() {
+            Value::Real(v)
+        } else {
+            Value::Scalar { si_value: v, dimension: dim }
+        }
+    };
+    Value::BoundingBox {
+        min: Box::new(Value::Point(vec![
+            make_comp(min[0]),
+            make_comp(min[1]),
+            make_comp(min[2]),
+        ])),
+        max: Box::new(Value::Point(vec![
+            make_comp(max[0]),
+            make_comp(max[1]),
+            make_comp(max[2]),
+        ])),
+    }
+}
+
+/// Build a `Value::Lambda` with (name, id) param pairs.
+///
+/// Lifted directly from `gradient_tests.rs:69`.  Used for constructing
+/// `Analytical`-source field lambdas in bounded-reduction tests.
+fn make_value_lambda(
+    params: Vec<(&str, ValueCellId)>,
+    body: CompiledExpr,
+    captures: ValueMap,
+) -> Value {
+    Value::Lambda {
+        params: params
+            .into_iter()
+            .map(|(n, id)| (n.to_string(), id))
+            .collect(),
+        body: Box::new(body),
+        captures,
+    }
+}
+
+/// Build a `Value::Field` with an explicit source kind and a lambda value.
+///
+/// Alias for the local `make_field_with_source` helper (which appears later
+/// in this file).  Provided here for semantic clarity in bounded-reduction
+/// test construction, before `make_field_with_source` is visible to the reader.
+///
+/// SAFETY: no code here references `make_field_with_source` at declaration time;
+/// Rust resolves all function names at call time within the same module.
+fn make_analytical_field(
+    domain: Type,
+    codomain: Type,
+    source: FieldSourceKind,
+    lambda: Value,
+) -> (Value, Type) {
+    let field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source,
+        lambda: Arc::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+    (field, field_type)
+}
+
+/// Build a 2-arg `FunctionCall` CompiledExpr for `op(field, bbox)`.
+///
+/// Used as the primary fixture factory for bounded-reduction dispatch tests:
+/// the result is passed to `eval_expr` to exercise the full dispatch chain.
+fn make_bounded_call(
+    op: &str,
+    field: Value,
+    field_type: Type,
+    bounds: Value,
+    result_type: Type,
+) -> CompiledExpr {
+    make_function_call(
+        op,
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(bounds, Type::BoundingBox),
+        ],
+        result_type,
+    )
 }
 
 // ── Step 1: max over a 1-D Real-codomain Sampled field ──────────────────────
