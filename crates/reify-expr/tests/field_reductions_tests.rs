@@ -985,18 +985,24 @@ fn all_reductions_sampled_empty_data_returns_undef() {
 }
 
 // ── Step 19: argcount-gating regression pins ───────────────────────────────
+//
+// Contract (updated in task 4561): a `Value::BoundingBox` 2nd argument now
+// triggers the bounded reduction path (`compute_*_bounded`).  A non-BoundingBox
+// 2nd arg (e.g. a scalar `Real`) does NOT match the new gate and falls
+// through as before — `max`/`min` to `eval_builtin` → binary numeric form
+// → Undef (Field has no `as_f64`); `argmax`/`argmin` to `eval_builtin` →
+// no binding → Undef.  The positive counterpart (`max(field, bbox)` reduces)
+// is exercised by the new bounded-Sampled tests added in step-1 above.
 
-/// Regression pin: `max(field, scalar)` (2 args, first is Field) must NOT
-/// be intercepted by our 1-arg-Field gate. The dispatch falls through to
-/// `eval_builtin`'s binary `max(a, b)` (`reify-stdlib::numeric.rs:63`),
-/// which expects scalar `as_f64()` operands — `Value::Field` has no
-/// `as_f64()` mapping, so the binary form returns `Value::Undef`.
+/// Regression pin: `max(field, scalar)` (2 args, first is Field, second is
+/// a non-BoundingBox scalar) falls through to the binary numeric form and
+/// returns `Value::Undef` (Field has no `as_f64` mapping).
 ///
-/// This pins the gating contract: the 1-arg-Field arm in `lib.rs` is the
-/// ONLY path that reduces a field. A 2-arg call with a Field first arg
-/// falls through to the binary numeric form and produces `Undef`.
+/// The updated dispatch contract: a `Value::BoundingBox` 2nd arg triggers the
+/// bounded reduction; a non-BoundingBox scalar 2nd arg falls through to
+/// `eval_builtin`'s binary `max(a,b)` which cannot coerce a Field → Undef.
 #[test]
-fn argcount_gating_max_field_then_extra_arg_returns_undef() {
+fn argcount_gating_max_field_then_non_bbox_arg_returns_undef() {
     let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
     let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
     let expr = make_function_call(
@@ -1012,13 +1018,13 @@ fn argcount_gating_max_field_then_extra_arg_returns_undef() {
     assert_eq!(
         result,
         Value::Undef,
-        "max(field, scalar) (2 args) should fall through to binary numeric.rs::max and return Undef (Field has no as_f64)"
+        "max(field, scalar) (non-BoundingBox 2nd arg) should fall through to binary numeric.rs::max → Undef"
     );
 }
 
-/// Same regression pin for `min`.
+/// Same regression pin for `min`: non-BoundingBox scalar 2nd arg → Undef.
 #[test]
-fn argcount_gating_min_field_then_extra_arg_returns_undef() {
+fn argcount_gating_min_field_then_non_bbox_arg_returns_undef() {
     let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
     let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
     let expr = make_function_call(
@@ -1034,14 +1040,14 @@ fn argcount_gating_min_field_then_extra_arg_returns_undef() {
     assert_eq!(
         result,
         Value::Undef,
-        "min(field, scalar) (2 args) should fall through to binary numeric.rs::min and return Undef (Field has no as_f64)"
+        "min(field, scalar) (non-BoundingBox 2nd arg) should fall through to binary numeric.rs::min → Undef"
     );
 }
 
-/// Same regression pin for `argmax` (no binary form — falls through to
-/// `eval_builtin` which has no binding for `argmax`, → `Undef`).
+/// Same regression pin for `argmax`: non-BoundingBox scalar 2nd arg → Undef
+/// (no binary `argmax` form; `eval_builtin` has no binding for `argmax`).
 #[test]
-fn argcount_gating_argmax_field_then_extra_arg_returns_undef() {
+fn argcount_gating_argmax_field_then_non_bbox_arg_returns_undef() {
     let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
     let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
     let expr = make_function_call(
@@ -1057,13 +1063,13 @@ fn argcount_gating_argmax_field_then_extra_arg_returns_undef() {
     assert_eq!(
         result,
         Value::Undef,
-        "argmax(field, scalar) (2 args) should fall through to eval_builtin and return Undef (no binding)"
+        "argmax(field, scalar) (non-BoundingBox 2nd arg) falls through to eval_builtin → Undef (no binding)"
     );
 }
 
-/// Same regression pin for `argmin`.
+/// Same regression pin for `argmin`: non-BoundingBox scalar 2nd arg → Undef.
 #[test]
-fn argcount_gating_argmin_field_then_extra_arg_returns_undef() {
+fn argcount_gating_argmin_field_then_non_bbox_arg_returns_undef() {
     let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
     let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
     let expr = make_function_call(
@@ -1079,7 +1085,7 @@ fn argcount_gating_argmin_field_then_extra_arg_returns_undef() {
     assert_eq!(
         result,
         Value::Undef,
-        "argmin(field, scalar) (2 args) should fall through to eval_builtin and return Undef (no binding)"
+        "argmin(field, scalar) (non-BoundingBox 2nd arg) falls through to eval_builtin → Undef (no binding)"
     );
 }
 
@@ -1195,6 +1201,142 @@ fn argmax_sampled_field_2d_with_shape_mismatch_returns_undef() {
         result,
         Value::Undef,
         "argmax(field) over 2-D field with data.len() != prod(axis_lengths) should return Value::Undef"
+    );
+}
+
+// ── Bounded Sampled sub-region tests (step-1 RED / step-2 GREEN) ────────────
+//
+// Fixture: 1-D SampledField with Real domain and Real codomain.
+//   axis  = [0, 1, 2, 3, 4]
+//   data  = [1, 5, 3, 4, 2]
+//   bbox  x ∈ [2, 4] → in-bounds nodes: {x=2→3, x=3→4, x=4→2}
+//
+// Exact expectations (data values, no interpolation):
+//   max   = 4.0  (data at x=3)
+//   min   = 2.0  (data at x=4)
+//   argmax = Value::Real(3.0)  (coord at the max)
+//   argmin = Value::Real(4.0)  (coord at the min)
+//
+// Empty sub-region (bbox x ∈ [10, 20]) — no grid nodes → Undef.
+//
+// **RED before step-2 (Sampled arm not yet implemented).**
+
+/// `max(sampled_1d_field, bbox)` clips to the sub-region and returns the maximum
+/// data value within the bounding box.
+///
+/// axis [0..4] / data [1,5,3,4,2], bbox x∈[2,4]:
+/// in-bounds {x=2→3, x=3→4, x=4→2} → max = 4.0.
+#[test]
+fn max_sampled_field_bounded_subregion_returns_max_in_bbox() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let bbox = make_bbox([2.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(4.0),
+        "max(sampled 1-D, bbox x∈[2,4]) should be 4.0 (data at x=3)"
+    );
+}
+
+/// `min(sampled_1d_field, bbox)` clips to the sub-region and returns the minimum
+/// data value within the bounding box.
+///
+/// axis [0..4] / data [1,5,3,4,2], bbox x∈[2,4]:
+/// in-bounds {x=2→3, x=3→4, x=4→2} → min = 2.0.
+#[test]
+fn min_sampled_field_bounded_subregion_returns_min_in_bbox() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let bbox = make_bbox([2.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("min", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(2.0),
+        "min(sampled 1-D, bbox x∈[2,4]) should be 2.0 (data at x=4)"
+    );
+}
+
+/// `argmax(sampled_1d_field, bbox)` clips to the sub-region and returns the
+/// domain coordinate at the maximum.
+///
+/// axis [0..4] / data [1,5,3,4,2], bbox x∈[2,4]:
+/// in-bounds {x=2→3, x=3→4, x=4→2} → argmax → x=3 → Value::Real(3.0).
+#[test]
+fn argmax_sampled_field_bounded_subregion_returns_coord_at_max() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let bbox = make_bbox([2.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmax", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(3.0),
+        "argmax(sampled 1-D, bbox x∈[2,4]) should be coord 3.0 (data[3]=4 is the max)"
+    );
+}
+
+/// `argmin(sampled_1d_field, bbox)` clips to the sub-region and returns the
+/// domain coordinate at the minimum.
+///
+/// axis [0..4] / data [1,5,3,4,2], bbox x∈[2,4]:
+/// in-bounds {x=2→3, x=3→4, x=4→2} → argmin → x=4 → Value::Real(4.0).
+#[test]
+fn argmin_sampled_field_bounded_subregion_returns_coord_at_min() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let bbox = make_bbox([2.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmin", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(4.0),
+        "argmin(sampled 1-D, bbox x∈[2,4]) should be coord 4.0 (data[4]=2 is the min)"
+    );
+}
+
+/// `max(sampled_1d_field, bbox)` where the bounding box excludes ALL grid nodes
+/// returns `Value::Undef` (empty sub-region).
+///
+/// axis [0..4], bbox x∈[10,20] — no grid points in range → Undef.
+#[test]
+fn max_sampled_field_bounded_empty_subregion_returns_undef() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let bbox = make_bbox([10.0, 0.0, 0.0], [20.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "max(sampled 1-D, bbox outside all nodes) should return Undef (empty sub-region)"
     );
 }
 
