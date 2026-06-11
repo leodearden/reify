@@ -1108,4 +1108,62 @@ mod tests {
             "PDEAD,PUNTESTED must enable both opt-in detectors"
         );
     }
+
+    // -------------------------------------------------------------------
+    // PTODO CLI-wiring tests (step-13 RED / step-14 GREEN)
+    //
+    // PTODO is the structural TODO-tracking lane (PRD task α). Unlike
+    // PDEAD/PUNTESTED/PLAYER it is *structural* — it reads the working tree
+    // via ls_files + fs and never contacts jcodemunch — so needs_jcodemunch
+    // must stay false for it. Like the other non-default detectors it is
+    // opt-in only (excluded from the default all-detector sweep; ε owns
+    // default-sweep membership).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn parse_args_accepts_ptodo_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PTODO".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PTODO must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PTODO"),
+            "parsed pattern must be Some(\"PTODO\")"
+        );
+    }
+
+    #[test]
+    fn needs_jcodemunch_ptodo_routes_false() {
+        // PTODO is the structural lane — it reads the working tree directly
+        // (ls_files + fs), never jcodemunch. It must NOT trigger a connection.
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PTODO"))),
+            "PTODO is structural and must not require jcodemunch"
+        );
+    }
+
+    /// Guard: PTODO is opt-in only — must not run in the default (no --pattern)
+    /// all-detector sweep. Tests the actual `run_ptodo` dispatch predicate so a
+    /// real change to the dispatch logic (e.g. accidentally folding PTODO into
+    /// the default sweep — ε's job, not α's) would be caught.
+    #[test]
+    fn ptodo_not_in_default_sweep() {
+        assert!(
+            !run_ptodo(&make_args(false, None)),
+            "PTODO must be opt-in only (not part of the default sweep)"
+        );
+        assert!(
+            run_ptodo(&make_args(false, Some("PTODO"))),
+            "PTODO must activate when --pattern PTODO is given"
+        );
+    }
+
+    /// PTODO must be selectable as a non-leading token in a comma-separated
+    /// `--pattern` list (mirrors `opt_in_detectors_selected_via_comma_list`).
+    #[test]
+    fn run_ptodo_selected_via_comma_list() {
+        assert!(
+            run_ptodo(&make_args(false, Some("P2,PTODO"))),
+            "P2,PTODO must enable PTODO"
+        );
+    }
 }
