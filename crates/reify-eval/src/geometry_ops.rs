@@ -15902,7 +15902,7 @@ mod tests {
     #[test]
     fn face_named_ctor_yields_named_leaf_selector_of_face_kind() {
         use reify_core::identity::RealizationNodeId;
-        use reify_core::{Type, ValueCellId};
+        use reify_core::ValueCellId;
         use reify_test_support::mocks::MockGeometryKernel;
 
         let handle_b = GeometryHandleId(1);
@@ -15970,7 +15970,7 @@ mod tests {
     #[test]
     fn edge_named_ctor_yields_named_leaf_selector_of_edge_kind() {
         use reify_core::identity::RealizationNodeId;
-        use reify_core::{Type, ValueCellId};
+        use reify_core::ValueCellId;
         use reify_test_support::mocks::MockGeometryKernel;
 
         let handle_b = GeometryHandleId(1);
@@ -16038,7 +16038,7 @@ mod tests {
     #[test]
     fn solid_body_named_ctor_yields_named_leaf_selector_of_body_kind() {
         use reify_core::identity::RealizationNodeId;
-        use reify_core::{Type, ValueCellId};
+        use reify_core::ValueCellId;
         use reify_test_support::mocks::MockGeometryKernel;
 
         let handle_b = GeometryHandleId(1);
@@ -16109,7 +16109,7 @@ mod tests {
     #[test]
     fn face_named_ctor_resolve_unknown_name_yields_empty_and_topology_tag_stale() {
         use reify_core::identity::RealizationNodeId;
-        use reify_core::{Type, ValueCellId};
+        use reify_core::ValueCellId;
         use reify_test_support::mocks::MockGeometryKernel;
 
         let handle_b = GeometryHandleId(1);
