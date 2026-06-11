@@ -38,9 +38,13 @@ print(-1 if m < 0 or t < 0 else m + t)
 PY
 }
 
+reseed() { echo "jobserver-canary: $1 — re-seeding $SVC"; systemctl --user restart "$SVC"; }
+
 s=$(tokens_sum)
-if [ "$s" -eq "$SEEDED" ]; then
-    echo "jobserver-canary: ok (idle, $s/$SEEDED tokens)"
+if [ "$s" -lt 0 ]; then
+    reseed "FIFO vanished mid-check"
+elif [ "$s" -lt "$SEEDED" ]; then
+    reseed "idle but only $s/$SEEDED tokens (leaked)"
 else
-    echo "jobserver-canary: noting sum=$s/$SEEDED (deferred action)"
+    echo "jobserver-canary: ok (idle, $s/$SEEDED tokens)"
 fi
