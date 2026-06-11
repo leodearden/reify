@@ -710,6 +710,10 @@ def evaluate_acceptance(measurements: dict, derived: dict) -> tuple:
       2. occupancy sum == nproc throughout (token conservation)
       3. worst-case task < task_timeout (budget not exceeded)
       4. §10.4 escape-valve: single-pool cold task > MAX_SANE_TIMEOUT → FINDING
+      5. lower-bound floor: derived timeout < MIN_SANE_TIMEOUT →
+           hard FAIL (TIMEOUT_BELOW_FLOOR, ok=False) when unlabeled,
+           soft WARNING (SYNTHETIC_TIMEOUT_NOT_AUTHORITATIVE, ok=True) when
+           synthetic_load:true (escape-valve pattern — honest surfacing only)
 
     Returns
     -------
@@ -838,6 +842,12 @@ def evaluate_acceptance(measurements: dict, derived: dict) -> tuple:
     synthetic = bool(measurements.get("synthetic_load", False))
     for _label, _key in (("task", "task_timeout_secs"), ("merge", "merge_timeout_secs")):
         _val = derived.get(_key, 0)
+        # `0 < _val` is intentional: _val == 0 means "no matching runs / not
+        # measured" (derive_constants found no qualifying walls), which is a
+        # distinct missing-data condition and is out of scope for this guard.
+        # A zero timeout wired into verify.sh would be caught by check §3
+        # (TASK_TIMEOUT_UNDERBUDGET) or simply kill every job via `timeout 0`
+        # — a loud failure, not a silent one.
         if 0 < _val < MIN_SANE_TIMEOUT:
             if not synthetic:
                 findings.append({

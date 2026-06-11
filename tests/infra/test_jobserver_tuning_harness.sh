@@ -1365,6 +1365,32 @@ else:
             f"(a) env-override: expected MIN_SANE_TIMEOUT=120, got {got!r}"
         )
 
+# error-path: non-integer value → exit non-zero (validation guard)
+_bad_loader = f"""
+import importlib.util, os
+os.environ["REIFY_TUNING_MIN_SANE_TIMEOUT"] = {{val!r}}
+spec = importlib.util.spec_from_file_location("jth", {HARNESS_PATH!r})
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+"""
+for _bad_val in ("abc", "0"):
+    result_a_bad = subprocess.run(
+        [sys.executable, "-c", _bad_loader.format(val=_bad_val)],
+        capture_output=True, text=True,
+    )
+    if result_a_bad.returncode == 0:
+        errors.append(
+            f"(a) validation error-path: "
+            f"REIFY_TUNING_MIN_SANE_TIMEOUT={_bad_val!r} "
+            f"expected non-zero exit, got 0"
+        )
+    elif "REIFY_TUNING_MIN_SANE_TIMEOUT" not in result_a_bad.stderr:
+        errors.append(
+            f"(a) validation error-path: "
+            f"REIFY_TUNING_MIN_SANE_TIMEOUT={_bad_val!r} "
+            f"expected env-var name in stderr, got: {result_a_bad.stderr.strip()!r}"
+        )
+
 # ── (b) HARD FAIL: unlabeled sub-floor → ok=False, TIMEOUT_BELOW_FLOOR error ─
 m_sub = _subfloor_measurements()
 derived_sub = mod.derive_constants(m_sub)
