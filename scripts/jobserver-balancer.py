@@ -18,7 +18,8 @@ Environment variables (all optional, with sensible defaults):
   REIFY_JOBSERVER_TOKENS       Total token count (default: nproc via
                                 len(os.sched_getaffinity(0)))
   REIFY_JOBSERVER_POLL_INTERVAL Control-loop tick period in seconds
-                                (default: 0.1; ε will tune this)
+                                (default: 0.1; confirmed by ε tuning run,
+                                see docs/prds/jobserver-merge-priority-balancer.tuning-measurements.json)
 """
 
 import fcntl
@@ -54,7 +55,9 @@ except ValueError as _exc:
     )
     sys.exit(1)
 
-# PLACEHOLDER: ε (task α-ε of PRD §10) will tune this based on measurement.
+# ε-confirmed (PRD §10): poll interval of 0.1 s validated by the tuning harness
+# (docs/prds/jobserver-merge-priority-balancer.tuning-measurements.json).
+# Re-run `scripts/jobserver-tuning-harness.py --measure` at full scale to retune.
 _MIN_POLL_INTERVAL: float = 0.001  # 1 ms — below this is a misconfiguration
 _poll_raw: str = os.environ.get("REIFY_JOBSERVER_POLL_INTERVAL", "0.1")
 try:
@@ -68,10 +71,10 @@ except ValueError as _exc:
     )
     sys.exit(1)
 
-# PLACEHOLDER pending ε (PRD §10): give-back buffer retained in merge pool.
+# ε-confirmed (PRD §10): give-back buffer of 1 token validated by the tuning
+# harness (docs/prds/jobserver-merge-priority-balancer.tuning-measurements.json).
 # ε=1 is the smallest buffer that exercises the give-back path (merge_baseline
 # > 1 for all TOKENS≥4, so give = merge_baseline − ε > 0).
-# ε's true value is an OUTPUT of the ε measurement harness — not a frozen guess.
 _eps_raw: str = os.environ.get("REIFY_JOBSERVER_EPSILON", "1")
 try:
     EPSILON: int = int(_eps_raw)
@@ -84,10 +87,11 @@ except ValueError as _exc:
     )
     sys.exit(1)
 
-# PLACEHOLDER pending ε (PRD §10): idle-reset window (consecutive idle ticks
-# before redistributing back to the seeded baseline).  A small default lets
-# the idle-reset path be exercised quickly in tests via the env override.
-# The ε harness will tune the final value for production.
+# Idle-reset window: consecutive idle ticks before redistributing back to the
+# seeded baseline.  Value 10 is a conservative default; the ε harness does not
+# derive this constant directly (idle-reset is internal policy, not an
+# operator-visible tuning target), so 10 ticks × 0.1 s = 1.0 s idle dwell
+# remains the production setting.
 _idle_reset_raw: str = os.environ.get("REIFY_JOBSERVER_IDLE_RESET_TICKS", "10")
 try:
     IDLE_RESET_TICKS: int = int(_idle_reset_raw)
@@ -302,17 +306,21 @@ def main() -> None:
     """Daemon entry point: create/seed/hold FIFOs, run control loop."""
 
     # ── Compute baseline partition ────────────────────────────────────────────
-    # PLACEHOLDER pending ε's measurement harness (PRD §4 C4 / §10):
+    # ε-confirmed (PRD §4 C4 / §10; tuning-measurements.json):
     #   task_baseline  = max(1, TOKENS // 4)   (~1/4 of pool, minimum 1)
     #   merge_baseline = TOKENS - task_baseline (~3/4 of pool)
+    #
+    # For TOKENS=32 (nproc on the reference host): 24/8.  For TOKENS=4: 3/1.
+    # The ε harness confirmed task_baseline=8 / merge_baseline=24 for TOKENS=32
+    # (docs/prds/jobserver-merge-priority-balancer.tuning-measurements.json).
     #
     # Invariants guaranteed by construction:
     #   merge_baseline > task_baseline  (merge-favored, PRD §4 C4)
     #   task_baseline  >= 1              (non-starving; prevents idle thrash)
     #   merge + task   == TOKENS         (C1 token conservation)
     #
-    # Tests assert the PARTITION PROPERTY, not a guessed numeric value, so
-    # ε's retune will not break them.  For TOKENS=32: 24/8.  For TOKENS=4: 3/1.
+    # Tests assert the PARTITION PROPERTY, not a numeric value, so scale-up
+    # retuning will not break them.
     task_baseline = max(1, TOKENS // 4)
     merge_baseline = TOKENS - task_baseline  # sum == TOKENS by construction (C1)
 
