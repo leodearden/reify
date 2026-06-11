@@ -85,6 +85,77 @@ fn ignore_attr(line: &str) -> Option<IgnoreForm> {
     }
 }
 
+// -----------------------------------------------------------------------
+// §8.2 citation resolution (canonical vs malformed)
+// -----------------------------------------------------------------------
+
+/// §8.2 canonical citation: a `#` immediately followed by a run of 1..=5 ASCII
+/// digits whose run length is ≤5 (the char after the run is not a digit, so a
+/// 6-digit number is not matched on its 5-digit prefix).
+fn has_canonical_cite(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'#' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            let run = j - (i + 1);
+            if (1..=5).contains(&run) {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// `true` when `c` is a Greek-block letter (U+0370..=U+03FF) — the banned
+/// Greek-cite alphabet (`task δ`, `task α`).
+fn is_greek(c: char) -> bool {
+    ('\u{0370}'..='\u{03FF}').contains(&c)
+}
+
+/// §8.2/§6.4 malformed citation: the case-insensitive token `task` immediately
+/// followed — after an optional single space — by a Greek letter, OR
+/// `task-`/`task_`/`task `+ ASCII digit (PRD-relative / legacy forms). Banned
+/// from day one; δ migrates valid cites to canonical `#NNNN`.
+fn has_malformed_cite(line: &str) -> bool {
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    while i + 4 <= n {
+        let is_task = chars[i].eq_ignore_ascii_case(&'t')
+            && chars[i + 1].eq_ignore_ascii_case(&'a')
+            && chars[i + 2].eq_ignore_ascii_case(&'s')
+            && chars[i + 3].eq_ignore_ascii_case(&'k');
+        if is_task {
+            let after = i + 4;
+            if after < n {
+                let c = chars[after];
+                // Greek immediately after `task`.
+                if is_greek(c) {
+                    return true;
+                }
+                // Digit form: `task` + (`-` | `_` | ` `) + ASCII digit.
+                if (c == '-' || c == '_' || c == ' ')
+                    && after + 1 < n
+                    && chars[after + 1].is_ascii_digit()
+                {
+                    return true;
+                }
+                // Greek after a single space: `task δ`.
+                if c == ' ' && after + 1 < n && is_greek(chars[after + 1]) {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
