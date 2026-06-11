@@ -3651,10 +3651,10 @@ mod tests {
             other => panic!("inertia field must be Value::Matrix, got {other:?}"),
         };
         assert_eq!(inertia_rows.len(), 3, "point_mass inertia must have 3 rows");
-        for r in 0..3 {
-            assert_eq!(inertia_rows[r].len(), 3, "row {r} must have 3 cols");
-            for c in 0..3 {
-                match &inertia_rows[r][c] {
+        for (r, row) in inertia_rows.iter().enumerate() {
+            assert_eq!(row.len(), 3, "row {r} must have 3 cols");
+            for (c, cell) in row.iter().enumerate() {
+                match cell {
                     Value::Scalar { si_value, dimension } => {
                         assert_eq!(
                             *dimension,
