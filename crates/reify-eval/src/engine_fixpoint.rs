@@ -252,7 +252,9 @@ mod tests {
     use crate::cache::NodeId;
     use crate::deps::DependencyTrace;
     use crate::graph::EvaluationGraph;
-    use reify_core::{ConstraintNodeId, RealizationNodeId, ResolutionNodeId, ValueCellId};
+    use reify_core::{
+        ConstraintNodeId, DiagnosticCode, RealizationNodeId, ResolutionNodeId, ValueCellId,
+    };
     use std::collections::{HashMap, HashSet};
 
     /// Build a `DependencyTrace` from explicit reads + realization_reads.
@@ -382,6 +384,95 @@ mod tests {
             result.diagnostics.is_empty(),
             "acyclic graph must emit zero diagnostics, got {}",
             result.diagnostics.len()
+        );
+    }
+
+    /// Task 4357 δ (step-9): a genuine `|SCC|>1` cycle — two value cells each
+    /// reading the other (a param↔let value cycle) — plus a downstream acyclic
+    /// consumer stranded behind the cycle. `run_unified_pass` must:
+    /// (a) leave BOTH cycle members in `residue`, absent from `schedule` (they
+    ///     never reach in-degree 0, so they are never executed);
+    /// (b) emit EXACTLY ONE `E_EVAL_CYCLE` diagnostic (code == `EvalCycle`)
+    ///     whose message names BOTH members via `NodeId::describe()`;
+    /// (c) NOT emit a second `E_EVAL_CYCLE` for the stranded downstream consumer
+    ///     (a singleton-no-self-edge SCC in residue → no diagnostic).
+    ///
+    /// RED until step-10 lands the Stage B Tarjan SCC discriminator.
+    #[test]
+    fn unified_pass_two_node_cycle_emits_single_eval_cycle() {
+        let e = "E";
+        let x = ValueCellId::new(e, "x");
+        let y = ValueCellId::new(e, "y");
+        // Downstream acyclic consumer reading a cycle member — stranded behind
+        // the cycle (singleton-no-self-edge once the cycle pins it in residue).
+        let d = ValueCellId::new(e, "d");
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // 2-cycle: x reads y, y reads x.
+        traces.insert(NodeId::Value(x.clone()), trace(vec![y.clone()], vec![]));
+        traces.insert(NodeId::Value(y.clone()), trace(vec![x.clone()], vec![]));
+        // Downstream consumer reads x (in the cycle) ⇒ never reaches in-degree 0.
+        traces.insert(NodeId::Value(d.clone()), trace(vec![x.clone()], vec![]));
+
+        let graph = EvaluationGraph::default();
+        let result = run_unified_pass(&graph, &traces);
+
+        let nx = NodeId::Value(x.clone());
+        let ny = NodeId::Value(y.clone());
+        let nd = NodeId::Value(d.clone());
+
+        // (a) both cycle members residue, never scheduled.
+        assert!(result.residue.contains(&nx), "x must be in residue");
+        assert!(result.residue.contains(&ny), "y must be in residue");
+        assert!(
+            !result.schedule.contains(&nx),
+            "x must never be scheduled (cyclic)"
+        );
+        assert!(
+            !result.schedule.contains(&ny),
+            "y must never be scheduled (cyclic)"
+        );
+        // The stranded consumer is also residue (proves the singleton case is
+        // exercised), but must NOT generate its own diagnostic — see (c).
+        assert!(
+            result.residue.contains(&nd),
+            "downstream consumer must be stranded in residue"
+        );
+
+        // (b) exactly one E_EVAL_CYCLE diagnostic naming BOTH cycle members.
+        let cycle_diags: Vec<&Diagnostic> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::EvalCycle))
+            .collect();
+        assert_eq!(
+            cycle_diags.len(),
+            1,
+            "exactly one E_EVAL_CYCLE expected; got {:?}",
+            result
+                .diagnostics
+                .iter()
+                .map(|d| (d.code, d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let msg = cycle_diags[0].message.as_str();
+        assert!(
+            msg.contains(&nx.describe()),
+            "cycle message must name x via describe() ({}); got: {msg}",
+            nx.describe()
+        );
+        assert!(
+            msg.contains(&ny.describe()),
+            "cycle message must name y via describe() ({}); got: {msg}",
+            ny.describe()
+        );
+
+        // (c) the stranded downstream consumer gets NO E_EVAL_CYCLE of its own:
+        // only one cycle diagnostic total (asserted above) and it must not list
+        // the singleton consumer in its ordered path.
+        assert!(
+            !msg.contains(&nd.describe()),
+            "stranded consumer d must not appear in any cycle path; got: {msg}"
         );
     }
 }
