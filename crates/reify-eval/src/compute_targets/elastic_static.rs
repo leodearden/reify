@@ -337,7 +337,7 @@ pub fn solve_elastic_static_trampoline(
     //
     // Both accumulate into disjoint targets and compose: a scene may mix
     // PointLoad and PressureLoad in the same LoadCase.
-    let (tip_force, pressures, _body_force) =
+    let (tip_force, pressures, body_force) =
         extract_loads(&value_inputs[4], extract_density(&value_inputs[0]));
 
     // ── (3b) Shell-route dispatch (task 3594/δ) ──────────────────────────────
@@ -580,8 +580,8 @@ pub fn solve_elastic_static_trampoline(
     // cache key (the trampoline does not hash ElasticOptions).
     let (deterministic, threads_opt) = extract_execution_params(&value_inputs[6]);
     let (fea, fresh_warm) = solve_cantilever_fea(
-        &model, length, width, height, tip_force, prior_cg, &pressures, deterministic, threads_opt,
-        progress_opt,
+        &model, length, width, height, tip_force, prior_cg, &pressures, body_force,
+        deterministic, threads_opt, progress_opt,
     );
 
     // ── (6b) Cancel check ─────────────────────────────────────────────────────
@@ -860,9 +860,10 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 ///   `aniso.d_matrix_global()`.
 ///
 /// Returns `(CantileverFeaSolve, CgWarmState)`.
-// 9 args: the helper threads mesh geometry, tip load, pressures, CG warm-state,
-// and the task-2926 execution-mode knobs (`deterministic`, `threads`) into a
-// single cohesive solve; splitting them into a struct would not aid clarity.
+// 10 args: the helper threads mesh geometry, tip load, pressures, gravity body
+// force, CG warm-state, and the task-2926 execution-mode knobs (`deterministic`,
+// `threads`) into a single cohesive solve; splitting them into a struct would not
+// aid clarity.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_cantilever_fea(
     model: &MaterialModel,
@@ -872,6 +873,7 @@ pub(crate) fn solve_cantilever_fea(
     tip_force: [f64; 3],
     prior_cg: Option<CgWarmState>,
     pressures: &[PressureSpec],
+    body_force: [f64; 3],
     deterministic: bool,
     threads: Option<usize>,
     progress: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl>,
@@ -1044,6 +1046,13 @@ pub(crate) fn solve_cantilever_fea(
     // PressureLoad face tractions are accumulated into the same `f` vector.
     // An empty `pressures` slice is a no-op, preserving the existing tip-only path.
     assemble_box_face_pressures(&mut f, &coords, &tet_connectivity, pressures, length, width, height);
+
+    // ── Gravity body force (task 4440 β) ──────────────────────────────────────
+    //
+    // Gravity body-force vector (N·m⁻³ = ρ·g·direction) is assembled per-element
+    // via `apply_body_force`.  All-zero body_force is a guarded no-op, preserving
+    // byte-identical output for every existing gravity-free solve.
+    assemble_body_force(&mut f, &coords, &tet_connectivity, body_force);
 
     // ── Dirichlet BCs: clamp all DOFs at root face (ix == 0) ─────────────────
     let root_nodes: Vec<usize> = (0..nz1)
@@ -1794,6 +1803,32 @@ fn assemble_box_face_pressures(
     }
 }
 
+/// Assemble a gravity body-force vector into the global force vector `f`.
+///
+/// For each tet, gathers its 4 physical node positions and calls
+/// `apply_body_force(f, ElementOrder::P1, conn, &phys, body_force)`, which
+/// integrates the constant body-force field against the P1 shape functions
+/// (each node receives `body_force × volume / 4`).
+///
+/// **No-op guard:** when `body_force` is all-zero (the common case for
+/// gravity-free solves), the function returns immediately without iterating
+/// the mesh, preserving byte-identical output for existing test fixtures.
+fn assemble_body_force(
+    f: &mut [f64],
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    body_force: [f64; 3],
+) {
+    if body_force == [0.0f64; 3] {
+        return;
+    }
+    for tet in tets {
+        let conn = [tet[0], tet[1], tet[2], tet[3]];
+        let phys: [[f64; 3]; 4] = [coords[tet[0]], coords[tet[1]], coords[tet[2]], coords[tet[3]]];
+        apply_body_force(f, ElementOrder::P1, &conn, &phys, body_force);
+    }
+}
+
 /// Extract `(ShellForce, shell_threshold)` from the `ElasticOptions`
 /// `Value::StructureInstance` at `value_inputs[6]` for shell-route classification
 /// (task 3594/δ).
@@ -2120,7 +2155,7 @@ mod tests {
 
         let (result, _warm) =
             solve_cantilever_fea(
-                &model, length, width, height, [0.0, 0.0, 0.0], None, &pressures, true, None, None,
+                &model, length, width, height, [0.0, 0.0, 0.0], None, &pressures, [0.0; 3], true, None, None,
             );
 
         assert!(result.converged, "FEA must converge under x_max pressure");
@@ -2189,6 +2224,7 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -2270,6 +2306,7 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -2283,6 +2320,7 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -2396,6 +2434,7 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -2557,6 +2596,7 @@ mod tests {
             [0.0, 0.0, -1000.0],
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -3229,6 +3269,7 @@ mod tests {
             tip_force,
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             Some(&mut |_iter: usize, _residual: f64| -> CgIterationControl {
@@ -3268,6 +3309,7 @@ mod tests {
             tip_force,
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -3302,7 +3344,7 @@ mod tests {
 
         let (result, _) =
             solve_cantilever_fea(
-                &model, 1.0, 0.1, 0.1, [0.0, -1000.0, 0.0], None, &[], true, None, None,
+                &model, 1.0, 0.1, 0.1, [0.0, -1000.0, 0.0], None, &[], [0.0; 3], true, None, None,
             );
 
         assert!(result.converged, "directional Y-load solve must converge");
