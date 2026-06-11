@@ -156,6 +156,69 @@ fn has_malformed_cite(line: &str) -> bool {
     false
 }
 
+// -----------------------------------------------------------------------
+// §8.3 phantom tracking / §6.8 inline escape, allowlist, swept extensions
+// -----------------------------------------------------------------------
+
+/// §8.3 phantom-tracking phrases — prose that *claims* a TODO is tracked
+/// elsewhere without backing it with a canonical `#NNNN` cite. Matched
+/// case-insensitively (lowercase copy) as substrings.
+const PHANTOM_PHRASES: &[&str] = &[
+    "tracked separately",
+    "tracked as a follow-up",
+    "tracked in project memory",
+    "follow-up task will",
+];
+
+/// §8.3 phantom-tracking detection: `true` when the line contains any of the
+/// [`PHANTOM_PHRASES`] (case-insensitive). The no-canonical-cite precondition
+/// is applied by the caller ([`classify_file`]).
+fn phantom_phrase(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    PHANTOM_PHRASES.iter().any(|p| lower.contains(p))
+}
+
+/// §6.8 inline escape: a line carrying the literal `ptodo:allow` opts out of
+/// the whole sweep for that line (an intentional, reviewed marker).
+fn line_escaped(line: &str) -> bool {
+    line.contains("ptodo:allow")
+}
+
+/// §6.8 allowlist path prefixes — paths starting with any entry are exempt
+/// from the sweep so the tool never flags its own machinery or test data.
+const ALLOWLIST_PREFIXES: &[&str] = &[
+    // The detector's own crate: its pattern string-literals (`TODO`/`FIXME`/
+    // `HACK`, `task δ`, the phantom phrases, …) and the committed fixtures
+    // under `tests/fixtures/ptodo/` would otherwise self-match.
+    "crates/reify-audit/",
+    // The `#[ignore]`-reason extraction tool: carries `#[ignore]` markers and
+    // reason strings as the data it operates on.
+    "crates/reify-test-support/src/ignore_hygiene.rs",
+    // … and that tool's tests, which embed `#[ignore]` attributes as fixtures.
+    "crates/reify-test-support/tests/ignore_reason_hygiene.rs",
+];
+
+/// §6.8 allowlist check: `true` when `path` (root-relative) starts with any
+/// [`ALLOWLIST_PREFIXES`] entry.
+fn is_allowlisted(path: &str) -> bool {
+    ALLOWLIST_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
+}
+
+/// §6.8 swept extensions — the exact set the structural lane scans:
+/// `.rs .ri .sh .py .ts .tsx .js`. Non-code/config files (`.md`, `.toml`,
+/// `.yaml`, `.json`, …) carry prose, not tracked-work markers, and are skipped
+/// (PRD §13 Q1 defers `.toml`/`.yml`/`.yaml` to θ).
+fn is_swept_ext(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".rs")
+        || lower.ends_with(".ri")
+        || lower.ends_with(".sh")
+        || lower.ends_with(".py")
+        || lower.ends_with(".ts")
+        || lower.ends_with(".tsx")
+        || lower.ends_with(".js")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
