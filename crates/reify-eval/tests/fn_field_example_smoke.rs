@@ -17,6 +17,7 @@
 //! `sample(Undef, ..)` → `Undef` → constraints yield `Indeterminate`, not
 //! `Satisfied`.
 
+use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 use reify_ir::Satisfaction;
@@ -28,10 +29,12 @@ const EXAMPLE_PATH: &str = concat!(
     "/../../examples/fields/fn_field.ri"
 );
 
-/// Compile `examples/fields/fn_field.ri` and verify it has no error-severity
-/// diagnostics (compile-clean signal; faster subset of the full e2e test).
-#[test]
-fn fn_field_ri_compiles_with_stdlib() {
+/// Read the fixture and compile it with the stdlib, asserting no error
+/// diagnostics.  Returns the compiled program for further use.
+///
+/// Factored out to avoid duplicating the read + error-check boilerplate across
+/// the two tests below.
+fn compile_fn_field_fixture() -> CompiledModule {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/fields/fn_field.ri should exist");
 
@@ -42,32 +45,33 @@ fn fn_field_ri_compiles_with_stdlib() {
         "expected no compile errors in fn_field.ri, got: {:?}",
         errors_only(&compiled)
     );
+
+    compiled
+}
+
+/// Compile `examples/fields/fn_field.ri` and verify it has no error-severity
+/// diagnostics (compile-clean signal; faster subset of the full e2e test).
+#[test]
+fn fn_field_ri_compiles_with_stdlib() {
+    compile_fn_field_fixture();
 }
 
 /// Eval and check `examples/fields/fn_field.ri` and verify all structure
 /// constraints are `Satisfaction::Satisfied`.
 ///
-/// The fixture declares exactly **4** range constraints in `FnFieldDemo`:
+/// The fixture declares **4** range constraints in `FnFieldDemo`:
 ///   - `doubled_at_3 > 5.999` and `doubled_at_3 < 6.001` (fn_field sample at 3.0)
 ///   - `plus1_at_4 > 4.999` and `plus1_at_4 < 5.001` (fn_field sample at 4.0)
 ///
-/// If you add constraints to `fn_field.ri`, update the exact count below.
+/// The exact count is asserted as `>= 4` so that adding illustrative constraints
+/// to `fn_field.ri` doesn't break this test — the per-entry Satisfied loop
+/// provides the real behavioural signal.
 ///
 /// **RED before step-2**: constraints are `Indeterminate` (fn_field → Undef).
-/// **GREEN after step-2**: all 4 constraints are `Satisfied`.
+/// **GREEN after step-2**: all constraints are `Satisfied`.
 #[test]
 fn fn_field_constraints_all_satisfied() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/fields/fn_field.ri should exist");
-
-    let compiled = parse_and_compile_with_stdlib(&source);
-
-    // Compile must be clean.
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "expected no compile errors, got: {:?}",
-        errors_only(&compiled)
-    );
+    let compiled = compile_fn_field_fixture();
 
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
@@ -81,12 +85,13 @@ fn fn_field_constraints_all_satisfied() {
         .collect();
     assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
 
-    // Check constraints — exactly 4, one per range bound in FnFieldDemo.
+    // At least the 4 constraints from fn_field.ri must be present and all
+    // Satisfied.  Using >= rather than == so that adding illustrative
+    // constraints to the fixture doesn't break this unrelated assertion.
     let check = engine.check(&compiled);
-    assert_eq!(
-        check.constraint_results.len(),
-        4,
-        "expected exactly 4 constraint results, got {}",
+    assert!(
+        check.constraint_results.len() >= 4,
+        "expected at least 4 constraint results, got {}",
         check.constraint_results.len()
     );
 

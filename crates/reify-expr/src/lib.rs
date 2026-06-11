@@ -245,6 +245,16 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     if evaluated_args.len() == 1
                         && matches!(&evaluated_args[0], Value::Lambda { .. }) =>
                 {
+                    // In debug/test builds, assert that α's `field_op_result_type`
+                    // has stamped `result_type = Field<D,C>`.  A typing regression
+                    // would otherwise silently produce a `Value::Field` with wrong
+                    // domain/codomain rather than surfacing as a loud failure.
+                    debug_assert!(
+                        matches!(&expr.result_type, Type::Field { .. }),
+                        "fn_field result_type should be Field<D,C>, stamped by \
+                         field_op_result_type (task 4219 α); got {:?}",
+                        &expr.result_type
+                    );
                     let (domain_type, codomain_type) =
                         if let Type::Field { domain, codomain } = &expr.result_type {
                             ((**domain).clone(), (**codomain).clone())

@@ -153,3 +153,44 @@ fn sample_fn_field_evaluates_to_real_b1() {
         result
     );
 }
+
+/// `fn_field(3.0)` — arg is a non-lambda `Value::Real` — must fall through to
+/// `reify_stdlib::eval_builtin` (no `fn_field` binding there) and return
+/// `Value::Undef`.
+///
+/// This pins the documented strict fall-through guarantee: when the match guard
+/// `matches!(&evaluated_args[0], Value::Lambda { .. })` is not satisfied, the
+/// arm is skipped and the call degrades gracefully to `Undef` rather than
+/// panicking or constructing a malformed `Value::Field`.
+///
+/// Note: `field_op_result_type` in the compiler returns `None` for non-Function
+/// args, so a well-typed tree never reaches this path.  This test covers the
+/// runtime contract for a mistyped or hand-constructed tree.
+#[test]
+fn fn_field_non_lambda_arg_falls_through_to_undef() {
+    let hash = reify_core::ContentHash::of(b"fn_field_non_lambda_arg_test");
+    // Build `fn_field(3.0)` — arg is Value::Real(3.0), not a lambda.
+    let expr = CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: "fn_field".to_string(),
+                qualified_name: "std::fn_field".to_string(),
+            },
+            args: vec![CompiledExpr::literal(Value::Real(3.0), Type::Real)],
+        },
+        result_type: Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::Real),
+        },
+        content_hash: hash,
+    };
+
+    let result = eval_expr(&expr, &EvalContext::simple(&ValueMap::new()));
+
+    assert_eq!(
+        result,
+        Value::Undef,
+        "fn_field(non-lambda) must fall through to Undef, got {:?}",
+        result
+    );
+}
