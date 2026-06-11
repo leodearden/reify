@@ -408,6 +408,115 @@ pub fn try_eval_body_mass_props(
     }
 }
 
+/// Build-time mechanism-mass pre-derivation pass (task 4472, rung (b)).
+///
+/// For a `Value::Map` with `kind == "mechanism"`, iterates over the mechanism's
+/// `bodies` list and, for each body whose `solid` is a `Value::GeometryHandle`,
+/// issues the three KGQ queries (`Volume` / `CenterOfMass` / `InertiaTensor`)
+/// via `query_body_mass_props_from_kernel` and writes the resulting
+/// `MassProperties` StructureInstance into a NEW **additive** `derived_mass_props`
+/// sibling key on that body map — the original `solid` GeometryHandle is NOT
+/// replaced.
+///
+/// Density is resolved via `resolve_density(None, body_material_density(body))`
+/// which returns the water default (1000 kg/m³) when no body-level material
+/// density is present (the current mechanism-body case). The
+/// `W_DynamicsDefaultDensity` warning is NOT emitted here — that warning belongs
+/// to the user-facing `body_mass_props()` call, not the internal build pass.
+///
+/// Returns `Some(patched_mechanism)` iff at least one body was successfully
+/// patched. Returns `None` for any non-mechanism value, or when no body
+/// carried a geometry handle, or when all geometry-backed bodies failed their
+/// kernel queries — mirroring the `None`-means-skip post-process contract.
+///
+/// On a kernel-query failure for an individual body, a `Diagnostic::warning` is
+/// emitted and that body is left unpatched (skipped), but the pass continues
+/// with the remaining bodies.
+pub fn derive_mechanism_mass_props(
+    value: &Value,
+    kernel: &dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Value> {
+    // Recognise mechanism: must be a Map with kind=="mechanism".
+    let mech_map = match value {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    if mech_map.get(&Value::String("kind".to_string()))
+        != Some(&Value::String("mechanism".to_string()))
+    {
+        return None;
+    }
+
+    // Extract bodies list.
+    let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
+        Some(Value::List(b)) => b,
+        _ => return None,
+    };
+
+    let mut patched_bodies: Vec<Value> = Vec::with_capacity(bodies.len());
+    let mut any_patched = false;
+
+    for body_value in bodies {
+        let body_map = match body_value {
+            Value::Map(b) => b,
+            _ => {
+                patched_bodies.push(body_value.clone());
+                continue;
+            }
+        };
+
+        let solid = body_map.get(&Value::String("solid".to_string()));
+        let handle = match solid {
+            Some(Value::GeometryHandle { kernel_handle, .. }) => *kernel_handle,
+            _ => {
+                // Not a geometry handle — leave unpatched.
+                patched_bodies.push(body_value.clone());
+                continue;
+            }
+        };
+
+        // Resolve density (water default when no material on body).
+        let material = body_material_density(body_value);
+        let (density, _source) = resolve_density(None, material);
+
+        // Issue the three KGQ queries.
+        match query_body_mass_props_from_kernel(kernel, handle, density) {
+            Ok((mass, com, inertia)) => {
+                let mp =
+                    assemble_mass_properties(mass_value(mass), com_value(com), inertia_value(inertia));
+                // Write derived_mass_props additively — preserve the existing body
+                // keys (including solid).
+                let mut new_body: std::collections::BTreeMap<Value, Value> =
+                    body_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                new_body.insert(Value::String("derived_mass_props".to_string()), mp);
+                patched_bodies.push(Value::Map(new_body));
+                any_patched = true;
+            }
+            Err(e) => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "derive_mechanism_mass_props: kernel query failed for body with handle \
+                     {handle:?}: {e}; body will not carry derived_mass_props"
+                )));
+                patched_bodies.push(body_value.clone());
+            }
+        }
+    }
+
+    if !any_patched {
+        return None;
+    }
+
+    // Rebuild mechanism Map with the patched bodies list.
+    let mut new_mech: std::collections::BTreeMap<Value, Value> =
+        mech_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    new_mech.insert(
+        Value::String("bodies".to_string()),
+        Value::List(patched_bodies),
+    );
+    Some(Value::Map(new_mech))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
