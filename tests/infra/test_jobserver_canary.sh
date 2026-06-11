@@ -339,4 +339,44 @@ assert "Block B (b): sum restored to TOKENS after restart+reseed" \
 rm -f "$_BB_BAL_PID_FILE"
 _cleanup_canary
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C: idle-only guard — a mid-build leak must be SKIPPED
+#
+#   hold_seed_fifos at merge=2/task=1 (sum=3 < TOKENS=4 → leaked state), but
+#   BUILD_ACTIVE_CMD='echo 1' (build ACTIVE).
+#   The canary must:
+#     (i)  print a "build active — skipping" message
+#     (ii) NOT record a systemctl restart
+#   Restarting under load would SIGKILL in-flight rustc and permanently destroy
+#   the tokens those processes hold.
+#
+#   RED: step-4 has no idle guard — leaked sum with active build still reseeds.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: idle-only guard — mid-build leak is skipped ---"
+
+_cleanup_canary
+_MERGE_FIFO="$(mktemp -u /tmp/test-canary-merge-XXXXXX)"
+_TASK_FIFO="$(mktemp -u /tmp/test-canary-task-XXXXXX)"
+_READY_FILE="$(mktemp /tmp/test-canary-ready-XXXXXX)"
+> "$_CALLS_FILE"
+
+hold_seed_fifos "$_MERGE_FIFO" "$_TASK_FIFO" 2 1 "$_READY_FILE"   # sum=3 < 4 (leak)
+wait_for_ready "$_READY_FILE"
+
+_bc_out=""
+_bc_rc=0
+_bc_out=$(run_canary 'echo 1' 2>&1) || _bc_rc=$?   # build ACTIVE
+
+assert "Block C: canary prints 'build active' skip message" \
+    bash -c "echo '$_bc_out' | grep -qi 'build active'"
+
+assert "Block C: canary exits 0 (skip is not an error)" \
+    test "$_bc_rc" -eq 0
+
+assert "Block C: no systemctl restart while build is active (leak skipped)" \
+    bash -c "! grep -qF 'restart' '$_CALLS_FILE'"
+
+_cleanup_canary
+
 test_summary
