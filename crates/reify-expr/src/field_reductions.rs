@@ -685,7 +685,7 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
         // - all_reductions_on_analytical_field_return_undef
         // - all_reductions_on_composed_field_return_undef
         // - all_reductions_on_imported_field_return_undef
-        // - all_reductions_on_derived_non_vonmises_field_return_undef (→ Gradient)
+        // - all_reductions_on_deferred_differential_field_return_undef (→ Gradient)
         _ => Value::Undef,
     }
 }

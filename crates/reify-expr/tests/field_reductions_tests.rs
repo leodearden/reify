@@ -843,7 +843,7 @@ fn all_reductions_on_imported_field_return_undef() {
 /// differential-field-reductions PRD; it is and remains Undef in
 /// `compute_extremum`/`compute_argextremum` via the `_ => Undef` fall-through.
 #[test]
-fn all_reductions_on_derived_non_vonmises_field_return_undef() {
+fn all_reductions_on_deferred_differential_field_return_undef() {
     let (field, field_type) =
         make_constant_real_analytical_field(FieldSourceKind::Gradient);
     assert_all_reductions_undef(
@@ -3368,5 +3368,40 @@ fn argmax_principal_stresses_field_with_partial_nan_skips_nan() {
             dimension: DimensionVector::LENGTH,
         },
         "argmax(PrincipalStresses field with partial NaN) should skip NaN and return coord 1.0 m"
+    );
+}
+
+/// All four reductions return `Value::Undef` when every PrincipalStresses
+/// window is all-NaN (all-out-of-solid FEA sentinel).
+///
+/// Pins the NaN-skip + all-finite-absent → Undef chain:
+/// `compute_eigenvalues_3x3([NaN; 9])` returns `Some([NaN, NaN, NaN])`,
+/// the selected entry is NaN, the `is_finite()` gate in
+/// `argmax_argmin_index` / `reduce_sampled_extremum` skips every window,
+/// and all four reductions return `Value::Undef`.
+///
+/// Mirrors `reductions_on_max_shear_field_all_nan_windows_return_undef`.
+#[test]
+fn reductions_on_principal_stresses_field_all_nan_windows_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let list_pressure = Type::List(Box::new(pressure.clone()));
+    let nan_sf = make_sampled_tensor_1d(
+        "all_nan",
+        vec![0.0, 1.0],
+        vec![[f64::NAN; 9], [f64::NAN; 9]],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(nan_sf, Type::Real);
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        list_pressure,
+        FieldSourceKind::PrincipalStresses,
+        inner_tensor_field,
+    );
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "PrincipalStresses with all-NaN windows (all-out-of-solid → Undef)",
     );
 }
