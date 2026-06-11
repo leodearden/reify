@@ -16,6 +16,8 @@
 
 #![allow(clippy::mutable_key_type)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
@@ -29,8 +31,20 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
     m.get(&k.to_string())
 }
 
+/// Scenario-9 call counter: incremented by `identity_fn` each time it runs.
+///
+/// Provides a direct execution proof for the ComputeNode-trampoline test:
+/// because the inline-fallback body is also `{ x }` (identity), the result
+/// cell value alone cannot distinguish trampoline-accept from inline-fallback.
+/// The ComputeNode-presence check (assertion b) is an indirect inference; this
+/// counter makes assertion (d) a first-class execution witness — if lowering
+/// ever changed to insert a ComputeNode on inline-fallback, (b) would silently
+/// lose discriminating power while (d) would still fail correctly.
+static SCENARIO_9_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// Synthetic identity trampoline used by scenario 9.
 /// Mirrors compute_dispatch_registry.rs identity_fn (task γ / 3422 pattern).
+/// Increments `SCENARIO_9_CALL_COUNT` so the test can assert direct execution.
 fn identity_fn(
     value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
@@ -38,6 +52,7 @@ fn identity_fn(
     _prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
+    SCENARIO_9_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
     ComputeOutcome::Completed {
         result: value_inputs.first().cloned().unwrap_or(Value::Undef),
         new_warm_state: None,
@@ -443,6 +458,9 @@ structure def StructInstanceTrampolineFixture {
     let compiled = parse_and_compile_with_stdlib(SOURCE);
     let mut engine = make_simple_engine();
     engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
+    // Reset before eval so any prior (re-)run of this test in the same process
+    // doesn't bleed a stale count into assertion (d).
+    SCENARIO_9_CALL_COUNT.store(0, Ordering::Relaxed);
     let eval_result = engine.eval(&compiled);
 
     // (a) The result cell must be a Steel_AISI_1045 StructureInstance,
@@ -505,6 +523,17 @@ structure def StructInstanceTrampolineFixture {
         "expected no Error diagnostics (trampoline was registered), \
          got: {:?}",
         error_diags
+    );
+
+    // (d) Direct execution proof: identity_fn's call counter was incremented.
+    //     Unlike (b), this asserts the fn body actually ran — if lowering
+    //     behaviour ever changed to insert a ComputeNode even on inline-fallback,
+    //     (b) alone would silently lose its discriminating power; (d) would not.
+    assert_eq!(
+        SCENARIO_9_CALL_COUNT.load(Ordering::Relaxed),
+        1,
+        "identity_fn must have been called exactly once by the trampoline dispatch \
+         (direct execution proof, not inferred from graph structure)"
     );
 }
 
