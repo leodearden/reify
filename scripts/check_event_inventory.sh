@@ -69,6 +69,36 @@ fi
 INVENTORY="$REPO_ROOT/docs/gui-event-channels.md"
 SRC_DIR="$REPO_ROOT/gui/src-tauri"
 
+# Build-artifact directories under SRC_DIR that must never be scanned.
+# Rationale: the infra-check lane runs concurrently with a build lane (verify.sh
+# "Overlap join" region). Tauri codegen writes transient .rs files to gen/ during
+# any `cargo build -p reify-gui`; the Rust compiler writes to target/. A transient
+# emit literal in those dirs would be flagged as a false-positive orphan/phantom.
+# All four names are .gitignore'd build outputs (gen/:36, /target:5,
+# node_modules/:14, gui/dist/:49); no tracked .rs lives under any of them.
+# See esc-4357-20 (flake), task-4529 (fix).
+PRUNE_DIRS=(target gen node_modules dist)
+
+# Pre-build a find prune expression: \( -type d \( -name a -o -name b ... \) -prune \)
+# and a grep --exclude-dir arg list, both derived from PRUNE_DIRS.
+_find_prune_expr=()
+_grep_exclude_args=()
+for _d in "${PRUNE_DIRS[@]}"; do
+    _grep_exclude_args+=("--exclude-dir=$_d")
+done
+# Build the find -prune clause: ( -type d ( -name a -o -name b -o ... ) -prune )
+_find_prune_expr+=(\( -type d \()
+_first=1
+for _d in "${PRUNE_DIRS[@]}"; do
+    if [[ $_first -eq 1 ]]; then
+        _find_prune_expr+=(-name "$_d")
+        _first=0
+    else
+        _find_prune_expr+=(-o -name "$_d")
+    fi
+done
+_find_prune_expr+=(\) -prune \))
+
 if [[ ! -f "$INVENTORY" ]]; then
     echo "ERROR: inventory file not found: $INVENTORY" >&2
     exit 1
@@ -93,8 +123,11 @@ registered=$(grep -oP '\| `\K[a-z0-9-]+(?=` \|)' "$INVENTORY" | sort -u || true)
 #       "evaluation-status",
 # Dynamic forms (.emit(&name, …) or .emit(event_name, …)) produce no match.
 emit_channels=$(
-    find "$SRC_DIR" -name "*.rs" -exec \
-        perl -0777 -ne 'print "$1\n" while /\.emit\(\s*"([a-z0-9-]+)"/gm' {} + \
+    find "$SRC_DIR" \
+        "${_find_prune_expr[@]}" \
+        -o \( -type f -name "*.rs" -exec \
+            perl -0777 -ne 'print "$1\n" while /\.emit\(\s*"([a-z0-9-]+)"/gm' {} + \
+        \) \
     2>/dev/null | sort -u || true
 )
 
@@ -105,7 +138,7 @@ while IFS= read -r channel; do
     if ! printf '%s\n' "$registered" | grep -qx "$channel"; then
         orphan_count=$((orphan_count + 1))
         echo "WARNING: orphan channel '$channel' (not in docs/gui-event-channels.md):" >&2
-        grep -rn --include="*.rs" "\"$channel\"" "$SRC_DIR" >&2 || true
+        grep -rn --include="*.rs" "${_grep_exclude_args[@]}" "\"$channel\"" "$SRC_DIR" >&2 || true
     fi
 done <<< "$emit_channels"
 
