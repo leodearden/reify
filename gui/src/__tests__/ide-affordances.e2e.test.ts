@@ -238,11 +238,17 @@ describe('folding', () => {
 
     // Find Ctrl-Shift-[ binding in keymap facet and invoke it directly.
     // (Synthetic keydown does not drive CodeMirror keymaps in jsdom.)
-    const { foldedRanges } = await import('@codemirror/language');
+    const { foldedRanges, forceParsing } = await import('@codemirror/language');
     const { keymap } = await import('@codemirror/view');
     const allBindings = view.state.facet(keymap).flat();
     const foldBinding = allBindings.find((b) => b.key === 'Ctrl-Shift-[');
     expect(foldBinding).toBeDefined(); // confirms the binding is registered
+    // Ensure the Lezer syntax tree is fully parsed before invoking foldCode.
+    // syntaxFolding() returns null when tree.length < lineEnd; in jsdom the
+    // incremental parser may not have run yet after a single flushMacrotasks(0).
+    // forceParsing() calls ensureSyntaxTree synchronously and dispatches an
+    // empty transaction to apply the result to view.state.
+    forceParsing(view, view.state.doc.length, 2000);
     foldBinding!.run!(view);
     await flushMacrotasks(0);
 

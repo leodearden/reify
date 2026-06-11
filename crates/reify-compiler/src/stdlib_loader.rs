@@ -280,11 +280,13 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
                 "std.ports.fluid",
                 include_str!("../stdlib/ports_fluid.ri"),
             ),
-            // `std.fields` is a documentation-only packaging surface for the
-            // existing built-in field differential operators (gradient, divergence,
-            // curl, laplacian, sample). It declares no pub fn or pub type and
-            // references no other stdlib module → zero ordering constraints;
-            // tail-append is safe. Reconstruction per PRD §Slice C.
+            // `std.fields` packages the built-in field differential operators
+            // (gradient, divergence, curl, laplacian, sample) and hosts the
+            // single generic exemplar `pub fn through<T>(x: T) -> T` (task
+            // 4233 δ — Tier-1 generics gate; fields-api tasks ε/ζ will extend
+            // this module further). It references no other stdlib module →
+            // zero ordering constraints; tail-append is safe.
+            // Reconstruction per PRD §Slice C.
             ("std.fields", include_str!("../stdlib/fields.ri")),
             // `std.determinacy.purposes` ships the two standard determinacy-check
             // purposes (simulation_ready + design_review, PRD §5) that are merged
