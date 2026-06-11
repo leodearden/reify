@@ -608,5 +608,67 @@ assert "Check 15: exits 0 in warning mode" \
 assert "Check 15: exits 0 under --strict (no false-positive orphan from untracked transient)" \
     "$CHECK_SCRIPT" --repo-root "$_fix15dir" --strict
 
+# ==============================================================================
+# Check 16: reverse-pass (--bidirectional) tracked-only hermeticity (task-4572)
+# A §1 channel whose ONLY literal lives in an UNTRACKED src/extra.rs must be
+# flagged as a phantom — the untracked file must NOT count as source wiring.
+# The untracked file is placed under src/ (a directory PRUNE_DIRS never prunes
+# by name), proving git ls-files closes the gap directory-name pruning left.
+# RED against the current reverse pass: grep -r "$SRC_DIR" finds the untracked
+# extra.rs literal → only-in-untracked NOT flagged → assertions 1/3 fail.
+# GREEN only after the git ls-files implementation excludes untracked files.
+# ==============================================================================
+echo ""
+echo "--- Check 16: reverse-pass tracked-only hermeticity (src/ untracked, task-4572) ---"
+
+_fix16dir="$_tmpdir/fix16"
+mkdir -p "$_fix16dir/docs" "$_fix16dir/gui/src-tauri/src"
+
+cat > "$_fix16dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `wired-ok` | wired |
+| `only-in-untracked` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+# TRACKED: legitimately wired channel in src/.
+cat > "$_fix16dir/gui/src-tauri/src/real.rs" <<'RUST'
+fn emit_real(app: &AppHandle) {
+    app.emit("wired-ok", ());
+}
+RUST
+
+# UNTRACKED: the ONLY occurrence of "only-in-untracked" is here.
+# NOT staged — models a concurrent build lane's transient file under src/.
+# This must NOT count as source wiring for the reverse pass.
+cat > "$_fix16dir/gui/src-tauri/src/extra.rs" <<'RUST'
+// Untracked transient — literal must not count as wiring.
+const C: &str = "only-in-untracked";
+RUST
+
+# Stage only real.rs; extra.rs stays untracked.
+_init_repo "$_fix16dir" gui/src-tauri/src/real.rs
+
+_fix16_stderr="$_tmpdir/fix16_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix16dir" --bidirectional 2>"$_fix16_stderr" || true
+
+assert "Check 16: 'only-in-untracked' IS flagged as phantom (untracked literal must not count as wiring)" \
+    grep -q 'only-in-untracked' "$_fix16_stderr"
+
+assert "Check 16: 'wired-ok' is NOT flagged as phantom" \
+    bash -c "! grep -q 'wired-ok' '$_fix16_stderr'"
+
+assert "Check 16: --bidirectional --strict exits non-zero (only-in-untracked is a phantom)" \
+    bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix16dir' --bidirectional --strict"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
