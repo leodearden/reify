@@ -185,22 +185,22 @@ fn validate_differentiable_field<'a>(
 
 /// Compute the result-codomain type for the gradient operator.
 ///
-/// Returns `Some(result_codomain)` when:
-/// - `codomain_type` is scalar (`Real`, `Int`, or `Scalar { .. }`), **and**
-/// - `domain_type` is scalar (`1D → n = 1`) or `Point { n, scalar }` (`nD → n`).
+/// Returns `Some(result_codomain)` when `domain_type` is scalar (`1D → n = 1`)
+/// or `Point { n, scalar }` (`nD → n`); returns `None` for non-scalar/non-Point
+/// domains.
 ///
 /// For `n == 1` returns the gradient quantity directly (scalar derivative);
 /// for `n > 1` wraps it in `Type::Vector { n, quantity: gradient_quantity }`.
 ///
-/// Returns `None` for non-scalar codomains or non-scalar/non-Point domains,
-/// matching the `Value::Undef` path in the existing validate-and-reject logic.
+/// For non-scalar codomains `dim_quotient_type` falls back to
+/// `dimensionless_fallback(codomain_type)`, matching the original
+/// Analytical/Composed path behavior (construction always succeeds for
+/// valid domain; the codomain guard fires only at sampling time).
 ///
 /// Used by both the Sampled eager-lower path (ε) and the existing
 /// Analytical/Composed path, so the codomain computation is a single source
 /// of truth and the D6 typing is guaranteed identical across both paths.
 fn gradient_result_codomain(domain_type: &Type, codomain_type: &Type) -> Option<Type> {
-    // Codomain must be scalar; propagate None for non-scalar.
-    scalar_dimension(codomain_type)?;
     // Determine n from domain.
     let n = match domain_type {
         _ if scalar_dimension(domain_type).is_some() => 1,
