@@ -753,6 +753,7 @@ fn extract_density_or_degenerate(material: &Value) -> Result<f64, ComputeOutcome
     } else {
         None
     };
+    // modal has no explicit density arg; only the material rung is in play
     match resolve_density_strict(None, material_density) {
         Some((rho, _)) => Ok(rho),
         None => Err(no_mass_matrix_outcome()),
@@ -4885,6 +4886,12 @@ mod tests {
     /// deliberately **not** part of the shared `resolve_density_strict` rung-walk
     /// (mass_props.rs is Value-free and does not validate magnitude — see
     /// design decision "Keep modal's positivity validation in the eval layer").
+    ///
+    /// The explicit-rung agreement (when a caller-supplied explicit density
+    /// overrides the material rung) is verified separately by
+    /// `strict_shared_rung_walk_invariant` in
+    /// `crates/reify-stdlib/src/dynamics/mass_props.rs`, which covers the case
+    /// modal intentionally never exercises (modal passes `explicit = None`).
     ///
     /// RED: `crate::dynamics_ops::resolve_body_density` is private until
     /// step-4 bumps it to `pub(crate)` → compile error.
