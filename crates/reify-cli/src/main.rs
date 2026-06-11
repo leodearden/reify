@@ -414,6 +414,34 @@ fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
 /// Usage line printed to stderr for any `reify check` usage error.
 const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
+/// `reify check <file>` — lightweight static constraint checker.
+///
+/// ## Engine posture: deliberately NO compute trampolines
+///
+/// The non-[`RepresentationWithin`] path uses `Engine::new(None) + check()`;
+/// the [`RepresentationWithin`] path uses `Engine::with_registered_kernel +
+/// check()`.  Neither path calls [`configured_eval_engine`] nor registers the
+/// FEA/buckling/modal compute trampolines
+/// ([`reify_eval::compute_targets::register_compute_fns`] /
+/// [`reify_eval::register_shell_extract_compute_fns`]).
+///
+/// Consequence: `@optimized("solver::elastic_static")` FEA-result constraints
+/// (e.g. `constraint peak_stress < limit` over `result.max_von_mises`) evaluate
+/// against the body-inline `undef` fallback and report **Indeterminate** under
+/// `reify check`.  They are NOT a gate; `reify build` or `reify eval` are the
+/// FEA exit-code gate.
+///
+/// **Rationale:** registering compute trampolines here would run a potentially
+/// slow FEA solve inside the lightweight static-check path, violating the design
+/// intent that *check attaches no kernel by design*.  The trampoline-free posture
+/// is an executable contract locked by `check_fea_violated_constraint_is_not_gated`
+/// in `cli_build_fea.rs`; changing it requires updating that test intentionally.
+///
+/// **Known limitation:** `reify check` still surfaces the engine-owned
+/// `Severity::Error` "no registered compute trampoline (falling back to
+/// body-inlining)" diagnostic on stderr for `@optimized` FEA solves.  The
+/// severity is owned by `engine_eval.rs`; downgrading it to a warning is a
+/// separate engine-side concern (deferred, out of scope for this CLI task).
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
