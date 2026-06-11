@@ -89,7 +89,36 @@ pub(crate) enum DifferentialOp {
 /// < 3 nodes for the Laplacian.  Higher-order boundary treatment is deferred
 /// to η per PRD §10.
 pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> SampledField {
-    todo!("sampled_differential: not yet implemented — see plan step-2/4/6/8")
+    let dims = axis_dims(sf);
+    let n_axes = dims.len();
+    let grid_count: usize = dims.iter().product();
+    let in_stride = if grid_count > 0 { sf.data.len() / grid_count } else { 1 };
+
+    match op {
+        DifferentialOp::Gradient => {
+            // Scalar input (stride 1) → vector output (stride = axis count n).
+            debug_assert_eq!(in_stride, 1, "Gradient: expected scalar input (stride 1)");
+            let out_stride = n_axes;
+            let mut data = vec![0.0f64; grid_count * out_stride];
+            for g in 0..grid_count {
+                let mi = decode_index(g, &dims);
+                for c in 0..n_axes {
+                    data[g * out_stride + c] =
+                        first_diff_along_axis(&sf.data, &dims, &sf.spacing, &mi, c, 1, 0);
+                }
+            }
+            clone_geometry(sf, data)
+        }
+        DifferentialOp::Laplacian => {
+            todo!("sampled_differential Laplacian: not yet implemented — see plan step-4")
+        }
+        DifferentialOp::Divergence => {
+            todo!("sampled_differential Divergence: not yet implemented — see plan step-6")
+        }
+        DifferentialOp::Curl => {
+            todo!("sampled_differential Curl: not yet implemented — see plan step-8")
+        }
+    }
 }
 
 // ─── grid helpers ────────────────────────────────────────────────────────────
