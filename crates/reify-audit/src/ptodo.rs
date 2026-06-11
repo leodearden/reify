@@ -299,22 +299,40 @@ impl Kind {
     }
 }
 
-/// §8 per-file classification: scan `content` line-by-line and return one
-/// `(line_no, kind, marker_text)` entry per offending line (1-based line
+/// The unified per-line classification produced by [`scan_file`]. A given line
+/// is either *structurally* offending (no canonical cite → α's domain) or
+/// *cited* (a canonical `#NNNN` marker → β's liveness domain). At most one
+/// variant per line; lines matching neither produce no entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LineClass {
+    /// A structural finding kind (α) — emitted verbatim by [`classify_file`].
+    Structural(Kind),
+    /// A tracked marker carrying one or more canonical `#NNNN` cites (β) — the
+    /// liveness lane resolves these ids against the task DB.
+    Cited(Vec<u32>),
+}
+
+/// §8 per-file scan: walk `content` line-by-line and return one `(line_no,
+/// class, marker_text)` entry per offending OR tracked line (1-based line
 /// numbers, `marker_text` is the trimmed line). `is_rust` gates the `.rs`-only
-/// macro and `#[ignore]` rules.
+/// macro and `#[ignore]` rules. This is the single precedence-correct pass
+/// shared by the structural lane ([`classify_file`]) and the liveness lane
+/// ([`check`]) so the two never drift.
 ///
 /// Precedence per line (first match wins; at most one entry per line):
 /// 1. `ptodo:allow` inline escape → the line is skipped entirely (§6.8).
-/// 2. `#[ignore]` (`.rs`): bare → `BareIgnore`; reason-bearing → no entry
-///    (deferred to γ). Checked before comment markers so a reason string is
+/// 2. `#[ignore]` (`.rs`): bare → `Structural(BareIgnore)`; reason-bearing → no
+///    entry (deferred to γ — intentionally NOT cite-checked, so its `#N` reason
+///    ids never reach β). Checked before comment markers so a reason string is
 ///    not misread as a marker.
-/// 3. comment marker (all exts): canonical `#NNNN` → no entry (tracked, β
-///    liveness-checks); malformed cite → `MalformedCite`; else `Untracked`.
+/// 3. comment marker (all exts): canonical `#NNNN` → `Cited(on-line cites)`
+///    (tracked → β liveness-checks); malformed cite → `Structural(MalformedCite)`;
+///    else `Structural(Untracked)`.
 /// 4. stub macro (`.rs`): a canonical cite on this line OR the line directly
-///    above → no entry (above-line lookback); else `Untracked`.
-/// 5. phantom phrase with no canonical cite → `PhantomTracking`.
-fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
+///    above → `Cited(this-line ∪ above-line cites)` (above-line lookback for the
+///    `// #NNNN` \ `todo!()` convention); else `Structural(Untracked)`.
+/// 5. phantom phrase with no canonical cite → `Structural(PhantomTracking)`.
+fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
     let mut out = Vec::new();
     let mut prev: Option<&str> = None;
     for (i, line) in content.lines().enumerate() {
@@ -329,33 +347,73 @@ fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
         let has_canon = has_canonical_cite(line);
 
         if is_rust && let Some(form) = ignore_attr(line) {
-            // (2) #[ignore] (.rs only). Reason-bearing forms defer to γ.
+            // (2) #[ignore] (.rs only). Reason-bearing forms defer to γ and are
+            // NOT cite-checked (their #N reason ids are γ's job, not β's).
             if form == IgnoreForm::Bare {
-                out.push((line_no, Kind::BareIgnore, line.trim().to_string()));
+                out.push((line_no, LineClass::Structural(Kind::BareIgnore), line.trim().to_string()));
             }
         } else if find_comment_marker(line).is_some() {
             // (3) comment markers (all swept exts).
             if has_canon {
-                // canonical cite → tracked; liveness deferred to β.
+                // canonical cite → tracked; β resolves the on-line cites. No
+                // above-line lookback here (that is a stub-macro convention),
+                // so an unrelated cite on the prior line cannot mask this one.
+                out.push((line_no, LineClass::Cited(extract_cites(line)), line.trim().to_string()));
             } else if has_malformed_cite(line) {
-                out.push((line_no, Kind::MalformedCite, line.trim().to_string()));
+                out.push((line_no, LineClass::Structural(Kind::MalformedCite), line.trim().to_string()));
             } else {
-                out.push((line_no, Kind::Untracked, line.trim().to_string()));
+                out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
         } else if is_rust && find_macro_stub(line) {
             // (4) stub macros (.rs only) with above-line cite lookback.
             let cited_above = prev.is_some_and(has_canonical_cite);
-            if !has_canon && !cited_above {
-                out.push((line_no, Kind::Untracked, line.trim().to_string()));
+            if has_canon || cited_above {
+                // tracked via on-line or above-line cite → β resolves the union.
+                let mut ids = extract_cites(line);
+                if let Some(p) = prev {
+                    ids.extend(extract_cites(p));
+                }
+                dedup_in_place(&mut ids);
+                out.push((line_no, LineClass::Cited(ids), line.trim().to_string()));
+            } else {
+                out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
         } else if phantom_phrase(line) && !has_canon {
             // (5) phantom tracking — claim of tracking with no canonical cite.
-            out.push((line_no, Kind::PhantomTracking, line.trim().to_string()));
+            out.push((line_no, LineClass::Structural(Kind::PhantomTracking), line.trim().to_string()));
         }
 
         prev = Some(line);
     }
     out
+}
+
+/// Order-preserving in-place dedup of cite ids. Cite lists are tiny (1–2
+/// elements), so the O(n²) membership scan is cheaper than a `HashSet`.
+fn dedup_in_place(ids: &mut Vec<u32>) {
+    let mut seen: Vec<u32> = Vec::new();
+    ids.retain(|id| {
+        if seen.contains(id) {
+            false
+        } else {
+            seen.push(*id);
+            true
+        }
+    });
+}
+
+/// §8 per-file classification (structural lane, α): [`scan_file`] filtered to
+/// its [`LineClass::Structural`] entries, yielding one `(line_no, kind,
+/// marker_text)` per structurally-offending line. The `Cited` markers drop out
+/// here; they are resolved by the β liveness lane in [`check`].
+fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
+    scan_file(content, is_rust)
+        .into_iter()
+        .filter_map(|(line_no, class, text)| match class {
+            LineClass::Structural(kind) => Some((line_no, kind, text)),
+            LineClass::Cited(_) => None,
+        })
+        .collect()
 }
 
 // -----------------------------------------------------------------------
