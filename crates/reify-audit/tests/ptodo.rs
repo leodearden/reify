@@ -428,6 +428,235 @@ mod tests {
 // real task DB. They pin the §8.2 multi-cite rule and the §8.3 orphaned /
 // unknown-id taxonomy (both Medium).
 
+// -----------------------------------------------------------------------
+// ζ inverse lane — resolve_inverse against a seeded tasks table + MockGitOps
+// -----------------------------------------------------------------------
+//
+// These tests drive `ptodo::resolve_inverse` directly against an in-memory
+// `tasks` table (common::schema::seed_tasks_db + insert_task_with_metadata),
+// plus a `MockGitOps` with `set_last_commit_for_path` canned answers. No
+// filesystem, no real task DB, no on-disk repo. Pins PRD §9 scenarios 11/12
+// and the directory-prefix FP guard.
+
+mod inverse {
+    use crate::common::schema::{insert_task, insert_task_with_metadata, seed_tasks_db};
+    use reify_audit::{EvidenceRef, GitCommit, MockGitOps, Pattern, Severity};
+    use std::collections::HashSet;
+
+    fn tracked(paths: &[&str]) -> HashSet<String> {
+        paths.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn mock_commit(sha: &str, subject: &str) -> GitCommit {
+        GitCommit { sha: sha.to_string(), subject: subject.to_string() }
+    }
+
+    // Scenario 11 (PRD §9): non-terminal task whose metadata.files names a
+    // deleted path → exactly one task-cites-deleted-path finding.
+    #[test]
+    fn deleted_path_emits_finding() {
+        let conn = seed_tasks_db();
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            42,
+            "pending",
+            r#"{"files":["crates/deleted.rs"]}"#,
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_last_commit_for_path(
+            "crates/deleted.rs",
+            mock_commit("abc123", "delete crates/deleted.rs"),
+        );
+
+        let tracked = tracked(&["crates/alive.rs"]);
+
+        let findings =
+            reify_audit::ptodo::resolve_inverse(&conn, &git, &tracked).expect("resolve_inverse");
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one task-cites-deleted-path finding; got {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PTodo, "pattern: {f:?}");
+        assert_eq!(f.severity, Severity::Medium, "severity: {f:?}");
+        assert_eq!(f.task_id, "42", "task_id must equal the task id: {f:?}");
+        assert!(
+            f.summary.starts_with("task-cites-deleted-path:"),
+            "summary must start with kind prefix: {}",
+            f.summary
+        );
+        assert!(
+            f.summary.contains("crates/deleted.rs"),
+            "summary must contain the path: {}",
+            f.summary
+        );
+        assert!(
+            f.summary.contains("abc123"),
+            "summary must contain the commit sha: {}",
+            f.summary
+        );
+        // Evidence: MetadataFiles + Commit
+        let has_metadata_files = f.evidence.iter().any(|e| {
+            matches!(e, EvidenceRef::MetadataFiles { entries } if entries.contains(&"crates/deleted.rs".to_string()))
+        });
+        assert!(has_metadata_files, "evidence must contain MetadataFiles ref: {:?}", f.evidence);
+        let has_commit = f.evidence.iter().any(|e| {
+            matches!(e, EvidenceRef::Commit { sha, .. } if sha == "abc123")
+        });
+        assert!(has_commit, "evidence must contain Commit ref with sha: {:?}", f.evidence);
+    }
+
+    // Scenario 12 (PRD §9): path absent from tracked set but never committed
+    // (mock returns None) → no finding (presumed to-be-created).
+    #[test]
+    fn never_existed_path_no_finding() {
+        let conn = seed_tasks_db();
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            43,
+            "in-progress",
+            r#"{"files":["crates/new.rs"]}"#,
+        );
+
+        // MockGitOps with no entry for "crates/new.rs" → returns None
+        let git = MockGitOps::new();
+        let tracked = tracked(&["crates/existing.rs"]);
+
+        let findings =
+            reify_audit::ptodo::resolve_inverse(&conn, &git, &tracked).expect("resolve_inverse");
+
+        assert!(
+            findings.is_empty(),
+            "never-existed path must not produce a finding; got {findings:?}"
+        );
+    }
+
+    // Path present as an exact match in the tracked set → no finding.
+    #[test]
+    fn exact_tracked_file_no_finding() {
+        let conn = seed_tasks_db();
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            44,
+            "deferred",
+            r#"{"files":["crates/alive.rs"]}"#,
+        );
+
+        let mut git = MockGitOps::new();
+        // Even if git has history, the path is present → should not flag.
+        git.set_last_commit_for_path("crates/alive.rs", mock_commit("dead", "rm"));
+
+        let tracked = tracked(&["crates/alive.rs"]);
+
+        let findings =
+            reify_audit::ptodo::resolve_inverse(&conn, &git, &tracked).expect("resolve_inverse");
+
+        assert!(
+            findings.is_empty(),
+            "a path present in tracked set must not produce a finding; got {findings:?}"
+        );
+    }
+
+    // FP guard: path present as a DIRECTORY PREFIX of a tracked file → no finding.
+    // Mirrors the live case where task cites "crates/reify-audit/tests" (a dir)
+    // while tracked contains "crates/reify-audit/tests/foo.rs".
+    #[test]
+    fn dir_prefix_of_tracked_file_no_finding() {
+        let conn = seed_tasks_db();
+        // Without trailing slash
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            45,
+            "pending",
+            r#"{"files":["crates/x/tests"]}"#,
+        );
+        // Also insert a row citing a trailing-slash form
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            46,
+            "pending",
+            r#"{"files":["crates/x/tests/"]}"#,
+        );
+
+        let mut git = MockGitOps::new();
+        // Even with history mocked, dir prefixes must not flag.
+        git.set_last_commit_for_path("crates/x/tests", mock_commit("sha1", "rm dir"));
+        git.set_last_commit_for_path("crates/x/tests/", mock_commit("sha2", "rm dir slash"));
+
+        // tracked contains a file UNDER the cited directory.
+        let tracked = tracked(&["crates/x/tests/a.rs"]);
+
+        let findings =
+            reify_audit::ptodo::resolve_inverse(&conn, &git, &tracked).expect("resolve_inverse");
+
+        assert!(
+            findings.is_empty(),
+            "dir-prefix of tracked file must not produce a finding; got {findings:?}"
+        );
+    }
+
+    // Terminal task (done or cancelled) citing a deleted path → no finding.
+    #[test]
+    fn terminal_task_no_finding() {
+        let conn = seed_tasks_db();
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            47,
+            "done",
+            r#"{"files":["crates/old.rs"]}"#,
+        );
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            48,
+            "cancelled",
+            r#"{"files":["crates/old2.rs"]}"#,
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_last_commit_for_path("crates/old.rs", mock_commit("sha3", "rm old"));
+        git.set_last_commit_for_path("crates/old2.rs", mock_commit("sha4", "rm old2"));
+
+        let tracked = tracked(&["crates/something_else.rs"]);
+
+        let findings =
+            reify_audit::ptodo::resolve_inverse(&conn, &git, &tracked).expect("resolve_inverse");
+
+        assert!(
+            findings.is_empty(),
+            "terminal tasks (done/cancelled) must not produce inverse findings; got {findings:?}"
+        );
+    }
+
+    // NULL metadata (no metadata column set) → gracefully produces no findings.
+    #[test]
+    fn null_metadata_no_finding() {
+        let conn = seed_tasks_db();
+        // insert_task inserts (tag, id, status) with metadata defaulting to NULL
+        insert_task(&conn, "master", 49, "pending");
+
+        let git = MockGitOps::new();
+        let tracked = tracked(&["crates/anything.rs"]);
+
+        let findings =
+            reify_audit::ptodo::resolve_inverse(&conn, &git, &tracked).expect("resolve_inverse");
+
+        assert!(
+            findings.is_empty(),
+            "NULL metadata must produce no findings; got {findings:?}"
+        );
+    }
+}
+
 mod liveness {
     use crate::common::schema::{insert_task, seed_tasks_db};
     use reify_audit::{EvidenceRef, Pattern, Severity};
