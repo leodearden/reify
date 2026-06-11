@@ -3560,4 +3560,169 @@ mod tests {
             "a fully-resolvable mechanism must not emit a diagnostic, got {diag:?}"
         );
     }
+
+    // ── step-5 RED (task 4494): make_mass_properties + eval_point_mass populate ──
+    //
+    // make_mass_properties/eval_point_mass must produce inertia cells as
+    // Value::Scalar{MOMENT_OF_INERTIA}, not plain Value::Real.
+    // RED until step-6 (task 4494) changes make_mass_properties to emit
+    // dimensioned scalars.
+
+    /// make_mass_properties must build the inertia field as a Value::Matrix of
+    /// Value::Scalar{dimension == MOMENT_OF_INERTIA} cells, mirroring the
+    /// eval_body_mass_props_core populate pattern. si_value must equal the
+    /// supplied f64 entry within 1e-12.
+    #[test]
+    fn make_mass_properties_inertia_cells_are_moment_of_inertia_scalars() {
+        let input_inertia = [[1.0_f64, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
+        let mp = make_mass_properties(2.5, [0.1, 0.2, 0.3], input_inertia);
+
+        let data = match &mp {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected MassProperties StructureInstance, got {other:?}"),
+        };
+        assert_eq!(data.type_name, "MassProperties");
+        let inertia_rows = match data.fields.get("inertia").expect("inertia field") {
+            Value::Matrix(rows) => rows,
+            other => panic!("inertia field must be Value::Matrix, got {other:?}"),
+        };
+        assert_eq!(inertia_rows.len(), 3, "inertia must have 3 rows");
+        for r in 0..3 {
+            assert_eq!(inertia_rows[r].len(), 3, "inertia row {r} must have 3 cols");
+            for c in 0..3 {
+                match &inertia_rows[r][c] {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::MOMENT_OF_INERTIA,
+                            "inertia[{r}][{c}] must be MOMENT_OF_INERTIA-dimensioned, got {dimension:?}"
+                        );
+                        assert!(
+                            (si_value - input_inertia[r][c]).abs() < 1e-12,
+                            "inertia[{r}][{c}] si_value: expected {}, got {}",
+                            input_inertia[r][c],
+                            si_value
+                        );
+                    }
+                    other => panic!(
+                        "inertia[{r}][{c}] must be Value::Scalar{{MOMENT_OF_INERTIA}}, got {other:?}"
+                    ),
+                }
+            }
+        }
+    }
+
+    /// eval_point_mass (zero inertia) must also populate inertia cells as
+    /// Value::Scalar{MOMENT_OF_INERTIA} with si_value == 0.0.
+    #[test]
+    fn eval_point_mass_inertia_cells_are_moment_of_inertia_scalars() {
+        let mp = eval_point_mass(&[Value::Scalar {
+            si_value: 2.5,
+            dimension: DimensionVector::MASS,
+        }]);
+
+        let data = match &mp {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected MassProperties StructureInstance, got {other:?}"),
+        };
+        assert_eq!(data.type_name, "MassProperties");
+        let inertia_rows = match data.fields.get("inertia").expect("inertia field") {
+            Value::Matrix(rows) => rows,
+            other => panic!("inertia field must be Value::Matrix, got {other:?}"),
+        };
+        assert_eq!(inertia_rows.len(), 3, "point_mass inertia must have 3 rows");
+        for r in 0..3 {
+            assert_eq!(inertia_rows[r].len(), 3, "row {r} must have 3 cols");
+            for c in 0..3 {
+                match &inertia_rows[r][c] {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::MOMENT_OF_INERTIA,
+                            "point_mass inertia[{r}][{c}] must be MOMENT_OF_INERTIA-dimensioned"
+                        );
+                        assert!(
+                            si_value.abs() < 1e-15,
+                            "point_mass inertia[{r}][{c}] si_value must be 0.0, got {si_value}"
+                        );
+                    }
+                    other => panic!(
+                        "point_mass inertia[{r}][{c}] must be Value::Scalar{{MOMENT_OF_INERTIA}}, got {other:?}"
+                    ),
+                }
+            }
+        }
+    }
+
+    // ── step-5 (task 4494): numeric-identity round-trip for RNEA extraction ──────
+    //
+    // Proves mass_properties_from_value is dimension-agnostic: a MassProperties
+    // whose inertia cells are Value::Scalar{MOMENT_OF_INERTIA} yields the same
+    // (mass, com, inertia) f64 triple as the equivalent Value::Real-celled fixture.
+    // GREEN immediately (cell_f64 already strips si_value from dimensioned scalars).
+
+    /// mass_properties_from_value returns identical f64 triples whether the
+    /// inertia cells are plain Value::Real or Value::Scalar{MOMENT_OF_INERTIA}.
+    /// This confirms the RNEA extraction path is dimension-agnostic and that
+    /// RNEA τ output is byte-identical after the step-6 populate change.
+    #[test]
+    fn mass_properties_from_value_round_trip_is_identical_for_dimensioned_inertia() {
+        let mass = 3.0_f64;
+        let com = [0.01, -0.02, 0.05];
+        let inertia = [[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]];
+
+        // Existing fixture: Value::Real inertia cells.
+        let mp_real = mass_properties_fixture(mass, com, inertia);
+
+        // New fixture: Value::Scalar{MOMENT_OF_INERTIA} inertia cells.
+        let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
+        let inertia_dimensioned = Value::Matrix(
+            inertia
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|&x| Value::Scalar {
+                            si_value: x,
+                            dimension: DimensionVector::MOMENT_OF_INERTIA,
+                        })
+                        .collect()
+                })
+                .collect(),
+        );
+        let mp_dimensioned = mint_instance(
+            "MassProperties",
+            vec![
+                (
+                    "mass".to_string(),
+                    Value::Scalar {
+                        si_value: mass,
+                        dimension: DimensionVector::MASS,
+                    },
+                ),
+                ("com".to_string(), com_point),
+                ("inertia".to_string(), inertia_dimensioned),
+                ("origin".to_string(), Value::Real(0.0)),
+            ],
+        );
+
+        let (m_real, c_real, i_real) =
+            mass_properties_from_value(&mp_real).expect("Value::Real inertia must parse");
+        let (m_dim, c_dim, i_dim) =
+            mass_properties_from_value(&mp_dimensioned).expect("MOMENT_OF_INERTIA inertia must parse");
+
+        assert!((m_real - m_dim).abs() < 1e-15, "mass must be identical");
+        for i in 0..3 {
+            assert!((c_real[i] - c_dim[i]).abs() < 1e-15, "com[{i}] must be identical");
+        }
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (i_real[r][c] - i_dim[r][c]).abs() < 1e-15,
+                    "inertia[{r}][{c}] must be identical (got real={}, dim={})",
+                    i_real[r][c],
+                    i_dim[r][c]
+                );
+            }
+        }
+    }
 }
