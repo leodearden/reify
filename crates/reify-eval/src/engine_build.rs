@@ -6720,6 +6720,29 @@ fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
     found
 }
 
+/// Resolves an `Output` occurrence's raw `path` field into the fully-resolved
+/// destination written by [`Engine::build_outputs`] (io-export δ).
+///
+/// The B7 design-relative-path rule
+/// (`docs/prds/v0_6/io-export-import-completion.md` §7.3): an absolute `raw`
+/// path is returned verbatim; a relative `raw` path is joined onto
+/// `out_dir_override` when present (a CI escape hatch that beats the design
+/// dir), otherwise onto `design_dir` (the directory containing the `.ri` design
+/// file). Keeping the rule in one pure function makes `ExportArtifact.path`
+/// fully resolved and unit-testable without spawning the CLI binary.
+fn resolve_artifact_path(
+    raw: &str,
+    design_dir: &std::path::Path,
+    out_dir_override: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    let raw_path = std::path::Path::new(raw);
+    if raw_path.is_absolute() {
+        raw_path.to_path_buf()
+    } else {
+        out_dir_override.unwrap_or(design_dir).join(raw_path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
