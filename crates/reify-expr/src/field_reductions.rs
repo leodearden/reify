@@ -56,13 +56,6 @@
 //! - **Gradient/Divergence/Curl/Laplacian** (differential, need neighbor-stencil
 //!   FD primitive) — the differential-field-reductions PRD.
 //!
-//! The deferred path for `Imported`/derived 1-arg requires either
-//! numerical optimisation over an analytical lambda's bounded domain or
-//! sampled-subfield reduction — see `docs/prds/v0_3/structural-analysis-fea.md`.
-//! The PRD task description authorises this staging:
-//! "Implementation can be staged — `sampled` first (FEA produces
-//! sampled fields)."
-//!
 //! # NaN / empty data semantics
 //!
 //! `SampledField.data` is `Vec<f64>` and the elaborator
@@ -645,10 +638,11 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
         // supplied, so a global extremum is ill-posed for an unbounded analytical
         // domain.  The 2-arg bounded form `max(field, bbox)` is implemented in
         // `compute_bounded_extremum` / `reduce_analytical_extremum_bounded`
-        // (task 4561, step-4).  Remaining deferred: Imported (no lambda data)
-        // and derived wrappers (Gradient/Divergence/Curl/Laplacian/
-        // PrincipalStresses) — sampled-subfield reduction for those still
-        // requires PRD §13 line 238 scope.
+        // (task 4561, step-4).  Remaining deferred by category:
+        // - PrincipalStresses (pointwise list, max-entry) — task 4562.
+        // - Gradient/Divergence/Curl/Laplacian (differential, neighbor-stencil
+        //   FD primitive) — the differential-field-reductions PRD.
+        // - Imported (no lambda data).
         //
         // Pinned by the step-15 / S5 negative-path tests:
         // - all_reductions_on_analytical_field_return_undef
