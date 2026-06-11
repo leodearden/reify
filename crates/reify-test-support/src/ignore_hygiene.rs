@@ -11,6 +11,41 @@ fn is_doc_comment_line(line: &str) -> bool {
     trimmed.starts_with("///") || trimmed.starts_with("//!")
 }
 
+/// Extract the reason string from a single `#[ignore = "..."]` attribute line.
+///
+/// Returns `Some(reason)` for the canonical rustfmt form
+/// `#[ignore = "reason"]` (space-equals-space-quote), where `reason` is the
+/// slice between the opening `"` and the next raw `"` byte. Returns `None`
+/// for:
+/// - bare `#[ignore]` attributes (no reason string)
+/// - non-`#[ignore]` lines
+/// - `///` and `//!` doc-comment lines (prose mentions of the attribute)
+/// - non-canonical forms (e.g. no spaces around `=`)
+///
+/// **Note:** escaped quotes (`\"`) inside the reason are not handled — the
+/// reason is truncated at the first raw `"`. No current source file uses
+/// escaped quotes inside `#[ignore]` reasons.
+///
+/// This is the line-level reason extractor shared with the PTODO detector
+/// (§8.3 γ lane). It formalises the format-vs-liveness split: `reify-
+/// test-support` owns extraction + format checks (`check_ignore_reasons`);
+/// PTODO owns citation-liveness (`has_canonical_cite`/`resolve_liveness`).
+pub fn extract_ignore_reason(line: &str) -> Option<&str> {
+    // Skip doc-comment lines (`///`, `//!`) — prose mentions of the attribute
+    // inside doc comments must not fire, mirroring `check_ignore_reasons`.
+    if is_doc_comment_line(line) {
+        return None;
+    }
+    // Recognise only the canonical rustfmt form: trim leading whitespace, then
+    // match the `#[ignore = "` prefix exactly (space-equals-space-quote).
+    // Non-canonical forms (no spaces around `=`) are silently ignored.
+    let rest = line.trim_start().strip_prefix("#[ignore = \"")?;
+    // The reason is everything up to the first raw `"` (escaped-quote
+    // limitation documented in the function doc comment above).
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
 /// Scan `source` for `#[ignore = "..."]` reason strings that contain a stale
 /// transient-plan-doc pointer (e.g. a `plan step-N` breadcrumb). Returns one
 /// human-readable violation string per offender. Empty Vec means clean.
