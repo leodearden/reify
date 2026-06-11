@@ -354,20 +354,18 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
         _ => return None,
     };
     // Rung (a): explicit MassProperties solid wins unconditionally.
-    if let Some(solid) = map_get(bm, "solid") {
-        if let Value::StructureInstance(d) = solid {
-            if d.type_name == "MassProperties" {
-                return Some(solid.clone());
-            }
-        }
+    if let Some(solid) = map_get(bm, "solid")
+        && let Value::StructureInstance(d) = solid
+        && d.type_name == "MassProperties"
+    {
+        return Some(solid.clone());
     }
     // Rung (b): build-pass-baked derived_mass_props (task 4472).
-    if let Some(derived) = map_get(bm, "derived_mass_props") {
-        if let Value::StructureInstance(d) = derived {
-            if d.type_name == "MassProperties" {
-                return Some(derived.clone());
-            }
-        }
+    if let Some(derived) = map_get(bm, "derived_mass_props")
+        && let Value::StructureInstance(d) = derived
+        && d.type_name == "MassProperties"
+    {
+        return Some(derived.clone());
     }
     // Rung (c): unresolvable.
     None
