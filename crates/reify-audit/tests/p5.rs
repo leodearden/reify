@@ -117,6 +117,7 @@ mod tests {
             Pattern::PLayerViolation,
             Pattern::P5TestsAssertEmpty,
             Pattern::P5LivePathStranded,
+            Pattern::PTodo,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
@@ -128,6 +129,7 @@ mod tests {
                 Pattern::PLayerViolation => {}
                 Pattern::P5TestsAssertEmpty => {}
                 Pattern::P5LivePathStranded => {}
+                Pattern::PTodo => {}
             }
         }
 

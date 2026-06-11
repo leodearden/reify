@@ -118,6 +118,47 @@ fn closed_port_url() -> String {
     format!("http://127.0.0.1:{port}/mcp")
 }
 
+/// Recursively copy the directory tree at `src` into `dst` (creating `dst`).
+/// Used to lift the committed `tests/fixtures/ptodo/` tree into a throwaway
+/// git repo so its root-relative paths escape the live `crates/reify-audit/`
+/// allowlist (the detector keys the allowlist off the project-root-relative
+/// path, and here the project root IS the fixture root).
+fn copy_dir_recursive(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create dst dir");
+    for entry in std::fs::read_dir(src).expect("read_dir src") {
+        let entry = entry.expect("dir entry");
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().expect("file_type").is_dir() {
+            copy_dir_recursive(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).expect("copy file");
+        }
+    }
+}
+
+/// `git init` + add + commit every file under `dir` (identity + gpgsign
+/// disabled, mirroring `tests/real_git_ops.rs`). After this, `git -C <dir>
+/// ls-files` returns every fixture path so `RealGitOps::ls_files` enumerates
+/// them for the PTODO structural sweep.
+fn git_init_commit_all(dir: &Path) {
+    let run = |args: &[&str]| {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .expect("git command failed to spawn");
+        assert!(status.success(), "git {:?} exited {:?}", args, status.code());
+    };
+    run(&["init", "--initial-branch=main"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "Test"]);
+    run(&["config", "commit.gpgsign", "false"]);
+    run(&["add", "."]);
+    run(&["commit", "-m", "ptodo fixtures"]);
+}
+
 // -----------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------
@@ -1306,9 +1347,138 @@ mod cli {
             stderr.contains("'BOGUS'"),
             "stderr must name the offending token 'BOGUS' (with surrounding quotes); stderr: {stderr}"
         );
+        // Per-token containment (not the exact connecting prose) so the test
+        // survives future token additions / reordering.
+        for tok in ["P1", "P2", "P5", "PDEAD", "PUNTESTED", "PLAYER", "PTODO"] {
+            assert!(
+                stderr.contains(tok),
+                "stderr must list known token {tok}; stderr: {stderr}"
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // PTODO structural-lane end-to-end (step-15 RED / step-16 GREEN)
+    // -------------------------------------------------------------------
+
+    /// `--pattern PTODO` over the committed fixture tree (copied into a fresh
+    /// git repo, with the fixture root AS the project root) emits exactly the
+    /// three structural findings — untracked (scenario01), malformed-cite
+    /// (scenario04), phantom-tracking (scenario05) — each `PTodo`/`Medium`
+    /// with a §8.3 kind-prefixed summary and a `File` evidence ref at the
+    /// offending path. The scenario10 pair (inline `ptodo:allow` escape +
+    /// the nested `crates/reify-audit/` allowlisted file) must be suppressed,
+    /// and the run exits 0 (all Medium → no High).
+    ///
+    /// RED until step-16 wires the `if run_ptodo { ptodo::check }` dispatch
+    /// arm in `main()` — until then `--pattern PTODO` runs no detector and
+    /// yields zero findings.
+    #[test]
+    fn ptodo_fixture_tree_emits_three_kinds_and_suppresses_allowlist_and_escape() {
+        // Repo dir holds ONLY the committed fixtures (so ls-files is exactly
+        // the fixture set); the tasks-file/runs-db live in a separate aux dir
+        // so they are never tracked and never enumerated by the sweep.
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ptodo");
+        copy_dir_recursive(&fixtures, repo.path());
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "PTODO",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern PTODO on fixture tree");
+
+        // All findings are Medium → exit 0.
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "PTODO fixture sweep must exit 0 (all Medium, no High); got {:?}\nstderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+
+        assert_eq!(
+            findings.len(),
+            3,
+            "PTODO fixture sweep must emit exactly 3 findings \
+             (untracked/malformed-cite/phantom-tracking); got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        // Every fixture finding is Pattern::PTodo / Severity::Medium.
+        for f in &findings {
+            assert_eq!(
+                f["pattern"].as_str(),
+                Some("PTodo"),
+                "every fixture finding must be PTodo; got:\n{f:#}"
+            );
+            assert_eq!(
+                f["severity"].as_str(),
+                Some("Medium"),
+                "every fixture finding must be Medium; got:\n{f:#}"
+            );
+        }
+
+        // Each expected scenario: task_id = root-relative path, summary begins
+        // with the §8.3 kind token, evidence[0] is a File ref at the same path.
+        let has = |path: &str, kind_prefix: &str| -> bool {
+            findings.iter().any(|f| {
+                f["task_id"].as_str() == Some(path)
+                    && f["summary"].as_str().is_some_and(|s| s.starts_with(kind_prefix))
+                    && f["evidence"][0]["File"]["path"].as_str() == Some(path)
+            })
+        };
         assert!(
-            stderr.contains("expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER"),
-            "stderr must list the known tokens; stderr: {stderr}"
+            has("scenario01_untracked.rs", "untracked:"),
+            "scenario01 must yield an 'untracked' PTodo finding; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            has("scenario04_malformed_cite.rs", "malformed-cite:"),
+            "scenario04 must yield a 'malformed-cite' PTodo finding; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            has("scenario05_phantom_tracking.rs", "phantom-tracking:"),
+            "scenario05 must yield a 'phantom-tracking' PTodo finding; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        // Scenario 10: neither the inline-escape file nor the allowlisted nested
+        // file may surface a finding.
+        let none_mentions = |needle: &str| -> bool {
+            !findings
+                .iter()
+                .any(|f| f["task_id"].as_str().is_some_and(|t| t.contains(needle)))
+        };
+        assert!(
+            none_mentions("scenario10_inline_escape.rs"),
+            "inline-escape file (ptodo:allow) must yield no finding; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            none_mentions("scenario10_allowlisted.rs"),
+            "allowlisted nested file (crates/reify-audit/ prefix) must yield no finding; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
         );
     }
 }
