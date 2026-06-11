@@ -234,4 +234,37 @@ fn bearing_constraint_select_is_ambiguous_under_stub() {
         "expected at least one AutoTypeParamAmbiguous Error diagnostic; got:\n{:#?}",
         compiled.diagnostics
     );
+
+    // Guard that no unexpected NAMED error codes appear alongside
+    // AutoTypeParamAmbiguous.  This pins that the Ambiguous verdict originates
+    // from the strict-auto resolution path rather than being masked by an
+    // unrelated regression.
+    //
+    // Why we filter on `code.is_some()` only (not all Errors):
+    //   The fixture's `seal.thickness` member-access on an unresolved TypeParam
+    //   currently emits "member access not yet supported: .thickness" as a hard
+    //   Error with `code: None`.  This is the task-4342 risk scenario noted in
+    //   the plan — the member-access path is partially landed and produces an
+    //   unnamed error alongside AutoTypeParamAmbiguous.  Tolerating `code: None`
+    //   errors here keeps the test green while still catching any unexpected
+    //   *named* diagnostic codes that would indicate a different regression.
+    //
+    // When γ/ζ wire the real checker and the member-access path is fully resolved,
+    // the `code: None` error should disappear; this assertion will then naturally
+    // tighten to "only AutoTypeParamAmbiguous remains."
+    let unexpected_named_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code.is_some()
+                && d.code != Some(DiagnosticCode::AutoTypeParamAmbiguous)
+        })
+        .collect();
+    assert!(
+        unexpected_named_errors.is_empty(),
+        "unexpected named Error diagnostics found beyond AutoTypeParamAmbiguous \
+         — possible regression in an unrelated named diagnostic code; got:\n{:#?}",
+        unexpected_named_errors
+    );
 }
