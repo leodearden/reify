@@ -2857,4 +2857,173 @@ mod tests {
 
         (n_nodes, ke_list, conns)
     }
+
+    // ─── step-1 (RED): assembly-level determinism guards ─────────────────────
+
+    /// 32 sequential `AssemblyMode::Deterministic` assemblies of the shared-DOF
+    /// 3×3×3 box mesh produce bit-identical K (stored values AND sparsity
+    /// pattern).
+    ///
+    /// **Before the BTreeMap fix** (step-2): faer's `sort_unstable` is
+    /// deterministic for the same in-memory input in sequential execution, so
+    /// this test will PASS even without the fix.  Under concurrent CPU load,
+    /// however, different heap-allocation patterns change the physical layout
+    /// of the triplet `Vec`, which can cause `sort_unstable` to produce
+    /// different orderings for equal-key `(row, col)` triplets → different K
+    /// matrices → diverging CG iteration counts (the observed harness flake).
+    ///
+    /// **After the BTreeMap fix**: K is a pure reify-owned left-fold over
+    /// elements in encounter order, guaranteed bit-identical across ANY
+    /// execution environment (loaded or not, any thread count, any OS scheduler
+    /// decision). The test encodes this cross-environment invariant.
+    ///
+    /// Non-trivial-K sanity check: asserts at least one stored value is
+    /// non-zero, so a degenerate zero-K can't make the test pass spuriously.
+    #[test]
+    fn deterministic_assembly_bit_identical_across_repeats() {
+        let mat = dimensionless_steel_like();
+        let (n_nodes, ke_list, conns) = build_shared_dof_box_3x3x3(&mat);
+
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .zip(ke_list.iter())
+            .enumerate()
+            .map(|(i, (conn, ke))| AssemblyElement {
+                id: i,
+                connectivity: conn.as_slice(),
+                k_e: ke,
+            })
+            .collect();
+
+        // Reference assembly (repeat 0).
+        let reference =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+        let (ref_sym, ref_vals) = reference.parts();
+
+        // Sanity: K is non-trivial.
+        assert!(
+            ref_vals.iter().any(|&v| v != 0.0),
+            "reference K is all-zero — fixture may be degenerate",
+        );
+
+        // 31 further repeats must be bit-identical.
+        for repeat in 1..32_usize {
+            let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+            let (sym, vals) = k.parts();
+
+            // Sparsity pattern.
+            assert_eq!(
+                sym.row_ptr(),
+                ref_sym.row_ptr(),
+                "repeat {repeat}: row_ptr differs",
+            );
+            assert_eq!(
+                sym.col_idx(),
+                ref_sym.col_idx(),
+                "repeat {repeat}: col_idx differs",
+            );
+
+            // Stored values must be bit-identical.
+            assert_eq!(
+                vals.len(),
+                ref_vals.len(),
+                "repeat {repeat}: nnz count differs",
+            );
+            for (j, (&a, &b)) in vals.iter().zip(ref_vals.iter()).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "repeat {repeat}: vals[{j}] = {a} differs from reference {b}",
+                );
+            }
+        }
+    }
+
+    /// `AssemblyMode::Deterministic` on the shared-DOF 3×3×3 box mesh produces
+    /// K bit-identical to the encounter-order BTreeMap reference at every
+    /// `(row, col)` entry.
+    ///
+    /// **Reference construction**: independently accumulate the same elements
+    /// into a `BTreeMap<(usize,usize),f64>` in slice/encounter order,
+    /// mirroring `emit_element_triplets`' `(a,α,b,β)` emission —
+    /// `reference[(row,col)] = Σ K_e[a*d+α][b*d+β]` summed over all elements
+    /// contributing to `(row, col)` in the order they appear in the element
+    /// slice. This is the reify-owned left-fold that the BTreeMap fix
+    /// guarantees.
+    ///
+    /// **Before the BTreeMap fix** (step-2): faer's `sort_unstable` on 23 328
+    /// triplets operates in the large-array quicksort regime (NOT insertion
+    /// sort), which is **not stable** — equal-key triplets may land in any
+    /// relative order. For the 3×3×3 mesh, interior nodes receive up to 48
+    /// contributions per `(row,col)` pair; if quicksort reorders them
+    /// differently from encounter order, the resulting K[i][j] sum will differ
+    /// from the reference due to FP non-associativity (distinct element
+    /// geometries → distinct contribution values → order-dependent sums).
+    ///
+    /// Expected: **FAIL** with a `to_bits()` mismatch at a shared-DOF entry
+    /// (confirms faer's sort does not preserve encounter order for large meshes,
+    /// establishing the RED baseline for the BTreeMap fix).
+    ///
+    /// **After the BTreeMap fix**: K_det IS the encounter-order BTreeMap fold,
+    /// so this assertion is guaranteed to pass bit-for-bit.
+    #[test]
+    fn deterministic_assembly_matches_encounter_order_reference() {
+        let mat = dimensionless_steel_like();
+        let (n_nodes, ke_list, conns) = build_shared_dof_box_3x3x3(&mat);
+
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .zip(ke_list.iter())
+            .enumerate()
+            .map(|(i, (conn, ke))| AssemblyElement {
+                id: i,
+                connectivity: conn.as_slice(),
+                k_e: ke,
+            })
+            .collect();
+
+        // Assemble via the Deterministic path (currently delegates dedup to faer).
+        let k_det =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+        // Build the encounter-order BTreeMap reference.
+        // Uses emit_element_triplets (the production scatter primitive) to
+        // ensure the reference mirrors exactly the same (a,α,b,β) emission
+        // order, then folds contributions in slice order.
+        let n_dofs_per_node = 3usize; // pure P1 tet mesh → D = 3
+        let mut reference: std::collections::BTreeMap<(usize, usize), f64> =
+            std::collections::BTreeMap::new();
+        let mut tmp: Vec<Triplet<usize, usize, f64>> = Vec::new();
+        for element in &elements {
+            tmp.clear();
+            emit_element_triplets(element, n_dofs_per_node, &mut tmp);
+            for t in &tmp {
+                *reference.entry((t.row, t.col)).or_insert(0.0) += t.val;
+            }
+        }
+
+        // Sanity: reference is non-trivial.
+        assert!(
+            reference.values().any(|&v| v != 0.0),
+            "encounter-order reference is all-zero — fixture may be degenerate",
+        );
+
+        // Every (row, col) in the reference must match K_det bit-for-bit.
+        // A mismatch at any shared-DOF entry means faer's sort reordered equal-
+        // key triplets differently from encounter order — the RED confirmation.
+        let dim = 3 * n_nodes;
+        for row in 0..dim {
+            for col in 0..dim {
+                let ref_val = reference.get(&(row, col)).copied().unwrap_or(0.0);
+                let det_val = read(&k_det, row, col);
+                assert_eq!(
+                    det_val.to_bits(),
+                    ref_val.to_bits(),
+                    "K_det[{row}][{col}] = {det_val} differs from encounter-order \
+                     reference = {ref_val}; \
+                     faer sort reordered equal-key triplets at this shared DOF",
+                );
+            }
+        }
+    }
 }
