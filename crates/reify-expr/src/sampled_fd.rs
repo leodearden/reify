@@ -148,7 +148,38 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
             clone_geometry(sf, data)
         }
         DifferentialOp::Curl => {
-            todo!("sampled_differential Curl: not yet implemented — see plan step-8")
+            // Curl is only defined for Regular3D + stride-3 vector fields.
+            // For other inputs return a defined degenerate field (all-zero, stride 3)
+            // rather than panicking — the primitive is total (PRD §5/design §5).
+            if sf.kind != SampledGridKind::Regular3D || in_stride != 3 {
+                // Degenerate: non-Regular3D or wrong component stride.
+                // Return a zero-filled stride-3 field — the primitive is total
+                // (PRD §5/design §5); callers must not get a panic here.
+                // ζ will call Curl only on validated Regular3D + stride-3 inputs;
+                // any other caller is a caller-side contract violation surfaced
+                // at the ζ dispatch layer, not here.
+                return clone_geometry(sf, vec![0.0f64; grid_count * 3]);
+            }
+
+            // curl = ∇×F with components:
+            //   curl_x = ∂F_z/∂y  − ∂F_y/∂z  = ∂F2/∂x1 − ∂F1/∂x2
+            //   curl_y = ∂F_x/∂z  − ∂F_z/∂x  = ∂F0/∂x2 − ∂F2/∂x0
+            //   curl_z = ∂F_y/∂x  − ∂F_x/∂y  = ∂F1/∂x0 − ∂F0/∂x1
+            //
+            // Each partial ∂F_c/∂x_a is computed by first_diff_along_axis with
+            // axis=a, stride=3, comp=c.  Output is interleaved node-major: stride 3.
+            let mut data = vec![0.0f64; grid_count * 3];
+            for g in 0..grid_count {
+                let mi = decode_index(g, &dims);
+                let d = |axis: usize, comp: usize| -> f64 {
+                    first_diff_along_axis(&sf.data, &dims, &sf.spacing, &mi, axis, 3, comp)
+                };
+                // axis indices: 0=x, 1=y, 2=z; component indices: 0=F_x, 1=F_y, 2=F_z
+                data[g * 3]     = d(1, 2) - d(2, 1); // curl_x
+                data[g * 3 + 1] = d(2, 0) - d(0, 2); // curl_y
+                data[g * 3 + 2] = d(0, 1) - d(1, 0); // curl_z
+            }
+            clone_geometry(sf, data)
         }
     }
 }
