@@ -24,10 +24,10 @@
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
 //! §6.7 (liveness degradation contract).
 
-use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use crate::{AuditContext, EvidenceRef, Finding, GitCommit, Pattern, Severity};
 use reify_test_support::ignore_hygiene::extract_ignore_reason;
 use rusqlite::OptionalExtension;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------
@@ -531,6 +531,11 @@ fn path_present_in_tracked(path: &str, tracked: &std::collections::HashSet<Strin
         return true;
     }
     // Directory-prefix membership: some tracked file lives under `path/`.
+    // O(n) scan over the tracked set — acceptable for current backlog sizes
+    // because most cited paths hit the O(1) exact-match branch above and only
+    // genuinely absent paths reach here. If the tracked set grows very large
+    // (tens of thousands of files), consider a sorted Vec<String> +
+    // `partition_point`-based prefix search to reduce this to O(log n).
     let prefix = format!("{}/", path);
     tracked.iter().any(|f| f.starts_with(&prefix))
 }
@@ -572,6 +577,10 @@ pub fn resolve_inverse(
         .collect::<rusqlite::Result<_>>()?;
 
     let mut out: Vec<Finding> = Vec::new();
+    // Per-run cache: avoid redundant `git log` spawns when multiple tasks cite
+    // the same absent path (common in larger backlogs where a single deleted
+    // file is referenced by several related tasks).
+    let mut git_cache: HashMap<String, Option<GitCommit>> = HashMap::new();
 
     for (id, status, metadata_opt) in rows {
         if is_terminal_status(&status) {
@@ -592,8 +601,13 @@ pub fn resolve_inverse(
                 continue;
             }
             // Path absent from tracked set — check git history (fail-safe: None
-            // on any git error → no false positive).
-            if let Some(commit) = git.last_commit_for_path(&path) {
+            // on any git error → no false positive). Results are memoized to
+            // avoid repeated subprocess spawns for the same path across tasks.
+            let commit_opt = git_cache
+                .entry(path.clone())
+                .or_insert_with(|| git.last_commit_for_path(&path))
+                .clone();
+            if let Some(commit) = commit_opt {
                 out.push(Finding {
                     pattern: Pattern::PTodo,
                     severity: Severity::Medium,
@@ -825,7 +839,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             inverse_findings = inv;
         }
         Err(_) => eprintln!(
-            "reify-audit: tasks.db unreachable at '{}' — PTODO liveness degraded; structural checks still run",
+            "reify-audit: tasks.db unreachable at '{}' — PTODO liveness (β) and inverse (ζ) lanes degraded; structural checks still run",
             db_path.display()
         ),
     }
