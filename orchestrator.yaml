@@ -92,6 +92,7 @@ verify_env:
 # the serial-queue backlog. Correctness is the same gate as single merges (the train tip
 # is verified by verify.sh --scope all before advance). df tasks 1704-1708 landed the code.
 merge_train_former_enabled: true
+merge_train_coalesce_enabled: true  # dark_factory:1722; user-authorized 2026-06-10
 merge_train_max_members: 3  # already the default; explicit per GO-N3
 
 # Per-role turn budgets. Raising the architect budget is a direct response to
