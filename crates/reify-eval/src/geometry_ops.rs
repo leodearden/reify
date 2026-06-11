@@ -3939,7 +3939,7 @@ pub(crate) fn try_eval_topology_selector(
         // Zero kernel queries at construction time (K2/BT7).
         TopologySelectorHelper::Union => eval_variadic_composition(
             "union",
-            &args,
+            args,
             named_steps,
             values,
             kernel,
@@ -3948,7 +3948,7 @@ pub(crate) fn try_eval_topology_selector(
         ),
         TopologySelectorHelper::Intersect => eval_variadic_composition(
             "intersect",
-            &args,
+            args,
             named_steps,
             values,
             kernel,
@@ -3980,21 +3980,21 @@ pub(crate) fn try_eval_topology_selector(
         // D8 interim (W_TOPOLOGY_TAG_STALE + [] until persistent-naming-v2).
         TopologySelectorHelper::Face => eval_named_leaf_selector_ctor(
             reify_core::ty::SelectorKind::Face,
-            &args,
+            args,
             values,
             &function.name,
             diagnostics,
         ),
         TopologySelectorHelper::Edge => eval_named_leaf_selector_ctor(
             reify_core::ty::SelectorKind::Edge,
-            &args,
+            args,
             values,
             &function.name,
             diagnostics,
         ),
         TopologySelectorHelper::SolidBody => eval_named_leaf_selector_ctor(
             reify_core::ty::SelectorKind::Body,
-            &args,
+            args,
             values,
             &function.name,
             diagnostics,
