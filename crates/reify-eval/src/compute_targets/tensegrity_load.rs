@@ -82,8 +82,14 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
 
     let (nodes, member_pairs, kinds) = crack_tensegrity(&value_inputs[0])?;
     let prestress = crack_forces(&value_inputs[1], "prestress")?;
-    let youngs_modulus = crack_scalar(&value_inputs[2], "youngs_modulus")?;
-    let area = crack_scalar(&value_inputs[3], "area")?;
+    let youngs_modulus = crack_dimensioned_scalar(
+        &value_inputs[2],
+        "youngs_modulus",
+        DimensionVector::PRESSURE,
+        "Pressure",
+    )?;
+    let area =
+        crack_dimensioned_scalar(&value_inputs[3], "area", DimensionVector::AREA, "Area")?;
     let loads = crack_loads(&value_inputs[4])?;
     let supports = crack_supports(&value_inputs[5], nodes.len())?;
 
@@ -245,7 +251,9 @@ fn crack_index_pairs(
     Ok(out)
 }
 
-/// Crack a `List<Force>` (accepting bare Real or any dimensioned Scalar entries).
+/// Crack a `List<Force>` into f64 newtons. Each entry must be FORCE-dimensioned
+/// (a bare `Real` is still accepted for ergonomics); a *dimensioned* `Scalar`
+/// carrying the wrong unit is rejected — see [`crack_dimensioned_scalar`].
 fn crack_forces(v: &Value, what: &str) -> Result<Vec<f64>, String> {
     let list = match v {
         Value::List(items) => items,
@@ -257,23 +265,44 @@ fn crack_forces(v: &Value, what: &str) -> Result<Vec<f64>, String> {
     };
     let mut out = Vec::with_capacity(list.len());
     for (i, item) in list.iter().enumerate() {
-        match scalar_f64(item) {
-            Some(x) => out.push(x),
-            None => {
-                return Err(format!(
-                    "E_TensegrityLoadInfeasible: {what}[{i}] must be a force scalar, got {item:?}"
-                ));
-            }
-        }
+        out.push(crack_dimensioned_scalar(
+            item,
+            &format!("{what}[{i}]"),
+            DimensionVector::FORCE,
+            "Force",
+        )?);
     }
     Ok(out)
 }
 
-/// Crack a single dimensioned `Scalar` (or bare `Real`) into an f64.
-fn crack_scalar(v: &Value, what: &str) -> Result<f64, String> {
-    scalar_f64(v).ok_or_else(|| {
-        format!("E_TensegrityLoadInfeasible: {what} must be a scalar, got {v:?}")
-    })
+/// Crack a single dimensioned `Scalar` into an f64, requiring its unit to equal
+/// `expected`. A bare `Real` is still accepted — the dimensionless ergonomic
+/// escape hatch [`scalar_f64`] already allowed (so `[1.0, …]`-style literals keep
+/// working) — but a *dimensioned* `Scalar` whose unit disagrees (e.g. an Area
+/// passed where a Pressure is expected: the classic `youngs_modulus` ↔ `area`
+/// argument swap, or a Length where a Force is expected) is rejected with a
+/// located error rather than silently solving a physically wrong problem. This
+/// tightens the v1 form-find relaxation for the positionally-adjacent section
+/// scalars without losing the bare-`Real` ergonomics. `label` is the human unit
+/// name shown in the diagnostic.
+fn crack_dimensioned_scalar(
+    v: &Value,
+    what: &str,
+    expected: DimensionVector,
+    label: &str,
+) -> Result<f64, String> {
+    match v {
+        Value::Real(r) => Ok(*r),
+        Value::Scalar { si_value, dimension } if *dimension == expected => Ok(*si_value),
+        Value::Scalar { .. } => Err(format!(
+            "E_TensegrityLoadInfeasible: {what} has the wrong unit — expected a {label}; \
+             check the call argument order (youngs_modulus is a Pressure, area is an Area, \
+             and prestress / loads are Forces)"
+        )),
+        other => Err(format!(
+            "E_TensegrityLoadInfeasible: {what} must be a scalar, got {other:?}"
+        )),
+    }
 }
 
 /// Crack `loads` (a `List<Vector3<Force>>`) into per-node `[f64; 3]` force
@@ -295,13 +324,25 @@ fn crack_loads(v: &Value) -> Result<Vec<[f64; 3]>, String> {
     for (i, item) in list.iter().enumerate() {
         match item {
             Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
-                let bad = || {
-                    format!("E_TensegrityLoadInfeasible: loads[{i}] has a non-numeric component")
-                };
                 out.push([
-                    scalar_f64(&c[0]).ok_or_else(bad)?,
-                    scalar_f64(&c[1]).ok_or_else(bad)?,
-                    scalar_f64(&c[2]).ok_or_else(bad)?,
+                    crack_dimensioned_scalar(
+                        &c[0],
+                        &format!("loads[{i}].x"),
+                        DimensionVector::FORCE,
+                        "Force",
+                    )?,
+                    crack_dimensioned_scalar(
+                        &c[1],
+                        &format!("loads[{i}].y"),
+                        DimensionVector::FORCE,
+                        "Force",
+                    )?,
+                    crack_dimensioned_scalar(
+                        &c[2],
+                        &format!("loads[{i}].z"),
+                        DimensionVector::FORCE,
+                        "Force",
+                    )?,
                 ]);
             }
             other => {
@@ -441,56 +482,22 @@ fn describe(e: TensegrityLoadError) -> String {
 mod tests {
     use super::*;
 
-    // Direct coverage for the `describe()` cause arms. Three of the four
-    // (`DimensionMismatch`, `SingularSystem`, `ActiveSetDidNotConverge`) are not
-    // reachable through the producer-side trampoline integration tests, so their
-    // phrasing would otherwise be unprotected:
+    // Direct coverage for the one `describe()` arm that interpolates a runtime
+    // value — `ActiveSetDidNotConverge`'s `{iterations}` count. That is real
+    // substitution *behavior*, not fixed prose, so it is worth a unit test. The
+    // other three arms are deliberately NOT pinned here: a bare substring
+    // assertion on a `match → String` arm fails on any rephrase while adding no
+    // behavioral coverage, and each is already covered (or moot) elsewhere —
+    //   * `EmptyFreeSet` / `SingularSystem` — their wording is asserted
+    //     end-to-end (via `assert_failed_infeasible`) in
+    //     `tests/tensegrity_t3b_load.rs`:
+    //     `trampoline_all_anchored_is_failed_empty_free_set` pins
+    //     "every node is anchored", and
+    //     `trampoline_disconnected_free_node_is_failed_not_panic` pins
+    //     "singular tangent system".
     //   * `DimensionMismatch` — the trampoline's own *located* length/range guards
-    //     (`run`) pre-empt it before the kernel is called.
-    //   * `SingularSystem` — a free node with no taut load path has a zero/missing
-    //     stiffness diagonal, which trips the kernel's Jacobi-preconditioner
-    //     `assert!` (a panic), not this variant; reaching it needs an
-    //     ill-conditioned-but-diagonal-present system that exhausts the CG cap,
-    //     which is impractical to construct as a fast, non-flaky golden.
-    //   * `ActiveSetDidNotConverge` — `run` always passes
-    //     `TensegrityLoadOptions::default()` (cap = 64), so no crafted Value input
-    //     can drive the active set past the cap.
-    // These unit tests pin each arm's wording — and, critically, the `{iterations}`
-    // interpolation — so a format regression fails here instead of silently
-    // shipping a garbled diagnostic. (`EmptyFreeSet` *is* exercised end-to-end by
-    // `tests/tensegrity_t3b_load.rs::trampoline_all_anchored_is_failed_empty_free_set`;
-    // it is included here too for a complete, single-glance phrase map.)
-
-    #[test]
-    fn describe_dimension_mismatch_phrase() {
-        let msg = describe(TensegrityLoadError::DimensionMismatch);
-        assert!(
-            msg.contains("input dimensions disagree"),
-            "DimensionMismatch describe() phrase changed: {msg:?}",
-        );
-    }
-
-    #[test]
-    fn describe_empty_free_set_phrase() {
-        let msg = describe(TensegrityLoadError::EmptyFreeSet);
-        assert!(
-            msg.contains("every node is anchored"),
-            "EmptyFreeSet describe() phrase changed: {msg:?}",
-        );
-    }
-
-    #[test]
-    fn describe_singular_system_phrase() {
-        let msg = describe(TensegrityLoadError::SingularSystem);
-        assert!(
-            msg.contains("singular tangent system"),
-            "SingularSystem describe() phrase changed: {msg:?}",
-        );
-        assert!(
-            msg.contains("did not converge"),
-            "SingularSystem describe() should name the CG non-convergence: {msg:?}",
-        );
-    }
+    //     (`run`) pre-empt it before the kernel is ever called, so the arm is
+    //     unreachable through the product.
 
     /// The key regression guard: `ActiveSetDidNotConverge` is the only arm that
     /// interpolates a runtime value (`iterations`). Assert the count is actually

@@ -422,6 +422,30 @@ fn trampoline_out_of_range_support_is_failed() {
     assert_failed_infeasible(call_tensegrity_load(&value_inputs), "out of range");
 }
 
+/// (b4) The section scalars carry SI units — `youngs_modulus` is a Pressure and
+/// `area` is an Area. Swapping the two positionally-adjacent arguments (a
+/// Pressure where an Area is expected and vice versa) must surface a located
+/// `E_TensegrityLoadInfeasible` "wrong unit" diagnostic rather than silently
+/// solving a physically wrong problem — the dimension guard the relaxed
+/// bare-f64 cracker used to skip. `area(a)` sits in the `youngs_modulus` slot,
+/// so the Pressure check fires first.
+#[test]
+fn trampoline_swapped_section_units_is_failed() {
+    let value_inputs = vec![
+        two_cable_string(2.0),
+        Value::List(vec![force(5_000.0), force(5_000.0)]),
+        area(1.0e-4),      // an Area where youngs_modulus (Pressure) is expected
+        pressure(200.0e9), // a Pressure where area (Area) is expected
+        Value::List(vec![
+            force_vec(0.0, 0.0, 0.0),
+            force_vec(0.0, 50.0, 0.0),
+            force_vec(0.0, 0.0, 0.0),
+        ]),
+        Value::List(vec![Value::Int(0), Value::Int(2)]),
+    ];
+    assert_failed_infeasible(call_tensegrity_load(&value_inputs), "wrong unit");
+}
+
 // ── step-13: dedicated solver::tensegrity_load target registration ───────────
 //
 // PRD §11 Q2: the load solver is wired as its OWN ComputeNode target (not an
