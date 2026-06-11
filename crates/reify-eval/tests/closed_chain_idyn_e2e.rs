@@ -683,7 +683,7 @@ fn closed_4bar_virtual_work_identity() {
     // where a=0.04 m, b=0.12 m, ω=2π rad/s, (a+b)/b=4/3 → q̇_1=−8π/3.
     // forces[i] is returned in the same bodies order, so forces[i] pairs with q̇[i].
     let q_dot = [
-        6.283185307179586_f64,   // j_crank:       ω = 2π rad/s
+        std::f64::consts::TAU,   // j_crank:       ω = 2π rad/s
         -8.377580409572781_f64,  // j_coupler:     −(a+b)/b·ω = −8π/3 rad/s (relative)
         0.0_f64,                  // j_coupler_tip: 0
         0.0_f64,                  // j_rocker:      0
