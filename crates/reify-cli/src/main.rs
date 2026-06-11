@@ -833,16 +833,25 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 }
                 println!("Wrote {} ({} bytes)", path, data.len());
             }
-            match outcome {
-                ConstraintOutcome::AllSatisfied => ExitCode::SUCCESS,
+            // Emit the per-outcome status message (unchanged from pre-4458),
+            // then decide exit via build_is_success — which also gates on
+            // Severity::Error diagnostics, matching cmd_eval's Error gate
+            // (task 4458 fix (c)).  See `build_is_success` for rationale.
+            match &outcome {
+                ConstraintOutcome::AllSatisfied => {}
                 ConstraintOutcome::SomeIndeterminate(n) => {
                     println!("No constraints violated ({n} indeterminate).");
-                    ExitCode::SUCCESS
                 }
                 ConstraintOutcome::SomeViolated => {
                     println!("Some constraints violated.");
-                    ExitCode::FAILURE
                 }
+            }
+            let has_error_diagnostic =
+                result.diagnostics.iter().any(|d| d.severity == Severity::Error);
+            if build_is_success(&outcome, has_error_diagnostic) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
             }
         }
         None => {
@@ -1421,6 +1430,30 @@ fn cmd_lsp() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Pure exit-decision helper for `reify build`.
+///
+/// Returns `true` when the build should exit 0 (success), `false` when it
+/// should exit non-zero (failure).  Two independent gates cause failure:
+///
+/// 1. A [`ConstraintOutcome::SomeViolated`] result — one or more constraints
+///    were violated.
+/// 2. `has_error_diagnostic` — at least one [`reify_core::Severity::Error`]
+///    diagnostic was emitted (e.g. "no registered compute trampoline"), even
+///    if the constraint outcome is [`ConstraintOutcome::AllSatisfied`] or
+///    [`ConstraintOutcome::SomeIndeterminate`].
+///
+/// This resolves task-4458 concern (c): `cmd_build` previously exited 0 when
+/// an `Error`-severity engine diagnostic was emitted alongside a non-violated
+/// constraint outcome.  This helper aligns `cmd_build`'s exit code with
+/// `cmd_eval`'s `Severity::Error` gate (see `cmd_eval` at the
+/// `diagnostics.iter().any(|d| d.severity == Severity::Error)` check).
+///
+/// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
+/// unit-testable; callers convert to `ExitCode` at the boundary.
+fn build_is_success(outcome: &ConstraintOutcome, has_error_diagnostic: bool) -> bool {
+    !has_error_diagnostic && !matches!(outcome, ConstraintOutcome::SomeViolated)
 }
 
 /// Pure exit-decision helper for `reify check`.
