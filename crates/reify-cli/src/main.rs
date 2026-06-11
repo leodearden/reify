@@ -782,14 +782,26 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     let checker = SimpleConstraintChecker;
-    // Wire the production SolverRegistry + all compute trampolines (FEA/buckling/
-    // modal + shell-extract) so `@optimized` targets dispatch correctly — matching
-    // cmd_eval and the GUI.  Without this, the engine emits an Error-severity
-    // "no registered compute trampoline" diagnostic and body-inlines the solve,
-    // leaving FEA-result constraints Indeterminate.  See build_is_success for the
-    // corresponding (c) exit-code gate.
-    let mut engine =
-        configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(checker)));
+    // Register FEA/buckling/modal + shell-extract compute trampolines so that
+    // `@optimized("solver::elastic_static")` targets dispatch to the real solver
+    // rather than body-inlining.  Without these registrations the engine emits an
+    // Error-severity "no registered compute trampoline" diagnostic and FEA-result
+    // constraints evaluate to Indeterminate.
+    //
+    // NOTE: cmd_build intentionally does NOT call `configured_eval_engine` (which
+    // also adds `.with_solver(production())`).  The DimensionalSolver resolves
+    // `auto` params via a synthetic Chebyshev-centre objective even when no explicit
+    // `minimize`/`maximize` directive is present; wiring it here would change the
+    // observable behaviour of existing `auto`-param fixtures (bracket_indeterminate,
+    // bracket_all_indeterminate) from INDETERMINATE → SATISFIED.  cmd_build's
+    // solver-free posture is intentional; cmd_eval wires the full solver via
+    // `configured_eval_engine` because it explicitly models the full evaluation path.
+    // The FEA trampoline is pure-Rust and independent of the DimensionalSolver, so
+    // the solve runs correctly here without `.with_solver`.  See `build_is_success`
+    // for the (c) exit-code gate.
+    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
     let result = engine.build(&compiled, format);
 
     let outcome = report_eval_output(
@@ -840,9 +852,9 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 }
 
-/// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_build`
-/// and `cmd_eval`: wire the production [`reify_constraints::SolverRegistry`] and
-/// register all compute trampolines so `@optimized` targets dispatch correctly.
+/// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
+/// wire the production [`reify_constraints::SolverRegistry`] and register all
+/// compute trampolines so `@optimized` targets dispatch correctly.
 ///
 /// The production registry installs `DimensionalSolver` (dimensional constraints)
 /// and `SolveSpaceSolver` (geometric constraints: `std::distance`,
@@ -850,12 +862,11 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// This mirrors the GUI's `EngineSession::with_registered_kernel` solver so that
 /// CLI and GUI resolve auto-params identically.
 ///
-/// `cmd_build` (`with_registered_kernel + build()`), `cmd_eval`'s geometry branch
-/// (`with_registered_kernel + build()`), and `cmd_eval`'s plain branch
-/// (`Engine::new(None) + eval()`) all share this setup; only the constructor and
-/// the terminal `build()`/`eval()` call differ.  Factoring the shared setup here
-/// eliminates the duplicated `.with_solver` + `register_compute_fns` block that
-/// would otherwise appear verbatim in each branch.
+/// Both the geometry branch (`with_registered_kernel + build()`) and the plain
+/// branch (`Engine::new(None) + eval()`) share this setup; only the constructor
+/// and the terminal `build()`/`eval()` call differ.  Factoring the shared setup
+/// here eliminates the duplicated `.with_solver` + `register_compute_fns` block
+/// that would otherwise appear verbatim in each branch.
 ///
 /// Both the FEA/buckling/modal trampolines (`register_compute_fns`) and the
 /// shell-extract trampoline (`register_shell_extract_compute_fns`) are registered
@@ -864,6 +875,10 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// solves would hit `DispatchError::Failed` in `insert_shell_extract_upstream` and
 /// emit a misleading "falling back to tet meshing" warning even though the FEA
 /// trampoline independently re-classifies and runs the correct shell solve.
+///
+/// NOTE: `cmd_build` intentionally does NOT use this helper — it registers only
+/// compute trampolines (without `.with_solver`) to preserve cmd_build's solver-free
+/// posture for `auto`-param fixtures.  See the comment in `cmd_build` for rationale.
 fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
     let mut engine = engine.with_solver(Box::new(reify_constraints::SolverRegistry::production()));
     reify_eval::compute_targets::register_compute_fns(&mut engine);

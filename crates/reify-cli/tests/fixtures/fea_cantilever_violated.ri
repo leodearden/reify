@@ -41,15 +41,15 @@ structure FeaCantileverViolated {
     // Supports: fully clamped (fixed) at the beam root.
     let mount = FixedSupport(target: "root")
 
-    // Wrap material in ConstitutiveLawInput so that member-access .law has
-    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
-    let ci = ConstitutiveLawInput(law: material)
-
     // FEA solve: the @optimized dispatcher routes this call to the
     // `solver::elastic_static` trampoline when registered via
     // register_compute_fns (cmd_build + cmd_eval).
+    //
+    // Direct-pass form: Steel_AISI_1045() conforms to ConstitutiveLaw
+    // transitively via ElasticMaterial : ConstitutiveLaw (task γ/4441 +
+    // task δ/4442).  The ConstitutiveLawInput shim was retired in task δ/4442.
     let result = solve_elastic_static(
-        ci.law, length, width, height, [tip_load], [mount], ElasticOptions()
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
     )
 
     // FEA-result constraints — use let-bind member-access idiom so the
