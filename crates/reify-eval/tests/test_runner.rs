@@ -4,6 +4,28 @@ use reify_eval::run_tests;
 use reify_ir::Satisfaction;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
+use reify_test_support::parse_and_compile_with_stdlib;
+
+/// Inline `@test structure` using `solve_elastic_static` (direct-pass material form).
+/// Mirrors `CANTILEVER_DETERMINISTIC_SRC` in `solve_elastic_static_e2e.rs` but wraps
+/// the body in `@test` and adds `constraint result.max_von_mises > 0Pa`.
+const FEA_CANTILEVER_TEST_SRC: &str = r#"
+@test structure TestFEAConstraintFires {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+
+    constraint result.max_von_mises > 0Pa
+}
+"#;
 
 #[test]
 fn run_tests_on_module_with_no_tests_returns_empty_vec() {
@@ -240,6 +262,37 @@ fn run_tests_with_auto_param_returns_indeterminate() {
         results[0].status,
         reify_eval::TestStatus::Indeterminate,
         "auto param should produce Indeterminate via real SimpleConstraintChecker"
+    );
+}
+
+// FEA end-to-end: run_tests over a @test block calling solve_elastic_static.
+// Proves task 4468's build_test_engine trampoline registration reaches a real
+// FEA solve. GREEN on current main; RED (Indeterminate) only on a pre-4468 tree.
+#[test]
+fn run_tests_fea_constraint_not_indeterminate() {
+    let compiled = parse_and_compile_with_stdlib(FEA_CANTILEVER_TEST_SRC);
+    let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
+
+    assert_eq!(results.len(), 1, "expected exactly one @test result");
+
+    // Direct dispatch proof: trampoline ran — body-inline fallback was NOT hit.
+    assert!(
+        results[0]
+            .diagnostics
+            .iter()
+            .all(|d| !d.message.contains("no registered compute trampoline")),
+        "run_tests emitted 'no registered compute trampoline' fallback \
+         — trampoline not dispatched; diagnostics: {:?}",
+        results[0].diagnostics
+    );
+
+    // Task-spec pin: constraint fired (Pass/Fail), not silently Indeterminate.
+    assert_ne!(
+        results[0].status,
+        reify_eval::TestStatus::Indeterminate,
+        "FEA constraint evaluated to Indeterminate \
+         — trampoline result was Undef (4468 regression); diagnostics: {:?}",
+        results[0].diagnostics
     );
 }
 
