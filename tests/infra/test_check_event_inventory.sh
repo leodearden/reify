@@ -670,5 +670,48 @@ assert "Check 16: 'wired-ok' is NOT flagged as phantom" \
 assert "Check 16: --bidirectional --strict exits non-zero (only-in-untracked is a phantom)" \
     bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix16dir' --bidirectional --strict"
 
+# ==============================================================================
+# Check 17: non-git repo-root exits with a clear error
+# When --repo-root points at a plain directory (not a git work tree), the script
+# must exit non-zero with an error message. Without this check the tool degrades
+# asymmetrically: the forward pass silently exits 0 (empty source list → no
+# orphans ever flagged) while the reverse pass flags every §1 channel as phantom
+# — an inconsistent and surprising failure mode.
+# ==============================================================================
+echo ""
+echo "--- Check 17: non-git repo-root exits with error ---"
+
+_fix17dir="$_tmpdir/fix17"
+mkdir -p "$_fix17dir/docs" "$_fix17dir/gui/src-tauri/src"
+
+cat > "$_fix17dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `some-channel` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+# No git init — _fix17dir is a plain directory, intentionally not a git work tree.
+
+_fix17_stderr="$_tmpdir/fix17_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix17dir" 2>"$_fix17_stderr" || true
+
+assert "Check 17: non-git repo-root exits non-zero" \
+    bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix17dir' 2>/dev/null"
+
+assert "Check 17: stderr contains ERROR about non-git work tree" \
+    grep -qi 'error.*git' "$_fix17_stderr"
+
+assert "Check 17: --bidirectional also exits non-zero on non-git repo-root" \
+    bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix17dir' --bidirectional 2>/dev/null"
+
 # -- Summary ------------------------------------------------------------------
 test_summary

@@ -13,6 +13,9 @@
 # the gap where transients land outside the named dirs (esc-3798-78). Single-
 # star pathspec: git * is not path-boundary-aware, so it matches recursively at
 # every depth AND the top-level build.rs (same set as the prior find -name).
+# Staged-only coverage: a new .emit("new-channel", …) call in an unstaged file
+# is not detected until the file is `git add`ed. This is intentional — the
+# verify/CI gate always runs on staged/committed trees.
 #
 # Forward pass: extracts literal channel names from .emit("name", …) call sites
 # in tracked sources and warns if any are absent from docs/gui-event-channels.md.
@@ -53,7 +56,11 @@ Options:
                      §1-scoped: §2 (FICTION → WIRED) rows are excluded pending
                      §2 graduation. Opt-in per esc-3552-52 reviewer note.
   --repo-root DIR    Repository root (default: git rev-parse --show-toplevel).
+                     Must be a git work tree; exits 1 with an error otherwise.
   -h, --help         Show this message.
+
+Note: only git-tracked (staged) .rs files are scanned. A .emit("new-channel")
+call in an unstaged file is not detected until the file is added to the index.
 USAGE
 }
 
@@ -85,6 +92,11 @@ fi
 
 if [[ ! -d "$SRC_DIR" ]]; then
     echo "ERROR: source directory not found: $SRC_DIR" >&2
+    exit 1
+fi
+
+if ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "ERROR: repo-root is not a git work tree: $REPO_ROOT" >&2
     exit 1
 fi
 
@@ -138,7 +150,6 @@ fi
 # §1-only: awk extracts between ^## §1 and the next ^## §[0-9]+ heading.
 # Permissive scan: grep -F '"channel-name"' matches any literal occurrence,
 # not just .emit("…") form, so dynamic-emit patterns are naturally covered.
-# Empty _tracked_rs (non-git --repo-root) ⇒ all §1 channels treated as phantom.
 phantom_count=0
 if [[ $BIDIRECTIONAL -eq 1 ]]; then
     sec1_channels=$(
