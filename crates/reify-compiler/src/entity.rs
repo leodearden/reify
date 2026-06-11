@@ -2776,12 +2776,28 @@ fn member_type_map_from_template(tmpl: &TopologyTemplate) -> BTreeMap<String, Ty
     // LETS which remain realization-only (no ValueCellDecl) and therefore still
     // miss in `sub_member_types`.
     //
-    // Note: for collection subs, including geometry cells means the "recommend
-    // indexed access" diagnostic fires instead of the geometry-specific cross-sub
-    // diagnostic for `self.<collection_sub>.<geom_param>` access.  The
-    // geometry-specific collection-sub diagnostic tests are therefore `#[ignore]`
-    // until GHR-δ+ provides a better routing strategy.  This is an accepted v0.1
-    // limitation; the "recommend indexed access" message is still informative.
+    // PERMANENT ROUTING DECISION (ratified by task 4549, after GHR-γ/3605 and
+    // GHR-δ/3606 both shipped):
+    //
+    // For **collection** subs, including geometry value cells means that bare
+    // `self.<collection_sub>.<geom_param>` access intentionally emits the
+    // "recommend indexed access" diagnostic rather than the geometry-specific
+    // "not yet supported in v0.1" message.  This is the correct UX: a
+    // collection sub has no single handle regardless of member type — the
+    // actionable fix is always to pick a specific instance
+    // (`<collection_sub>[i].<geom_param>`), which THEN surfaces the geometry
+    // v0.1 limitation via the indexed-access branch.  Routing to the
+    // geometry-specific message for bare access would be less actionable and
+    // would degrade UX.
+    //
+    // The indexed-access branch (`bolts[0].body`) IS routed to the geometry-
+    // specific diagnostic because it calls `try_emit_cross_sub_geometry` before
+    // consulting `sub_member_types` — that ordering is intentional and tested.
+    //
+    // This routing is pinned by `collection_sub_bare_geometry_access_recommends_
+    // indexed_access` (routing guard) and `collection_sub_indexed_geometry_access_
+    // emits_specific_diagnostic` (indexed regression guard) in
+    // `cross_sub_geometry_diagnostic_tests.rs`.
     tmpl.value_cells
         .iter()
         .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
