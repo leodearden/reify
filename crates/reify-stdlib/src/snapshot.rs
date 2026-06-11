@@ -902,6 +902,13 @@ fn joint_world_transform(
 
     // Compose: T_joint_world = T_parent_world ∘ T_joint_local
     // where T_joint_local = transform_at(joint, value_for(joint)).
+    //
+    // PRD §7.2 no-bypass invariant (route 2): the per-joint transform MUST route
+    // through `transform_at` and MUST NOT be reconstructed from the joint Map fields
+    // directly. `transform_at` applies the "origin" pre-compose uniformly, so any pivot
+    // offset is baked in here automatically. Verified behaviourally by
+    // `joint_world_transform_offset_equals_transform_at_route2` and
+    // `snapshot_analytic_two_link_offset_chain_world_transform`.
     let motion_value = value_for(joint, bindings)?;
     let t_local = eval_builtin("transform_at", &[joint.clone(), motion_value]);
     if t_local.is_undef() {
@@ -1156,7 +1163,8 @@ pub(crate) fn make_binding(joint: Value, value: Value) -> Value {
 mod tests {
     use crate::eval_builtin;
     use crate::test_fixtures::{
-        angle_range_0_to_pi, axis_x_unit, axis_z_unit, length_range_0_to_1m, planar_xy_joint,
+        angle_range_0_to_pi, axis_x_unit, axis_z_unit, body_world_transform, length_range_0_to_1m,
+        offset_revolute_z, planar_xy_joint, two_link_offset_chain,
     };
     use reify_ir::Value;
     use std::collections::BTreeMap;
@@ -3079,6 +3087,192 @@ mod tests {
             s.is_undef(),
             "snapshot with mismatched-length warm-start arg must return Undef, got {:?}",
             s
+        );
+    }
+
+    // ── KIN-OFFSET γ step-2 (B8 routes 2 + 4): no-bypass invariant ───────────────
+
+    /// B8 route 2: `joint_world_transform(j, {j→world}, &[bind(j,v)], &mut {})` ==
+    /// `transform_at(j, v)` for an offset-bearing joint with a world parent.
+    ///
+    /// The parent is world (identity pose) so T_joint_world = I ∘ transform_at(j, v) = transform_at(j, v).
+    /// Proves `joint_world_transform` routes through `transform_at` without
+    /// reconstructing the per-joint transform (PRD §7.2).
+    #[test]
+    fn joint_world_transform_offset_equals_transform_at_route2() {
+        let j = offset_revolute_z(0.3);
+        let v = std::f64::consts::PI / 6.0;
+
+        // Build joint_parents: j → world sentinel
+        let mut world_map = BTreeMap::new();
+        world_map.insert(
+            Value::String("kind".to_string()),
+            Value::String("world".to_string()),
+        );
+        let world = Value::Map(world_map);
+
+        let mut joint_parents = BTreeMap::new();
+        joint_parents.insert(j.clone(), world.clone());
+
+        let bindings = vec![eval_builtin("bind", &[j.clone(), Value::angle(v)])];
+        let mut cache = BTreeMap::new();
+
+        let route2 = super::joint_world_transform(&j, &joint_parents, &bindings, &mut cache)
+            .expect("joint_world_transform must return Some for a valid offset joint at world");
+        let direct = eval_builtin("transform_at", &[j.clone(), Value::angle(v)]);
+        assert!(!direct.is_undef(), "transform_at with offset must not return Undef");
+
+        let (route2_rot, route2_trans) = decompose_transform_for_assert(&route2);
+        let (direct_rot, direct_trans) = decompose_transform_for_assert(&direct);
+        let tol = 1e-12;
+
+        let (rw, rx, ry, rz) = route2_rot;
+        let (dw, dx, dy, dz) = direct_rot;
+        assert!(
+            (rw - dw).abs() < tol
+                && (rx - dx).abs() < tol
+                && (ry - dy).abs() < tol
+                && (rz - dz).abs() < tol,
+            "B8 route-2 rotation mismatch: route2=({rw},{rx},{ry},{rz}) direct=({dw},{dx},{dy},{dz})"
+        );
+        for i in 0..3 {
+            assert!(
+                (route2_trans[i] - direct_trans[i]).abs() < tol,
+                "B8 route-2 translation[{i}] mismatch: route2={} direct={}",
+                route2_trans[i],
+                direct_trans[i]
+            );
+        }
+    }
+
+    /// B8 route 4: the offset propagates into the snapshot `world_transform` —
+    /// an offset joint's snapshot translation differs from the no-offset version.
+    ///
+    /// The snapshot `world_transform` is what the dynamics reads in
+    /// `snapshot_inverse_dynamics`; this confirms that FK input is offset-aware (PRD §7.2).
+    #[test]
+    fn snapshot_world_transform_offset_joint_differs_from_no_offset_route4() {
+        let v = std::f64::consts::PI / 6.0;
+        let solid = Value::String("body_a".to_string());
+
+        // ── With offset joint ─────────────────────────────────────────────
+        let j_offset = offset_revolute_z(0.3);
+        let mech_offset = eval_builtin("mechanism", &[]);
+        let mech_offset = eval_builtin("body", &[mech_offset, solid.clone(), j_offset.clone()]);
+        let bind_offset = eval_builtin("bind", &[j_offset.clone(), Value::angle(v)]);
+        let snap_offset = eval_builtin("snapshot", &[mech_offset, Value::List(vec![bind_offset])]);
+        let (_, [tx_off, ty_off, _]) =
+            decompose_transform_for_assert(body_world_transform(&snap_offset, 0));
+
+        // ── Without offset joint ──────────────────────────────────────────
+        let j_bare = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let mech_bare = eval_builtin("mechanism", &[]);
+        let mech_bare = eval_builtin("body", &[mech_bare, solid.clone(), j_bare.clone()]);
+        let bind_bare = eval_builtin("bind", &[j_bare.clone(), Value::angle(v)]);
+        let snap_bare = eval_builtin("snapshot", &[mech_bare, Value::List(vec![bind_bare])]);
+        let (_, [tx_bare, ty_bare, _]) =
+            decompose_transform_for_assert(body_world_transform(&snap_bare, 0));
+
+        // The offset (0.3 m at +X) must shift the translation relative to the bare joint.
+        // For revolute-Z with origin=(0.3,0,0): world translation = (0.3, 0, 0) regardless of θ.
+        // For bare revolute-Z: world translation = (0, 0, 0).
+        assert!(
+            (tx_off - tx_bare).abs() > 0.1,
+            "B8 route-4: offset joint tx should differ from bare (offset=0.3m): \
+             off={tx_off:.6}, bare={tx_bare:.6}"
+        );
+        // ty must be 0 for both: revolute-Z origin is purely in X, so the Y component
+        // of the world translation is zero regardless of whether an X-offset is present.
+        assert!(ty_off.abs() < 1e-9, "B8 route-4: offset ty should be 0, got {ty_off:.3e}");
+        assert!(ty_bare.abs() < 1e-9, "B8 route-4: bare ty should be 0, got {ty_bare:.3e}");
+    }
+
+    // ── KIN-OFFSET γ step-4 (B3): 2-link offset chain FK analytic ────────────────
+
+    /// B3 FK: 2-link offset revolute-Z chain at θ_a=π/6 (body A), θ_b=π/3 (body B).
+    ///
+    /// With L_a=0.3 m and L_b=0.2 m (pivot offsets = link lengths), the analytic
+    /// planar-arm closed form gives body B's world_transform as:
+    ///   translation = (L_a + L_b·cos θ_a, L_b·sin θ_a, 0)
+    ///               = (0.3 + 0.2·cos 30°, 0.2·sin 30°, 0)
+    ///               ≈ (0.473205, 0.1, 0)
+    ///   rotation    = R_z(θ_a + θ_b) = R_z(90°) ≈ (0.707107, 0, 0, 0.707107)
+    ///
+    /// Confirms both the private `joint_world_transform` / `walk_fk` path AND
+    /// the public `snapshot` builtin are offset-aware (PRD §7.2 route 2).
+    #[test]
+    fn snapshot_analytic_two_link_offset_chain_world_transform() {
+        let pi = std::f64::consts::PI;
+        let theta_a = pi / 6.0; // 30°
+        let theta_b = pi / 3.0; // 60°
+
+        let (joint_a, joint_b) = two_link_offset_chain();
+        let solid_a = Value::String("link_a".to_string());
+        let solid_b = Value::String("link_b".to_string());
+
+        let mech = eval_builtin("mechanism", &[]);
+        // Body A at joint_a, parented to world (3-arg: parent defaults to world).
+        let mech = eval_builtin("body", &[mech, solid_a.clone(), joint_a.clone()]);
+        // Body B at joint_b, parented to joint_a.
+        let mech = eval_builtin("body", &[mech, solid_b.clone(), joint_b.clone(), joint_a.clone()]);
+
+        let bind_a = eval_builtin("bind", &[joint_a.clone(), Value::angle(theta_a)]);
+        let bind_b = eval_builtin("bind", &[joint_b.clone(), Value::angle(theta_b)]);
+        let snap = eval_builtin("snapshot", &[mech, Value::List(vec![bind_a, bind_b])]);
+
+        let smap = match snap {
+            Value::Map(m) => m,
+            other => panic!("expected Snapshot Map, got {:?}", other),
+        };
+        let bodies = match smap.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            other => panic!("expected bodies List, got {:?}", other),
+        };
+        assert_eq!(bodies.len(), 2, "snapshot should have 2 bodies");
+
+        // Body B is the second entry (id=1).
+        let body_b = match &bodies[1] {
+            Value::Map(b) => b,
+            other => panic!("expected body Map, got {:?}", other),
+        };
+        let wt = body_b
+            .get(&Value::String("world_transform".to_string()))
+            .expect("body B must carry world_transform");
+        let ((rw, rx, ry, rz), [tx, ty, tz]) = decompose_transform_for_assert(wt);
+
+        // Analytic expected values (PRD §7.2 design decision 4).
+        let l_a = 0.3_f64;
+        let l_b = 0.2_f64;
+        let exp_tx = l_a + l_b * theta_a.cos();
+        let exp_ty = l_b * theta_a.sin();
+        let tol = 1e-9;
+
+        assert!(
+            (tx - exp_tx).abs() < tol,
+            "body B tx: expected {exp_tx:.9}, got {tx:.9}"
+        );
+        assert!(
+            (ty - exp_ty).abs() < tol,
+            "body B ty: expected {exp_ty:.9}, got {ty:.9}"
+        );
+        assert!(tz.abs() < tol, "body B tz: expected 0, got {tz:.3e}");
+
+        // Rotation = R_z(θ_a + θ_b) = R_z(π/2) → (cos π/4, 0, 0, sin π/4).
+        let half = (theta_a + theta_b) / 2.0;
+        let exp_qw = half.cos();
+        let exp_qz = half.sin();
+        let matches_pos = (rw - exp_qw).abs() < tol
+            && rx.abs() < tol
+            && ry.abs() < tol
+            && (rz - exp_qz).abs() < tol;
+        let matches_neg = (rw + exp_qw).abs() < tol
+            && rx.abs() < tol
+            && ry.abs() < tol
+            && (rz + exp_qz).abs() < tol;
+        assert!(
+            matches_pos || matches_neg,
+            "body B rotation: expected R_z(90°) ≈ ({exp_qw:.6}, 0, 0, {exp_qz:.6}) up to sign, \
+             got ({rw:.6}, {rx:.6}, {ry:.6}, {rz:.6})"
         );
     }
 }

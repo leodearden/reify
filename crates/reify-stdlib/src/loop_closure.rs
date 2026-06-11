@@ -84,6 +84,11 @@ pub fn chain_transform(chain: &[Value], values: &[JointValue]) -> Option<Value> 
     }
     for (joint, v) in chain.iter().zip(values.iter()) {
         let v_value = value_for_joint(joint, v)?;
+        // PRD §7.2 no-bypass invariant (route 1): per-joint transforms MUST route through
+        // `transform_at` and MUST NOT be reconstructed from the joint Map directly.
+        // `transform_at` applies the "origin" pre-compose uniformly, so any offset is baked
+        // in here. Verified behaviourally by
+        // `chain_transform_offset_single_joint_equals_transform_at_route1`.
         let next = eval_builtin("transform_at", &[joint.clone(), v_value]);
         if next.is_undef() {
             return None;
@@ -860,6 +865,11 @@ pub fn loop_residual_jacobian_by_joint(
                 }
             }
 
+            // PRD §7.2 no-bypass invariant (route 3): this central-difference
+            // evaluates `loop_residual_twist`, which internally calls `chain_transform`
+            // → `transform_at`. The offset is inherited automatically through that call
+            // chain — this site MUST NOT reconstruct per-joint transforms directly.
+            // Verified behaviourally by γ B8 route-3 test and the B5 Jacobian test.
             let rp = loop_residual_twist(chain_a, &va_plus, chain_b, &vb_plus)?;
             let rm = loop_residual_twist(chain_a, &va_minus, chain_b, &vb_minus)?;
 
@@ -881,7 +891,8 @@ mod tests {
     use crate::loop_closure_value::JointValue;
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint,
-        length_range_0_to_1m, planar_xy_joint, spherical_joint,
+        length_range_0_to_1m, offset_prismatic_x, offset_revolute_z, planar_xy_joint,
+        spherical_joint, two_link_offset_chain,
     };
     use reify_ir::Value;
 
@@ -2325,6 +2336,293 @@ mod tests {
             )
             .is_none(),
             "eps=0 must return None"
+        );
+    }
+
+    // ── KIN-OFFSET γ step-2 (B8 routes 1 + 3): no-bypass invariant ───────────────
+
+    /// B8 route 1: `chain_transform([j], [Scalar(v)])` reproduces
+    /// `transform_at(j, v)` exactly for an offset-bearing joint.
+    ///
+    /// Proves `chain_transform` routes every offset through `transform_at`
+    /// — no bypass (PRD §7.2).
+    #[test]
+    fn chain_transform_offset_single_joint_equals_transform_at_route1() {
+        let j = offset_revolute_z(0.3);
+        let v = std::f64::consts::PI / 6.0;
+
+        let chain_result = super::chain_transform(std::slice::from_ref(&j), &[JointValue::Scalar(v)])
+            .expect("chain_transform must return Some for an offset revolute joint");
+        let direct = eval_builtin("transform_at", &[j.clone(), Value::angle(v)]);
+        assert!(!direct.is_undef(), "transform_at with offset must not return Undef");
+
+        let ct = translation_xyz(&chain_result);
+        let dt = translation_xyz(&direct);
+        let (cw, cx, cy, cz) = rotation_wxyz(&chain_result);
+        let (dw, dx, dy, dz) = rotation_wxyz(&direct);
+        let tol = 1e-12;
+        assert!(
+            (cw - dw).abs() < tol
+                && (cx - dx).abs() < tol
+                && (cy - dy).abs() < tol
+                && (cz - dz).abs() < tol,
+            "B8 route-1: rotation mismatch — chain=({cw},{cx},{cy},{cz}) direct=({dw},{dx},{dy},{dz})"
+        );
+        for i in 0..3 {
+            assert!(
+                (ct[i] - dt[i]).abs() < tol,
+                "B8 route-1: translation[{i}] mismatch — chain={} direct={}",
+                ct[i],
+                dt[i]
+            );
+        }
+    }
+
+    /// B8 route 3: the offset PROPAGATES into `loop_residual_twist` — the
+    /// residual of an offset chain differs from the same chain with origins
+    /// stripped, proving the Jacobian basis is offset-aware (PRD §7.2).
+    #[test]
+    fn loop_residual_twist_offset_propagates_into_residual_route3() {
+        let j_offset = offset_revolute_z(0.3);
+        let j_bare = revolute_z();
+        let v = std::f64::consts::FRAC_PI_4;
+
+        // Use the same "other side" chain for both comparisons.
+        let chain_ref = vec![revolute_z()];
+        let vals_ref = vec![JointValue::Scalar(v)];
+
+        let chain_offset = vec![j_offset.clone()];
+        let chain_bare = vec![j_bare.clone()];
+        let vals = vec![JointValue::Scalar(v)];
+
+        let twist_offset = super::loop_residual_twist(&chain_offset, &vals, &chain_ref, &vals_ref)
+            .expect("loop_residual_twist with offset must return Some");
+        let twist_bare = super::loop_residual_twist(&chain_bare, &vals, &chain_ref, &vals_ref)
+            .expect("loop_residual_twist without offset must return Some");
+
+        // The offset (0.3 m translation baked into chain_a) must change the
+        // residual — the difference should be dominated by the 0.3 m offset.
+        let max_diff = twist_offset
+            .iter()
+            .zip(twist_bare.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_diff > 1e-6,
+            "B8 route-3: offset must change loop_residual_twist \
+             (max |Δtwist| = {max_diff:.3e}, want > 1e-6)"
+        );
+    }
+
+    // ── KIN-OFFSET γ step-5 (B3): 2-link offset chain analytic FK ────────────────
+
+    /// B3 chain_transform: 2-link offset revolute-Z chain at θ_a=π/6, θ_b=π/3.
+    ///
+    /// With L_a=0.3 m (joint_a pivot) and L_b=0.2 m (joint_b pivot), the
+    /// composed Transform via `chain_transform` must equal the planar-arm
+    /// closed form (PRD §7.2 design decision 4):
+    ///   translation = (L_a + L_b·cos θ_a, L_b·sin θ_a, 0)
+    ///               = (0.3 + 0.2·cos 30°, 0.2·sin 30°, 0)
+    ///               ≈ (0.473205, 0.1, 0)
+    ///   rotation    = R_z(θ_a + θ_b) = R_z(90°) = (0.707107, 0, 0, 0.707107)
+    ///
+    /// Confirms the chain_transform consumer (loop_closure.rs:87) is offset-aware.
+    #[test]
+    fn chain_transform_two_link_offset_chain_analytic() {
+        let pi = std::f64::consts::PI;
+        let theta_a = pi / 6.0; // 30°
+        let theta_b = pi / 3.0; // 60°
+
+        let (joint_a, joint_b) = two_link_offset_chain();
+        let chain = vec![joint_a.clone(), joint_b.clone()];
+        let vals = vec![JointValue::Scalar(theta_a), JointValue::Scalar(theta_b)];
+
+        let result = super::chain_transform(&chain, &vals)
+            .expect("chain_transform must return Some for a 2-link offset chain");
+
+        // Closed-form expected values (PRD design decision 4).
+        let l_a = 0.3_f64;
+        let l_b = 0.2_f64;
+        let exp_tx = l_a + l_b * theta_a.cos();
+        let exp_ty = l_b * theta_a.sin();
+        let half = (theta_a + theta_b) / 2.0; // = π/4
+        let exp_qw = half.cos();
+        let exp_qz = half.sin();
+
+        let tol = 1e-9;
+        let trans = translation_xyz(&result);
+        assert!(
+            (trans[0] - exp_tx).abs() < tol,
+            "tx: expected {exp_tx:.9}, got {:.9}", trans[0]
+        );
+        assert!(
+            (trans[1] - exp_ty).abs() < tol,
+            "ty: expected {exp_ty:.9}, got {:.9}", trans[1]
+        );
+        assert!(
+            trans[2].abs() < tol,
+            "tz: expected 0, got {:.3e}", trans[2]
+        );
+
+        let (w, x, y, z) = rotation_wxyz(&result);
+        let matches_pos = (w - exp_qw).abs() < tol && x.abs() < tol
+            && y.abs() < tol && (z - exp_qz).abs() < tol;
+        let matches_neg = (w + exp_qw).abs() < tol && x.abs() < tol
+            && y.abs() < tol && (z + exp_qz).abs() < tol;
+        assert!(
+            matches_pos || matches_neg,
+            "rotation: expected R_z(90°) ≈ ({exp_qw:.6}, 0, 0, {exp_qz:.6}) up to sign, \
+             got ({w:.6}, {x:.6}, {y:.6}, {z:.6})"
+        );
+    }
+
+    // ── KIN-OFFSET γ step-6 (B5): twist↔Jacobian consistency on offset chains ───
+
+    /// B5: `loop_residual_jacobian_by_joint` columns match a manual central
+    /// difference of the OFFSET-AWARE `loop_residual_twist`, within the eps²
+    /// FD floor (≤ 1e-9 at eps=1e-7).
+    ///
+    /// Chain structure:
+    ///   chain_a = [jA = offset_revolute_z(0.3)]
+    ///   chain_b = [jB = offset_revolute_z(0.2), jC = offset_prismatic_x(0.1)]
+    ///   target_joints = [jA, jB, jC] (structurally distinct — each appears in
+    ///   exactly one chain).
+    ///
+    /// The manual FD uses the identical `fd_column` helper and the same
+    /// offset-aware `loop_residual_twist`, so divergence is only operation-
+    /// ordering roundoff (~1 ULP, far below 1e-9).  Non-vacuity assertion
+    /// confirms at least one column is non-trivially nonzero (the offset is
+    /// genuinely exercised, not a vacuous zero-Jacobian).
+    #[test]
+    fn loop_residual_jacobian_by_joint_offset_chain_matches_manual_fd() {
+        let eps = 1e-7_f64;
+        let tol = 1e-9_f64;
+
+        // Three structurally-distinct offset-bearing joints (each a unique Map).
+        let j_a = offset_revolute_z(0.3);
+        let j_b = offset_revolute_z(0.2);
+        let j_c = offset_prismatic_x(0.1);
+
+        // chain_a = [jA], chain_b = [jB, jC]
+        let chain_a = vec![j_a.clone()];
+        let chain_b = vec![j_b.clone(), j_c.clone()];
+        let vals_a = vec![JointValue::Scalar(0.5_f64)];
+        let vals_b = vec![JointValue::Scalar(0.3_f64), JointValue::Scalar(0.2_f64)];
+
+        let cols = super::loop_residual_jacobian_by_joint(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b,
+            &[j_a.clone(), j_b.clone(), j_c.clone()],
+            eps,
+        )
+        .expect("loop_residual_jacobian_by_joint must return Some for valid offset chains");
+
+        assert_eq!(cols.len(), 3, "three single-DOF target joints → three columns");
+
+        // Manual FD: jA appears in chain_a[0] only.
+        let manual_a = fd_column(
+            &chain_a, &vals_a, &chain_b, &vals_b, (Some(0), None), 0, eps,
+        );
+        // Manual FD: jB appears in chain_b[0] only.
+        let manual_b = fd_column(
+            &chain_a, &vals_a, &chain_b, &vals_b, (None, Some(0)), 0, eps,
+        );
+        // Manual FD: jC appears in chain_b[1] only.
+        let manual_c = fd_column(
+            &chain_a, &vals_a, &chain_b, &vals_b, (None, Some(1)), 0, eps,
+        );
+
+        for k in 0..6 {
+            assert!(
+                (cols[0][k] - manual_a[k]).abs() < tol,
+                "B5 col_jA[{k}]: function={:.6e} manual={:.6e} diff={:.2e}",
+                cols[0][k], manual_a[k], (cols[0][k] - manual_a[k]).abs()
+            );
+            assert!(
+                (cols[1][k] - manual_b[k]).abs() < tol,
+                "B5 col_jB[{k}]: function={:.6e} manual={:.6e} diff={:.2e}",
+                cols[1][k], manual_b[k], (cols[1][k] - manual_b[k]).abs()
+            );
+            assert!(
+                (cols[2][k] - manual_c[k]).abs() < tol,
+                "B5 col_jC[{k}]: function={:.6e} manual={:.6e} diff={:.2e}",
+                cols[2][k], manual_c[k], (cols[2][k] - manual_c[k]).abs()
+            );
+        }
+
+        // Non-vacuity: at least one column entry is non-trivially nonzero.
+        // The offset makes the residual config-dependent → Jacobian columns
+        // are non-zero whenever the two chains are not at the same pose.
+        let max_abs = cols
+            .iter()
+            .flat_map(|col| col.iter())
+            .map(|v| v.abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_abs > 1e-4,
+            "B5 non-vacuity: at least one Jacobian entry must be nonzero \
+             (offset is genuinely exercised), max_abs = {max_abs:.3e}"
+        );
+    }
+
+    // ── KIN-OFFSET γ amend: analytic Jacobian check for single offset joint ─
+
+    /// Analytic check: `loop_residual_jacobian_by_joint` column for a single
+    /// `offset_revolute_z(L)` joint in chain_a, with empty chain_b (≡ identity).
+    ///
+    /// The residual is `r = log(T_a^{-1}(θ))` where
+    ///   `T_a(θ) = {R_z(θ), (L,0,0)}`  (offset_revolute_z(L) at angle θ)
+    ///   `T_a^{-1}(θ) = {R_z(−θ), (−L·cos θ, L·sin θ, 0)}`
+    ///
+    /// Closed-form log components (derivation: SE(3) log with α=−θ,
+    /// tx=−L·cos θ, ty=L·sin θ, using the 2×2 rotation-coupled translation
+    /// formula):
+    ///   r[2] (ω_z)  = −θ           → ∂r[2]/∂θ = −1  (exact)
+    ///   r[4] (v_y)  = θ·L/2        → ∂r[4]/∂θ = L/2 (exact for all θ)
+    ///
+    /// The L/2 term is the offset's fingerprint in the Jacobian: without an
+    /// offset (L=0), r[4]=0 for all θ, so col[4]=0.  With L=0.2, col[4]=0.1.
+    /// This is the genuinely offset-discriminating assertion that the B5
+    /// FD-vs-FD test (which is near-tautological on its own) cannot provide.
+    #[test]
+    fn loop_residual_jacobian_analytic_offset_single_joint() {
+        let eps = 1e-7_f64;
+        let tol = 1e-9_f64;
+        let l = 0.2_f64;        // pivot offset
+        let theta_a = 0.5_f64;  // well away from 0 and π to avoid log singularities
+
+        let j_a = offset_revolute_z(l);
+        let chain_a = vec![j_a.clone()];
+        let vals_a = vec![JointValue::Scalar(theta_a)];
+        // Empty chain_b ≡ identity transform.
+        let chain_b: Vec<Value> = vec![];
+        let vals_b: Vec<JointValue> = vec![];
+
+        let cols = super::loop_residual_jacobian_by_joint(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b,
+            std::slice::from_ref(&j_a),
+            eps,
+        )
+        .expect("jacobian must return Some for a single-joint offset chain vs identity");
+
+        assert_eq!(cols.len(), 1, "single target joint → one column");
+        let col = cols[0];
+
+        // Analytic: ∂r[2]/∂θ = −1 (ω_z = −θ from the angular part of log(T_a^{-1}))
+        assert!(
+            (col[2] - (-1.0)).abs() < tol,
+            "analytic ∂ω_z/∂θ = −1; FD gave {:.12}", col[2]
+        );
+        // Analytic: ∂r[4]/∂θ = L/2 (v_y = θ·L/2, exact for all θ ≠ 0).
+        // The offset L enters here: col[4]=0 with no offset, col[4]=L/2=0.1 with offset.
+        assert!(
+            (col[4] - l / 2.0).abs() < tol,
+            "analytic ∂v_y/∂θ = L/2 = {:.4}; FD gave {:.12}", l / 2.0, col[4]
         );
     }
 }

@@ -658,6 +658,11 @@ fn snapshot_inverse_dynamics(
             Some(Value::Int(n)) => *n,
             _ => return None,
         };
+        // PRD §7.2 no-bypass invariant (route 4): the `world_transform` read here is
+        // the FK pose baked by `snapshot()` via `joint_world_transform` → `transform_at`.
+        // Any pivot offset is already composed into this value — this site reads the
+        // offset-aware pose and MUST NOT reconstruct per-joint transforms from the joint Map.
+        // Verified behaviourally by γ B8 route-4 test and the B3 dynamics test.
         world_tf.insert(id, map_get(sbm, "world_transform")?);
     }
 
@@ -3176,6 +3181,145 @@ mod tests {
             result.is_none(),
             "positions slice length != body count must return None \
              (fail-honest one-per-body invariant)"
+        );
+    }
+
+    // ── KIN-OFFSET γ step-7 (B3): dynamics offset FK + finitude ─────────────────
+    //
+    // B3 dynamics: asserts (A) the snapshot body's world_transform that the dynamics
+    // reads (in snapshot_inverse_dynamics) is offset-aware (matches hand-computed offset-shifted
+    // position, exact SE(3) composition, tol ≈1e-9) and (B) inverse_dynamics on the
+    // offset mechanism returns a finite, well-formed result — not Undef.
+    //
+    // Setup: offset_revolute_z(L=0.1m), 1 kg point mass at CoM=(0,0,−0.1),
+    // zero inertia. Joint at θ=π/6, static (q̇=q̈=0).
+    //
+    // For offset_revolute_z(L): transform_at = {R_z(θ), (L,0,0)} (origin pre-compose).
+    // World translation = (L, 0, 0) = (0.1, 0, 0) regardless of θ — a clean, exact
+    // hand-computable reference proving the FK input to dynamics is offset-aware
+    // (route 4 of the PRD §7.2 no-bypass invariant, verified by γ B8 route-4 test).
+    //
+    // Does NOT assert a precise analytic torque (that is β/B7 with a tolerance derived
+    // from the loop-Newton floor); γ is a re-validation, not a new analytic e2e.
+
+    #[test]
+    fn inverse_dynamics_offset_joint_fk_world_transform_correct_and_finite() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        // ── Shared offset_revolute_z(0.1) fixture ─────────────────────────────
+        // offset_revolute_z uses range 0..π; θ=π/6 ≈ 0.52 is well within it.
+        let joint = crate::test_fixtures::offset_revolute_z(0.1);
+        assert!(
+            matches!(joint, Value::Map(_)),
+            "offset_revolute_z(0.1) must yield a Map, got {:?}",
+            joint
+        );
+
+        // ── Single-body mechanism (1 kg point mass, CoM at (0,0,−0.1)) ───────
+        let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+        let mech = eval_builtin("mechanism", &[]);
+        let mech = eval_builtin("body", &[mech, mp.clone(), joint.clone()]);
+        assert!(matches!(mech, Value::Map(_)), "body() must yield a Mechanism Map");
+
+        // ── Snapshot at θ = π/6 (30°) ────────────────────────────────────────
+        let theta = PI / 6.0;
+        let binding = eval_builtin("bind", &[joint.clone(), Value::angle(theta)]);
+        let snap = eval_builtin("snapshot", &[mech.clone(), Value::List(vec![binding])]);
+        assert!(matches!(snap, Value::Map(_)), "snapshot() must yield a Snapshot Map");
+
+        // ── PRIMARY: world_transform.translation == (0.1, 0, 0) ──────────────
+        // For offset_revolute_z(L=0.1): transform_at = {R_z(θ), (L,0,0)}.
+        // T_world = I ∘ transform_at = {R_z(θ), (0.1, 0, 0)}.
+        // Translation is (0.1, 0, 0) regardless of θ — the offset is baked in.
+        let wt = crate::test_fixtures::body_world_transform(&snap, 0);
+
+        // Decompose world_transform.
+        let (rotation, translation) = match wt {
+            Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+            other => panic!("expected Transform, got {:?}", other),
+        };
+        let comps = match translation {
+            Value::Vector(c) if c.len() == 3 => c,
+            other => panic!("expected Vector(3) translation, got {:?}", other),
+        };
+        let read_f64 = |v: &Value| -> f64 {
+            match v {
+                Value::Real(r) => *r,
+                Value::Scalar { si_value, .. } => *si_value,
+                other => panic!("expected numeric component, got {:?}", other),
+            }
+        };
+        let tx = read_f64(&comps[0]);
+        let ty = read_f64(&comps[1]);
+        let tz = read_f64(&comps[2]);
+
+        let tol = 1e-9;
+        assert!(
+            (tx - 0.1).abs() < tol,
+            "B3 dynamics route-4: world_transform.tx should be 0.1 m (offset), got {tx}"
+        );
+        assert!(
+            ty.abs() < tol,
+            "B3 dynamics route-4: world_transform.ty should be 0, got {ty}"
+        );
+        assert!(
+            tz.abs() < tol,
+            "B3 dynamics route-4: world_transform.tz should be 0, got {tz}"
+        );
+
+        // Rotation should be R_z(π/6) (offset origin has identity rotation).
+        let (qw, qx, qy, qz) = match rotation {
+            Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+            other => panic!("expected Orientation, got {:?}", other),
+        };
+        let exp_qw = (theta / 2.0).cos();
+        let exp_qz = (theta / 2.0).sin();
+        let rot_ok =
+            (qw - exp_qw).abs() < tol && qx.abs() < tol && qy.abs() < tol && (qz - exp_qz).abs() < tol
+            || (qw + exp_qw).abs() < tol && qx.abs() < tol && qy.abs() < tol && (qz + exp_qz).abs() < tol;
+        assert!(
+            rot_ok,
+            "B3 dynamics route-4: world_transform rotation should be R_z(π/6) ≈ \
+             ({exp_qw:.6},0,0,{exp_qz:.6}) up to sign, got ({qw:.6},{qx:.6},{qy:.6},{qz:.6})"
+        );
+
+        // ── SECONDARY: inverse_dynamics returns a finite, well-formed result ──
+        let q_dot = Value::List(vec![Value::Real(0.0)]);
+        let q_ddot = Value::List(vec![Value::Real(0.0)]);
+
+        let result = eval_dynamics(
+            "inverse_dynamics_at_snapshot_lower",
+            &[mech, snap, q_dot, q_ddot],
+        )
+        .expect("inverse_dynamics_at_snapshot_lower must be a recognised dynamics intrinsic");
+
+        let forces = match &result {
+            Value::List(f) => f,
+            other => panic!("expected a List<JointForce>, got {other:?}"),
+        };
+        assert_eq!(forces.len(), 1, "one joint → one JointForce");
+
+        let value = field(&forces[0], "JointForce", "value");
+        let torque = num(field(value, "ScalarTorque", "magnitude"));
+        // ── Finitude smoke test (intentionally NOT offset-discriminating for the torque) ──
+        //
+        // For a z-axis revolute with z-directed gravity g=(0,0,−9.81):
+        //   τ_z = (r_CoM × F_grav)·ẑ = r_x·F_y − r_y·F_x = r_x·0 − r_y·0 = 0
+        // for ANY CoM position — moving the CoM off the rotation axis (x,y ≠ 0)
+        // does not produce a nonzero τ_z because F_grav ∥ ẑ makes the cross product
+        // perpendicular to ẑ.  τ_z = 0 is exact physics, not a numerical coincidence.
+        //
+        // Offset-discriminating dynamics coverage (a nonzero analytic torque that
+        // changes with L) requires a non-z joint axis or non-z gravity and is
+        // deliberately deferred to β/B7.  This assertion's role is to confirm that
+        // inverse_dynamics returns a finite, well-formed result on an offset mechanism,
+        // complementing the PRIMARY assertion above (world_transform.tx == L) which
+        // is the offset-discriminating check for route 4.
+        assert!(
+            torque.is_finite() && torque.abs() < 1e-6,
+            "B3 dynamics finitude: inverse_dynamics must return a finite result \
+             (z-revolute + z-gravity → τ_z = 0 exactly for any CoM); got {torque}"
         );
     }
 
