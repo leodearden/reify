@@ -411,7 +411,6 @@ pub fn try_eval_body_mass_props(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::dimension::DimensionVector;
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use reify_stdlib::dynamics::mass_props::uniform_box_inertia;
@@ -1535,8 +1534,15 @@ mod inverse_dynamics_trampoline_tests {
     }
 
     /// A `MassProperties` instance: mass (Mass-scalar), com (Point3<Length>),
-    /// inertia (3×3 Matrix<Real>), origin (Real) — the shape the η snapshot RNEA
-    /// core parses from `body.solid`.
+    /// inertia (3×3 Matrix of **`Value::Real`**), origin (Real).
+    ///
+    /// The inertia cells are intentionally `Value::Real` (the legacy / user-authored
+    /// encoding) rather than `Value::Scalar{MOMENT_OF_INERTIA}` (production path).
+    /// This exercises the backward-compatible code path: `cell_f64` accepts both
+    /// `Value::Real(x)` and `Value::Scalar { si_value: x, .. }`, so RNEA extraction
+    /// is dimension-agnostic and produces identical numerics for both encodings.
+    /// See `make_mass_properties` / `mass_properties_fixture` in `reify-stdlib` for
+    /// the production-faithful dimensioned shape.
     fn mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
         let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
         let inertia_matrix = Value::Matrix(
