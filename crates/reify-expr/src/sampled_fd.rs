@@ -32,6 +32,14 @@
 //! | Divergence  | n (vector) | 1 (scalar)       |
 //! | Curl        | 3 (vec)    | 3 (vec, 3-D only)|
 //!
+//! # Totality
+//!
+//! Every operator is **total**: when the input stride does not match the
+//! operator's expectation (e.g. a vector field passed to `Gradient`), the
+//! function returns a zero-filled degenerate field with the correct output
+//! stride rather than panicking.  The ζ dispatch layer validates strides before
+//! calling; the totality guarantee is a defence-in-depth backstop.
+//!
 //! # Numeric contract (PRD §6)
 //!
 //! * Gradient/Divergence/Curl on **affine** inputs: exact to < 1e-12 at every
@@ -60,9 +68,11 @@ use reify_ir::{SampledField, SampledGridKind};
 pub(crate) enum DifferentialOp {
     /// ∂f/∂x_c for each axis c.
     /// Input: scalar (stride 1).  Output: vector (stride = axis count n).
+    /// Returns a zero-filled degenerate field if the input stride ≠ 1.
     Gradient,
     /// Σ_c ∂F_c/∂x_c.
     /// Input: vector (stride = axis count n).  Output: scalar (stride 1).
+    /// Returns a zero-filled degenerate field if the input stride ≠ axis count.
     Divergence,
     /// ∇×F (Regular3D + stride-3 only).
     /// Input: vector stride 3.  Output: vector stride 3.
@@ -70,6 +80,7 @@ pub(crate) enum DifferentialOp {
     Curl,
     /// Σ_c ∂²f/∂x_c².
     /// Input: scalar (stride 1).  Output: scalar (stride 1).
+    /// Returns a zero-filled degenerate field if the input stride ≠ 1.
     Laplacian,
 }
 
@@ -80,6 +91,15 @@ pub(crate) enum DifferentialOp {
 /// `kind`, `bounds_min`, `bounds_max`, `spacing`, `axis_grids`,
 /// `interpolation`) but with a freshly-computed data buffer and a reset
 /// `oob_emitted` flag.
+///
+/// # Stride contract and totality
+///
+/// Each operator expects a specific input stride (see the per-operator stride
+/// table in the module doc).  When the contract is violated the operator
+/// returns a zero-filled degenerate `SampledField` with the output stride
+/// appropriate for the requested operator — it never panics.  The ζ dispatch
+/// layer validates strides before calling; this totality is a
+/// defence-in-depth backstop.
 ///
 /// # Boundary treatment
 ///
@@ -93,6 +113,12 @@ pub(crate) enum DifferentialOp {
 /// Under-resolved axes contribute zero: < 2 nodes for 1st-derivative ops;
 /// < 3 nodes for the Laplacian.  Higher-order boundary treatment is deferred
 /// to η per PRD §10.
+///
+/// # Performance
+///
+/// The hot-path loop maintains a running multi-index (odometer increment via
+/// [`increment_mi`]) and addresses neighbours via precomputed per-axis grid
+/// strides ([`compute_axis_strides`]), avoiding all per-node heap allocations.
 pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> SampledField {
     let dims = axis_dims(sf);
     let n_axes = dims.len();
@@ -102,14 +128,28 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
     match op {
         DifferentialOp::Gradient => {
             // Scalar input (stride 1) → vector output (stride = axis count n).
-            debug_assert_eq!(in_stride, 1, "Gradient: expected scalar input (stride 1)");
+            // Totality: return zero-filled degenerate field on stride mismatch.
             let out_stride = n_axes;
+            if in_stride != 1 {
+                return clone_geometry(sf, vec![0.0f64; grid_count * out_stride]);
+            }
+            let ax_strides = compute_axis_strides(&dims);
+            let mut mi = vec![0usize; n_axes];
             let mut data = vec![0.0f64; grid_count * out_stride];
-            for (g, chunk) in data.chunks_mut(out_stride).enumerate() {
-                let mi = decode_index(g, &dims);
-                for (c, out) in chunk.iter_mut().enumerate() {
-                    *out = first_diff_along_axis(&sf.data, &dims, &sf.spacing, &mi, c, 1, 0);
+            for g in 0..grid_count {
+                for c in 0..n_axes {
+                    data[g * out_stride + c] = first_diff_flat(
+                        &sf.data,
+                        dims[c],
+                        sf.spacing[c],
+                        mi[c],
+                        g,
+                        ax_strides[c],
+                        1,
+                        0,
+                    );
                 }
+                increment_mi(&mut mi, &dims);
             }
             clone_geometry(sf, data)
         }
@@ -118,36 +158,59 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
             // Boundary: one-sided 3-point second difference (f[0]-2f[1]+f[2])/h²
             // which equals 2a for f=ax², matching the quadratic exactness contract
             // (PRD §6). Higher-order boundary treatment deferred to η per PRD §10.
-            debug_assert_eq!(in_stride, 1, "Laplacian: expected scalar input (stride 1)");
+            // Totality: return zero-filled degenerate field on stride mismatch.
+            if in_stride != 1 {
+                return clone_geometry(sf, vec![0.0f64; grid_count]);
+            }
+            let ax_strides = compute_axis_strides(&dims);
+            let mut mi = vec![0usize; n_axes];
             let mut data = vec![0.0f64; grid_count];
-            for (g, val) in data.iter_mut().enumerate() {
-                let mi = decode_index(g, &dims);
+            for g in 0..grid_count {
                 let mut lap = 0.0;
                 for axis in 0..n_axes {
-                    lap += second_diff_along_axis(&sf.data, &dims, &sf.spacing, &mi, axis, 1, 0);
+                    lap += second_diff_flat(
+                        &sf.data,
+                        dims[axis],
+                        sf.spacing[axis],
+                        mi[axis],
+                        g,
+                        ax_strides[axis],
+                        1,
+                        0,
+                    );
                 }
-                *val = lap;
+                data[g] = lap;
+                increment_mi(&mut mi, &dims);
             }
             clone_geometry(sf, data)
         }
         DifferentialOp::Divergence => {
             // Vector input (stride = axis count n) → scalar output (stride 1).
             // out[g] = Σ_c ∂F_c/∂x_c, where F_c is extracted from interleaved
-            // input via first_diff_along_axis(..., stride=in_stride, comp=c).
-            debug_assert_eq!(
-                in_stride, n_axes,
-                "Divergence: expected vector input (stride == axis count {n_axes})"
-            );
+            // input via first_diff_flat(..., data_stride=in_stride, comp=c).
+            // Totality: return zero-filled degenerate field on stride mismatch.
+            if in_stride != n_axes {
+                return clone_geometry(sf, vec![0.0f64; grid_count]);
+            }
+            let ax_strides = compute_axis_strides(&dims);
+            let mut mi = vec![0usize; n_axes];
             let mut data = vec![0.0f64; grid_count];
-            for (g, val) in data.iter_mut().enumerate() {
-                let mi = decode_index(g, &dims);
+            for g in 0..grid_count {
                 let mut div = 0.0;
                 for c in 0..n_axes {
-                    div += first_diff_along_axis(
-                        &sf.data, &dims, &sf.spacing, &mi, c, in_stride, c,
+                    div += first_diff_flat(
+                        &sf.data,
+                        dims[c],
+                        sf.spacing[c],
+                        mi[c],
+                        g,
+                        ax_strides[c],
+                        in_stride,
+                        c,
                     );
                 }
-                *val = div;
+                data[g] = div;
+                increment_mi(&mut mi, &dims);
             }
             clone_geometry(sf, data)
         }
@@ -170,18 +233,32 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
             //   curl_y = ∂F_x/∂z  − ∂F_z/∂x  = ∂F0/∂x2 − ∂F2/∂x0
             //   curl_z = ∂F_y/∂x  − ∂F_x/∂y  = ∂F1/∂x0 − ∂F0/∂x1
             //
-            // Each partial ∂F_c/∂x_a is computed by first_diff_along_axis with
-            // axis=a, stride=3, comp=c.  Output is interleaved node-major: stride 3.
+            // Each partial ∂F_c/∂x_a is computed by first_diff_flat with
+            // axis=a, data_stride=3, comp=c.  Output is interleaved node-major: stride 3.
+            let ax_strides = compute_axis_strides(&dims);
+            let mut mi = vec![0usize; 3]; // Regular3D has exactly 3 axes
             let mut data = vec![0.0f64; grid_count * 3];
-            for (g, chunk) in data.chunks_mut(3).enumerate() {
-                let mi = decode_index(g, &dims);
-                let d = |axis: usize, comp: usize| -> f64 {
-                    first_diff_along_axis(&sf.data, &dims, &sf.spacing, &mi, axis, 3, comp)
-                };
+            for g in 0..grid_count {
                 // axis indices: 0=x, 1=y, 2=z; component indices: 0=F_x, 1=F_y, 2=F_z
-                chunk[0] = d(1, 2) - d(2, 1); // curl_x
-                chunk[1] = d(2, 0) - d(0, 2); // curl_y
-                chunk[2] = d(0, 1) - d(1, 0); // curl_z
+                // curl_x = ∂F2/∂x1 − ∂F1/∂x2
+                data[g * 3] =
+                    first_diff_flat(&sf.data, dims[1], sf.spacing[1], mi[1], g, ax_strides[1], 3, 2)
+                        - first_diff_flat(
+                            &sf.data, dims[2], sf.spacing[2], mi[2], g, ax_strides[2], 3, 1,
+                        );
+                // curl_y = ∂F0/∂x2 − ∂F2/∂x0
+                data[g * 3 + 1] =
+                    first_diff_flat(&sf.data, dims[2], sf.spacing[2], mi[2], g, ax_strides[2], 3, 0)
+                        - first_diff_flat(
+                            &sf.data, dims[0], sf.spacing[0], mi[0], g, ax_strides[0], 3, 2,
+                        );
+                // curl_z = ∂F1/∂x0 − ∂F0/∂x1
+                data[g * 3 + 2] =
+                    first_diff_flat(&sf.data, dims[0], sf.spacing[0], mi[0], g, ax_strides[0], 3, 1)
+                        - first_diff_flat(
+                            &sf.data, dims[1], sf.spacing[1], mi[1], g, ax_strides[1], 3, 0,
+                        );
+                increment_mi(&mut mi, &dims);
             }
             clone_geometry(sf, data)
         }
@@ -195,11 +272,47 @@ fn axis_dims(sf: &SampledField) -> Vec<usize> {
     sf.axis_grids.iter().map(|g| g.len()).collect()
 }
 
+/// Precompute per-axis row-major grid strides.
+///
+/// `axis_strides[a] = ∏_{b > a} dims[b]`.  Combined with the flat node index
+/// `g`, a neighbour at `mi[a] ± 1` on axis `a` sits at flat index
+/// `g ± axis_strides[a]`.  This lets the FD kernels address neighbours without
+/// rebuilding a multi-index Vec on every call.
+fn compute_axis_strides(dims: &[usize]) -> Vec<usize> {
+    let n = dims.len();
+    if n == 0 {
+        return vec![];
+    }
+    let mut strides = vec![1usize; n];
+    for axis in (0..n - 1).rev() {
+        strides[axis] = strides[axis + 1] * dims[axis + 1];
+    }
+    strides
+}
+
+/// Advance a row-major running multi-index by one step (odometer-style).
+///
+/// Axis 0 is outermost (slowest-varying).  Overflow past the last grid node
+/// wraps all components to zero, consistent with the next iteration of the
+/// outer `for g in 0..grid_count` loop.
+fn increment_mi(mi: &mut [usize], dims: &[usize]) {
+    for axis in (0..dims.len()).rev() {
+        mi[axis] += 1;
+        if mi[axis] < dims[axis] {
+            return;
+        }
+        mi[axis] = 0;
+    }
+}
+
 /// Row-major flat index from a multi-index `mi` over dimensions `dims`.
 /// Axis 0 is the outermost (slowest-varying) index.
 ///
 /// Matches `SampledField::data` layout: for 3-D [i, j, k] with dims [nx, ny, nz]
 /// `flat_index = i * ny * nz + j * nz + k`.
+///
+/// Kept as a reference implementation; the hot-path kernels use
+/// [`compute_axis_strides`] + direct flat arithmetic instead.
 fn flat_index(mi: &[usize], dims: &[usize]) -> usize {
     let mut idx = 0usize;
     let mut stride = 1usize;
@@ -211,6 +324,9 @@ fn flat_index(mi: &[usize], dims: &[usize]) -> usize {
 }
 
 /// Decode a flat grid index `g` back into a multi-index over `dims`.
+///
+/// Kept as a reference implementation; the hot-path maintains a running
+/// multi-index via [`increment_mi`] instead.
 fn decode_index(g: usize, dims: &[usize]) -> Vec<usize> {
     let n = dims.len();
     let mut mi = vec![0usize; n];
@@ -224,9 +340,9 @@ fn decode_index(g: usize, dims: &[usize]) -> Vec<usize> {
 
 /// `flat_index` with one axis component overridden to `new_val`.
 ///
-/// Used by the FD kernels to address the `i±1` and boundary neighbours of a
-/// node: clone the multi-index, replace the target-axis slot, and compute the
-/// flat row-major address for indexing into the interleaved data buffer.
+/// Kept as a reference implementation; the hot-path kernels address neighbours
+/// by adding/subtracting a precomputed `axis_stride` from the flat node index
+/// instead.
 fn flat_index_with(mi: &[usize], dims: &[usize], axis: usize, new_val: usize) -> usize {
     let mut mi2 = mi.to_vec();
     mi2[axis] = new_val;
@@ -235,8 +351,92 @@ fn flat_index_with(mi: &[usize], dims: &[usize], axis: usize, new_val: usize) ->
 
 // ─── finite-difference kernels ───────────────────────────────────────────────
 
+/// Central/one-sided first difference along `axis` — **allocation-free
+/// hot-path version** using precomputed flat addressing.
+///
+/// `g` is the flat node index, `axis_stride` is `compute_axis_strides()[axis]`
+/// (the row-major grid stride for this axis), `mi_axis` is the current
+/// position of the node on this axis (from the running multi-index).
+/// `data_stride` and `comp` index the component in an interleaved buffer:
+/// `data[node * data_stride + comp]`.
+///
+/// Returns 0.0 when `n < 2` (mirrors `medial::gradient_at_index` for
+/// singleton axes).
+fn first_diff_flat(
+    data: &[f64],
+    n: usize,
+    h: f64,
+    mi_axis: usize,
+    g: usize,
+    axis_stride: usize,
+    data_stride: usize,
+    comp: usize,
+) -> f64 {
+    if n < 2 {
+        return 0.0;
+    }
+    if mi_axis == 0 {
+        // forward one-sided
+        (data[(g + axis_stride) * data_stride + comp] - data[g * data_stride + comp]) / h
+    } else if mi_axis == n - 1 {
+        // backward one-sided
+        (data[g * data_stride + comp] - data[(g - axis_stride) * data_stride + comp]) / h
+    } else {
+        // central
+        (data[(g + axis_stride) * data_stride + comp]
+            - data[(g - axis_stride) * data_stride + comp])
+            / (2.0 * h)
+    }
+}
+
+/// Central/one-sided second difference along `axis` — **allocation-free
+/// hot-path version** using precomputed flat addressing.
+///
+/// Returns 0.0 when `n < 3`.
+///
+/// Boundary: one-sided 3-point form `(f[0] - 2·f[1] + f[2]) / h²` at the
+/// lower boundary and `(f[n-1] - 2·f[n-2] + f[n-3]) / h²` at the upper
+/// boundary, which equals `2a` for `f = ax²` (Laplacian exactness per PRD §6).
+fn second_diff_flat(
+    data: &[f64],
+    n: usize,
+    h: f64,
+    mi_axis: usize,
+    g: usize,
+    axis_stride: usize,
+    data_stride: usize,
+    comp: usize,
+) -> f64 {
+    if n < 3 {
+        return 0.0;
+    }
+    let h2 = h * h;
+    if mi_axis == 0 {
+        // one-sided lower: (f[0] - 2·f[1] + f[2]) / h²
+        let p0 = g * data_stride + comp;
+        let p1 = (g + axis_stride) * data_stride + comp;
+        let p2 = (g + 2 * axis_stride) * data_stride + comp;
+        (data[p0] - 2.0 * data[p1] + data[p2]) / h2
+    } else if mi_axis == n - 1 {
+        // one-sided upper: (f[n-1] - 2·f[n-2] + f[n-3]) / h²
+        let pc = g * data_stride + comp;
+        let pb = (g - axis_stride) * data_stride + comp;
+        let pa = (g - 2 * axis_stride) * data_stride + comp;
+        (data[pc] - 2.0 * data[pb] + data[pa]) / h2
+    } else {
+        // central: (f[i+1] - 2·f[i] + f[i-1]) / h²
+        let pm = (g - axis_stride) * data_stride + comp;
+        let p0 = g * data_stride + comp;
+        let pp = (g + axis_stride) * data_stride + comp;
+        (data[pp] - 2.0 * data[p0] + data[pm]) / h2
+    }
+}
+
 /// Central/one-sided first difference along `axis`, reading component `comp`
 /// from interleaved `data[node * stride + comp]`.
+///
+/// **Reference implementation** using multi-index Vec addressing — kept for
+/// documentation.  The hot-path uses [`first_diff_flat`] instead.
 ///
 /// Returns 0.0 when `dims[axis] < 2` (mirrors `medial::gradient_at_index` for
 /// singleton axes).
@@ -276,6 +476,9 @@ fn first_diff_along_axis(
 
 /// Central/one-sided second difference along `axis`, reading component `comp`
 /// from interleaved `data[node * stride + comp]`.
+///
+/// **Reference implementation** using multi-index Vec addressing — kept for
+/// documentation.  The hot-path uses [`second_diff_flat`] instead.
 ///
 /// Returns 0.0 when `dims[axis] < 3`.
 ///
@@ -347,7 +550,7 @@ fn clone_geometry(sf: &SampledField, data: Vec<f64>) -> SampledField {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
 
@@ -443,6 +646,10 @@ mod tests {
     /// 1D gradient: f(x) = 2x + 3 ⟹ ∂f/∂x = 2 everywhere.
     /// Central and first-order one-sided first differences are both
     /// algebraically exact for affine functions on a uniform grid.
+    ///
+    /// Also verifies that `clone_geometry` preserves `name` and resets
+    /// `oob_emitted` (suggestion 4 — single test locks the full constructor
+    /// contract).
     #[test]
     fn gradient_1d_affine_exact() {
         let sf = make_1d_scalar(5, 1.0, |x| 2.0 * x + 3.0);
@@ -458,6 +665,13 @@ mod tests {
         assert_eq!(out.bounds_min, sf.bounds_min);
         assert_eq!(out.bounds_max, sf.bounds_max);
         assert_eq!(out.interpolation, sf.interpolation);
+
+        // clone_geometry contract: name preserved, oob_emitted reset (suggestion 4)
+        assert_eq!(out.name, sf.name, "clone_geometry must preserve name");
+        assert!(
+            !out.oob_emitted.load(Ordering::Relaxed),
+            "clone_geometry must reset oob_emitted to false"
+        );
 
         // Gradient exact at every node
         for (g, &val) in out.data.iter().enumerate() {
@@ -726,6 +940,7 @@ mod tests {
 
     /// Curl on a non-Regular3D input returns a defined degenerate field
     /// (out_stride=3, all-zero data) rather than panicking.
+    /// Exercises the `kind != Regular3D` guard.
     #[test]
     fn curl_degenerate_non_3d_returns_zero() {
         // Use a 2D vector field — not Regular3D, so curl should return zeros
@@ -739,6 +954,32 @@ mod tests {
         let grid_count = 4 * 3;
         assert_eq!(out.data.len(), grid_count * 3);
         assert!(out.data.iter().all(|&v| v == 0.0), "degenerate curl should be all-zero");
+    }
+
+    /// Curl on a Regular3D field with in_stride ≠ 3 returns a zero-filled
+    /// stride-3 field rather than panicking.
+    /// Exercises the `in_stride != 3` guard (the kind guard passes; stride fails).
+    /// Regression for the second branch of the Curl degenerate path.
+    #[test]
+    fn curl_degenerate_regular3d_wrong_stride_returns_zero() {
+        // make_3d_scalar produces a Regular3D field with in_stride=1 (scalar).
+        // Curl expects in_stride=3, so the stride guard fires.
+        let sf = make_3d_scalar(3, 3, 3, 1.0, |x, y, _z| x + y);
+        let out = sampled_differential(&sf, DifferentialOp::Curl);
+
+        let grid_count = 3 * 3 * 3;
+        assert_eq!(
+            out.data.len(),
+            grid_count * 3,
+            "degenerate curl must have stride-3 output"
+        );
+        assert!(
+            out.data.iter().all(|&v| v == 0.0),
+            "degenerate curl (wrong stride) must be all-zero"
+        );
+        // Grid geometry still preserved
+        assert_eq!(out.kind, SampledGridKind::Regular3D);
+        assert_eq!(out.axis_grids, sf.axis_grids);
     }
 
     // ── step-9: second-order convergence control + degenerate-axis handling ──
