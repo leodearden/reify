@@ -124,6 +124,22 @@ pub struct UnifiedPassResult {
 /// singleton self-loop. A final independent classifier emits one
 /// `E_EVAL_UNRESOLVED` per constraint whose transitive geometry-backed read
 /// closure reaches an auto value cell.
+///
+/// # Determinism (the total order of the returned diagnostic vector)
+///
+/// Every order-sensitive step rides the shared `DebugOrd` total order, so no
+/// `HashMap`/`HashSet` iteration order ever leaks into `schedule` or
+/// `diagnostics`: the Kahn ready set is a `BTreeSet<DebugOrd>` (`pop_first`);
+/// Tarjan's outer node iteration and successor enumeration are `DebugOrd`-sorted
+/// (via `debug_ord_sorted`); SCCs are emitted ordered by each component's
+/// `DebugOrd`-min member; and the per-SCC ordered path is a DFS from that
+/// `DebugOrd`-min member following SCC-internal successors in `DebugOrd` order.
+///
+/// The `diagnostics` vector therefore has ONE documented total order: ALL
+/// `E_EVAL_CYCLE` diagnostics first (one per cyclic SCC, in SCC-min order), then
+/// ALL `E_EVAL_UNRESOLVED` diagnostics (one per offending constraint, in the
+/// constraint's `DebugOrd` order). The vector is byte-identical across runs and
+/// across trace-map insertion orders — pinned by the step-15 determinism test.
 pub fn run_unified_pass(
     graph: &EvaluationGraph,
     traces: &HashMap<NodeId, DependencyTrace>,
