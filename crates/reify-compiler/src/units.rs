@@ -1258,34 +1258,44 @@ mod tests {
     // one-line table edit — no per-name boilerplate.
     fn task_2699_topology_selector_cases() -> Vec<(&'static str, reify_core::Type)> {
         vec![
+            // Task 4118 (γ): the 7 predicate/all selector constructors now
+            // evaluate to a typed `Value::Selector(kind)` and so are typed
+            // `Type::Selector(kind)` at compile time (not `List<Geometry>`).
+            // The compiler inserts a `ResolveSelector` coercion node at the
+            // three consumption sites (param-binding, single()/list-helper,
+            // IndexAccess-object) to bridge `Selector → List<Geometry>`.
             (
                 "edges",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
             (
                 "faces",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
             ),
             (
                 "edges_by_length",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
             (
                 "faces_by_area",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
             ),
             (
                 "faces_by_normal",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
             ),
             (
                 "edges_parallel_to",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
             (
                 "edges_at_height",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
+            // adjacent_faces / shared_edges remain List<Geometry>: they are
+            // RELATIONAL queries with no `LeafQuery` representation (4117's
+            // LeafQuery = {Named,All,ByNormal,ByArea,ByLength,ByHeight,
+            // ByParallel}), so they are out of scope for the Selector re-type.
             (
                 "adjacent_faces",
                 reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
@@ -1330,6 +1340,55 @@ mod tests {
                 "topology_selector_result_type({name:?}) must equal {expected:?} (task 2699 §3.9)"
             );
         }
+    }
+
+    // Task 4118 (γ): the 7 predicate/all selector constructors are typed
+    // `Type::Selector(kind)` (Edge / Face per the constructor), NOT
+    // `List<Geometry>`. The compiler bridges `Selector → List<Geometry>` via a
+    // `ResolveSelector` coercion node at the three consumption sites.
+    #[test]
+    fn topology_selector_result_type_for_re_typed_selectors_is_typed_selector() {
+        use reify_core::Type;
+        use reify_core::ty::SelectorKind;
+        // edges/faces (All) and the predicate selectors.
+        assert_eq!(
+            topology_selector_result_type("faces"),
+            Some(Type::Selector(SelectorKind::Face))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        assert_eq!(
+            topology_selector_result_type("faces_by_normal"),
+            Some(Type::Selector(SelectorKind::Face))
+        );
+        assert_eq!(
+            topology_selector_result_type("faces_by_area"),
+            Some(Type::Selector(SelectorKind::Face))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges_by_length"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges_at_height"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges_parallel_to"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        // Relational selectors stay List<Geometry> (out of scope for the
+        // Selector re-type — no LeafQuery representation).
+        assert_eq!(
+            topology_selector_result_type("adjacent_faces"),
+            Some(Type::List(Box::new(Type::Geometry)))
+        );
+        assert_eq!(
+            topology_selector_result_type("shared_edges"),
+            Some(Type::List(Box::new(Type::Geometry)))
+        );
     }
 
     // --- Task 3603 / GHR-α — geometry-query registry (PRD §1 Phase 1) ---
