@@ -21,6 +21,12 @@ fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// `char`-level analogue of [`is_word_byte`] for the `\b` left-boundary check
+/// in [`has_malformed_cite`] (which scans `char`s to recognise Greek cites).
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
 /// §8.1 comment markers — canonical regex `\b(TODO|FIXME|HACK)\b\s*[(:]`.
 ///
 /// Case-sensitive uppercase only: lowercase prose ("todo: someday") does not
@@ -54,8 +60,14 @@ fn find_comment_marker(line: &str) -> Option<&'static str> {
 }
 
 /// §8.1 Rust stub macros: `todo!(` / `unimplemented!(`. Pure substring scan;
-/// the `.rs`-only gating lives in [`classify_file`].
+/// the `.rs`-only gating lives in [`classify_file`]. A line whose trimmed start
+/// is a `//` comment (`//`, `///`, `//!`) is prose, not a real stub — a
+/// commented-out or doc-comment mention (`// todo!() example`) does not fire
+/// (mirrors the doc-comment skip in [`ignore_attr`]).
 fn find_macro_stub(line: &str) -> bool {
+    if line.trim_start().starts_with("//") {
+        return false;
+    }
     line.contains("todo!(") || line.contains("unimplemented!(")
 }
 
@@ -132,7 +144,11 @@ fn has_malformed_cite(line: &str) -> bool {
             && chars[i + 1].eq_ignore_ascii_case(&'a')
             && chars[i + 2].eq_ignore_ascii_case(&'s')
             && chars[i + 3].eq_ignore_ascii_case(&'k');
-        if is_task {
+        // Require a left word boundary so an embedded `task` (e.g. the one
+        // inside `multitask 5`) is not misread as a malformed cite — mirrors
+        // the `\b` logic in `find_comment_marker`.
+        let left_ok = i == 0 || !is_word_char(chars[i - 1]);
+        if is_task && left_ok {
             let after = i + 4;
             if after < n {
                 let c = chars[after];
@@ -398,6 +414,9 @@ mod tests {
         assert!(find_macro_stub("    todo!()"));
         assert!(find_macro_stub("    unimplemented!(\"later\")"));
         assert!(!find_macro_stub("    let x = compute();"));
+        // Commented-out / doc-comment mentions are prose, not real stubs.
+        assert!(!find_macro_stub("// todo!() example"));
+        assert!(!find_macro_stub("/// returns todo!() placeholder"));
     }
 
     // -------------------------------------------------------------------
@@ -457,6 +476,9 @@ mod tests {
         assert!(!has_malformed_cite("the multitasking scheduler runs"));
         // A bare canonical cite.
         assert!(!has_malformed_cite("resolved in #4553"));
+        // `task` embedded in a larger word (no left boundary) must NOT match,
+        // even when followed by a separator + digit (`multitask 5`).
+        assert!(!has_malformed_cite("// TODO: schedule multitask 5 jobs"));
     }
 
     // -------------------------------------------------------------------
