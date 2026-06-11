@@ -3082,3 +3082,160 @@ fn all_reductions_on_safety_factor_field_with_non_positive_yield_return_undef() 
         "SafetyFactor with negative yield (-250e6 → non-positive guard → Undef)",
     );
 }
+
+// ── Task 4562: PrincipalStresses reductions ──────────────────────────────────
+//
+// PrincipalStresses is a pointwise tensor→LIST projection: each stride-9
+// stress-tensor window eigen-decomposes to a List of 3 principal stresses
+// (ascending: eigs[0]=σ₃ min, eigs[2]=σ₁ max).
+//
+// Diagonal windows hit the `p1 ≤ 1e-30` short-circuit in
+// `compute_eigenvalues_3x3` (off-diagonal entries are 0), so eigenvalues
+// equal the sorted diagonal entries EXACTLY — no floating-point error,
+// so `assert_eq!` on exact `Value::Scalar` values is sound.
+//
+// Tests are RED before step-2 / step-4 implement the PrincipalStresses arm.
+
+/// Diagonal 3×3 symmetric window with principal stresses (a, b, c):
+/// [a,0,0, 0,b,0, 0,0,c] (row-major, off-diagonal = 0).
+///
+/// `compute_eigenvalues_3x3` hits the `p1 ≤ 1e-30` diagonal short-circuit
+/// and returns `sort([a, b, c])` with NO floating arithmetic — eigenvalues
+/// equal the diagonal entries exactly, so `assert_eq!` on `Value::Scalar`
+/// values is safe.
+fn diagonal_window(a: f64, b: f64, c: f64) -> [f64; 9] {
+    [a, 0.0, 0.0, 0.0, b, 0.0, 0.0, 0.0, c]
+}
+
+/// `max` / `min` over a PrincipalStresses-source field whose lambda is a 1-D
+/// Sampled tensor field with diagonal windows.
+///
+/// Windows: diag(100e6, 20e6, 30e6), diag(50e6, 40e6, 60e6), diag(10e6, -70e6, 5e6).
+/// Eigenvalues (ascending) per window:
+///   - w0: [20e6, 30e6, 100e6]  → min_entry=20e6,  max_entry=100e6
+///   - w1: [40e6, 50e6,  60e6]  → min_entry=40e6,  max_entry=60e6
+///   - w2: [-70e6, 5e6,  10e6]  → min_entry=-70e6, max_entry=10e6
+/// Global max = max(100e6, 60e6, 10e6) = 100e6 Pa.
+/// Global min = min(20e6, 40e6, -70e6) = -70e6 Pa.
+///
+/// The PrincipalStresses field has `codomain = List(Scalar<PRESSURE>)`;
+/// the reduction unwraps to the element type and returns `Value::Scalar<PRESSURE>`.
+///
+/// **RED before step-2**: PrincipalStresses arm returns `Value::Undef`.
+#[test]
+fn max_min_principal_stresses_derived_sampled_field_returns_correct_extremum() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let list_pressure = Type::List(Box::new(pressure.clone()));
+
+    // Build the inner Sampled tensor field (stride-9 diagonal windows).
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            diagonal_window(100e6, 20e6, 30e6),
+            diagonal_window(50e6, 40e6, 60e6),
+            diagonal_window(10e6, -70e6, 5e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+
+    // Construct the PrincipalStresses-source field (lambda = inner tensor field,
+    // codomain = List(Scalar<PRESSURE>)).
+    let (ps_field, ps_field_type) = make_field_with_source(
+        length.clone(),
+        list_pressure,
+        FieldSourceKind::PrincipalStresses,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max(ps_field) should be 100e6 Pa (global max principal stress)
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(ps_field.clone(), ps_field_type.clone())],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar {
+            si_value: 100e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(PrincipalStresses field) should return 100e6 Pa (global max eigenvalue)"
+    );
+
+    // min(ps_field) should be -70e6 Pa (global min principal stress)
+    let min_expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(ps_field, ps_field_type)],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Scalar {
+            si_value: -70e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "min(PrincipalStresses field) should return -70e6 Pa (global min eigenvalue)"
+    );
+}
+
+/// Partial-NaN skip: windows [NaN×9, diag(15e6, 25e6, 8e6), NaN×9].
+/// Eigenvalues for the finite window (diagonal short-circuit):
+///   sort([15e6, 25e6, 8e6]) = [8e6, 15e6, 25e6] → max_entry = 25e6.
+/// NaN windows eigen-decompose to NaN and are skipped by the `is_finite()` gate.
+/// Expected: max = 25e6 Pa.
+///
+/// **RED before step-2**.
+#[test]
+fn max_principal_stresses_field_with_partial_nan_windows_skips_nan() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let list_pressure = Type::List(Box::new(pressure.clone()));
+
+    let sf = make_sampled_tensor_1d(
+        "partial_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            [f64::NAN; 9],                     // out-of-solid sentinel
+            diagonal_window(15e6, 25e6, 8e6),  // finite: max_entry = 25e6 Pa
+            [f64::NAN; 9],                     // out-of-solid sentinel
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(sf, length.clone());
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        list_pressure,
+        FieldSourceKind::PrincipalStresses,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max → the single finite projected window: eigs[2] = 25e6 Pa
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar {
+            si_value: 25e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(PrincipalStresses field with partial NaN) should skip NaN and return 25e6 Pa"
+    );
+}
