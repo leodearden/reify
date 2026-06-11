@@ -524,6 +524,16 @@ fn frequency_bits(val: &Value) -> u64 {
 /// provides the reference result AND the donated warm state; a fresh engine
 /// receives that warm state via `warm_pool_mut().donate(...)` before its
 /// first eval.
+///
+/// ## Release gate
+///
+/// The `debug_assertions` guard skips this test in debug builds to avoid the
+/// cost of two full modal solves.  The test DOES run at merge time: the
+/// orchestrator sets `DF_VERIFY_ROLE=merge`, which causes `scripts/verify.sh`
+/// to default to `--profile both` (debug + release passes).  `reify-eval` is
+/// a release-sensitive crate and is included in the release nextest pass, so
+/// every merge gate exercises this test.  To run it locally:
+/// `cargo test --release -p reify-eval --test warm_state_donation`.
 #[cfg_attr(debug_assertions, ignore = "heavy modal solve; release-only")]
 #[test]
 fn warm_state_seeded_modal_solve_matches_cold_baseline() {
