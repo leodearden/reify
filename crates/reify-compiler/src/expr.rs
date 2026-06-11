@@ -1744,6 +1744,19 @@ pub(crate) fn compile_expr_guarded(
                     // and `dynamics_constructor_names_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates.
+                    // task 4118 γ — list-helper selector coercion (insertion
+                    // site #2). When `single(selector)` is called, wrap the
+                    // `Selector(k)` argument in `ResolveSelector` so the helper
+                    // sees `List<Geometry>` and `infer_list_helper_return_type`
+                    // (below) collapses `single(List<Geometry>)` → `Geometry`
+                    // instead of the first-arg fallback leaving the cell typed
+                    // `Selector(k)`. A no-op for every other name / non-selector
+                    // arg. Shadows `compiled_args` so BOTH the result-type
+                    // inference below and the emitted `FunctionCall` carry the
+                    // wrapped argument. Gated on the same β `type_compatible`
+                    // rule as sites #1/#3 (centralized in `coerce.rs`).
+                    let compiled_args = coerce::coerce_list_helper_args(name, compiled_args);
+
                     let resolved = ResolvedFunction {
                         name: name.clone(),
                         qualified_name: format!("std::{}", name),

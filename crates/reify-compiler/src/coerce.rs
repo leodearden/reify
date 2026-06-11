@@ -44,6 +44,36 @@ pub(crate) fn coerce_selector_arg(arg: CompiledExpr, param_ty: &Type) -> Compile
     }
 }
 
+/// List-helper selector coercion (insertion site #2). When the `single`
+/// list-helper receives a `Selector(k)` first argument, wrap it in
+/// `ResolveSelector` so the helper sees `List<Geometry>` and
+/// [`infer_list_helper_return_type`](crate::list_helpers::infer_list_helper_return_type)
+/// collapses `single(List<Geometry>)` → `Geometry` (instead of the first-arg
+/// fallback leaving the cell typed `Selector(k)`).
+///
+/// Scoped to `single` — the ratified γ coercion target (PRD §4.4). `flat_map`'s
+/// first argument is also a `List<_>`, but its element type flows into a
+/// separately-compiled user lambda, so it is intentionally left out of scope
+/// here. Every other name — and any non-`Selector` first argument — passes
+/// through untouched, gated on the same β `type_compatible` rule via
+/// [`coerce_selector_arg`] ("do not coerce when arg is already a List").
+pub(crate) fn coerce_list_helper_args(name: &str, args: Vec<CompiledExpr>) -> Vec<CompiledExpr> {
+    if name != "single" {
+        return args;
+    }
+    let list_geometry = Type::List(Box::new(Type::Geometry));
+    args.into_iter()
+        .enumerate()
+        .map(|(i, arg)| {
+            if i == 0 {
+                coerce_selector_arg(arg, &list_geometry)
+            } else {
+                arg
+            }
+        })
+        .collect()
+}
+
 /// `true` when `arg_ty` is a `Selector(k)` that coerces to the `List<Geometry>`
 /// `param_ty` under the β rule.
 ///
