@@ -125,6 +125,37 @@ fn has_canonical_cite(line: &str) -> bool {
     false
 }
 
+/// §8.2 cite extraction (β liveness lane): every canonical `#NNNN` id on the
+/// line, in source order. Mirrors [`has_canonical_cite`]'s `#`+digit-run scan
+/// but parses each 1..=5-digit run to `u32` (runs of length 0 or >5 are
+/// skipped, so `#abc`, a bare `#`, and a 6-digit `#123456` yield nothing —
+/// consistent with the canonical-cite recogniser). `#0` parses to `0`.
+fn extract_cites(line: &str) -> Vec<u32> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'#' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            let run = j - (i + 1);
+            if (1..=5).contains(&run) {
+                // `line[i + 1..j]` is a 1..=5-digit ASCII run; it always fits
+                // in u32 (max 99999), so the parse cannot fail.
+                if let Ok(id) = line[i + 1..j].parse::<u32>() {
+                    out.push(id);
+                }
+                i = j; // skip past the consumed digit run
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// `true` when `c` is a Greek-block letter (U+0370..=U+03FF) — the banned
 /// Greek-cite alphabet (`task δ`, `task α`).
 fn is_greek(c: char) -> bool {
