@@ -742,11 +742,11 @@ pub fn solve_elastic_static_trampoline(
 ///
 /// # Called by
 ///
-/// In-file production caller: `elastic_static.rs:484` (wired by done task #3594/δ).
+/// In-file production caller: `solve_elastic_static_trampoline` (wired by done task #3594/δ).
 /// Also reached via the elastic-static `ComputeFn` fn-pointer registration which
 /// the orphan audit cannot trace — so this fn is permanently 0-external-caller
 /// from the audit's perspective (Bucket-1 fn-pointer blind spot).
-// G-allow: Bucket-1 fn-pointer ComputeFn registration blind spot; in-file production caller at :484 wired by #3594 (done); shipped by #4067 (done); permanent 0-external-caller by audit design.
+// G-allow: Bucket-1 fn-pointer ComputeFn registration blind spot; in-file production caller in `solve_elastic_static_trampoline` wired by #3594 (done); shipped by #4067 (done); permanent 0-external-caller by audit design.
 pub fn shell_channels_to_value(channels: &Option<ShellChannels>, mid_stress: &Value) -> Value {
     let ch = match channels {
         None => return Value::Undef,

@@ -275,7 +275,7 @@ impl ImpulseTrain {
     }
 
     /// Sum of all impulse amplitudes (should equal 1.0 for any well-formed shaper).
-    // G-allow: impulse-shaping well-formedness helper (amplitude-sum check), task #3866 (ε); permanent internal helper called only within impulse_shaper.rs + unit tests; input_shape_value entry point is wired via trampoline.rs → trajectory_ops.rs:429.
+    // G-allow: impulse-shaping well-formedness helper (amplitude-sum check), task #3866 (ε); permanent internal helper called only within impulse_shaper.rs + unit tests; input_shape_value entry point is wired via `input_shape_trampoline` in trajectory_ops.rs.
     pub fn amplitude_sum(&self) -> f64 {
         self.impulses.iter().map(|imp| imp.amplitude).sum()
     }
