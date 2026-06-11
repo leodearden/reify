@@ -3249,6 +3249,10 @@ pub(crate) fn try_eval_topology_selector(
         "union" => TopologySelectorHelper::Union,
         "intersect" => TopologySelectorHelper::Intersect,
         "difference" => TopologySelectorHelper::Difference,
+        // task 4119 δ — Named-leaf constructors (PRD §11.1)
+        "face" => TopologySelectorHelper::Face,
+        "edge" => TopologySelectorHelper::Edge,
+        "solid_body" => TopologySelectorHelper::SolidBody,
         _ => return None,
     };
 
@@ -3332,10 +3336,13 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Distance
                 | TopologySelectorHelper::Intersects
                 | TopologySelectorHelper::Split
-                // task 4119 δ
+                // task 4119 δ — composition + Named-leaf ctors
                 | TopologySelectorHelper::Union
                 | TopologySelectorHelper::Intersect
-                | TopologySelectorHelper::Difference => {
+                | TopologySelectorHelper::Difference
+                | TopologySelectorHelper::Face
+                | TopologySelectorHelper::Edge
+                | TopologySelectorHelper::SolidBody => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -3918,6 +3925,48 @@ pub(crate) fn try_eval_topology_selector(
                 }
             }
         }
+        // ── task 4119 δ: Named-leaf constructors ─────────────────────────────
+        // face(geometry, name) / edge(geometry, name) / solid_body(geometry, name)
+        // resolve the parent GeometryHandleRef from args[0] (via resolve_selector_target,
+        // which reads Value::GeometryHandle from the values map) and the name string
+        // from args[1] (a Literal(Value::String(s)), extracted via resolve_string_literal_arg
+        // which shares the AdHocSelector precedent).  Both must succeed; either
+        // falling through yields None (cell left at Undef — PRD invariant #2).
+        // Zero kernel queries at construction time (K2/BT7); resolution is the
+        // D8 interim (W_TOPOLOGY_TAG_STALE + [] until persistent-naming-v2).
+        TopologySelectorHelper::Face => {
+            let target = resolve_selector_target(&args[0], values)?;
+            let name = resolve_string_literal_arg(&args[1])?.to_string();
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::Named(name),
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::Edge => {
+            let target = resolve_selector_target(&args[0], values)?;
+            let name = resolve_string_literal_arg(&args[1])?.to_string();
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::Named(name),
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::SolidBody => {
+            let target = resolve_selector_target(&args[0], values)?;
+            let name = resolve_string_literal_arg(&args[1])?.to_string();
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Body,
+                target,
+                reify_ir::value::LeafQuery::Named(name),
+                &function.name,
+                diagnostics,
+            )
+        }
     }
 }
 
@@ -4369,6 +4418,21 @@ enum TopologySelectorHelper {
     /// `difference(a, b) -> Selector(k)` — binary same-kind selector difference
     /// (task 4119 δ).  Arity exactly 2; `SelectorValue::difference` enforces K1.
     Difference,
+    /// `face(geometry, name) -> Selector(Face)` — Named-leaf FaceSelector ctor
+    /// (task 4119 δ, PRD §11.1).  Arity 2: args[0] = parent geometry ValueRef,
+    /// args[1] = name string Literal.  Builds `LeafQuery::Named(name)` with
+    /// `SelectorKind::Face`.  Resolution is the D8 interim (W_TOPOLOGY_TAG_STALE
+    /// + [] for any name until persistent-naming-v2 lands).
+    Face,
+    /// `edge(geometry, name) -> Selector(Edge)` — Named-leaf EdgeSelector ctor
+    /// (task 4119 δ, PRD §11.1).  Arity 2: args[0] = parent geometry ValueRef,
+    /// args[1] = name string Literal.  Builds `LeafQuery::Named(name)` with
+    /// `SelectorKind::Edge`.
+    Edge,
+    /// `solid_body(geometry, name) -> Selector(Body)` — Named-leaf BodySelector
+    /// ctor (task 4119 δ, PRD §11.1).  Arity 2.  `body(...)` is the RBD ctor
+    /// (StructureRef("Mechanism")) — `solid_body` is the verified-free alternative.
+    SolidBody,
 }
 
 impl TopologySelectorHelper {
@@ -4401,7 +4465,11 @@ impl TopologySelectorHelper {
             // for the Union/Intersect path.
             | TopologySelectorHelper::Difference
             | TopologySelectorHelper::Union
-            | TopologySelectorHelper::Intersect => 2,
+            | TopologySelectorHelper::Intersect
+            // task 4119 δ: Named-leaf ctors are arity 2 (geometry, name).
+            | TopologySelectorHelper::Face
+            | TopologySelectorHelper::Edge
+            | TopologySelectorHelper::SolidBody => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
             | TopologySelectorHelper::Length
