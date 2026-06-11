@@ -1457,14 +1457,13 @@ pub(crate) fn compile_expr_guarded(
                 let mut param_arg: Vec<Option<usize>> = vec![None; nparams];
 
                 // Pass 1: assign named args to their target param slot.
+                // Unknown named args (no matching param) are handled below (lenient __arg{i}).
                 for (call_idx, arg_name) in arg_names.iter().enumerate() {
-                    if let Some(pname) = arg_name {
-                        if let Some(pidx) =
+                    if let Some(pname) = arg_name
+                        && let Some(pidx) =
                             params.iter().position(|(n, _)| *n == pname.as_str())
-                        {
-                            param_arg[pidx] = Some(call_idx);
-                        }
-                        // Unknown named arg: handled below (lenient __arg{i}).
+                    {
+                        param_arg[pidx] = Some(call_idx);
                     }
                 }
 
@@ -1498,13 +1497,13 @@ pub(crate) fn compile_expr_guarded(
                 // Lenient fallback: unknown named args (no matching param)
                 // are appended as __arg{i} to preserve existing IR handling.
                 for (call_idx, arg_name) in arg_names.iter().enumerate() {
-                    if let Some(pname) = arg_name {
-                        if !params.iter().any(|(n, _)| *n == pname.as_str()) {
-                            ordered_args.push((
-                                format!("__arg{}", call_idx),
-                                compiled_args[call_idx].clone(),
-                            ));
-                        }
+                    if let Some(pname) = arg_name
+                        && !params.iter().any(|(n, _)| *n == pname.as_str())
+                    {
+                        ordered_args.push((
+                            format!("__arg{}", call_idx),
+                            compiled_args[call_idx].clone(),
+                        ));
                     }
                 }
 
