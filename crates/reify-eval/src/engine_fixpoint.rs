@@ -428,6 +428,21 @@ fn eval_cycle_diagnostic(scc: &[NodeId], adjacency: &HashMap<NodeId, Vec<NodeId>
 /// on designs with many constraints over shared geometry.
 ///
 /// An independent classifier: it never touches the cycle residue.
+///
+/// # Decline-to-solve is the intended δ contract (known limitation)
+///
+/// This guard UNCONDITIONALLY declares the geometry-backed-constraint-on-auto
+/// class unsolvable: the δ driver is a pure structural planner with NO solver
+/// knowledge, so it cannot distinguish a genuinely under-determined constraint
+/// from one the solver would legitimately settle. A design whose solver resolves
+/// such auto parameters builds cleanly under [`BuildScheduler::LegacyMultiPass`]
+/// but would surface a hard [`reify_core::Severity::Error`] here — a deliberate
+/// decline-to-solve, NOT a proven structural impossibility. This is exactly why
+/// `E_EVAL_UNRESOLVED` is reachable only behind [`BuildScheduler::UnifiedDag`]
+/// (default OFF): production is unaffected until ε wires the executors + the
+/// runtime `DeterminacyState::Determined` readiness gate onto the schedule, the
+/// layer that refines (and for solver-resolvable autos, suppresses) this class.
+/// Such constraints are intentionally out of scope for δ's structural pass.
 fn unresolved_diagnostics(
     graph: &EvaluationGraph,
     traces: &HashMap<NodeId, DependencyTrace>,
@@ -1095,6 +1110,108 @@ mod tests {
         assert!(
             !unres[0].message.contains(&nc_ok.describe()),
             "the non-auto-backed constraint must NOT be reported; got: {}",
+            unres[0].message
+        );
+    }
+
+    /// Task 4357 δ (amendment #4): the cycle and auto-reach classifiers are
+    /// INDEPENDENT. A graph in which the auto-read closure passes THROUGH a cyclic
+    /// realization sub-DAG yields BOTH an `E_EVAL_CYCLE` (for the cyclic
+    /// realizations) AND an `E_EVAL_UNRESOLVED` (for the downstream constraint) —
+    /// neither classifier suppresses the other.
+    ///
+    /// A `Constraint` node can never itself be a NAMED cycle member: it is a pure
+    /// sink in the inverted-trace adjacency (nothing reads a constraint, so it has
+    /// no outgoing edge and cannot close an SCC). When its backing realization is
+    /// cyclic the constraint is merely STRANDED in residue (a singleton-no-self-
+    /// edge SCC → no cycle diagnostic of its own) while still earning its
+    /// `E_EVAL_UNRESOLVED`. This pins the documented split so a future refactor
+    /// can't silently start double-reporting the same node under one error.
+    #[test]
+    fn unified_pass_cyclic_and_auto_reaching_emits_both_diagnostics() {
+        let e = "E";
+        let a = ValueCellId::new(e, "a"); // AUTO cell
+        let r0 = RealizationNodeId::new(e, 0);
+        let r1 = RealizationNodeId::new(e, 1);
+        let c = ConstraintNodeId::new(e, 0);
+
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // Auto cell root.
+        traces.insert(NodeId::Value(a.clone()), trace(vec![], vec![]));
+        // Realization cycle r0 ↔ r1, AND r0 directly reads the auto cell, so the
+        // cycle's transitive closure reaches auto.
+        traces.insert(
+            NodeId::Realization(r0.clone()),
+            trace(vec![a.clone()], vec![r1.clone()]),
+        );
+        traces.insert(
+            NodeId::Realization(r1.clone()),
+            trace(vec![], vec![r0.clone()]),
+        );
+        // Constraint backed by the cyclic realization ⇒ reaches auto through it,
+        // and is stranded behind the cycle (never reaches in-degree 0).
+        traces.insert(
+            NodeId::Constraint(c.clone()),
+            trace(vec![], vec![r0.clone()]),
+        );
+
+        let mut graph = EvaluationGraph::default();
+        insert_cell(&mut graph, &a, ValueCellKind::Auto { free: false });
+
+        let result = run_unified_pass(&graph, &traces);
+
+        let nr0 = NodeId::Realization(r0.clone());
+        let nr1 = NodeId::Realization(r1.clone());
+        let nc = NodeId::Constraint(c.clone());
+
+        // Cyclic realizations + the stranded constraint all land in residue.
+        assert!(result.residue.contains(&nr0), "r0 must be residue (cyclic)");
+        assert!(result.residue.contains(&nr1), "r1 must be residue (cyclic)");
+        assert!(
+            result.residue.contains(&nc),
+            "constraint is stranded behind the cyclic realization"
+        );
+
+        // Exactly one E_EVAL_CYCLE, naming the cyclic realizations — NOT the
+        // constraint (a sink can never be a cycle member).
+        let cyc = cycle_diags(&result);
+        assert_eq!(
+            cyc.len(),
+            1,
+            "one cyclic SCC → one E_EVAL_CYCLE; got {:?}",
+            result
+                .diagnostics
+                .iter()
+                .map(|d| (d.code, d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            cyc[0].message.contains(&nr0.describe()) && cyc[0].message.contains(&nr1.describe()),
+            "cycle must name both realizations; got: {}",
+            cyc[0].message
+        );
+        assert!(
+            !cyc[0].message.contains(&nc.describe()),
+            "constraint must NOT be a named cycle member; got: {}",
+            cyc[0].message
+        );
+
+        // Exactly one E_EVAL_UNRESOLVED, naming the constraint — the independent
+        // classifier fires even though the constraint's closure is also cyclic.
+        let unres = unresolved_diags(&result);
+        assert_eq!(
+            unres.len(),
+            1,
+            "constraint reaching auto → one E_EVAL_UNRESOLVED; got {:?}",
+            result
+                .diagnostics
+                .iter()
+                .map(|d| (d.code, d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            unres[0].message.contains(&nc.describe()),
+            "unresolved must name the constraint; got: {}",
             unres[0].message
         );
     }
