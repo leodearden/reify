@@ -17,3 +17,59 @@
 //! contract is always unit-testable; the `unified-dag` Cargo feature +
 //! `REIFY_BUILD_SCHEDULER` env var gate ONLY the production activation of the
 //! driver inside `Engine::build()`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task 4357 δ (step-5): `BuildScheduler::from_env_value` is the PURE
+    /// (no real env read) string→scheduler parser. Default is `LegacyMultiPass`;
+    /// `"unified"` parses to `UnifiedDag` (feature-independent at the parser
+    /// layer); case-insensitive + trimmed; any unrecognized/garbage value
+    /// defaults to `LegacyMultiPass`. Pure ⇒ parallel-safe.
+    ///
+    /// RED until step-6 adds the enum + parser.
+    #[test]
+    fn build_scheduler_from_env_value_parsing() {
+        // Default: absent env → Legacy.
+        assert_eq!(
+            BuildScheduler::from_env_value(None),
+            BuildScheduler::LegacyMultiPass
+        );
+        // Explicit legacy.
+        assert_eq!(
+            BuildScheduler::from_env_value(Some("legacy")),
+            BuildScheduler::LegacyMultiPass
+        );
+        // Explicit unified (pure parser — feature-independent).
+        assert_eq!(
+            BuildScheduler::from_env_value(Some("unified")),
+            BuildScheduler::UnifiedDag
+        );
+        // Case-insensitive + surrounding whitespace tolerated.
+        assert_eq!(
+            BuildScheduler::from_env_value(Some("  UNIFIED ")),
+            BuildScheduler::UnifiedDag
+        );
+        assert_eq!(
+            BuildScheduler::from_env_value(Some("Legacy")),
+            BuildScheduler::LegacyMultiPass
+        );
+        // Garbage / empty → default Legacy.
+        assert_eq!(
+            BuildScheduler::from_env_value(Some("garbage")),
+            BuildScheduler::LegacyMultiPass
+        );
+        assert_eq!(
+            BuildScheduler::from_env_value(Some("")),
+            BuildScheduler::LegacyMultiPass
+        );
+    }
+
+    /// Task 4357 δ (step-5): the `Default` impl must be `LegacyMultiPass` so an
+    /// un-configured engine keeps byte-identical legacy behaviour.
+    #[test]
+    fn build_scheduler_default_is_legacy() {
+        assert_eq!(BuildScheduler::default(), BuildScheduler::LegacyMultiPass);
+    }
+}
