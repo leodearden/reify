@@ -9,7 +9,81 @@
 //!
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar).
 
-// (impl fns land in step-4/6/8/10)
+// -----------------------------------------------------------------------
+// §8.1 marker recognition (pure, hand-rolled — no `regex` dep per design §12)
+// -----------------------------------------------------------------------
+
+/// `true` when `b` is an ASCII word byte (`[A-Za-z0-9_]`) — the alphabet for
+/// the hand-rolled `\b` word-boundary checks in [`find_comment_marker`].
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// §8.1 comment markers — canonical regex `\b(TODO|FIXME|HACK)\b\s*[(:]`.
+///
+/// Case-sensitive uppercase only: lowercase prose ("todo: someday") does not
+/// fire (design decision — cuts false positives). The keyword must be a whole
+/// word (non-word byte / line edge on both sides, so `XTODO`/`TODONE` miss),
+/// optionally followed by whitespace, then `(` or `:`. Returns the matched
+/// keyword, or `None`.
+fn find_comment_marker(line: &str) -> Option<&'static str> {
+    let bytes = line.as_bytes();
+    for kw in ["TODO", "FIXME", "HACK"] {
+        let klen = kw.len();
+        let mut start = 0;
+        while let Some(rel) = line[start..].find(kw) {
+            let idx = start + rel;
+            let after = idx + klen;
+            let left_ok = idx == 0 || !is_word_byte(bytes[idx - 1]);
+            let right_ok = after >= bytes.len() || !is_word_byte(bytes[after]);
+            if left_ok && right_ok {
+                let mut j = after;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < bytes.len() && (bytes[j] == b'(' || bytes[j] == b':') {
+                    return Some(kw);
+                }
+            }
+            start = idx + 1;
+        }
+    }
+    None
+}
+
+/// §8.1 Rust stub macros: `todo!(` / `unimplemented!(`. Pure substring scan;
+/// the `.rs`-only gating lives in [`classify_file`].
+fn find_macro_stub(line: &str) -> bool {
+    line.contains("todo!(") || line.contains("unimplemented!(")
+}
+
+/// The two §8.1 `#[ignore]` shapes the structural lane distinguishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IgnoreForm {
+    /// `#[ignore]` — no reason string (α emits `bare-ignore`).
+    Bare,
+    /// `#[ignore = "..."]` — carries a reason (α defers the reason policy to γ).
+    WithReason,
+}
+
+/// §8.1 ignore attributes (`.rs` only — gating in [`classify_file`]): a trimmed
+/// line that starts with `#[ignore`. `///`/`//!` doc-comment prose mentioning
+/// the attribute does not fire. `]` immediately after → `Bare`; `=` →
+/// `WithReason`.
+fn ignore_attr(line: &str) -> Option<IgnoreForm> {
+    let t = line.trim_start();
+    if t.starts_with("///") || t.starts_with("//!") {
+        return None;
+    }
+    let rest = t.strip_prefix("#[ignore")?.trim_start();
+    if rest.starts_with(']') {
+        Some(IgnoreForm::Bare)
+    } else if rest.starts_with('=') {
+        Some(IgnoreForm::WithReason)
+    } else {
+        None
+    }
+}
 
 #[cfg(test)]
 mod tests {
