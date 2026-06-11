@@ -116,21 +116,13 @@ fairness:
 # `drift_check_every_n_lands` key would have been silently dropped (extra='ignore').
 # K = 1 + enabled runners = 2 (LocalRunner trust-anchor on the workstation +
 # leo-laptop). Fail-safe: an unreachable laptop falls back to local, never stalls.
-# verify_runners: ── DISABLED 2026-06-10 (incident revert): enabling C makes K=2, which
-# trips the ENFORCED liveness-margin guard at startup → orchestrator crash-loop.
-# enforce_merge_liveness_margin (harness.py:3262): worst-case = merge_ahead_bound(_k=2) ×
-# cold_timeout(7200s) = 14400s > threshold 8100s (0.75 × liveness 10800s) →
-# MergeLivenessConfigError, refuse to start. The C enable path (df 1716) did NOT account
-# for the enforced guard (added by df 1714/1715). Resolve before re-enabling: the per-host
-# serial lane (num_hosts=_k) means the LOCAL reaper holds ≤1 _merge-* worktree, so the
-# liveness call likely should use the per-host bound (not _k) — or the cold-timeout /
-# liveness window must be retuned. Runner config preserved for re-enable:
-#   - name: laptop
-#     ssh_host: leo-laptop
-#     git_remote: leo-laptop
-#     config_path: /home/leo/.config/orchestrator/reify-laptop.yaml
-#     enabled: true
-# verify_drift_check_every_n_lands: 20
+verify_runners:
+  - name: laptop
+    ssh_host: leo-laptop
+    git_remote: leo-laptop
+    config_path: /home/leo/.config/orchestrator/reify-laptop.yaml
+    enabled: true
+verify_drift_check_every_n_lands: 20
 #
 # sccache shared backend (κ): both hosts share a redis cache so the laptop free-rides
 # the workstation's warm compilation artifacts. ENABLED 2026-06-10 alongside the C enable.
