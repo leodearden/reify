@@ -219,6 +219,140 @@ mod tests {
         assert!(orphaned.summary.contains("done"), "summary: {}", orphaned.summary);
     }
 
+    /// §8.3 γ structural lane: a `#[ignore = "pending X"]` (blocker-prose, no
+    /// cite) → `untracked:` PTodo/Medium finding; `#[ignore = "requires OCCT"]`
+    /// (operational) → no finding.
+    #[test]
+    fn check_ignore_blocker_prose_emits_untracked_operational_passes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(root, "ignore_blocker.rs", "#[ignore = \"pending X\"]\nfn f() {}\n");
+        write_file(root, "ignore_op.rs", "#[ignore = \"requires OCCT\"]\nfn g() {}\n");
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec![
+            "ignore_blocker.rs".to_string(),
+            "ignore_op.rs".to_string(),
+        ]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        // Blocker-prose → exactly one untracked finding at ignore_blocker.rs.
+        let blocker_finding = findings.iter().find(|f| {
+            f.evidence.iter().any(|e| matches!(e, EvidenceRef::File { path: p } if p == "ignore_blocker.rs"))
+        });
+        let bf = blocker_finding.unwrap_or_else(|| {
+            panic!("expected untracked finding for ignore_blocker.rs; findings={findings:?}")
+        });
+        assert_eq!(bf.pattern, Pattern::PTodo, "pattern: {bf:?}");
+        assert_eq!(bf.severity, Severity::Medium, "severity: {bf:?}");
+        assert!(
+            bf.summary.starts_with("untracked:"),
+            "summary must start with 'untracked:': {}",
+            bf.summary
+        );
+
+        // Operational → no finding for ignore_op.rs.
+        let op_finding = findings.iter().any(|f| {
+            f.evidence.iter().any(|e| matches!(e, EvidenceRef::File { path: p } if p == "ignore_op.rs"))
+        });
+        assert!(
+            !op_finding,
+            "operational reason must yield no finding; findings={findings:?}"
+        );
+    }
+
+    /// §8.3 γ cite-first: `#[ignore = "blocked on #4444"]` routes through β
+    /// (cite wins over blocker-prose). With #4444 seeded `done` → `orphaned:`
+    /// finding. With #4444 seeded `pending` → no finding (one live cite tracks).
+    #[test]
+    fn check_ignore_reason_with_cite_runs_liveness_lane() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(root, "ignore_cite.rs", "#[ignore = \"blocked on #4444\"]\nfn f() {}\n");
+
+        // Seed #4444 as 'done' (terminal) at the default path.
+        crate::common::schema::seed_tasks_db_at(
+            &root.join(".taskmaster/tasks/tasks.db"),
+            &[("master", 4444, "done")],
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec!["ignore_cite.rs".to_string()]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        // Terminal cite → orphaned finding.
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one orphaned finding; got {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PTodo);
+        assert_eq!(f.severity, Severity::Medium);
+        assert!(f.summary.starts_with("orphaned:"), "summary: {}", f.summary);
+        assert!(f.summary.contains("#4444"), "summary must carry id: {}", f.summary);
+        assert!(f.summary.contains("done"), "summary must carry status: {}", f.summary);
+
+        // Now seed #4444 as 'pending' (live) and re-run → no finding.
+        let dir2 = tempfile::tempdir().expect("tempdir");
+        let root2 = dir2.path();
+        write_file(root2, "ignore_cite.rs", "#[ignore = \"blocked on #4444\"]\nfn f() {}\n");
+        crate::common::schema::seed_tasks_db_at(
+            &root2.join(".taskmaster/tasks/tasks.db"),
+            &[("master", 4444, "pending")],
+        );
+        let mut git2 = MockGitOps::new();
+        git2.set_ls_files(vec!["ignore_cite.rs".to_string()]);
+        let ctx2 = AuditContext {
+            project_root: root2.to_path_buf(),
+            conn: &conn,
+            git: &git2,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+        let findings2 = reify_audit::ptodo::check(&ctx2);
+        assert!(
+            findings2.is_empty(),
+            "live cite (#4444 pending) must yield no finding; got {findings2:?}"
+        );
+    }
+
     /// §6.7 degradation (in-process): the SAME tree as the liveness test but
     /// with NO task DB at the default path. `check` must skip the liveness lane
     /// silently — only the structural `untracked` finding is returned, with no

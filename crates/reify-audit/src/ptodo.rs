@@ -25,6 +25,7 @@
 //! §6.7 (liveness degradation contract).
 
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use reify_test_support::ignore_hygiene::extract_ignore_reason;
 use rusqlite::OptionalExtension;
 use std::path::{Path, PathBuf};
 
@@ -256,6 +257,29 @@ fn phantom_phrase(line: &str) -> bool {
     PHANTOM_PHRASES.iter().any(|p| lower.contains(p))
 }
 
+/// §8.3 γ blocker-prose needles — matched case-insensitively (against a
+/// lowercased copy of the reason), except `RED:` which is matched
+/// case-sensitively against the original to avoid the `required:` false
+/// positive (the substring `red:` appears in `required:` when lowercased).
+///
+/// Trailing spaces on `until ` and `once ` are part of the §8.3 grammar and
+/// provide a crude word boundary (so `until` at end-of-string does not match).
+const BLOCKER_PROSE: &[&str] = &["pending", "not yet", "until ", "once ", "blocked"];
+
+/// §8.3 γ: `true` when `reason` contains a blocker-prose needle.
+///
+/// The check is applied to the EXTRACTED reason, not the whole `#[ignore]`
+/// line. Five tokens are matched case-insensitively; `RED:` is matched
+/// case-sensitively to guard against `required:` false positives.
+fn has_blocker_prose(reason: &str) -> bool {
+    let lower = reason.to_lowercase();
+    if BLOCKER_PROSE.iter().any(|n| lower.contains(n)) {
+        return true;
+    }
+    // `RED:` case-sensitive — `required:` must not match.
+    reason.contains("RED:")
+}
+
 /// §6.8 inline escape: a line carrying the literal `ptodo:allow` opts out of
 /// the whole sweep for that line (an intentional, reviewed marker).
 fn line_escaped(line: &str) -> bool {
@@ -350,10 +374,12 @@ enum LineClass {
 ///
 /// Precedence per line (first match wins; at most one entry per line):
 /// 1. `ptodo:allow` inline escape → the line is skipped entirely (§6.8).
-/// 2. `#[ignore]` (`.rs`): bare → `Structural(BareIgnore)`; reason-bearing → no
-///    entry (deferred to γ — intentionally NOT cite-checked, so its `#N` reason
-///    ids never reach β). Checked before comment markers so a reason string is
-///    not misread as a marker.
+/// 2. `#[ignore]` (`.rs`): bare → `Structural(BareIgnore)`; reason-bearing →
+///    γ reason policy: extract reason via [`extract_ignore_reason`]; if it
+///    contains a canonical `#NNNN` cite → `Cited(ids)` (step-8; β liveness);
+///    else if it has blocker-prose → `Structural(Untracked)`; else (operational)
+///    → no entry. Checked before comment markers so a reason string is not
+///    misread as a marker.
 /// 3. comment marker (all exts): canonical `#NNNN` → `Cited(on-line cites)`
 ///    (tracked → β liveness-checks); malformed cite → `Structural(MalformedCite)`;
 ///    else `Structural(Untracked)`.
@@ -376,10 +402,28 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
         let has_canon = has_canonical_cite(line);
 
         if is_rust && let Some(form) = ignore_attr(line) {
-            // (2) #[ignore] (.rs only). Reason-bearing forms defer to γ and are
-            // NOT cite-checked (their #N reason ids are γ's job, not β's).
-            if form == IgnoreForm::Bare {
-                out.push((line_no, LineClass::Structural(Kind::BareIgnore), line.trim().to_string()));
+            // (2) #[ignore] (.rs only). γ reason policy (cite-first, §8.3):
+            //   bare → Structural(BareIgnore);
+            //   reason-bearing: extract reason;
+            //     if it has a canonical cite → Cited(ids) (β liveness);
+            //     else if it has blocker-prose → Structural(Untracked);
+            //     else (operational) → no entry.
+            match form {
+                IgnoreForm::Bare => {
+                    out.push((line_no, LineClass::Structural(Kind::BareIgnore), line.trim().to_string()));
+                }
+                IgnoreForm::WithReason => {
+                    if let Some(reason) = extract_ignore_reason(line) {
+                        if has_canonical_cite(reason) {
+                            // cite-first (§8.3): reason contains a canonical #NNNN → β resolves it.
+                            out.push((line_no, LineClass::Cited(extract_cites(reason)), line.trim().to_string()));
+                        } else if has_blocker_prose(reason) {
+                            out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
+                        }
+                        // else: operational reason → no entry (pass)
+                    }
+                    // extract_ignore_reason returned None (non-canonical form) → no entry
+                }
             }
         } else if find_comment_marker(line).is_some() {
             // (3) comment markers (all swept exts).
@@ -704,6 +748,44 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.3 γ blocker-prose matching — has_blocker_prose
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn has_blocker_prose_positives() {
+        // "pending" — case-insensitive
+        assert!(has_blocker_prose("pending fillet binding"));
+        assert!(has_blocker_prose("Pending upstream fix"));
+        // "not yet" — case-insensitive
+        assert!(has_blocker_prose("not yet implemented"));
+        assert!(has_blocker_prose("Not Yet ready"));
+        // "RED:" — case-SENSITIVE (must stay uppercase)
+        assert!(has_blocker_prose("RED: awaiting impl"));
+        // "until " — case-insensitive (trailing space is part of needle)
+        assert!(has_blocker_prose("ignore until fillet lands"));
+        assert!(has_blocker_prose("Until some later date"));
+        // "once " — case-insensitive (trailing space is part of needle)
+        assert!(has_blocker_prose("run once manually"));
+        assert!(has_blocker_prose("Once fixed, remove this"));
+        // "blocked" — case-insensitive
+        assert!(has_blocker_prose("blocked on upstream"));
+        assert!(has_blocker_prose("Blocked by refactor"));
+    }
+
+    #[test]
+    fn has_blocker_prose_negatives() {
+        // Operational reasons — none of the needles present
+        assert!(!has_blocker_prose("requires OCCT"));
+        assert!(!has_blocker_prose("probe: run manually"));
+        assert!(!has_blocker_prose("timing/benchmark out of CI"));
+        // Case-sensitivity guard: "required:" contains "red:" in lowercase
+        // but must NOT match because RED: is matched case-sensitively.
+        assert!(!has_blocker_prose("required: rebuild"));
+        // Empty reason
+        assert!(!has_blocker_prose(""));
+    }
+
+    // -------------------------------------------------------------------
     // §8.1 marker recognition — ignore attributes (.rs)
     // -------------------------------------------------------------------
 
@@ -873,7 +955,7 @@ mod tests {
             "// TODO(task δ): migrate",           // 3 (c) marker + malformed -> MalformedCite
             "// TODO: wire this",                 // 4 (d) marker, no cite -> Untracked
             "    #[ignore]",                      // 5 (e) bare ignore -> BareIgnore
-            "    #[ignore = \"blocked\"]",        // 6 (f) reason-bearing -> no entry
+            "    #[ignore = \"blocked\"]",        // 6 (f) blocker-prose reason -> Untracked (γ)
             "// resolved in #4553",               // 7 canonical cite, no marker -> no entry (prev for 8)
             "    todo!()",                        // 8 (g) macro, canonical cite directly above -> no entry
             "// TODO: leave me  // ptodo:allow",  // 9 (h) inline escape -> skipped
@@ -887,9 +969,53 @@ mod tests {
             (3, Kind::MalformedCite, "// TODO(task δ): migrate".to_string()),
             (4, Kind::Untracked, "// TODO: wire this".to_string()),
             (5, Kind::BareIgnore, "#[ignore]".to_string()),
+            // γ: blocker-prose reason "blocked" → Untracked (was "no entry" pre-γ).
+            (6, Kind::Untracked, "#[ignore = \"blocked\"]".to_string()),
             (10, Kind::Untracked, "todo!(\"later\")".to_string()),
         ];
         assert_eq!(got, expected);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.3 γ structural policy — blocker-prose vs operational
+    // -------------------------------------------------------------------
+
+    /// Blocker-prose reason (no cite) → Structural(Untracked).
+    /// Operational reason (no cite, no blocker-prose) → no entry.
+    /// Bare #[ignore] → Structural(BareIgnore) (regression).
+    #[test]
+    fn scan_file_ignore_with_reason_blocker_prose_and_operational() {
+        let lines = [
+            "#[ignore = \"pending fillet binding\"]", // 1 blocker-prose -> Structural(Untracked)
+            "#[ignore = \"requires OCCT\"]",           // 2 operational -> no entry
+            "#[ignore]",                              // 3 bare -> Structural(BareIgnore)
+        ];
+        let content = lines.join("\n");
+        let got = scan_file(&content, true);
+
+        let expected: Vec<(usize, LineClass, String)> = vec![
+            (1, LineClass::Structural(Kind::Untracked),
+             "#[ignore = \"pending fillet binding\"]".to_string()),
+            (3, LineClass::Structural(Kind::BareIgnore), "#[ignore]".to_string()),
+        ];
+        assert_eq!(got, expected);
+    }
+
+    /// Non-canonical `#[ignore="blocked"]` (no spaces around `=`) — identical
+    /// to the canonical form from scan_file's perspective: extract_ignore_reason
+    /// mirrors ignore_attr's tolerance of non-spaced forms.
+    #[test]
+    fn scan_file_ignore_non_canonical_form_blocker_prose() {
+        let content = "#[ignore=\"pending fillet binding\"]";
+        let got = scan_file(content, true);
+        assert_eq!(
+            got,
+            vec![(
+                1,
+                LineClass::Structural(Kind::Untracked),
+                "#[ignore=\"pending fillet binding\"]".to_string(),
+            )]
+        );
     }
 
     // -------------------------------------------------------------------
@@ -903,7 +1029,7 @@ mod tests {
             "// TODO(#4553): x",          // 1 comment marker + canonical cite -> Cited([4553])
             "// #42",                     // 2 cite-only, no marker -> no entry (prev for 3)
             "    todo!()",                // 3 stub macro, cite directly above -> Cited([42])
-            "    #[ignore = \"see #42\"]", // 4 reason-bearing ignore -> no entry (deferred to γ)
+            "    #[ignore = \"see #42\"]", // 4 reason-bearing with cite -> Cited([42]) (γ cite-first)
             "// TODO: wire this",         // 5 marker, no cite -> Structural(Untracked)
             "// TODO(#5): x  // ptodo:allow", // 6 inline escape on a cited line -> skipped
         ];
@@ -913,17 +1039,41 @@ mod tests {
         let expected: Vec<(usize, LineClass, String)> = vec![
             (1, LineClass::Cited(vec![4553]), "// TODO(#4553): x".to_string()),
             (3, LineClass::Cited(vec![42]), "todo!()".to_string()),
+            // γ cite-first: reason "see #42" has a canonical cite → Cited([42]).
+            (4, LineClass::Cited(vec![42]), "#[ignore = \"see #42\"]".to_string()),
             (5, LineClass::Structural(Kind::Untracked), "// TODO: wire this".to_string()),
         ];
         assert_eq!(got, expected);
 
         // Regression: classify_file is exactly scan_file filtered to its
-        // Structural variants — the Cited markers (1, 3) and the suppressed
-        // lines (2, 4, 6) drop out, leaving byte-identical α output.
+        // Structural variants — the Cited markers (1, 3, 4) and the suppressed
+        // lines (2, 6) drop out, leaving byte-identical α output.
         let classified = classify_file(&content, true);
         let expected_structural: Vec<(usize, Kind, String)> =
             vec![(5, Kind::Untracked, "// TODO: wire this".to_string())];
         assert_eq!(classified, expected_structural);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.3 γ cite-first path — reason with canonical cite → Cited (β lane)
+    // -------------------------------------------------------------------
+
+    /// `#[ignore = "blocked on #4444"]` — cite wins over blocker-prose.
+    /// `#[ignore = "see #42"]`          — cite without blocker-prose.
+    #[test]
+    fn scan_file_ignore_reason_with_cite_emits_cited_entry() {
+        let lines = [
+            "#[ignore = \"blocked on #4444\"]", // 1 cite wins over "blocked" prose → Cited([4444])
+            "#[ignore = \"see #42\"]",          // 2 cite, no blocker-prose → Cited([42])
+        ];
+        let content = lines.join("\n");
+        let got = scan_file(&content, true);
+
+        let expected: Vec<(usize, LineClass, String)> = vec![
+            (1, LineClass::Cited(vec![4444]), "#[ignore = \"blocked on #4444\"]".to_string()),
+            (2, LineClass::Cited(vec![42]),   "#[ignore = \"see #42\"]".to_string()),
+        ];
+        assert_eq!(got, expected);
     }
 
     // -------------------------------------------------------------------
