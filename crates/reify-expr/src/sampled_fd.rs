@@ -465,6 +465,75 @@ mod tests {
         }
     }
 
+    /// Build a Regular2D vector field with in_stride=2 over `nx × ny` nodes.
+    /// `f(x, y)` returns `[F_x, F_y]`; data is node-major interleaved:
+    /// `data[g*2 + c]` where `g = i*ny + j`.
+    fn make_2d_vector(
+        nx: usize,
+        ny: usize,
+        hx: f64,
+        hy: f64,
+        f: impl Fn(f64, f64) -> [f64; 2],
+    ) -> SampledField {
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * hx).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * hy).collect();
+        let mut data = Vec::with_capacity(nx * ny * 2);
+        for i in 0..nx {
+            for j in 0..ny {
+                let v = f(xs[i], ys[j]);
+                data.push(v[0]);
+                data.push(v[1]);
+            }
+        }
+        SampledField {
+            name: "test-2d-vec".to_string(),
+            kind: SampledGridKind::Regular2D,
+            bounds_min: vec![0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * hx, (ny - 1) as f64 * hy],
+            spacing: vec![hx, hy],
+            axis_grids: vec![xs, ys],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build a Regular3D vector field with in_stride=3 over `nx × ny × nz` nodes.
+    /// `f(x, y, z)` returns `[F_x, F_y, F_z]`; data is node-major interleaved.
+    fn make_3d_vector(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        h: f64,
+        f: impl Fn(f64, f64, f64) -> [f64; 3],
+    ) -> SampledField {
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * h).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
+        let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
+        let mut data = Vec::with_capacity(nx * ny * nz * 3);
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    let v = f(xs[i], ys[j], zs[k]);
+                    data.push(v[0]);
+                    data.push(v[1]);
+                    data.push(v[2]);
+                }
+            }
+        }
+        SampledField {
+            name: "test-3d-vec".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * h, (ny - 1) as f64 * h, (nz - 1) as f64 * h],
+            spacing: vec![h, h, h],
+            axis_grids: vec![xs, ys, zs],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
     // ── step-3: laplacian of a quadratic scalar field is exact ───────────────
 
     /// 1D laplacian: f(x) = x² ⟹ ∇²f = 2 everywhere.
@@ -512,6 +581,56 @@ mod tests {
             assert!(
                 (val - 6.0).abs() < 1e-12,
                 "node {g}: laplacian = {val}, expected 6.0"
+            );
+        }
+    }
+
+    // ── step-5: divergence of an affine vector field is exact ────────────────
+
+    /// 2D divergence: F = (2x, 3y) ⟹ div F = 2 + 3 = 5 everywhere.
+    /// Input is stride-2 interleaved: data[g*2+0] = F_x, data[g*2+1] = F_y.
+    #[test]
+    fn divergence_2d_affine_exact() {
+        let nx = 4;
+        let ny = 3;
+        let sf = make_2d_vector(nx, ny, 0.5, 0.5, |x, y| [2.0 * x, 3.0 * y]);
+        let out = sampled_differential(&sf, DifferentialOp::Divergence);
+
+        let grid_count = nx * ny;
+        // out_stride = 1 (scalar)
+        assert_eq!(out.data.len(), grid_count);
+
+        // Grid geometry preserved
+        assert_eq!(out.kind, SampledGridKind::Regular2D);
+        assert_eq!(out.axis_grids, sf.axis_grids);
+        assert_eq!(out.spacing, sf.spacing);
+        assert_eq!(out.bounds_min, sf.bounds_min);
+        assert_eq!(out.bounds_max, sf.bounds_max);
+
+        for (g, &val) in out.data.iter().enumerate() {
+            assert!(
+                (val - 5.0).abs() < 1e-12,
+                "node {g}: div = {val}, expected 5.0"
+            );
+        }
+    }
+
+    /// 3D divergence: F = (x, 2y, 3z) ⟹ div F = 1 + 2 + 3 = 6 everywhere.
+    #[test]
+    fn divergence_3d_affine_exact() {
+        let n = 4;
+        let sf = make_3d_vector(n, n, n, 1.0, |x, y, z| [x, 2.0 * y, 3.0 * z]);
+        let out = sampled_differential(&sf, DifferentialOp::Divergence);
+
+        let grid_count = n * n * n;
+        assert_eq!(out.data.len(), grid_count);
+        assert_eq!(out.kind, SampledGridKind::Regular3D);
+        assert_eq!(out.axis_grids, sf.axis_grids);
+
+        for (g, &val) in out.data.iter().enumerate() {
+            assert!(
+                (val - 6.0).abs() < 1e-12,
+                "node {g}: div = {val}, expected 6.0"
             );
         }
     }
