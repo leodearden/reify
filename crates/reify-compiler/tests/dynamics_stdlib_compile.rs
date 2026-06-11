@@ -100,7 +100,9 @@ fn mass_properties_has_four_params_with_correct_types() {
     let inertia_ty = Type::Matrix {
         m: 3,
         n: 3,
-        quantity: Box::new(Type::Real),
+        quantity: Box::new(Type::Scalar {
+            dimension: DimensionVector::MOMENT_OF_INERTIA,
+        }),
     };
     let origin_ty = Type::Real;
 
