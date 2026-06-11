@@ -2706,6 +2706,56 @@ mod tests {
         );
     }
 
+    /// Wrap `selector_call` in `ResolveSelector` then `IndexAccess[0]` — the
+    /// NEW shape produced after task 4118 step-12 inserts the coercion node
+    /// between the `IndexAccess` object and the selector `FunctionCall`:
+    /// `IndexAccess{ object: ResolveSelector{ FunctionCall }, .. }`.
+    fn index_0_resolve_selector(
+        selector_call: reify_ir::CompiledExpr,
+    ) -> reify_ir::CompiledExpr {
+        index_0(reify_ir::CompiledExpr::resolve_selector(selector_call))
+    }
+
+    /// task 4118 step-13/14 — the detector must see THROUGH a `ResolveSelector`
+    /// wrapper. After step-12, inline `faces(s)[0]` lowers to
+    /// `IndexAccess{ object: ResolveSelector{ FunctionCall{faces} } }`;
+    /// `is_surface_producing_arg` must still return true for the face-producing
+    /// selectors and false for the curve selector `edges` wrapped the same way.
+    ///
+    /// RED until step-14 unwraps the `ResolveSelector` between the `IndexAccess`
+    /// object and the selector `FunctionCall`.
+    #[test]
+    fn is_surface_producing_arg_sees_through_resolve_selector_wrapper() {
+        for sel in ["faces", "faces_by_area", "faces_by_normal"] {
+            let wrapped = index_0_resolve_selector(make_selector_call(sel));
+            assert!(
+                is_surface_producing_arg(&wrapped),
+                "is_surface_producing_arg must see through ResolveSelector to the \
+                 face-producing selector {sel:?}"
+            );
+        }
+        let wrapped_edges = index_0_resolve_selector(make_selector_call("edges"));
+        assert!(
+            !is_surface_producing_arg(&wrapped_edges),
+            "is_surface_producing_arg must return false for a ResolveSelector-wrapped \
+             curve selector (edges)"
+        );
+    }
+
+    /// Regression pin: the bare (un-wrapped) `IndexAccess{ FunctionCall }` shape
+    /// must STILL be recognized — `adjacent_faces` stays `List<Geometry>` (no
+    /// `ResolveSelector` wrapper), and the hand-built fixtures above depend on
+    /// the bare-FunctionCall fallback. (Green before AND after step-14.)
+    #[test]
+    fn is_surface_producing_arg_still_recognizes_bare_function_call() {
+        let bare = index_0(make_selector_call("adjacent_faces"));
+        assert!(
+            is_surface_producing_arg(&bare),
+            "is_surface_producing_arg must still match the bare \
+             IndexAccess{{FunctionCall}} shape (adjacent_faces stays List<Geometry>)"
+        );
+    }
+
     /// Structural invariant: every name in FACE_PRODUCING_SELECTOR_NAMES must
     /// also appear in GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
     ///
