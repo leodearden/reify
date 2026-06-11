@@ -14348,6 +14348,205 @@ mod tests {
         );
     }
 
+    // ── step-5 (task 4118 γ): ResolveSelector kernel-bearing eval tests ──────
+    //
+    // These pin `try_eval_resolve_selector`, the kernel-bearing dispatch for the
+    // compiler-inserted `ResolveSelector` coercion node (and `IndexAccess` over a
+    // selector). It reconstructs the inner `Value::Selector` INLINE from the
+    // nested selector FunctionCall (sidestepping value-cell ordering), calls the
+    // single `topology_selectors::resolve` executor, and wraps the resulting
+    // canonical-order handle ids as `Value::List(Value::GeometryHandle)`
+    // sub-handles via `make_sub_handle`. RED until step-6 adds the function.
+
+    /// `ResolveSelector { faces(b) }` resolves the All-face leaf via the kernel
+    /// and yields a `Value::List` of three `Value::GeometryHandle` sub-handles,
+    /// matching a direct `resolve()` + `make_sub_handle`: canonical TopExp order,
+    /// per-element hashing, parent realization_ref inherited.
+    #[test]
+    fn resolve_selector_faces_all_yields_geometry_handle_list() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("BoxFaces", 0);
+        let parent_hash: [u8; 32] = [0x55; 32];
+
+        let mut kernel = MockGeometryKernel::new().with_extracted_faces(
+            parent_handle,
+            vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+            ],
+        );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("BoxFaces", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+
+        // ResolveSelector { faces(b) } — inner selector is a nested FunctionCall,
+        // reconstructed inline (no value-cell ordering dependency).
+        let inner = topology_selector_call_one_value_ref(
+            "faces",
+            "BoxFaces",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let expr = reify_ir::CompiledExpr::resolve_selector(inner);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "ResolveSelector{{faces(b)}} must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(list.len(), 3, "expected 3 resolved face sub-handles");
+
+        let expected_ids = [
+            GeometryHandleId(2),
+            GeometryHandleId(3),
+            GeometryHandleId(4),
+        ];
+        for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
+            let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+                &parent_hash,
+                crate::topology_selectors::SubKind::Face,
+                i as u32,
+            );
+            match elem {
+                reify_ir::Value::GeometryHandle {
+                    realization_ref,
+                    upstream_values_hash,
+                    kernel_handle,
+                } => {
+                    assert_eq!(
+                        realization_ref, &parent_rr,
+                        "elem[{i}] realization_ref must inherit parent"
+                    );
+                    assert_eq!(kernel_handle, expected_id, "elem[{i}] kernel_handle");
+                    assert_eq!(
+                        upstream_values_hash, &expected_hash,
+                        "elem[{i}] hash must be compose_sub_handle_hash(parent, Face, {i})"
+                    );
+                }
+                other => panic!("elem[{i}] must be Value::GeometryHandle, got {:?}", other),
+            }
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "successful resolve must emit zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `IndexAccess { object: ResolveSelector { faces(b) }, index: 0 }` recomputes
+    /// to the indexed sub-handle (the curvature_smoke `faces(s)[0]` shape): resolve
+    /// the selector to its list then index — element 0 is the canonical first face.
+    #[test]
+    fn resolve_selector_index_access_returns_indexed_handle() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("BoxFaces", 0);
+        let parent_hash: [u8; 32] = [0x55; 32];
+
+        let mut kernel = MockGeometryKernel::new().with_extracted_faces(
+            parent_handle,
+            vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+            ],
+        );
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(parent_handle));
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("BoxFaces", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+
+        let inner = topology_selector_call_one_value_ref(
+            "faces",
+            "BoxFaces",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let object = reify_ir::CompiledExpr::resolve_selector(inner);
+        let index = reify_ir::CompiledExpr::literal(reify_ir::Value::Int(0), Type::Int);
+        let expr = reify_ir::CompiledExpr::index_access(object, index, Type::Geometry);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Face,
+            0,
+        );
+        match result {
+            Some(reify_ir::Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle,
+            }) => {
+                assert_eq!(realization_ref, parent_rr, "indexed handle realization_ref");
+                assert_eq!(
+                    kernel_handle,
+                    GeometryHandleId(2),
+                    "faces(b)[0] → canonical first face GHId(2)"
+                );
+                assert_eq!(
+                    upstream_values_hash, expected_hash,
+                    "indexed handle hash == compose_sub_handle_hash(parent, Face, 0)"
+                );
+            }
+            other => panic!(
+                "faces(b)[0] must yield Some(Value::GeometryHandle(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "successful index must emit zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
     // ── try_eval_topology_selector directional-selector dispatch unit tests ───
     // (task 3618, KGQ-ι: faces_by_normal + edges_parallel_to)
     //
