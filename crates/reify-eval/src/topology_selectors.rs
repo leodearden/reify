@@ -2889,4 +2889,275 @@ mod tests {
             "same (parent, kind, index) must be EQUAL regardless of kernel_handle"
         );
     }
+
+    // ── resolve() executor (task 4118, step-1) ─────────────────────────────
+    //
+    // Pin the behavior of the single `resolve()` executor that lowers a
+    // constructed `SelectorValue` (the kernel-free 4117 substrate) to a
+    // concrete `Vec<GeometryHandleId>`: each `LeafQuery` delegates to the
+    // existing predicate fn (verbatim reuse), `All` extracts every sub-shape
+    // of the kind, and composites (`Union`/`Intersect`/`Difference`)
+    // set-combine the children's id lists with K3 dedup in canonical
+    // first-seen (`TopExp::MapShapes`) order.
+    use reify_core::ty::SelectorKind;
+    use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+
+    /// Build a `GeometryHandleRef` target with the given ephemeral kernel id.
+    /// `CountingKernel::extract_edges`/`extract_faces` ignore the handle
+    /// argument, so only `kernel_handle` matters for routing the predicate fn.
+    fn target_ref(kernel_id: u64) -> GeometryHandleRef {
+        GeometryHandleRef {
+            realization_ref: reify_core::identity::RealizationNodeId::new("B", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(kernel_id),
+        }
+    }
+
+    // (a) predicate leaves delegate to the existing filter fns ───────────────
+
+    #[test]
+    fn resolve_leaf_by_normal_delegates_to_faces_by_normal() {
+        let face_ids = vec![
+            GeometryHandleId(301),
+            GeometryHandleId(302),
+            GeometryHandleId(303),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], Value::String("{\"x\":0,\"y\":0,\"z\":1}".into()))
+            .with_response(face_ids[1], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(face_ids[2], Value::String("{\"x\":0,\"y\":0,\"z\":-1}".into()));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::ByNormal { dir: [0.0, 0.0, 1.0], tol_rad: 1f64.to_radians() },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, vec![face_ids[0]], "ByNormal selects the +Z face");
+        assert!(diags.is_empty(), "no diagnostics on a clean resolve");
+    }
+
+    #[test]
+    fn resolve_leaf_by_area_delegates_to_faces_by_area() {
+        let face_ids = vec![
+            GeometryHandleId(201),
+            GeometryHandleId(202),
+            GeometryHandleId(203),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_faces(face_ids.clone())
+            .with_response(face_ids[0], Value::Real(200e-6))
+            .with_response(face_ids[1], Value::Real(300e-6))
+            .with_response(face_ids[2], Value::Real(600e-6));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::ByArea { min_m2: 199e-6, max_m2: 201e-6 },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, vec![face_ids[0]], "ByArea selects the 200e-6 m² face");
+    }
+
+    #[test]
+    fn resolve_leaf_by_length_delegates_to_edges_by_length() {
+        let edge_ids = vec![
+            GeometryHandleId(101),
+            GeometryHandleId(102),
+            GeometryHandleId(103),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::Real(0.005))
+            .with_response(edge_ids[1], Value::Real(0.010))
+            .with_response(edge_ids[2], Value::Real(0.015));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target_ref(1),
+            LeafQuery::ByLength { min_m: 0.008, max_m: 0.012 },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, vec![edge_ids[1]], "ByLength selects the 10mm edge");
+    }
+
+    #[test]
+    fn resolve_leaf_by_height_delegates_to_edges_at_height() {
+        // bbox payloads: edge 0 at z=0, edges 1 & 2 at z=10mm. The window
+        // z=10mm ± 1mm selects edges 1 and 2 (both zmin and zmax in range).
+        let edge_ids = vec![
+            GeometryHandleId(101),
+            GeometryHandleId(102),
+            GeometryHandleId(103),
+        ];
+        let bbox = |z: f64| -> Value {
+            Value::String(format!(
+                "{{\"xmin\":0,\"ymin\":0,\"zmin\":{z},\"xmax\":1,\"ymax\":1,\"zmax\":{z}}}"
+            ))
+        };
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], bbox(0.0))
+            .with_response(edge_ids[1], bbox(0.010))
+            .with_response(edge_ids[2], bbox(0.010));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target_ref(1),
+            LeafQuery::ByHeight { z_m: 0.010, tol_m: 0.001 },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![edge_ids[1], edge_ids[2]],
+            "ByHeight selects both edges on the z=10mm plane"
+        );
+    }
+
+    #[test]
+    fn resolve_leaf_by_parallel_delegates_to_edges_parallel_to() {
+        let edge_ids = vec![
+            GeometryHandleId(401),
+            GeometryHandleId(402),
+            GeometryHandleId(403),
+        ];
+        let mut kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::String("{\"x\":1,\"y\":0,\"z\":0}".into()))
+            .with_response(edge_ids[1], Value::String("{\"x\":-1,\"y\":0,\"z\":0}".into()))
+            .with_response(edge_ids[2], Value::String("{\"x\":0,\"y\":1,\"z\":0}".into()));
+        let sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target_ref(1),
+            LeafQuery::ByParallel { axis: [1.0, 0.0, 0.0], tol_rad: 1f64.to_radians() },
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![edge_ids[0], edge_ids[1]],
+            "ByParallel is sign-tolerant on ±X"
+        );
+    }
+
+    // (b) All leaves extract every sub-shape of the kind ─────────────────────
+
+    #[test]
+    fn resolve_leaf_all_faces_extracts_all_faces() {
+        let face_ids = vec![GeometryHandleId(301), GeometryHandleId(302)];
+        let mut kernel = CountingKernel::new().with_faces(face_ids.clone());
+        let sv = SelectorValue::leaf(SelectorKind::Face, target_ref(1), LeafQuery::All)
+            .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, face_ids, "All/Face yields the extract_faces order");
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn resolve_leaf_all_edges_extracts_all_edges() {
+        let edge_ids = vec![
+            GeometryHandleId(101),
+            GeometryHandleId(102),
+            GeometryHandleId(103),
+        ];
+        let mut kernel = CountingKernel::new().with_edges(edge_ids.clone());
+        let sv = SelectorValue::leaf(SelectorKind::Edge, target_ref(1), LeafQuery::All)
+            .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, edge_ids, "All/Edge yields the extract_edges order");
+    }
+
+    // (c) composites set-combine with K3 dedup in first-seen order ───────────
+
+    /// Shared 4-edge fixture: lengths 5,10,15,20 mm at ids 101..=104.
+    fn four_edge_kernel() -> (Vec<GeometryHandleId>, CountingKernel) {
+        let edge_ids = vec![
+            GeometryHandleId(101),
+            GeometryHandleId(102),
+            GeometryHandleId(103),
+            GeometryHandleId(104),
+        ];
+        let kernel = CountingKernel::new()
+            .with_edges(edge_ids.clone())
+            .with_response(edge_ids[0], Value::Real(0.005))
+            .with_response(edge_ids[1], Value::Real(0.010))
+            .with_response(edge_ids[2], Value::Real(0.015))
+            .with_response(edge_ids[3], Value::Real(0.020));
+        (edge_ids, kernel)
+    }
+
+    /// An edge `ByLength` leaf over the shared 4-edge fixture.
+    fn len_leaf(min_m: f64, max_m: f64) -> SelectorValue {
+        SelectorValue::leaf(
+            SelectorKind::Edge,
+            target_ref(1),
+            LeafQuery::ByLength { min_m, max_m },
+        )
+        .expect("leaf")
+    }
+
+    #[test]
+    fn resolve_union_is_set_union_first_seen_order() {
+        let (edge_ids, mut kernel) = four_edge_kernel();
+        // A = {101,102} (4–12mm), B = {102,103} (8–16mm).
+        let sv = SelectorValue::union(vec![
+            len_leaf(0.004, 0.012),
+            len_leaf(0.008, 0.016),
+        ])
+        .expect("union");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(
+            got,
+            vec![edge_ids[0], edge_ids[1], edge_ids[2]],
+            "union dedups 102 and preserves first-seen order"
+        );
+    }
+
+    #[test]
+    fn resolve_intersect_is_set_intersection() {
+        let (edge_ids, mut kernel) = four_edge_kernel();
+        let sv = SelectorValue::intersect(vec![
+            len_leaf(0.004, 0.012), // {101,102}
+            len_leaf(0.008, 0.016), // {102,103}
+        ])
+        .expect("intersect");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, vec![edge_ids[1]], "intersect keeps only the shared 102");
+    }
+
+    #[test]
+    fn resolve_difference_is_set_difference() {
+        let (edge_ids, mut kernel) = four_edge_kernel();
+        let sv = SelectorValue::difference(
+            len_leaf(0.004, 0.012), // {101,102}
+            len_leaf(0.008, 0.016), // {102,103}
+        )
+        .expect("difference");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert_eq!(got, vec![edge_ids[0]], "difference A−B drops 102, keeps 101");
+    }
+
+    #[test]
+    fn resolve_intersect_empty_when_disjoint() {
+        let (_edge_ids, mut kernel) = four_edge_kernel();
+        let sv = SelectorValue::intersect(vec![
+            len_leaf(0.004, 0.006), // {101}
+            len_leaf(0.014, 0.016), // {103}
+        ])
+        .expect("intersect");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert!(got.is_empty(), "disjoint intersection resolves to []");
+    }
 }
