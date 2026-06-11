@@ -77,7 +77,7 @@ fn find_comment_marker(line: &str) -> Option<&'static str> {
 }
 
 /// §8.1 Rust stub macros: `todo!(` / `unimplemented!(`. Pure substring scan;
-/// the `.rs`-only gating lives in [`classify_file`]. A line whose trimmed start
+/// the `.rs`-only gating lives in [`scan_file`]. A line whose trimmed start
 /// is a `//` comment (`//`, `///`, `//!`) is prose, not a real stub — a
 /// commented-out or doc-comment mention (`// todo!() example`) does not fire
 /// (mirrors the doc-comment skip in [`ignore_attr`]).
@@ -97,7 +97,7 @@ enum IgnoreForm {
     WithReason,
 }
 
-/// §8.1 ignore attributes (`.rs` only — gating in [`classify_file`]): a trimmed
+/// §8.1 ignore attributes (`.rs` only — gating in [`scan_file`]): a trimmed
 /// line that starts with `#[ignore`. `///`/`//!` doc-comment prose mentioning
 /// the attribute does not fire. `]` immediately after → `Bare`; `=` →
 /// `WithReason`.
@@ -250,7 +250,7 @@ const PHANTOM_PHRASES: &[&str] = &[
 
 /// §8.3 phantom-tracking detection: `true` when the line contains any of the
 /// [`PHANTOM_PHRASES`] (case-insensitive). The no-canonical-cite precondition
-/// is applied by the caller ([`classify_file`]).
+/// is applied by the caller ([`scan_file`]).
 fn phantom_phrase(line: &str) -> bool {
     let lower = line.to_lowercase();
     PHANTOM_PHRASES.iter().any(|p| lower.contains(p))
@@ -334,7 +334,7 @@ impl Kind {
 /// variant per line; lines matching neither produce no entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LineClass {
-    /// A structural finding kind (α) — emitted verbatim by [`classify_file`].
+    /// A structural finding kind (α) — constructed by [`scan_file`].
     Structural(Kind),
     /// A tracked marker carrying one or more canonical `#NNNN` cites (β) — the
     /// liveness lane resolves these ids against the task DB.
@@ -345,8 +345,8 @@ enum LineClass {
 /// class, marker_text)` entry per offending OR tracked line (1-based line
 /// numbers, `marker_text` is the trimmed line). `is_rust` gates the `.rs`-only
 /// macro and `#[ignore]` rules. This is the single precedence-correct pass
-/// shared by the structural lane ([`classify_file`]) and the liveness lane
-/// ([`check`]) so the two never drift.
+/// shared by the structural lane and the liveness lane (both driven from
+/// [`check`]) so the two never drift.
 ///
 /// Precedence per line (first match wins; at most one entry per line):
 /// 1. `ptodo:allow` inline escape → the line is skipped entirely (§6.8).
@@ -431,28 +431,6 @@ fn dedup_in_place(ids: &mut Vec<u32>) {
     });
 }
 
-/// §8 per-file classification (structural lane, α): [`scan_file`] filtered to
-/// its [`LineClass::Structural`] entries, yielding one `(line_no, kind,
-/// marker_text)` per structurally-offending line. The `Cited` markers drop out
-/// here; they are resolved by the β liveness lane in [`check`].
-///
-/// Retained as the documented "structural lane = scan_file ∩ Structural"
-/// derivation and exercised directly by the α precedence unit tests
-/// (`classify_file_precedence_rust`, `classify_file_non_rust_skips_macro_and_ignore`);
-/// [`check`] itself now drives [`scan_file`] directly (it needs the `Cited`
-/// markers the structural filter discards), so this helper has no non-test
-/// caller — hence `#[allow(dead_code)]`.
-#[allow(dead_code)]
-fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
-    scan_file(content, is_rust)
-        .into_iter()
-        .filter_map(|(line_no, class, text)| match class {
-            LineClass::Structural(kind) => Some((line_no, kind, text)),
-            LineClass::Cited(_) => None,
-        })
-        .collect()
-}
-
 // -----------------------------------------------------------------------
 // §6.7 liveness lane — task-DB path resolution
 // -----------------------------------------------------------------------
@@ -500,7 +478,7 @@ fn is_terminal_status(status: &str) -> bool {
 ///
 /// A statement-prepare error (missing `tasks` table / corrupt DB) is propagated
 /// as `Err` so [`check`] degrades fail-soft (§6.7) instead of panicking.
-// G-allow: test-facing thin wrapper over `resolve_liveness_keyed`; production `check` calls the keyed variant directly (~L618), and tests/ptodo.rs exercises this entry point.
+// G-allow: test-facing thin wrapper over `resolve_liveness_keyed`. MUST stay `pub` (not `pub(crate)`/`#[cfg(test)]`): its sole caller is the tests/ptodo.rs integration test — a SEPARATE crate that cannot see crate-private or cfg(test)-gated items — while production `check` calls the keyed variant directly.
 pub fn resolve_liveness(
     conn: &rusqlite::Connection,
     cited: &[(String, usize, Vec<u32>, String)],
@@ -670,6 +648,22 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test-only derivation of the structural lane: [`scan_file`] filtered to its
+    /// [`LineClass::Structural`] entries (the `Cited` markers — β's domain — drop
+    /// out), yielding one `(line_no, kind, text)` per structurally-offending line.
+    /// Production [`check`] drives [`scan_file`] directly (it needs the `Cited`
+    /// markers this filter discards), so this "structural = scan_file ∩ Structural"
+    /// view lives here purely to exercise α's precedence unit tests.
+    fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
+        scan_file(content, is_rust)
+            .into_iter()
+            .filter_map(|(line_no, class, text)| match class {
+                LineClass::Structural(kind) => Some((line_no, kind, text)),
+                LineClass::Cited(_) => None,
+            })
+            .collect()
+    }
 
     // -------------------------------------------------------------------
     // §8.1 marker recognition — comment markers
