@@ -73,6 +73,125 @@ impl BuildScheduler {
     }
 }
 
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+use reify_core::Diagnostic;
+
+use crate::cache::NodeId;
+use crate::deps::DependencyTrace;
+use crate::dirty::DebugOrd;
+use crate::graph::EvaluationGraph;
+
+/// Output of [`run_unified_pass`] — a pure structural plan (no node execution).
+///
+/// - `schedule`: the topological evaluation order of the in-set, in-degree-0
+///   nodes reached by the Kahn worklist (ε's executors consume this).
+/// - `residue`: node-set members never popped — cyclic nodes and any node
+///   stranded downstream of a cycle (Stage A hang-proof output).
+/// - `diagnostics`: `E_EVAL_CYCLE` (one per cyclic SCC, step-10/12) and
+///   `E_EVAL_UNRESOLVED` (geometry-backed-constraint-on-auto, step-14).
+#[derive(Debug, Default)]
+pub struct UnifiedPassResult {
+    pub schedule: Vec<NodeId>,
+    pub residue: HashSet<NodeId>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Run a single unified build-DAG pass over α's forward dependency-trace graph.
+///
+/// A PURE STRUCTURAL PLANNER: it returns a `(schedule, residue, diagnostics)`
+/// triple and does NOT execute nodes. The node set is the trace map's KEYS
+/// (Value/Constraint/Realization/Resolution + composed-field Values) — α's
+/// complete forward trace, eager-over-reachable. Compute nodes carry no forward
+/// trace (reverse-index-only sinks) and stay outside this worklist; ε extends
+/// the set if it needs to schedule them.
+///
+/// In-degree and forward adjacency are built by INVERTING the trace map (single
+/// source ⇒ guaranteed consistent, no drift vs. the reverse index): for each
+/// node `N`, predecessors = `{Value(r) | r ∈ reads} ∪ {Realization(rr) | rr ∈
+/// realization_reads}`, counting/edging only those present in the node set.
+/// A read naming an absent producer is not counted, so a missing-producer
+/// consumer still reaches in-degree 0 and is scheduled — never residue (design
+/// decision #6). Repeated reads (e.g. `a * a`) are deduped per node.
+///
+/// The Kahn worklist uses a `BTreeSet<DebugOrd>` ready set (`pop_first`), giving
+/// a deterministic schedule. Single pass, no fixpoint ⇒ cannot hang (Stage A).
+/// Cyclic nodes never reach in-degree 0, so they are never popped/scheduled and
+/// land in `residue`. O(V+E).
+///
+/// Stage B (Tarjan SCC over the residue → `E_EVAL_CYCLE`) and the
+/// `E_EVAL_UNRESOLVED` auto-guard are layered on in later steps.
+pub fn run_unified_pass(
+    graph: &EvaluationGraph,
+    traces: &HashMap<NodeId, DependencyTrace>,
+) -> UnifiedPassResult {
+    // `graph` is consumed by the E_EVAL_UNRESOLVED auto-guard (step-14).
+    let _ = graph;
+
+    // Node set = the trace map's keys.
+    let node_set: HashSet<NodeId> = traces.keys().cloned().collect();
+
+    // In-degree + forward adjacency by inverting the trace map.
+    let mut in_degree: HashMap<NodeId, usize> =
+        node_set.iter().map(|n| (n.clone(), 0usize)).collect();
+    let mut adjacency: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+
+    for node in &node_set {
+        if let Some(tr) = traces.get(node) {
+            // Unique in-set predecessors (dedup repeated reads).
+            let mut preds: HashSet<NodeId> = HashSet::new();
+            for r in &tr.reads {
+                let p = NodeId::Value(r.clone());
+                if node_set.contains(&p) {
+                    preds.insert(p);
+                }
+            }
+            for rr in &tr.realization_reads {
+                let p = NodeId::Realization(rr.clone());
+                if node_set.contains(&p) {
+                    preds.insert(p);
+                }
+            }
+            for p in preds {
+                adjacency.entry(p).or_default().push(node.clone());
+                *in_degree.get_mut(node).expect("node present in in_degree") += 1;
+            }
+        }
+    }
+
+    // Kahn worklist — DebugOrd-ordered ready set for a deterministic schedule.
+    let mut ready: BTreeSet<DebugOrd> = in_degree
+        .iter()
+        .filter(|(_, d)| **d == 0)
+        .map(|(n, _)| DebugOrd(n.clone()))
+        .collect();
+    let mut schedule: Vec<NodeId> = Vec::with_capacity(node_set.len());
+
+    while let Some(DebugOrd(node)) = ready.pop_first() {
+        if let Some(deps) = adjacency.get(&node) {
+            for dep in deps {
+                let d = in_degree.get_mut(dep).expect("dependent present in in_degree");
+                debug_assert!(*d > 0, "in-degree underflow at {dep:?}");
+                *d -= 1;
+                if *d == 0 {
+                    ready.insert(DebugOrd(dep.clone()));
+                }
+            }
+        }
+        schedule.push(node);
+    }
+
+    // Residue = node-set members never popped (cyclic / stranded-downstream).
+    let scheduled: HashSet<NodeId> = schedule.iter().cloned().collect();
+    let residue: HashSet<NodeId> = node_set.difference(&scheduled).cloned().collect();
+
+    UnifiedPassResult {
+        schedule,
+        residue,
+        diagnostics: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
