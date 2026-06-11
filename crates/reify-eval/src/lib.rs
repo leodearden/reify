@@ -15,6 +15,7 @@ pub mod deps;
 pub mod dirty;
 pub mod dispatcher;
 pub mod engine_fixpoint;
+pub use engine_fixpoint::BuildScheduler;
 mod engine_admin;
 pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;

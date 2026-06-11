@@ -18,6 +18,61 @@
 //! `REIFY_BUILD_SCHEDULER` env var gate ONLY the production activation of the
 //! driver inside `Engine::build()`.
 
+/// Build-time scheduler selection (task 4357 δ).
+///
+/// Selects between the legacy multi-pass build loop and the unified build-DAG
+/// Kahn worklist driver. Defaults to [`BuildScheduler::LegacyMultiPass`] so an
+/// un-configured engine keeps byte-identical legacy behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BuildScheduler {
+    /// Legacy multi-pass build loop (default; byte-preserving).
+    #[default]
+    LegacyMultiPass,
+    /// Unified build-DAG: `run_unified_pass` Kahn worklist + cycle contract.
+    UnifiedDag,
+}
+
+impl BuildScheduler {
+    /// Environment variable consulted by [`BuildScheduler::from_env`].
+    pub const ENV_VAR: &'static str = "REIFY_BUILD_SCHEDULER";
+
+    /// Pure parser: map an optional configuration string to a scheduler.
+    ///
+    /// Feature-INDEPENDENT — `Some("unified")` always parses to `UnifiedDag` so
+    /// the parser stays unit-testable without the `unified-dag` Cargo feature.
+    /// Matching is case-insensitive and tolerates surrounding whitespace. Any
+    /// unrecognized value — including `None`, empty, or garbage — defaults to
+    /// `LegacyMultiPass`.
+    ///
+    /// The production [`BuildScheduler::from_env`] layers the `unified-dag`
+    /// feature gate on top of this parser.
+    pub fn from_env_value(value: Option<&str>) -> Self {
+        let normalized = value.map(|v| v.trim().to_ascii_lowercase());
+        match normalized.as_deref() {
+            Some("unified") => BuildScheduler::UnifiedDag,
+            _ => BuildScheduler::LegacyMultiPass,
+        }
+    }
+
+    /// Production selection: read `REIFY_BUILD_SCHEDULER` and apply the
+    /// `unified-dag` feature gate.
+    ///
+    /// `UnifiedDag` is selectable ONLY when the `unified-dag` Cargo feature is
+    /// enabled. When the feature is disabled (the default), this always returns
+    /// `LegacyMultiPass` regardless of the env value — the env gate is inert
+    /// without the feature, so production builds opt in deliberately.
+    pub fn from_env() -> Self {
+        #[cfg(feature = "unified-dag")]
+        {
+            Self::from_env_value(std::env::var(Self::ENV_VAR).ok().as_deref())
+        }
+        #[cfg(not(feature = "unified-dag"))]
+        {
+            BuildScheduler::LegacyMultiPass
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
