@@ -284,13 +284,18 @@ structure Outer {
 // ─── step-7: collection sub geometry access ───────────────────────────────────
 
 /// Accessing a geometry member via an indexed collection sub (`bolts[0].body`)
-/// must emit the geometry-specific diagnostic (not the generic "unknown member").
+/// emits the geometry-specific "not yet supported in v0.1" diagnostic, NOT the
+/// generic "unknown member" fallback.
 ///
-/// RED until GHR-γ step-8 lands (geometry-specific diagnostic for collection-sub
-/// indexed access is not yet implemented).  Ignored so the test suite stays green;
-/// un-ignore once step-8 is complete.
+/// This behavior shipped in GHR-γ (task 3605): the indexed-access branch in
+/// `expr.rs` calls `try_emit_cross_sub_geometry` BEFORE consulting
+/// `sub_member_types`, so a `param body : Solid` member still routes to the
+/// geometry-specific diagnostic even though it also has a `ValueCellDecl`.
+///
+/// Ratified as a permanent regression guard by task 4549.  The prior
+/// `#[ignore = "RED: GHR-γ step-8"]` was stale — the behavior was already
+/// shipping before that annotation was reviewed.
 #[test]
-#[ignore = "RED: geometry-specific diagnostic for indexed collection-sub not yet implemented (GHR-γ step-8)"]
 fn collection_sub_indexed_geometry_access_emits_specific_diagnostic() {
     let source = r#"pub structure Bolt {
     param body : Solid = cylinder(2mm, 10mm)
