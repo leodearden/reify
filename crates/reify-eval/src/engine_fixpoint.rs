@@ -665,4 +665,193 @@ mod tests {
             "stranded consumer d must not appear in any cycle path; got: {msg}"
         );
     }
+
+    /// All `E_EVAL_CYCLE` diagnostics in a result, in emission order.
+    fn cycle_diags(result: &UnifiedPassResult) -> Vec<&Diagnostic> {
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::EvalCycle))
+            .collect()
+    }
+
+    /// Task 4357 δ (step-11a): self-loop `let x = x` — a singleton SCC carrying
+    /// a self-edge — must emit EXACTLY ONE `E_EVAL_CYCLE` naming `x`. The node
+    /// reads itself, so it never reaches in-degree 0 and lands in residue as a
+    /// singleton; step-12 must classify the self-edge as a cycle (step-10's
+    /// `|SCC|>1` rule alone leaves it undiagnosed).
+    ///
+    /// RED until step-12 handles the singleton-with-self-edge case.
+    #[test]
+    fn unified_pass_self_loop_emits_one_eval_cycle() {
+        let e = "E";
+        let x = ValueCellId::new(e, "x");
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // x = x — the node reads itself.
+        traces.insert(NodeId::Value(x.clone()), trace(vec![x.clone()], vec![]));
+
+        let graph = EvaluationGraph::default();
+        let result = run_unified_pass(&graph, &traces);
+
+        let nx = NodeId::Value(x.clone());
+        assert!(result.residue.contains(&nx), "self-loop node must be residue");
+        assert!(!result.schedule.contains(&nx), "self-loop node never scheduled");
+
+        let cyc = cycle_diags(&result);
+        assert_eq!(
+            cyc.len(),
+            1,
+            "self-loop must emit exactly one E_EVAL_CYCLE; got {:?}",
+            result
+                .diagnostics
+                .iter()
+                .map(|d| (d.code, d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            cyc[0].message.contains(&nx.describe()),
+            "self-loop cycle must name x ({}); got: {}",
+            nx.describe(),
+            cyc[0].message
+        );
+    }
+
+    /// Task 4357 δ (step-11b): two disjoint cycles must emit EXACTLY TWO
+    /// `E_EVAL_CYCLE` diagnostics in a deterministic order (ordered by each
+    /// SCC's DebugOrd-min member, so the `a↔b` cycle precedes the `x↔y` cycle).
+    #[test]
+    fn unified_pass_two_disjoint_cycles_emit_two_eval_cycles() {
+        let e = "E";
+        let x = ValueCellId::new(e, "x");
+        let y = ValueCellId::new(e, "y");
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // cycle 1: x ↔ y
+        traces.insert(NodeId::Value(x.clone()), trace(vec![y.clone()], vec![]));
+        traces.insert(NodeId::Value(y.clone()), trace(vec![x.clone()], vec![]));
+        // cycle 2: a ↔ b
+        traces.insert(NodeId::Value(a.clone()), trace(vec![b.clone()], vec![]));
+        traces.insert(NodeId::Value(b.clone()), trace(vec![a.clone()], vec![]));
+
+        let graph = EvaluationGraph::default();
+        let result = run_unified_pass(&graph, &traces);
+
+        let cyc = cycle_diags(&result);
+        assert_eq!(cyc.len(), 2, "two disjoint cycles → two E_EVAL_CYCLE");
+        // Deterministic order: a↔b (min member `a`) before x↔y (min member `x`).
+        let m0 = cyc[0].message.as_str();
+        let m1 = cyc[1].message.as_str();
+        assert!(
+            m0.contains(&NodeId::Value(a.clone()).describe())
+                && m0.contains(&NodeId::Value(b.clone()).describe()),
+            "first diagnostic must be the a↔b cycle; got: {m0}"
+        );
+        assert!(
+            m1.contains(&NodeId::Value(x.clone()).describe())
+                && m1.contains(&NodeId::Value(y.clone()).describe()),
+            "second diagnostic must be the x↔y cycle; got: {m1}"
+        );
+    }
+
+    /// Task 4357 δ (step-11c): a cross-kind cycle of a DIFFERENT pair —
+    /// realization ↔ realization via `realization_reads` (the GeomRef::Sub edge
+    /// `compute_levels` ignores) — must emit one `E_EVAL_CYCLE`, proving the
+    /// detector is kind-agnostic over every edge kind α's trace map encodes.
+    #[test]
+    fn unified_pass_realization_cycle_is_kind_agnostic() {
+        let e = "E";
+        let r0 = RealizationNodeId::new(e, 0);
+        let r1 = RealizationNodeId::new(e, 1);
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        // r0 reads r1, r1 reads r0 — realization ↔ realization (GeomRef::Sub).
+        traces.insert(
+            NodeId::Realization(r0.clone()),
+            trace(vec![], vec![r1.clone()]),
+        );
+        traces.insert(
+            NodeId::Realization(r1.clone()),
+            trace(vec![], vec![r0.clone()]),
+        );
+
+        let graph = EvaluationGraph::default();
+        let result = run_unified_pass(&graph, &traces);
+
+        let cyc = cycle_diags(&result);
+        assert_eq!(cyc.len(), 1, "realization↔realization cycle → one E_EVAL_CYCLE");
+        let m = cyc[0].message.as_str();
+        assert!(
+            m.contains(&NodeId::Realization(r0.clone()).describe()),
+            "cycle must name r0; got: {m}"
+        );
+        assert!(
+            m.contains(&NodeId::Realization(r1.clone()).describe()),
+            "cycle must name r1; got: {m}"
+        );
+        assert!(result.residue.contains(&NodeId::Realization(r0)));
+        assert!(result.residue.contains(&NodeId::Realization(r1)));
+    }
+
+    /// Task 4357 δ (step-11d): missing-producer — a consumer whose `reads` name
+    /// a node ABSENT from the trace map. Per design decision #6 (in-set-only
+    /// in-degree), the consumer still reaches in-degree 0 and is scheduled; it
+    /// is never residue and never a cycle.
+    #[test]
+    fn unified_pass_missing_producer_schedules_no_cycle() {
+        let e = "E";
+        let c = ValueCellId::new(e, "c");
+        let absent = ValueCellId::new(e, "absent"); // no trace entry ⇒ not in node set
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        traces.insert(NodeId::Value(c.clone()), trace(vec![absent.clone()], vec![]));
+
+        let graph = EvaluationGraph::default();
+        let result = run_unified_pass(&graph, &traces);
+
+        let nc = NodeId::Value(c.clone());
+        assert!(
+            result.schedule.contains(&nc),
+            "missing-producer consumer must be scheduled"
+        );
+        assert!(result.residue.is_empty(), "missing producer is never residue");
+        assert_eq!(
+            cycle_diags(&result).len(),
+            0,
+            "missing producer must not emit E_EVAL_CYCLE"
+        );
+    }
+
+    /// Task 4357 δ (step-11e): failed-realization shape — an acyclic realization
+    /// node present in the graph. It always reaches in-degree 0, so it is
+    /// scheduled, never residue, and never a cycle (its runtime kernel failure
+    /// surfaces as a geometry-error diagnostic downstream at ε, not here).
+    #[test]
+    fn unified_pass_acyclic_realization_schedules_no_cycle() {
+        let e = "E";
+        let p = ValueCellId::new(e, "p");
+        let r = RealizationNodeId::new(e, 0);
+        let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+        traces.insert(NodeId::Value(p.clone()), trace(vec![], vec![]));
+        traces.insert(
+            NodeId::Realization(r.clone()),
+            trace(vec![p.clone()], vec![]),
+        );
+
+        let graph = EvaluationGraph::default();
+        let result = run_unified_pass(&graph, &traces);
+
+        let nr = NodeId::Realization(r.clone());
+        assert!(
+            result.schedule.contains(&nr),
+            "acyclic realization must be scheduled"
+        );
+        assert!(
+            result.residue.is_empty(),
+            "acyclic realization is never residue"
+        );
+        assert_eq!(
+            cycle_diags(&result).len(),
+            0,
+            "acyclic realization must not emit E_EVAL_CYCLE"
+        );
+    }
 }
