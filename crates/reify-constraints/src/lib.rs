@@ -49,9 +49,9 @@ use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, Constr
 /// - `(false, kinds)` — all leaves are defined (or the expression has no ValueRefs);
 ///   `kinds` lists the distinct `value_kind_label` strings of the defined leaf values
 ///   (deduped, stable declaration order).
-fn classify_undef<'a>(
+fn classify_undef(
     expr: &reify_ir::CompiledExpr,
-    values: &'a reify_ir::ValueMap,
+    values: &reify_ir::ValueMap,
 ) -> (bool, Vec<String>) {
     let leaf_ids = expr.collect_value_refs();
     let mut undef_names: Vec<String> = Vec::new();
