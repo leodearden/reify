@@ -1420,9 +1420,9 @@ mod cli {
 
         assert_eq!(
             findings.len(),
-            3,
-            "PTODO fixture sweep must emit exactly 3 findings \
-             (untracked/malformed-cite/phantom-tracking); got:\n{:#}",
+            4,
+            "PTODO fixture sweep must emit exactly 4 findings \
+             (untracked/malformed-cite/phantom-tracking + blocker-prose ignore); got:\n{:#}",
             serde_json::Value::Array(findings.clone())
         );
 
@@ -1465,13 +1465,29 @@ mod cli {
             serde_json::Value::Array(findings.clone())
         );
 
+        // Scenario 7: blocker-prose ignore → untracked finding.
+        assert!(
+            has("scenario07_ignore_blocker_prose.rs", "untracked:"),
+            "scenario07 must yield an 'untracked' PTodo finding; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
         // Scenario 10: neither the inline-escape file nor the allowlisted nested
-        // file may surface a finding.
+        // file may surface a finding.  Also used for scenario08 (operational
+        // ignore) and scenario07's absence of a scenario08 finding.
         let none_mentions = |needle: &str| -> bool {
             !findings
                 .iter()
                 .any(|f| f["task_id"].as_str().is_some_and(|t| t.contains(needle)))
         };
+
+        // Scenario 8: operational ignore → no finding.
+        assert!(
+            none_mentions("scenario08_ignore_operational.rs"),
+            "scenario08 (operational reason) must yield no finding; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
         assert!(
             none_mentions("scenario10_inline_escape.rs"),
             "inline-escape file (ptodo:allow) must yield no finding; findings:\n{:#}",

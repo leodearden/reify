@@ -934,7 +934,7 @@ mod tests {
             "// TODO(task δ): migrate",           // 3 (c) marker + malformed -> MalformedCite
             "// TODO: wire this",                 // 4 (d) marker, no cite -> Untracked
             "    #[ignore]",                      // 5 (e) bare ignore -> BareIgnore
-            "    #[ignore = \"blocked\"]",        // 6 (f) reason-bearing -> no entry
+            "    #[ignore = \"blocked\"]",        // 6 (f) blocker-prose reason -> Untracked (γ)
             "// resolved in #4553",               // 7 canonical cite, no marker -> no entry (prev for 8)
             "    todo!()",                        // 8 (g) macro, canonical cite directly above -> no entry
             "// TODO: leave me  // ptodo:allow",  // 9 (h) inline escape -> skipped
@@ -948,7 +948,34 @@ mod tests {
             (3, Kind::MalformedCite, "// TODO(task δ): migrate".to_string()),
             (4, Kind::Untracked, "// TODO: wire this".to_string()),
             (5, Kind::BareIgnore, "#[ignore]".to_string()),
+            // γ: blocker-prose reason "blocked" → Untracked (was "no entry" pre-γ).
+            (6, Kind::Untracked, "#[ignore = \"blocked\"]".to_string()),
             (10, Kind::Untracked, "todo!(\"later\")".to_string()),
+        ];
+        assert_eq!(got, expected);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.3 γ structural policy — blocker-prose vs operational
+    // -------------------------------------------------------------------
+
+    /// Blocker-prose reason (no cite) → Structural(Untracked).
+    /// Operational reason (no cite, no blocker-prose) → no entry.
+    /// Bare #[ignore] → Structural(BareIgnore) (regression).
+    #[test]
+    fn scan_file_ignore_with_reason_blocker_prose_and_operational() {
+        let lines = [
+            "#[ignore = \"pending fillet binding\"]", // 1 blocker-prose -> Structural(Untracked)
+            "#[ignore = \"requires OCCT\"]",           // 2 operational -> no entry
+            "#[ignore]",                              // 3 bare -> Structural(BareIgnore)
+        ];
+        let content = lines.join("\n");
+        let got = scan_file(&content, true);
+
+        let expected: Vec<(usize, LineClass, String)> = vec![
+            (1, LineClass::Structural(Kind::Untracked),
+             "#[ignore = \"pending fillet binding\"]".to_string()),
+            (3, LineClass::Structural(Kind::BareIgnore), "#[ignore]".to_string()),
         ];
         assert_eq!(got, expected);
     }
