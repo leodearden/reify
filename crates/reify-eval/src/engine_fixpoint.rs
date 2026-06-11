@@ -1041,4 +1041,130 @@ mod tests {
             unres[0].message
         );
     }
+
+    /// Serialize a result's diagnostics to the ordered `(code, message)` vector
+    /// the determinism contract is defined over.
+    fn diag_vector(result: &UnifiedPassResult) -> Vec<(Option<DiagnosticCode>, String)> {
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.message.clone()))
+            .collect()
+    }
+
+    /// Task 4357 δ (step-15): the determinism contract. A graph combining TWO
+    /// disjoint cycles (`a↔b` and `x↔y`) AND a geometry-backed-constraint-on-auto
+    /// must produce a byte-identical diagnostic vector — the ordered sequence of
+    /// `(code, message)` pairs — across 100 runs AND across deliberately shuffled
+    /// trace-map insertion orders. Each run rebuilds the trace map in a fresh
+    /// `HashMap` (a new `RandomState` seed ⇒ a different iteration order), so any
+    /// HashMap-order leak into the schedule, SCC enumeration, per-SCC ordered
+    /// path, SCC emission order, or the cycle-vs-unresolved diagnostic order
+    /// would surface as a mismatch.
+    ///
+    /// RED if any order-sensitive step is left unsorted.
+    #[test]
+    fn unified_pass_diagnostic_vector_is_deterministic() {
+        let e = "E";
+        let a = ValueCellId::new(e, "a");
+        let b = ValueCellId::new(e, "b");
+        let x = ValueCellId::new(e, "x");
+        let y = ValueCellId::new(e, "y");
+        let gcell = ValueCellId::new(e, "gcell"); // AUTO cell behind the constraint
+        let r = RealizationNodeId::new(e, 0);
+        let c = ConstraintNodeId::new(e, 0);
+
+        // The full node set as (key, trace) entries — inserted in a permuted
+        // sequence per run so the underlying HashMap layout varies.
+        let entries: Vec<(NodeId, DependencyTrace)> = vec![
+            // cycle 1: a ↔ b
+            (NodeId::Value(a.clone()), trace(vec![b.clone()], vec![])),
+            (NodeId::Value(b.clone()), trace(vec![a.clone()], vec![])),
+            // cycle 2: x ↔ y
+            (NodeId::Value(x.clone()), trace(vec![y.clone()], vec![])),
+            (NodeId::Value(y.clone()), trace(vec![x.clone()], vec![])),
+            // geometry-backed-constraint-on-auto: c → r → gcell(auto)
+            (NodeId::Value(gcell.clone()), trace(vec![], vec![])),
+            (
+                NodeId::Realization(r.clone()),
+                trace(vec![gcell.clone()], vec![]),
+            ),
+            (
+                NodeId::Constraint(c.clone()),
+                trace(vec![], vec![r.clone()]),
+            ),
+        ];
+        let n = entries.len();
+
+        // Rebuild the trace map by inserting `entries` in the given `order`.
+        let build_map = |order: &[usize]| -> HashMap<NodeId, DependencyTrace> {
+            let mut m = HashMap::new();
+            for &i in order {
+                let (k, v) = entries[i].clone();
+                m.insert(k, v);
+            }
+            m
+        };
+        // `gcell` must read as auto in the graph for the unresolved guard.
+        let build_graph = || {
+            let mut g = EvaluationGraph::default();
+            insert_cell(&mut g, &gcell, ValueCellKind::Auto { free: false });
+            g
+        };
+
+        let canonical: Vec<usize> = (0..n).collect();
+
+        // Reference vector + expected shape: two cycles then one unresolved, the
+        // a↔b cycle (DebugOrd-min `a`) before the x↔y cycle (min `x`).
+        let reference = diag_vector(&run_unified_pass(&build_graph(), &build_map(&canonical)));
+        assert_eq!(
+            reference.len(),
+            3,
+            "expected exactly 2 EvalCycle + 1 EvalUnresolved; got {reference:?}"
+        );
+        assert_eq!(reference[0].0, Some(DiagnosticCode::EvalCycle));
+        assert_eq!(reference[1].0, Some(DiagnosticCode::EvalCycle));
+        assert_eq!(reference[2].0, Some(DiagnosticCode::EvalUnresolved));
+        assert!(
+            reference[0].1.contains(&NodeId::Value(a.clone()).describe())
+                && reference[0].1.contains(&NodeId::Value(b.clone()).describe()),
+            "first cycle must be a↔b; got: {}",
+            reference[0].1
+        );
+        assert!(
+            reference[1].1.contains(&NodeId::Value(x.clone()).describe())
+                && reference[1].1.contains(&NodeId::Value(y.clone()).describe()),
+            "second cycle must be x↔y; got: {}",
+            reference[1].1
+        );
+        assert!(
+            reference[2].1.contains(&NodeId::Constraint(c.clone()).describe()),
+            "unresolved must name constraint c; got: {}",
+            reference[2].1
+        );
+
+        // 100 fresh runs — each rebuilds the map (new RandomState seed).
+        for i in 0..100 {
+            let got = diag_vector(&run_unified_pass(&build_graph(), &build_map(&canonical)));
+            assert_eq!(got, reference, "run {i} diverged from the reference vector");
+        }
+
+        // Deliberately shuffled insertion orders must not change the output.
+        let mut shuffles: Vec<Vec<usize>> = Vec::new();
+        shuffles.push((0..n).rev().collect()); // reversed
+        for k in 1..n {
+            let mut rot: Vec<usize> = (0..n).collect();
+            rot.rotate_left(k);
+            shuffles.push(rot); // every rotation
+        }
+        shuffles.push(vec![6, 0, 4, 2, 5, 1, 3]); // hand-picked scrambles
+        shuffles.push(vec![3, 5, 1, 6, 0, 2, 4]);
+        for order in &shuffles {
+            let got = diag_vector(&run_unified_pass(&build_graph(), &build_map(order)));
+            assert_eq!(
+                got, reference,
+                "insertion order {order:?} changed the diagnostic vector"
+            );
+        }
+    }
 }
