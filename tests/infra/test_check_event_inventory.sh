@@ -551,5 +551,62 @@ assert "Check 14: --bidirectional does NOT flag 'wired-ok' as phantom" \
 assert "Check 14: --bidirectional --strict exits non-zero (only-in-gen is a phantom)" \
     bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix14dir' --bidirectional --strict"
 
+# ==============================================================================
+# Check 15: forward-pass tracked-only hermeticity (esc-3798-78 / task-4572)
+# A transient .rs file under src/ (a directory PRUNE_DIRS never pruned by name)
+# must NOT be scanned if it is UNTRACKED — it models a concurrent build lane
+# writing a file that is not yet in the index. git ls-files excludes it by
+# construction; the old find-based scan would flag it as an orphan.
+# RED against the current find-based script: find scans the untracked
+# src/transient.rs → orphan flagged → assertions 1/2/4 fail.
+# GREEN only after the git ls-files implementation excludes untracked files.
+# ==============================================================================
+echo ""
+echo "--- Check 15: forward-pass tracked-only hermeticity (src/ transient, esc-3798-78) ---"
+
+_fix15dir="$_tmpdir/fix15"
+mkdir -p "$_fix15dir/docs" "$_fix15dir/gui/src-tauri/src"
+
+cat > "$_fix15dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+| Channel | Notes |
+|---|---|
+| `mesh-update` | wired |
+INVENTORY
+
+# TRACKED: legitimate source file with a registered channel — no orphan.
+cat > "$_fix15dir/gui/src-tauri/src/real.rs" <<'RUST'
+fn emit_real(app: &AppHandle) {
+    app.emit("mesh-update", ());
+}
+RUST
+
+# UNTRACKED: transient file dropped by a concurrent build lane under src/.
+# NOT staged — models esc-3798-78 where the transient landed outside gen/target.
+cat > "$_fix15dir/gui/src-tauri/src/transient.rs" <<'RUST'
+fn emit_transient(app: &AppHandle) {
+    app.emit("untracked-orphan", ());
+}
+RUST
+
+# Stage only real.rs; transient.rs stays untracked.
+_init_repo "$_fix15dir" gui/src-tauri/src/real.rs
+
+_fix15_stderr="$_tmpdir/fix15_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix15dir" 2>"$_fix15_stderr" || true
+
+assert "Check 15: 'untracked-orphan' does NOT appear in stderr (untracked file excluded)" \
+    bash -c "! grep -q 'untracked-orphan' '$_fix15_stderr'"
+
+assert "Check 15: no 'orphan' line in stderr (no false-positive from src/ transient)" \
+    bash -c "! grep -q 'orphan' '$_fix15_stderr'"
+
+assert "Check 15: exits 0 in warning mode" \
+    "$CHECK_SCRIPT" --repo-root "$_fix15dir"
+
+assert "Check 15: exits 0 under --strict (no false-positive orphan from untracked transient)" \
+    "$CHECK_SCRIPT" --repo-root "$_fix15dir" --strict
+
 # -- Summary ------------------------------------------------------------------
 test_summary
