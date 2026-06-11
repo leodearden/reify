@@ -472,5 +472,62 @@ assert "Check 13: exits 0 in warning mode" \
 assert "Check 13: exits 0 under --strict (no false-positive orphan)" \
     "$CHECK_SCRIPT" --repo-root "$_fix13dir" --strict
 
+# ==============================================================================
+# Check 14: bidirectional / reverse-pass hermeticity
+# A §1 channel whose ONLY literal occurrence is inside a pruned build-artifact
+# dir (gen/) must still be reported as a phantom. Pre-fix, the unpruned reverse
+# grep finds the gen/ literal, counts it as wiring, and suppresses the phantom
+# warning — a false NEGATIVE (esc-4357-20, task-4529).
+# ==============================================================================
+echo ""
+echo "--- Check 14: bidirectional reverse-pass hermeticity (prune gen/ phantom) ---"
+
+_fix14dir="$_tmpdir/fix14"
+mkdir -p "$_fix14dir/docs" \
+         "$_fix14dir/gui/src-tauri/src" \
+         "$_fix14dir/gui/src-tauri/gen/schemas"
+
+cat > "$_fix14dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `wired-ok` | wired |
+| `only-in-gen` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+# Legitimately wired channel in src/.
+cat > "$_fix14dir/gui/src-tauri/src/real.rs" <<'RUST'
+fn emit_real(app: &AppHandle) {
+    app.emit("wired-ok", ());
+}
+RUST
+
+# The ONLY literal occurrence of "only-in-gen" lives inside a pruned gen/ artifact.
+# With the fix, the reverse grep must NOT find it — only-in-gen should be phantom.
+cat > "$_fix14dir/gui/src-tauri/gen/schemas/built.rs" <<'RUST'
+// Codegen artifact — this literal must NOT count as source wiring.
+const CHANNEL: &str = "only-in-gen";
+RUST
+
+_fix14_stderr="$_tmpdir/fix14_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix14dir" --bidirectional 2>"$_fix14_stderr" || true
+
+assert "Check 14: --bidirectional still flags 'only-in-gen' as phantom (gen/ must not count as wiring)" \
+    grep -q 'only-in-gen' "$_fix14_stderr"
+
+assert "Check 14: --bidirectional does NOT flag 'wired-ok' as phantom" \
+    bash -c "! grep -q 'wired-ok' '$_fix14_stderr'"
+
+assert "Check 14: --bidirectional --strict exits non-zero (only-in-gen is a phantom)" \
+    bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix14dir' --bidirectional --strict"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
