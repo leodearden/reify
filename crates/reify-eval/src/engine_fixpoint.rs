@@ -75,7 +75,7 @@ impl BuildScheduler {
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use reify_core::{Diagnostic, DiagnosticCode};
+use reify_core::{Diagnostic, DiagnosticCode, RealizationNodeId};
 
 use crate::cache::NodeId;
 use crate::deps::DependencyTrace;
@@ -121,15 +121,13 @@ pub struct UnifiedPassResult {
 ///
 /// Stage B runs Tarjan SCC over the residue subgraph, emitting one
 /// `E_EVAL_CYCLE` per genuine cycle — a multi-node SCC (`|SCC| > 1`) or a
-/// singleton self-loop. The `E_EVAL_UNRESOLVED` auto-guard (step-14) is layered
-/// on in a later step.
+/// singleton self-loop. A final independent classifier emits one
+/// `E_EVAL_UNRESOLVED` per constraint whose transitive geometry-backed read
+/// closure reaches an auto value cell.
 pub fn run_unified_pass(
     graph: &EvaluationGraph,
     traces: &HashMap<NodeId, DependencyTrace>,
 ) -> UnifiedPassResult {
-    // `graph` is consumed by the E_EVAL_UNRESOLVED auto-guard (step-14).
-    let _ = graph;
-
     // Node set = the trace map's keys.
     let node_set: HashSet<NodeId> = traces.keys().cloned().collect();
 
@@ -203,6 +201,12 @@ pub fn run_unified_pass(
             diagnostics.push(eval_cycle_diagnostic(&scc, &adjacency));
         }
     }
+
+    // --- E_EVAL_UNRESOLVED: geometry-backed-constraint-on-auto guard ---
+    // Independent classifier over the existing trace edges (does NOT touch the
+    // cycle residue). Appended after all cycle diagnostics; constraints are
+    // visited in DebugOrd order, so the appended sub-vector is deterministic.
+    diagnostics.extend(unresolved_diagnostics(graph, traces));
 
     UnifiedPassResult {
         schedule,
@@ -389,6 +393,72 @@ fn eval_cycle_diagnostic(scc: &[NodeId], adjacency: &HashMap<NodeId, Vec<NodeId>
         .join(", ");
     Diagnostic::error(format!("evaluation cycle detected: [{members}]"))
         .with_code(DiagnosticCode::EvalCycle)
+}
+
+/// Geometry-backed-constraint-on-auto guard (→ `E_EVAL_UNRESOLVED`).
+///
+/// For each constraint (visited in `DebugOrd` order for determinism), walk its
+/// transitive auto-read closure — the backing realizations named by
+/// `realization_reads`, then each realization's own `reads` (value cells) and
+/// `realization_reads` (nested realizations), recursively. If the closure
+/// reaches any auto value cell ([`EvaluationGraph::is_auto_cell`]), the unified
+/// pass declines to solve that constraint and emits one `E_EVAL_UNRESOLVED`.
+///
+/// An independent classifier: it never touches the cycle residue.
+fn unresolved_diagnostics(
+    graph: &EvaluationGraph,
+    traces: &HashMap<NodeId, DependencyTrace>,
+) -> Vec<Diagnostic> {
+    let constraints = debug_ord_sorted(
+        traces
+            .keys()
+            .filter(|n| matches!(n, NodeId::Constraint(_)))
+            .cloned(),
+    );
+    let mut out = Vec::new();
+    for c in constraints {
+        if constraint_reaches_auto(&c, graph, traces) {
+            out.push(
+                Diagnostic::error(format!(
+                    "unresolved constraint: {} transitively depends on auto parameter(s) \
+                     through geometry-backed inputs",
+                    c.describe()
+                ))
+                .with_code(DiagnosticCode::EvalUnresolved),
+            );
+        }
+    }
+    out
+}
+
+/// True if `constraint`'s transitive geometry-backed read closure reaches any
+/// auto value cell. Bounded by a visited-set over realizations to stay O(V+E).
+fn constraint_reaches_auto(
+    constraint: &NodeId,
+    graph: &EvaluationGraph,
+    traces: &HashMap<NodeId, DependencyTrace>,
+) -> bool {
+    let mut visited: HashSet<RealizationNodeId> = HashSet::new();
+    // Seed the walk from the constraint's backing realizations.
+    let mut stack: Vec<RealizationNodeId> = match traces.get(constraint) {
+        Some(tr) => tr.realization_reads.clone(),
+        None => return false,
+    };
+    while let Some(r) = stack.pop() {
+        if !visited.insert(r.clone()) {
+            continue;
+        }
+        let Some(rtr) = traces.get(&NodeId::Realization(r)) else {
+            continue;
+        };
+        // Any auto value cell directly read by this realization closes the case.
+        if rtr.reads.iter().any(|vc| graph.is_auto_cell(vc)) {
+            return true;
+        }
+        // Otherwise recurse through nested geometry-backed realizations.
+        stack.extend(rtr.realization_reads.iter().cloned());
+    }
+    false
 }
 
 #[cfg(test)]
