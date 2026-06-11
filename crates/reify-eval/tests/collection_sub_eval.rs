@@ -1058,11 +1058,6 @@ fn grown_forall_constraints_trigger_solver_on_later_upstream_edit() {
     // Count only the calls driven by the edit_param sequence (excludes the
     // one eval()-phase call for the Bolt template's empty-constraints problem).
     let call_count = problems.len() - calls_before_edits;
-    // Debug: print which entities triggered solver calls
-    for (i, p) in problems.iter().enumerate() {
-        let entities: Vec<_> = p.auto_params.iter().map(|ap| ap.id.entity.as_str()).collect();
-        eprintln!("solver call {}: entities = {:?}", i, entities);
-    }
     drop(problems);
     assert_eq!(
         call_count,
