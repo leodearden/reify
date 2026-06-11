@@ -608,14 +608,19 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         .collect();
 
     // β liveness lane: open the task DB read-only; on success resolve the
-    // collected cites and merge the findings in. A missing/unreadable DB (or a
-    // prepare/probe failure) simply skips the lane — the §6.7 degradation
-    // breadcrumb is wired in a later step; the structural lane is unaffected.
+    // collected cites and merge the findings in. A missing/unreadable DB (open
+    // error) OR a prepare/probe failure on an existing-but-corrupt DB (resolve
+    // error) degrades the lane fail-soft (§6.7): exactly one stderr breadcrumb
+    // naming the resolved path, then the structural findings are returned
+    // unchanged. The exit class is untouched (Medium-neutral) — 125 is reserved
+    // for genuine arg/IO misconfig, never an absent optional substrate.
     let db_path = tasks_db_path(&ctx.project_root);
-    if let Ok(conn) = open_tasks_db(&db_path)
-        && let Ok(live) = resolve_liveness_keyed(&conn, &cited)
-    {
-        keyed.extend(live);
+    match open_tasks_db(&db_path).and_then(|conn| resolve_liveness_keyed(&conn, &cited)) {
+        Ok(live) => keyed.extend(live),
+        Err(_) => eprintln!(
+            "reify-audit: tasks.db unreachable at '{}' — PTODO liveness degraded; structural checks still run",
+            db_path.display()
+        ),
     }
 
     // Deterministic merged order across both lanes: (path, line). A given line
