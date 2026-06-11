@@ -336,16 +336,15 @@ fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3]
 /// The single canonical read-path for body mass in every inverse-dynamics and
 /// modal consumer.
 ///
-/// Reads `body.solid` and returns `Some(MassProperties StructureInstance)` when
-/// the solid is a `Value::StructureInstance` with `type_name == "MassProperties"`.
-///
 /// Rung precedences (highest first):
 /// (a) **Explicit MassProperties** — `body.solid` is a `MassProperties`
 ///     StructureInstance → `Some(solid.clone())`.
-/// (b) **Derived geometry×density** — documented TODO(3620 tail / task 4472):
-///     real-geometry solid with density; stub returns `None`.
-/// (c) **Unresolvable** — missing `solid` key, wrong type, non-MassProperties
-///     StructureInstance → `None`.
+/// (b) **Derived geometry×density** — `body.derived_mass_props` is a
+///     `MassProperties` StructureInstance baked by the build-time
+///     `post_process_mechanism_mass_props` pass (task 4472) → `Some(that.clone())`.
+///     Rung (a) wins when `solid` is already an explicit MassProperties; rung (b)
+///     fires only when `solid` is absent or is not a MassProperties.
+/// (c) **Unresolvable** — neither rung above matched → `None`.
 ///
 /// Consumers extract fields from the returned `Value` via
 /// [`mass_properties_from_value`].
@@ -354,12 +353,24 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
         Value::Map(m) => m,
         _ => return None,
     };
-    let solid = map_get(bm, "solid")?;
-    match solid {
-        Value::StructureInstance(d) if d.type_name == "MassProperties" => Some(solid.clone()),
-        // TODO(3620 tail / task 4472): real-geometry×density derived rung
-        _ => None,
+    // Rung (a): explicit MassProperties solid wins unconditionally.
+    if let Some(solid) = map_get(bm, "solid") {
+        if let Value::StructureInstance(d) = solid {
+            if d.type_name == "MassProperties" {
+                return Some(solid.clone());
+            }
+        }
     }
+    // Rung (b): build-pass-baked derived_mass_props (task 4472).
+    if let Some(derived) = map_get(bm, "derived_mass_props") {
+        if let Value::StructureInstance(d) = derived {
+            if d.type_name == "MassProperties" {
+                return Some(derived.clone());
+            }
+        }
+    }
+    // Rung (c): unresolvable.
+    None
 }
 
 // ── dynamics diagnose hook (task 4278) ───────────────────────────────────────
