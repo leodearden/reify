@@ -466,10 +466,22 @@ MERGE_VERIFY_ARGS = ["all", "--scope", "all"]
 TASK_VERIFY_ARGS = ["test", "--scope", "all", "--include-infra"]
 
 
+# Anti-hang safety net for one whole campaign verify (minutes).  Deliberately
+# FAR above any legitimate wall: the standing 60m/75m budgets live INSIDE
+# verify.sh as per-nextest-step timeouts (verify.sh `timeout … 60m/75m nextest`
+# lines), and verify.sh propagates a step's exit code — including a step 124 —
+# as its own exit (the `exit "$_rc"` step-failure path).  Wrapping the WHOLE
+# verify in 60m/75m (as the original step-12 wiring did) would manufacture
+# spurious 124s production never sees (a full verify legitimately runs npm +
+# compile + a 60m-budget debug pass + a 75m-budget release pass back-to-back)
+# and falsely fail criterion (c).  If this net ever fires, the ~4h wall makes
+# it self-evident in the report.
+SAFETY_NET_TIMEOUT_MIN = 240
+
+
 def make_verify_cmd(
     role: str,
     action_args: list,
-    timeout_min: int,
     merge_fifo: str,
     task_fifo: str,
     verify_sh: str,
@@ -484,9 +496,8 @@ def make_verify_cmd(
         Without them the single-pool baseline run would silently draw from
         the live dual-pool service, turning the A/B into dual-vs-dual.
 
-    The standing outer-timeout budget (debug 60m / release 75m) is applied
-    via `timeout --kill-after=60 <timeout_min>m` so exit-124 is observable
-    for criterion (c).
+    No per-role outer timeout: criterion (c)'s exit-124 oracle is verify.sh's
+    own standing per-step budgets (see SAFETY_NET_TIMEOUT_MIN note above).
     """
     return [
         "env",
@@ -495,7 +506,7 @@ def make_verify_cmd(
         f"REIFY_JOBSERVER_TASK_FIFO={task_fifo}",
         "timeout",
         "--kill-after=60",
-        f"{timeout_min}m",
+        f"{SAFETY_NET_TIMEOUT_MIN}m",
         "bash",
         verify_sh,
     ] + list(action_args)
@@ -562,11 +573,11 @@ def _run_campaign(
     def _cmds_for(merge_fifo: str, task_fifo: str) -> "tuple[list, list]":
         """Merge + task command lists with the run's FIFOs routed in."""
         merge_cmd = make_verify_cmd(
-            "merge", MERGE_VERIFY_ARGS, 75, merge_fifo, task_fifo, verify_sh
+            "merge", MERGE_VERIFY_ARGS, merge_fifo, task_fifo, verify_sh
         )
         task_cmds = [
             make_verify_cmd(
-                "task", TASK_VERIFY_ARGS, 60, merge_fifo, task_fifo,
+                "task", TASK_VERIFY_ARGS, merge_fifo, task_fifo,
                 task_verify_sh,
             )
             for _ in range(ntasks)

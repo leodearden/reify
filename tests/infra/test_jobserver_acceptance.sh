@@ -586,17 +586,23 @@ spec.loader.exec_module(mod)
 errors = []
 
 cmd = mod.make_verify_cmd(
-    "merge", mod.MERGE_VERIFY_ARGS, 75,
+    "merge", mod.MERGE_VERIFY_ARGS,
     "/fake/merge-fifo", "/fake/task-fifo", "/fake/verify.sh",
 )
 
-# 6a: action + role + timeout budget present
+# 6a: action + role + anti-hang safety net present; NO per-role outer
+# budget — criterion (c)'s 124 oracle is verify.sh's own INNER per-step
+# 60m/75m budgets (verify.sh propagates a step 124 as its exit code).
+# Wrapping the whole verify in 60m/75m would manufacture spurious 124s.
 if "all" not in cmd[cmd.index("/fake/verify.sh"):]:
     errors.append("(6a) merge cmd missing the 'all' verify.sh action")
 if "DF_VERIFY_ROLE=merge" not in cmd:
     errors.append("(6a) merge cmd missing DF_VERIFY_ROLE=merge")
-if "75m" not in cmd:
-    errors.append("(6a) merge cmd missing the 75m standing budget")
+if "75m" in cmd or "60m" in cmd:
+    errors.append("(6a) cmd carries a per-role outer budget — would "
+                  "manufacture spurious 124s (inner budgets are the oracle)")
+if f"{mod.SAFETY_NET_TIMEOUT_MIN}m" not in cmd:
+    errors.append("(6a) merge cmd missing the anti-hang safety net")
 if "--scope" not in cmd or "timeout" not in cmd:
     errors.append("(6a) merge cmd missing --scope / timeout wrapper")
 
@@ -606,15 +612,17 @@ if "REIFY_JOBSERVER_MERGE_FIFO=/fake/merge-fifo" not in cmd:
 if "REIFY_JOBSERVER_TASK_FIFO=/fake/task-fifo" not in cmd:
     errors.append("(6b) task-pool FIFO env var not injected")
 
-# task-role variant: action 'test', 60m budget
+# task-role variant: action 'test', same no-outer-budget contract
 tcmd = mod.make_verify_cmd(
-    "task", mod.TASK_VERIFY_ARGS, 60,
+    "task", mod.TASK_VERIFY_ARGS,
     "/fake/merge-fifo", "/fake/task-fifo", "/fake/verify.sh",
 )
 if "test" not in tcmd[tcmd.index("/fake/verify.sh"):]:
     errors.append("(6a) task cmd missing the 'test' verify.sh action")
-if "DF_VERIFY_ROLE=task" not in tcmd or "60m" not in tcmd:
-    errors.append("(6a) task cmd missing role / 60m budget")
+if "DF_VERIFY_ROLE=task" not in tcmd:
+    errors.append("(6a) task cmd missing role")
+if "60m" in tcmd or "75m" in tcmd:
+    errors.append("(6a) task cmd carries a per-role outer budget")
 
 # 6c: _run_campaign refuses ntasks > 0 without task_repo (raises before
 # provisioning anything — hermetically safe to call)
