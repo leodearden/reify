@@ -137,4 +137,49 @@ mod tests {
         // Doc-comment prose mentioning the attribute must NOT fire.
         assert_eq!(ignore_attr("/// #[ignore]"), None);
     }
+
+    // -------------------------------------------------------------------
+    // §8.2 citation resolution — canonical `#NNNN`
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn canonical_cite_positives() {
+        assert!(has_canonical_cite("// TODO(#42): x"));
+        assert!(has_canonical_cite("see #4553"));
+        assert!(has_canonical_cite("#1"));
+        assert!(has_canonical_cite("#12345 five digits"));
+    }
+
+    #[test]
+    fn canonical_cite_negatives() {
+        assert!(!has_canonical_cite("bare # alone"));
+        assert!(!has_canonical_cite("#abc not digits"));
+        // 6-digit run exceeds the 1..=5 window — not a 5-digit prefix match.
+        assert!(!has_canonical_cite("#123456 six digits"));
+        // Space between `#` and digits.
+        assert!(!has_canonical_cite("# 42"));
+    }
+
+    // -------------------------------------------------------------------
+    // §8.2/§6.4 malformed citations — Greek / PRD-relative / legacy
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn malformed_cite_positives() {
+        assert!(has_malformed_cite("// TODO(task δ): migrate")); // Greek
+        assert!(has_malformed_cite("tracked in task α")); // Greek, no space-after-paren
+        assert!(has_malformed_cite("// TODO(task-5): later")); // PRD-relative
+        assert!(has_malformed_cite("// TODO: see task 4553")); // legacy space form
+        assert!(has_malformed_cite("// TODO: see task_4553")); // legacy underscore form
+    }
+
+    #[test]
+    fn malformed_cite_negatives() {
+        // Canonical-only line must not be reported malformed (no `task` token).
+        assert!(!has_malformed_cite("// TODO(#4553): migrate"));
+        // Ordinary prose, no task+cite shape.
+        assert!(!has_malformed_cite("the multitasking scheduler runs"));
+        // A bare canonical cite.
+        assert!(!has_malformed_cite("resolved in #4553"));
+    }
 }
