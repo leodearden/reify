@@ -180,6 +180,57 @@ fn file_lines_on_real_commit() {
 }
 
 // -----------------------------------------------------------------------
+// ls_files: tracked-path enumeration (PTODO structural-lane git seam)
+// -----------------------------------------------------------------------
+
+/// Pin that `RealGitOps::ls_files` returns exactly the set of tracked,
+/// root-relative paths — including nested paths — and excludes an
+/// untracked/uncommitted file.
+///
+/// Setup: commit `a.rs`, `dir/b.sh`, `crates/x/c.rs`; then write (but do NOT
+/// `git add`/commit) `untracked.rs`.
+///
+/// Assertion: the returned set equals the three committed paths, and the
+/// untracked file is absent. Order is not asserted (git's ls-files order is
+/// not part of the contract); the detector sorts before use.
+#[test]
+fn ls_files_lists_tracked_paths_only() {
+    use std::collections::BTreeSet;
+
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+
+    write_file(root, "a.rs", "fn a() {}\n");
+    write_file(root, "dir/b.sh", "echo hi\n");
+    write_file(root, "crates/x/c.rs", "fn c() {}\n");
+    git_commit(root, "commit three tracked files");
+
+    // An untracked file that must NOT appear in ls_files output.
+    write_file(root, "untracked.rs", "fn untracked() {}\n");
+
+    let git = RealGitOps::new(root);
+    let listed: BTreeSet<String> = git.ls_files().into_iter().collect();
+
+    let expected: BTreeSet<String> = ["a.rs", "dir/b.sh", "crates/x/c.rs"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    assert_eq!(
+        listed, expected,
+        "ls_files must return exactly the tracked root-relative paths; got: {:?}",
+        listed,
+    );
+    assert!(
+        !listed.contains("untracked.rs"),
+        "ls_files must not list an untracked/uncommitted file; got: {:?}",
+        listed,
+    );
+}
+
+// -----------------------------------------------------------------------
 // Trailing-newline invariant: both forms yield the same logical line count
 // -----------------------------------------------------------------------
 
