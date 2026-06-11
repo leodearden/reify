@@ -619,6 +619,63 @@ mod tests {
         );
     }
 
+    // ── compute_max_shear_3x3 kernel tests ──────────────────────────────────
+
+    /// `compute_max_shear_3x3` on a uniaxial window [σ,0,...,0] returns σ/2
+    /// (eigenvalues = [0,0,σ] → (σ−0)/2 = σ/2).
+    ///
+    /// Also verifies a hydrostatic window [p,0,0, 0,p,0, 0,0,p] → 0.0
+    /// (all eigenvalues equal → (p−p)/2 = 0).
+    ///
+    /// RED before step-2: `compute_max_shear_3x3` does not exist (compile error).
+    #[test]
+    fn compute_max_shear_3x3_uniaxial_and_hydrostatic() {
+        // Uniaxial [σ,0,0,0,0,0,0,0,0] → τ_max = σ/2
+        let sigma = 200e6_f64;
+        let uniaxial = [sigma, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let tau = compute_max_shear_3x3(&uniaxial);
+        assert!(
+            (tau - sigma / 2.0).abs() < 1e-6,
+            "uniaxial: expected τ_max={}, got {}",
+            sigma / 2.0,
+            tau
+        );
+
+        // Hydrostatic [p,0,0, 0,p,0, 0,0,p] → τ_max = 0
+        let p = 100e6_f64;
+        let hydrostatic = [p, 0.0, 0.0, 0.0, p, 0.0, 0.0, 0.0, p];
+        let tau_h = compute_max_shear_3x3(&hydrostatic);
+        assert!(
+            tau_h.abs() < 1e-6,
+            "hydrostatic: expected τ_max=0.0, got {}",
+            tau_h
+        );
+    }
+
+    /// All-NaN window routed through the `max_shear` builtin must NOT panic
+    /// on the symmetry `debug_assert` in `compute_eigenvalues_3x3`, and must
+    /// return `Value::Undef` (NaN projected to NaN → `sanitize_value` → Undef).
+    ///
+    /// RED before step-2: the NaN short-circuit in `compute_eigenvalues_3x3`
+    /// is missing, so `(NaN-NaN).abs() <= ...` = false and the assert fires.
+    #[test]
+    fn max_shear_builtin_all_nan_window_returns_undef_without_panic() {
+        let nan_tensor = make_dimensioned_matrix(
+            &[
+                &[f64::NAN, f64::NAN, f64::NAN],
+                &[f64::NAN, f64::NAN, f64::NAN],
+                &[f64::NAN, f64::NAN, f64::NAN],
+            ],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("max_shear", &[nan_tensor]).unwrap();
+        assert!(
+            result.is_undef(),
+            "max_shear(all-NaN window) must return Undef without panicking, got {:?}",
+            result
+        );
+    }
+
     // ── safety_factor tests ─────────────────────────────────────────────────
 
     #[test]
