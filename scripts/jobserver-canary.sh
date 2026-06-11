@@ -50,6 +50,13 @@ build_active() {  # count live cargo/compiler/linker procs (exclude stopped/zomb
 
 reseed() { echo "jobserver-canary: $1 — re-seeding $SVC"; systemctl --user restart "$SVC"; }
 
+# Either FIFO gone → custodian daemon is dead; restart unconditionally.
+# A dead daemon means no verify can be using the FIFO, so restart is safe even
+# under apparent build activity.
+if [ ! -p "$MERGE_FIFO" ] || [ ! -p "$TASK_FIFO" ]; then
+    reseed "merge/task FIFO missing"; exit 0
+fi
+
 # Require the build to be idle across the whole sampling window before acting,
 # so we never re-seed while a verify is mid-flight.
 for i in 1 2 3; do
