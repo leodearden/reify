@@ -171,7 +171,9 @@ pub struct TensegrityLoadSolve {
 /// - [`TensegrityLoadError::EmptyFreeSet`] — every node is anchored, so there is
 ///   no free DOF to solve for.
 /// - [`TensegrityLoadError::SingularSystem`] — an inner CG pass failed to
-///   converge (a singular or ill-conditioned reduced tangent system).
+///   converge (a singular or ill-conditioned reduced tangent system), or a free
+///   (non-fixed) node has no incident member, so its DOFs carry zero stiffness
+///   (a rigid-body / singular tangent mode with no taut load path to a support).
 /// - [`TensegrityLoadError::ActiveSetDidNotConverge`] — the tension-only active
 ///   set did not reach a fixed point within `options.max_active_set_iters`
 ///   passes (the PRD §11 Q5 defensive guard; drop-only monotonicity makes this
@@ -213,6 +215,26 @@ pub fn tensegrity_load_analysis(
     // problem has nothing to solve for.
     if n_nodes == 0 || is_fixed.iter().all(|&f| f) {
         return Err(TensegrityLoadError::EmptyFreeSet);
+    }
+
+    // A free node touched by no member has zero incident stiffness: its three
+    // DOFs reach the global tangent system with an empty (zero) diagonal — a
+    // rigid-body / singular tangent mode. Solving it would trip the inner CG
+    // Jacobi preconditioner's unconditional missing-diagonal assert and panic
+    // (a contract violation the trampoline cannot catch). Reject it up-front as
+    // SingularSystem instead. Anchored orphans are fine — they are pinned by
+    // Dirichlet BCs and grounded by `solve_active_pass`'s stabiliser. Endpoints
+    // were range-checked above, so indexing `touched` here is in-bounds.
+    let mut touched = vec![false; n_nodes];
+    for member in members {
+        let (j, k) = member.nodes;
+        touched[j] = true;
+        touched[k] = true;
+    }
+    for node in 0..n_nodes {
+        if !is_fixed[node] && !touched[node] {
+            return Err(TensegrityLoadError::SingularSystem);
+        }
     }
 
     // Tension-only active set: start with every member active and drop any
