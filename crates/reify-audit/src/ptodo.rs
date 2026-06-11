@@ -378,4 +378,57 @@ mod tests {
             assert!(!is_swept_ext(p), "{p} should NOT be a swept extension");
         }
     }
+
+    // -------------------------------------------------------------------
+    // §8 per-file classification orchestration (precedence)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn classify_file_precedence_rust() {
+        // Each line exercises exactly one §8 precedence rule; line numbers are
+        // 1-based. is_rust=true so macro/ignore rules are live.
+        let lines = [
+            "// TODO(#4553): cited",              // 1 (a) canonical cite -> no entry
+            "// tracked as a follow-up task",     // 2 (b) phantom, no cite -> PhantomTracking
+            "// TODO(task δ): migrate",           // 3 (c) marker + malformed -> MalformedCite
+            "// TODO: wire this",                 // 4 (d) marker, no cite -> Untracked
+            "    #[ignore]",                      // 5 (e) bare ignore -> BareIgnore
+            "    #[ignore = \"blocked\"]",        // 6 (f) reason-bearing -> no entry
+            "// resolved in #4553",               // 7 canonical cite, no marker -> no entry (prev for 8)
+            "    todo!()",                        // 8 (g) macro, canonical cite directly above -> no entry
+            "// TODO: leave me  // ptodo:allow",  // 9 (h) inline escape -> skipped
+            "    todo!(\"later\")",               // 10 macro, no cite above -> Untracked
+        ];
+        let content = lines.join("\n");
+        let got = classify_file(&content, true);
+
+        let expected: Vec<(usize, Kind, String)> = vec![
+            (2, Kind::PhantomTracking, "// tracked as a follow-up task".to_string()),
+            (3, Kind::MalformedCite, "// TODO(task δ): migrate".to_string()),
+            (4, Kind::Untracked, "// TODO: wire this".to_string()),
+            (5, Kind::BareIgnore, "#[ignore]".to_string()),
+            (10, Kind::Untracked, "todo!(\"later\")".to_string()),
+        ];
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn classify_file_non_rust_skips_macro_and_ignore() {
+        // is_rust=false: comment markers and phantom phrases still fire (all
+        // swept exts), but the .rs-only macro and #[ignore] rules do NOT.
+        let lines = [
+            "# TODO: wire this sh script", // 1 comment marker -> Untracked
+            "todo!()",                     // 2 macro -> suppressed (is_rust=false)
+            "#[ignore]",                   // 3 ignore -> suppressed (is_rust=false)
+            "tracked separately",          // 4 phantom -> PhantomTracking
+        ];
+        let content = lines.join("\n");
+        let got = classify_file(&content, false);
+
+        let expected: Vec<(usize, Kind, String)> = vec![
+            (1, Kind::Untracked, "# TODO: wire this sh script".to_string()),
+            (4, Kind::PhantomTracking, "tracked separately".to_string()),
+        ];
+        assert_eq!(got, expected);
+    }
 }
