@@ -617,12 +617,19 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
             Some(sf) => reduce_sampled_extremum(&sf, codomain_type, find_min),
             None => Value::Undef,
         },
+        // MaxShear: same pattern as VonMises — project each 9-float window via
+        // `compute_max_shear_3x3` ((σ₁−σ₃)/2), delegate to Sampled reduction.
+        // NaN windows (out-of-solid sentinel) yield NaN and are skipped.
+        FieldSourceKind::MaxShear => match project_max_shear_sampled(lambda.as_ref()) {
+            Some(sf) => reduce_sampled_extremum(&sf, codomain_type, find_min),
+            None => Value::Undef,
+        },
         // Analytical/Composed 1-arg: stays honest-Undef — no bounds are
         // supplied, so a global extremum is ill-posed for an unbounded analytical
         // domain.  The 2-arg bounded form `max(field, bbox)` is implemented in
         // `compute_bounded_extremum` / `reduce_analytical_extremum_bounded`
         // (task 4561, step-4).  Remaining deferred: Imported (no lambda data)
-        // and derived wrappers (Gradient/Divergence/Curl/Laplacian/MaxShear/
+        // and derived wrappers (Gradient/Divergence/Curl/Laplacian/
         // PrincipalStresses/SafetyFactor) — sampled-subfield reduction for
         // those still requires PRD §13 line 238 scope.
         //
@@ -635,28 +642,26 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
     }
 }
 
-/// Project the backing Sampled tensor field stored in a VonMises field's
-/// lambda slot into a fresh stride-1 scalar `SampledField`.
+/// Generic: project a Sampled tensor field's 9-float windows to a stride-1
+/// scalar `SampledField` via a per-window kernel `project_fn`.
 ///
 /// # Unwrap path
 ///
-/// The lambda slot of a `VonMisesField` holds the ORIGINAL tensor
-/// `Value::Field { source: Sampled, lambda: Arc<Value::SampledField(_)>, .. }`.
+/// `tensor_field` must be a `Value::Field { source: Sampled, lambda: Arc<Value::SampledField(_)>, .. }`.
 /// This helper performs two levels of unwrapping:
-/// 1. `lambda` as `Value::Field { source: Sampled, lambda: inner, .. }`
+/// 1. `tensor_field` as `Value::Field { source: Sampled, lambda: inner, .. }`
 /// 2. `inner.as_ref()` as `Value::SampledField(sf)` (the actual data buffer)
 ///
 /// Returns `None` defensively for any other shape, mirroring the
 /// `compute_extremum` Sampled defensive arm.
 ///
-/// # Projection
+/// # Stride contract
 ///
 /// Computes `grid_count = ∏ axis_grid lengths`, guards that
 /// `sf.axis_grids` is non-empty, `grid_count > 0`, and
-/// `sf.data.len() == grid_count * 9` (stride contract — mirrors
+/// `sf.data.len() == grid_count * 9` (stride-9 contract — mirrors
 /// `fea.rs::extract_per_case_sampled_field`), then for each `i` in
-/// `0..grid_count` pushes
-/// `reify_stdlib::compute_von_mises_3x3(&sf.data[i*9..i*9+9])` into a new
+/// `0..grid_count` pushes `project_fn(&sf.data[i*9..i*9+9])` into a new
 /// scalar `Vec<f64>`.
 ///
 /// Note: the `axis_grids.is_empty()` guard is technically redundant given
@@ -668,15 +673,14 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
 ///
 /// # Result
 ///
-/// Returns a fresh `SampledField` copying `sf`'s grid metadata (`name`,
-/// `kind`, `bounds_min`, `bounds_max`, `spacing`, `axis_grids`,
-/// `interpolation`) with `data = projected_scalars` and
-/// `oob_emitted: AtomicBool::new(false)` (fresh flag — the projected field
-/// is an internal intermediary, so there is no user-visible duplicate-warning
-/// surface to suppress, mirroring fea.rs line 804–813 rationale).
-fn project_von_mises_sampled(lambda: &Value) -> Option<SampledField> {
-    // Level 1: unwrap the Sampled tensor field from the VonMises lambda slot.
-    let inner = match lambda {
+/// Returns a fresh `SampledField` copying `sf`'s grid metadata with
+/// `data = projected_scalars` and `oob_emitted: AtomicBool::new(false)`.
+fn project_sampled_tensor_windows(
+    tensor_field: &Value,
+    project_fn: impl Fn(&[f64]) -> f64,
+) -> Option<SampledField> {
+    // Level 1: unwrap the Sampled tensor field.
+    let inner = match tensor_field {
         Value::Field {
             source: FieldSourceKind::Sampled,
             lambda: inner,
@@ -691,20 +695,16 @@ fn project_von_mises_sampled(lambda: &Value) -> Option<SampledField> {
         _ => return None,
     };
 
-    // Shape + stride contract: axis_grids must be non-empty (SampledGridKind
-    // invariant guarantees this for Regular1D/2D/3D, but checked defensively
-    // for directly-constructed fields bypassing that gate; an empty axis_grids
-    // vec would yield product()==1, not 0, so it must be guarded separately),
-    // grid_count must be non-zero, and data must be exactly grid_count * 9 floats.
+    // Shape + stride contract.
     let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
     if sf.axis_grids.is_empty() || grid_count == 0 || sf.data.len() != grid_count * 9 {
         return None;
     }
 
-    // Project each 9-float window to a scalar von Mises value.
+    // Project each 9-float window to a scalar value.
     let mut projected: Vec<f64> = Vec::with_capacity(grid_count);
     for i in 0..grid_count {
-        projected.push(reify_stdlib::compute_von_mises_3x3(&sf.data[i * 9..i * 9 + 9]));
+        projected.push(project_fn(&sf.data[i * 9..i * 9 + 9]));
     }
 
     Some(SampledField {
@@ -718,6 +718,31 @@ fn project_von_mises_sampled(lambda: &Value) -> Option<SampledField> {
         data: projected,
         oob_emitted: AtomicBool::new(false),
     })
+}
+
+/// Project the backing Sampled tensor field stored in a VonMises field's
+/// lambda slot into a fresh stride-1 scalar `SampledField` via
+/// `reify_stdlib::compute_von_mises_3x3`.
+///
+/// Thin delegator to [`project_sampled_tensor_windows`] with the VonMises
+/// per-window kernel. All shape/stride/NaN-skip guards live in the generic.
+///
+/// The existing VonMises S5 defensive tests (`all_reductions_on_vonmises_field_
+/// with_non_sampled_lambda_return_undef`, `_stride_violation_`, `_all_nan_`)
+/// cover the shared guard path through this delegator.
+fn project_von_mises_sampled(lambda: &Value) -> Option<SampledField> {
+    project_sampled_tensor_windows(lambda, reify_stdlib::compute_von_mises_3x3)
+}
+
+/// Project the backing Sampled tensor field stored in a MaxShear field's
+/// lambda slot into a fresh stride-1 scalar `SampledField` via
+/// `reify_stdlib::compute_max_shear_3x3`.
+///
+/// The lambda slot of a `MaxShear` field holds the ORIGINAL tensor
+/// `Value::Field { source: Sampled, .. }` (same shape as VonMises).
+/// Delegates shape/stride/NaN-skip guards to [`project_sampled_tensor_windows`].
+fn project_max_shear_sampled(lambda: &Value) -> Option<SampledField> {
+    project_sampled_tensor_windows(lambda, reify_stdlib::compute_max_shear_3x3)
 }
 
 /// Reduce a `SampledField`'s data buffer to a single extremum value,
@@ -785,6 +810,15 @@ fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
         // because data.len() == grid_count == prod(axis_grid lengths) after
         // projection.
         FieldSourceKind::VonMises => match project_von_mises_sampled(lambda.as_ref()) {
+            Some(sf) => match argmax_argmin_index(&sf.data, find_min) {
+                Some(linear) => arg_coord_from_index(&sf, linear, domain_type),
+                None => Value::Undef,
+            },
+            None => Value::Undef,
+        },
+        // MaxShear: same pattern as VonMises — project via `compute_max_shear_3x3`,
+        // then locate the extremum index and decompose to a domain coordinate.
+        FieldSourceKind::MaxShear => match project_max_shear_sampled(lambda.as_ref()) {
             Some(sf) => match argmax_argmin_index(&sf.data, find_min) {
                 Some(linear) => arg_coord_from_index(&sf, linear, domain_type),
                 None => Value::Undef,
