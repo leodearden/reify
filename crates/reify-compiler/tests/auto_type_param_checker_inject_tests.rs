@@ -90,6 +90,39 @@ impl ConstraintChecker for AlwaysViolated {
     }
 }
 
+/// An always-indeterminate checker that counts how many times `check()` is
+/// called, using interior mutability so it works through `&dyn`.
+///
+/// The count proves the `*_checked` entry points actually reach the checker
+/// (not just that the symbols compile). The DFS leaf visitor calls `check()`
+/// once per candidate type even when the constraint list is empty, so the
+/// counter increments at least once for any `auto:` resolution that finds a
+/// candidate.
+struct CountingIndeterminate {
+    calls: std::sync::atomic::AtomicU32,
+}
+
+impl CountingIndeterminate {
+    fn new() -> Self {
+        Self { calls: std::sync::atomic::AtomicU32::new(0) }
+    }
+}
+
+impl ConstraintChecker for CountingIndeterminate {
+    fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        input
+            .constraints
+            .iter()
+            .map(|(id, _)| ConstraintResult {
+                id: id.clone(),
+                satisfaction: Satisfaction::Indeterminate,
+                diagnostics: ConstraintDiagnostics::default(),
+            })
+            .collect()
+    }
+}
+
 /// Extract `(severity, message)` pairs for diagnostic comparison.
 /// `Diagnostic` does not derive `PartialEq`, so we compare the two scalar
 /// fields that carry semantic content.
@@ -156,9 +189,11 @@ fn compile_with_prelude_checked_parity() {
 
 // ─── compile_with_prelude_context_checked parity ──────────────────────────────
 
-/// Injecting `AlwaysIndeterminate` through `compile_with_prelude_context_checked`
+/// Injecting `CountingIndeterminate` through `compile_with_prelude_context_checked`
 /// must produce byte-identical `auto_type_substitution` and diagnostics to the
-/// stub-default `compile_with_prelude_context`.
+/// stub-default `compile_with_prelude_context`, AND the checker must be invoked
+/// at least once — proving the seam reaches the checker, not just that the
+/// `*_checked` symbol resolves.
 #[test]
 fn compile_with_prelude_context_checked_parity() {
     let parsed = parse_auto_source(CELL_DEP_SEAL_SOURCE, "test_checker_inject_ctx");
@@ -167,9 +202,15 @@ fn compile_with_prelude_context_checked_parity() {
     let ctx =
         reify_compiler::PreludeContext::new(&prelude.iter().collect::<Vec<_>>());
     let stub = reify_compiler::compile_with_prelude_context(&parsed, &ctx);
+    let counter = CountingIndeterminate::new();
     let checked =
-        reify_compiler::compile_with_prelude_context_checked(&parsed, &ctx, &AlwaysIndeterminate);
+        reify_compiler::compile_with_prelude_context_checked(&parsed, &ctx, &counter);
     assert_parity(&stub, &checked, "compile_with_prelude_context_checked");
+    assert!(
+        counter.calls.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "CountingIndeterminate::check() was never called — the checker seam \
+         did not reach the feasibility evaluator"
+    );
 }
 
 // ─── compile_entry_with_stdlib_cfg_checked parity ─────────────────────────────

@@ -893,6 +893,17 @@ pub fn compile_entry_with_stdlib_cfg(
 /// Recursive import compiles (inside the DAG walk) keep the stub checker to
 /// bound β's blast radius per design decision §4. Only the entry module's
 /// compile call (`compile_with_prelude_context_checked`) receives `checker`.
+///
+/// **Entry/import asymmetry — constant constraints:** this boundary is
+/// intentional but is visible for constant-foldable constraints (e.g.
+/// `constraint 0 > 1`): a module with such a constraint will have its
+/// `auto:` candidates rejected when compiled as the *entry* (real checker
+/// applied) but accepted when compiled as an *import* (stub → Indeterminate).
+/// For cell-dependent constraints the compile-time `ValueMap` is empty (Undef),
+/// so both paths return `Indeterminate` and no divergence is observable.
+/// The integration test `compile_entry_with_stdlib_cfg_checked_import_uses_stub`
+/// pins this as a regression guard. Threading `checker` into DAG-walk import
+/// compiles for consistent cross-role resolution is left as a follow-up.
 pub fn compile_entry_with_stdlib_cfg_checked(
     parsed: &reify_ast::ParsedModule,
     resolver: &ModuleResolver,
