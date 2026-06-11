@@ -218,6 +218,69 @@ mod tests {
         assert!(orphaned.summary.contains("#4444"), "summary: {}", orphaned.summary);
         assert!(orphaned.summary.contains("done"), "summary: {}", orphaned.summary);
     }
+
+    /// §6.7 degradation (in-process): the SAME tree as the liveness test but
+    /// with NO task DB at the default path. `check` must skip the liveness lane
+    /// silently — only the structural `untracked` finding is returned, with no
+    /// `orphaned`/`unknown-id` finding for the cited file, and no panic.
+    #[test]
+    fn check_degrades_when_tasks_db_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(root, "cited.rs", "// TODO(#4444): x\n");
+        write_file(root, "untracked.rs", "// TODO: wire\n");
+        // NB: no `.taskmaster/tasks/tasks.db` is seeded → the default path is
+        // absent, so the read-only open fails and the liveness lane degrades.
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec!["cited.rs".to_string(), "untracked.rs".to_string()]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        // The structural lane still flags the untracked marker.
+        assert!(
+            findings.iter().any(|f| {
+                f.evidence
+                    .iter()
+                    .any(|e| matches!(e, EvidenceRef::File { path } if path == "untracked.rs"))
+                    && f.summary.starts_with("untracked:")
+            }),
+            "untracked structural finding must survive DB-absent degradation; findings={findings:?}"
+        );
+
+        // The liveness lane is skipped entirely: no orphaned/unknown-id finding,
+        // and in particular none referencing the cited file.
+        for f in &findings {
+            assert!(
+                !f.summary.starts_with("orphaned:") && !f.summary.starts_with("unknown-id:"),
+                "no liveness finding may be emitted when the DB is absent; got {:?}",
+                f.summary
+            );
+        }
+        assert!(
+            !findings.iter().any(|f| {
+                f.evidence
+                    .iter()
+                    .any(|e| matches!(e, EvidenceRef::File { path } if path == "cited.rs"))
+            }),
+            "cited file must yield no finding when the DB is absent; findings={findings:?}"
+        );
+    }
 }
 
 }

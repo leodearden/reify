@@ -1481,6 +1481,98 @@ mod cli {
             serde_json::Value::Array(findings.clone())
         );
     }
+
+    /// §6.7 PTODO liveness degradation (end-to-end): `--pattern PTODO` over a
+    /// repo with a cited marker and an untracked marker but NO
+    /// `.taskmaster/tasks/tasks.db` must (1) emit the EXACT §6.7 breadcrumb on
+    /// stderr, (2) still surface the untracked structural finding in the JSON,
+    /// and (3) exit 0 — never 125 (125 is reserved for arg/IO misconfig, not an
+    /// absent optional substrate). `.taskmaster/` is untracked, so this absent-DB
+    /// path is the common case during worktree verify.
+    ///
+    /// RED until step-12 emits the breadcrumb; the structural finding and exit 0
+    /// already hold under step-10's silent skip, so the breadcrumb assertions
+    /// are the only failing ones.
+    #[test]
+    fn ptodo_degrades_fail_soft_when_tasks_db_absent() {
+        // Repo holds ONLY the two markers (so ls-files is exactly that set);
+        // the tasks-file/runs-db live in a separate aux dir, never tracked. No
+        // .taskmaster/tasks/tasks.db is created anywhere → the liveness lane
+        // degrades fail-soft.
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        std::fs::write(repo.path().join("cited.rs"), "// TODO(#4444): orphan-or-not\n")
+            .expect("write cited.rs");
+        std::fs::write(repo.path().join("untracked.rs"), "// TODO: wire this\n")
+            .expect("write untracked.rs");
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "PTODO",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern PTODO with no tasks.db");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        // (3) Fail-soft: all findings Medium → exit 0, never 125.
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "DB-absent degradation must exit 0, never 125; got {:?}\nstderr:\n{stderr}",
+            out.status.code()
+        );
+
+        // (1) The EXACT §6.7 breadcrumb. The path between the anchors is the
+        // resolved <repo>/.taskmaster/tasks/tasks.db, asserted via its stable
+        // tail rather than pinned literally (tempdir prefix varies).
+        assert!(
+            stderr.contains("reify-audit: tasks.db unreachable at '"),
+            "missing breadcrumb prefix; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("' — PTODO liveness degraded; structural checks still run"),
+            "missing breadcrumb suffix; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(".taskmaster/tasks/tasks.db"),
+            "breadcrumb must name the resolved tasks.db path; stderr:\n{stderr}"
+        );
+
+        // (2) The structural lane is unaffected: the untracked finding still
+        // parses out of the same stderr stream (the breadcrumb is a leading
+        // diagnostic line that parse_findings_from_stderr skips).
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.iter().any(|f| {
+                f["task_id"].as_str() == Some("untracked.rs")
+                    && f["summary"].as_str().is_some_and(|s| s.starts_with("untracked:"))
+            }),
+            "untracked structural finding must survive degradation; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        // The cited marker yields no finding (β skipped, α suppresses cited lines).
+        assert!(
+            !findings.iter().any(|f| f["task_id"].as_str() == Some("cited.rs")),
+            "cited file must yield no finding when the DB is absent; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
