@@ -53,20 +53,24 @@ fn classify_undef(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
 ) -> (bool, Vec<String>) {
+    use std::collections::HashSet;
+
     let leaf_ids = expr.collect_value_refs();
     let mut undef_names: Vec<String> = Vec::new();
+    let mut undef_seen: HashSet<String> = HashSet::new();
     let mut defined_kinds: Vec<String> = Vec::new();
+    let mut kinds_seen: HashSet<String> = HashSet::new();
 
     for id in &leaf_ids {
         let v = values.get_or_undef(id);
         if v.is_undef() {
             let name = id.to_string();
-            if !undef_names.contains(&name) {
+            if undef_seen.insert(name.clone()) {
                 undef_names.push(name);
             }
         } else {
             let kind = value_kind_label(&v);
-            if !defined_kinds.contains(&kind) {
+            if kinds_seen.insert(kind.clone()) {
                 defined_kinds.push(kind);
             }
         }
@@ -147,17 +151,17 @@ impl ConstraintChecker for SimpleConstraintChecker {
                         },
                     ),
                     Value::Undef => {
-                        let (has_undef, names) = classify_undef(expr, input.values);
+                        let (has_undef, items) = classify_undef(expr, input.values);
                         let msg = if has_undef {
                             format!(
                                 "constraint {} indeterminate: undefined inputs: {}",
                                 id,
-                                names.join(", ")
+                                items.join(", ")
                             )
                         } else {
-                            // All leaves are defined but the operator produced Undef.
-                            // Step-4 will replace this fallback with a kind list.
-                            if names.is_empty() {
+                            // All leaves are defined (or the expr has no ValueRefs) but
+                            // the operator produced Undef; report the distinct operand kinds.
+                            if items.is_empty() {
                                 format!(
                                     "constraint {} indeterminate: operator undefined for these operand kinds",
                                     id
@@ -166,7 +170,7 @@ impl ConstraintChecker for SimpleConstraintChecker {
                                 format!(
                                     "constraint {} indeterminate: operator undefined for these operand kinds: {}",
                                     id,
-                                    names.join(", ")
+                                    items.join(", ")
                                 )
                             }
                         };
