@@ -14,10 +14,10 @@
 //!    no-diagnostic invariant at the same call sites that previously emitted
 //!    the v0.1 "not yet supported" diagnostic.
 //!
-//! 2. **Diagnostic preserved (collection subs).**  `bolts[0].body` and
-//!    bare `self.bolts.body` continue to emit the geometry-specific
-//!    diagnostic — per-instance handles for collection elements are out of
-//!    scope for v0.1.
+//! 2. **Diagnostics preserved (collection subs).**  `bolts[0].body` emits the
+//!    geometry-specific "not yet supported in v0.1" diagnostic.  Bare
+//!    `self.bolts.body` emits the more-actionable "recommend indexed access"
+//!    diagnostic (routing ratified by task 4549; see step-7 tests).
 //!
 //! 3. **Generic-fallback preserved (truly missing members).**
 //!    `self.inner.nonexistent` still emits the generic "unknown member"
@@ -339,14 +339,32 @@ pub structure Rack {
 }
 
 /// Accessing a geometry member via a bare collection sub (`self.bolts.body`)
-/// must emit the geometry-specific diagnostic (not the generic "unknown member").
+/// emits the "recommend indexed access" diagnostic, NOT the geometry-specific
+/// "not yet supported in v0.1" message.
 ///
-/// RED until GHR-γ step-8 lands (geometry-specific diagnostic for collection-sub
-/// bare access is not yet implemented).  Ignored so the test suite stays green;
-/// un-ignore once step-8 is complete.
+/// ## Routing decision (ratified by task 4549)
+///
+/// GHR-γ (task 3605) lowers `param body : Solid` to a `ValueCellDecl` included
+/// by `member_type_map_from_template`.  For a **bare** collection-sub access, the
+/// bare-collection branch in `expr.rs` consults `sub_member_types` first; because
+/// `body` is present, the branch emits:
+///
+/// > "cannot access member 'body' of collection sub 'bolts' directly through
+/// >  self; use `bolts[i].body` for a specific instance"
+///
+/// This is strictly more actionable than the geometry-specific message: a
+/// collection sub has no single handle regardless of member type; the correct
+/// fix is to pick an instance (`bolts[i].body`), which THEN surfaces the
+/// geometry v0.1 limitation via the indexed branch.  Reversing this routing
+/// would degrade UX.  GHR-δ (task 3606) shipped without a per-instance-handle
+/// strategy, retiring the speculative "until GHR-δ+" citation.
+///
+/// ## Routing guard
+///
+/// Assertion (c) explicitly pins that the geometry-specific diagnostic does NOT
+/// fire for bare access, locking this routing decision against future regression.
 #[test]
-#[ignore = "RED: geometry-specific diagnostic for bare collection-sub not yet implemented (GHR-γ step-8)"]
-fn collection_sub_bare_geometry_access_emits_specific_diagnostic() {
+fn collection_sub_bare_geometry_access_recommends_indexed_access() {
     let source = r#"pub structure Bolt {
     param body : Solid = cylinder(2mm, 10mm)
 }
@@ -361,29 +379,37 @@ pub structure Rack {
         .filter(|d| d.severity == Severity::Error)
         .collect();
 
+    // (a) At least one Error fires.
     assert!(
         !errors.is_empty(),
         "expected at least one Error for bare collection-sub geometry access"
     );
 
+    // (b) An Error recommends indexed access — message names 'bolts', 'body',
+    //     and the idiomatic fix `bolts[i].body`.
+    let recommends_indexed = errors.iter().any(|d| {
+        d.message.contains("bolts")
+            && d.message.contains("body")
+            && d.message.contains("bolts[i].body")
+    });
+    assert!(
+        recommends_indexed,
+        "expected 'recommend indexed access' diagnostic naming 'bolts', 'body', \
+         and 'bolts[i].body'; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // (c) ROUTING GUARD: no Error carries the geometry-specific diagnostic.
+    //     Bare collection-sub access intentionally routes to the collection
+    //     recommendation, not to the geometry "not yet supported" message.
     let has_geometry_diagnostic = errors
         .iter()
         .any(|d| d.message.contains("geometry") && has_deferred_keyword(&d.message));
     assert!(
-        has_geometry_diagnostic,
-        "expected geometry-specific diagnostic for self.bolts.body; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-
-    let names_sub_and_member = errors.iter().any(|d| {
-        d.message.contains("geometry")
-            && has_deferred_keyword(&d.message)
-            && d.message.contains("bolts")
-            && d.message.contains("body")
-    });
-    assert!(
-        names_sub_and_member,
-        "geometry diagnostic must name 'bolts' and 'body'; got: {:?}",
+        !has_geometry_diagnostic,
+        "bare collection-sub access must NOT emit the geometry-specific diagnostic; \
+         the routing guard has regressed — bare access should route to 'recommend \
+         indexed access', not to the geometry limitation message; got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
