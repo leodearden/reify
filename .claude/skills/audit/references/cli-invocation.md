@@ -6,16 +6,32 @@ How the `/audit` skill shells out to `reify-audit`. This is the first skill in t
 
 ## §1 Binary resolution
 
-Prefer the pre-built release binary if present; fall back to `cargo run`:
+**Freshness guard — REQUIRED before preferring the release binary.**
+
+`reify-audit` is absent from `scripts/release-sensitive-crates.txt`, so the merge-gate release pass never rebuilds `target/release/reify-audit`. Without a freshness check the skill silently serves a stale detector that may predate precision fixes. The guard must live in the caller (not inside the binary) because the staleness to catch is precisely a binary that predates any guard.
+
+Source `scripts/reify-audit-freshness.sh` and call `reify_audit_guard` in **REBUILD** mode before selecting the release binary. Rebuild mode calls `cargo build --release -q -p reify-audit` to self-heal the binary; it is cheap and non-blocking for an interactive skill invocation:
 
 ```bash
 # Resolve repo root — anchor all paths against it.
 # Makes /audit safe to invoke from any subdirectory of the worktree.
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
-# Preferred — release binary already built
-if [ -x "$REPO_ROOT/target/release/reify-audit" ]; then
-    REIFY_AUDIT_BIN="$REPO_ROOT/target/release/reify-audit"
+# Load the shared freshness guard library.
+source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
+
+# REBUILD mode: if the release binary predates the last crates/reify-audit
+# commit, cargo-build it before selecting it. Falls through silently if fresh.
+# Use `|| true` so that a failed rebuild (toolchain absent, compile error, etc.)
+# degrades to the `cargo run` fallback below rather than aborting the script
+# when the invoking context uses `set -e`. A failed rebuild means the guard
+# returns 125, but the fallback `cargo run --release --quiet` still works.
+RELEASE_BIN="$REPO_ROOT/target/release/reify-audit"
+reify_audit_guard "$RELEASE_BIN" rebuild "$REPO_ROOT" || true
+
+# Preferred — release binary (now guaranteed fresh or just rebuilt)
+if [ -x "$RELEASE_BIN" ]; then
+    REIFY_AUDIT_BIN="$RELEASE_BIN"
 else
     # Fallback — build and run (quiet suppresses cargo progress chatter on stdout)
     REIFY_AUDIT_BIN="cargo run --release --quiet -p reify-audit --"

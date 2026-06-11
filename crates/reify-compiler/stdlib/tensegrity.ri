@@ -233,7 +233,7 @@ pub fn form_find_free(
 //     input and surfaces as an E_FormFindInfeasible diagnostic. Explicit
 //     per-member q (not ratios / eigenvalue auto-scaling) is the T1a scope;
 //     the free-standing eigenvalue/ratio search is deferred to T1b.
-//     `List<Real>` placeholder typing matches the LoadCase.loads convention.
+//     `List<Real>` is the natural type — per-member force densities are scalars.
 //
 //   anchors : List<Int>
 //     0-based indices into `structure.nodes` of the anchored (fixed) nodes.

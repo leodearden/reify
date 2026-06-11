@@ -14,6 +14,8 @@ pub mod demand;
 pub mod deps;
 pub mod dirty;
 pub mod dispatcher;
+pub mod engine_fixpoint;
+pub use engine_fixpoint::BuildScheduler;
 mod engine_admin;
 pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
@@ -22,6 +24,7 @@ pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
 };
 pub use graph::CancellationHandle;
+pub use graph::RealizationKernelProvenance;
 pub mod solver_progress;
 pub use solver_progress::{SolverProgressSink, SolverProgressUpdate};
 pub mod dynamics_ops;
@@ -310,9 +313,15 @@ fn value_type_kind_matches(
         // step-6 so Geometry cells are accepted.
         Value::GeometryHandle { .. } => matches!(ty, Type::Geometry),
         Value::AffineMap { .. } => matches!(ty, Type::AffineMap(_)), // task 3958 / α
-        // Topology-selector value (task 4116 / α): kind must match exactly.
-        // PRD §4.4/§9: this is the β behavior, satisfied here because exhaustiveness forces it.
-        Value::Selector(sv) => matches!(ty, Type::Selector(k) if *k == sv.kind),
+        // Topology-selector value (task 4116 / α): kind must match exactly for
+        // single-kind typed cells (PRD §4.4/§9).
+        // PRD §4.2/§11.1 (task 4369/A2): a kind-agnostic `AnySelector` cell also
+        // accepts any concrete selector value — the type carries no kind constraint,
+        // so all three concrete selector kinds satisfy it.
+        Value::Selector(sv) => {
+            matches!(ty, Type::AnySelector)
+                || matches!(ty, Type::Selector(k) if *k == sv.kind)
+        }
         // If a future `Value::TraitObjectInstance` variant is added, add a
         // matching arm here AND relax the runtime assertion so the compiler
         // enforces completeness.
@@ -390,6 +399,17 @@ pub struct Engine {
     /// Consolidated evaluation state from last eval() or edit_param().
     /// None before the first eval() call; always Some after.
     eval_state: Option<EvaluationState>,
+    /// Build-time scheduler selection (task 4357 δ): the legacy multi-pass build
+    /// loop vs. the unified build-DAG `run_unified_pass` Kahn/Tarjan driver. Set
+    /// once at construction from [`BuildScheduler::from_env`] — which honours the
+    /// `unified-dag` Cargo feature + `REIFY_BUILD_SCHEDULER` env gate and defaults
+    /// to `LegacyMultiPass`, so an un-configured engine keeps byte-identical
+    /// legacy behaviour. The `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// setter `Engine::set_build_scheduler` (engine_admin.rs) overrides it
+    /// DIRECTLY so integration tests can drive the UnifiedDag `build()` path
+    /// without mutating process env. Consulted only at the δ wiring site in
+    /// `Engine::build` (engine_build.rs).
+    build_scheduler: BuildScheduler,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,
     /// Counter for snapshot IDs.
@@ -1381,6 +1401,85 @@ mod tests {
         assert!(
             !value_type_kind_matches(&face_selector, &Type::Geometry, None),
             "Value::Selector against Type::Geometry must be false (different outer variant)"
+        );
+    }
+
+    // ── value_type_kind_matches: Type::AnySelector acceptance (task 4369/A2) ──────────────
+
+    /// A concrete `Value::Selector` of any kind satisfies a `Type::AnySelector` cell;
+    /// non-selector values do not; exact-kind enforcement for `Type::Selector(k)` is
+    /// unchanged (regression guard).
+    ///
+    /// Step-5 contract (RED until step-6):
+    /// (a) Face-kind selector against Type::AnySelector → true
+    /// (b) Edge-kind selector against Type::AnySelector → true
+    /// (c) Body-kind selector against Type::AnySelector → true
+    /// (d) Value::Real(1.0) against Type::AnySelector → false (non-selector rejected)
+    /// (e) regression: Face-kind selector against Type::Selector(Edge) → false
+    #[test]
+    fn value_type_kind_matches_any_selector_acceptance() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::{RealizationNodeId, Type};
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+        use reify_ir::{GeometryHandleId, Value};
+
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestPart", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+
+        // Face selector — uses ByNormal (Face-only query, must pair with Face kind).
+        let face_sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target.clone(),
+            LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 },
+        )
+        .expect("face SelectorValue must construct");
+        let face_val = Value::Selector(face_sv.clone());
+
+        // Edge selector — uses LeafQuery::All (kind-agnostic query, pairs with any kind).
+        let edge_sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target.clone(),
+            LeafQuery::All,
+        )
+        .expect("edge SelectorValue must construct");
+        let edge_val = Value::Selector(edge_sv);
+
+        // Body selector — uses LeafQuery::All (kind-agnostic).
+        let body_sv = SelectorValue::leaf(
+            SelectorKind::Body,
+            target.clone(),
+            LeafQuery::All,
+        )
+        .expect("body SelectorValue must construct");
+        let body_val = Value::Selector(body_sv);
+
+        // (a) Face-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&face_val, &Type::AnySelector, None),
+            "Value::Selector(Face) against Type::AnySelector must be true (a)"
+        );
+        // (b) Edge-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&edge_val, &Type::AnySelector, None),
+            "Value::Selector(Edge) against Type::AnySelector must be true (b)"
+        );
+        // (c) Body-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&body_val, &Type::AnySelector, None),
+            "Value::Selector(Body) against Type::AnySelector must be true (c)"
+        );
+        // (d) Non-selector value is rejected by Type::AnySelector.
+        assert!(
+            !value_type_kind_matches(&Value::Real(1.0), &Type::AnySelector, None),
+            "Value::Real against Type::AnySelector must be false (d)"
+        );
+        // (e) Regression: single-kind exact match still enforced (unchanged by task 4369).
+        assert!(
+            !value_type_kind_matches(&face_val, &Type::Selector(SelectorKind::Edge), None),
+            "Value::Selector(Face) against Type::Selector(Edge) must be false (e)"
         );
     }
 

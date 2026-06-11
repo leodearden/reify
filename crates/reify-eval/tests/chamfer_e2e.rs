@@ -17,7 +17,7 @@ use reify_test_support::*;
 #[test]
 fn chamfer_compiler_rejects_one_arg() {
     let source = r#"structure S {
-    param target: Scalar = 5mm
+    param target: Length = 5mm
     let result = chamfer(target)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ch1"));
@@ -49,8 +49,8 @@ fn chamfer_compiler_rejects_one_arg() {
 #[test]
 fn chamfer_compiler_rejects_three_args() {
     let source = r#"structure S {
-    param target: Scalar = 5mm
-    param dist: Scalar = 2mm
+    param target: Length = 5mm
+    param dist: Length = 2mm
     let result = chamfer(target, dist, dist)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ch3"));
@@ -83,8 +83,8 @@ fn chamfer_compiler_rejects_three_args() {
 #[test]
 fn chamfer_compiler_accepts_two_args() {
     let source = r#"structure S {
-    param target: Scalar = 5mm
-    param dist: Scalar = 2mm
+    param target: Length = 5mm
+    param dist: Length = 2mm
     let result = chamfer(target, dist)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ch2"));

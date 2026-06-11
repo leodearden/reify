@@ -21,6 +21,8 @@ export { MechanismPanel } from './MechanismPanel';
 export type { MechanismPanelProps } from './MechanismPanel';
 export { DiagnosticsPanel } from './DiagnosticsPanel';
 export type { DiagnosticsPanelProps, DiagnosticEntry } from './DiagnosticsPanel';
+export { FindUsesPanel } from './FindUsesPanel';
+export type { FindUsesPanelProps } from './FindUsesPanel';
 export { AutoResolvePanel } from './AutoResolvePanel';
 export type { AutoResolvePanelProps } from './AutoResolvePanel';
 export { FeaCasePickerDropdown } from './FeaCasePickerDropdown';

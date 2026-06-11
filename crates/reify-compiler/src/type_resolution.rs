@@ -1,6 +1,6 @@
 use super::*;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Internal type alias entry — stored in the registry during compilation.
 ///
@@ -570,6 +570,13 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "FaceSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Face)),
         "EdgeSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Edge)),
         "BodySelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
+        // Kind-agnostic selector param annotation (PRD §4.2/§11.1, task 4369/A2).
+        // Bare "Selector" resolves to Type::AnySelector so a param declared as
+        // `target : Selector` accepts a Selector value of ANY concrete kind
+        // (Face/Edge/Body), while single-kind params (FaceSelector etc.) keep
+        // exact-kind checking.  resolve_type_with_aliases inherits this arm
+        // automatically since it delegates to resolve_type_name for builtin names.
+        "Selector" => Some(Type::AnySelector),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::Real),
@@ -1238,7 +1245,161 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::Axis
         | Type::BoundingBox
         | Type::Selector(_)
+        | Type::AnySelector
         | Type::Error => ty.clone(),
+    }
+}
+
+/// Recursively rewrite every node's `result_type` in `expr` in place by
+/// applying the type-parameter substitution map `subst`.
+///
+/// Mirrors [`CompiledExpr::walk`] (reify-ir/src/expr.rs) arm-for-arm but
+/// **mutably**, visiting pre-order. The `match` over `CompiledExprKind` is
+/// exhaustive (no `_` wildcard) so that adding a new variant to the enum
+/// produces a compile error here — preventing a new variant from silently
+/// passing through with unsubstituted `result_type` values.
+///
+/// Used during monomorphization (`phase_auto_type_param_resolution`) to
+/// rewrite body expressions in cloned generic templates so that all
+/// `Type::TypeParam` occurrences in expression nodes are replaced with the
+/// resolved concrete `Type::StructureRef` values.
+pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &HashMap<String, Type>) {
+    // Substitute this node's own result_type (pre-order).
+    expr.result_type = substitute_type_params(&expr.result_type, subst);
+
+    match &mut expr.kind {
+        CompiledExprKind::Literal(_) => {}
+        CompiledExprKind::ValueRef(_) | CompiledExprKind::CrossSubGeometryRef(_) => {}
+        CompiledExprKind::BinOp { left, right, .. } => {
+            substitute_expr_result_types(left, subst);
+            substitute_expr_result_types(right, subst);
+        }
+        CompiledExprKind::UnOp { operand, .. } => {
+            substitute_expr_result_types(operand, subst);
+        }
+        CompiledExprKind::FunctionCall { args, .. } => {
+            for arg in args {
+                substitute_expr_result_types(arg, subst);
+            }
+        }
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            substitute_expr_result_types(condition, subst);
+            substitute_expr_result_types(then_branch, subst);
+            substitute_expr_result_types(else_branch, subst);
+        }
+        CompiledExprKind::Match { discriminant, arms } => {
+            substitute_expr_result_types(discriminant, subst);
+            for arm in arms {
+                substitute_expr_result_types(&mut arm.body, subst);
+            }
+        }
+        CompiledExprKind::UserFunctionCall { args, .. } => {
+            for arg in args {
+                substitute_expr_result_types(arg, subst);
+            }
+        }
+        CompiledExprKind::Lambda { params, body, .. } => {
+            // Substitute TypeParam→StructureRef in lambda parameter type
+            // annotations (e.g., `|x: T| ...` inside a generic body).
+            // Mirrors the explicit annotation positions — NOT included in
+            // CompiledExpr::walk because walk only traverses sub-expressions;
+            // we substitute here to prevent residual TypeParam in param types.
+            for (_, ty) in params.iter_mut() {
+                if let Some(t) = ty {
+                    *t = substitute_type_params(t, subst);
+                }
+            }
+            substitute_expr_result_types(body, subst);
+        }
+        CompiledExprKind::ListLiteral(elements) => {
+            for elem in elements {
+                substitute_expr_result_types(elem, subst);
+            }
+        }
+        CompiledExprKind::ReflectiveCellList(elements) => {
+            for elem in elements {
+                substitute_expr_result_types(elem, subst);
+            }
+        }
+        CompiledExprKind::SetLiteral(elements) => {
+            for elem in elements {
+                substitute_expr_result_types(elem, subst);
+            }
+        }
+        CompiledExprKind::MapLiteral(entries) => {
+            for (key, val) in entries {
+                substitute_expr_result_types(key, subst);
+                substitute_expr_result_types(val, subst);
+            }
+        }
+        CompiledExprKind::IndexAccess { object, index } => {
+            substitute_expr_result_types(object, subst);
+            substitute_expr_result_types(index, subst);
+        }
+        CompiledExprKind::MethodCall { object, args, .. } => {
+            substitute_expr_result_types(object, subst);
+            for arg in args {
+                substitute_expr_result_types(arg, subst);
+            }
+        }
+        CompiledExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            substitute_expr_result_types(collection, subst);
+            substitute_expr_result_types(predicate, subst);
+        }
+        CompiledExprKind::OptionSome(inner) => {
+            substitute_expr_result_types(inner, subst);
+        }
+        CompiledExprKind::OptionNone => {}
+        CompiledExprKind::MetaAccess { .. } => {}
+        CompiledExprKind::DeterminacyPredicate { .. } => {}
+        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
+            if let Some(lo) = lower {
+                substitute_expr_result_types(lo, subst);
+            }
+            if let Some(hi) = upper {
+                substitute_expr_result_types(hi, subst);
+            }
+        }
+        CompiledExprKind::AdHocSelector { base, args, .. } => {
+            substitute_expr_result_types(base, subst);
+            for arg in args {
+                substitute_expr_result_types(arg, subst);
+            }
+        }
+        // Leaf placeholder — no child expressions.
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+        // Mirror walk: only ordered_args and defaults are traversed; `lets`
+        // contains template-local value refs (structural, not type-bearing)
+        // and is intentionally skipped by CompiledExpr::walk — we mirror
+        // that decision here.  Any result_type TypeParam nodes inside a
+        // `lets` subtree are therefore NOT substituted, which is an accepted
+        // α partial-coverage limitation (symmetric with walk's precedent).
+        CompiledExprKind::StructureInstanceCtor {
+            ordered_args,
+            defaults,
+            ..
+        } => {
+            for (_, arg) in ordered_args {
+                substitute_expr_result_types(arg, subst);
+            }
+            for (_, def) in defaults {
+                substitute_expr_result_types(def, subst);
+            }
+        }
+        // task 4118 (γ): recurse into the wrapped selector. The node's own
+        // result_type is the invariant List<Geometry> (no TypeParam to
+        // substitute), but the inner selector may carry substitutable types.
+        CompiledExprKind::ResolveSelector { selector } => {
+            substitute_expr_result_types(selector, subst);
+        }
     }
 }
 
@@ -2389,6 +2550,63 @@ mod tests {
             result,
             Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
             "resolve_type_with_aliases(\"BodySelector\", …) should return Type::Selector(Body)"
+        );
+    }
+
+    // ── AnySelector type-name resolution (task 4369 / A2) ────────────────────
+    //
+    // The bare `Selector` spelling (no kind qualifier) must resolve to
+    // `Type::AnySelector` so that param annotations like `target : Selector`
+    // accept any concrete selector kind at the type-compat level.
+    //
+    // Tests (a) and (b) are RED until step-2 adds the resolver arm.
+    // Test (c) is GREEN from pre-1's Display arm (documents the
+    // resolver<->Display round-trip contract).
+
+    /// (a) `resolve_type_name("Selector")` must return `Type::AnySelector`.
+    ///
+    /// RED until step-2 adds `"Selector" => Some(Type::AnySelector)` to
+    /// `resolve_type_name`.
+    #[test]
+    fn resolve_type_name_recognises_any_selector() {
+        assert_eq!(
+            resolve_type_name("Selector"),
+            Some(Type::AnySelector),
+            "\"Selector\" should resolve to Type::AnySelector"
+        );
+    }
+
+    /// (b) `resolve_type_with_aliases("Selector", …)` must return
+    /// `Type::AnySelector` — it inherits the builtin arm automatically.
+    ///
+    /// RED until step-2 adds the arm to `resolve_type_name`.
+    #[test]
+    fn resolve_type_with_aliases_inherits_any_selector() {
+        let reg = TypeAliasRegistry::new();
+        let result = resolve_type_with_aliases(
+            "Selector",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::AnySelector),
+            "resolve_type_with_aliases(\"Selector\", …) should return Type::AnySelector"
+        );
+    }
+
+    /// (c) Display round-trip: `Type::AnySelector` formats as `"Selector"`,
+    /// which is the same spelling the resolver accepts (task 4369/A2 §11.1).
+    ///
+    /// GREEN from pre-1's Display arm.
+    #[test]
+    fn any_selector_display_matches_resolver_spelling() {
+        assert_eq!(
+            format!("{}", Type::AnySelector),
+            "Selector",
+            "Type::AnySelector should display as \"Selector\" to match the resolver spelling"
         );
     }
 

@@ -17,7 +17,7 @@ use reify_test_support::*;
 #[test]
 fn fillet_compiler_rejects_one_arg() {
     let source = r#"structure S {
-    param target: Scalar = 5mm
+    param target: Length = 5mm
     let result = fillet(target)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_fl1"));
@@ -49,8 +49,8 @@ fn fillet_compiler_rejects_one_arg() {
 #[test]
 fn fillet_compiler_rejects_three_args() {
     let source = r#"structure S {
-    param target: Scalar = 5mm
-    param rad: Scalar = 2mm
+    param target: Length = 5mm
+    param rad: Length = 2mm
     let result = fillet(target, rad, rad)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_fl3"));
@@ -83,8 +83,8 @@ fn fillet_compiler_rejects_three_args() {
 #[test]
 fn fillet_compiler_accepts_two_args() {
     let source = r#"structure S {
-    param target: Scalar = 5mm
-    param rad: Scalar = 2mm
+    param target: Length = 5mm
+    param rad: Length = 2mm
     let result = fillet(target, rad)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_fl2"));

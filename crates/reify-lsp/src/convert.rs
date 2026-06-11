@@ -625,7 +625,7 @@ mod tests {
 
     #[test]
     fn find_word_keyword_param() {
-        let source = "param width: Scalar = 80mm";
+        let source = "param width: Length = 80mm";
         let result = find_word_at_offset(source, 2); // 'r' in param
         assert_eq!(result, Some((0, "param")));
     }

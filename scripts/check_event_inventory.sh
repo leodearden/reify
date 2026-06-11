@@ -69,6 +69,53 @@ fi
 INVENTORY="$REPO_ROOT/docs/gui-event-channels.md"
 SRC_DIR="$REPO_ROOT/gui/src-tauri"
 
+# Build-artifact directories under SRC_DIR that must never be scanned.
+# Rationale: the infra-check lane runs concurrently with a build lane (verify.sh
+# "Overlap join" region). Tauri codegen writes transient .rs files to gen/ during
+# any `cargo build -p reify-gui`; the Rust compiler writes to target/. A transient
+# emit literal in those dirs would be flagged as a false-positive orphan/phantom.
+#
+# target/ and gen/ are the two real build-output dirs at the top of SRC_DIR
+# (.gitignore'd: /target:5, gen/:36 in gui/src-tauri/.gitignore).
+#
+# dist and node_modules are defensive guards — they do NOT currently exist under
+# gui/src-tauri/ (their .gitignore entries are for gui/dist/:49 and
+# node_modules/:14 under the parent gui/ directory). They are included to guard
+# against future Tauri or JS tooling additions to gui/src-tauri that could
+# otherwise silently introduce false-positive scan hits.
+#
+# The find prune uses -name (basename match), NOT -path anchored to SRC_DIR.
+# This is intentional: gen and target are project-reserved build-output names
+# under gui/src-tauri; no tracked .rs source module should ever carry either
+# name at any depth. If a future source module were named gen/ or target/ it
+# would need renaming (both are conventional build-dir names that confuse tools).
+# The grep --exclude-dir side is inherently basename-only (grep has no path-prune
+# equivalent), so basename matching is also the only consistent option across
+# both scan forms.
+# No tracked .rs lives under any of these four names; pruning is safe.
+# See esc-4357-20 (flake), task-4529 (fix).
+PRUNE_DIRS=(target gen node_modules dist)
+
+# Pre-build a find prune expression: \( -type d \( -name a -o -name b ... \) -prune \)
+# and a grep --exclude-dir arg list, both derived from PRUNE_DIRS.
+_find_prune_expr=()
+_grep_exclude_args=()
+for _d in "${PRUNE_DIRS[@]}"; do
+    _grep_exclude_args+=("--exclude-dir=$_d")
+done
+# Build the find -prune clause: ( -type d ( -name a -o -name b -o ... ) -prune )
+_find_prune_expr+=(\( -type d \()
+_first=1
+for _d in "${PRUNE_DIRS[@]}"; do
+    if [[ $_first -eq 1 ]]; then
+        _find_prune_expr+=(-name "$_d")
+        _first=0
+    else
+        _find_prune_expr+=(-o -name "$_d")
+    fi
+done
+_find_prune_expr+=(\) -prune \))
+
 if [[ ! -f "$INVENTORY" ]]; then
     echo "ERROR: inventory file not found: $INVENTORY" >&2
     exit 1
@@ -93,8 +140,11 @@ registered=$(grep -oP '\| `\K[a-z0-9-]+(?=` \|)' "$INVENTORY" | sort -u || true)
 #       "evaluation-status",
 # Dynamic forms (.emit(&name, …) or .emit(event_name, …)) produce no match.
 emit_channels=$(
-    find "$SRC_DIR" -name "*.rs" -exec \
-        perl -0777 -ne 'print "$1\n" while /\.emit\(\s*"([a-z0-9-]+)"/gm' {} + \
+    find "$SRC_DIR" \
+        "${_find_prune_expr[@]}" \
+        -o \( -type f -name "*.rs" -exec \
+            perl -0777 -ne 'print "$1\n" while /\.emit\(\s*"([a-z0-9-]+)"/gm' {} + \
+        \) \
     2>/dev/null | sort -u || true
 )
 
@@ -105,7 +155,7 @@ while IFS= read -r channel; do
     if ! printf '%s\n' "$registered" | grep -qx "$channel"; then
         orphan_count=$((orphan_count + 1))
         echo "WARNING: orphan channel '$channel' (not in docs/gui-event-channels.md):" >&2
-        grep -rn --include="*.rs" "\"$channel\"" "$SRC_DIR" >&2 || true
+        grep -rn --include="*.rs" "${_grep_exclude_args[@]}" "\"$channel\"" "$SRC_DIR" >&2 || true
     fi
 done <<< "$emit_channels"
 
@@ -126,7 +176,7 @@ if [[ $BIDIRECTIONAL -eq 1 ]]; then
     )
     while IFS= read -r ch; do
         [[ -z "$ch" ]] && continue
-        if ! grep -rqF "\"$ch\"" --include="*.rs" "$SRC_DIR" 2>/dev/null; then
+        if ! grep -rqF "\"$ch\"" --include="*.rs" "${_grep_exclude_args[@]}" "$SRC_DIR" 2>/dev/null; then
             phantom_count=$((phantom_count + 1))
             echo "WARNING: phantom channel '$ch' registered in inventory but no source occurrence in gui/src-tauri/" >&2
         fi

@@ -1,0 +1,294 @@
+{
+  "synthetic_load": true,
+  "nproc": 32,
+  "runs": [
+    {
+      "service": "single-pool",
+      "regime": "just-task",
+      "cache_state": "warm",
+      "busy_fraction": 0.9929234851835471,
+      "occupancy": [
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073955.835956838
+        },
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073956.539146269
+        }
+      ],
+      "merge_wall": 0.0,
+      "task_wall": 0.7029852629639208,
+      "exit_124_count": 0,
+      "nproc": 32
+    },
+    {
+      "service": "single-pool",
+      "regime": "just-task",
+      "cache_state": "cold",
+      "busy_fraction": 0.9928792569659443,
+      "occupancy": [
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073956.746740425
+        },
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073957.752664669
+        }
+      ],
+      "merge_wall": 0.0,
+      "task_wall": 1.0058006250765175,
+      "exit_124_count": 0,
+      "nproc": 32
+    },
+    {
+      "service": "single-pool",
+      "regime": "just-merge",
+      "cache_state": "warm",
+      "busy_fraction": 0.9922480620155039,
+      "occupancy": [
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073957.757650603
+        },
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073958.966474576
+        }
+      ],
+      "merge_wall": 1.2087269930634648,
+      "task_wall": 0.0,
+      "exit_124_count": 0,
+      "nproc": 32
+    },
+    {
+      "service": "single-pool",
+      "regime": "just-merge",
+      "cache_state": "cold",
+      "busy_fraction": 0.9912126537785588,
+      "occupancy": [
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073959.132239379
+        },
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073960.021397715
+        }
+      ],
+      "merge_wall": 0.8890619070734829,
+      "task_wall": 0.0,
+      "exit_124_count": 0,
+      "nproc": 32
+    },
+    {
+      "service": "single-pool",
+      "regime": "mixed",
+      "cache_state": "warm",
+      "busy_fraction": 0.9909695817490495,
+      "occupancy": [
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073960.022510605
+        },
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073962.657530945
+        }
+      ],
+      "merge_wall": 1.6298891890328377,
+      "task_wall": 1.0049888119101524,
+      "exit_124_count": 0,
+      "nproc": 32
+    },
+    {
+      "service": "single-pool",
+      "regime": "mixed",
+      "cache_state": "cold",
+      "busy_fraction": 0.9929400690304362,
+      "occupancy": [
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073962.904391006
+        },
+        {
+          "merge": 32,
+          "task": 0,
+          "sum": 32,
+          "timestamp": 1073964.898487498
+        }
+      ],
+      "merge_wall": 1.0321225810330361,
+      "task_wall": 0.9618384120985866,
+      "exit_124_count": 0,
+      "nproc": 32
+    },
+    {
+      "service": "dual-pool",
+      "regime": "just-task",
+      "cache_state": "warm",
+      "busy_fraction": 0.9851948051948052,
+      "occupancy": [
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073965.064312251
+        },
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073965.989931339
+        }
+      ],
+      "merge_wall": 0.0,
+      "task_wall": 0.9254808588884771,
+      "exit_124_count": 0,
+      "nproc": 32
+    },
+    {
+      "service": "dual-pool",
+      "regime": "just-task",
+      "cache_state": "cold",
+      "busy_fraction": 0.9900149775336995,
+      "occupancy": [
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073966.414403923
+        },
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073967.438749266
+        }
+      ],
+      "merge_wall": 0.0,
+      "task_wall": 1.024230093928054,
+      "exit_124_count": 0,
+      "nproc": 32
+    },
+    {
+      "service": "dual-pool",
+      "regime": "just-merge",
+      "cache_state": "warm",
+      "busy_fraction": 0.9972477064220183,
+      "occupancy": [
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073967.611271986
+        },
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073968.48883777
+        }
+      ],
+      "merge_wall": 0.8773441750090569,
+      "task_wall": 0.0,
+      "exit_124_count": 0,
+      "nproc": 32
+    },
+    {
+      "service": "dual-pool",
+      "regime": "just-merge",
+      "cache_state": "cold",
+      "busy_fraction": 0.9910172371934935,
+      "occupancy": [
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073968.878847773
+        },
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073969.831230333
+        }
+      ],
+      "merge_wall": 0.9522765309084207,
+      "task_wall": 0.0,
+      "exit_124_count": 0,
+      "nproc": 32
+    },
+    {
+      "service": "dual-pool",
+      "regime": "mixed",
+      "cache_state": "warm",
+      "busy_fraction": 0.9919367343774228,
+      "occupancy": [
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073970.055329145
+        },
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073971.902826435
+        }
+      ],
+      "merge_wall": 0.7799698580056429,
+      "task_wall": 1.0674439230933785,
+      "exit_124_count": 0,
+      "nproc": 32
+    },
+    {
+      "service": "dual-pool",
+      "regime": "mixed",
+      "cache_state": "cold",
+      "busy_fraction": 0.9754591256297741,
+      "occupancy": [
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073972.22362499
+        },
+        {
+          "merge": 24,
+          "task": 8,
+          "sum": 32,
+          "timestamp": 1073973.979078373
+        }
+      ],
+      "merge_wall": 1.1209164771717042,
+      "task_wall": 0.6343252179212868,
+      "exit_124_count": 0,
+      "nproc": 32
+    }
+  ]
+}

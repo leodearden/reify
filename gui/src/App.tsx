@@ -17,11 +17,13 @@ import {
   ViewManageModal,
   MechanismPanel,
   DiagnosticsPanel,
+  FindUsesPanel,
   AutoResolvePanel,
   SolverProgressOverlay,
   BucklingPanel,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
+import type { ReferenceResult } from './editor/references';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
@@ -95,6 +97,78 @@ import type { PersistentViewState } from './types';
 import styles from './App.module.css';
 
 export const NEW_FILE_TEMPLATE = '// New design\n';
+
+/** Minimal structural interface required by {@link navigateToDiagnostic}.
+ *  Using a structural interface keeps the function testable without depending
+ *  on the concrete createEditorStore return type. */
+export interface NavigateToDiagnosticStore {
+  state: {
+    activeFile: string | null;
+    openFiles: Pick<FileData, 'path'>[];
+  };
+  setActiveFile: (path: string) => void;
+  openFile: (file: FileData) => void;
+}
+
+/**
+ * Navigate the editor to a diagnostic location.
+ *
+ * Extracted from handleNavigateToDiagnostic so it is dependency-injected and
+ * unit-testable without rendering App. Follows the precedent of
+ * gotoDefinitionCommand / resolveAndNavigate (task 4206).
+ *
+ * Logic (implemented incrementally across γ steps):
+ *  (1) Refuse span-less diagnostics (has_location === false) — strict === false
+ *      so absent/undefined or true keep navigating (α's default-true contract).
+ *  (2) Same-file: call setScrollToLocation only.
+ *  (3) Already-open cross-file: setActiveFile then setScrollToLocation (step-4).
+ *  (4) Not-open cross-file: openFile from disk then setScrollToLocation (step-6).
+ *  (5) Open failure: error toast; no scroll (step-8).
+ */
+export async function navigateToDiagnostic(
+  d: DiagnosticEntry,
+  deps: {
+    store: NavigateToDiagnosticStore;
+    openFile: (path: string) => Promise<FileData>;
+    setScrollToLocation: (loc: SourceLocation) => void;
+    showToast: (message: string, type: ToastMessage['type']) => void;
+  },
+): Promise<void> {
+  // (1) Refuse synthetic span-less diagnostics.
+  if (d.has_location === false) return;
+
+  const loc: SourceLocation = {
+    file_path: d.file_path,
+    line: d.line,
+    column: d.column,
+    end_line: d.end_line,
+    end_column: d.end_column,
+  };
+
+  const active = deps.store.state.activeFile;
+  if (!(active && isSameFile(d.file_path, active))) {
+    // (3) Cross-file: file is already open in a tab → switch to it.
+    const open = deps.store.state.openFiles.find((f) => isSameFile(f.path, d.file_path));
+    if (open) {
+      // (3) Already-open cross-file: just activate.
+      deps.store.setActiveFile(open.path);
+    } else {
+      // (4) Not yet open: read from disk and load into the store.
+      try {
+        const fileData = await deps.openFile(d.file_path);
+        deps.store.openFile(fileData);
+      } catch (err) {
+        deps.showToast(`Could not open ${d.file_path}: ${errorMessage(err)}`, 'error');
+        return;
+      }
+    }
+  }
+
+  // All non-error paths fall through here so the scroll fires AFTER any
+  // file-switch, guaranteeing the Editor sees the swapped doc first.
+  deps.setScrollToLocation(loc);
+}
+
 const MIN_PANEL_WIDTH = 150;
 const MIN_PANEL_HEIGHT = 80;
 const CHAT_MIN_HEIGHT = 160;
@@ -480,6 +554,11 @@ const App: Component = () => {
   const [viewManageOpen, setViewManageOpen] = createSignal(false);
 
   // Diagnostics panel state lives in layoutStore (problemsCollapsed / problemsHeight).
+  // Find-uses panel state (Shift+F12 references provider, task 4202 β). Results
+  // are held in native LSP (0-based) coordinates; onNavigate converts to the
+  // 1-based SourceLocation when driving setScrollToLocation.
+  const [findUsesOpen, setFindUsesOpen] = createSignal(false);
+  const [findUsesResults, setFindUsesResults] = createSignal<ReferenceResult[]>([]);
   // Both compile and tessellation diagnostics share the DiagnosticInfo schema, so the
   // panel renders them as a single merged list — no schema change or extra state needed.
   // The two pipelines are disjoint by construction: compile errors come from the static
@@ -535,8 +614,18 @@ const App: Component = () => {
   }
 
   function handleNavigateToDiagnostic(d: DiagnosticEntry) {
-    setScrollToLocation({ file_path: d.file_path, line: d.line, column: d.column, end_line: d.end_line, end_column: d.end_column });
+    // Delegate to the exported, dependency-injected function (γ task-4403).
     // Panel stays open after navigation (docked design — no modal to dismiss).
+    // .catch handles unexpected synchronous throws from store/signal calls that
+    // bypass the internal try/catch (which only wraps the disk-read path).
+    void navigateToDiagnostic(d, {
+      store: editorStore,
+      openFile: bridgeOpenFile,
+      setScrollToLocation,
+      showToast,
+    }).catch((err: unknown) => {
+      showToast(`Navigation error: ${errorMessage(err)}`, 'error');
+    });
   }
 
   // Refs for splitter max-width clamping
@@ -1553,7 +1642,7 @@ const App: Component = () => {
                 onFileClick={handleFileClick}
               />
               <FileTabs store={editorStore} />
-              <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} compileDiagnostics={engineStore.state.compileDiagnostics} liveContentRef={(fn) => { getLiveEditorContent = fn; }} />
+              <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} compileDiagnostics={engineStore.state.compileDiagnostics} liveContentRef={(fn) => { getLiveEditorContent = fn; }} onShowReferences={(results) => { setFindUsesResults(results); setFindUsesOpen(true); }} />
               {/* Horizontal splitter — shown only when diagnostics panel is expanded */}
               <Show when={!layoutStore.state.problemsCollapsed}>
                 <Splitter orientation="horizontal" data-testid="splitter-problems" onResize={handleProblemsResize} />
@@ -1703,6 +1792,25 @@ const App: Component = () => {
             onClose={() => setShowExportDialog(false)}
           />
           {/* DiagnosticsPanel relocated to .editorPanel (docked) — see below */}
+          <FindUsesPanel
+            open={findUsesOpen()}
+            results={findUsesResults()}
+            onClose={() => setFindUsesOpen(false)}
+            onNavigate={(r) => {
+              // LSP positions are 0-based; SourceLocation/cursor is 1-based (+1).
+              // Reuses the diagnostics setScrollToLocation path, which moves the
+              // cursor AND records the ζ same-file nav-history entry (Editor.tsx
+              // scrollToLocation effect) — so nav-history needs zero new plumbing.
+              setScrollToLocation({
+                file_path: r.uri,
+                line: r.line + 1,
+                column: r.character + 1,
+                end_line: r.endLine + 1,
+                end_column: r.endCharacter + 1,
+              });
+              setFindUsesOpen(false);
+            }}
+          />
           <ViewManageModal
             open={viewManageOpen()}
             store={viewStateStore}

@@ -42,7 +42,15 @@ pub enum ExprKind {
     /// Unary operation: `-a`, `!b`
     UnOp { op: String, operand: Box<Expr> },
     /// Function call: `sin(x)`
-    FunctionCall { name: String, args: Vec<Expr> },
+    ///
+    /// `arg_names` is length-matched to `args`; `None` entries encode positional
+    /// (unlabelled) arguments, `Some(label)` encodes a named argument like `foo(a: 1.0)`.
+    FunctionCall {
+        name: String,
+        args: Vec<Expr>,
+        /// Parallel to `args`; `None` = positional, `Some(label)` = named.
+        arg_names: Vec<Option<String>>,
+    },
     /// Member access: `self.width`
     MemberAccess { object: Box<Expr>, member: String },
     /// Enum variant access: `Direction.In`

@@ -52,6 +52,36 @@ describe('createLspClient', () => {
     expect(result.capabilities.completionProvider).toBeDefined();
   });
 
+  it('initialize threads rootUri into the params when provided (activates cross-file resolution)', async () => {
+    // κ (task 4210): the backend sets workspace_root from the initialize params'
+    // rootUri, which is what activates cross-file references/rename. The client
+    // MUST forward rootUri so the live GUI is no longer dormant for cross-file.
+    mockInvoke.mockResolvedValue(JSON.stringify({ capabilities: {} }));
+
+    const client = createLspClient();
+    await client.initialize('file:///workspace');
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'initialize',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({ rootUri: 'file:///workspace', capabilities: {} });
+  });
+
+  it('initialize omits rootUri when called without one (single-file fallback unchanged)', async () => {
+    mockInvoke.mockResolvedValue(JSON.stringify({ capabilities: {} }));
+
+    const client = createLspClient();
+    await client.initialize();
+
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({ capabilities: {} });
+    expect(params).not.toHaveProperty('rootUri');
+  });
+
   it('didOpen sends textDocument/didOpen notification', async () => {
     mockInvoke.mockResolvedValue('null');
 
@@ -313,6 +343,49 @@ describe('createLspClient', () => {
     expect(result).toBeNull();
   });
 
+  it('rename round-trips a multi-file WorkspaceEdit (changes keyed by two uris) unchanged', async () => {
+    // κ (task 4210): a cross-file rename returns edits keyed by MORE THAN ONE uri.
+    // The WorkspaceEdit type (changes?: { [uri]: TextEdit[] }) is already
+    // multi-file-keyed, so a two-file edit must pass through rename() intact — no
+    // type change is needed beyond threading rootUri (step-18).
+    const mockEdit = {
+      changes: {
+        'file:///parts.ri': [
+          {
+            range: { start: { line: 0, character: 10 }, end: { line: 0, character: 14 } },
+            newText: 'Bore',
+          },
+        ],
+        'file:///main.ri': [
+          {
+            range: { start: { line: 0, character: 13 }, end: { line: 0, character: 17 } },
+            newText: 'Bore',
+          },
+          {
+            range: { start: { line: 2, character: 15 }, end: { line: 2, character: 19 } },
+            newText: 'Bore',
+          },
+        ],
+      },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(mockEdit));
+
+    const client = createLspClient();
+    const result = await client.rename('file:///main.ri', 2, 15, 'Bore');
+
+    expect(result).not.toBeNull();
+    expect(result!.changes).toBeDefined();
+    // Both uris keyed, each carrying its own TextEdit[].
+    expect(Object.keys(result!.changes!).sort()).toEqual([
+      'file:///main.ri',
+      'file:///parts.ri',
+    ]);
+    expect(result!.changes!['file:///parts.ri']).toHaveLength(1);
+    expect(result!.changes!['file:///main.ri']).toHaveLength(2);
+    // The whole multi-file edit round-trips byte-for-byte (structure unchanged).
+    expect(result).toEqual(mockEdit);
+  });
+
   // --- task 4204 δ: documentHighlight ---
 
   it('createLspClient() exposes a documentHighlight function', () => {
@@ -450,5 +523,79 @@ describe('extractHoverMarkdown', () => {
 
   it('returns empty string for an array containing only malformed elements', () => {
     expect(extractHoverMarkdown([{ malformed: true }, { alsoMalformed: 42 }])).toBe('');
+  });
+
+  it('createLspClient() exposes a references function', () => {
+    const client = createLspClient();
+    expect(typeof client.references).toBe('function');
+  });
+
+  it('references sends textDocument/references with position and includeDeclaration context', async () => {
+    mockInvoke.mockResolvedValue('[]');
+
+    const client = createLspClient();
+    await client.references('file:///test.ri', 9, 15, true);
+
+    expect(mockInvoke).toHaveBeenCalledWith('lsp_request', {
+      method: 'textDocument/references',
+      params: expect.any(String),
+    });
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params).toEqual({
+      textDocument: { uri: 'file:///test.ri' },
+      position: { line: 9, character: 15 },
+      context: { includeDeclaration: true },
+    });
+  });
+
+  it('references returns a Location[] from an array response', async () => {
+    const mockLocations = [
+      {
+        uri: 'file:///test.ri',
+        range: { start: { line: 2, character: 4 }, end: { line: 2, character: 9 } },
+      },
+      {
+        uri: 'file:///test.ri',
+        range: { start: { line: 5, character: 8 }, end: { line: 5, character: 13 } },
+      },
+    ];
+    mockInvoke.mockResolvedValue(JSON.stringify(mockLocations));
+
+    const client = createLspClient();
+    const result = await client.references('file:///test.ri', 5, 8, true);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].uri).toBe('file:///test.ri');
+    expect(result[0].range.start).toEqual({ line: 2, character: 4 });
+  });
+
+  it('references returns [] when the response is null (unknown URI / no identifier -> Ok(None))', async () => {
+    mockInvoke.mockResolvedValue('null');
+
+    const client = createLspClient();
+    const result = await client.references('file:///unknown.ri', 0, 0, true);
+
+    expect(result).toEqual([]);
+  });
+
+  it('references returns [] when the response is not an array', async () => {
+    mockInvoke.mockResolvedValue(JSON.stringify({ unexpected: 'shape' }));
+
+    const client = createLspClient();
+    const result = await client.references('file:///test.ri', 1, 2, true);
+
+    expect(result).toEqual([]);
+  });
+
+  it('references passes includeDeclaration=false through to context', async () => {
+    mockInvoke.mockResolvedValue('[]');
+
+    const client = createLspClient();
+    await client.references('file:///test.ri', 1, 2, false);
+
+    const callArgs = mockInvoke.mock.calls[0];
+    const params = JSON.parse((callArgs[1] as { params: string }).params);
+    expect(params.context).toEqual({ includeDeclaration: false });
   });
 });

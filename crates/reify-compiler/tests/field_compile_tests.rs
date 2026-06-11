@@ -365,7 +365,7 @@ fn compile_field_compose_type_check_valid() {
     let module = compile_source(
         r#"
 field def f1 : Point3 -> Scalar { source = analytical { |p| 1.0m } }
-field def f2 : Scalar -> Scalar { source = analytical { |x| 1.0m } }
+field def f2 : Length -> Scalar { source = analytical { |x| 1.0m } }
 field def composed : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
 "#,
     );
@@ -405,7 +405,7 @@ fn compile_field_compose_type_mismatch() {
     let module = compile_source(
         r#"
 field def f1 : Point3 -> Vector3 { source = analytical { |p| p } }
-field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
+field def f2 : Length -> Scalar { source = analytical { |x| x } }
 field def bad_compose : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
 "#,
     );
@@ -438,7 +438,7 @@ fn compose_type_check_nested_in_match() {
 enum Mode { A B }
 
 field def f1 : Point3 -> Vector3 { source = analytical { |p| p } }
-field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
+field def f2 : Length -> Scalar { source = analytical { |x| x } }
 field def bad_nested : Point3 -> Scalar {
     source = composed { |p| match Mode.A { A => f2(f1(p)) B => f2(f1(p)) } }
 }
@@ -464,7 +464,7 @@ fn compile_duplicate_field_names() {
     let module = compile_source(
         r#"
 field def temp : Point3 -> Scalar { source = analytical { |p| p } }
-field def temp : Scalar -> Scalar { source = analytical { |x| x } }
+field def temp : Length -> Scalar { source = analytical { |x| x } }
 "#,
     );
     // Should emit a diagnostic about duplicate entity definition (covers field-vs-field collision

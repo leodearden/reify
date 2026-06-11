@@ -3,6 +3,6 @@
 // Used by test_command_on_indeterminate_file_exits_success.
 
 @test structure TestAuto {
-    param x: Scalar = auto
+    param x: Length = auto
     constraint x > 0
 }

@@ -318,7 +318,7 @@ mod tests {
 
     /// Assert that `fn_name(target, tail_arg_names[0], tail_arg_names[1], ...)` with a scalar
     /// `target` param falls back to `GeomRef::Step(0)` (the step_offset when there are no
-    /// prior sub-ops). Each name in `tail_arg_names` becomes a `param <name>: Scalar` in the
+    /// prior sub-ops). Each name in `tail_arg_names` becomes a `param <name>: Length` in the
     /// generated source; the call is `fn_name(target, name0, name1, ...)`.
     ///
     /// Tail arg values are assigned uniform `Scalar = (i+2)mm` literals regardless of
@@ -334,11 +334,11 @@ mod tests {
         let param_decls: String = tail_arg_names
             .iter()
             .enumerate()
-            .map(|(i, name)| format!("    param {name}: Scalar = {}mm\n", i + 2))
+            .map(|(i, name)| format!("    param {name}: Length = {}mm\n", i + 2))
             .collect();
         let tail_call = tail_arg_names.join(", ");
         let source = format!(
-            "structure S {{\n    param target: Scalar = 5mm\n{decls}    let result = {f}(target, {tail})\n}}",
+            "structure S {{\n    param target: Length = 5mm\n{decls}    let result = {f}(target, {tail})\n}}",
             f = fn_name,
             decls = param_decls,
             tail = tail_call,
@@ -448,7 +448,7 @@ mod tests {
     /// to `GeomRef::Step(1)` (the step_offset after the sphere occupies step 0), NOT a
     /// hardcoded `Step(0)` as was the pre-fix bug (task-612/task-1732).
     ///
-    /// Each name in `tail_arg_names` becomes a `param <name>: Scalar` in the generated source.
+    /// Each name in `tail_arg_names` becomes a `param <name>: Length` in the generated source.
     /// Tail arg values are uniform `Scalar = (i+2)mm` literals — see
     /// `assert_non_geometry_target_fallback` for the rationale (the fallback path is independent
     /// of tail arg types).
@@ -463,11 +463,11 @@ mod tests {
         let param_decls: String = tail_arg_names
             .iter()
             .enumerate()
-            .map(|(i, name)| format!("    param {name}: Scalar = {}mm\n", i + 2))
+            .map(|(i, name)| format!("    param {name}: Length = {}mm\n", i + 2))
             .collect();
         let tail_call = tail_arg_names.join(", ");
         let source = format!(
-            "structure S {{\n    param target: Scalar = 5mm\n{decls}    let result = union(sphere(1mm), {f}(target, {tail}))\n}}",
+            "structure S {{\n    param target: Length = 5mm\n{decls}    let result = union(sphere(1mm), {f}(target, {tail}))\n}}",
             f = fn_name,
             decls = param_decls,
             tail = tail_call,

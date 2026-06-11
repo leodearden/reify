@@ -1,0 +1,159 @@
+// Closed-chain revolute FOUR-BAR worked example — committable foothold for the
+// closed-chain inverse-dynamics e2e (KIN-OFFSET β1, task 4428; split child of
+// task 4391 option C; the EXPRESSIBLE successor to the descoped 4146 revolute
+// 4-bar that shipped a 2-prismatic loop instead).
+//
+// PRD: docs/prds/v0_6/kinematic-inter-joint-offsets.md task β (§1 consumer,
+// §8 boundary test B4, §9).
+//
+// ── Why this example can exist now (esc-4146-280 §0 gap, now closed) ──────────
+// Task 4146 could NOT build a revolute 4-bar e2e: the pre-4331 kinematic layer
+// had NO representation for fixed inter-joint link-length offsets, so every
+// revolute pivot coincided at the world origin and the translational loop
+// residual was IDENTICALLY ZERO (a vacuous test). Task 4331 (merged 456c31782c)
+// added the revolute pivot-OFFSET DSL surface — `revolute(axis, range, pivot)`,
+// whose 3rd `point3(...)` argument injects a fixed translation into the joint's
+// forward-kinematic transform (origin ∘ motion). With GENUINELY non-coincident
+// pivots the loop residual is nonzero and config-dependent, so a true spatial
+// linkage finally closes a non-trivial loop.
+//
+// ── The Grashof crank-rocker geometry (planar, about +Z) ─────────────────────
+// Five revolute joints about the world +Z axis, pivots laid out in the XY plane:
+//
+//     crank  a = 40 mm   (shortest link — the fully-rotating input)
+//     coupler b = 120 mm
+//     rocker  c = 116.282484506 mm
+//     ground  d = 140 mm  (fixed pivot A→D separation)
+//
+// Grashof check (crank-rocker ⇒ shortest link is the crank, fully rotatable):
+//   s + l = 40 + 140 = 180 mm  ≤  p + q = 116.2825 + 120 = 236.2825 mm  ✓
+//
+// CRITICAL — the rocker length c is NOT a round 120 mm. It is the EXACT length
+// that lets the loop close at the boundary-test configuration θ_input = 45° with
+// the coupler held straight (θ_coupler = 0): the coupler-tip pivot C then sits at
+//   C = R_z(45°)·(a + b, 0, 0) = ((a+b)/√2, (a+b)/√2) = (113.1371, 113.1371) mm,
+// and the rocker, pivoted at D = (d, 0, 0) = (140, 0, 0) mm, must reach C with a
+// link of length |C − D| = √((113.1371−140)² + 113.1371²) = 116.282484506 mm.
+// A round c = 120 mm does NOT close here (|C − D| = 116.28 ≠ 120) — that mismatch
+// is exactly the prior-art trap (the descoped 4146 plan assumed 120 mm). The B4
+// Rust gate `closed_chain_idyn_e2e.rs::closed_4bar_loop_closes_consistently`
+// pins convergence at this geometry.
+//
+// The assembled configuration at θ_input = 45° (solved analytically, and
+// re-derived live by `solve_loop_closure` in the B4 gate):
+//   θ_crank      =  π/4          = 0.7853981633974483 rad
+//   θ_coupler    =  0            (coupler straight along the crank)
+//   θ_coupler_tip = 0            (tip joints carry offsets, no motion here)
+//   θ_rocker     =  atan2(113.1371, 113.1371 − 140) = 1.8039163646188838 rad
+//   θ_rocker_tip =  θ_crank − θ_rocker              = −1.0185182012214355 rad
+//     (orientation closure: θ_crank+θ_coupler+θ_coupler_tip = θ_rocker+θ_rocker_tip)
+//
+// ── Joint layout (matches the two open chains the B4 test composes) ───────────
+//   chain_a = [j_crank, j_coupler, j_coupler_tip]  → reaches pivot C from A
+//   chain_b = [j_rocker, j_rocker_tip]             → reaches pivot C from D
+// Each non-ground joint carries its parent-link length as a +X pivot offset in
+// its own frame, so composing the chain walks the linkage end-to-end:
+//   j_crank       pivot (0,0,0)        — revolute at A = world origin
+//   j_coupler     pivot (40,0,0) mm    — crank length a, in the crank frame
+//   j_coupler_tip pivot (120,0,0) mm   — coupler length b, in the coupler frame
+//   j_rocker      pivot (140,0,0) mm   — ground length d, in the world frame
+//   j_rocker_tip  pivot (116.282484506,0,0) mm — rocker length c, in rocker frame
+// The distinct pivots also make each joint a structurally-distinct Map, which
+// the mechanism's joint_parents keying and the bridge's Value::Eq joint
+// matching both rely on.
+//
+// ── Scope boundary (β1 vs β2) ────────────────────────────────────────────────
+// β1 (this file + the B4 live loop-residual tests) delivers the committable
+// example and the genuinely nonzero-residual configuration. This file is the
+// COMPLETE worked example — it assembles the closed mechanism and calls
+// `inverse_dynamics(m, traj)` through the landed 4146 bridge UNCHANGED — but β1
+// asserts NOTHING about the `forces` result. The constraint-rank (B6) and
+// virtual-work power-identity (B7, with the derived G6 tolerance) assertions on
+// `forces` are sibling β2's, which reuses this file without edits (and may
+// retune the trajectory rates/accels it needs).
+//
+// Running `reify eval examples/dynamics/closed_4bar_idyn.ri` evaluates the five
+// revolute joint cells, the assembled closed mechanism, and the `forces` cell.
+structure def ClosedFourBarIdyn {
+    // Rotation axis shared by all five revolute joints (planar linkage in XY).
+    let axis_z = vec3(0, 0, 1)
+
+    // Generous angle range (0 .. 2π). Declared ranges are validated at joint
+    // construction but NOT consulted by transform_at FK or the loop-closure
+    // solver (no clamping) — the assembled θ_rocker_tip = −1.0185 rad sits
+    // outside this range by design; the range documents the nominal sweep.
+    let turn = 0rad .. 6.283185307179586rad
+
+    // ── The five revolute joints, with non-coincident +X pivot offsets ───────
+    // j_crank has its pivot AT the world origin (A) — the 2-arg form is the
+    // pivot-(0,0,0) special case (pure rotation, zero translation in FK).
+    let j_crank = revolute(axis_z, turn)
+    // Remaining joints carry their parent-link length as a +X pivot offset.
+    let j_coupler     = revolute(axis_z, turn, point3(40mm, 0mm, 0mm))
+    let j_coupler_tip = revolute(axis_z, turn, point3(120mm, 0mm, 0mm))
+    let j_rocker      = revolute(axis_z, turn, point3(140mm, 0mm, 0mm))
+    let j_rocker_tip  = revolute(axis_z, turn, point3(116.282484506mm, 0mm, 0mm))
+
+    // ── Mass properties: one DISTINCT solid per body ──────────────────────────
+    // append_body rejects duplicate solids (structural Value equality), so all
+    // six bodies — three links, two link-tips, one closing body — need distinct
+    // MassProperties. COM at each link's frame origin (kept simple; β2 owns the
+    // dynamics numbers). The closing body's mass is dynamics-ignored
+    // (n_tree = bodies − loop_closures = 5) but must still be distinct.
+    let mp_crank       = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.10, 0.0, 0.0], [0.0, 0.10, 0.0], [0.0, 0.0, 0.10]], origin: 0.0)
+    let mp_coupler     = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.20, 0.0, 0.0], [0.0, 0.20, 0.0], [0.0, 0.0, 0.20]], origin: 0.0)
+    let mp_coupler_tip = MassProperties(mass: 0.5kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.02, 0.0, 0.0], [0.0, 0.02, 0.0], [0.0, 0.0, 0.02]], origin: 0.0)
+    let mp_rocker      = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]], origin: 0.0)
+    let mp_rocker_tip  = MassProperties(mass: 0.4kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]], origin: 0.0)
+    let mp_closing     = MassProperties(mass: 0.3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.005, 0.0, 0.0], [0.0, 0.005, 0.0], [0.0, 0.0, 0.005]], origin: 0.0)
+
+    // ── Assemble the closed loop ─────────────────────────────────────────────
+    // body(m, solid, at) defaults the parent to WORLD; body(m, solid, at, parent)
+    // parents `at` onto an existing tree joint. Spanning tree (joint_parents):
+    //   j_crank       → world          (ground pivot A)
+    //   j_coupler     → j_crank        (coupler rides the crank)
+    //   j_coupler_tip → j_coupler      (coupler far tip reaches C)
+    //   j_rocker      → world          (ground pivot D)
+    //   j_rocker_tip  → j_rocker       (rocker far tip reaches C)
+    // The closing 4-arg body re-registers j_coupler_tip with parent
+    // j_rocker_tip — a parent CONFLICT, so append_body records a loop_closure
+    // constraint (path_a through the crank side, path_b through the rocker
+    // side) instead of a tree edge. That record is what makes this mechanism
+    // CLOSED (and routes inverse_dynamics through the 4146 closed-chain path).
+    let m0 = mechanism()
+    let m1 = body(m0, mp_crank, j_crank)
+    let m2 = body(m1, mp_coupler, j_coupler, j_crank)
+    let m3 = body(m2, mp_coupler_tip, j_coupler_tip, j_coupler)
+    let m4 = body(m3, mp_rocker, j_rocker)
+    let m5 = body(m4, mp_rocker_tip, j_rocker_tip, j_rocker)
+    // Closing edge: the coupler-tip joint meets the rocker-tip joint at pivot C.
+    let m = body(m5, mp_closing, j_coupler_tip, j_rocker_tip)
+
+    // ── One-sample joint-space trajectory at the ASSEMBLED configuration ─────
+    //   values[0..6] : per-body joint positions, in BODIES order (crank,
+    //                  coupler, coupler_tip, rocker, rocker_tip, closing), in
+    //                  radians. These are the analytically-solved closure
+    //                  angles from the header — the position-closure identity
+    //                  holds (the B4 gate re-derives them via
+    //                  solve_loop_closure). The closing body's value is the
+    //                  closing joint's coordinate relative to its loop parent
+    //                  (j_rocker_tip frame): 0 at exact closure.
+    //   vels[0..5]   : per spanning-tree DOF generalized velocities. At this
+    //                  aligned configuration (θ_coupler = 0, A–B–C collinear)
+    //                  the coupler-tip pivot C is at an instantaneous
+    //                  standstill, so velocity closure gives
+    //                    ω_coupler = −(a+b)/b · ω_input = −8π/3,
+    //                    ω_rocker  = 0,
+    //                    ω_rocker_tip = ω_input + ω_coupler = −2π/3
+    //                  for the prescribed crank rate ω_input = 2π rad/s.
+    //   accels[0..5] : per spanning-tree DOF generalized accelerations. Zero
+    //                  here — β1 asserts nothing about `forces`; β2 owns the
+    //                  dynamics validation and may retune these.
+    let sample = TrajectorySample(t: 0s, values: [0.7853981633974483, 0.0, 0.0, 1.8039163646188838, -1.0185182012214355, 0.0], vels: [6.283185307179586, -8.377580409572781, 0.0, 0.0, -2.0943951023931953], accels: [0.0, 0.0, 0.0, 0.0, 0.0])
+    let traj = MotionTrajectory(mechanism: 0.0, samples: [sample])
+
+    // Closed-chain inverse dynamics through the landed 4146 bridge, UNCHANGED.
+    // β1 asserts nothing about this cell; β2 (B6 constraint-rank, B7
+    // virtual-work identity) reads it.
+    let forces = inverse_dynamics(m, traj)
+}

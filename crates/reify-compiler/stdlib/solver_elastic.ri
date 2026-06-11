@@ -410,54 +410,19 @@ structure def ShellStress {
 // concrete `StructureRef("Steel_AISI_1045")` does not match the declared
 // `TraitObject("ElasticMaterial")` at a fn call site.
 //
-// Workaround (same pattern as `LoadCase.loads : List<Real>` for loads/supports):
+// Workaround (material is an exact-match TraitObject; same structural pattern):
 //   1. Wrap the material: `let mi = FEAMaterialInput(material: mat)`
 //      (structure ctors accept any value — no call-site type check)
 //   2. Pass `mi.material` — whose compile-time type is `ElasticMaterial` (the
 //      declared param type) — to the function. Exact match. ✓
 //
 // NOTE: this struct is intentionally kept for solve_buckling compatibility.
-// solve_elastic_static now accepts ConstitutiveLaw via ConstitutiveLawInput
-// (task δ/3780). Do NOT widen FEAMaterialInput.material to ConstitutiveLaw —
-// that would break buckling (solver_buckling_fns.ri:51, param material:ElasticMaterial).
-//
-// TODO(trait-coerce): remove this struct and pass material directly once the
-// type checker supports trait-object coercion at fn call sites.
+// solve_elastic_static accepts ConstitutiveLaw directly (task γ/4441 supertrait
+// + task δ/4442 shim retirement). Do NOT widen FEAMaterialInput.material to
+// ConstitutiveLaw — that would break buckling (solver_buckling_fns.ri:51,
+// param material:ElasticMaterial).
 pub structure def FEAMaterialInput {
     param material : ElasticMaterial
-}
-
-// ── ConstitutiveLawInput ──────────────────────────────────────────────────────
-//
-// Type-coercion shim for passing any `ConstitutiveLaw` conformer (isotropic,
-// orthotropic, transverse-isotropic) to `solve_elastic_static`. The Reify
-// overload resolver uses exact type equality; a concrete structure like
-// `OrthotropicMaterial(...)` has compile-time type
-// `StructureRef("OrthotropicMaterial")`, which does not match the declared
-// `TraitObject("ConstitutiveLaw")` at a fn call site.
-//
-// Workaround (same pattern as FEAMaterialInput):
-//   1. Wrap the law: `let ci = ConstitutiveLawInput(law: mat)`
-//      (structure ctors accept any value — no call-site type check)
-//   2. Pass `ci.law` — whose compile-time type is `ConstitutiveLaw` (the
-//      declared param type) — to `solve_elastic_static`. Exact match. ✓
-//
-// This is the δ/3780 scalar-lift surface: a bare ConstitutiveLaw is
-// auto-lifted to a homogeneous ConstantField by the trampoline so a single
-// solve path handles both isotropic and anisotropic (orthotropic /
-// transverse-isotropic) cases. Heterogeneous Field<Point3,AnisotropicMaterial>
-// call-surface is deferred to task ε.
-//
-// Q3 design decision (δ/3780): wrapper-coercion was chosen over the PRD's
-// "coercion at lowering" because lowering changes require reify-compiler Rust
-// changes outside this task's stdlib scope. The load order
-// (materials_fea before constitutive) also forbids
-// `trait ElasticMaterial : ConstitutiveLaw`.
-//
-// TODO(trait-coerce): remove this struct and pass material directly once the
-// type checker supports trait-object coercion at fn call sites.
-pub structure def ConstitutiveLawInput {
-    param law : ConstitutiveLaw
 }
 
 // ── solve_elastic_static ──────────────────────────────────────────────────────
@@ -481,22 +446,24 @@ pub structure def ConstitutiveLawInput {
 //
 // Signature notes:
 //
-//   `material : ConstitutiveLaw` (task δ/3780 generalisation):
+//   `material : ConstitutiveLaw` (task δ/3780 generalisation, γ/4441 direct-pass):
 //     Accepts any conforming structure: isotropic (`ElasticMaterial` conformers),
 //     orthotropic (`OrthotropicMaterial`), or transverse-isotropic
 //     (`TransverseIsotropicMaterial`). The trampoline auto-lifts the single
 //     homogeneous ConstitutiveLaw to a `ConstantField` — the scalar auto-lift
 //     mechanism — so a single solve path handles the homogeneous case.
 //
-//     Call-site coercion: because the overload resolver uses exact type equality,
-//     callers must wrap their material in `ConstitutiveLawInput(law: mat)` and
-//     pass `ci.law`. Structure ctors accept any value, so
-//     `ConstitutiveLawInput(law: OrthotropicMaterial(...)).law` (and the isotropic
-//     `ConstitutiveLawInput(law: Steel_AISI_1045()).law`) both satisfy the
-//     `TraitObject("ConstitutiveLaw")` param type. See ConstitutiveLawInput doc.
-//
-//     Q3 resolution (δ/3780): wrapper-coercion chosen over PRD "coercion at
-//     lowering" (out of scope for stdlib-only task). See ConstitutiveLawInput doc.
+//     Direct passing (task γ/4441): the `material : ConstitutiveLaw` param is a
+//     trait-object scalar, which the overload resolver treats as a WILDCARD
+//     (matches any arg type). A post-pass (`phase_fn_arg_conformance` →
+//     `check_fn_arg_conformance` → `satisfies_trait_bound` → `trait_satisfies`)
+//     then validates conformance by walking trait refinement chains transitively.
+//     Because `trait ElasticMaterial : ConstitutiveLaw` now holds (γ/4441),
+//     `Steel_AISI_1045()` (and every other `ElasticMaterial` conformer) may be
+//     passed DIRECTLY — no `ConstitutiveLawInput` wrapper required.
+//     `OrthotropicMaterial` and `TransverseIsotropicMaterial` (: ConstitutiveLaw
+//     directly) also pass without a wrapper.  The `ConstitutiveLawInput` shim
+//     was retired in task δ/4442; callers pass material directly.
 //
 //     Heterogeneous `Field<Point3<Length>, AnisotropicMaterial>` call-surface
 //     deferred to task ε.
@@ -511,8 +478,8 @@ pub structure def ConstitutiveLawInput {
 //     each concrete list element against the trait.  Direct typed list literals
 //     `[PointLoad(...)]` / `[PressureLoad(...)]` / `[FixedSupport(...)]`
 //     type-check directly — no LoadCase bundle required.
-//     `LoadCase.loads : List<Real>` remains `List<Real>` (tightening LoadCase
-//     is a clean follow-up; see `std.fea.multi_case` header note 1).
+//     `LoadCase.loads : List<Load>` and `LoadCase.supports : List<Support>` were
+//     tightened from `List<Real>` placeholders in task ζ/4444 (resolved).
 //
 //   `options : ElasticOptions` (no default):
 //     `phase_functions` runs before `phase_entities` in the Reify compiler, so

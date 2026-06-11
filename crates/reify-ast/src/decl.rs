@@ -47,6 +47,11 @@ pub enum Declaration {
     Constraint(ConstraintDef),
     Unit(UnitDecl),
     TypeAlias(TypeAliasDecl),
+    /// `default Material = steel` — ambient-default declaration.
+    ///
+    /// Grammar producer only (task A). Semantics (scope resolution, injection
+    /// into structures) are deferred to task B.
+    Default(DefaultDecl),
     /// A `module a.b.c` declaration at the top of a file.
     ///
     /// Positional: placed via the grammar's `source_file: seq(optional($.module_declaration),
@@ -192,7 +197,7 @@ pub struct WhereClause {
     pub span: SourceSpan,
 }
 
-/// `param width: Scalar = 80mm`
+/// `param width: Length = 80mm`
 #[derive(Debug, Clone)]
 pub struct ParamDecl {
     pub name: String,
@@ -734,7 +739,7 @@ pub struct EnumDecl {
     pub annotations: Vec<Annotation>,
 }
 
-/// `fn area(w: Scalar, h: Scalar) -> Scalar { w * h }`
+/// `fn area(w: Length, h: Length) -> Scalar { w * h }`
 #[derive(Debug, Clone)]
 pub struct FnDef {
     pub name: String,
@@ -792,6 +797,13 @@ pub struct PurposeDef {
     pub type_params: Vec<TypeParamDecl>,
     pub params: Vec<PurposeParam>,
     pub members: Vec<MemberDecl>,
+    /// Ambient-default declarations directly in this purpose body.
+    ///
+    /// Extracted from `purpose_member` nodes into a dedicated vec (parallel to
+    /// `pragmas`) so that `members` contains only `MemberDecl` variants and the
+    /// `Declaration::Default` blast radius is kept small (task 4496 design
+    /// decision — NOT a `MemberDecl::Default` variant).
+    pub defaults: Vec<DefaultDecl>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
     /// Block-level pragmas inside this purpose.
@@ -833,7 +845,6 @@ impl ConstraintDef {
     ///
     /// Callers can use this instead of scanning `annotations` manually.
     /// Symmetric with `TopologyTemplate::is_test()`.
-    // TODO: Once constraint-def lowering lands, this moves to CompiledConstraintDef::is_test.
     pub fn is_test(&self) -> bool {
         has_test_annotation(&self.annotations)
     }
@@ -874,6 +885,23 @@ pub struct TypeAliasDecl {
     pub content_hash: ContentHash,
     /// Annotations preceding this declaration.
     pub annotations: Vec<Annotation>,
+}
+
+/// An ambient-default declaration: `default Material = steel`
+///
+/// Valid at two positions: file top-level (`Declaration::Default`) and directly
+/// inside a `purpose` body (`PurposeDef.defaults`).
+///
+/// Grammar producer only (task A); semantics (scope resolution, injection into
+/// structures) are deferred to task B. No `pub` prefix and no annotations in v1.
+#[derive(Debug, Clone)]
+pub struct DefaultDecl {
+    /// The type name this default applies to (e.g., `Material`).
+    pub type_expr: TypeExpr,
+    /// The default value expression (e.g., `steel`).
+    pub value: Expr,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
 }
 
 /// The source kind for a field declaration.
@@ -919,7 +947,7 @@ pub struct TypeParamDecl {
     pub span: SourceSpan,
 }
 
-/// A function parameter: `w: Scalar` or `w: Scalar = default_expr`
+/// A function parameter: `w: Length` or `w: Length = default_expr`
 #[derive(Debug, Clone)]
 pub struct FnParam {
     pub name: String,

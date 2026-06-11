@@ -114,6 +114,7 @@ fn make_diagnostic(file_path: &str, severity: &str, message: &str) -> Diagnostic
         severity: severity.to_string(),
         message: message.to_string(),
         code: None,
+        has_location: true,
     }
 }
 

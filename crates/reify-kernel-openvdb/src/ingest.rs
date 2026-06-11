@@ -277,6 +277,59 @@ pub struct IngestOutcome {
     pub warnings: Vec<reify_core::Diagnostic>,
 }
 
+/// Build an [`OpenVdbGridSource`] from FFI-extracted metadata and the raw f32
+/// densified buffer that comes out of `grid_densify_to_buffer`.
+///
+/// This is the shared construction helper used by BOTH:
+/// - [`read_vdb_file`] (file-read path: opens a `.vdb` file → extracts
+///   metadata via FFI → densifies → calls this helper).
+/// - `OpenVdbKernel::densify_grid_to_sampled` (in-kernel path: starts from
+///   an already-registered handle → extracts metadata via FFI → densifies
+///   → calls this helper).
+///
+/// # Invariants captured here (one place, not duplicated)
+///
+/// - `kind = Regular3D` — both paths work with 3-D SDF grids only.
+/// - Axis-0 = X, Axis-1 = Y, Axis-2 = Z (row-major X-outermost) — matches
+///   `reify_expr::interp::interpolate_3d`, `engine_eval::build_sampled_field`,
+///   and the workspace-wide row-major convention.
+/// - `f32 → f64` conversion via **consuming** `into_iter()` so the transient
+///   f32 buffer is freed as soon as the f64 `collect()` finishes.
+///   At the C++-side cap (~256M voxels = 1 GiB f32) this keeps the peak at
+///   ~3 GiB rather than holding both buffers live (esc-3095-97 suggestion 2).
+/// - `units_str.is_empty() → None` — an empty units string from
+///   `grid_units()` means the grid carries no units metadata; `None` in
+///   `OpenVdbGridSource` is the signal that `validate_grid_units` short-circuits
+///   without a `UnitMismatch` check.
+/// - `interpolation = Linear` — `meshToLevelSet`-built grids do not write
+///   interpolation metadata; the correct interpolation for a continuous SDF
+///   is linear (box-sampler).
+#[cfg(has_openvdb)]
+pub(crate) fn build_realized_grid_source(
+    voxel_sizes: [f64; 3],
+    bbox_min: [f64; 3],
+    bbox_max: [f64; 3],
+    units_str: &str,
+    raw_buffer: Vec<f32>,
+) -> OpenVdbGridSource {
+    // `into_iter()` (consuming) — not `iter()` (borrowing) — so the f32
+    // buffer is freed as soon as the f64 collect finishes.
+    let data: Vec<f64> = raw_buffer.into_iter().map(|v| v as f64).collect();
+    OpenVdbGridSource {
+        kind: OpenVdbGridKind::Regular3D,
+        bounds_min: bbox_min.to_vec(),
+        bounds_max: bbox_max.to_vec(),
+        spacing: voxel_sizes.to_vec(),
+        data,
+        units: if units_str.is_empty() {
+            None
+        } else {
+            Some(units_str.to_string())
+        },
+        interpolation: OpenVdbInterpolation::Linear,
+    }
+}
+
 /// Lower an in-memory OpenVDB grid to a [`SampledField`].
 ///
 /// Handles `Regular1D` / `Regular2D` / `Regular3D` arms uniformly, mapping
@@ -620,30 +673,12 @@ pub fn read_vdb_file(
             detail: e.to_string(),
         }
     })?;
-    // `into_iter()` (consuming) — not `iter()` (borrowing) — so the f32
-    // buffer is freed as soon as the f64 collect finishes.  At the C++-side
-    // cap (~256M voxels = 1 GiB f32) the long-lived storage paid by
-    // `SampledField` is ~2 GiB f64; consuming the f32 keeps the transient
-    // peak at ~3 GiB instead of holding both buffers live afterwards.
-    // See task 3095 review esc-3095-97 suggestion 2.
-    let data: Vec<f64> = raw_buffer.into_iter().map(|v| v as f64).collect();
-
-    // Build the in-memory source model.  Axis-0 = X, Axis-1 = Y, Axis-2 = Z.
-    // bounds_min/max come from the world-space voxel-center coordinates of the
-    // active bounding box; spacing carries the per-axis voxel sizes.
-    let source = OpenVdbGridSource {
-        kind: OpenVdbGridKind::Regular3D,
-        bounds_min: bbox_min_arr.to_vec(),
-        bounds_max: bbox_max_arr.to_vec(),
-        spacing: voxel_sizes.to_vec(),
-        data,
-        units: if units_str.is_empty() {
-            None
-        } else {
-            Some(units_str.to_string())
-        },
-        interpolation: OpenVdbInterpolation::Linear,
-    };
+    // Build the OpenVdbGridSource from the per-axis metadata and the raw
+    // f32 buffer.  The drift-prone construction details (Regular3D,
+    // X-outermost, f32→f64 conversion, units-empty→None) live in ONE
+    // place — `build_realized_grid_source` — so both this file-read path
+    // and `densify_grid_to_sampled` share the same axis convention.
+    let source = build_realized_grid_source(voxel_sizes, bbox_min_arr, bbox_max_arr, &units_str, raw_buffer);
 
     lower_to_sampled(&source, grid_name, codomain_type)
 }
@@ -815,6 +850,7 @@ fn format_type_repr(t: &Type) -> String {
         Type::Transform(_) => "Transform",
         Type::AffineMap(_) => "AffineMap",
         Type::Selector(_) => "Selector",
+        Type::AnySelector => "Selector",
         Type::Range(_) => "Range",
         Type::Plane => "Plane",
         Type::Axis => "Axis",

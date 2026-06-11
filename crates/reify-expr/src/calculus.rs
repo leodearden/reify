@@ -226,7 +226,7 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
     // via Arc::clone.  A full O(1) wrap requires callers to pass Arc<Value> so
     // the entire source field can be ref-counted rather than cloned.  This needs
     // the evaluator's `evaluated_args: Vec<Value>` to become `Vec<Arc<Value>>`
-    // — a broader architectural change tracked as a follow-up task.
+    // — a broader architectural change (tracked by task 4551).
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -296,7 +296,7 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
     );
 
     // Result: scalar field with dimensionally-correct codomain.
-    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization. (task 4551)
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -367,7 +367,7 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
     );
 
     // Result: vector field with dimensionally-correct codomain.
-    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization. (task 4551)
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: Type::vec3(result_component),
@@ -425,7 +425,7 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
     );
 
     // Result: scalar field with dimensionally-correct codomain.
-    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization. (task 4551)
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -737,7 +737,7 @@ pub(crate) fn compute_numerical_gradient_at_point(
     // codomain_type is now the gradient field's codomain (already R/Q-divided by
     // compute_gradient), so no further division is needed here:
     //   - 1D field  → Scalar { dimension } or Real
-    //   - nD field  → Vector { n, quantity: Scalar { dimension } } or Vector { n, quantity: Real }
+    //   - nD field  → Vector { n, quantity: Length { dimension } } or Vector { n, quantity: Real }
     let result_dim = match codomain_type {
         Type::Vector { quantity, .. } => match quantity.as_ref() {
             Type::Scalar { dimension } => *dimension,

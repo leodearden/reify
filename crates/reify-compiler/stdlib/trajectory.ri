@@ -45,8 +45,8 @@
 //   2. `mechanism` on `PiecewisePolynomialProfile` uses bare `Real` with a
 //      `TODO(mechanism-type)` note pointing at the same sibling PRD. No
 //      analogous alias makes sense (Mechanism is a structural type, not a
-//      scalar dimension) — same pattern as `LoadCase.loads : List<Real>`'s
-//      `TODO(load-trait)` annotation in `fea_multi_case.ri`.
+//      scalar dimension) — same placeholder-with-TODO pattern; the analogous
+//      `LoadCase.loads` placeholder was since tightened (task ζ/4444).
 //   3. TYPE-ALIAS COLLAPSE (η-phase): `Pose3`, `Vec3`, and `LocationId` are
 //      all aliased to `Real` (lines 67-86). Because all three resolve to the
 //      identical underlying type, the typechecker currently provides ZERO
@@ -66,8 +66,8 @@
 // JointValue: per-joint scalar — position / velocity / acceleration depending
 // on the call-site. Currently aliased to `Real` as the kinematic-completion
 // PRD (which owns the proper kinematic-scalar type) has not landed yet.
-// Same placeholder convention as `fea_multi_case.ri::LoadCase.loads :
-// List<Real>` with its `TODO(load-trait)` annotation. Retargeting this line
+// Same placeholder-with-TODO convention; the analogous `LoadCase.loads`
+// placeholder was since tightened to `List<Load>` (task ζ/4444). Retargeting this line
 // when the kinematic PRD lands propagates the type tightening to every
 // consumer in this file without touching any structure_def body.
 //
@@ -255,8 +255,8 @@ structure def PeriodicSpline : BoundaryCondition { }
 //
 // TODO(mechanism-type): tighten `mechanism : Real` to the kinematic-
 // completion PRD's `Mechanism` type when that PRD lands. Same shape and
-// rationale as `LoadCase.loads : List<Real>` with its `TODO(load-trait)`
-// annotation in `fea_multi_case.ri:84`.
+// rationale; the analogous `LoadCase.loads` placeholder was since tightened
+// to `List<Load>` (task ζ/4444).
 structure def PiecewisePolynomialProfile : Profile {
     param mechanism : Real
     param waypoints : List<Waypoint>

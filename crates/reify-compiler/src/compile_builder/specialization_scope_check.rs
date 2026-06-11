@@ -119,7 +119,8 @@ where
             | Declaration::Unit(_)
             | Declaration::TypeAlias(_)
             | Declaration::Import(_)
-            | Declaration::Module(_) => continue,
+            | Declaration::Module(_)
+            | Declaration::Default(_) => continue,
         };
         find_specialization_scopes(members, visitor, 0);
     }
@@ -183,7 +184,7 @@ mod tests {
         // therefore no diagnostics fire.
         let parsed = parse_module(
             "structure S {
-                param x : Scalar = 5mm
+                param x : Length = 5mm
                 sub a = Foo()
                 sub b : List<Bar>
             }",

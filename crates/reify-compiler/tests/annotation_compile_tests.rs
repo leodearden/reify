@@ -339,7 +339,7 @@ fn shell_non_literal_expr_arg_lowers_to_expr_variant_and_still_warns() {
             name: None,
             value: reify_ir::AnnotationArgValue::Expr(expr),
         } => match &expr.kind {
-            reify_ast::ExprKind::FunctionCall { name, args } => {
+            reify_ast::ExprKind::FunctionCall { name, args, .. } => {
                 assert_eq!(name, "linear_taper", "unexpected call target");
                 assert_eq!(args.len(), 1, "expected linear_taper(<1 arg>)");
                 assert!(

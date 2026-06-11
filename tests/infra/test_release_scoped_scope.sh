@@ -120,122 +120,93 @@ assert "grep-derived release_sensitive_set includes reify-mesh-morph (Mechanism 
     test "${_MESH_MORPH_IN_DERIVED:-0}" -gt 0
 
 # ---------------------------------------------------------------------------
-# Plan-shape assertions (Tests 4-7)
+# Plan-shape assertions (Tests 4-7) — task 4451 folded contract
 # Source of truth: scripts/verify.sh --print-plan (the oracle the orchestrator
 # calls). --profile both --scope all forces the full plan; env lines are stripped
 # via `grep -v '^#'`.
+#
+# Folded contract (task 4451):
+#   - NO cargo-test-occt-gated.sh invocation in the plan
+#   - Release nextest pass: one `cargo nextest run -p <all-release-sensitive> --release`
+#     (reify-eval is now folded into the nextest release pass alongside non-OCCT crates)
+#   - Debug pass: `cargo nextest run --workspace` with NO --exclude (OCCT folded in)
 # ---------------------------------------------------------------------------
 TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
 
-# Split by OCCT membership to build the two release crate lists for assertions.
+# All release-sensitive crates (declared set from the shared lib).
 _OCCT_DECLARED_STR="$(occt_declared_set)"
-_is_occt() { grep -qxF "$1" <<< "$_OCCT_DECLARED_STR"; }
 
-_RELEASE_GATED_CRATES=()    # OCCT ∩ release-sensitive (expect: just reify-eval)
-_RELEASE_UNGATED_CRATES=()  # release-sensitive ∖ OCCT (non-OCCT crates)
-while IFS= read -r _c; do
-    [ -z "$_c" ] && continue
-    if _is_occt "$_c"; then
-        _RELEASE_GATED_CRATES+=("$_c")
-    else
-        _RELEASE_UNGATED_CRATES+=("$_c")
-    fi
-done <<< "$DECLARED_CRATES"
-
-# Extract the gated release line (via the flock wrapper, with --release).
-GATED_RELEASE="$(printf '%s\n' "$TEST_PLAN_SEGS" \
-    | grep 'cargo-test-occt-gated\.sh' | grep -- '--release' || true)"
-export GATED_RELEASE
-
-# Extract the ungated release line (not via the flock wrapper, with --release).
-# After step-4 this uses -p flags instead of --workspace; after step-4 it must
-# NOT match --workspace (those assertions are the RED condition before step-4).
-UNGATED_RELEASE="$(printf '%s\n' "$TEST_PLAN_SEGS" \
+# Extract the nextest release pass (no gated wrapper).
+NEXTEST_RELEASE="$(printf '%s\n' "$TEST_PLAN_SEGS" \
     | grep -v 'cargo-test-occt-gated\.sh' \
-    | grep -E 'cargo (test|nextest run)' \
+    | grep -E 'cargo nextest run' \
     | grep -- '--release' || true)"
-export UNGATED_RELEASE
+export NEXTEST_RELEASE
 
 echo ""
-echo "--- Test 4: gated release pass is scoped to OCCT-intersect crates only ---"
-# Only OCCT-intersect crates (reify-eval) should appear in the gated release pass.
-for _c in "${_RELEASE_GATED_CRATES[@]}"; do
-    assert "gated release has '-p $_c'" \
-        bash -c "printf '%s' \"\$GATED_RELEASE\" | grep -qF ' -p $_c'"
-done
-# The 3 other OCCT crates (reify-kernel-occt, reify-cli, reify-config) must NOT appear.
-_OCCT_RELEASE_ABSENT=(reify-kernel-occt reify-cli reify-config)
-for _c in "${_OCCT_RELEASE_ABSENT[@]}"; do
-    assert "gated release does NOT have '-p $_c'" \
-        bash -c "! printf '%s' \"\$GATED_RELEASE\" | grep -qF ' -p $_c'"
-done
-assert "gated release does not contain --workspace" \
-    bash -c "! printf '%s' \"\$GATED_RELEASE\" | grep -qF ' --workspace'"
-assert "gated release has '-- --test-threads=1'" \
-    bash -c "printf '%s' \"\$GATED_RELEASE\" | grep -qF -- '-- --test-threads=1'"
-assert "gated release has 'REIFY_OCCT_TEST_TIMEOUT=4800'" \
-    bash -c "printf '%s' \"\$GATED_RELEASE\" | grep -qF 'REIFY_OCCT_TEST_TIMEOUT=4800'"
+echo "--- Test 4: no gated release pass; nextest release pass exists with -p reify-eval (task 4451) ---"
+# Task 4451: reify-eval (OCCT ∩ release-sensitive) is folded into the nextest
+# release pass. No flock wrapper is used; the nextest occt group bounds concurrency.
+assert "plan has NO cargo-test-occt-gated.sh invocation at all (task 4451: fold)" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'cargo-test-occt-gated\.sh'"
+assert "nextest release pass exists (cargo nextest run ... --release, no gated wrapper)" \
+    test -n "$NEXTEST_RELEASE"
+assert "nextest release pass has '-p reify-eval' (OCCT∩release-sensitive, folded, task 4451)" \
+    bash -c "printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF ' -p reify-eval'"
+assert "nextest release pass does NOT have '--workspace' (sensitivity-scoped)" \
+    bash -c "! printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF ' --workspace'"
+assert "nextest release pass does NOT have '-- --test-threads=1' (nextest serializes via occt group)" \
+    bash -c "! printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF '-- --test-threads=1'"
 
 echo ""
-echo "--- Test 5: ungated release pass has '-p <crate>' for each non-OCCT release-sensitive crate ---"
-for _c in "${_RELEASE_UNGATED_CRATES[@]}"; do
-    assert "ungated release has '-p $_c'" \
-        bash -c "printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' -p $_c'"
-done
-assert "ungated release has '--release'" \
-    bash -c "printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' --release'"
-assert "ungated release does NOT contain --workspace" \
-    bash -c "! printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' --workspace'"
-assert "ungated release does NOT contain --exclude" \
-    bash -c "! printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' --exclude'"
-assert "ungated release does NOT have '-p reify-eval'" \
-    bash -c "! printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' -p reify-eval'"
-
-echo ""
-echo "--- Test 5a: reify-mesh-morph in ungated release pass (Mechanism C regression guard) ---"
-# Step-7 adds Mechanism C to the detector and reify-mesh-morph to the declared txt;
-# the data-driven release pass then auto-emits '-p reify-mesh-morph' in the ungated
-# bucket (reify-mesh-morph is not OCCT-touching).  Both assertions below are RED
-# until those two changes land together in step-7.
-assert "ungated release has '-p reify-mesh-morph' (Mechanism C regression guard)" \
-    bash -c "printf '%s' \"\$UNGATED_RELEASE\" | grep -qF ' -p reify-mesh-morph'"
-assert "gated release does NOT have '-p reify-mesh-morph' (not OCCT-touching)" \
-    bash -c "! printf '%s' \"\$GATED_RELEASE\" | grep -qF ' -p reify-mesh-morph'"
-
-echo ""
-echo "--- Test 6: DEBUG pass unchanged (gated debug has all 4 OCCT crates; ungated debug uses --workspace --exclude) ---"
-GATED_DEBUG="$(printf '%s\n' "$TEST_PLAN_SEGS" \
-    | grep 'cargo-test-occt-gated\.sh' | grep -v -- '--release' || true)"
-UNGATED_DEBUG="$(printf '%s\n' "$TEST_PLAN_SEGS" \
-    | grep -E 'cargo (test|nextest run) --workspace' \
-    | grep -v 'cargo-test-occt-gated\.sh' | grep -v -- '--release' || true)"
-export GATED_DEBUG UNGATED_DEBUG
-
-# Gated debug must still have ALL 4 OCCT crates.
+echo "--- Test 5: nextest release pass has '-p <crate>' for each release-sensitive crate (task 4451) ---"
+# After the fold, ALL release-sensitive crates (incl. reify-eval) go through the
+# single nextest release pass. The OCCT/non-OCCT split is gone.
 while IFS= read -r _c; do
     [ -z "$_c" ] && continue
-    assert "gated debug has '-p $_c' (OCCT crate, unchanged)" \
-        bash -c "printf '%s' \"\$GATED_DEBUG\" | grep -qF ' -p $_c'"
-done <<< "$_OCCT_DECLARED_STR"
-
-assert "ungated debug has --workspace (unchanged)" \
-    bash -c "printf '%s' \"\$UNGATED_DEBUG\" | grep -qF ' --workspace'"
-assert "ungated debug has --exclude (unchanged)" \
-    bash -c "printf '%s' \"\$UNGATED_DEBUG\" | grep -qF ' --exclude'"
-assert "ungated debug does NOT have --release" \
-    bash -c "! printf '%s' \"\$UNGATED_DEBUG\" | grep -qF ' --release'"
+    assert "nextest release has '-p $_c' (release-sensitive, task 4451)" \
+        bash -c "printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF ' -p $_c'"
+done <<< "$DECLARED_CRATES"
+assert "nextest release has '--release'" \
+    bash -c "printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF ' --release'"
+assert "nextest release does NOT contain --workspace" \
+    bash -c "! printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF ' --workspace'"
+assert "nextest release does NOT contain --exclude" \
+    bash -c "! printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF ' --exclude'"
 
 echo ""
-echo "--- Test 7: gated release appears before ungated release in the plan ---"
-_GATED_RELEASE_IDX="$(printf '%s\n' "$TEST_PLAN_SEGS" \
-    | grep -n 'cargo-test-occt-gated\.sh' | grep -- '--release' | head -1 | cut -d: -f1 || true)"
-# After step-4 the ungated release no longer uses --workspace; match any non-gated
-# cargo (test|nextest run) line with --release.
-_UNGATED_RELEASE_IDX="$(printf '%s\n' "$TEST_PLAN_SEGS" \
-    | grep -nE 'cargo (test|nextest run)' \
+echo "--- Test 5a: reify-mesh-morph in nextest release pass (Mechanism C regression guard, task 4451) ---"
+# reify-mesh-morph is release-sensitive (Mechanism C) and non-OCCT; it goes
+# into the single nextest release pass (no gated/ungated split after the fold).
+assert "nextest release has '-p reify-mesh-morph' (Mechanism C regression guard, task 4451)" \
+    bash -c "printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF ' -p reify-mesh-morph'"
+
+echo ""
+echo "--- Test 6: debug pass is 'cargo nextest run --workspace' with NO --exclude (OCCT folded in, task 4451) ---"
+NEXTEST_DEBUG="$(printf '%s\n' "$TEST_PLAN_SEGS" \
+    | grep -E 'cargo nextest run --workspace' \
+    | grep -v -- '--release' || true)"
+export NEXTEST_DEBUG
+
+assert "debug nextest pass exists (cargo nextest run --workspace, no --release)" \
+    test -n "$NEXTEST_DEBUG"
+assert "debug nextest pass has --workspace (full-workspace)" \
+    bash -c "printf '%s' \"\$NEXTEST_DEBUG\" | grep -qF ' --workspace'"
+assert "debug nextest pass has NO --exclude (OCCT folded in, task 4451)" \
+    bash -c "! printf '%s' \"\$NEXTEST_DEBUG\" | grep -qF ' --exclude'"
+assert "debug nextest pass does NOT have --release" \
+    bash -c "! printf '%s' \"\$NEXTEST_DEBUG\" | grep -qF ' --release'"
+
+echo ""
+echo "--- Test 7: debug pass appears before release pass in the plan (task 4451) ---"
+# Ordering: debug nextest pass (--workspace) before release nextest pass (-p ... --release).
+_DEBUG_IDX="$(printf '%s\n' "$TEST_PLAN_SEGS" \
+    | grep -nE 'cargo nextest run --workspace' | grep -v -- '--release' | head -1 | cut -d: -f1 || true)"
+_RELEASE_IDX="$(printf '%s\n' "$TEST_PLAN_SEGS" \
     | grep -v 'cargo-test-occt-gated' \
+    | grep -nE 'cargo nextest run' \
     | grep -- '--release' | head -1 | cut -d: -f1 || true)"
-assert "gated release (segment ${_GATED_RELEASE_IDX:-?}) precedes ungated release (segment ${_UNGATED_RELEASE_IDX:-?})" \
-    bash -c "[ '${_GATED_RELEASE_IDX:-0}' -gt 0 ] && [ '${_UNGATED_RELEASE_IDX:-0}' -gt 0 ] && [ '${_GATED_RELEASE_IDX:-0}' -lt '${_UNGATED_RELEASE_IDX:-0}' ]"
+assert "debug nextest pass (segment ${_DEBUG_IDX:-?}) precedes release nextest pass (segment ${_RELEASE_IDX:-?})" \
+    bash -c "[ '${_DEBUG_IDX:-0}' -gt 0 ] && [ '${_RELEASE_IDX:-0}' -gt 0 ] && [ '${_DEBUG_IDX:-0}' -lt '${_RELEASE_IDX:-0}' ]"
 
 test_summary

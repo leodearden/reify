@@ -16,7 +16,7 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 /// Build the canonical Bolt + Parent (collection sub) templates and return
 /// `(TopologyTemplate, TopologyTemplate)` in `(parent, bolt)` order.
 ///
-/// - Bolt has a single `diameter: Scalar = 10mm` param.
+/// - Bolt has a single `diameter: Length = 10mm` param.
 /// - Parent has `param n : Int` (default controlled by `n_default`), a
 ///   `__count_bolts = n` let-binding marked as the structure-controlling
 ///   cell, and a collection sub-component `bolts : List<Bolt>` whose count
@@ -376,7 +376,7 @@ fn eval_dynamic_index_collection_member_access_from_source() {
     // End-to-end: compile source with bolts[idx].diameter and eval.
     // If the compiler emits Literal(Undef) for the collection base, the result will be Undef.
     let source = r#"
-        structure Bolt { param diameter : Scalar = 10mm }
+        structure Bolt { param diameter : Length = 10mm }
         structure S {
             param idx : Int = 0
             sub bolts : List<Bolt>
@@ -427,7 +427,7 @@ fn eval_collection_aggregate_from_source() {
     // This tests the compiler path for bare collection sub identifier resolution,
     // NOT the builder API that step-19 uses.
     let source = r#"
-        structure Bolt { param grade : Scalar = 8.8 }
+        structure Bolt { param grade : Length = 8.8 }
         structure S {
             sub bolts : List<Bolt>
             constraint bolts.count == 3

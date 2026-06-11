@@ -29,8 +29,13 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
     // Drop stdin by closing it
     drop(child.stdin.take());
 
-    // Wait with timeout to prevent CI deadlocks
-    let timeout = Duration::from_secs(10);
+    // Wait with timeout to prevent CI deadlocks.
+    // 30s headroom: task 4503 raised the OCCT nextest max-threads cap 4->24
+    // (commit 9ea8cdd4b8), so under peak concurrent load the child's stdlib
+    // compile (parse_with_stdlib for bracket.ri) can exceed the old 10s ceiling
+    // even though the MCP roundtrip itself is fast. This guards deadlocks, not
+    // performance, so a wider ceiling is safe.
+    let timeout = Duration::from_secs(30);
     let start = std::time::Instant::now();
     loop {
         match child.try_wait() {

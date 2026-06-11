@@ -88,7 +88,11 @@ fn body_label(body: &Value) -> String {
 /// `try_eval_body_mass_props` (deferred-kernel dispatch path) so the ladder and
 /// the diagnostic are single-sourced regardless of whether the geometric query
 /// is available.
-fn resolve_body_density(
+///
+/// `pub(crate)` so the modal_ops cross-path convergence test (task 4470 step-3)
+/// can feed the same material Value to both the modal and dynamics resolution
+/// paths without duplicating the ladder logic.
+pub(crate) fn resolve_body_density(
     body: &Value,
     density_arg: Option<&Value>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -130,15 +134,28 @@ fn com_value(com: [f64; 3]) -> Value {
     )
 }
 
-/// Inertia `Value` for `MassProperties.inertia : Matrix<3,3,Real>` — a 3×3
-/// `Value::Matrix` of plain `Real` cells (so the existing
-/// `dynamics_psd::inertia_3x3_from_value` parser and the engine PSD hook read
-/// it unchanged).
+/// Inertia `Value` for `MassProperties.inertia : Matrix<3,3,MomentOfInertia>` —
+/// a 3×3 `Value::Matrix` of `MomentOfInertia`-dimensioned `Value::Scalar` cells
+/// (kg·m²). Each cell carries `si_value` == the raw f64 from the geometric query
+/// and `dimension == DimensionVector::MOMENT_OF_INERTIA`.
+///
+/// The PSD hook (`dynamics_psd`) and the RNEA extraction path
+/// (`inertia_3x3_from_value`) both read cells via `cell_f64`, which accepts
+/// `Value::Scalar{si_value,..}` and strips to `si_value` — so all downstream
+/// numeric outputs (eigenvalues, RNEA τ) are byte-identical to the former
+/// `Value::Real` encoding. Mirrors `com_value`'s `LENGTH` pattern.
 fn inertia_value(inertia: [[f64; 3]; 3]) -> Value {
     Value::Matrix(
         inertia
             .iter()
-            .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+            .map(|row| {
+                row.iter()
+                    .map(|&x| Value::Scalar {
+                        si_value: x,
+                        dimension: DimensionVector::MOMENT_OF_INERTIA,
+                    })
+                    .collect()
+            })
             .collect(),
     )
 }
@@ -1073,6 +1090,60 @@ mod tests {
         );
     }
 
+    // ── step-3 (task 4494): inertia cells are MomentOfInertia-dimensioned scalars ─
+    //
+    // Kernel-independent pin: eval_body_mass_props_core must populate the inertia
+    // field of the assembled MassProperties with Value::Scalar{MOMENT_OF_INERTIA}
+    // cells, not plain Value::Real. Fails RED until step-4 (task 4494) changes
+    // inertia_value to emit dimensioned scalars.
+
+    /// The populated inertia matrix must be a Value::Matrix of
+    /// Value::Scalar{dimension == MOMENT_OF_INERTIA} cells with si_value equal
+    /// (within 1e-12) to the corresponding uniform_box_inertia entry.
+    /// This runs on every CI runner regardless of OCCT availability.
+    #[test]
+    fn eval_body_mass_props_core_inertia_cells_are_moment_of_inertia_scalars() {
+        let b = body(Some(2700.0));
+        let mut diags = Vec::new();
+        let result =
+            eval_body_mass_props_core(&b, None, |d| uniform_box_inertia(DIMS, d), &mut diags);
+
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected MassProperties StructureInstance, got {other:?}"),
+        };
+        let inertia_rows = match data.fields.get("inertia").expect("inertia field") {
+            Value::Matrix(rows) => rows,
+            other => panic!("inertia field must be Value::Matrix, got {other:?}"),
+        };
+        assert_eq!(inertia_rows.len(), 3, "inertia must have 3 rows");
+
+        let (_, _, expected_inertia) = uniform_box_inertia(DIMS, 2700.0);
+        for r in 0..3 {
+            assert_eq!(inertia_rows[r].len(), 3, "each inertia row must have 3 cols");
+            for c in 0..3 {
+                match &inertia_rows[r][c] {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::MOMENT_OF_INERTIA,
+                            "inertia[{r}][{c}] must be MOMENT_OF_INERTIA-dimensioned, got {dimension:?}"
+                        );
+                        assert!(
+                            (si_value - expected_inertia[r][c]).abs() < 1e-12,
+                            "inertia[{r}][{c}] si_value: expected {}, got {}",
+                            expected_inertia[r][c],
+                            si_value
+                        );
+                    }
+                    other => panic!(
+                        "inertia[{r}][{c}] must be Value::Scalar{{MOMENT_OF_INERTIA}}, got {other:?}"
+                    ),
+                }
+            }
+        }
+    }
+
     /// Malformed CenterOfMass JSON: Volume succeeds but the CoM reply is not a
     /// valid `{"x":_,"y":_,"z":_}` JSON string. `parse_xyz_value` fails,
     /// propagating a `QueryError` that triggers the Undef downgrade + Warning.
@@ -1463,8 +1534,15 @@ mod inverse_dynamics_trampoline_tests {
     }
 
     /// A `MassProperties` instance: mass (Mass-scalar), com (Point3<Length>),
-    /// inertia (3×3 Matrix<Real>), origin (Real) — the shape the η snapshot RNEA
-    /// core parses from `body.solid`.
+    /// inertia (3×3 Matrix of **`Value::Real`**), origin (Real).
+    ///
+    /// The inertia cells are intentionally `Value::Real` (the legacy / user-authored
+    /// encoding) rather than `Value::Scalar{MOMENT_OF_INERTIA}` (production path).
+    /// This exercises the backward-compatible code path: `cell_f64` accepts both
+    /// `Value::Real(x)` and `Value::Scalar { si_value: x, .. }`, so RNEA extraction
+    /// is dimension-agnostic and produces identical numerics for both encodings.
+    /// See `make_mass_properties` / `mass_properties_fixture` in `reify-stdlib` for
+    /// the production-faithful dimensioned shape.
     fn mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
         let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
         let inertia_matrix = Value::Matrix(

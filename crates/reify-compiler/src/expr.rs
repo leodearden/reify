@@ -1316,7 +1316,7 @@ pub(crate) fn compile_expr_guarded(
                 result_type,
             )
         }
-        reify_ast::ExprKind::FunctionCall { name, args } => {
+        reify_ast::ExprKind::FunctionCall { name, args, arg_names } => {
             // ── task 3808 (δ): semantic gate — reject `auto` in function-call args ──
             // Named-arg `auto` (both strict `ExprKind::Auto { free: false }` and free
             // `ExprKind::Auto { free: true }`) is valid only at a BINDING SITE (sub
@@ -1436,20 +1436,113 @@ pub(crate) fn compile_expr_guarded(
                     .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
                     .map(|vc| (vc.id.member.as_str(), vc.default_expr.as_ref()))
                     .collect();
+                // --- By-name binder (task-4522) ---
+                // Named arg `p` binds to the template param named `p`;
+                // positional (None) args fill the next declaration-order
+                // param not already bound by a named arg.  ordered_args is
+                // emitted in template param-declaration order; uncovered
+                // params with a default_expr contribute to `defaults`.
+                //
+                // All-positional behaviour (all arg_names == None) is
+                // identical to the previous positional-only code, so
+                // existing zero-arg and all-positional SIR ctor tests are
+                // unaffected.
+                //
+                // Unknown named-arg (no matching param): appended as
+                // __arg{i} in ordered_args (lenient; preserves existing IR
+                // handling and avoids a new panic for out-of-scope case).
+                let nparams = params.len();
+                // param_arg[pidx] = Some(call_arg_index) when param pidx
+                // is bound by a call arg; None when uncovered.
+                let mut param_arg: Vec<Option<usize>> = vec![None; nparams];
+
+                // Pass 1: assign named args to their target param slot.
+                // Unknown named args (no matching param) are handled below (lenient __arg{i}).
+                // Duplicate named args (same param named twice) emit a diagnostic; last-write-wins
+                // as a graceful fallback so compilation can continue.
+                for (call_idx, arg_name) in arg_names.iter().enumerate() {
+                    if let Some(pname) = arg_name
+                        && let Some(pidx) =
+                            params.iter().position(|(n, _)| *n == pname.as_str())
+                    {
+                        if param_arg[pidx].is_some() {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "duplicate named argument '{}' in call to '{}'; \
+                                     parameter supplied more than once",
+                                    pname, name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "argument supplied more than once",
+                                )),
+                            );
+                        }
+                        param_arg[pidx] = Some(call_idx);
+                    }
+                }
+
+                // Pass 2: assign positional (None) args to the next
+                // uncovered declaration-order param slot.  Over-arity positional
+                // args (beyond the param count) are collected into
+                // `extra_positional_idxs` and appended to ordered_args below as
+                // `__arg{call_idx}` — matching the lenient fallback for unknown
+                // named args and preserving the pre-task-4522 IR representation.
+                let mut next_slot = 0usize;
+                let mut extra_positional_idxs: Vec<usize> = Vec::new();
+                for (call_idx, arg_name) in arg_names.iter().enumerate() {
+                    if arg_name.is_none() {
+                        // Advance past any named-bound slots.
+                        while next_slot < nparams && param_arg[next_slot].is_some() {
+                            next_slot += 1;
+                        }
+                        if next_slot < nparams {
+                            param_arg[next_slot] = Some(call_idx);
+                            next_slot += 1;
+                        } else {
+                            // Over-arity positional arg: no param slot remaining.
+                            // Preserve pre-task-4522 IR representation (__arg{i}).
+                            extra_positional_idxs.push(call_idx);
+                        }
+                    }
+                }
+
+                // Build ordered_args in template param-declaration order.
                 let mut ordered_args: Vec<(String, CompiledExpr)> =
                     Vec::with_capacity(compiled_args.len());
-                for (i, arg) in compiled_args.iter().enumerate() {
-                    let pname = params
-                        .get(i)
-                        .map(|(n, _)| (*n).to_string())
-                        .unwrap_or_else(|| format!("__arg{}", i));
-                    ordered_args.push((pname, arg.clone()));
+                for (pidx, (pname, _)) in params.iter().enumerate() {
+                    if let Some(call_idx) = param_arg[pidx] {
+                        ordered_args
+                            .push(((*pname).to_string(), compiled_args[call_idx].clone()));
+                    }
                 }
-                let covered = ordered_args.len();
+                // Lenient fallback: unknown named args (no matching param)
+                // are appended as __arg{i} to preserve existing IR handling.
+                for (call_idx, arg_name) in arg_names.iter().enumerate() {
+                    if let Some(pname) = arg_name
+                        && !params.iter().any(|(n, _)| *n == pname.as_str())
+                    {
+                        ordered_args.push((
+                            format!("__arg{}", call_idx),
+                            compiled_args[call_idx].clone(),
+                        ));
+                    }
+                }
+                // Lenient fallback: over-arity positional args appended as
+                // __arg{call_idx}, matching the unknown-named-arg fallback above.
+                for call_idx in extra_positional_idxs {
+                    ordered_args.push((
+                        format!("__arg{}", call_idx),
+                        compiled_args[call_idx].clone(),
+                    ));
+                }
+
+                // Compute defaults: uncovered params with a default_expr.
                 let defaults: Vec<(String, CompiledExpr)> = params
                     .iter()
-                    .skip(covered)
-                    .filter_map(|(n, d)| d.map(|e| ((*n).to_string(), e.clone())))
+                    .enumerate()
+                    .filter(|(pidx, _)| param_arg[*pidx].is_none())
+                    .filter_map(|(_, (n, d))| d.map(|e| ((*n).to_string(), e.clone())))
                     .collect();
                 // Collect the template's Let cells in declaration order (task-4342):
                 // each Let's compiled expr is stored in `default_expr`; the ctor
@@ -1613,6 +1706,30 @@ pub(crate) fn compile_expr_guarded(
                         padded_args.extend(default_exprs);
                         return build_user_function_call_expr(name, padded_args, result_type);
                     }
+                    // NoMatch-arm secondary resolution (task 4118 γ, coercion
+                    // site #1: param-binding). A `Selector(k)` argument coerces
+                    // one-directionally to a `List<Geometry>` param (task 4117 β
+                    // `type_compatible`), but `resolve_function_overload` matches
+                    // by exact equality and rejected it. Retry with the β
+                    // coercion (mirroring `try_default_padding` above) and, on a
+                    // unique non-generic match, wrap each Selector arg in
+                    // `ResolveSelector`. See esc-4118-61.
+                    if let Some(matched_fn) =
+                        coerce::try_selector_coerced_overload(&named_candidates, &arg_types)
+                    {
+                        if let Some(msg) = deprecation_message(&matched_fn.annotations) {
+                            emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
+                        }
+                        let result_type = matched_fn.return_type.clone();
+                        let coerced_args: Vec<CompiledExpr> = compiled_args
+                            .into_iter()
+                            .zip(matched_fn.params.iter())
+                            .map(|(arg, (_, param_ty))| {
+                                coerce::coerce_selector_arg(arg, param_ty)
+                            })
+                            .collect();
+                        return build_user_function_call_expr(name, coerced_args, result_type);
+                    }
                     // User functions with this name exist, but none match — error with candidates
                     let candidate_sigs: Vec<String> = named_candidates
                         .iter()
@@ -1712,11 +1829,27 @@ pub(crate) fn compile_expr_guarded(
                     // `is_geometry_kinematic_query` → `is_geometry_topology_selector` →
                     // `is_geometry_query` → `is_geometry_function` →
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
+                    // `is_dynamics_constructor` →
                     // first-arg fallback. The five geometry-name families plus the
-                    // RBD-β `is_dynamics_query` family (task 3829) are pinned disjoint
-                    // in `units.rs::tests::{geometry,dynamics}_query_names_are_disjoint_from_other_families`,
+                    // RBD-β `is_dynamics_query` family (task 3829) and the task-4278
+                    // `is_dynamics_constructor` family are pinned disjoint in
+                    // `units.rs::tests::{geometry,dynamics}_query_names_are_disjoint_from_other_families`
+                    // and `dynamics_constructor_names_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates.
+                    // task 4118 γ — list-helper selector coercion (insertion
+                    // site #2). When `single(selector)` is called, wrap the
+                    // `Selector(k)` argument in `ResolveSelector` so the helper
+                    // sees `List<Geometry>` and `infer_list_helper_return_type`
+                    // (below) collapses `single(List<Geometry>)` → `Geometry`
+                    // instead of the first-arg fallback leaving the cell typed
+                    // `Selector(k)`. A no-op for every other name / non-selector
+                    // arg. Shadows `compiled_args` so BOTH the result-type
+                    // inference below and the emitted `FunctionCall` carry the
+                    // wrapped argument. Gated on the same β `type_compatible`
+                    // rule as sites #1/#3 (centralized in `coerce.rs`).
+                    let compiled_args = coerce::coerce_list_helper_args(name, compiled_args);
+
                     let resolved = ResolvedFunction {
                         name: name.clone(),
                         qualified_name: format!("std::{}", name),
@@ -1800,6 +1933,19 @@ pub(crate) fn compile_expr_guarded(
                         // default would mismatch — the first arg is the body (a
                         // `Solid` / structure), not a `MassProperties`. Mirrors
                         // the `is_geometry_query_helper => Type::Bool` arm.
+                        Type::StructureRef("MassProperties".to_string())
+                    } else if is_dynamics_constructor(name) {
+                        // point_mass(mass) / mass_properties(mass, com, inertia):
+                        // task-4278 dynamics-constructor builtins, dispatched at
+                        // eval time by `reify_stdlib::dynamics::eval_dynamics`.
+                        // The result type is `MassProperties` — set up-front so
+                        // the cell typechecks. Without this arm the first-arg
+                        // fallback would infer `Scalar<Mass>` for
+                        // `point_mass(2.5kg)`, tripping `value_type_kind_matches`
+                        // at eval time. Uniform `StructureRef("MassProperties")`
+                        // result (mirrors the `is_dynamics_query` arm above).
+                        // Pinned disjoint from all sibling families by
+                        // `dynamics_constructor_names_are_disjoint_from_other_families`.
                         Type::StructureRef("MassProperties".to_string())
                     } else if is_affine_map_constructor(name) {
                         // affine_scale / affine_shear_* / affine_translate /
@@ -1885,6 +2031,24 @@ pub(crate) fn compile_expr_guarded(
                         // families by the units.rs disjointness test, so this
                         // arm's position in the ladder is unobservable.
                         joint_ctor_result_type(name, &compiled_args)
+                    } else if is_analysis_typed_fn(name) {
+                        // FEA stress-analysis reduction family (FEA-5, task
+                        // 2884): von_mises / principal_stresses / max_shear /
+                        // safety_factor / stress_invariants. These are pure
+                        // eval-builtins dispatched by name in
+                        // `reify_stdlib::eval_builtin` (analysis.rs). Setting
+                        // their result types here PREVENTS the first-arg Tensor
+                        // drift in the fallback below — e.g.
+                        // `von_mises(stress)` would otherwise mis-type as
+                        // `Tensor<Pressure>` instead of `Scalar<Pressure>`.
+                        //
+                        // The call STAYS a `FunctionCall` (eval untouched, name-
+                        // dispatched to existing Rust kernels).  The family is
+                        // pinned disjoint from all sibling families by the
+                        // `analysis_fn_names_are_disjoint_from_other_families`
+                        // test in `units.rs`, so this arm's position in the
+                        // ladder is unobservable.
+                        analysis_fn_result_type(name, &compiled_args)
                     } else {
                         compiled_args
                             .first()
@@ -2880,6 +3044,20 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
+            // task 4118 γ — IndexAccess-object selector coercion (insertion
+            // site #3). After step-4 `faces(b)` / `faces_by_normal(...)` are
+            // `Selector(k)`, not `List`. Wrap the object in `ResolveSelector`
+            // (→ `List<Geometry>`) so the element type resolves to `Geometry`
+            // below, instead of hitting the non-collection hard error. A no-op
+            // for any non-`Selector` object — real `List`/`Map` and genuinely
+            // non-indexable values pass through unchanged, preserving their
+            // existing element-type / hard-error handling. Gated on the same β
+            // `type_compatible` rule as sites #1/#2 (centralized in `coerce.rs`).
+            let compiled_obj = coerce::coerce_selector_arg(
+                compiled_obj,
+                &Type::List(Box::new(Type::Geometry)),
+            );
+
             // Infer result type from collection's element type.
             // Anti-cascade guard (task-448): if the object is already
             // poisoned, propagate Type::Error rather than falling back to
@@ -4521,10 +4699,12 @@ pub structure Rack {
     }
 
     fn call_expr(name: &str, args: Vec<reify_ast::Expr>) -> reify_ast::Expr {
+        let n = args.len();
         reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: name.to_string(),
                 args,
+                arg_names: vec![None; n],
             },
             span: SourceSpan::prelude(),
         }

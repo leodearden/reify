@@ -9,8 +9,8 @@ use reify_compiler::{
     ValueCellKind, find_template,
 };
 use reify_core::{
-    ComputeNodeId, ConstraintNodeId, ContentHash, RealizationNodeId, ResolutionNodeId, Type,
-    ValueCellId,
+    ComputeNodeId, ConstraintNodeId, ContentHash, KernelId, RealizationNodeId, ResolutionNodeId,
+    Type, ValueCellId,
 };
 use reify_ir::{CompiledExpr, OpaqueState, PersistentMap, ReprKind, Value, ValueMap};
 
@@ -64,6 +64,33 @@ pub struct RealizationNodeData {
     /// NOT included in `content_hash` — it is an evaluation-graph wiring detail,
     /// not realization identity.
     pub geometry_cell: Option<ValueCellId>,
+    /// The kernel that produced the terminal geometry handle for this
+    /// realization (task 4248, piece 3).  `None` until the realization has
+    /// been executed at least once; set from the terminal `KernelHandle`
+    /// at the two `node.produced_repr = repr` graph-write sites in
+    /// `engine_build.rs`.  NOT included in `content_hash` — this is
+    /// dispatcher/cache metadata, not realization identity.
+    ///
+    /// Production counterpart to the `#[cfg(test)]`-gated
+    /// `Engine::test_terminal_handle`; see `Engine::realization_kernel_provenance`
+    /// for the public read path.
+    pub produced_kernel: Option<KernelId>,
+}
+
+/// Per-realization kernel provenance entry returned by
+/// [`Engine::realization_kernel_provenance`] (task 4248, piece 3).
+///
+/// Sorted by `realization` id for deterministic CLI output; only realizations
+/// whose terminal kernel is `Some` are included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RealizationKernelProvenance {
+    /// Stable string identifier for this realization (the `RealizationNodeId`
+    /// string representation).
+    pub realization: String,
+    /// The repr-kind produced by the terminal kernel adapter.
+    pub repr: ReprKind,
+    /// The kernel that produced (and owns) the terminal geometry handle.
+    pub kernel: KernelId,
 }
 
 /// A resolution node in the evaluation graph.
@@ -356,6 +383,9 @@ impl EvaluationGraph {
                     // per-op dispatcher choice at execution time.
                     produced_repr: ReprKind::BRep,
                     geometry_cell,
+                    // Task 4248 piece 3: populated at execution time from the
+                    // terminal KernelHandle; None until first execution.
+                    produced_kernel: None,
                 };
                 graph.realizations.insert(realization.id.clone(), node);
             }
@@ -983,6 +1013,7 @@ mod tests {
             operations: ops,
             content_hash: hash,
             produced_repr: reify_ir::ReprKind::BRep,
+            produced_kernel: None,
         };
 
         assert_eq!(node.id, id);
@@ -1450,6 +1481,7 @@ mod tests {
             operations: vec![],
             content_hash: ContentHash::of_str("r0"),
             produced_repr: reify_ir::ReprKind::BRep,
+            produced_kernel: None,
         };
         graph.realizations.insert(rnid.clone(), rnode);
         assert_eq!(graph.realizations.len(), 1);
@@ -1912,6 +1944,7 @@ mod tests {
                 operations: vec![],
                 content_hash: hash_h,
                 produced_repr: reify_ir::ReprKind::BRep,
+                produced_kernel: None,
             },
         );
 

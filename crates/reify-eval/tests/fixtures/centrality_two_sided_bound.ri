@@ -14,7 +14,7 @@
 //   asserts x ≈ 5mm (strictly interior: 2mm < x < 8mm)
 //   and engine.centrality_synthesized_scopes() contains "CentredBar".
 structure CentredBar {
-    param x: Scalar = auto
+    param x: Length = auto
 
     constraint x >= 2mm
     constraint x <= 8mm

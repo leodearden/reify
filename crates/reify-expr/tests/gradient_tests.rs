@@ -2181,7 +2181,7 @@ fn gradient_deriv_overflow_returns_undef() {
 }
 
 /// Gradient of Field<Point3<Scalar[m]>, Scalar[kg]> must have codomain_type
-/// = Vector { n: 3, quantity: Scalar[kg/m] }, not Vector { n: 3, quantity: Scalar[kg] }.
+/// = Vector { n: 3, quantity: Length[kg/m] }, not Vector { n: 3, quantity: Length[kg] }.
 ///
 /// The runtime values are correct (dimension division happens in
 /// compute_numerical_gradient_at_point), but the type metadata on the gradient
@@ -2524,7 +2524,7 @@ fn gradient_mixed_dimensionless_codomain_type() {
 }
 
 /// Regression: gradient of Field<Point3<Scalar[m]>, Scalar[DIMENSIONLESS]> must have
-/// codomain_type = Vector { n: 3, quantity: Real }, NOT Vector { n: 3, quantity: Scalar[DIMENSIONLESS] }.
+/// codomain_type = Vector { n: 3, quantity: Real }, NOT Vector { n: 3, quantity: Length[DIMENSIONLESS] }.
 ///
 /// The codomain is explicitly typed as `Scalar[DIMENSIONLESS]` (not `Type::Real`), but the
 /// runtime produces `Value::Real` for dimensionless gradient components, so the type-level
@@ -3931,7 +3931,7 @@ mod trust_the_declaration_tests {
         );
         let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-        // Domain: Scalar{LENGTH}; codomain: declared as Scalar{MASS} (mismatches runtime)
+        // Domain: Length{LENGTH}; codomain: declared as Scalar{MASS} (mismatches runtime)
         let domain_type = Type::length();
         let codomain_type = Type::Scalar { dimension: dim_kg };
 

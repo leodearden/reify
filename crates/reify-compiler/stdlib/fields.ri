@@ -32,6 +32,24 @@
 //   None satisfies (no intercepting builtin) AND (composable Reify body),
 //   so none is declared here.
 //
+// ── Generic exemplar (task 4233 δ — type-level-generics Tier-1 gate) ─────────
+//
+// `through<T>` is the first generic fn in std.fields and the literal 4218
+// completion gate ("a generic stdlib .ri fn type-checks end-to-end").
+//
+// It returns T (not Field), so it does NOT hit the "Field is not constructible
+// in a pub fn body" restriction documented above.  std.fields symbols are
+// prelude-resolved (import is a no-op), so through<T> is callable end-to-end
+// from any user file without an explicit `import std.fields`.
+//
+// Named `through` (not `identity`) to avoid shadowing the math construction
+// builtin `identity(n)` which creates an n×n identity matrix.
+//
+// The fields-api tasks ε/ζ (4223/4224) extend std.fields with
+// constant_field/compose; through<T> is a stable exemplar that remains here.
+
+pub fn through<T>(x: T) -> T { x }
+
 // ── Why no Field type alias ───────────────────────────────────────────────────
 //
 //   The built-in parametric type Field<D,C> already resolves everywhere

@@ -119,9 +119,10 @@ pub(crate) fn substitute_expr(
             op: op.clone(),
             operand: Box::new(substitute_expr(operand, bindings)),
         },
-        ExprKind::FunctionCall { name, args } => ExprKind::FunctionCall {
+        ExprKind::FunctionCall { name, args, arg_names } => ExprKind::FunctionCall {
             name: name.clone(),
             args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+            arg_names: arg_names.clone(),
         },
         ExprKind::MemberAccess { object, member } => ExprKind::MemberAccess {
             object: Box::new(substitute_expr(object, bindings)),

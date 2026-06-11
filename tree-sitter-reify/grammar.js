@@ -142,6 +142,7 @@ module.exports = grammar({
       $.constraint_definition,
       $.unit_declaration,
       $.type_alias_declaration,
+      $.default_declaration,
       $.pragma,
       $.annotation,
     ),
@@ -384,6 +385,7 @@ module.exports = grammar({
       $.minimize_declaration,
       $.maximize_declaration,
       $.guarded_block,
+      $.default_declaration,
       $.pragma,
     ),
 
@@ -437,6 +439,28 @@ module.exports = grammar({
       optional($.type_parameters),
       '=',
       field('type', $.dimensional_type_expr),
+    ),
+
+    // ── Default declaration (top-level and purpose-body) ──────
+    // `default Material = steel`
+    //
+    // `default` is a PLAIN string token (contextual keyword). tree-sitter only
+    // makes it a lex candidate where the parse state admits it; `default_declaration`
+    // is reachable ONLY at `_declaration` and `purpose_member` starts, and no
+    // alternative at those positions begins with a bare identifier — so `'default'`
+    // and `identifier` are never both valid at one state. Everywhere else (param/let
+    // names, expression operands, member access, args) `default` continues to lex
+    // as `identifier`. This mirrors the proven pattern for `undef`, `unit`, and
+    // `type`. See task 4496 design decision for the full rationale.
+    //
+    // RHS is `$._expression` (NOT `_binding_value`; `auto` is meaningless for a
+    // concrete default), mirroring `unit_declaration.conversion`.
+    // No `pub` prefix and no annotations in v1 (task B may add them later).
+    default_declaration: $ => seq(
+      'default',
+      field('type', $.type_expr),
+      '=',
+      field('value', $._expression),
     ),
 
     // ── Associated type ─────────────────────────────────────

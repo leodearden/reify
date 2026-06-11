@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use reify_compiler::ValueCellKind;
+use reify_ir::{DeterminacyState, Value};
 use reify_mcp::{
     ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, ReifyToolContext,
     SelectionInfo, SetParamResult, SourceContent, SourceLocationInfo, ToolError, UpdateResult,
 };
-use reify_ir::{DeterminacyState, Value};
 
 /// Tracks the state of an open file.
 struct FileEntry {
@@ -85,10 +85,8 @@ impl CliToolContext {
 
         // Prelude-aware parse for AST-shape consistency across reify-lsp/-cli;
         // see task 2525.
-        let parsed = reify_compiler::parse_with_stdlib(
-            &source,
-            reify_core::ModulePath::single(module_name),
-        );
+        let parsed =
+            reify_compiler::parse_with_stdlib(&source, reify_core::ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
             let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
@@ -228,10 +226,8 @@ impl ReifyToolContext for CliToolContext {
         for diag in &compiled.diagnostics {
             // Use the first label's span if available, otherwise default to (1,1)
             let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first() {
-                let (l, c) =
-                    reify_core::byte_offset_to_line_col(source, label.span.start as usize);
-                let (el, ec) =
-                    reify_core::byte_offset_to_line_col(source, label.span.end as usize);
+                let (l, c) = reify_core::byte_offset_to_line_col(source, label.span.start as usize);
+                let (el, ec) = reify_core::byte_offset_to_line_col(source, label.span.end as usize);
                 (l as u32, c as u32, el as u32, ec as u32)
             } else {
                 (1, 1, 1, 1)
@@ -245,6 +241,7 @@ impl ReifyToolContext for CliToolContext {
                 severity: diag.severity.as_wire_str().to_owned(),
                 message: diag.message.clone(),
                 code: None,
+                has_location: !diag.labels.is_empty(),
             });
         }
 
@@ -399,10 +396,8 @@ impl ReifyToolContext for CliToolContext {
 
         // Prelude-aware parse for AST-shape consistency across reify-lsp/-cli;
         // see task 2525.
-        let parsed = reify_compiler::parse_with_stdlib(
-            content,
-            reify_core::ModulePath::single(module_name),
-        );
+        let parsed =
+            reify_compiler::parse_with_stdlib(content, reify_core::ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
             // Parse failed — return failure WITHOUT modifying any state.
@@ -1041,10 +1036,8 @@ mod tests {
     #[test]
     fn invalid_parse_input_is_actually_unparseable() {
         // Check 1: the syntax parser itself reports errors.
-        let parsed = reify_syntax::parse(
-            INVALID_PARSE_INPUT,
-            reify_core::ModulePath::single("probe"),
-        );
+        let parsed =
+            reify_syntax::parse(INVALID_PARSE_INPUT, reify_core::ModulePath::single("probe"));
         assert!(
             !parsed.errors.is_empty(),
             "INVALID_PARSE_INPUT must produce a parse error; the grammar may have changed. \
@@ -1417,6 +1410,51 @@ mod tests {
                 .any(|d| d.severity == Severity::Error.as_wire_str()),
             "at least one diagnostic must have severity == \"Error\" (PascalCase wire format); \
              bracket_compile_error.ri is known to produce a compile-time Error",
+        );
+    }
+
+    /// CLI `get_diagnostics` (producer #4: `mcp_context.rs:239`) must set
+    /// `has_location == true` for diagnostics that carry a real source span
+    /// (non-empty labels), pinning the `!diag.labels.is_empty()` predicate at
+    /// the CLI construction site (`mcp_context.rs:230` branch).
+    ///
+    /// Uses the same `fresh_ctx()` + `BRACKET_COMPILE_ERROR_PATH` fixture as
+    /// `get_diagnostics_severity_is_pascal_case_wire_format` (line 1386) — that
+    /// fixture is known to produce at least one labelled compile Error with a
+    /// real source span.
+    ///
+    /// **False-branch coverage note:** the `has_location == false` path (labelless
+    /// diagnostic → false) is NOT tested here.  The CLI has no `inject_diagnostic_for_test`
+    /// equivalent, and no existing real-compiler fixture is known to produce a
+    /// labelless `compiled.diagnostics` entry (compile-time name-resolution errors,
+    /// which `bracket_compile_error.ri` triggers, always carry a label).  The false
+    /// branch is covered by the engine-side test
+    /// `get_diagnostics_labelless_fallback_unchanged_after_optimization`
+    /// (engine_tests.rs), which exercises the IDENTICAL predicate
+    /// `!diag.labels.is_empty()`.  The CLI site at `mcp_context.rs:248` uses
+    /// exactly that expression; a regression that hardcodes `true` there would be
+    /// caught by a code review of the one changed line.
+    #[test]
+    fn get_diagnostics_has_location_true_for_spanned_error() {
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_COMPILE_ERROR_PATH)
+            .expect("load_file should succeed for bracket_compile_error.ri");
+
+        let diags = ctx
+            .get_diagnostics()
+            .expect("get_diagnostics should succeed");
+
+        assert!(
+            !diags.is_empty(),
+            "bracket_compile_error.ri must produce at least one diagnostic"
+        );
+
+        // The fixture is known to produce a labelled compile Error with a real source span.
+        // At least one diagnostic must have has_location == true (non-empty labels path).
+        assert!(
+            diags.iter().any(|d| d.has_location),
+            "at least one diagnostic from bracket_compile_error.ri must have has_location = true \
+             (labelled Error ⇒ non-empty labels ⇒ real source span)"
         );
     }
 

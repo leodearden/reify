@@ -51,19 +51,14 @@ use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_w
 /// `crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs`, which
 /// inspects the compiled module directly via `load_stdlib_module()`.
 ///
-/// Stage-2 readiness — when struct-ctor eval lands and the smoke fixture should
-/// swap map literals for ctor calls — is probed by the `#[ignore]`d
-/// `struct_ctor_eval_stage_2_readiness` test below; run via
-/// `cargo test --test multi_load_case_stdlib_smoke -- --ignored`.
-///
 /// Bindings:
 ///   `cases`       = `map{"operating" => 42, "overload" => 99}` (inner Map)
 ///   `mcr`         = `map{"cases" => cases}` (struct-shaped outer Map)
 ///   `names`       = `case_names(mcr)` → `["operating", "overload"]` (lexicographic)
 ///   `op_result`   = `result_for(mcr, "operating")` → `42`
 ///   `miss_result` = `result_for(mcr, "missing")` → `Undef`
-///   `mcr_ctor`    = `MultiCaseResult(cases: map{})` → `Undef` (struct-ctor tripwire; fires
-///                  automatically when ctor eval lands — see `struct_ctor_eval_stage_2_readiness`)
+///   `mcr_ctor`    = `MultiCaseResult(cases: map{})` → `Value::StructureInstance` (struct-ctor
+///                  tripwire; FIRED — SIR-α/task 3540 landed, see the tripwire block in the test)
 const SMOKE_SOURCE: &str = r#"
 structure def SmokeFixture {
     let cases = map{"operating" => 42, "overload" => 99}
@@ -184,14 +179,10 @@ fn multi_load_case_stdlib_smoke_e2e() {
     // eval handler returns a `Value::StructureInstance` — NOT a `Value::Map`.
     //
     // The tripwire is updated here to pin the SIR-α reality (struct ctor →
-    // `Value::StructureInstance` named after the structure-def). Note this
-    // SUPERSEDES the `#[ignore]`d `struct_ctor_eval_stage_2_readiness`
-    // companion below, which still encodes the pre-SIR-α `Value::Map`
-    // expectation. Reconciling that ignored test's `Value::Map` shape with
-    // SIR-α's `Value::StructureInstance` is the multi-load-case FEA PRD
-    // owner's call (cross-PRD seam — out of SIR-α scope; flagged via
-    // escalate_info esc-3540 for steward/PRD-owner follow-up). SIR-α only
-    // updates the *active* tripwire so the suite stays green.
+    // `Value::StructureInstance` named after the structure-def). This
+    // SUPERSEDED the `#[ignore]`d `struct_ctor_eval_stage_2_readiness`
+    // companion probe, which encoded the pre-SIR-α `Value::Map`
+    // expectation; that probe has since been deleted (task 4550).
     let mcr_ctor = get_value(v, "mcr_ctor");
     match mcr_ctor {
         Value::StructureInstance(data) => {
@@ -604,7 +595,6 @@ fn worst_case_lambda_returns_non_field_returns_undef() {
 ///   `missing_case` = `result_for(result, "missing")` → `Value::Undef`
 const SOLVE_LOAD_CASES_SOURCE: &str = r#"
 structure def SolveLoadCasesFixture {
-    let ci        = ConstitutiveLawInput(law: Steel_AISI_1045())
     let lc1       = LoadCase(
         name:     "operating",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
@@ -615,7 +605,7 @@ structure def SolveLoadCasesFixture {
         loads:    [PointLoad(point: "tip", force: 2000.0)],
         supports: [FixedSupport(target: "root")],
     )
-    let result        = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
+    let result        = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
     let case_list     = case_names(result)
     let op_case       = result_for(result, "operating")
     let missing_case  = result_for(result, "missing")
@@ -775,11 +765,10 @@ fn solve_load_cases_two_cases_returns_mcr_shape() {
 /// Bindings:
 ///   `lc_high`  = `LoadCase(name: "high_res", ..., options: some(ElasticOptions(max_iter: 500)))`
 ///   `lc_low`   = `LoadCase(name: "low_res", ...)` (options: none, defaults to shared)
-///   `result`   = `solve_load_cases(ci.law, ..., [lc_high, lc_low], ElasticOptions())`
+///   `result`   = `solve_load_cases(Steel_AISI_1045(), ..., [lc_high, lc_low], ElasticOptions())`
 ///   `case_list` = `case_names(result)` → `["high_res", "low_res"]`
 const PER_CASE_OPTIONS_SOURCE: &str = r#"
 structure def PerCaseOptionsFixture {
-    let ci       = ConstitutiveLawInput(law: Steel_AISI_1045())
     let lc_high  = LoadCase(
         name:     "high_res",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
@@ -791,7 +780,7 @@ structure def PerCaseOptionsFixture {
         loads:    [PointLoad(point: "tip", force: 1000.0)],
         supports: [FixedSupport(target: "root")],
     )
-    let result     = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc_high, lc_low], ElasticOptions())
+    let result     = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc_high, lc_low], ElasticOptions())
     let case_list  = case_names(result)
 }
 "#;
@@ -907,16 +896,15 @@ fn solve_load_cases_per_case_options_both_cases_appear() {
 /// as the 1-case solve (modulo the different `loads` per case).
 ///
 /// Bindings:
-///   `result` = `solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1], ElasticOptions())`
+///   `result` = `solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1], ElasticOptions())`
 const SINGLE_CASE_SOURCE: &str = r#"
 structure def SingleCaseFixture {
-    let ci   = ConstitutiveLawInput(law: Steel_AISI_1045())
     let lc1  = LoadCase(
         name:     "only",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
         supports: [FixedSupport(target: "root")],
     )
-    let result   = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1], ElasticOptions())
+    let result   = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1], ElasticOptions())
 }
 "#;
 
@@ -925,10 +913,9 @@ structure def SingleCaseFixture {
 /// volume-mesh ComputeNode would be reused across cases in a real FEA engine.
 ///
 /// Bindings:
-///   `result` = `solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())`
+///   `result` = `solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())`
 const TWO_CASE_SHARED_MESH_SOURCE: &str = r#"
 structure def TwoCaseSharedMeshFixture {
-    let ci   = ConstitutiveLawInput(law: Steel_AISI_1045())
     let lc1  = LoadCase(
         name:     "light",
         loads:    [PointLoad(point: "tip", force: 1000.0)],
@@ -939,7 +926,7 @@ structure def TwoCaseSharedMeshFixture {
         loads:    [PointLoad(point: "tip", force: 5000.0)],
         supports: [FixedSupport(target: "root")],
     )
-    let result   = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
+    let result   = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1, lc2], ElasticOptions())
 }
 "#;
 
@@ -1065,112 +1052,4 @@ fn solve_load_cases_one_vs_two_cases_entry_count() {
             "2-case \"{key}\" result must be non-Undef; got: {val:?}"
         );
     }
-}
-
-// ── Stage-2 readiness probe ───────────────────────────────────────────────────
-
-/// Stage-2 readiness probe: verify that the `MultiCaseResult(...)` and
-/// `LoadCase(...)` struct constructors produce the correct `Value::Map` shape,
-/// and that the accessors flowing from `MultiCaseResult` work end-to-end, once
-/// struct-constructor eval lands.
-///
-/// Currently `#[ignore]`d because struct-constructor eval is not yet
-/// implemented: `reify_stdlib::eval_builtin` returns `Value::Undef` for
-/// unrecognised names (including `MultiCaseResult` and `LoadCase`), so the
-/// `Value::Map`-shape assertions panic with the current engine.
-///
-/// Both structs are probed symmetrically so that a partial Stage-2 landing
-/// (e.g. `MultiCaseResult` ctor works but `LoadCase` doesn't) is caught.
-///
-/// To run: `cargo test --test multi_load_case_stdlib_smoke -- --ignored`
-///
-/// Migration cue: when this test passes, swap the `cases`/`mcr` map literals
-/// in `SMOKE_SOURCE` for an actual `MultiCaseResult(cases: map{...})` ctor
-/// call, verify `multi_load_case_stdlib_smoke_e2e` still passes, then delete
-/// this probe.
-#[test]
-#[ignore = "Stage 2: struct-ctor eval not yet implemented"]
-fn struct_ctor_eval_stage_2_readiness() {
-    const STAGE_2_SOURCE: &str = r#"
-structure def SmokeFixture {
-    let mcr = MultiCaseResult(cases: map{"operating" => 42, "overload" => 99})
-    let lc  = LoadCase(name: "tracking", loads: [], supports: [])
-    let names      = case_names(mcr)
-    let op_result  = result_for(mcr, "operating")
-    let miss_result = result_for(mcr, "missing")
-}
-"#;
-
-    let compiled = parse_and_compile_with_stdlib(STAGE_2_SOURCE);
-    let mut engine = make_simple_engine();
-    let result = engine.eval(&compiled);
-
-    // 1. No Error-severity diagnostics from the ctor call.
-    let eval_errors = collect_errors(&result.diagnostics);
-    assert!(
-        eval_errors.is_empty(),
-        "eval should produce no Error-severity diagnostics from the ctor call, \
-         got: {eval_errors:?}"
-    );
-
-    let v = &result.values;
-
-    // 2. `mcr` is a `Value::Map` whose `"cases"` key maps to a `Value::Map`.
-    let mcr = get_value(v, "mcr");
-    match mcr {
-        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
-            Some(Value::Map(_)) => {}
-            Some(other) => panic!("mcr[\"cases\"] should be Value::Map, got: {other:?}"),
-            None => panic!("mcr should have a \"cases\" key, got: {mcr:?}"),
-        },
-        _ => panic!("mcr should be Value::Map, got: {mcr:?}"),
-    }
-
-    // 3. `lc` is a `Value::Map` (LoadCase struct-instance shape) whose `"name"`
-    //    key maps to `Value::String("tracking")`. Probed symmetrically with `mcr`
-    //    so a partial Stage-2 landing (e.g. MultiCaseResult ctor works but
-    //    LoadCase doesn't) is caught. Pinning the `name` field distinguishes a
-    //    real LoadCase ctor result from any incidental empty-Map or wrong-named Map.
-    let lc = get_value(v, "lc");
-    match lc {
-        Value::Map(outer) => match outer.get(&Value::String("name".to_string())) {
-            Some(Value::String(name)) if name == "tracking" => {}
-            Some(other) => {
-                panic!("lc[\"name\"] should be Value::String(\"tracking\"), got: {other:?}")
-            }
-            None => panic!("lc should have a \"name\" key, got: {lc:?}"),
-        },
-        _ => panic!("lc (LoadCase ctor) should be Value::Map, got: {lc:?}"),
-    }
-
-    // 4. `case_names(mcr)` returns ["operating", "overload"] in lexicographic order.
-    let names = get_value(v, "names");
-    assert_eq!(
-        names,
-        &Value::List(vec![
-            Value::String("operating".to_string()),
-            Value::String("overload".to_string()),
-        ]),
-        "case_names(mcr) should return [\"operating\", \"overload\"] in lexicographic order, \
-         got: {names:?}"
-    );
-
-    // 5. `result_for(mcr, "missing")` returns Undef (silent-Undef contract per
-    //    PRD task #10 deferral, re-flowed through the ctor path so Stage-2 ctor-built
-    //    MCR values certify the missing-key behavior end-to-end — mirrors the
-    //    map-literal coverage in `multi_load_case_stdlib_smoke_e2e`).
-    let miss_result = get_value(v, "miss_result");
-    assert!(
-        miss_result.is_undef(),
-        "result_for(mcr, \"missing\") should return Undef for a missing key on a \
-         ctor-built MultiCaseResult, got: {miss_result:?}"
-    );
-
-    // 6. `result_for(mcr, "operating")` returns Value::Int(42).
-    let op_result = get_value(v, "op_result");
-    assert_eq!(
-        op_result,
-        &Value::Int(42),
-        "result_for(mcr, \"operating\") should return Value::Int(42), got: {op_result:?}"
-    );
 }

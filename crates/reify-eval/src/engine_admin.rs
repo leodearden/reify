@@ -238,6 +238,11 @@ impl Engine {
             structure_registry,
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
+            // Task 4357 δ: scheduler selection read ONCE from the environment.
+            // `from_env` honours the `unified-dag` feature + REIFY_BUILD_SCHEDULER
+            // gate and defaults to LegacyMultiPass (byte-preserving). Tests
+            // override post-construction via `set_build_scheduler`.
+            build_scheduler: crate::engine_fixpoint::BuildScheduler::from_env(),
             demand: DemandRegistry::new(),
             next_snapshot_id: 0,
             next_version_id: 0,
@@ -356,12 +361,14 @@ impl Engine {
     /// (task 4050): return the terminal `KernelHandle` cached for a realization
     /// at `(entity, repr, tol, NO_OPTIONS)`, or `None` if no entry satisfies.
     ///
-    /// The terminal handle is not graph-observable (a `RealizationNodeData`
-    /// stores only `produced_repr: ReprKind`, not the originating `KernelId`),
-    /// so the cross-kernel-handoff test reads it back through the realization
-    /// cache to assert the terminal kernel is Manifold (gap-3 cross-kernel
-    /// routing). `KernelHandle` is `Copy`, so the borrowed cache entry is copied
-    /// out without disturbing the cache.
+    /// The terminal handle is now graph-observable via
+    /// [`Self::realization_kernel_provenance`] (task 4248): `RealizationNodeData`
+    /// carries `produced_kernel: Option<KernelId>` written at execution time.
+    /// This test-gated accessor provides direct cache access (by entity+repr+tol
+    /// key) for the cross-kernel-handoff test that needs to assert the terminal
+    /// kernel is Manifold (gap-3 cross-kernel routing).  `KernelHandle` is
+    /// `Copy`, so the borrowed cache entry is copied out without disturbing
+    /// the cache.
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn test_terminal_handle(
         &self,
@@ -372,6 +379,63 @@ impl Engine {
         self.realization_cache
             .lookup(entity, repr, tol, crate::NO_OPTIONS)
             .copied()
+    }
+
+    /// Return per-realization terminal-kernel provenance for the most recent
+    /// `build()` or `build_snapshot()` call (task 4248, piece 3).
+    ///
+    /// Reads the snapshot graph and returns one [`crate::graph::RealizationKernelProvenance`]
+    /// entry per realization whose `produced_kernel` is `Some` (i.e. has been
+    /// executed at least once).  Entries are sorted by `realization` id for
+    /// deterministic CLI output.
+    ///
+    /// Production counterpart to the `#[cfg(any(test, feature =
+    /// "test-instrumentation"))]`-gated [`Self::test_terminal_handle`]: where
+    /// that accessor reads the realization cache by entity+repr+tol key, this
+    /// one reads the graph node's `produced_kernel` field directly, making the
+    /// terminal kernel fully graph-observable without any test-only seam.
+    ///
+    /// Returns an empty `Vec` if no `build` / `build_snapshot` has been called
+    /// yet, or if no realization produced a kernel handle (e.g. all constraint-
+    /// only runs).
+    pub fn realization_kernel_provenance(
+        &self,
+    ) -> Vec<crate::graph::RealizationKernelProvenance> {
+        let Some(state) = self.eval_state.as_ref() else {
+            return Vec::new();
+        };
+        let mut entries: Vec<crate::graph::RealizationKernelProvenance> = state
+            .snapshot
+            .graph
+            .realizations
+            .values()
+            .filter_map(|node| {
+                node.produced_kernel.map(|kernel| {
+                    crate::graph::RealizationKernelProvenance {
+                        realization: node.id.to_string(),
+                        repr: node.produced_repr,
+                        kernel,
+                    }
+                })
+            })
+            .collect();
+        // Sort by (entity, numeric index) so entries appear in human-intuitive
+        // order (0, 1, 2, ..., 10) rather than lexicographic string order
+        // (which would give ..., [1], [10], [11], [2], ...).  The realization
+        // ID format is "EntityName#realization[N]"; we parse N as u32 and fall
+        // back to (whole_string, u32::MAX) for any unrecognised format so the
+        // sort remains total and deterministic for diff-stable CLI output.
+        entries.sort_by_key(|a| {
+            a.realization
+                .split_once("#realization[")
+                .and_then(|(entity, rest)| {
+                    rest.strip_suffix(']')
+                        .and_then(|idx| idx.parse::<u32>().ok())
+                        .map(|idx| (entity.to_owned(), idx))
+                })
+                .unwrap_or_else(|| (a.realization.clone(), u32::MAX))
+        });
+        entries
     }
 
     /// Return a reference to the feature-tag table populated by the most recent
@@ -1348,6 +1412,21 @@ impl Engine {
         self.last_dispatch_count
     }
 
+    /// **Test-instrumentation only — not a stable public surface.**
+    ///
+    /// Force the build-time [`crate::BuildScheduler`] selection, bypassing BOTH
+    /// [`crate::BuildScheduler::from_env`] AND the `unified-dag` Cargo feature
+    /// gate (which gates only the env/production activation path in `from_env`).
+    ///
+    /// Task 4357 δ: lets the `unified_dag_cycle_contract` integration test drive
+    /// the `UnifiedDag` `build()` path deterministically WITHOUT mutating process
+    /// env (which would race other parallel tests). Mirrors the `set_capture_*`
+    /// test-seam convention.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn set_build_scheduler(&mut self, scheduler: crate::engine_fixpoint::BuildScheduler) {
+        self.build_scheduler = scheduler;
+    }
+
     /// GHR-δ §5: reset the geometry-handle revalidation slow-path counter to 0.
     ///
     /// Called at the start of every `build()` / `build_snapshot()` (alongside
@@ -1575,7 +1654,7 @@ impl Engine {
         self.panic_on_eval_cells.clear();
     }
 
-    // ── Task 3541: warm-pool event drain + journal recording ─────────────────
+    // ── Task 3582: warm-pool event drain + journal recording ─────────────────
 
     /// Drain the warm pool's buffered telemetry events, record each as an
     /// [`crate::journal::EvalEvent`] on the diagnostic journal, and return the
@@ -1597,7 +1676,7 @@ impl Engine {
     /// (check, edit_check, build, tessellate_snapshot, etc.).  This is the
     /// eval-boundary call site that wires the existing warm_pool event buffer
     /// to the diagnostic journal, subsuming M-010.
-    // G-allow: task #3541 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (engine.rs) wiring lands in subsequent #3541 steps
+    // G-allow: task #3582 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (engine.rs) wiring lands with #3582 (drain-wiring tracker, pending)
     pub fn drain_and_record_warm_pool_events(&mut self) -> Vec<crate::warm_pool::WarmPoolEvent> {
         let events = self.warm_pool.drain_events();
         let version = reify_core::VersionId(self.next_version_id.saturating_sub(1));

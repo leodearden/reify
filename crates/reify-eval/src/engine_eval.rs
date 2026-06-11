@@ -104,6 +104,7 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::Transform(_)
         | Type::AffineMap(_) // task 3958 / α: Value::AffineMap now exists
         | Type::Selector(_) // task 4116 / α: Value::Selector now exists
+        | Type::AnySelector // task 4369 / A2: kind-agnostic selector cell (value is Value::Selector(k))
         | Type::Range(_)
         | Type::Plane
         | Type::Axis
@@ -1240,7 +1241,7 @@ pub(crate) fn elaborate_field(
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
 pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_core::ContentHash> {
-    // TODO(task-5-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
+    // TODO(task-4551-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
     // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
     // allocation per call.  If `ContentHash` (or `xxhash_rust::xxh3`) later exposes an
     // incremental/streaming constructor, replace this with `BufReader` + chunk-by-chunk

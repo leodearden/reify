@@ -169,7 +169,7 @@
 //! `Freshness::Final` state, independent of output value shape).
 //!
 //! TODO: thread `StructureRegistry` through the trampoline signature (tracked
-//! as a future refinement) once ComputeFn/ComputeOutcome are moved into reify-ir.
+//! by task 4552) once ComputeFn/ComputeOutcome are moved into reify-ir.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -742,9 +742,11 @@ pub fn solve_elastic_static_trampoline(
 ///
 /// # Called by
 ///
-/// Task 3594/δ calls this on the shell-routing path with real `Some(_)` data.
-/// This task (#4067) ships the helper; 3594/δ wires the call site.
-// G-allow: shell-channel->Value helper shipped by task #4067; consumer is the task #3594/δ shell-routing call site (not yet wired). Reached on the elastic-static ComputeFn path via fn-pointer registration the orphan audit cannot trace.
+/// In-file production caller: `solve_elastic_static_trampoline` (wired by done task #3594/δ).
+/// Also reached via the elastic-static `ComputeFn` fn-pointer registration which
+/// the orphan audit cannot trace — so this fn is permanently 0-external-caller
+/// from the audit's perspective (Bucket-1 fn-pointer blind spot).
+// G-allow: Bucket-1 fn-pointer ComputeFn registration blind spot; in-file production caller in `solve_elastic_static_trampoline` wired by #3594 (done); shipped by #4067 (done); permanent 0-external-caller by audit design.
 pub fn shell_channels_to_value(channels: &Option<ShellChannels>, mid_stress: &Value) -> Value {
     let ch = match channels {
         None => return Value::Undef,
@@ -1459,7 +1461,7 @@ fn real_field(data: &StructureInstanceData, key: &str) -> f64 {
 }
 
 /// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
-/// `youngs_modulus: Scalar(PRESSURE)` and `poisson_ratio: Real`.
+/// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`.
 fn extract_material(val: &Value) -> IsotropicElastic {
     let data = match val {
         Value::StructureInstance(d) => d,

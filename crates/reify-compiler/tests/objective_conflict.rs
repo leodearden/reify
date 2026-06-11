@@ -61,8 +61,8 @@ fn compile_module(src: &str, module_name: &str) -> reify_compiler::CompiledModul
 #[test]
 fn conflict_minimize_mass_maximize_stiffness_emits_error() {
     let src = r#"structure S {
-    param mass: Scalar = auto
-    param stiffness: Scalar = auto
+    param mass: Length = auto
+    param stiffness: Length = auto
     minimize mass
     maximize stiffness
 }"#;
@@ -136,8 +136,8 @@ fn conflict_minimize_mass_maximize_stiffness_emits_error() {
 #[test]
 fn no_conflict_same_sense_minimize_minimize() {
     let src = r#"structure S {
-    param mass: Scalar = auto
-    param cost: Scalar = auto
+    param mass: Length = auto
+    param cost: Length = auto
     minimize mass
     minimize cost
 }"#;
@@ -161,7 +161,7 @@ fn no_conflict_same_sense_minimize_minimize() {
 #[test]
 fn no_conflict_single_objective() {
     let src = r#"structure S {
-    param mass: Scalar = auto
+    param mass: Length = auto
     minimize mass
 }"#;
 
@@ -185,7 +185,7 @@ fn no_conflict_single_objective() {
 #[test]
 fn no_conflict_mixed_sense_same_expression() {
     let src = r#"structure S {
-    param mass: Scalar = auto
+    param mass: Length = auto
     minimize mass
     maximize mass
 }"#;

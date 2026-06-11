@@ -13,6 +13,7 @@ fn sample_diagnostic(severity: &str, message: &str) -> DiagnosticInfo {
         severity: severity.to_string(),
         message: message.to_string(),
         code: None,
+        has_location: false,
     }
 }
 

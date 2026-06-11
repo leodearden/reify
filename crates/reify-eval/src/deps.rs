@@ -746,6 +746,7 @@ mod tests {
                 operations: vec![],
                 content_hash: ContentHash::of_str("r0"),
                 produced_repr: ReprKind::BRep,
+                produced_kernel: None,
             },
         );
 
@@ -1494,6 +1495,7 @@ mod tests {
         graph.realizations.insert(
             r0.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: r0.clone(),
                 geometry_cell: Some(b.clone()),
                 operations: vec![],
@@ -1682,6 +1684,7 @@ mod tests {
         graph.realizations.insert(
             r0.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: r0.clone(),
                 geometry_cell: Some(body.clone()),
                 operations: vec![],
@@ -1977,6 +1980,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             inner_a.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: inner_a.clone(),
                 geometry_cell: Some(body_a.clone()),
                 operations: vec![],
@@ -1991,6 +1995,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             inner_b.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: inner_b.clone(),
                 geometry_cell: Some(body_b.clone()),
                 operations: vec![],
@@ -2006,6 +2011,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             outer.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: outer.clone(),
                 geometry_cell: None,
                 operations: vec![CompiledGeometryOp::Boolean {
@@ -2059,6 +2065,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             step_outer.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: step_outer.clone(),
                 geometry_cell: None,
                 operations: vec![CompiledGeometryOp::Boolean {
@@ -2131,6 +2138,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
             graph.realizations.insert(
                 inner.clone(),
                 RealizationNodeData {
+                    produced_kernel: None,
                     id: inner.clone(),
                     geometry_cell: Some(ValueCellId::new("Inner", "body")),
                     operations: vec![],
@@ -2141,6 +2149,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
             graph.realizations.insert(
                 consuming.clone(),
                 RealizationNodeData {
+                    produced_kernel: None,
                     id: consuming.clone(),
                     geometry_cell: None,
                     operations: ops,
@@ -2317,6 +2326,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             r_a.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: r_a.clone(),
                 geometry_cell: Some(ValueCellId::new("A", "body")),
                 operations: vec![],
@@ -2328,6 +2338,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             r_b.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: r_b.clone(),
                 geometry_cell: Some(ValueCellId::new("B", "body")), // same member name!
                 operations: vec![],
@@ -2341,6 +2352,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             outer.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: outer.clone(),
                 geometry_cell: None,
                 operations: vec![CompiledGeometryOp::Boolean {
@@ -2404,6 +2416,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             inner.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: inner.clone(),
                 geometry_cell: Some(ValueCellId::new("Inner", "body")),
                 operations: vec![],
@@ -2417,6 +2430,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         graph.realizations.insert(
             outer.clone(),
             RealizationNodeData {
+                produced_kernel: None,
                 id: outer.clone(),
                 geometry_cell: None,
                 operations: vec![CompiledGeometryOp::Boolean {

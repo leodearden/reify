@@ -5,7 +5,7 @@
 // (aux meshes excluded per T6 acceptance criterion)
 
 structure SmallCube {
-    param size: Scalar = 10mm
+    param size: Length = 10mm
 
     let body = box(size, size, size)
 }

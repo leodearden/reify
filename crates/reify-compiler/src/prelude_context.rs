@@ -133,9 +133,6 @@ impl<'a> PreludeContext<'a> {
         // If two modules declare a pub alias with the same name, only the first
         // survives in pub_aliases; the collision is recorded in collision_warnings
         // for diagnostic emission at compile time.
-        // TODO(perf): cache Vec<TypeAliasEntry> here instead of Vec<CompiledTypeAlias>
-        // to avoid the second clone in TypeAliasEntry::from_compiled_for_prelude during
-        // phase_aliases seeding — defer until profiling shows it matters.
         let mut alias_first_module: HashMap<String, String> = HashMap::new();
         let mut collision_warnings: Vec<(String, String, String)> = Vec::new();
         let mut pub_aliases: Vec<CompiledTypeAlias> = Vec::new();

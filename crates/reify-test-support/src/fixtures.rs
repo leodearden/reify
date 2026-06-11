@@ -12,11 +12,11 @@ use crate::builders::{
 /// The canonical bracket source code for end-to-end testing.
 pub fn bracket_source() -> &'static str {
     r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = 5mm
-    param fillet_radius: Scalar = 3mm
-    param hole_diameter: Scalar = 6mm
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
+    param fillet_radius: Length = 3mm
+    param hole_diameter: Length = 6mm
 
     let volume = width * height * thickness
 
@@ -30,7 +30,7 @@ pub fn bracket_source() -> &'static str {
 
 /// Return the bracket source with the default width replaced by `width_str`.
 ///
-/// E.g. `bracket_source_with_width("120mm")` gives `param width: Scalar = 120mm`.
+/// E.g. `bracket_source_with_width("120mm")` gives `param width: Length = 120mm`.
 pub fn bracket_source_with_width(width_str: &str) -> String {
     bracket_source().replace("80mm", width_str)
 }
@@ -65,8 +65,8 @@ pub fn warn_source_with_unknown_port_type_with_width() -> &'static str {
 /// `thickness > 2mm` constraint.
 pub fn bracket_source_violating() -> String {
     bracket_source().replace(
-        "param thickness: Scalar = 5mm",
-        "param thickness: Scalar = 1mm",
+        "param thickness: Length = 5mm",
+        "param thickness: Length = 1mm",
     )
 }
 
@@ -105,7 +105,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 where_clause: None,
                 annotations: Vec::new(),
                 span: SourceSpan::new(24, 42),
-                content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
+                content_hash: ContentHash::of_str("param width: Length = 80mm"),
             }),
             MemberDecl::Param(ParamDecl {
                 name: "height".into(),
@@ -128,7 +128,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 where_clause: None,
                 annotations: Vec::new(),
                 span: SourceSpan::new(47, 74),
-                content_hash: ContentHash::of_str("param height: Scalar = 100mm"),
+                content_hash: ContentHash::of_str("param height: Length = 100mm"),
             }),
             MemberDecl::Param(ParamDecl {
                 name: "thickness".into(),
@@ -151,7 +151,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 where_clause: None,
                 annotations: Vec::new(),
                 span: SourceSpan::new(79, 107),
-                content_hash: ContentHash::of_str("param thickness: Scalar = 5mm"),
+                content_hash: ContentHash::of_str("param thickness: Length = 5mm"),
             }),
             MemberDecl::Param(ParamDecl {
                 name: "fillet_radius".into(),
@@ -174,7 +174,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 where_clause: None,
                 annotations: Vec::new(),
                 span: SourceSpan::new(112, 144),
-                content_hash: ContentHash::of_str("param fillet_radius: Scalar = 3mm"),
+                content_hash: ContentHash::of_str("param fillet_radius: Length = 3mm"),
             }),
             MemberDecl::Param(ParamDecl {
                 name: "hole_diameter".into(),
@@ -197,7 +197,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 where_clause: None,
                 annotations: Vec::new(),
                 span: SourceSpan::new(149, 181),
-                content_hash: ContentHash::of_str("param hole_diameter: Scalar = 6mm"),
+                content_hash: ContentHash::of_str("param hole_diameter: Length = 6mm"),
             }),
             MemberDecl::Let(LetDecl {
                 name: "volume".into(),
@@ -347,6 +347,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                                 span: SourceSpan::new(375, 384),
                             },
                         ],
+                        arg_names: vec![None, None, None],
                     },
                     span: SourceSpan::new(356, 385),
                 },
@@ -468,8 +469,8 @@ pub fn bracket_compiled_module() -> CompiledModule {
 /// Create a `CompiledModule` with a `Beam` structure with multiple dimensional and labeled constraints.
 ///
 /// Structure `Beam`:
-///   - `param width: Scalar(LENGTH) = 50mm`
-///   - `param height: Scalar(LENGTH) = 100mm`
+///   - `param width: Length = 50mm`
+///   - `param height: Length = 100mm`
 ///   - range constraints on width: `width > 10mm` and `width < 500mm`
 ///   - range constraints on height: `height > 10mm` and `height < 1000mm`
 ///   - ratio constraint: `height > 2 * width` (labeled "slender")
@@ -622,7 +623,7 @@ pub fn rigid_trait_module() -> CompiledModule {
 
 /// Return a `CompiledModule` containing a "Rigid" trait and a "Plate" structure.
 ///
-/// The "Rigid" trait requires a `thickness: Scalar(LENGTH)` parameter.
+/// The "Rigid" trait requires a `thickness: Length` parameter.
 /// The "Plate" template has a single `thickness` parameter and satisfies the trait.
 pub fn trait_structure_module() -> CompiledModule {
     use reify_ir::CompiledExpr;
@@ -700,8 +701,8 @@ pub fn purpose_module() -> CompiledModule {
 /// Return a `CompiledModule` with a single constrained "Beam" structure.
 ///
 /// The Beam has two parameters and five constraints:
-/// - `param width: Scalar(LENGTH) = 100mm`
-/// - `param height: Scalar(LENGTH) = 200mm`
+/// - `param width: Length = 100mm`
+/// - `param height: Length = 200mm`
 /// - constraint 0: `width > 10mm`   (from `range_constraint`)
 /// - constraint 1: `width < 500mm`  (from `range_constraint`)
 /// - constraint 2: `height > 10mm`  (from `range_constraint`)
@@ -765,9 +766,9 @@ pub fn constrained_structure_module() -> reify_compiler::CompiledModule {
 /// Create a `CompiledModule` with a parent/child relationship for sub-component testing.
 ///
 /// Returns a module with two templates:
-/// - `Child` with `param height: Scalar(LENGTH) = 10mm` (0.01 SI) and
+/// - `Child` with `param height: Length = 10mm` (0.01 SI) and
 ///   `let half_h = height / 2`
-/// - `Parent` with `param width: Scalar(LENGTH) = 80mm` (0.08 SI) and
+/// - `Parent` with `param width: Length = 80mm` (0.08 SI) and
 ///   `sub rib = Child(height: width * 0.5)`
 ///
 /// Child is listed first so it can be found by structure_name lookup.
@@ -1198,23 +1199,23 @@ mod tests {
     #[test]
     fn bracket_source_with_width_replaces_default() {
         let source = bracket_source_with_width("120mm");
-        assert!(source.contains("param width: Scalar = 120mm"));
+        assert!(source.contains("param width: Length = 120mm"));
         assert!(!source.contains("80mm"), "original 80mm should be replaced");
         // Everything else should be intact
-        assert!(source.contains("param height: Scalar = 100mm"));
+        assert!(source.contains("param height: Length = 100mm"));
         assert!(source.contains("constraint thickness > 2mm"));
     }
 
     #[test]
     fn bracket_source_violating_has_small_thickness() {
         let source = bracket_source_violating();
-        assert!(source.contains("param thickness: Scalar = 1mm"));
+        assert!(source.contains("param thickness: Length = 1mm"));
         assert!(
-            !source.contains("param thickness: Scalar = 5mm"),
+            !source.contains("param thickness: Length = 5mm"),
             "original 5mm should be replaced"
         );
         // Other params should be unchanged
-        assert!(source.contains("param width: Scalar = 80mm"));
+        assert!(source.contains("param width: Length = 80mm"));
         assert!(source.contains("constraint thickness > 2mm"));
     }
 

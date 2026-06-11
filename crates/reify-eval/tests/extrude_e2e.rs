@@ -17,7 +17,7 @@ use reify_test_support::*;
 #[test]
 fn extrude_compiler_rejects_one_arg() {
     let source = r#"structure S {
-    param profile: Scalar = 5mm
+    param profile: Length = 5mm
     let result = extrude(profile)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ext1"));
@@ -53,8 +53,8 @@ fn extrude_compiler_rejects_one_arg() {
 #[test]
 fn extrude_compiler_rejects_three_args() {
     let source = r#"structure S {
-    param profile: Scalar = 5mm
-    param dist: Scalar = 10mm
+    param profile: Length = 5mm
+    param dist: Length = 10mm
     let result = extrude(profile, dist, dist)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ext3"));
@@ -87,8 +87,8 @@ fn extrude_compiler_rejects_three_args() {
 #[test]
 fn extrude_compiler_accepts_two_args() {
     let source = r#"structure S {
-    param profile: Scalar = 5mm
-    param dist: Scalar = 10mm
+    param profile: Length = 5mm
+    param dist: Length = 10mm
     let result = extrude(profile, dist)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ext2"));

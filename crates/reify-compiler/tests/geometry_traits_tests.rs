@@ -13,6 +13,7 @@
 use reify_compiler::*;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_core::Type;
+use reify_core::ty::SelectorKind;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -302,41 +303,38 @@ fn task_2699_topology_selector_cells_typed_per_registry() {
     // RHS expressions are inlined into the Bracket source below; the
     // cell-name / expected-type columns drive the post-compile assertion loop.
     let cases: &[(&str, &str, Type)] = &[
-        (
-            "all_edges",
-            "edges(body)",
-            Type::List(Box::new(Type::Geometry)),
-        ),
-        (
-            "all_faces",
-            "faces(body)",
-            Type::List(Box::new(Type::Geometry)),
-        ),
+        // Task 4118 (γ): the 7 predicate/all selector constructors are typed
+        // `Type::Selector(kind)` (not `List<Geometry>`). These bare cells are
+        // not consumed in a List context here, so no coercion is inserted —
+        // the cell's own result_type is the typed selector.
+        ("all_edges", "edges(body)", Type::Selector(SelectorKind::Edge)),
+        ("all_faces", "faces(body)", Type::Selector(SelectorKind::Face)),
         (
             "short_edges",
             "edges_by_length(body, 0mm..50mm)",
-            Type::List(Box::new(Type::Geometry)),
+            Type::Selector(SelectorKind::Edge),
         ),
         (
             "small_faces",
             "faces_by_area(body, 0mm * 1mm .. 1m * 1m)",
-            Type::List(Box::new(Type::Geometry)),
+            Type::Selector(SelectorKind::Face),
         ),
         (
             "top_faces",
             "faces_by_normal(body, vec3(0.0, 0.0, 1.0), 1deg)",
-            Type::List(Box::new(Type::Geometry)),
+            Type::Selector(SelectorKind::Face),
         ),
         (
             "vert_edges",
             "edges_parallel_to(body, vec3(1.0, 0.0, 0.0), 1deg)",
-            Type::List(Box::new(Type::Geometry)),
+            Type::Selector(SelectorKind::Edge),
         ),
         (
             "bot_edges",
             "edges_at_height(body, 0mm, 0.01mm)",
-            Type::List(Box::new(Type::Geometry)),
+            Type::Selector(SelectorKind::Edge),
         ),
+        // neighbors / shared remain List<Geometry> (relational, out of scope).
         (
             "neighbors",
             "adjacent_faces(body, body)",

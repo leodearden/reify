@@ -4,10 +4,12 @@
 // `mutable_key_type` on every `BTreeMap<Value, _>` site.
 #![allow(clippy::mutable_key_type)]
 
+mod analysis_signatures;
 mod annotations;
 mod arg_check;
 pub mod auto_type_param;
 pub mod cfg;
+mod coerce;
 mod compile_builder;
 mod conformance;
 mod connect;
@@ -29,6 +31,7 @@ mod ice;
 mod list_helpers;
 mod joint_signatures;
 mod math_signatures;
+mod signatures_common;
 pub mod module_dag;
 mod module_pragmas;
 pub mod prelude_context;
@@ -69,6 +72,7 @@ pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
 pub(crate) use ice::*;
 pub(crate) use list_helpers::*;
+pub(crate) use analysis_signatures::*;
 pub(crate) use joint_signatures::*;
 pub(crate) use math_signatures::*;
 pub(crate) use scope::*;

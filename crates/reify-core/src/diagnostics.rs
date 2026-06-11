@@ -1572,6 +1572,22 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_DynamicsBodyMassPropsArity`
     /// (severity convention: `E_*` → Error). Registered in task 3829 (RBD-β).
     DynamicsBodyMassPropsArity,
+    /// Origin: `crates/reify-stdlib/src/dynamics/eval.rs` (`diagnose` hook,
+    /// wired into `reify-expr::emit_undef_builtin_diagnostics`).
+    ///
+    /// Emitted as a `Severity::Error` when an `inverse_dynamics` call returns
+    /// `Value::Undef` because at least one body in the spanning tree has no
+    /// resolvable mass — i.e. `body.solid` is neither a `MassProperties`
+    /// `Value::StructureInstance` nor a real-geometry solid with density (the
+    /// derived rung is a stub until task 3620). The diagnostic names the
+    /// first unresolvable body.
+    ///
+    /// Canonical message form:
+    /// `"inverse_dynamics: body '<id>' has no resolvable mass (no MassProperties on body.solid)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DynamicsBodyMassUnresolved`.
+    /// Registered in task 4278 (v0.3 flexures uniform-mass substrate).
+    DynamicsBodyMassUnresolved,
     /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
     /// phase) and `crates/reify-compiler/src/trait_requirements.rs`.
     ///
@@ -1902,6 +1918,39 @@ pub enum DiagnosticCode {
     /// the out-of-scope variant fired when the intrinsic is used outside a purpose
     /// constraint position entirely.
     DeterminacyIntrinsicArg,
+    /// Origin: `crates/reify-eval/src/engine_fixpoint.rs::run_unified_pass`
+    /// (task 4357 δ; unified build-DAG Stage B Tarjan-SCC discriminator).
+    ///
+    /// Canonical message form (one diagnostic per strongly-connected component):
+    /// `"evaluation cycle detected: [<member>, <member>, …]"`, where each
+    /// member is rendered via [`crate::NodeId::describe`] along a deterministic
+    /// ordered path (mirroring the legacy `detect_let_cycle` `[a, b, c]` shape).
+    ///
+    /// Emitted as a `Severity::Error` when the online Kahn worklist leaves a
+    /// residue whose induced subgraph contains a true cycle (`|SCC| > 1`, or a
+    /// singleton carrying a self-edge). Singleton-no-self-edge residue members
+    /// are stranded-downstream and do NOT emit this code. Kind-agnostic: detects
+    /// value↔value, geom↔constraint, realization↔realization (GeomRef::Sub) and
+    /// any other cross-kind cycle over the edges α's trace map encodes.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_EVAL_CYCLE`.
+    EvalCycle,
+    /// Origin: `crates/reify-eval/src/engine_fixpoint.rs::run_unified_pass`
+    /// (task 4357 δ; geometry-backed-constraint-on-auto guard).
+    ///
+    /// Canonical message form:
+    /// `"unresolved constraint: <constraint-describe> transitively depends on
+    /// auto parameter(s) through geometry-backed inputs"`.
+    ///
+    /// Emitted as a `Severity::Error` when a constraint's transitive auto-read
+    /// closure (its `realization_reads`, then each backing realization's
+    /// `reads` + `realization_reads`, recursively) reaches an `auto` value cell
+    /// (`ValueCellKind::is_auto`). The unified pass declines to solve that
+    /// class. Independent of the cycle residue (a pure structural classifier
+    /// over existing edges).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_EVAL_UNRESOLVED`.
+    EvalUnresolved,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -2077,6 +2126,44 @@ pub struct DiagnosticRef {
 #[cfg(test)]
 mod tests {
     use super::{Diagnostic, DiagnosticCode, SourceSpan};
+
+    /// Task 4357 δ (step-3): the two additive diagnostic codes emitted by
+    /// `engine_fixpoint::run_unified_pass` — `EvalCycle` (E_EVAL_CYCLE) and
+    /// `EvalUnresolved` (E_EVAL_UNRESOLVED) — must exist, be distinct, and be
+    /// attachable via `Diagnostic::error(..).with_code(..)` with the code
+    /// reading back.
+    ///
+    /// RED until step-4 adds the variants.
+    #[test]
+    fn eval_cycle_and_unresolved_codes_exist_and_attach() {
+        // Exist + distinct.
+        assert_ne!(DiagnosticCode::EvalCycle, DiagnosticCode::EvalUnresolved);
+
+        // Attachable via the builder; code reads back.
+        let cyc = Diagnostic::error("cycle").with_code(DiagnosticCode::EvalCycle);
+        assert_eq!(cyc.code, Some(DiagnosticCode::EvalCycle));
+        let unr = Diagnostic::error("unresolved").with_code(DiagnosticCode::EvalUnresolved);
+        assert_eq!(unr.code, Some(DiagnosticCode::EvalUnresolved));
+    }
+
+    /// Task 4357 δ (step-3): the additive codes serialize to their PascalCase
+    /// wire identifiers under the `serde` feature (matching the enum's
+    /// `rename_all = "PascalCase"`), so downstream tooling matches stable
+    /// strings rather than message substrings.
+    ///
+    /// RED until step-4 adds the variants.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn eval_codes_serialize_to_pascalcase_wire_strings() {
+        assert_eq!(
+            serde_json::to_value(DiagnosticCode::EvalCycle).unwrap(),
+            serde_json::Value::String("EvalCycle".to_owned())
+        );
+        assert_eq!(
+            serde_json::to_value(DiagnosticCode::EvalUnresolved).unwrap(),
+            serde_json::Value::String("EvalUnresolved".to_owned())
+        );
+    }
 
     #[test]
     fn prelude_sentinel_is_prelude() {
@@ -3120,6 +3207,57 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::MechanismNonDrivingJoint).unwrap();
         assert_eq!(s, "\"MechanismNonDrivingJoint\"");
     }
+
+    /// `DiagnosticInfo.has_location` round-trips through serde:
+    /// (a) `has_location: false` serializes to JSON key `"has_location"` with value `false`
+    /// — the field is never skipped, always present on the wire; (b) deserializing a JSON
+    /// object that omits `has_location` yields `has_location == true` — pinning the
+    /// backward-compat `#[serde(default = "default_has_location")]` contract so older
+    /// payloads and un-updated consumers are treated as line-tied.
+    ///
+    /// RED until step-5 adds the field and `default_has_location` helper to `DiagnosticInfo`.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_info_has_location_serde_wire_and_default() {
+        use super::DiagnosticInfo;
+
+        // (a) Serialize: has_location: false must produce JSON key "has_location" = false.
+        let info = DiagnosticInfo {
+            file_path: "test.ri".to_owned(),
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 1,
+            severity: "Error".to_owned(),
+            message: "test".to_owned(),
+            code: None,
+            has_location: false,
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(
+            v["has_location"],
+            serde_json::Value::Bool(false),
+            "has_location: false must serialize to JSON false under key 'has_location'"
+        );
+
+        // (b) Deserialize: omitting has_location from JSON must yield has_location == true
+        //     (backward-compat: older payloads without the field are treated as line-tied).
+        let json = serde_json::json!({
+            "file_path": "test.ri",
+            "line": 1,
+            "column": 1,
+            "end_line": 1,
+            "end_column": 1,
+            "severity": "Error",
+            "message": "test",
+            "code": null
+        });
+        let deserialized: DiagnosticInfo = serde_json::from_value(json).unwrap();
+        assert!(
+            deserialized.has_location,
+            "missing `has_location` in JSON must deserialize as true (backward-compat default)"
+        );
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
@@ -3139,4 +3277,29 @@ pub struct DiagnosticInfo {
     pub severity: String,
     pub message: String,
     pub code: Option<String>,
+    /// Whether this diagnostic carries a real, line-tied source span.
+    ///
+    /// `true` means the `line`/`column`/`end_line`/`end_column` fields reflect an
+    /// actual span from the compiled source (non-empty `Diagnostic::labels`).
+    /// `false` means the positions are synthetic (hardcoded 1/1/1/1) and do NOT
+    /// point at a meaningful source location — e.g. module-level hot-reload staleness
+    /// errors where no span is available.
+    ///
+    /// Consumers (β span-less render, γ span-less refusal) use this flag to avoid
+    /// navigating the editor to a fake line 1 for span-less diagnostics.
+    ///
+    /// **Wire default:** a JSON payload that omits `has_location` deserializes as
+    /// `true` (line-tied) to preserve backward compatibility with older serializers
+    /// and un-updated consumers.
+    #[cfg_attr(feature = "serde", serde(default = "default_has_location"))]
+    pub has_location: bool,
+}
+
+/// Serde default for [`DiagnosticInfo::has_location`]: `true` (line-tied).
+///
+/// Returning `true` makes a JSON payload that omits `has_location` deserialize as
+/// line-tied, preserving backward-compat for older serializers and un-updated consumers.
+#[cfg(feature = "serde")]
+fn default_has_location() -> bool {
+    true
 }

@@ -4,8 +4,8 @@
 // minimize mass + minimize cost (equal-weight sum, B2, not a conflict).
 // `reify check` must exit zero and NOT print "E_OBJECTIVE_CONFLICT".
 structure S {
-    param mass: Scalar = auto
-    param cost: Scalar = auto
+    param mass: Length = auto
+    param cost: Length = auto
     minimize mass
     minimize cost
 }

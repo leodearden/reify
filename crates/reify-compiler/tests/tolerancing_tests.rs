@@ -53,18 +53,18 @@ fn stdlib_file_parses_and_compiles_without_errors() {
     );
 }
 
-// ─── step-5: all 4 enums with correct variants ───────────────────────────────
+// ─── step-5: all 5 enums with correct variants ───────────────────────────────
 
-/// Step 5: All 4 enums are present with correct variant counts and specific
-/// variant names for MaterialCondition.
+/// Step 5: All 5 enums are present with correct variant counts and specific
+/// variant names for MaterialCondition and ZoneShape.
 #[test]
-fn all_four_enums_with_correct_variants() {
+fn all_five_enums_with_correct_variants() {
     let module = load_stdlib_module();
 
     assert_eq!(
         module.enum_defs.len(),
-        4,
-        "expected exactly 4 enums, got: {:?}",
+        5,
+        "expected exactly 5 enums, got: {:?}",
         module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
     );
 
@@ -127,6 +127,27 @@ fn all_four_enums_with_correct_variants() {
         "SurfaceDirection should have 6 variants, got: {:?}",
         sd.variants
     );
+
+    // ZoneShape: 2 variants (Width, Cylindrical) — FOS zone-shape discriminator (α)
+    let zs = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "ZoneShape")
+        .expect("expected 'ZoneShape' enum");
+    assert_eq!(
+        zs.variants.len(),
+        2,
+        "ZoneShape should have 2 variants, got: {:?}",
+        zs.variants
+    );
+    for variant in &["Width", "Cylindrical"] {
+        assert!(
+            zs.variants.contains(&variant.to_string()),
+            "ZoneShape missing variant '{}', variants: {:?}",
+            variant,
+            zs.variants
+        );
+    }
 }
 
 // ─── step-7: DimensionalTolerance structure correctness ───────────────────────
@@ -278,20 +299,24 @@ fn geometric_tolerance_trait_and_subtrait_hierarchy() {
     );
 }
 
-// ─── step-11: all 14 GD&T types + Datum present ──────────────────────────────
+// ─── step-11: all GD&T types + Datum present ─────────────────────────────────
 
-/// Step 11: All 14 GD&T structure defs + Datum are present as templates.
-/// Angularity has a 'nominal_angle' value cell.
+/// Step 11: All GD&T structure defs + Datum are present as templates.
+/// The set is 17 GD&T types after the α restructure (the original 14 plus
+/// StraightnessOfAxis, ProfileOfSurfaceRelated, ProfileOfLineRelated); the count
+/// is intentionally NOT baked into the test name so future additions (γ/δ) don't
+/// re-stale it. Angularity has a 'nominal_angle' value cell.
 #[test]
-fn all_fourteen_gdt_types_and_datum_present() {
+fn all_gdt_types_and_datum_present() {
     let module = load_stdlib_module();
 
     let template_names: Vec<&str> = module.templates.iter().map(|t| t.name.as_str()).collect();
 
     let expected_gdt_and_datum = [
-        // Form (4)
+        // Form (4 + StraightnessOfAxis FOS variant, α)
         "Flatness",
         "Straightness",
+        "StraightnessOfAxis",
         "Circularity",
         "Cylindricity",
         // Orientation (3)
@@ -305,9 +330,11 @@ fn all_fourteen_gdt_types_and_datum_present() {
         // Runout (2)
         "CircularRunout",
         "TotalRunout",
-        // Profile (2)
+        // Profile (2 datum-less + 2 …Related datum-referenced, α)
         "ProfileOfSurface",
         "ProfileOfLine",
+        "ProfileOfSurfaceRelated",
+        "ProfileOfLineRelated",
         // Datum
         "Datum",
     ];
@@ -339,6 +366,227 @@ fn all_fourteen_gdt_types_and_datum_present() {
             .map(|vc| &vc.id.member)
             .collect::<Vec<_>>()
     );
+}
+
+// ─── α: StraightnessOfAxis FOS form variant ──────────────────────────────────
+
+/// α: `StraightnessOfAxis` is a FormTolerance variant for the FOS-derived axis.
+/// It refines FormTolerance (no datum), carries the standard tolerance_value /
+/// feature / material_condition Param cells, and — because the axis tolerance
+/// zone is inherently Ø — carries NO `zone_shape` discriminator cell.
+///
+/// RED before step-4: StraightnessOfAxis does not exist.
+#[test]
+fn straightness_of_axis_is_fos_form_variant() {
+    let module = load_stdlib_module();
+
+    let soa = module
+        .templates
+        .iter()
+        .find(|t| t.name == "StraightnessOfAxis")
+        .expect("expected 'StraightnessOfAxis' template");
+
+    assert!(
+        soa.trait_bounds.contains(&"FormTolerance".to_string()),
+        "StraightnessOfAxis should have 'FormTolerance' in trait_bounds, got: {:?}",
+        soa.trait_bounds
+    );
+
+    let param_names: Vec<&str> = soa
+        .value_cells
+        .iter()
+        .filter(|vc| vc.kind == ValueCellKind::Param)
+        .map(|vc| vc.id.member.as_str())
+        .collect();
+    for name in &["tolerance_value", "feature", "material_condition"] {
+        assert!(
+            param_names.contains(name),
+            "StraightnessOfAxis missing Param '{}', params: {:?}",
+            name,
+            param_names
+        );
+    }
+
+    // Axis zone is inherently Ø → no zone_shape discriminator.
+    assert!(
+        !soa.value_cells.iter().any(|vc| vc.id.member == "zone_shape"),
+        "StraightnessOfAxis must NOT have a 'zone_shape' cell (axis zone is inherently Ø), \
+         got cells: {:?}",
+        soa.value_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── α: runout callouts carry a required datum_refs ──────────────────────────
+
+/// α: CircularRunout and TotalRunout each gain a required `datum_refs` Param
+/// cell typed Geometry (DatumRef aliases Type::Geometry per #3116). Runout is
+/// always datum-referenced per ASME Y14.5, so the datum is mandatory (no default).
+///
+/// RED before step-6: the base runout structures refine GeometricTolerance
+/// directly and have no datum_refs cell.
+#[test]
+fn runout_callouts_carry_required_datum_refs() {
+    let module = load_stdlib_module();
+
+    for name in &["CircularRunout", "TotalRunout"] {
+        let t = module
+            .templates
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' template", name));
+
+        let datum = t
+            .value_cells
+            .iter()
+            .find(|vc| vc.kind == ValueCellKind::Param && vc.id.member == "datum_refs")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} must have a 'datum_refs' Param cell, got params: {:?}",
+                    name,
+                    t.value_cells
+                        .iter()
+                        .filter(|vc| vc.kind == ValueCellKind::Param)
+                        .map(|vc| &vc.id.member)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            datum.cell_type,
+            Type::Geometry,
+            "{}.datum_refs must be Type::Geometry (DatumRef aliases Geometry), got {:?}",
+            name,
+            datum.cell_type
+        );
+    }
+}
+
+// ─── α: profile split — datum-less vs datum-referenced (…Related) ────────────
+
+/// α: the profile callouts split into datum-less (form-only) and datum-referenced
+/// (…Related) variants. ProfileOfSurface / ProfileOfLine remain datum-less (no
+/// datum_refs cell); ProfileOfSurfaceRelated / ProfileOfLineRelated add a required
+/// `datum_refs` Param cell typed Geometry.
+///
+/// RED before step-8: the two …Related variants do not exist.
+#[test]
+fn profile_callouts_split_datumless_and_related() {
+    let module = load_stdlib_module();
+
+    // Datum-less variants: present, and NO datum_refs cell.
+    for name in &["ProfileOfSurface", "ProfileOfLine"] {
+        let t = module
+            .templates
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' template", name));
+        assert!(
+            !t.value_cells.iter().any(|vc| vc.id.member == "datum_refs"),
+            "{} must be datum-less (no 'datum_refs' cell), got cells: {:?}",
+            name,
+            t.value_cells
+                .iter()
+                .map(|vc| &vc.id.member)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // …Related variants: present, with a required datum_refs Param cell typed Geometry.
+    for name in &["ProfileOfSurfaceRelated", "ProfileOfLineRelated"] {
+        let t = module
+            .templates
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' template", name));
+        let datum = t
+            .value_cells
+            .iter()
+            .find(|vc| vc.kind == ValueCellKind::Param && vc.id.member == "datum_refs")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} must have a 'datum_refs' Param cell, got params: {:?}",
+                    name,
+                    t.value_cells
+                        .iter()
+                        .filter(|vc| vc.kind == ValueCellKind::Param)
+                        .map(|vc| &vc.id.member)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            datum.cell_type,
+            Type::Geometry,
+            "{}.datum_refs must be Type::Geometry (DatumRef aliases Geometry), got {:?}",
+            name,
+            datum.cell_type
+        );
+    }
+}
+
+// ─── α: FOS location/orientation callouts carry a zone_shape discriminator ───
+
+/// α: Position and the three orientation callouts (Parallelism, Perpendicularity,
+/// Angularity) each gain a `zone_shape` Param cell typed Enum("ZoneShape").
+/// Concentricity and Symmetry are deliberately EXCLUDED — they were removed in
+/// ASME Y14.5-2018 and have inherently fixed zone shapes, so a discriminator is
+/// meaningless. This test pins both the inclusion set and the exclusion set.
+///
+/// RED before step-10: zone_shape is not present on any callout yet.
+#[test]
+fn fos_location_orientation_callouts_carry_zone_shape() {
+    let module = load_stdlib_module();
+
+    // Inclusion set: Position + 3 orientation callouts carry zone_shape : ZoneShape.
+    for name in &["Position", "Parallelism", "Perpendicularity", "Angularity"] {
+        let t = module
+            .templates
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' template", name));
+        let zs = t
+            .value_cells
+            .iter()
+            .find(|vc| vc.kind == ValueCellKind::Param && vc.id.member == "zone_shape")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} must have a 'zone_shape' Param cell, got params: {:?}",
+                    name,
+                    t.value_cells
+                        .iter()
+                        .filter(|vc| vc.kind == ValueCellKind::Param)
+                        .map(|vc| &vc.id.member)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            zs.cell_type,
+            Type::Enum("ZoneShape".to_string()),
+            "{}.zone_shape must be Type::Enum(\"ZoneShape\"), got {:?}",
+            name,
+            zs.cell_type
+        );
+    }
+
+    // Exclusion set: Concentricity / Symmetry must NOT carry zone_shape.
+    for name in &["Concentricity", "Symmetry"] {
+        let t = module
+            .templates
+            .iter()
+            .find(|t| t.name == *name)
+            .unwrap_or_else(|| panic!("expected '{}' template", name));
+        assert!(
+            !t.value_cells.iter().any(|vc| vc.id.member == "zone_shape"),
+            "{} must NOT have a 'zone_shape' cell (fixed-shape, Y14.5-2018-removed), \
+             got cells: {:?}",
+            name,
+            t.value_cells
+                .iter()
+                .map(|vc| &vc.id.member)
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 // ─── step-13: SurfaceFinish, Fit, ISOToleranceGrade, Conforms ────────────────
@@ -607,11 +855,11 @@ fn full_module_integrity() {
         errors
     );
 
-    // 4 enums
+    // 5 enums
     assert_eq!(
         module.enum_defs.len(),
-        4,
-        "expected 4 enums (MaterialCondition, FitCategory, SurfaceParameter, SurfaceDirection), got: {:?}",
+        5,
+        "expected 5 enums (MaterialCondition, FitCategory, SurfaceParameter, SurfaceDirection, ZoneShape), got: {:?}",
         module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
     );
 
@@ -627,11 +875,13 @@ fn full_module_integrity() {
             .collect::<Vec<_>>()
     );
 
-    // 19 templates: DimensionalTolerance(1) + 14 GD&T + Datum(1) + SurfaceFinish(1) + Fit(1) + ISOToleranceGrade(1)
+    // 22 templates: DimensionalTolerance(1) + 14 GD&T + StraightnessOfAxis(1, α)
+    //   + ProfileOfSurfaceRelated(1, α) + ProfileOfLineRelated(1, α)
+    //   + Datum(1) + SurfaceFinish(1) + Fit(1) + ISOToleranceGrade(1)
     assert_eq!(
         module.templates.len(),
-        19,
-        "expected 19 templates, got: {:?}",
+        22,
+        "expected 22 templates, got: {:?}",
         module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 
@@ -849,12 +1099,12 @@ structure def ProbeNeg {
 /// IT4, which is below the supported IT5–IT18 range), iso_it_tolerance returns
 /// Value::Undef and the derived `tolerance_value` let resolves to Undef.
 ///
-/// NOTE: tolerancing_diagnose is not yet wired into reify-expr (the sibling β/ε
-/// TODO in reify-stdlib/src/lib.rs), so E_TolerancingOutOfEnvelope does not fire
-/// as an eval diagnostic. The observable behavior is a missing/Undef cell.
-///
-/// This test pins the current Undef behavior and will need updating when
-/// tolerancing_diagnose is wired and the diagnostic fires.
+/// NOTE: tolerancing_diagnose is now wired into reify-expr's eval-time
+/// Undef-diagnosis fallthrough (`emit_undef_builtin_diagnostics`, task 4461
+/// step-2). The eval diagnostic is pinned by
+/// `iso_it_tolerance_grade_25_out_of_envelope_emits_eval_error_diagnostic`.
+/// This test continues to pin the compile-clean + Undef-cell assertions, which
+/// are orthogonal to (and unaffected by) the eval-diagnostic wiring.
 #[test]
 fn iso_tolerance_grade_out_of_envelope_undef() {
     // IT4 is below IT5 — iso_it_tolerance returns Undef, so the derived let is Undef.
@@ -904,10 +1154,9 @@ structure def Probe {
             // Expected: iso_it_tolerance returns Undef for out-of-envelope grade 4
         }
         None => {
-            // Acceptable current behavior: tolerancing_diagnose is not yet wired into
-            // reify-expr, so iso_it_tolerance may omit the Undef cell rather than
-            // surfacing it. Will need updating when tolerancing_diagnose fires.
-            // (Sub-component presence confirmed above via probe_g_keys.)
+            // The Undef cell may be elided by the evaluator (observable as a missing
+            // entry rather than an explicit Undef). This is distinct from a
+            // sub-component resolution failure (confirmed above via probe_g_keys).
         }
         Some(other) => panic!(
             "out-of-envelope grade 4 should yield Undef tolerance_value, got {:?}",
@@ -2089,6 +2338,88 @@ fn stdlib_feature_datum_refs_have_geometry_type() {
             other
         ),
     }
+}
+
+// ─── task-4461: tolerancing_diagnose wired into eval Undef-diagnosis ─────────
+
+/// E2E pin: out-of-envelope iso_it_tolerance (grade 25) surfaces a
+/// Severity::Error "E_TolerancingOutOfEnvelope" in result.diagnostics after
+/// the tolerancing_diagnose arm was wired into emit_undef_builtin_diagnostics
+/// (task 4461 step-2).
+///
+/// Mirrors the result.diagnostics read at tolerancing_tests.rs:980 — this is
+/// the eval-pipeline realization of the `reify eval`→stderr user-observable
+/// signal (cmd_eval renders result.diagnostics to stderr). Grade 25 keeps this
+/// test distinct from iso_tolerance_grade_out_of_envelope_undef (grade 4),
+/// which only checks compile diagnostics + the Undef cell value.
+#[test]
+fn iso_it_tolerance_grade_25_out_of_envelope_emits_eval_error_diagnostic() {
+    let source = r#"
+structure def TestOOE {
+    param grade : Int = 25
+    param nmin : Length = 30mm
+    param nmax : Length = 50mm
+    let tolerance_value = iso_it_tolerance(grade, nmin, nmax)
+}
+structure def Probe {
+    sub g = TestOOE()
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    // Compile should be clean (no Error diagnostics).
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "out-of-envelope TestOOE should compile without errors, got: {:?}",
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // (a) Sub-component was instantiated — distinguishes "diagnostic emitted via sub" from
+    // "sub was never resolved" (a different failure mode that the unit test cannot catch).
+    let probe_g_keys: Vec<_> = result
+        .values
+        .iter()
+        .filter(|(k, _)| k.entity == "Probe.g")
+        .collect();
+    assert!(
+        !probe_g_keys.is_empty(),
+        "Probe.g sub-component should have produced at least one value cell; \
+         got none — check sub-component resolution"
+    );
+
+    // (b) tolerance_value inside the sub-component is Undef (or absent — the evaluator
+    // may elide Undef cells; see iso_tolerance_grade_out_of_envelope_undef for context).
+    let cell_id = ValueCellId::new("Probe.g", "tolerance_value");
+    match result.values.get(&cell_id) {
+        Some(Value::Undef) | None => {
+            // Expected: grade 25 → Undef (cell present-as-Undef or elided by evaluator).
+        }
+        Some(other) => panic!(
+            "Probe.g.tolerance_value for grade 25 should be Undef or absent, got {:?}",
+            other
+        ),
+    }
+
+    // (c) Eval sink contains the E_TolerancingOutOfEnvelope Error that propagated from
+    // the sub-component evaluation through the full compile→eval pipeline.  This is
+    // the eval-pipeline realization of the `reify eval`→stderr user-observable signal
+    // (cmd_eval renders result.diagnostics to stderr).
+    assert!(
+        result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Error && d.message.contains("E_TolerancingOutOfEnvelope")
+        }),
+        "eval diagnostics must contain an E_TolerancingOutOfEnvelope Error for grade 25, \
+         got: {:?}",
+        result.diagnostics
+    );
 }
 
 /// GREEN (step-3 resolver contract): `param feature : Geometry` and

@@ -212,15 +212,20 @@ pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
 /// Task 2699 names — compile-time type only; eval dispatch is task 2691.
 /// Until then, cells hold `Value::Undef`, which `value_type_kind_matches`
 /// accepts for any type (`reify_eval::lib:196`):
-/// - `edges(solid)`                          → `Type::List(Geometry)`
-/// - `faces(solid)`                          → `Type::List(Geometry)`
-/// - `edges_by_length(solid, range)`         → `Type::List(Geometry)`
-/// - `faces_by_area(solid, range)`           → `Type::List(Geometry)`
-/// - `faces_by_normal(solid, dir, tol)`      → `Type::List(Geometry)`
-/// - `edges_parallel_to(solid, dir, tol)`    → `Type::List(Geometry)`
-/// - `edges_at_height(solid, h, tol)`        → `Type::List(Geometry)`
-/// - `adjacent_faces(solid, face)`           → `Type::List(Geometry)`
-/// - `shared_edges(face1, face2)`            → `Type::List(Geometry)`
+/// Task 4118 (γ) — the 7 predicate/all selector constructors evaluate to a
+/// typed `Value::Selector(kind)`, so their compile-time result type is
+/// `Type::Selector(kind)`. The compiler inserts a `ResolveSelector` coercion
+/// node to bridge `Selector → List<Geometry>` at the three consumption sites
+/// (param-binding, single()/list-helper, IndexAccess-object):
+/// - `edges(solid)`                          → `Type::Selector(Edge)`
+/// - `faces(solid)`                          → `Type::Selector(Face)`
+/// - `edges_by_length(solid, range)`         → `Type::Selector(Edge)`
+/// - `faces_by_area(solid, range)`           → `Type::Selector(Face)`
+/// - `faces_by_normal(solid, dir, tol)`      → `Type::Selector(Face)`
+/// - `edges_parallel_to(solid, dir, tol)`    → `Type::Selector(Edge)`
+/// - `edges_at_height(solid, h, tol)`        → `Type::Selector(Edge)`
+/// - `adjacent_faces(solid, face)`           → `Type::List(Geometry)` (relational)
+/// - `shared_edges(face1, face2)`            → `Type::List(Geometry)` (relational)
 /// - `center_of_mass(solid, density)`        → `Type::point3(Type::length())`
 /// - `moment_of_inertia(solid, density)`     → `Type::tensor(2, 3, MomentOfInertia)`
 ///
@@ -233,11 +238,22 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         "closest_point" => Type::point3(Type::length()),
         "is_on" => Type::Bool,
         "angle_between_surfaces" => Type::angle(),
-        // Task 2699 — compile-time type wiring; eval dispatch is task 2691
-        "edges" | "faces" | "edges_by_length" | "faces_by_area" | "faces_by_normal"
-        | "edges_parallel_to" | "edges_at_height" | "adjacent_faces" | "shared_edges" => {
-            Type::List(Box::new(Type::Geometry))
-        }
+        // Task 4118 (γ) — the 7 predicate/all selector constructors are typed
+        // `Type::Selector(kind)` (Edge / Face per the constructor). The compiler
+        // bridges `Selector → List<Geometry>` via a `ResolveSelector` coercion
+        // node at the three consumption sites.
+        "edges" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "faces" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "edges_by_length" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "faces_by_area" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "faces_by_normal" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "edges_parallel_to" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "edges_at_height" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        // Task 2699 — relational selectors stay List<Geometry>: adjacent_faces /
+        // shared_edges have no `LeafQuery` representation (4117's LeafQuery =
+        // {Named,All,ByNormal,ByArea,ByLength,ByHeight,ByParallel}), so they are
+        // out of scope for the Selector re-type.
+        "adjacent_faces" | "shared_edges" => Type::List(Box::new(Type::Geometry)),
         // Task 4190 — split(solid, plane) -> List<Solid>. Same List<Geometry>
         // result type as the edge/face selectors; eval dispatch via
         // TopologySelectorHelper::Split in try_eval_topology_selector.
@@ -464,6 +480,33 @@ pub(crate) fn is_dynamics_query(name: &str) -> bool {
     DYNAMICS_QUERY_NAMES.contains(&name)
 }
 
+/// Dynamics-constructor builtins: `point_mass(mass)` and
+/// `mass_properties(mass, com, inertia)` (task 4278, v0.3 flexures
+/// uniform-mass substrate).
+///
+/// These are name-recognised eval-builtins dispatched in
+/// `reify_stdlib::dynamics::eval_dynamics` — NOT `.ri` declarations
+/// (body_mass_props / DYNAMICS_QUERY_NAMES precedent). The
+/// `is_dynamics_constructor` arm in `expr.rs::infer_type`'s
+/// `NoUserFunctions` ladder sets the result type to
+/// `Type::StructureRef("MassProperties")` **up-front**, which is
+/// LOAD-BEARING: without it the first-arg fallback would infer
+/// `Scalar<Mass>` for `point_mass(2.5kg)`, tripping
+/// `value_type_kind_matches` at eval time. Uniform `StructureRef`
+/// result type — no per-name table (mirrors DYNAMICS_QUERY_NAMES).
+///
+/// **Disjointness contract**: every entry must be absent from every
+/// other classification family; pinned by
+/// `dynamics_constructor_names_are_disjoint_from_other_families` (and
+/// the converse asserts added to the sibling disjointness tests).
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const DYNAMICS_CONSTRUCTOR_NAMES: &[&str] = &["mass_properties", "point_mass"];
+
+pub(crate) fn is_dynamics_constructor(name: &str) -> bool {
+    DYNAMICS_CONSTRUCTOR_NAMES.contains(&name)
+}
+
 /// Result type per geometry-query helper. Sets the cell's `result_type` so
 /// that downstream `value_type_kind_matches` accepts the post-process
 /// `Value` (which is `Value::Undef` until GHR-ζ Phase 6 wires kernel
@@ -553,19 +596,36 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
 const FACE_PRODUCING_SELECTOR_NAMES: &[&str] =
     &["faces", "faces_by_area", "faces_by_normal", "adjacent_faces"];
 
-/// Returns `true` iff `arg.kind` is an `IndexAccess` whose `object` is a
-/// `FunctionCall` whose `function.name` is in [`FACE_PRODUCING_SELECTOR_NAMES`].
+/// Returns `true` iff `arg.kind` is an `IndexAccess` whose `object` resolves to
+/// a `FunctionCall` whose `function.name` is in [`FACE_PRODUCING_SELECTOR_NAMES`].
 ///
 /// Structural surface detection — mirrors the `math_fn_result_type` precedent
 /// of inspecting the COMPILED-ARG STRUCTURE rather than the undifferentiated
 /// first-arg type (which would be `Type::Geometry` for both faces and edges
 /// after index access, offering no discrimination). Called by
 /// [`geometry_query_arg_aware_result_type`].
+///
+/// **Two object shapes (task 4118 γ).** After step-12 inserts the
+/// `Selector → List<Geometry>` coercion, a re-typed face selector is wrapped in
+/// a `ResolveSelector` coercion node between the `IndexAccess` object and the
+/// selector `FunctionCall`:
+/// `IndexAccess{ object: ResolveSelector{ FunctionCall{faces} } }`. The detector
+/// unwraps that node to reach the inner `FunctionCall`. Still-`List<Geometry>`
+/// selectors (e.g. `adjacent_faces`, which has no `Selector` re-typing and so no
+/// coercion) keep the bare `IndexAccess{ FunctionCall }` shape, handled by the
+/// fallback that inspects `object` directly.
 fn is_surface_producing_arg(arg: &reify_ir::CompiledExpr) -> bool {
     use reify_ir::CompiledExprKind;
-    if let CompiledExprKind::IndexAccess { object, .. } = &arg.kind
-        && let CompiledExprKind::FunctionCall { function, .. } = &object.kind
-    {
+    let CompiledExprKind::IndexAccess { object, .. } = &arg.kind else {
+        return false;
+    };
+    // Unwrap a ResolveSelector coercion node (re-typed face selectors); else
+    // inspect the object directly (still-List selectors like adjacent_faces).
+    let inner = match &object.kind {
+        CompiledExprKind::ResolveSelector { selector } => selector.as_ref(),
+        _ => object.as_ref(),
+    };
+    if let CompiledExprKind::FunctionCall { function, .. } = &inner.kind {
         return FACE_PRODUCING_SELECTOR_NAMES.contains(&function.name.as_str());
     }
     false
@@ -960,6 +1020,10 @@ mod tests {
     // all eight sibling families (regression-lock: catches any future colliding
     // name added to EITHER the joint slice or a sibling slice).
     use crate::joint_signatures::JOINT_TYPED_FN_NAMES;
+    // FEA stress-analysis reduction family (FEA-5, task 2884) — single source
+    // of truth in `crate::analysis_signatures`, imported here to pin
+    // disjointness from all sibling families.
+    use crate::analysis_signatures::ANALYSIS_FN_NAMES;
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
@@ -1227,34 +1291,44 @@ mod tests {
     // one-line table edit — no per-name boilerplate.
     fn task_2699_topology_selector_cases() -> Vec<(&'static str, reify_core::Type)> {
         vec![
+            // Task 4118 (γ): the 7 predicate/all selector constructors now
+            // evaluate to a typed `Value::Selector(kind)` and so are typed
+            // `Type::Selector(kind)` at compile time (not `List<Geometry>`).
+            // The compiler inserts a `ResolveSelector` coercion node at the
+            // three consumption sites (param-binding, single()/list-helper,
+            // IndexAccess-object) to bridge `Selector → List<Geometry>`.
             (
                 "edges",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
             (
                 "faces",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
             ),
             (
                 "edges_by_length",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
             (
                 "faces_by_area",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
             ),
             (
                 "faces_by_normal",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
             ),
             (
                 "edges_parallel_to",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
             (
                 "edges_at_height",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
+            // adjacent_faces / shared_edges remain List<Geometry>: they are
+            // RELATIONAL queries with no `LeafQuery` representation (4117's
+            // LeafQuery = {Named,All,ByNormal,ByArea,ByLength,ByHeight,
+            // ByParallel}), so they are out of scope for the Selector re-type.
             (
                 "adjacent_faces",
                 reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
@@ -1299,6 +1373,55 @@ mod tests {
                 "topology_selector_result_type({name:?}) must equal {expected:?} (task 2699 §3.9)"
             );
         }
+    }
+
+    // Task 4118 (γ): the 7 predicate/all selector constructors are typed
+    // `Type::Selector(kind)` (Edge / Face per the constructor), NOT
+    // `List<Geometry>`. The compiler bridges `Selector → List<Geometry>` via a
+    // `ResolveSelector` coercion node at the three consumption sites.
+    #[test]
+    fn topology_selector_result_type_for_re_typed_selectors_is_typed_selector() {
+        use reify_core::Type;
+        use reify_core::ty::SelectorKind;
+        // edges/faces (All) and the predicate selectors.
+        assert_eq!(
+            topology_selector_result_type("faces"),
+            Some(Type::Selector(SelectorKind::Face))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        assert_eq!(
+            topology_selector_result_type("faces_by_normal"),
+            Some(Type::Selector(SelectorKind::Face))
+        );
+        assert_eq!(
+            topology_selector_result_type("faces_by_area"),
+            Some(Type::Selector(SelectorKind::Face))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges_by_length"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges_at_height"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges_parallel_to"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        // Relational selectors stay List<Geometry> (out of scope for the
+        // Selector re-type — no LeafQuery representation).
+        assert_eq!(
+            topology_selector_result_type("adjacent_faces"),
+            Some(Type::List(Box::new(Type::Geometry)))
+        );
+        assert_eq!(
+            topology_selector_result_type("shared_edges"),
+            Some(Type::List(Box::new(Type::Geometry)))
+        );
     }
 
     // --- Task 3603 / GHR-α — geometry-query registry (PRD §1 Phase 1) ---
@@ -1479,6 +1602,11 @@ mod tests {
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
                  MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
             );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
         }
     }
 
@@ -1526,6 +1654,16 @@ mod tests {
                 !MATH_OPERATION_NAMES.contains(name),
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
         }
     }
@@ -1578,6 +1716,16 @@ mod tests {
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
                  MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ — \
                  constructors and operations are disjoint slices)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
         }
     }
@@ -1676,6 +1824,16 @@ mod tests {
                 "MATH_OPERATION_NAMES entry {name:?} must NOT also be a list-helper \
                  (`single` / `flat_map` — earlier arm in the NoUserFunctions ladder \
                  would shadow it)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
         }
     }
@@ -2332,6 +2490,81 @@ mod tests {
                 "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
                  MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
             );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+        }
+    }
+
+    /// Disjointness regression-lock for the FEA stress-analysis reduction
+    /// family (FEA-5, task 2884). Every `ANALYSIS_FN_NAMES` entry must be
+    /// absent from all sibling family slices so a name satisfies at most one
+    /// classification predicate in `expr.rs::resolve_function_overload`'s
+    /// `NoUserFunctions` ladder.
+    ///
+    /// The 5 analysis names are domain-specific and trivially disjoint — this
+    /// is a regression lock, not a behavioural change. Mirrors
+    /// `joint_typed_fn_names_are_disjoint_from_other_families`.
+    #[test]
+    fn analysis_fn_names_are_disjoint_from_other_families() {
+        for name in ANALYSIS_FN_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (joint-constructor family, task 4311)"
+            );
         }
     }
 
@@ -2490,6 +2723,56 @@ mod tests {
         );
     }
 
+    /// Wrap `selector_call` in `ResolveSelector` then `IndexAccess[0]` — the
+    /// NEW shape produced after task 4118 step-12 inserts the coercion node
+    /// between the `IndexAccess` object and the selector `FunctionCall`:
+    /// `IndexAccess{ object: ResolveSelector{ FunctionCall }, .. }`.
+    fn index_0_resolve_selector(
+        selector_call: reify_ir::CompiledExpr,
+    ) -> reify_ir::CompiledExpr {
+        index_0(reify_ir::CompiledExpr::resolve_selector(selector_call))
+    }
+
+    /// task 4118 step-13/14 — the detector must see THROUGH a `ResolveSelector`
+    /// wrapper. After step-12, inline `faces(s)[0]` lowers to
+    /// `IndexAccess{ object: ResolveSelector{ FunctionCall{faces} } }`;
+    /// `is_surface_producing_arg` must still return true for the face-producing
+    /// selectors and false for the curve selector `edges` wrapped the same way.
+    ///
+    /// RED until step-14 unwraps the `ResolveSelector` between the `IndexAccess`
+    /// object and the selector `FunctionCall`.
+    #[test]
+    fn is_surface_producing_arg_sees_through_resolve_selector_wrapper() {
+        for sel in ["faces", "faces_by_area", "faces_by_normal"] {
+            let wrapped = index_0_resolve_selector(make_selector_call(sel));
+            assert!(
+                is_surface_producing_arg(&wrapped),
+                "is_surface_producing_arg must see through ResolveSelector to the \
+                 face-producing selector {sel:?}"
+            );
+        }
+        let wrapped_edges = index_0_resolve_selector(make_selector_call("edges"));
+        assert!(
+            !is_surface_producing_arg(&wrapped_edges),
+            "is_surface_producing_arg must return false for a ResolveSelector-wrapped \
+             curve selector (edges)"
+        );
+    }
+
+    /// Regression pin: the bare (un-wrapped) `IndexAccess{ FunctionCall }` shape
+    /// must STILL be recognized — `adjacent_faces` stays `List<Geometry>` (no
+    /// `ResolveSelector` wrapper), and the hand-built fixtures above depend on
+    /// the bare-FunctionCall fallback. (Green before AND after step-14.)
+    #[test]
+    fn is_surface_producing_arg_still_recognizes_bare_function_call() {
+        let bare = index_0(make_selector_call("adjacent_faces"));
+        assert!(
+            is_surface_producing_arg(&bare),
+            "is_surface_producing_arg must still match the bare \
+             IndexAccess{{FunctionCall}} shape (adjacent_faces stays List<Geometry>)"
+        );
+    }
+
     /// Structural invariant: every name in FACE_PRODUCING_SELECTOR_NAMES must
     /// also appear in GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
     ///
@@ -2504,6 +2787,115 @@ mod tests {
                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
                 "FACE_PRODUCING_SELECTOR_NAMES entry {name:?} must also appear in \
                  GEOMETRY_TOPOLOGY_SELECTOR_NAMES (documented subset invariant)"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 4278 — DYNAMICS_CONSTRUCTOR_NAMES / is_dynamics_constructor (step-9 RED)
+    // -----------------------------------------------------------------------
+    //
+    // Tests for the new DYNAMICS_CONSTRUCTOR_NAMES family and is_dynamics_constructor
+    // predicate:
+    //   is_dynamics_constructor("point_mass") → true
+    //   is_dynamics_constructor("mass_properties") → true
+    //   unrelated names → false
+    //   disjointness: every DYNAMICS_CONSTRUCTOR_NAMES entry absent from every
+    //     other classification family
+    //
+    // These tests FAIL TO COMPILE until step-10 adds `DYNAMICS_CONSTRUCTOR_NAMES`
+    // and `is_dynamics_constructor` — that is the expected RED signal.
+
+    /// Task 4278 step-9 (RED). `is_dynamics_constructor("point_mass")` and
+    /// `is_dynamics_constructor("mass_properties")` must return true. Unrelated
+    /// names — "box" (geometry constructor), "body_mass_props" (DYNAMICS_QUERY_NAMES),
+    /// and "sqrt" (math-op) — must return false.
+    /// RED until step-10 adds `DYNAMICS_CONSTRUCTOR_NAMES` and
+    /// `is_dynamics_constructor`.
+    #[test]
+    fn dynamics_constructor_predicate_recognizes_ctor_names() {
+        assert!(
+            is_dynamics_constructor("point_mass"),
+            "is_dynamics_constructor must recognize 'point_mass' (task 4278)"
+        );
+        assert!(
+            is_dynamics_constructor("mass_properties"),
+            "is_dynamics_constructor must recognize 'mass_properties' (task 4278)"
+        );
+        assert!(
+            !is_dynamics_constructor("box"),
+            "is_dynamics_constructor must reject geometry name 'box'"
+        );
+        assert!(
+            !is_dynamics_constructor("body_mass_props"),
+            "is_dynamics_constructor must reject dynamics-query name 'body_mass_props' \
+             (DYNAMICS_QUERY_NAMES is a separate family)"
+        );
+        assert!(
+            !is_dynamics_constructor("sqrt"),
+            "is_dynamics_constructor must reject math-op name 'sqrt'"
+        );
+    }
+
+    /// Task 4278 step-9 (RED). Disjointness invariant for the dynamics-constructor
+    /// family. Every `DYNAMICS_CONSTRUCTOR_NAMES` entry (`point_mass` /
+    /// `mass_properties`) must be absent from all sibling classification families so
+    /// a name can satisfy at most one predicate in `expr.rs::infer_type`'s
+    /// `NoUserFunctions` ladder. Sibling to
+    /// `dynamics_query_names_are_disjoint_from_other_families` (units.rs).
+    /// RED until step-10 adds `DYNAMICS_CONSTRUCTOR_NAMES`.
+    #[test]
+    fn dynamics_constructor_names_are_disjoint_from_other_families() {
+        for name in DYNAMICS_CONSTRUCTOR_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family — separate slice)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (joint-constructor family, mechanism β task 4311)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine-map constructor family)"
             );
         }
     }

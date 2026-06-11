@@ -225,7 +225,7 @@ fn body_mass_props_box_evals_to_computed_mass_properties() {
         }
     }
 
-    // ── inertia: Value::Matrix of Value::Real ─────────────────────────────────
+    // ── inertia: Value::Matrix of Value::Scalar{MOMENT_OF_INERTIA} ───────────
     let inertia_rows = match data.fields.get("inertia").expect("inertia field") {
         Value::Matrix(rows) => rows,
         other => panic!("inertia field must be Value::Matrix, got {other:?}"),
@@ -237,8 +237,14 @@ fn body_mass_props_box_evals_to_computed_mass_properties() {
 
     let get = |r: usize, c: usize| -> f64 {
         match &inertia_rows[r][c] {
-            Value::Real(v) => *v,
-            other => panic!("inertia[{r}][{c}] must be Value::Real, got {other:?}"),
+            Value::Scalar { si_value, dimension }
+                if *dimension == DimensionVector::MOMENT_OF_INERTIA =>
+            {
+                *si_value
+            }
+            other => panic!(
+                "inertia[{r}][{c}] must be Value::Scalar{{MOMENT_OF_INERTIA}}, got {other:?}"
+            ),
         }
     };
 
