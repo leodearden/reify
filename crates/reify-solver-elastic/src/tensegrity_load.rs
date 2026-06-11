@@ -252,7 +252,7 @@ pub fn tensegrity_load_analysis(
     let (displacements, converged) = loop {
         iterations += 1;
         let (disp, conv) =
-            solve_active_pass(nodes, members, &active, loads, fixed_nodes, options)?;
+            solve_active_pass(nodes, members, &active, loads, fixed_nodes, &is_fixed, options)?;
 
         // A pass whose inner CG did not converge ⇒ a singular / ill-conditioned
         // reduced tangent system. Surface it rather than reporting a
@@ -347,14 +347,23 @@ fn member_force_delta(
 /// Dirichlet BCs, and solves the reduced system with CG. Returns the per-node
 /// displacement field and the CG convergence flag. This is the `bar_axial_
 /// deflection.rs` assemble→BC→solve pattern generalised to `N` members and
-/// supports; the tension-only active set (a later step) calls it once per pass
-/// with a shrinking active set.
+/// supports; the tension-only active set calls it once per pass with a
+/// shrinking active set.
+///
+/// Returns [`TensegrityLoadError::SingularSystem`] if any free (non-`is_fixed`)
+/// node is touched by no currently-active member — a zero-stiffness, rigid-body
+/// tangent mode (the dynamic case where the active set just dropped a free
+/// node's last cable) that would otherwise panic the inner CG Jacobi
+/// preconditioner on a missing diagonal. Unconnected *fixed* nodes are not
+/// orphans: they are pinned by Dirichlet BCs and grounded by the stabiliser
+/// below.
 fn solve_active_pass(
     nodes: &[[f64; 3]],
     members: &[BarMember],
     active: &[bool],
     loads: &[[f64; 3]],
     fixed_nodes: &[usize],
+    is_fixed: &[bool],
     options: &TensegrityLoadOptions,
 ) -> Result<(Vec<[f64; 3]>, bool), TensegrityLoadError> {
     let n_nodes = nodes.len();
@@ -379,6 +388,22 @@ fn solve_active_pass(
             &member.section,
             member.prestress,
         ));
+    }
+
+    // Per-pass free-orphan guard. A node touched by no currently-ACTIVE member
+    // and not fixed carries zero incident stiffness this pass — a singular /
+    // rigid-body tangent mode. This is the *dynamic* orphan case: the tension-
+    // only active set just dropped a free node's last cable, so it is connected
+    // at problem setup (clears the up-front `tensegrity_load_analysis` guard) but
+    // disconnected here. Catch it before `assemble_global_stiffness` /
+    // `solve_cg`, whose Jacobi preconditioner asserts on the missing diagonal
+    // and would panic (uncatchable by the trampoline). Unconnected *fixed* nodes
+    // are NOT orphans — they are pinned by Dirichlet BCs and grounded below — so
+    // only free unconnected nodes are the singular case.
+    for node in 0..n_nodes {
+        if !connected[node] && !is_fixed[node] {
+            return Err(TensegrityLoadError::SingularSystem);
+        }
     }
 
     // Grounding stabilisers for *orphan* fixed nodes — support nodes that no
