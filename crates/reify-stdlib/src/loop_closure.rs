@@ -2605,7 +2605,7 @@ mod tests {
             &vals_a,
             &chain_b,
             &vals_b,
-            &[j_a.clone()],
+            std::slice::from_ref(&j_a),
             eps,
         )
         .expect("jacobian must return Some for a single-joint offset chain vs identity");
