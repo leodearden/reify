@@ -1941,4 +1941,116 @@ mod tests {
             "content() must return the stored variant",
         );
     }
+
+    // ── α step-3 RED: typed accessors + honest-None + Clone Arc-sharing ──────
+    // sdf(), surface_mesh(), volume_mesh() exist after step-4 impl.
+
+    #[test]
+    fn typed_accessor_volume_mesh_returns_some_others_none() {
+        use std::sync::Arc;
+        use reify_core::ContentHash;
+        use reify_ir::{ElementOrderTag, VolumeMesh};
+
+        let h = RealizationReadHandle::new(
+            RealizationNodeId::new("v", 0),
+            ContentHash(1),
+            Some(RealizedContent::VolumeMesh(Arc::new(VolumeMesh {
+                vertices: vec![],
+                tet_indices: vec![],
+                element_order: ElementOrderTag::P1,
+                normals: None,
+            }))),
+        );
+        assert!(h.volume_mesh().is_some(), "volume_mesh() must return Some for VolumeMesh content");
+        assert!(h.sdf().is_none(), "sdf() must return None for VolumeMesh content");
+        assert!(h.surface_mesh().is_none(), "surface_mesh() must return None for VolumeMesh content");
+    }
+
+    #[test]
+    fn typed_accessor_surface_mesh_returns_some_others_none() {
+        use std::sync::Arc;
+        use reify_core::ContentHash;
+        use reify_ir::Mesh;
+
+        let h = RealizationReadHandle::new(
+            RealizationNodeId::new("s", 0),
+            ContentHash(2),
+            Some(RealizedContent::SurfaceMesh(Arc::new(Mesh {
+                vertices: vec![],
+                indices: vec![],
+                normals: None,
+            }))),
+        );
+        assert!(h.surface_mesh().is_some(), "surface_mesh() must return Some for SurfaceMesh content");
+        assert!(h.sdf().is_none(), "sdf() must return None for SurfaceMesh content");
+        assert!(h.volume_mesh().is_none(), "volume_mesh() must return None for SurfaceMesh content");
+    }
+
+    #[test]
+    fn typed_accessor_sdf_returns_some_others_none() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        use reify_core::ContentHash;
+        use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
+
+        let sf = SampledField {
+            name: "test".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![1.0],
+            spacing: vec![1.0],
+            axis_grids: vec![vec![0.0, 1.0]],
+            interpolation: InterpolationKind::Linear,
+            data: vec![0.0, 1.0],
+            oob_emitted: AtomicBool::new(false),
+        };
+        let h = RealizationReadHandle::new(
+            RealizationNodeId::new("f", 0),
+            ContentHash(3),
+            Some(RealizedContent::Sdf(Arc::new(sf))),
+        );
+        assert!(h.sdf().is_some(), "sdf() must return Some for Sdf content");
+        assert!(h.surface_mesh().is_none(), "surface_mesh() must return None for Sdf content");
+        assert!(h.volume_mesh().is_none(), "volume_mesh() must return None for Sdf content");
+    }
+
+    #[test]
+    fn typed_accessors_all_none_when_content_is_none() {
+        use reify_core::ContentHash;
+
+        let h = RealizationReadHandle::new(
+            RealizationNodeId::new("x", 0),
+            ContentHash(0),
+            None,
+        );
+        assert!(h.content().is_none(),       "content() must be None for None-content handle");
+        assert!(h.sdf().is_none(),           "sdf() must be None for None-content handle");
+        assert!(h.surface_mesh().is_none(),  "surface_mesh() must be None for None-content handle");
+        assert!(h.volume_mesh().is_none(),   "volume_mesh() must be None for None-content handle");
+    }
+
+    #[test]
+    fn clone_shares_arc_allocation_ptr_eq() {
+        use std::sync::Arc;
+        use reify_core::ContentHash;
+        use reify_ir::{ElementOrderTag, VolumeMesh};
+
+        let h = RealizationReadHandle::new(
+            RealizationNodeId::new("c", 0),
+            ContentHash(42),
+            Some(RealizedContent::VolumeMesh(Arc::new(VolumeMesh {
+                vertices: vec![],
+                tet_indices: vec![],
+                element_order: ElementOrderTag::P1,
+                normals: None,
+            }))),
+        );
+        let c = h.clone();
+        // Clone must share the inner Arc allocation (ptr_eq invariant §8).
+        assert!(
+            std::ptr::eq(h.volume_mesh().unwrap(), c.volume_mesh().unwrap()),
+            "cloned handle must share the same Arc allocation (ptr_eq)",
+        );
+        assert_eq!(h.content_hash, c.content_hash, "content_hash must match after clone");
+    }
 }
