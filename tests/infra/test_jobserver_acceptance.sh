@@ -233,6 +233,112 @@ PY
 assert "evaluate_acceptance_gate unit tests pass" \
     test "$_b2_exit" -eq 0
 
-# ── Blocks will be added by steps 07, 09, 11 ──────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 3: render_acceptance_report unit tests (step-07 / step-08)
+#   Tests that the renderer produces markdown containing the required sections.
+#   Fixture is the same all-pass inline literal from Block 2.
+#
+#   Required in the rendered markdown:
+#     - four (a)–(d) verdicts with PASS/FAIL labels
+#     - dual-pool merge wall-clock value
+#     - slowest task wall-clock value (max of task_walls)
+#     - cache_state column (warm/cold)
+#     - A/B comparison section (baseline vs dual-pool)
+#     - "ζ′/4520 budget floor" section with merge wall + slowest task wall
+#
+#   RED before step-08: render_acceptance_report absent → AttributeError.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 3: render_acceptance_report unit tests ---"
+
+_b3_exit=0
+{
+python3 - "$ACCEPT" <<'PY'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("ja", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+measurements = {
+    "nproc": 8,
+    "utilization_threshold": 0.85,
+    "baseline": {
+        "service": "single-pool",
+        "regime": "mixed",
+        "cache_state": "warm",
+        "busy_fraction": 0.96,
+        "merge_wall": 120.0,
+        "task_walls": [100.0, 115.0],
+        "exit_124_count": 0,
+        "occupancy": [{"merge": 4, "task": 4, "ts": 0.0}],
+    },
+    "dual_pool": {
+        "service": "dual-pool",
+        "regime": "mixed",
+        "cache_state": "warm",
+        "busy_fraction": 0.97,
+        "merge_wall": 95.0,
+        "task_walls": [105.0, 110.0],
+        "exit_124_count": 0,
+        "occupancy": [
+            {"merge": 4, "task": 4, "ts": 0.0},
+            {"merge": 8, "task": 0, "ts": 0.5},
+        ],
+    },
+}
+ok, verdicts, findings = mod.evaluate_acceptance_gate(measurements)
+report = mod.render_acceptance_report(measurements, verdicts)
+
+if not isinstance(report, str) or len(report) == 0:
+    errors.append("report is empty or not a string")
+    sys.stderr.write("FAIL render_acceptance_report:\n  " + "\n  ".join(errors) + "\n")
+    sys.exit(1)
+
+# Per-criterion PASS/FAIL labels
+for crit in ("a", "b", "c", "d"):
+    label = f"({crit})"
+    if label not in report:
+        errors.append(f"criterion label {label!r} not in report")
+    if "PASS" not in report and "FAIL" not in report:
+        errors.append("neither PASS nor FAIL appears in report")
+
+# Dual-pool merge wall value
+if "95" not in report:
+    errors.append("dual-pool merge_wall=95.0 not found in report")
+
+# Slowest task wall (max(105, 110) = 110)
+if "110" not in report:
+    errors.append("slowest task_wall=110.0 not found in report")
+
+# cache_state column present
+if "warm" not in report:
+    errors.append("cache_state 'warm' not in report")
+
+# A/B comparison section
+if "baseline" not in report.lower() and "single-pool" not in report.lower():
+    errors.append("A/B comparison section (baseline) missing from report")
+if "dual-pool" not in report.lower() and "dual_pool" not in report.lower():
+    errors.append("A/B comparison section (dual-pool) missing from report")
+
+# ζ′/4520 budget floor section
+if "4520" not in report:
+    errors.append("ζ′/4520 budget floor section missing from report")
+if "budget floor" not in report.lower():
+    errors.append("'budget floor' heading missing from report")
+
+if errors:
+    sys.stderr.write("FAIL render_acceptance_report:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: render_acceptance_report")
+PY
+} || _b3_exit=$?
+
+assert "render_acceptance_report unit tests pass" \
+    test "$_b3_exit" -eq 0
+
+# ── Blocks will be added by steps 09, 11 ──────────────────────────────────
 
 test_summary
