@@ -159,7 +159,7 @@ if [[ $BIDIRECTIONAL -eq 1 ]]; then
     )
     while IFS= read -r ch; do
         [[ -z "$ch" ]] && continue
-        if ! grep -rqF "\"$ch\"" --include="*.rs" "$SRC_DIR" 2>/dev/null; then
+        if ! grep -rqF "\"$ch\"" --include="*.rs" "${_grep_exclude_args[@]}" "$SRC_DIR" 2>/dev/null; then
             phantom_count=$((phantom_count + 1))
             echo "WARNING: phantom channel '$ch' registered in inventory but no source occurrence in gui/src-tauri/" >&2
         fi
