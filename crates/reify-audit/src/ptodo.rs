@@ -473,6 +473,7 @@ fn is_terminal_status(status: &str) -> bool {
 ///
 /// A statement-prepare error (missing `tasks` table / corrupt DB) is propagated
 /// as `Err` so [`check`] degrades fail-soft (§6.7) instead of panicking.
+// G-allow: test-facing thin wrapper over `resolve_liveness_keyed`; production `check` calls the keyed variant directly (~L618), and tests/ptodo.rs exercises this entry point.
 pub fn resolve_liveness(
     conn: &rusqlite::Connection,
     cited: &[(String, usize, Vec<u32>, String)],
