@@ -74,8 +74,25 @@ SRC_DIR="$REPO_ROOT/gui/src-tauri"
 # "Overlap join" region). Tauri codegen writes transient .rs files to gen/ during
 # any `cargo build -p reify-gui`; the Rust compiler writes to target/. A transient
 # emit literal in those dirs would be flagged as a false-positive orphan/phantom.
-# All four names are .gitignore'd build outputs (gen/:36, /target:5,
-# node_modules/:14, gui/dist/:49); no tracked .rs lives under any of them.
+#
+# target/ and gen/ are the two real build-output dirs at the top of SRC_DIR
+# (.gitignore'd: /target:5, gen/:36 in gui/src-tauri/.gitignore).
+#
+# dist and node_modules are defensive guards — they do NOT currently exist under
+# gui/src-tauri/ (their .gitignore entries are for gui/dist/:49 and
+# node_modules/:14 under the parent gui/ directory). They are included to guard
+# against future Tauri or JS tooling additions to gui/src-tauri that could
+# otherwise silently introduce false-positive scan hits.
+#
+# The find prune uses -name (basename match), NOT -path anchored to SRC_DIR.
+# This is intentional: gen and target are project-reserved build-output names
+# under gui/src-tauri; no tracked .rs source module should ever carry either
+# name at any depth. If a future source module were named gen/ or target/ it
+# would need renaming (both are conventional build-dir names that confuse tools).
+# The grep --exclude-dir side is inherently basename-only (grep has no path-prune
+# equivalent), so basename matching is also the only consistent option across
+# both scan forms.
+# No tracked .rs lives under any of these four names; pruning is safe.
 # See esc-4357-20 (flake), task-4529 (fix).
 PRUNE_DIRS=(target gen node_modules dist)
 
