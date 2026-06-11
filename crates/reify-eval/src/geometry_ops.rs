@@ -2754,6 +2754,49 @@ pub(crate) fn try_eval_resolve_selector(
                 other => Some(other),
             }
         }
+        // `single(<selector>)` (task 4118 γ): the single()/list-helper coercion
+        // site (compiler step-10) wraps the selector argument in a
+        // `ResolveSelector`, so a `single(faces_by_normal(...))` cell compiles to
+        // `FunctionCall { "single", [ResolveSelector{..}] }`. The pure eval path
+        // cannot resolve the inner `ResolveSelector` (no kernel), so resolve it
+        // HERE and unwrap the unique element — yielding the `Geometry` handle that
+        // `single`'s `single(List<Geometry>) → Geometry` contract promises. This
+        // is the runtime half of the single()/list-helper coercion (the golden
+        // `top = single(faces_by_normal(b, +Z, 1deg))` shape).
+        reify_ir::CompiledExprKind::FunctionCall { function, args }
+            if function.name == "single" && args.len() == 1 =>
+        {
+            let selector_expr = match &args[0].kind {
+                reify_ir::CompiledExprKind::ResolveSelector { selector } => selector.as_ref(),
+                // Defensive: a bare selector FunctionCall (un-coerced) — still ours.
+                reify_ir::CompiledExprKind::FunctionCall { .. } => &args[0],
+                // Any other arg shape (a real List, a ValueRef to a List, …) is
+                // owned by the pure eval_expr path — skip.
+                _ => return None,
+            };
+            match resolve_selector_to_list(
+                selector_expr,
+                named_steps,
+                values,
+                kernel,
+                diagnostics,
+            )? {
+                reify_ir::Value::List(mut elems) => {
+                    if elems.len() == 1 {
+                        Some(elems.remove(0))
+                    } else {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "single(...) expected exactly 1 element, got {}; cell left at Undef",
+                            elems.len()
+                        )));
+                        Some(reify_ir::Value::Undef)
+                    }
+                }
+                // resolve_selector_to_list downgraded to Undef (kernel error) —
+                // propagate so the cell is visibly degraded rather than skipped.
+                other => Some(other),
+            }
+        }
         _ => None,
     }
 }

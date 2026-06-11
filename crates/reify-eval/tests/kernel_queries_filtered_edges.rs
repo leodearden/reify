@@ -25,20 +25,26 @@
 //!    runner.
 //!
 //! 2. **OCCT-BACKED RUNTIME** (gated on `reify_kernel_occt::OCCT_AVAILABLE`) —
-//!    - `FilteredEdges.mid_edges` is `Value::List` of exactly **4**
-//!      `Value::GeometryHandle` (the 20mm y-edges selected by [15,25]mm).
-//!    - `FilteredEdges.small_faces` is `Value::List` of exactly **2**
-//!      `Value::GeometryHandle` (the 200mm² 10×20 z-faces selected by [196,225]mm²).
-//!    - `FilteredEdges.top_edges` is `Value::List` of exactly **4**
-//!      `Value::GeometryHandle` (the boundary edges of the top z=+15mm face).
-//!    - Every element's `upstream_values_hash` is non-zero (PRD §4 i) and,
-//!      within each list, pairwise-distinct (PRD §4 iii).
+//!    Task 4118 (γ) re-typed the predicate selector constructors: these cells now
+//!    hold a kernel-FREE `Value::Selector(kind)` (the typed leaf), NOT an eager
+//!    `Value::List<GeometryHandle>`.
+//!    - `FilteredEdges.mid_edges` is `Value::Selector(Edge)` with a
+//!      `ByLength { 15..25mm }` leaf.
+//!    - `FilteredEdges.small_faces` is `Value::Selector(Face)` with a
+//!      `ByArea { 196..225mm² }` leaf.
+//!    - `FilteredEdges.top_edges` is `Value::Selector(Edge)` with a
+//!      `ByHeight { z=15mm, tol=0.001mm }` leaf.
+//!    The handle COUNTS (4 y-edges / 2 z-faces / 4 top edges) are verified through
+//!    `topology_selectors::resolve` by the resolve() unit tests and the
+//!    `single(faces_by_normal(...))` golden (`selector_coercion_golden.rs`).
 //!
 //! Modelled on `kernel_queries_directional_selectors.rs` (task 3618).
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
+use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
+use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
@@ -47,9 +53,10 @@ const FIXTURE_PATH: &str = concat!(
     "/../../examples/kernel_queries/filtered_edges.ri"
 );
 
-/// End-to-end pin for KGQ-θ: `edges_by_length` (4 y-edges), `faces_by_area`
-/// (2 z-faces), and `edges_at_height` (4 top-plane edges) on a box, all
-/// returning `Value::List([Value::GeometryHandle])` with distinct hashes.
+/// End-to-end pin for KGQ-θ re-typed by task 4118 (γ): `edges_by_length`,
+/// `faces_by_area`, and `edges_at_height` on a box each build a kernel-free
+/// `Value::Selector(kind)` (typed leaf), the `Selector → List<Geometry>`
+/// resolution being deferred to `topology_selectors::resolve`.
 #[test]
 fn filtered_edges_compile_and_return_geometry_handles() {
     // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
@@ -76,137 +83,91 @@ fn filtered_edges_compile_and_return_geometry_handles() {
     let mut engine = Engine::new(Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    // ── edges_by_length: exactly 4 edges (20mm y-edges within [15,25]mm) ──────
+    // Task 4118 (γ): the 3 filtered selector constructors now build a kernel-FREE
+    // `Value::Selector(kind)` (typed leaf), NOT an eager `Value::List<Geometry>`.
+    // The handle COUNTS (4 y-edges / 2 z-faces / 4 top edges) are verified through
+    // `topology_selectors::resolve` by the resolve() unit tests and the
+    // `single(faces_by_normal(...))` golden (`selector_coercion_golden.rs`).
+
+    // ── edges_by_length: Value::Selector(Edge), ByLength{15..25mm} ────────────
 
     let mid_cell = ValueCellId::new("FilteredEdges", "mid_edges");
-    let mid_list = match result.values.get(&mid_cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "FilteredEdges.mid_edges must be Value::List of Value::GeometryHandle \
-             (PRD §4 KGQ-θ), got: {other:?}"
-        ),
-    };
-    assert_eq!(
-        mid_list.len(),
-        4,
-        "edges_by_length(box(10,20,30), 15..25mm) must return exactly 4 edges \
-         (the 4 y-edges of length 20mm); got {} elements",
-        mid_list.len()
+    assert_selector_leaf(
+        result.values.get(&mid_cell),
+        "FilteredEdges.mid_edges",
+        SelectorKind::Edge,
+        |query| match query {
+            LeafQuery::ByLength { min_m, max_m } => {
+                assert!(
+                    (*min_m - 0.015).abs() < 1e-9 && (*max_m - 0.025).abs() < 1e-9,
+                    "mid_edges leaf ByLength must be 15..25mm (0.015..0.025 m), got {min_m}..{max_m}"
+                );
+            }
+            other => panic!("mid_edges must be a ByLength leaf, got: {other:?}"),
+        },
     );
 
-    let mut mid_hashes: Vec<[u8; 32]> = Vec::new();
-    for (i, elem) in mid_list.iter().enumerate() {
-        match elem {
-            Value::GeometryHandle {
-                upstream_values_hash,
-                ..
-            } => {
-                assert_ne!(
-                    upstream_values_hash, &[0u8; 32],
-                    "mid_edges[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
-                );
-                mid_hashes.push(*upstream_values_hash);
-            }
-            other => panic!(
-                "mid_edges[{i}] must be Value::GeometryHandle (PRD §4 KGQ-θ), got: {other:?}"
-            ),
-        }
-    }
-    for i in 0..mid_hashes.len() {
-        for j in (i + 1)..mid_hashes.len() {
-            assert_ne!(
-                mid_hashes[i], mid_hashes[j],
-                "mid_edges[{i}] and mid_edges[{j}] must have distinct upstream_values_hashes \
-                 (PRD §4 iii)"
-            );
-        }
-    }
-
-    // ── faces_by_area: exactly 2 faces (200mm² z-faces within [196,225]mm²) ───
+    // ── faces_by_area: Value::Selector(Face), ByArea{196..225mm²} ─────────────
 
     let sf_cell = ValueCellId::new("FilteredEdges", "small_faces");
-    let sf_list = match result.values.get(&sf_cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "FilteredEdges.small_faces must be Value::List of Value::GeometryHandle \
-             (PRD §4 KGQ-θ), got: {other:?}"
-        ),
-    };
-    assert_eq!(
-        sf_list.len(),
-        2,
-        "faces_by_area(box(10,20,30), 196..225mm²) must return exactly 2 faces \
-         (the two 10×20=200mm² z-faces); got {} elements",
-        sf_list.len()
-    );
-
-    let mut sf_hashes: Vec<[u8; 32]> = Vec::new();
-    for (i, elem) in sf_list.iter().enumerate() {
-        match elem {
-            Value::GeometryHandle {
-                upstream_values_hash,
-                ..
-            } => {
-                assert_ne!(
-                    upstream_values_hash, &[0u8; 32],
-                    "small_faces[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
+    assert_selector_leaf(
+        result.values.get(&sf_cell),
+        "FilteredEdges.small_faces",
+        SelectorKind::Face,
+        |query| match query {
+            LeafQuery::ByArea { min_m2, max_m2 } => {
+                assert!(
+                    (*min_m2 - 0.000196).abs() < 1e-12 && (*max_m2 - 0.000225).abs() < 1e-12,
+                    "small_faces leaf ByArea must be 196..225mm² (1.96e-4..2.25e-4 m²), \
+                     got {min_m2}..{max_m2}"
                 );
-                sf_hashes.push(*upstream_values_hash);
             }
-            other => panic!(
-                "small_faces[{i}] must be Value::GeometryHandle (PRD §4 KGQ-θ), got: {other:?}"
-            ),
-        }
-    }
-    assert_ne!(
-        sf_hashes[0], sf_hashes[1],
-        "small_faces[0] and small_faces[1] must have distinct upstream_values_hashes \
-         (PRD §4 iii)"
+            other => panic!("small_faces must be a ByArea leaf, got: {other:?}"),
+        },
     );
 
-    // ── edges_at_height: exactly 4 edges (top z=+15mm boundary edges) ──────────
+    // ── edges_at_height: Value::Selector(Edge), ByHeight{z=15mm,tol=0.001mm} ──
 
     let te_cell = ValueCellId::new("FilteredEdges", "top_edges");
-    let te_list = match result.values.get(&te_cell) {
-        Some(Value::List(elems)) => elems.clone(),
+    assert_selector_leaf(
+        result.values.get(&te_cell),
+        "FilteredEdges.top_edges",
+        SelectorKind::Edge,
+        |query| match query {
+            LeafQuery::ByHeight { z_m, tol_m } => {
+                assert!(
+                    (*z_m - 0.015).abs() < 1e-9,
+                    "top_edges leaf ByHeight z_m must be 15mm (0.015 m), got {z_m}"
+                );
+                assert!(
+                    (*tol_m - 0.000001).abs() < 1e-12,
+                    "top_edges leaf ByHeight tol_m must be 0.001mm (1e-6 m), got {tol_m}"
+                );
+            }
+            other => panic!("top_edges must be a ByHeight leaf, got: {other:?}"),
+        },
+    );
+}
+
+/// Assert a cell holds a kernel-free `Value::Selector` whose node is a single
+/// `Leaf` of the expected `kind`, then run `check_query` against the leaf's
+/// `LeafQuery` (task 4118 γ). Mirrors the helper in
+/// `topology_selector_runtime.rs`.
+fn assert_selector_leaf(
+    cell_value: Option<&Value>,
+    label: &str,
+    kind: SelectorKind,
+    check_query: impl FnOnce(&LeafQuery),
+) {
+    let sv = match cell_value {
+        Some(Value::Selector(sv)) => sv,
         other => panic!(
-            "FilteredEdges.top_edges must be Value::List of Value::GeometryHandle \
-             (PRD §4 KGQ-θ), got: {other:?}"
+            "{label} must be a kernel-free Value::Selector (task 4118 γ; BT7), got: {other:?}"
         ),
     };
-    assert_eq!(
-        te_list.len(),
-        4,
-        "edges_at_height(box(10,20,30), 15mm, 0.001mm) must return exactly 4 edges \
-         (the 4 top-face boundary edges at z=+15mm); got {} elements",
-        te_list.len()
-    );
-
-    let mut te_hashes: Vec<[u8; 32]> = Vec::new();
-    for (i, elem) in te_list.iter().enumerate() {
-        match elem {
-            Value::GeometryHandle {
-                upstream_values_hash,
-                ..
-            } => {
-                assert_ne!(
-                    upstream_values_hash, &[0u8; 32],
-                    "top_edges[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
-                );
-                te_hashes.push(*upstream_values_hash);
-            }
-            other => panic!(
-                "top_edges[{i}] must be Value::GeometryHandle (PRD §4 KGQ-θ), got: {other:?}"
-            ),
-        }
-    }
-    for i in 0..te_hashes.len() {
-        for j in (i + 1)..te_hashes.len() {
-            assert_ne!(
-                te_hashes[i], te_hashes[j],
-                "top_edges[{i}] and top_edges[{j}] must have distinct upstream_values_hashes \
-                 (PRD §4 iii)"
-            );
-        }
+    assert_eq!(sv.kind, kind, "{label}: selector kind");
+    match &sv.node {
+        SelectorNode::Leaf { query, .. } => check_query(query),
+        other => panic!("{label} must be a Leaf selector node, got: {other:?}"),
     }
 }
