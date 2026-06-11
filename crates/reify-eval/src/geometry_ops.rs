@@ -15303,6 +15303,372 @@ mod tests {
         );
     }
 
+    // ── step-5 (task 4119 δ): composition-algebra eval + resolve tests ─────────
+    //
+    // These tests pin `try_eval_topology_selector` for the three combinator names
+    // (union/intersect/difference) and `topology_selectors::resolve` for their
+    // K3 set semantics. RED until step-6 adds the composition arms to
+    // try_eval_topology_selector; the resolve-semantics assertions are only
+    // reachable once the eval arm returns Some(Value::Selector(..)).
+    //
+    // BT2: union = canonical-order set-union of children (no duplicates).
+    // BT3: intersect of disjoint children = []; difference = a minus b.
+
+    /// Build a two-arg composition FunctionCall (`union(arg_a, arg_b)` etc.)
+    /// from two pre-compiled selector exprs.
+    fn topology_selector_composition_call(
+        combinator: &str,
+        arg_a: reify_ir::CompiledExpr,
+        arg_b: reify_ir::CompiledExpr,
+    ) -> reify_ir::CompiledExpr {
+        // Result type mirrors arg_a (same kind for valid same-kind composition).
+        let result_type = arg_a.result_type.clone();
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(combinator))
+            .combine(arg_a.content_hash)
+            .combine(arg_b.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: combinator.to_string(),
+                    qualified_name: combinator.to_string(),
+                },
+                args: vec![arg_a, arg_b],
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// `union(faces(b), faces(c))` evaluates to `Value::Selector(Union([sv_b, sv_c]))`
+    /// of kind Face, and resolving via `topology_selectors::resolve` yields the
+    /// canonical-order set-union of all face handles. BT2.
+    ///
+    /// RED until step-6 adds the `union` arm to `try_eval_topology_selector`.
+    #[test]
+    fn union_eval_produces_union_selector_and_resolve_yields_set_union() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let handle_c = GeometryHandleId(2);
+        let rr = RealizationNodeId::new("UnionTest", 0);
+        let hash_b: [u8; 32] = [0x11; 32];
+        let hash_c: [u8; 32] = [0x22; 32];
+
+        // faces(b) = [GHId(10), GHId(11)]; faces(c) = [GHId(12), GHId(13)].
+        // Union = [GHId(10), GHId(11), GHId(12), GHId(13)] (first-seen order, no dups).
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(handle_b, vec![GeometryHandleId(10), GeometryHandleId(11)])
+            .with_extracted_faces(handle_c, vec![GeometryHandleId(12), GeometryHandleId(13)]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(handle_b));
+        named_steps.insert("c".to_string(), kh(handle_c));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("UnionTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+        values.insert(
+            ValueCellId::new("UnionTest", "c"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_c,
+                kernel_handle: handle_c,
+            },
+        );
+
+        let faces_b = topology_selector_call_one_value_ref(
+            "faces",
+            "UnionTest",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_c = topology_selector_call_one_value_ref(
+            "faces",
+            "UnionTest",
+            "c",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let union_expr = topology_selector_composition_call("union", faces_b, faces_c);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &union_expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // RED until step-6 adds the union arm.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "union(faces(b), faces(c)) must yield Some(Value::Selector(..)), \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "union of face selectors → Face kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Union(children) => {
+                assert_eq!(children.len(), 2, "union of 2 operands → 2 children");
+            }
+            other => panic!("expected Union node, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean composition must emit no diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // Resolve set semantics: union = set-union of children (BT2).
+        let resolved = crate::topology_selectors::resolve(&sv, &mut kernel, &mut diagnostics)
+            .expect("union resolve must not error");
+        assert_eq!(
+            resolved,
+            vec![
+                GeometryHandleId(10),
+                GeometryHandleId(11),
+                GeometryHandleId(12),
+                GeometryHandleId(13),
+            ],
+            "union resolves to canonical-order set-union of all child handles"
+        );
+    }
+
+    /// `intersect(faces(b), faces(c))` where b and c are disjoint evaluates to
+    /// `Value::Selector(Intersect([sv_b, sv_c]))` of kind Face, and resolving
+    /// yields [] (empty intersection of disjoint sets). BT3.
+    ///
+    /// RED until step-6 adds the `intersect` arm to `try_eval_topology_selector`.
+    #[test]
+    fn intersect_eval_produces_intersect_selector_and_disjoint_resolves_empty() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let handle_c = GeometryHandleId(2);
+        let rr = RealizationNodeId::new("IntersectTest", 0);
+        let hash_b: [u8; 32] = [0x33; 32];
+        let hash_c: [u8; 32] = [0x44; 32];
+
+        // faces(b) = [GHId(10), GHId(11)]; faces(c) = [GHId(12), GHId(13)] (disjoint).
+        // Intersect of disjoint sets = [].
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(handle_b, vec![GeometryHandleId(10), GeometryHandleId(11)])
+            .with_extracted_faces(handle_c, vec![GeometryHandleId(12), GeometryHandleId(13)]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(handle_b));
+        named_steps.insert("c".to_string(), kh(handle_c));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("IntersectTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+        values.insert(
+            ValueCellId::new("IntersectTest", "c"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_c,
+                kernel_handle: handle_c,
+            },
+        );
+
+        let faces_b = topology_selector_call_one_value_ref(
+            "faces",
+            "IntersectTest",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_c = topology_selector_call_one_value_ref(
+            "faces",
+            "IntersectTest",
+            "c",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let intersect_expr = topology_selector_composition_call("intersect", faces_b, faces_c);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &intersect_expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // RED until step-6 adds the intersect arm.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "intersect(faces(b), faces(c)) must yield Some(Value::Selector(..)), \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "intersect of face selectors → Face kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Intersect(children) => {
+                assert_eq!(children.len(), 2, "intersect of 2 operands → 2 children");
+            }
+            other => panic!("expected Intersect node, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean intersect composition must emit no diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // Resolve set semantics: intersect of disjoint sets = [] (BT3).
+        let resolved = crate::topology_selectors::resolve(&sv, &mut kernel, &mut diagnostics)
+            .expect("intersect resolve must not error");
+        assert!(
+            resolved.is_empty(),
+            "intersect of disjoint face sets must resolve to []; got {:?}",
+            resolved
+        );
+    }
+
+    /// `difference(faces(b), faces(c))` evaluates to `Value::Selector(Difference(sv_b, sv_c))`
+    /// of kind Face, and resolving yields faces in b but not in c. BT3.
+    ///
+    /// RED until step-6 adds the `difference` arm to `try_eval_topology_selector`.
+    #[test]
+    fn difference_eval_produces_difference_selector_and_resolve_yields_set_difference() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let handle_c = GeometryHandleId(2);
+        let rr = RealizationNodeId::new("DiffTest", 0);
+        let hash_b: [u8; 32] = [0x55; 32];
+        let hash_c: [u8; 32] = [0x66; 32];
+
+        // faces(b) = [GHId(10), GHId(11), GHId(12)]; faces(c) = [GHId(11)].
+        // Difference = b \ c = [GHId(10), GHId(12)] (GHId(11) excluded).
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(
+                handle_b,
+                vec![GeometryHandleId(10), GeometryHandleId(11), GeometryHandleId(12)],
+            )
+            .with_extracted_faces(handle_c, vec![GeometryHandleId(11)]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(handle_b));
+        named_steps.insert("c".to_string(), kh(handle_c));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("DiffTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+        values.insert(
+            ValueCellId::new("DiffTest", "c"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_c,
+                kernel_handle: handle_c,
+            },
+        );
+
+        let faces_b = topology_selector_call_one_value_ref(
+            "faces",
+            "DiffTest",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_c = topology_selector_call_one_value_ref(
+            "faces",
+            "DiffTest",
+            "c",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let diff_expr = topology_selector_composition_call("difference", faces_b, faces_c);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &diff_expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // RED until step-6 adds the difference arm.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "difference(faces(b), faces(c)) must yield Some(Value::Selector(..)), \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "difference of face selectors → Face kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Difference(a, _b) => {
+                assert_eq!(
+                    a.kind,
+                    reify_core::ty::SelectorKind::Face,
+                    "difference left operand → Face kind"
+                );
+            }
+            other => panic!("expected Difference node, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean difference composition must emit no diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // Resolve set semantics: difference = a \ b (BT3).
+        let resolved = crate::topology_selectors::resolve(&sv, &mut kernel, &mut diagnostics)
+            .expect("difference resolve must not error");
+        assert_eq!(
+            resolved,
+            vec![GeometryHandleId(10), GeometryHandleId(12)],
+            "difference(faces(b), faces(c)) resolves to b \\ c = [GHId(10), GHId(12)]"
+        );
+    }
+
     // ── try_eval_topology_selector directional-selector dispatch unit tests ───
     // (task 3618, KGQ-ι: faces_by_normal + edges_parallel_to)
     //
