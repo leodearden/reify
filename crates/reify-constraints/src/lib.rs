@@ -308,6 +308,36 @@ mod tests {
     }
 
     #[test]
+    fn indeterminate_names_undefined_input_cells() {
+        // thickness_gt_2mm() depends on "Bracket.thickness".
+        // With an empty ValueMap, that cell is Undef (undefined input).
+        // The diagnostic message must name the cell: "Bracket.thickness".
+        let checker = SimpleConstraintChecker;
+        let expr = thickness_gt_2mm();
+        let values = ValueMap::new(); // thickness is Undef
+
+        let input = ConstraintInput {
+            constraints: Cow::Owned(vec![(cnid("Bracket", 0), &expr)]),
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+        let msg = &results[0].diagnostics.messages[0].message;
+        assert!(
+            msg.contains("undefined inputs"),
+            "expected 'undefined inputs' in message: {msg}"
+        );
+        assert!(
+            msg.contains("Bracket.thickness"),
+            "expected 'Bracket.thickness' in message: {msg}"
+        );
+    }
+
+    #[test]
     fn violated_constraint_carries_constraint_violated_code() {
         let checker = SimpleConstraintChecker;
         let expr = thickness_gt_2mm();
