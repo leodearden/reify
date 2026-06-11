@@ -16,6 +16,7 @@ mod sanitize;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
@@ -221,6 +222,41 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 "curl" if evaluated_args.len() == 1 => calculus::compute_curl(&evaluated_args[0]),
                 "laplacian" if evaluated_args.len() == 1 => {
                     calculus::compute_laplacian(&evaluated_args[0])
+                }
+                // fn_field(lambda): wrap a user lambda as FieldSourceKind::Analytical.
+                //
+                // This is the β-phase intercepting builtin (task 4220,
+                // PRD docs/prds/v0_6/std-fields-api.md §5.2). It constructs a
+                // `Value::Field { source: Analytical, lambda: Arc(lambda) }` from
+                // the evaluated first argument (which must be a `Value::Lambda`).
+                //
+                // domain_type / codomain_type are read from `expr.result_type`
+                // (α's `field_op_result_type` stamps this as `Field<D,C>` at
+                // compile time; verified and pinned by `field_op_typing_tests.rs`).
+                // The Real/Real fallback is harmless: `sample_field_at`'s
+                // `(Value::Lambda, _)` arm dispatches via
+                // `apply_lambda_with_point_unpacking` and ignores domain/codomain
+                // — so even a mistyped tree still samples correctly.
+                //
+                // No new sample arm is needed: sampling reuses the existing
+                // `(Value::Lambda { .. }, _)` arm in `sample_field_at` (lib.rs
+                // below) → `apply_lambda_with_point_unpacking` → result.
+                "fn_field"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Lambda { .. }) =>
+                {
+                    let (domain_type, codomain_type) =
+                        if let Type::Field { domain, codomain } = &expr.result_type {
+                            ((**domain).clone(), (**codomain).clone())
+                        } else {
+                            (Type::Real, Type::Real)
+                        };
+                    Value::Field {
+                        domain_type,
+                        codomain_type,
+                        source: FieldSourceKind::Analytical,
+                        lambda: Arc::new(evaluated_args[0].clone()),
+                    }
                 }
                 // Analysis field wrappers: intercept when arg is a Field,
                 // otherwise fall through to eval_builtin for concrete tensors.
