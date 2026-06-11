@@ -326,11 +326,125 @@ def render_acceptance_report(measurements: dict, verdicts: dict) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Concurrent mixed-load driver stub (implemented in steps 09-10)
+# Concurrent mixed-load driver (step-10)
 # ──────────────────────────────────────────────────────────────────────────────
 
+import subprocess
+import threading
+import time
 
-# def run_mixed_concurrent(merge_cmd, task_cmds, fifos, sampler_interval): ...
+
+def run_mixed_concurrent(
+    merge_cmd: list,
+    task_cmds: list,
+    fifos: dict,
+    sampler_interval: float = 0.5,
+    service: str = "dual-pool",
+    cache_state: str = "warm",
+) -> dict:
+    """Run one merge command and N task commands truly concurrently.
+
+    Starts all N+1 processes simultaneously via subprocess.Popen, launches a
+    background sampler thread that calls ε's sample_pool_occupancy every
+    *sampler_interval* seconds during the overlap, then waits for all
+    processes to finish.
+
+    This is the η concurrent driver — NOT ε's run_regime MIXED which runs
+    merge then tasks SEQUENTIALLY (jobserver-tuning-harness.py:548-556).
+    Genuine concurrency is required so signal (a) full-utilisation and
+    signal (d) merge-FIONREAD→nproc-WHILE-CONTESTED can be observed.
+
+    Parameters
+    ----------
+    merge_cmd       : list[str] — command for the merge process
+    task_cmds       : list[list[str]] — commands for N task processes
+    fifos           : dict — {"merge_fifo": str, "task_fifo": str}
+    sampler_interval: float — seconds between FIONREAD samples (default 0.5s)
+    service         : str — label for the returned record ("dual-pool" or
+                            "single-pool" for the baseline run)
+    cache_state     : str — "warm" or "cold" (operator-supplied)
+
+    Returns
+    -------
+    dict with:
+        service          : str
+        regime           : "mixed"
+        cache_state      : str
+        merge_wall       : float  — merge process wall-clock seconds
+        task_walls       : list[float]
+        exit_codes       : list[int]  — [merge_exit, task0_exit, ...]
+        exit_124_count   : int
+        occupancy        : list[dict] — FIONREAD time-series (merge/task/timestamp)
+        busy_fraction    : float  — from ε busy_fraction over /proc/stat snapshots
+    """
+    merge_fifo = fifos["merge_fifo"]
+    task_fifo = fifos["task_fifo"]
+
+    # /proc/stat snapshot before launch (for criterion-a busy_fraction)
+    stat_before = _harness._read_proc_stat()
+
+    occupancy: list = []
+    _stop_sampler = threading.Event()
+
+    def _sampler():
+        while not _stop_sampler.is_set():
+            try:
+                sample = sample_pool_occupancy(merge_fifo, task_fifo)
+                # sample_pool_occupancy returns {"merge", "task", "sum", "timestamp"}
+                # Rename "timestamp" to "ts" for consistency with fixture shape.
+                occupancy.append({
+                    "merge": sample["merge"],
+                    "task": sample["task"],
+                    "timestamp": sample["timestamp"],
+                })
+            except OSError:
+                pass  # FIFO may not yet be open — skip sample
+            _stop_sampler.wait(sampler_interval)
+
+    sampler_thread = threading.Thread(target=_sampler, daemon=True)
+
+    # Launch all processes simultaneously
+    t_merge_start = time.monotonic()
+    merge_proc = subprocess.Popen(merge_cmd)
+    t_tasks_start = [time.monotonic() for _ in task_cmds]
+    task_procs = [subprocess.Popen(cmd) for cmd in task_cmds]
+
+    # Start the background sampler once all processes are Popen'd
+    sampler_thread.start()
+
+    # Wait for merge
+    merge_proc.wait()
+    merge_wall = time.monotonic() - t_merge_start
+
+    # Wait for all tasks
+    task_walls: list = []
+    for i, proc in enumerate(task_procs):
+        proc.wait()
+        task_walls.append(time.monotonic() - t_tasks_start[i])
+
+    # Stop the sampler
+    _stop_sampler.set()
+    sampler_thread.join(timeout=sampler_interval * 2 + 1.0)
+
+    # /proc/stat snapshot after — for criterion-a busy_fraction
+    stat_after = _harness._read_proc_stat()
+    nproc_env = _harness.NPROC
+    bf_frac, _bf_cores = busy_fraction(stat_before, stat_after, nproc_env)
+
+    exit_codes = [merge_proc.returncode] + [p.returncode for p in task_procs]
+    exit_124_count = sum(1 for rc in exit_codes if is_timeout(rc))
+
+    return {
+        "service": service,
+        "regime": "mixed",
+        "cache_state": cache_state,
+        "merge_wall": float(merge_wall),
+        "task_walls": [float(w) for w in task_walls],
+        "exit_codes": exit_codes,
+        "exit_124_count": exit_124_count,
+        "occupancy": occupancy,
+        "busy_fraction": float(bf_frac),
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
