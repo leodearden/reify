@@ -5634,6 +5634,21 @@ impl Engine {
                 diagnostics,
             ) {
                 values.insert(cell.id.clone(), value);
+            } else if let Some(value) = crate::geometry_ops::try_eval_resolve_selector(
+                // Task 4118 (γ): the compiler-inserted `ResolveSelector` coercion
+                // node (and `IndexAccess` over a selector) resolves a typed
+                // `Value::Selector` cell to a `Value::List<Geometry>` HERE. The
+                // inner selector is reconstructed INLINE from its nested
+                // FunctionCall, so the "do not chain through value cells"
+                // invariant above is preserved — no dependency on another
+                // selector cell already being patched in this loop.
+                default_expr,
+                named_steps,
+                values,
+                kernel,
+                diagnostics,
+            ) {
+                values.insert(cell.id.clone(), value);
             }
         }
     }

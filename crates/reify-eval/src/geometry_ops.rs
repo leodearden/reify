@@ -2694,6 +2694,194 @@ fn build_leaf_selector(
     }
 }
 
+/// Kernel-bearing evaluation of the compiler-inserted `ResolveSelector`
+/// coercion node and `IndexAccess` over a selector (task 4118 γ, step-6).
+///
+/// `ResolveSelector { selector }` → reconstruct the inner `Value::Selector`
+/// (PREFERRED: inline from a nested selector `FunctionCall`, sidestepping
+/// value-cell ordering; else a `ValueRef` to an already-patched selector cell),
+/// call the single `topology_selectors::resolve` executor, and wrap the
+/// canonical-order handle ids as a `Value::List` of `Value::GeometryHandle`
+/// sub-handles via `make_sub_handle`.
+///
+/// `IndexAccess { object: ResolveSelector{..} | <selector FunctionCall>, index }`
+/// → resolve the selector to its list then return the indexed element (the
+/// `faces(s)[i]` curvature shape).
+///
+/// Returns `None` for any other expr shape (the geometry_ops `None`-means-skip
+/// contract: the cell is left for a sibling pass / the pure eval path).
+pub(crate) fn try_eval_resolve_selector(
+    expr: &reify_ir::CompiledExpr,
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    match &expr.kind {
+        reify_ir::CompiledExprKind::ResolveSelector { selector } => {
+            resolve_selector_to_list(selector, named_steps, values, kernel, diagnostics)
+        }
+        reify_ir::CompiledExprKind::IndexAccess { object, index } => {
+            // Only handle IndexAccess whose object is a selector / ResolveSelector;
+            // ordinary collection indexing is owned by the pure eval_expr path.
+            let inner_selector = match &object.kind {
+                reify_ir::CompiledExprKind::ResolveSelector { selector } => selector.as_ref(),
+                reify_ir::CompiledExprKind::FunctionCall { .. } => object.as_ref(),
+                _ => return None,
+            };
+            match resolve_selector_to_list(
+                inner_selector,
+                named_steps,
+                values,
+                kernel,
+                diagnostics,
+            )? {
+                reify_ir::Value::List(elems) => {
+                    let idx = resolve_index_usize(index, values)?;
+                    match elems.get(idx) {
+                        Some(v) => Some(v.clone()),
+                        None => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "selector index {idx} out of bounds (len {}); cell left at Undef",
+                                elems.len()
+                            )));
+                            Some(reify_ir::Value::Undef)
+                        }
+                    }
+                }
+                // resolve_selector_to_list downgraded to Undef (kernel error) —
+                // propagate so the cell is visibly degraded rather than skipped.
+                other => Some(other),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Reconstruct the `Value::Selector` denoted by `selector_expr`, resolve it via
+/// `topology_selectors::resolve`, and wrap the canonical-order handle ids as a
+/// `Value::List` of `Value::GeometryHandle` sub-handles. Shared by the
+/// `ResolveSelector` and `IndexAccess`-over-selector arms of
+/// [`try_eval_resolve_selector`].
+///
+/// Returns `None` when the inner expr is not a selector we can reconstruct (so
+/// the caller skips the cell); `Some(Value::Undef)` + a Warning when `resolve()`
+/// fails at the kernel.
+///
+/// NOTE (sub-handle indexing): the resolved ids are enumerated by FILTERED
+/// position, so a predicate leaf's `[i]` does not preserve the parent's canonical
+/// TopExp index. For the call-site-transparent shapes in scope here — `All`-leaf
+/// indexing (`faces(b)[i]`, filtered == canonical) and single-element
+/// `single(predicate(...))` — filtered position equals the intended element.
+/// Canonical-index recovery for multi-element predicate `[i]` is a follow-up.
+fn resolve_selector_to_list(
+    selector_expr: &reify_ir::CompiledExpr,
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    // (1) Obtain the Value::Selector. PREFERRED: inline reconstruction from a
+    // nested selector FunctionCall (no value-cell ordering dependency). Else a
+    // ValueRef to an already-patched Value::Selector cell.
+    let sv = match &selector_expr.kind {
+        reify_ir::CompiledExprKind::FunctionCall { .. } => {
+            match try_eval_topology_selector(
+                selector_expr,
+                named_steps,
+                values,
+                kernel,
+                diagnostics,
+            )? {
+                reify_ir::Value::Selector(sv) => sv,
+                // FunctionCall resolved to a non-selector (a still-List selector
+                // like adjacent_faces, or Undef) — not ours to wrap.
+                _ => return None,
+            }
+        }
+        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id) {
+            Some(reify_ir::Value::Selector(sv)) => sv.clone(),
+            // Cell not yet patched to a selector / not a selector — skip.
+            _ => return None,
+        },
+        _ => return None,
+    };
+
+    // (2) Parent identity for sub-handle hashing: the (first) leaf target.
+    let target = first_leaf_target(&sv)?;
+    let sub_kind = match sv.kind {
+        reify_core::ty::SelectorKind::Face => crate::topology_selectors::SubKind::Face,
+        reify_core::ty::SelectorKind::Edge => crate::topology_selectors::SubKind::Edge,
+        reify_core::ty::SelectorKind::Body => crate::topology_selectors::SubKind::Solid,
+    };
+    let parent_rr = target.realization_ref.clone();
+    let parent_hash = target.upstream_values_hash;
+
+    // (3) Resolve via the single executor — the kernel-bearing query happens HERE,
+    // not at construction (K2/BT7).
+    match crate::topology_selectors::resolve(&sv, kernel, diagnostics) {
+        Ok(ids) => {
+            let elements = ids
+                .into_iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    crate::topology_selectors::make_sub_handle(
+                        &parent_rr,
+                        &parent_hash,
+                        sub_kind,
+                        i as u32,
+                        id,
+                    )
+                })
+                .collect();
+            Some(reify_ir::Value::List(elements))
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "resolve_selector: kernel error resolving selector: {err}; cell left at Undef"
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// First `Leaf` target reached by a left-most walk of the selector tree — the
+/// parent solid handle used for sub-handle identity. The 7 re-typed constructors
+/// only build `Leaf` nodes; composites walk to their first child for robustness.
+fn first_leaf_target(
+    sv: &reify_ir::value::SelectorValue,
+) -> Option<&reify_ir::value::GeometryHandleRef> {
+    fn walk(node: &reify_ir::value::SelectorNode) -> Option<&reify_ir::value::GeometryHandleRef> {
+        match node {
+            reify_ir::value::SelectorNode::Leaf { target, .. } => Some(target),
+            reify_ir::value::SelectorNode::Union(children)
+            | reify_ir::value::SelectorNode::Intersect(children) => {
+                children.first().and_then(|c| walk(&c.node))
+            }
+            reify_ir::value::SelectorNode::Difference(a, _) => walk(&a.node),
+        }
+    }
+    walk(&sv.node)
+}
+
+/// Resolve an `IndexAccess` index expr to a `usize`. Accepts an `Int` literal or
+/// a `ValueRef` to an `Int` cell; returns `None` for anything else or a negative
+/// index (the caller then leaves the cell untouched).
+fn resolve_index_usize(
+    index: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+) -> Option<usize> {
+    let v = match &index.kind {
+        reify_ir::CompiledExprKind::Literal(v) => v,
+        reify_ir::CompiledExprKind::ValueRef(id) => values.get(id)?,
+        _ => return None,
+    };
+    match v {
+        reify_ir::Value::Int(i) if *i >= 0 => Some(*i as usize),
+        _ => None,
+    }
+}
+
 pub(crate) fn try_eval_topology_selector(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
