@@ -1040,10 +1040,14 @@ mod tests {
             err.contains("'BOGUS'"),
             "error must name the offending token 'BOGUS' (with surrounding quotes); got: {err}"
         );
-        assert!(
-            err.contains("expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, or PTODO"),
-            "error must list all known tokens; got: {err}"
-        );
+        // Per-token containment (not the exact connecting prose) so adding a
+        // future detector token or reordering the list does not break the test.
+        for tok in ["P1", "P2", "P5", "PDEAD", "PUNTESTED", "PLAYER", "PTODO"] {
+            assert!(
+                err.contains(tok),
+                "error must list known token {tok}; got: {err}"
+            );
+        }
         // NOTE: we do not assert !err.contains("P1,BOGUS") — a future message
         // that echoes the input but still names BOGUS would be equally valid.
         // The positive assertions above (token named + known-token list) are

@@ -1347,10 +1347,14 @@ mod cli {
             stderr.contains("'BOGUS'"),
             "stderr must name the offending token 'BOGUS' (with surrounding quotes); stderr: {stderr}"
         );
-        assert!(
-            stderr.contains("expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, or PTODO"),
-            "stderr must list the known tokens; stderr: {stderr}"
-        );
+        // Per-token containment (not the exact connecting prose) so the test
+        // survives future token additions / reordering.
+        for tok in ["P1", "P2", "P5", "PDEAD", "PUNTESTED", "PLAYER", "PTODO"] {
+            assert!(
+                stderr.contains(tok),
+                "stderr must list known token {tok}; stderr: {stderr}"
+            );
+        }
     }
 
     // -------------------------------------------------------------------
