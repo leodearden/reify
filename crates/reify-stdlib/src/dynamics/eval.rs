@@ -315,10 +315,11 @@ fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
 ///
 /// Accepts the canonical `dynamics_ops::assemble_mass_properties` shape (mass: a
 /// Mass-scalar; com: a `Value::Point` of Length-scalars; inertia: a 3×3
-/// `Value::Matrix` of `Real`) plus the equivalent list-shaped encodings a
-/// user-authored MassProperties may produce. The `com` Length dimension is
-/// stripped to SI metres. Returns `None` for any non-MassProperties value or a
-/// malformed/absent field.
+/// `Value::Matrix` of MomentOfInertia-dimensioned scalars, kg·m²) plus the
+/// equivalent list-shaped encodings a user-authored MassProperties may produce.
+/// The `com` Length dimension and inertia MomentOfInertia dimension are both
+/// stripped to raw SI f64 values via `cell_f64`. Returns `None` for any
+/// non-MassProperties value or a malformed/absent field.
 fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3])> {
     let data = match v {
         Value::StructureInstance(d) if d.type_name == "MassProperties" => d,
@@ -432,14 +433,26 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
 /// matching the `assemble_mass_properties` shape:
 /// - `mass`   → `Value::Scalar { dimension: MASS }`
 /// - `com`    → `Value::Point` of `Value::length` scalars (SI metres)
-/// - `inertia`→ `Value::Matrix` of `Value::Real` (3×3)
+/// - `inertia`→ `Value::Matrix` of `Value::Scalar { dimension: MOMENT_OF_INERTIA }` (3×3, kg·m²)
 /// - `origin` → `Value::Real(0.0)` (unused sentinel, mirrors `dynamics_ops`)
+///
+/// Inertia cells are MomentOfInertia-dimensioned scalars (kg·m²), matching the
+/// `inertia_value` populate pattern in `dynamics_ops`. The PSD hook and
+/// `inertia_3x3_from_value` both read them unchanged via `cell_f64`, which strips
+/// `si_value` from any `Value::Scalar`.
 fn make_mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
     let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
     let inertia_matrix = Value::Matrix(
         inertia
             .iter()
-            .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+            .map(|row| {
+                row.iter()
+                    .map(|&x| Value::Scalar {
+                        si_value: x,
+                        dimension: DimensionVector::MOMENT_OF_INERTIA,
+                    })
+                    .collect()
+            })
             .collect(),
     );
     mint_instance(
@@ -1415,7 +1428,7 @@ mod tests {
     /// Build a canonical `MassProperties` `Value::StructureInstance` matching
     /// `dynamics_ops::assemble_mass_properties`'s shape: `mass` a Mass-scalar,
     /// `com` a `Value::Point` of Length-scalars, `inertia` a 3×3 `Value::Matrix`
-    /// of `Real`, `origin` a `Real`.
+    /// of MomentOfInertia-dimensioned scalars (kg·m²), `origin` a `Real`.
     fn mass_properties_fixture(
         mass: f64,
         com: [f64; 3],
@@ -1425,7 +1438,14 @@ mod tests {
         let inertia_matrix = Value::Matrix(
             inertia
                 .iter()
-                .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+                .map(|row| {
+                    row.iter()
+                        .map(|&x| Value::Scalar {
+                            si_value: x,
+                            dimension: DimensionVector::MOMENT_OF_INERTIA,
+                        })
+                        .collect()
+                })
                 .collect(),
         );
         mint_instance(
