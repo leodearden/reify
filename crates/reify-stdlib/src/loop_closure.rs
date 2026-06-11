@@ -2566,4 +2566,63 @@ mod tests {
              (offset is genuinely exercised), max_abs = {max_abs:.3e}"
         );
     }
+
+    // ── KIN-OFFSET γ amend: analytic Jacobian check for single offset joint ─
+
+    /// Analytic check: `loop_residual_jacobian_by_joint` column for a single
+    /// `offset_revolute_z(L)` joint in chain_a, with empty chain_b (≡ identity).
+    ///
+    /// The residual is `r = log(T_a^{-1}(θ))` where
+    ///   `T_a(θ) = {R_z(θ), (L,0,0)}`  (offset_revolute_z(L) at angle θ)
+    ///   `T_a^{-1}(θ) = {R_z(−θ), (−L·cos θ, L·sin θ, 0)}`
+    ///
+    /// Closed-form log components (derivation: SE(3) log with α=−θ,
+    /// tx=−L·cos θ, ty=L·sin θ, using the 2×2 rotation-coupled translation
+    /// formula):
+    ///   r[2] (ω_z)  = −θ           → ∂r[2]/∂θ = −1  (exact)
+    ///   r[4] (v_y)  = θ·L/2        → ∂r[4]/∂θ = L/2 (exact for all θ)
+    ///
+    /// The L/2 term is the offset's fingerprint in the Jacobian: without an
+    /// offset (L=0), r[4]=0 for all θ, so col[4]=0.  With L=0.2, col[4]=0.1.
+    /// This is the genuinely offset-discriminating assertion that the B5
+    /// FD-vs-FD test (which is near-tautological on its own) cannot provide.
+    #[test]
+    fn loop_residual_jacobian_analytic_offset_single_joint() {
+        let eps = 1e-7_f64;
+        let tol = 1e-9_f64;
+        let l = 0.2_f64;        // pivot offset
+        let theta_a = 0.5_f64;  // well away from 0 and π to avoid log singularities
+
+        let j_a = offset_revolute_z(l);
+        let chain_a = vec![j_a.clone()];
+        let vals_a = vec![JointValue::Scalar(theta_a)];
+        // Empty chain_b ≡ identity transform.
+        let chain_b: Vec<Value> = vec![];
+        let vals_b: Vec<JointValue> = vec![];
+
+        let cols = super::loop_residual_jacobian_by_joint(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b,
+            &[j_a.clone()],
+            eps,
+        )
+        .expect("jacobian must return Some for a single-joint offset chain vs identity");
+
+        assert_eq!(cols.len(), 1, "single target joint → one column");
+        let col = cols[0];
+
+        // Analytic: ∂r[2]/∂θ = −1 (ω_z = −θ from the angular part of log(T_a^{-1}))
+        assert!(
+            (col[2] - (-1.0)).abs() < tol,
+            "analytic ∂ω_z/∂θ = −1; FD gave {:.12}", col[2]
+        );
+        // Analytic: ∂r[4]/∂θ = L/2 (v_y = θ·L/2, exact for all θ ≠ 0).
+        // The offset L enters here: col[4]=0 with no offset, col[4]=L/2=0.1 with offset.
+        assert!(
+            (col[4] - l / 2.0).abs() < tol,
+            "analytic ∂v_y/∂θ = L/2 = {:.4}; FD gave {:.12}", l / 2.0, col[4]
+        );
+    }
 }

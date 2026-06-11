@@ -3087,14 +3087,24 @@ mod tests {
 
         let value = field(&forces[0], "JointForce", "value");
         let torque = num(field(value, "ScalarTorque", "magnitude"));
-        // Finitude/shape check: inverse_dynamics must return a well-formed, finite result.
-        // Note: this is NOT an offset-discriminating assertion — the CoM lies on the Z
-        // rotation axis, so τ_z = (r × F)·ẑ = 0 regardless of pivot offset. A precise
-        // analytic torque identity is β/B7's deliverable.
+        // ── Finitude smoke test (intentionally NOT offset-discriminating for the torque) ──
+        //
+        // For a z-axis revolute with z-directed gravity g=(0,0,−9.81):
+        //   τ_z = (r_CoM × F_grav)·ẑ = r_x·F_y − r_y·F_x = r_x·0 − r_y·0 = 0
+        // for ANY CoM position — moving the CoM off the rotation axis (x,y ≠ 0)
+        // does not produce a nonzero τ_z because F_grav ∥ ẑ makes the cross product
+        // perpendicular to ẑ.  τ_z = 0 is exact physics, not a numerical coincidence.
+        //
+        // Offset-discriminating dynamics coverage (a nonzero analytic torque that
+        // changes with L) requires a non-z joint axis or non-z gravity and is
+        // deliberately deferred to β/B7.  This assertion's role is to confirm that
+        // inverse_dynamics returns a finite, well-formed result on an offset mechanism,
+        // complementing the PRIMARY assertion above (world_transform.tx == L) which
+        // is the offset-discriminating check for route 4.
         assert!(
             torque.is_finite() && torque.abs() < 1e-6,
-            "B3 dynamics: inverse_dynamics must return a finite result \
-             (on-axis CoM, analytic τ_z = 0); got {torque}"
+            "B3 dynamics finitude: inverse_dynamics must return a finite result \
+             (z-revolute + z-gravity → τ_z = 0 exactly for any CoM); got {torque}"
         );
     }
 }
