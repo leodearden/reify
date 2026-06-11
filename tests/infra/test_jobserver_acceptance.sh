@@ -451,6 +451,109 @@ PY
 assert "run_mixed_concurrent unit tests pass" \
     test "$_b4_exit" -eq 0
 
-# ── Block will be added by step 11 ────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 5: CLI mode contract tests (step-11 / step-12)
+#   Hermetic: fixtures written via heredoc to mktemp JSON files.
+#   No real load, no systemctl.
+#
+#   --evaluate <all-pass.json> → exit 0
+#   --evaluate <criterion-b-fail.json> → exit 1
+#   --report   <all-pass.json> -o <out.md> → exit 0, file contains verdicts
+#              and ζ′/4520 budget floor section
+#
+#   RED before step-12: main() --evaluate/--report dispatch still exits 2
+#   "not implemented" → exit-code contract fails.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 5: CLI --evaluate / --report contract tests ---"
+
+# Write inline fixtures to mktemp JSON files.
+_fix_ok=$(mktemp /tmp/test-accept-ok-XXXXXX.json)
+_fix_fail=$(mktemp /tmp/test-accept-fail-XXXXXX.json)
+_report_out=$(mktemp /tmp/test-accept-report-XXXXXX.md)
+
+cat > "$_fix_ok" <<'JSON'
+{
+  "nproc": 8,
+  "utilization_threshold": 0.85,
+  "baseline": {
+    "service": "single-pool",
+    "regime": "mixed",
+    "cache_state": "warm",
+    "busy_fraction": 0.96,
+    "merge_wall": 120.0,
+    "task_walls": [100.0, 115.0],
+    "exit_124_count": 0,
+    "occupancy": [{"merge": 4, "task": 4, "ts": 0.0}]
+  },
+  "dual_pool": {
+    "service": "dual-pool",
+    "regime": "mixed",
+    "cache_state": "warm",
+    "busy_fraction": 0.97,
+    "merge_wall": 95.0,
+    "task_walls": [105.0, 110.0],
+    "exit_124_count": 0,
+    "occupancy": [
+      {"merge": 4, "task": 4, "ts": 0.0},
+      {"merge": 8, "task": 0, "ts": 0.5}
+    ]
+  }
+}
+JSON
+
+cat > "$_fix_fail" <<'JSON'
+{
+  "nproc": 8,
+  "utilization_threshold": 0.85,
+  "baseline": {
+    "service": "single-pool",
+    "regime": "mixed",
+    "cache_state": "warm",
+    "busy_fraction": 0.96,
+    "merge_wall": 120.0,
+    "task_walls": [100.0, 115.0],
+    "exit_124_count": 0,
+    "occupancy": [{"merge": 4, "task": 4, "ts": 0.0}]
+  },
+  "dual_pool": {
+    "service": "dual-pool",
+    "regime": "mixed",
+    "cache_state": "warm",
+    "busy_fraction": 0.97,
+    "merge_wall": 150.0,
+    "task_walls": [105.0, 110.0],
+    "exit_124_count": 0,
+    "occupancy": [
+      {"merge": 4, "task": 4, "ts": 0.0},
+      {"merge": 8, "task": 0, "ts": 0.5}
+    ]
+  }
+}
+JSON
+
+# 5a: --evaluate all-pass fixture → exit 0
+assert "--evaluate all-pass fixture exits 0" \
+    python3 "$ACCEPT" --evaluate "$_fix_ok"
+
+# 5b: --evaluate criterion-b-fail fixture → exit 1
+_b5b_exit=0
+python3 "$ACCEPT" --evaluate "$_fix_fail" >/dev/null 2>&1 || _b5b_exit=$?
+assert "--evaluate criterion-b-fail fixture exits 1" \
+    test "$_b5b_exit" -eq 1
+
+# 5c: --report all-pass fixture -o <out.md> → file written with verdicts + ζ′ floor
+_b5c_exit=0
+python3 "$ACCEPT" --report "$_fix_ok" -o "$_report_out" 2>/dev/null || _b5c_exit=$?
+assert "--report exits 0" \
+    test "$_b5c_exit" -eq 0
+assert "--report writes a file with at least 10 lines" \
+    bash -c "[ -s '$_report_out' ] && [ \$(wc -l < '$_report_out') -ge 10 ]"
+assert "--report output contains verdict labels (a)(b)(c)(d)" \
+    bash -c "[ -s '$_report_out' ] && grep -q '(a)' '$_report_out' && grep -q '(b)' '$_report_out' && grep -q '(c)' '$_report_out' && grep -q '(d)' '$_report_out'"
+assert "--report output contains ζ′/4520 budget floor section" \
+    bash -c "[ -s '$_report_out' ] && grep -q '4520' '$_report_out'"
+
+rm -f "$_fix_ok" "$_fix_fail" "$_report_out"
 
 test_summary
