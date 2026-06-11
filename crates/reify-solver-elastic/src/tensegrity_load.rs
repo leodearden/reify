@@ -655,4 +655,44 @@ mod tests {
              got {result:?}",
         );
     }
+
+    // ---- Disconnected-free-node guards (review: robustness_panic_on_valid_input) ----
+
+    // (d) STATIC disconnected free node. A free node referenced by no member and
+    //     absent from `fixed_nodes` has zero incident stiffness: its three DOFs
+    //     reach `assemble_global_stiffness` with no diagonal entry, so the inner
+    //     CG's Jacobi preconditioner (`extract_diag_jacobi`) would hit its
+    //     unconditional `assert!` and PANIC — a contract violation the trampoline
+    //     cannot catch (it runs outside any `catch_unwind`). The kernel must
+    //     instead reject the singular / rigid-body tangent system up-front with a
+    //     structured `SingularSystem` error. Topology: nodes 0,2 anchors; node 1
+    //     free + cabled; node 3 a FREE ORPHAN at (5L, 5L, 0) touched by no member.
+    #[test]
+    fn singular_system_static_disconnected_free_node() {
+        let l = 2.0_f64;
+        let e = 200.0e9_f64;
+        let a = 1.0e-4_f64;
+        let n0 = 5_000.0_f64;
+        let nodes = vec![
+            [0.0, 0.0, 0.0],         // 0 anchor
+            [l, 0.0, 0.0],           // 1 free + cabled
+            [2.0 * l, 0.0, 0.0],     // 2 anchor
+            [5.0 * l, 5.0 * l, 0.0], // 3 FREE ORPHAN — no member, not fixed
+        ];
+        let members = vec![cable(0, 1, e, a, n0), cable(1, 2, e, a, n0)];
+        let loads = vec![
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0], // node 3 unloaded
+        ];
+        let fixed_nodes = vec![0, 2]; // node 3 deliberately left free
+        let result =
+            tensegrity_load_analysis(&nodes, &members, &loads, &fixed_nodes, &guard_options(64));
+        assert!(
+            matches!(result, Err(TensegrityLoadError::SingularSystem)),
+            "a free node with no incident member must be SingularSystem (not a panic), \
+             got {result:?}",
+        );
+    }
 }
