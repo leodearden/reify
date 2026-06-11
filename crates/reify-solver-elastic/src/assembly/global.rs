@@ -476,7 +476,14 @@ pub fn assemble_global_stiffness(
             // still validates the parallel-mode path (unchanged below).
             let mut btree: std::collections::BTreeMap<(usize, usize), f64> =
                 std::collections::BTreeMap::new();
-            let mut scratch: Vec<Triplet<usize, usize, f64>> = Vec::new();
+            // Pre-size `scratch` to the largest per-element triplet block to
+            // avoid repeated reallocs (one Vec is reused via `clear()` across
+            // all elements). `total_triplets / elements.len().max(1)` gives the
+            // average count; using the true per-element max would require an
+            // extra pass over elements, but the average is sufficient for
+            // avoiding pathological realloc cascades on heterogeneous meshes.
+            let scratch_cap = total_triplets / elements.len().max(1);
+            let mut scratch: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(scratch_cap);
             for element in elements {
                 scratch.clear();
                 emit_element_triplets(element, n_dofs_per_node, &mut scratch);
