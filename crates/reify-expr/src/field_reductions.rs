@@ -9,8 +9,8 @@
 //!
 //! # Source-kind support (staged per task description)
 //!
-//! `FieldSourceKind::Sampled` and `FieldSourceKind::VonMises` are fully
-//! implemented:
+//! The following source kinds are fully implemented for the **1-arg form**
+//! `max|min|argmax|argmin(field)`:
 //!
 //! - **Sampled** — data buffer reduced directly (stride-1 scalar data).
 //! - **VonMises** — the backing Sampled tensor field is unwrapped from
@@ -19,6 +19,15 @@
 //!   scalar buffer is delegated to the existing Sampled reduction path.
 //!   This mirrors `reify_stdlib::fea::envelope_tensor_projection` (the
 //!   proven two-pass pattern in this codebase).
+//! - **MaxShear** — same two-pass pattern via `reify_stdlib::compute_max_shear_3x3`
+//!   ((σ₁−σ₃)/2). Lambda slot = the original Sampled tensor `Value::Field`.
+//!   NaN windows (out-of-solid sentinel) yield NaN and are skipped.
+//!   (task 4543)
+//! - **SafetyFactor** — lambda slot = `Value::List[tensor_field, yield_val]`.
+//!   Per-window projection: `yield / compute_von_mises_3x3(w)`. Hydrostatic
+//!   windows (vM=0 → SF=+∞) are dropped by the `is_finite()` gate;
+//!   all-hydrostatic fields return `Value::Undef`. Malformed lambda
+//!   (non-List, wrong arity, non-numeric yield) → `Value::Undef`. (task 4543)
 //!
 //! `FieldSourceKind::Analytical`, `FieldSourceKind::Composed`, and
 //! `FieldSourceKind::VonMises` are also supported via the **2-arg bounded
@@ -27,24 +36,30 @@
 //! - **Analytical / Composed (2-arg bounded)** — a fixed-density grid of
 //!   [`GRID_SAMPLES_PER_AXIS`]^n nodes is sampled over the bounding box.
 //!   The extremum is the grid-resolution optimum.  See `compute_bounded_extremum`
-//!   for the resolution/tolerance contract.
+//!   for the resolution/tolerance contract. (task 4561)
 //! - **VonMises (2-arg bounded)** — the backing Sampled tensor field is
 //!   projected per 9-float window via `project_von_mises_sampled`, and the
 //!   resulting stride-1 scalar `SampledField` is clipped to the bounding box
 //!   via the same sub-region logic as `Sampled`.  Malformed lambda →
-//!   `Value::Undef` defensively.
+//!   `Value::Undef` defensively. (task 4561)
 //!
 //! All other source kinds (`Imported`, and the derived wrappers
-//! `Gradient`/`Divergence`/`Curl`/`Laplacian`/`PrincipalStresses`/
-//! `MaxShear`/`SafetyFactor`) return `Value::Undef` for the 1-arg form.
-//! The 1-arg `Analytical`/`Composed` form also returns `Value::Undef`
-//! (no bounds are supplied, so a global extremum is ill-posed for an
-//! unbounded analytical domain).
+//! `Gradient`/`Divergence`/`Curl`/`Laplacian`/`PrincipalStresses`) return
+//! `Value::Undef` for the 1-arg form. The 1-arg `Analytical`/`Composed` form
+//! also returns `Value::Undef` (no bounds are supplied, so a global extremum
+//! is ill-posed for an unbounded analytical domain).
+//!
+//! Deferred follow-ups by category:
+//! - **Analytical/Composed numerical-optimisation** — task 4561 (landed; 2-arg
+//!   bounded form covers the main use-case; unbounded 1-arg remains Undef).
+//! - **PrincipalStresses** (pointwise list, max-entry) — task 4562.
+//! - **Gradient/Divergence/Curl/Laplacian** (differential, need neighbor-stencil
+//!   FD primitive) — the differential-field-reductions PRD.
 //!
 //! The deferred path for `Imported`/derived 1-arg requires either
 //! numerical optimisation over an analytical lambda's bounded domain or
-//! sampled-subfield reduction — see `docs/prds/v0_3/structural-analysis-fea.md`
-//! task #6.  The PRD task description authorises this staging:
+//! sampled-subfield reduction — see `docs/prds/v0_3/structural-analysis-fea.md`.
+//! The PRD task description authorises this staging:
 //! "Implementation can be staged — `sampled` first (FEA produces
 //! sampled fields)."
 //!
@@ -58,10 +73,10 @@
 //! return `Value::Undef`. This matches the `safety_factor` poison
 //! convention and the `sanitize_value` discipline elsewhere in stdlib.
 //!
-//! For VonMises projections, NaN tensor windows (out-of-solid sentinel
-//! values used by the FEA elaborator) project to NaN via
-//! `compute_von_mises_3x3` and are then skipped by the existing
-//! `is_finite()` reduction, matching
+//! For tensor-field projections (VonMises, MaxShear, SafetyFactor), NaN
+//! tensor windows (out-of-solid sentinel values from the FEA elaborator)
+//! project to NaN or +∞ (hydrostatic SafetyFactor) and are then skipped
+//! by the existing `is_finite()` reduction, matching
 //! `solve_elastic_static_e2e.rs`'s window-skip logic.
 
 use std::sync::atomic::AtomicBool;
@@ -70,40 +85,36 @@ use reify_core::Type;
 use reify_ir::{FieldSourceKind, SampledField, Value};
 
 /// Compute `max(field)` — return the maximum codomain value of a
-/// `Sampled`- or `VonMises`-source field, wrapped per the field's
-/// `codomain_type`.
+/// `Sampled`-, `VonMises`-, `MaxShear`-, or `SafetyFactor`-source field,
+/// wrapped per the field's `codomain_type`.
 ///
-/// For `VonMises` fields the backing Sampled tensor field is projected
-/// per 9-float window via `reify_stdlib::compute_von_mises_3x3` before
-/// the reduction (see [`project_von_mises_sampled`]).
+/// For derived tensor-field projections:
+/// - `VonMises` — per-window `compute_von_mises_3x3`
+/// - `MaxShear` — per-window `compute_max_shear_3x3` ((σ₁−σ₃)/2)
+/// - `SafetyFactor` — per-window `yield / compute_von_mises_3x3`
+///   (hydrostatic vM=0 → +∞ → skipped)
 ///
 /// Other source kinds return `Value::Undef` (deferred — see module
-/// doc-comment for the staging rationale).
+/// doc-comment for the staging rationale and follow-up task list).
 pub(crate) fn compute_max(field_val: &Value) -> Value {
     compute_extremum(field_val, false)
 }
 
 /// Compute `min(field)` — return the minimum codomain value of a
-/// `Sampled`- or `VonMises`-source field, wrapped per the field's
-/// `codomain_type`.
+/// `Sampled`-, `VonMises`-, `MaxShear`-, or `SafetyFactor`-source field,
+/// wrapped per the field's `codomain_type`.
 ///
-/// For `VonMises` fields the backing Sampled tensor field is projected
-/// per 9-float window via `reify_stdlib::compute_von_mises_3x3` before
-/// the reduction (see [`project_von_mises_sampled`]).
-///
-/// Other source kinds return `Value::Undef` (deferred — see module
-/// doc-comment for the staging rationale).
+/// For derived tensor-field projections see [`compute_max`]. Other source
+/// kinds return `Value::Undef` (deferred — see module doc-comment).
 pub(crate) fn compute_min(field_val: &Value) -> Value {
     compute_extremum(field_val, true)
 }
 
 /// Compute `argmax(field)` — return the domain coord at which a
-/// `Sampled`- or `VonMises`-source field attains its maximum value,
-/// wrapped per the field's `domain_type`.
+/// `Sampled`-, `VonMises`-, `MaxShear`-, or `SafetyFactor`-source field
+/// attains its maximum value, wrapped per the field's `domain_type`.
 ///
-/// For `VonMises` fields the backing Sampled tensor field is projected
-/// per 9-float window via `reify_stdlib::compute_von_mises_3x3` before
-/// the index search (see [`project_von_mises_sampled`]).
+/// For derived tensor-field projections see [`compute_max`].
 ///
 /// Tie-break: lowest linear index wins (the `total_cmp` reduce keeps
 /// the first-seen extremum on equal values).
@@ -114,12 +125,10 @@ pub(crate) fn compute_argmax(field_val: &Value) -> Value {
 }
 
 /// Compute `argmin(field)` — return the domain coord at which a
-/// `Sampled`- or `VonMises`-source field attains its minimum value,
-/// wrapped per the field's `domain_type`.
+/// `Sampled`-, `VonMises`-, `MaxShear`-, or `SafetyFactor`-source field
+/// attains its minimum value, wrapped per the field's `domain_type`.
 ///
-/// For `VonMises` fields the backing Sampled tensor field is projected
-/// per 9-float window via `reify_stdlib::compute_von_mises_3x3` before
-/// the index search (see [`project_von_mises_sampled`]).
+/// For derived tensor-field projections see [`compute_max`].
 ///
 /// Tie-break: lowest linear index wins (mirrors `compute_argmax`).
 ///
