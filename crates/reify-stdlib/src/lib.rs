@@ -103,6 +103,16 @@ pub use dynamics::eval::diagnose as dynamics_diagnose;
 /// duplicating the formula inlined at
 /// `crates/reify-eval/src/compute_targets/elastic_static.rs:667`.
 pub use analysis::compute_von_mises_3x3;
+/// Public re-export of the max-shear scalar kernel for cross-crate reuse.
+///
+/// Called by `crates/reify-expr/src/field_reductions.rs` in the
+/// `project_max_shear_sampled` helper to project each 9-float stride-1 window
+/// of a Sampled tensor field to a scalar max-shear value during field
+/// reduction (max/min/argmax/argmin of a MaxShear-derived field). Mirrors
+/// the `compute_von_mises_3x3` precedent: the formula has a single home in
+/// `analysis.rs`, shared by both the `max_shear` builtin and the
+/// cross-crate field reduction.
+pub use analysis::compute_max_shear_3x3;
 /// Public re-export of the impulse-shaper math (`ImpulseTrain` + its residual /
 /// convolution API) and the `Shaper`→`ImpulseTrain` marshalling boundary.
 ///
