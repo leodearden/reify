@@ -398,6 +398,7 @@ pub fn try_eval_body_mass_props(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::dimension::DimensionVector;
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use reify_stdlib::dynamics::mass_props::uniform_box_inertia;
@@ -1075,6 +1076,60 @@ mod tests {
             !warnings.is_empty(),
             "malformed Volume reply must emit at least one Warning, got: {diags:?}"
         );
+    }
+
+    // ── step-3 (task 4494): inertia cells are MomentOfInertia-dimensioned scalars ─
+    //
+    // Kernel-independent pin: eval_body_mass_props_core must populate the inertia
+    // field of the assembled MassProperties with Value::Scalar{MOMENT_OF_INERTIA}
+    // cells, not plain Value::Real. Fails RED until step-4 (task 4494) changes
+    // inertia_value to emit dimensioned scalars.
+
+    /// The populated inertia matrix must be a Value::Matrix of
+    /// Value::Scalar{dimension == MOMENT_OF_INERTIA} cells with si_value equal
+    /// (within 1e-12) to the corresponding uniform_box_inertia entry.
+    /// This runs on every CI runner regardless of OCCT availability.
+    #[test]
+    fn eval_body_mass_props_core_inertia_cells_are_moment_of_inertia_scalars() {
+        let b = body(Some(2700.0));
+        let mut diags = Vec::new();
+        let result =
+            eval_body_mass_props_core(&b, None, |d| uniform_box_inertia(DIMS, d), &mut diags);
+
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected MassProperties StructureInstance, got {other:?}"),
+        };
+        let inertia_rows = match data.fields.get("inertia").expect("inertia field") {
+            Value::Matrix(rows) => rows,
+            other => panic!("inertia field must be Value::Matrix, got {other:?}"),
+        };
+        assert_eq!(inertia_rows.len(), 3, "inertia must have 3 rows");
+
+        let (_, _, expected_inertia) = uniform_box_inertia(DIMS, 2700.0);
+        for r in 0..3 {
+            assert_eq!(inertia_rows[r].len(), 3, "each inertia row must have 3 cols");
+            for c in 0..3 {
+                match &inertia_rows[r][c] {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::MOMENT_OF_INERTIA,
+                            "inertia[{r}][{c}] must be MOMENT_OF_INERTIA-dimensioned, got {dimension:?}"
+                        );
+                        assert!(
+                            (si_value - expected_inertia[r][c]).abs() < 1e-12,
+                            "inertia[{r}][{c}] si_value: expected {}, got {}",
+                            expected_inertia[r][c],
+                            si_value
+                        );
+                    }
+                    other => panic!(
+                        "inertia[{r}][{c}] must be Value::Scalar{{MOMENT_OF_INERTIA}}, got {other:?}"
+                    ),
+                }
+            }
+        }
     }
 
     /// Malformed CenterOfMass JSON: Volume succeeds but the CoM reply is not a
