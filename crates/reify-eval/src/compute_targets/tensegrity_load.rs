@@ -277,7 +277,11 @@ fn crack_scalar(v: &Value, what: &str) -> Result<f64, String> {
 }
 
 /// Crack `loads` (a `List<Vector3<Force>>`) into per-node `[f64; 3]` force
-/// vectors. Length-checking against the node count is left to the kernel.
+/// vectors. The loads-vs-nodes length check is performed in [`run`] (the
+/// trampoline) so a mismatch surfaces as a *located*
+/// `E_TensegrityLoadInfeasible` error; the kernel's own
+/// `loads.len() != nodes.len()` guard is a redundant backstop. This cracker only
+/// validates per-entry shape (3-component, numeric).
 fn crack_loads(v: &Value) -> Result<Vec<[f64; 3]>, String> {
     let list = match v {
         Value::List(items) => items,
@@ -430,5 +434,93 @@ fn describe(e: TensegrityLoadError) -> String {
              passes (the PRD §11 Q5 cap) — drop-only monotonicity should converge in \
              at most #cables passes, so this signals a non-monotone active-set policy"
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Direct coverage for the `describe()` cause arms. Three of the four
+    // (`DimensionMismatch`, `SingularSystem`, `ActiveSetDidNotConverge`) are not
+    // reachable through the producer-side trampoline integration tests, so their
+    // phrasing would otherwise be unprotected:
+    //   * `DimensionMismatch` — the trampoline's own *located* length/range guards
+    //     (`run`) pre-empt it before the kernel is called.
+    //   * `SingularSystem` — a free node with no taut load path has a zero/missing
+    //     stiffness diagonal, which trips the kernel's Jacobi-preconditioner
+    //     `assert!` (a panic), not this variant; reaching it needs an
+    //     ill-conditioned-but-diagonal-present system that exhausts the CG cap,
+    //     which is impractical to construct as a fast, non-flaky golden.
+    //   * `ActiveSetDidNotConverge` — `run` always passes
+    //     `TensegrityLoadOptions::default()` (cap = 64), so no crafted Value input
+    //     can drive the active set past the cap.
+    // These unit tests pin each arm's wording — and, critically, the `{iterations}`
+    // interpolation — so a format regression fails here instead of silently
+    // shipping a garbled diagnostic. (`EmptyFreeSet` *is* exercised end-to-end by
+    // `tests/tensegrity_t3b_load.rs::trampoline_all_anchored_is_failed_empty_free_set`;
+    // it is included here too for a complete, single-glance phrase map.)
+
+    #[test]
+    fn describe_dimension_mismatch_phrase() {
+        let msg = describe(TensegrityLoadError::DimensionMismatch);
+        assert!(
+            msg.contains("input dimensions disagree"),
+            "DimensionMismatch describe() phrase changed: {msg:?}",
+        );
+    }
+
+    #[test]
+    fn describe_empty_free_set_phrase() {
+        let msg = describe(TensegrityLoadError::EmptyFreeSet);
+        assert!(
+            msg.contains("every node is anchored"),
+            "EmptyFreeSet describe() phrase changed: {msg:?}",
+        );
+    }
+
+    #[test]
+    fn describe_singular_system_phrase() {
+        let msg = describe(TensegrityLoadError::SingularSystem);
+        assert!(
+            msg.contains("singular tangent system"),
+            "SingularSystem describe() phrase changed: {msg:?}",
+        );
+        assert!(
+            msg.contains("did not converge"),
+            "SingularSystem describe() should name the CG non-convergence: {msg:?}",
+        );
+    }
+
+    /// The key regression guard: `ActiveSetDidNotConverge` is the only arm that
+    /// interpolates a runtime value (`iterations`). Assert the count is actually
+    /// substituted — a different payload must appear verbatim and yield a distinct
+    /// message — so a decoupled/broken format string fails here rather than
+    /// shipping a diagnostic with a literal `{iterations}` or a stale count.
+    #[test]
+    fn describe_active_set_did_not_converge_interpolates_iteration_count() {
+        let msg7 = describe(TensegrityLoadError::ActiveSetDidNotConverge { iterations: 7 });
+        assert!(
+            msg7.contains("tension-only active set did not reach a fixed point"),
+            "ActiveSetDidNotConverge describe() phrase changed: {msg7:?}",
+        );
+        assert!(
+            msg7.contains("within 7 passes"),
+            "ActiveSetDidNotConverge must interpolate its iteration count \
+             (expected 'within 7 passes'): {msg7:?}",
+        );
+
+        // A different count must change the message verbatim — proves the value is
+        // interpolated, not a hardcoded literal that happens to read "7".
+        let msg42 =
+            describe(TensegrityLoadError::ActiveSetDidNotConverge { iterations: 42 });
+        assert!(
+            msg42.contains("within 42 passes"),
+            "iteration count must track the variant payload: {msg42:?}",
+        );
+        assert_ne!(
+            msg7, msg42,
+            "distinct iteration counts must yield distinct messages",
+        );
     }
 }
