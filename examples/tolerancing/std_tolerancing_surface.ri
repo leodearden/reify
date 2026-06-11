@@ -109,10 +109,6 @@ structure def StdTolerancingSurface {
     // feature and datum_refs: real geometry handles (tightened from Real — task #3116)
     // zone_shape: explicit Cylindrical (true-position Ø zone) — the FOS form β
     // permits MMC on (α); proves the same-module ZoneShape enum-variant arg.
-    // CALL ORDER NOTE: arg order matches tolerancing.ri param declaration order
-    // (datum_refs, zone_shape, material_condition) — the eval engine's named-argument
-    // binder is positional for beyond-trait params (see PARAM-ORDER NOTE in
-    // tolerancing.ri). Reordering these args will silently misassign values.
     let pos      = Position(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm),
                             datum_refs: box(1mm, 1mm, 1mm),
                             zone_shape: ZoneShape.Cylindrical,
@@ -140,7 +136,7 @@ structure def StdTolerancingSurface {
 
     // ── α orientation callout: Parallelism (zone_shape = Width default, RFS default) ─
     // Exercises an orientation callout with IMPLICIT material_condition (default RFS),
-    // proving zone_shape's beyond-trait param order fix does not break nominal_zone
+    // proving that beyond-trait params (zone_shape) do not affect nominal_zone
     // materialisation when material_condition is left implicit.
     //   nominal_zone = efz(0.04mm, RFS, 0mm) = 0.04mm = 0.00004 m
     let par      = Parallelism(tolerance_value: 0.04mm, feature: box(1mm, 1mm, 1mm),
