@@ -1592,12 +1592,37 @@ pub(super) fn check_phase_check_members_against_requirements(
     // `param max_torque : Option<Torque> = none` (default).
     let required_names: std::collections::HashSet<&str> =
         ctx.requirements.iter().map(|r| r.name.as_str()).collect();
+    // Dedup guard for the defaults loop below.
+    //
+    // Upstream dedup guarantees in collect_all_requirements (trait_requirements.rs):
+    //   • Param defaults: deduped by (name, DefaultKindTag::Param) via seen_defaults — at most
+    //     one Param default per name in ctx.defaults; duplicate is impossible.
+    //   • Annotated Let defaults WITHOUT structure override: deduped by seen_let_hashes (content-
+    //     hash comparison); at most one Let default per name reaches ctx.defaults.
+    //   • Annotated Let defaults WITH structure override: NOT deduped. When the structure already
+    //     declares a member `x`, hash-recording is suppressed (`if !structure_members.contains_key`)
+    //     so each trait's `let x` default is pushed unconditionally — multiple entries for the same
+    //     name can appear. The injection loop skips them all (re-checks structure_members), but the
+    //     collision rule runs first. Without this guard, a conformer override that is incompatible
+    //     with multiple same-named Let defaults (diamond / multi-trait) would emit one identical
+    //     "type mismatch" diagnostic per redundant entry rather than one per name.
+    //
+    // This HashSet is therefore a no-op for Params and unoverridden Lets (at most one entry each)
+    // but is the correct defensive guard for the overridden-Let edge case documented above.
+    let mut checked_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for default in &ctx.defaults {
         let Some(name) = default.name.as_deref() else {
             continue;
         };
         // Name is already handled by the requirements loop — skip to avoid false positives.
         if required_names.contains(name) {
+            continue;
+        }
+        // Emit at most one verdict per name: the overridden-Let multi-push scenario
+        // (see comment on checked_names above) can produce multiple ctx.defaults entries
+        // for the same name when the structure overrides it. Skip subsequent entries so
+        // only one diagnostic fires per name regardless of how many redundant entries exist.
+        if !checked_names.insert(name) {
             continue;
         }
         let trait_declared_type = match &default.kind {

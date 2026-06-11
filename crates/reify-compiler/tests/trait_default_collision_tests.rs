@@ -432,3 +432,77 @@ structure def S : T {
         module.diagnostics,
     );
 }
+
+// ── Suggestion-1 (amendment): checked_names dedup — diamond-override Let scenario ──────────
+//
+// When MULTIPLE traits each provide an annotated-let default for the SAME name AND the
+// structure overrides that name, `collect_all_requirements` (trait_requirements.rs) pushes
+// EACH default into `ctx.defaults` without dedup (hash-recording is suppressed for overridden
+// names). The checked_names guard in the defaults loop ensures only ONE diagnostic fires
+// per name regardless of how many redundant default entries are in ctx.defaults.
+
+/// Diamond scenario: two traits both provide `let y : Length = <different-value>` (different
+/// content hashes → would normally conflict, but the structure overrides `y` so conflict
+/// detection is suppressed and both defaults are pushed into ctx.defaults without dedup).
+///
+/// Structure overrides with `param y : Mass` — an incompatible type.
+///
+/// Without the `checked_names` guard the loop would emit TWO identical
+/// "type mismatch for trait member 'y'" diagnostics (one per redundant entry).
+/// With the guard, EXACTLY ONE fires.
+#[test]
+fn diamond_override_let_collision_emits_exactly_one_diagnostic() {
+    let source = r#"
+trait TraitA {
+    let y : Length = 5mm
+}
+trait TraitB {
+    let y : Length = 10mm
+}
+structure def S : TraitA + TraitB {
+    param y : Mass
+}
+"#;
+    let module = compile_source(source);
+    let mismatch_count = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("type mismatch for trait member 'y'"))
+        .count();
+
+    assert_eq!(
+        mismatch_count, 1,
+        "diamond-override Let collision must emit EXACTLY ONE \
+         \"type mismatch for trait member 'y'\" diagnostic (checked_names dedup); \
+         all diagnostics: {:?}",
+        module.diagnostics,
+    );
+}
+
+/// Same diamond scenario but the structure overrides with a COMPATIBLE type (`Length`).
+/// With the `checked_names` guard, ZERO "type mismatch for trait member" diagnostics fire.
+#[test]
+fn diamond_override_let_collision_compatible_conforms() {
+    let source = r#"
+trait TraitA {
+    let y : Length = 5mm
+}
+trait TraitB {
+    let y : Length = 10mm
+}
+structure def S : TraitA + TraitB {
+    param y : Length
+}
+"#;
+    let module = compile_source(source);
+
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("type mismatch for trait member")),
+        "diamond-override Let with compatible conformer type must NOT produce \
+         \"type mismatch for trait member\"; all diagnostics: {:?}",
+        module.diagnostics,
+    );
+}
