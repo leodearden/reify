@@ -457,11 +457,37 @@ pub fn assemble_global_stiffness(
         .sum();
     let triplets: Vec<Triplet<usize, usize, f64>> = match mode {
         AssemblyMode::Deterministic => {
-            let mut acc = Vec::with_capacity(total_triplets);
+            // Pre-aggregate every duplicate `(row, col)` contribution into a
+            // `BTreeMap<(usize, usize), f64>` in slice/encounter order, then
+            // emit a **duplicate-free** triplet set to faer. This makes K a
+            // pure reify-owned function of `(n_nodes, elements)` — faer's
+            // internal `sort_unstable`-based dedup order no longer affects
+            // any stored value.
+            //
+            // Accumulation is left-fold / encounter order:
+            //   K[i][j] = Σ (over elements sharing DOF pair (i,j))
+            //              K_e[a·d_e+α][b·d_e+β]
+            // processed in the order elements appear in the `elements` slice
+            // (and within each element in `(a, α, b, β)` row-major order as
+            // emitted by `emit_element_triplets`).
+            //
+            // With unique keys faer's `try_new_from_triplets` dedup becomes a
+            // no-op — the canary `faer_sums_duplicate_triplets_in_encounter_order`
+            // still validates the parallel-mode path (unchanged below).
+            let mut btree: std::collections::BTreeMap<(usize, usize), f64> =
+                std::collections::BTreeMap::new();
+            let mut scratch: Vec<Triplet<usize, usize, f64>> = Vec::new();
             for element in elements {
-                emit_element_triplets(element, n_dofs_per_node, &mut acc);
+                scratch.clear();
+                emit_element_triplets(element, n_dofs_per_node, &mut scratch);
+                for t in &scratch {
+                    *btree.entry((t.row, t.col)).or_insert(0.0) += t.val;
+                }
             }
-            acc
+            btree
+                .into_iter()
+                .map(|((row, col), val)| Triplet::new(row, col, val))
+                .collect()
         }
         AssemblyMode::Parallel { threads } => {
             // Partition `elements` into `threads` chunks via
@@ -548,28 +574,29 @@ pub fn assemble_global_stiffness(
             })
         }
     };
-    // faer 0.24's `try_new_from_triplets` **sums duplicate `(row, col)`
-    // entries in encounter order**. We rely on this contract: when two
-    // (or more) elements share a DOF pair, each element emits its own
-    // triplet, and the accumulated `K_global[i][j]` is the sum of all
-    // contributions in slice-iteration order.
+    // **Duplicate-summation ownership split:**
     //
-    // The contract is pinned by the `faer_sums_duplicate_triplets_in_encounter_order`
-    // unit test below, which seeds five duplicate triplets whose left-fold
-    // (encounter-order) and pairwise-tree-reduction sums diverge above
-    // the LSB — so a faer upgrade that switches summation strategy
-    // surfaces immediately rather than silently invalidating the
-    // parallel-mode determinism contract. Faer's own `test_from_indices`
-    // (sparse/mod.rs:280-326) demonstrates the same behavior on values
-    // that happen to be sum-order-invariant; our canary uses values that
-    // are not, so it would also catch a regression that survives faer's
-    // own test suite.
+    // *Deterministic mode* — the `BTreeMap` pre-aggregation above produces a
+    // duplicate-free triplet set, so faer's internal `sort_unstable`-based
+    // dedup is a no-op and does not influence any stored value. The summation
+    // order (left-fold / encounter order over the `elements` slice) is fully
+    // reify-owned. This makes `K` a pure function of `(n_nodes, elements)`,
+    // eliminating the flaky-determinism failure mode documented in task 4573.
     //
-    // If a future faer version regresses this (e.g. overwrites instead of
-    // summing), the fix is to switch the local helper to a pre-merge pass
-    // that sums in a `BTreeMap<(row, col), f64>` keyed by the canonical
-    // `(row, col)` order. step-5's `two_p1_elements_sharing_face_*` test
-    // would also surface the regression.
+    // *Parallel mode* — the merged triplet `Vec` still contains duplicates at
+    // shared DOFs, so `try_new_from_triplets` **must** sum them in encounter
+    // order. The `faer_sums_duplicate_triplets_in_encounter_order` canary
+    // (below) pins that faer contract: it seeds five duplicate triplets whose
+    // left-fold and pairwise-tree-reduction sums diverge above the LSB, so a
+    // faer upgrade that switches summation strategy surfaces immediately rather
+    // than silently invalidating the parallel-mode determinism contract. Faer's
+    // own `test_from_indices` (sparse/mod.rs:280-326) uses sum-order-invariant
+    // values; our canary does not, so it also catches regressions that survive
+    // faer's own suite.
+    //
+    // If a future faer version breaks encounter-order summation in parallel mode
+    // (e.g. overwrites instead of summing), apply the same BTreeMap pre-merge
+    // to the parallel arm and remove the canary dependency.
     // Debug-only orphan-DOF diagnostic. Zero release-mode cost; matches the
     // #[cfg(debug_assertions)] gating idiom in mpc.rs:172-213. Uses eprintln!
     // rather than tracing/log because reify-solver-elastic has no logging
