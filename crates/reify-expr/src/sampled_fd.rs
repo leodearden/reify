@@ -127,7 +127,25 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
             clone_geometry(sf, data)
         }
         DifferentialOp::Divergence => {
-            todo!("sampled_differential Divergence: not yet implemented — see plan step-6")
+            // Vector input (stride = axis count n) → scalar output (stride 1).
+            // out[g] = Σ_c ∂F_c/∂x_c, where F_c is extracted from interleaved
+            // input via first_diff_along_axis(..., stride=in_stride, comp=c).
+            debug_assert_eq!(
+                in_stride, n_axes,
+                "Divergence: expected vector input (stride == axis count {n_axes})"
+            );
+            let mut data = vec![0.0f64; grid_count];
+            for g in 0..grid_count {
+                let mi = decode_index(g, &dims);
+                let mut div = 0.0;
+                for c in 0..n_axes {
+                    div += first_diff_along_axis(
+                        &sf.data, &dims, &sf.spacing, &mi, c, in_stride, c,
+                    );
+                }
+                data[g] = div;
+            }
+            clone_geometry(sf, data)
         }
         DifferentialOp::Curl => {
             todo!("sampled_differential Curl: not yet implemented — see plan step-8")
