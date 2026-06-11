@@ -110,7 +110,21 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
             clone_geometry(sf, data)
         }
         DifferentialOp::Laplacian => {
-            todo!("sampled_differential Laplacian: not yet implemented — see plan step-4")
+            // Scalar input (stride 1) → scalar output (stride 1).
+            // Boundary: one-sided 3-point second difference (f[0]-2f[1]+f[2])/h²
+            // which equals 2a for f=ax², matching the quadratic exactness contract
+            // (PRD §6). Higher-order boundary treatment deferred to η per PRD §10.
+            debug_assert_eq!(in_stride, 1, "Laplacian: expected scalar input (stride 1)");
+            let mut data = vec![0.0f64; grid_count];
+            for g in 0..grid_count {
+                let mi = decode_index(g, &dims);
+                let mut lap = 0.0;
+                for axis in 0..n_axes {
+                    lap += second_diff_along_axis(&sf.data, &dims, &sf.spacing, &mi, axis, 1, 0);
+                }
+                data[g] = lap;
+            }
+            clone_geometry(sf, data)
         }
         DifferentialOp::Divergence => {
             todo!("sampled_differential Divergence: not yet implemented — see plan step-6")
