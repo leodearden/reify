@@ -31,10 +31,47 @@
 //! tessellate-path parity test, and an OCCT-gated end-to-end smoke test.
 
 use reify_compiler::compile_with_stdlib;
+use reify_core::ty::SelectorKind;
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_eval::Engine;
+use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, GeometryHandleId, Value};
 use reify_test_support::MockGeometryKernel;
+
+/// Assert a cell holds a kernel-free `Value::Selector` leaf (task 4118 γ): the
+/// 7 predicate/all selector constructors now evaluate to a typed
+/// `Value::Selector(kind)` instead of a `Value::List<GeometryHandle>`. The
+/// `Selector → List<Geometry>` bridge is the compiler-inserted `ResolveSelector`
+/// coercion node, resolved by `topology_selectors::resolve()`.
+///
+/// Construction is KERNEL-FREE (K2/BT7): these callers build with an UNSTAGED
+/// mock kernel (no `with_extracted_*` / predicate-query staging), so the only
+/// way the cell can be the correct typed `Value::Selector` with the right leaf
+/// target + query is if the post-process packaged the leaf without issuing a
+/// single kernel query.
+fn assert_selector_leaf(
+    cell_value: Option<&Value>,
+    label: &str,
+    kind: SelectorKind,
+    target: GeometryHandleId,
+    check_query: impl FnOnce(&LeafQuery),
+) {
+    let sv = match cell_value {
+        Some(Value::Selector(sv)) => sv,
+        other => panic!("{label} must be Value::Selector(_), got {other:?}"),
+    };
+    assert_eq!(sv.kind, kind, "{label}: selector kind");
+    match &sv.node {
+        SelectorNode::Leaf { target: t, query } => {
+            assert_eq!(
+                t.kernel_handle, target,
+                "{label}: leaf target must be the parent solid handle"
+            );
+            check_query(query);
+        }
+        other => panic!("{label} must be a Leaf selector node, got {other:?}"),
+    }
+}
 
 /// Parse and compile a source string with the stdlib prelude.
 /// Asserts the parse and compile pipelines produce no errors.
@@ -302,144 +339,52 @@ fn angle_between_surfaces_with_literal_int_arg_falls_through_to_undef() {
 // literal-args contract in the dispatcher.
 
 /// `let es = edges(body)` on a structure containing `let body = box(10mm, 10mm, 10mm)`
-/// must resolve to a `Value::List` of three `Value::GeometryHandle` sub-handles
-/// when the mock kernel pre-stages `extract_edges(GeometryHandleId(1)) = [2, 3, 4]`.
-/// Each element must carry the expected `kernel_handle`, and the three
-/// `upstream_values_hash` values must be pairwise distinct (PRD §4 iii).
+/// must construct a typed `Value::Selector(Edge)` whose leaf is `All` over the
+/// parent box handle (task 4118 γ) — NOT an eagerly-resolved `Value::List`.
+/// Construction is kernel-FREE: the build uses an UNSTAGED mock kernel, so a
+/// correct typed selector proves zero kernel queries were issued (K2/BT7).
 #[test]
-fn edges_let_resolves_to_list_of_int_via_extract_edges() {
+fn edges_let_constructs_typed_edge_all_selector() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
         let es = edges(body)\n}";
     let compiled = compile_no_errors(source);
-    let mut engine = engine_with_mock_kernel(|k| {
-        k.with_extracted_edges(
-            GeometryHandleId(1),
-            vec![
-                GeometryHandleId(2),
-                GeometryHandleId(3),
-                GeometryHandleId(4),
-            ],
-        )
-    });
+    let mut engine = engine_with_mock_kernel(|k| k);
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    let list = match result.values.get(&cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "Bracket.es must be Value::List of GeometryHandle sub-handles, got {:?}",
-            other
-        ),
-    };
-    assert_eq!(list.len(), 3, "expected 3 edge sub-handles");
-    let expected_ids = [
-        GeometryHandleId(2),
-        GeometryHandleId(3),
-        GeometryHandleId(4),
-    ];
-    let mut hashes: Vec<[u8; 32]> = Vec::new();
-    for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
-        match elem {
-            Value::GeometryHandle {
-                kernel_handle,
-                upstream_values_hash,
-                ..
-            } => {
-                assert_eq!(
-                    kernel_handle, expected_id,
-                    "es[{i}] kernel_handle must be {expected_id:?}"
-                );
-                hashes.push(*upstream_values_hash);
-            }
-            other => panic!("es[{i}] must be Value::GeometryHandle, got {:?}", other),
-        }
-    }
-    assert_ne!(
-        hashes[0], hashes[1],
-        "edge 0 and 1 upstream hashes must differ"
-    );
-    assert_ne!(
-        hashes[1], hashes[2],
-        "edge 1 and 2 upstream hashes must differ"
-    );
-    assert_ne!(
-        hashes[0], hashes[2],
-        "edge 0 and 2 upstream hashes must differ"
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.es",
+        SelectorKind::Edge,
+        GeometryHandleId(1),
+        |q| assert_eq!(*q, LeafQuery::All, "edges(body) → All leaf"),
     );
 }
 
 /// `let fs = faces(body)` on a structure containing `let body = box(10mm, 10mm, 10mm)`
-/// must resolve to a `Value::List` of six `Value::GeometryHandle` sub-handles when
-/// the mock kernel pre-stages `extract_faces(GeometryHandleId(1)) = [10..15]`
-/// (matching a box's six faces). Each element must carry the expected `kernel_handle`,
-/// and all six `upstream_values_hash` values must be pairwise distinct (PRD §4 iii).
+/// must construct a typed `Value::Selector(Face)` whose leaf is `All` over the
+/// parent box handle (task 4118 γ) — NOT an eagerly-resolved `Value::List`.
+/// Construction is kernel-FREE: the build uses an UNSTAGED mock kernel (K2/BT7).
 #[test]
-fn faces_let_resolves_to_list_of_int_via_extract_faces() {
+fn faces_let_constructs_typed_face_all_selector() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
         let fs = faces(body)\n}";
     let compiled = compile_no_errors(source);
-    let mut engine = engine_with_mock_kernel(|k| {
-        k.with_extracted_faces(
-            GeometryHandleId(1),
-            vec![
-                GeometryHandleId(10),
-                GeometryHandleId(11),
-                GeometryHandleId(12),
-                GeometryHandleId(13),
-                GeometryHandleId(14),
-                GeometryHandleId(15),
-            ],
-        )
-    });
+    let mut engine = engine_with_mock_kernel(|k| k);
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "fs");
-    let list = match result.values.get(&cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "Bracket.fs must be Value::List of GeometryHandle sub-handles, got {:?}",
-            other
-        ),
-    };
-    assert_eq!(list.len(), 6, "expected 6 face sub-handles");
-    let expected_ids = [
-        GeometryHandleId(10),
-        GeometryHandleId(11),
-        GeometryHandleId(12),
-        GeometryHandleId(13),
-        GeometryHandleId(14),
-        GeometryHandleId(15),
-    ];
-    let mut hashes: Vec<[u8; 32]> = Vec::new();
-    for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
-        match elem {
-            Value::GeometryHandle {
-                kernel_handle,
-                upstream_values_hash,
-                ..
-            } => {
-                assert_eq!(
-                    kernel_handle, expected_id,
-                    "fs[{i}] kernel_handle must be {expected_id:?}"
-                );
-                hashes.push(*upstream_values_hash);
-            }
-            other => panic!("fs[{i}] must be Value::GeometryHandle, got {:?}", other),
-        }
-    }
-    // All six hashes must be pairwise distinct (PRD §4 iii).
-    for i in 0..hashes.len() {
-        for j in (i + 1)..hashes.len() {
-            assert_ne!(
-                hashes[i], hashes[j],
-                "face {i} and {j} upstream hashes must differ"
-            );
-        }
-    }
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.fs",
+        SelectorKind::Face,
+        GeometryHandleId(1),
+        |q| assert_eq!(*q, LeafQuery::All, "faces(body) → All leaf"),
+    );
 }
 
 /// `let com = center_of_mass(body, density)` on a structure containing
@@ -527,291 +472,172 @@ fn moment_of_inertia_let_resolves_to_rank2_tensor_via_kernel_reply() {
     );
 }
 
-/// `let es = edges_by_length(body, r)` with `let r = 0mm..50mm` must resolve
-/// to the filtered `Value::List` of edge sub-handles (PRD §4 KGQ-θ) whose
-/// `EdgeLength` falls in `[0, 0.05] m`. Both staged edges (10 mm and 20 mm)
-/// are within range, so both survive. Pins the Range-arg resolution +
-/// delegation to `topology_selectors::edges_by_length` and the sub-handle
-/// output contract (task 3617).
+/// `let es = edges_by_length(body, r)` with `let r = 0mm..50mm` must construct
+/// a typed `Value::Selector(Edge)` whose leaf is `ByLength { 0..0.05 m }` over
+/// the parent box handle (task 4118 γ) — NOT an eagerly-filtered `Value::List`.
+/// Construction is kernel-FREE: the build uses an UNSTAGED mock kernel, so a
+/// correct typed selector proves zero kernel queries were issued (K2/BT7).
 #[test]
-fn edges_by_length_let_resolves_to_filtered_list_via_helper() {
+fn edges_by_length_let_constructs_typed_edge_by_length_selector() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
         let r = 0mm..50mm\n    \
         let es = edges_by_length(body, r)\n}";
     let compiled = compile_no_errors(source);
-    let mut engine = engine_with_mock_kernel(|k| {
-        k.with_extracted_edges(
-            GeometryHandleId(1),
-            vec![GeometryHandleId(2), GeometryHandleId(3)],
-        )
-        .with_edge_length_result(GeometryHandleId(2), Value::Real(0.010))
-        .with_edge_length_result(GeometryHandleId(3), Value::Real(0.020))
-    });
+    let mut engine = engine_with_mock_kernel(|k| k);
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    let list = match result.values.get(&cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "Bracket.es must be Value::List of GeometryHandle sub-handles \
-             (PRD §4 KGQ-θ); got {:?}",
-            other
-        ),
-    };
-    assert_eq!(
-        list.len(),
-        2,
-        "expected 2 edge sub-handles (both within [0,50]mm)"
-    );
-    let mut hashes: Vec<[u8; 32]> = Vec::new();
-    for (i, (elem, expected_kh)) in list
-        .iter()
-        .zip([GeometryHandleId(2), GeometryHandleId(3)].iter())
-        .enumerate()
-    {
-        match elem {
-            Value::GeometryHandle {
-                kernel_handle,
-                upstream_values_hash,
-                ..
-            } => {
-                assert_eq!(
-                    kernel_handle, expected_kh,
-                    "es[{i}] kernel_handle must be {expected_kh:?}"
-                );
-                assert_ne!(
-                    upstream_values_hash, &[0u8; 32],
-                    "es[{i}] upstream_values_hash must be non-zero (PRD §4)"
-                );
-                hashes.push(*upstream_values_hash);
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.es",
+        SelectorKind::Edge,
+        GeometryHandleId(1),
+        |q| match q {
+            LeafQuery::ByLength { min_m, max_m } => {
+                assert!((*min_m - 0.0).abs() < 1e-12, "min_m must be 0m, got {min_m}");
+                assert!((*max_m - 0.05).abs() < 1e-9, "max_m must be 0.05m, got {max_m}");
             }
-            other => panic!("es[{i}] must be Value::GeometryHandle, got {:?}", other),
-        }
-    }
-    assert_ne!(
-        hashes[0], hashes[1],
-        "es[0] and es[1] upstream_values_hash must be pairwise-distinct (PRD §4 iii)"
+            other => panic!("edges_by_length → ByLength leaf, got {other:?}"),
+        },
     );
 }
 
 /// `let fs = faces_by_area(body, r)` with `let r = 0mm*0mm..1m*1m` must
-/// resolve to the area-filtered `Value::List` of face sub-handles (PRD §4
-/// KGQ-θ). The single staged face (0.0001 m²) is within `[0, 1] m²`, so it
-/// survives. Pins the Area-Range resolution + delegation to
-/// `topology_selectors::faces_by_area` and the sub-handle output contract
-/// (task 3617).
+/// construct a typed `Value::Selector(Face)` whose leaf is `ByArea { 0..1 m² }`
+/// over the parent box handle (task 4118 γ) — NOT an eagerly-filtered
+/// `Value::List`. Construction is kernel-FREE (UNSTAGED mock kernel, K2/BT7).
 #[test]
-fn faces_by_area_let_resolves_to_filtered_list_via_helper() {
+fn faces_by_area_let_constructs_typed_face_by_area_selector() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
         let r = 0mm*0mm..1m*1m\n    \
         let fs = faces_by_area(body, r)\n}";
     let compiled = compile_no_errors(source);
-    let mut engine = engine_with_mock_kernel(|k| {
-        k.with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(2)])
-            .with_surface_area_result(GeometryHandleId(2), Value::Real(0.0001))
-    });
+    let mut engine = engine_with_mock_kernel(|k| k);
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "fs");
-    let list = match result.values.get(&cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "Bracket.fs must be Value::List of GeometryHandle sub-handles \
-             (PRD §4 KGQ-θ); got {:?}",
-            other
-        ),
-    };
-    assert_eq!(list.len(), 1, "expected 1 face sub-handle (within [0,1]m²)");
-    match &list[0] {
-        Value::GeometryHandle {
-            kernel_handle,
-            upstream_values_hash,
-            ..
-        } => {
-            assert_eq!(
-                kernel_handle,
-                &GeometryHandleId(2),
-                "fs[0] kernel_handle must be GHId(2)"
-            );
-            assert_ne!(
-                upstream_values_hash, &[0u8; 32],
-                "fs[0] upstream_values_hash must be non-zero (PRD §4)"
-            );
-        }
-        other => panic!("fs[0] must be Value::GeometryHandle, got {:?}", other),
-    }
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.fs",
+        SelectorKind::Face,
+        GeometryHandleId(1),
+        |q| match q {
+            LeafQuery::ByArea { min_m2, max_m2 } => {
+                assert!((*min_m2 - 0.0).abs() < 1e-12, "min_m2 must be 0m², got {min_m2}");
+                assert!((*max_m2 - 1.0).abs() < 1e-9, "max_m2 must be 1m², got {max_m2}");
+            }
+            other => panic!("faces_by_area → ByArea leaf, got {other:?}"),
+        },
+    );
 }
 
 /// `let fs = faces_by_normal(body, dir, tol)` with `let dir = vec3(0.0, 0.0, 1.0)`
-/// and `let tol = 1deg` must resolve to a `Value::List` of one
-/// `Value::GeometryHandle` (PRD §4 KGQ-ι). The single staged face's normal is
-/// exactly `+z`, so it survives the 1° tolerance. Pins the Vec3-arg + angle-arg
-/// resolution + delegation to `topology_selectors::faces_by_normal` and the
-/// sub-handle output contract (task 3618).
+/// and `let tol = 1deg` must construct a typed `Value::Selector(Face)` whose
+/// leaf is `ByNormal { dir: +z, tol: 1° }` over the parent box handle (task
+/// 4118 γ) — NOT an eagerly-filtered `Value::List`. Construction is kernel-FREE
+/// (UNSTAGED mock kernel, K2/BT7).
 #[test]
-fn faces_by_normal_let_resolves_to_filtered_list_via_helper() {
+fn faces_by_normal_let_constructs_typed_face_by_normal_selector() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
         let dir = vec3(0.0, 0.0, 1.0)\n    \
         let tol = 1deg\n    \
         let fs = faces_by_normal(body, dir, tol)\n}";
     let compiled = compile_no_errors(source);
-    let mut engine = engine_with_mock_kernel(|k| {
-        k.with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(2)])
-            .with_face_normal_result(
-                GeometryHandleId(2),
-                Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".to_string()),
-            )
-    });
+    let mut engine = engine_with_mock_kernel(|k| k);
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "fs");
-    let list = match result.values.get(&cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "Bracket.fs must be Value::List of GeometryHandle sub-handles \
-             (PRD §4 KGQ-ι); got {:?}",
-            other
-        ),
-    };
-    assert_eq!(list.len(), 1, "expected 1 face sub-handle");
-    match &list[0] {
-        Value::GeometryHandle {
-            kernel_handle,
-            upstream_values_hash,
-            ..
-        } => {
-            assert_eq!(
-                kernel_handle,
-                &GeometryHandleId(2),
-                "fs[0] kernel_handle must be GHId(2)"
-            );
-            assert_ne!(
-                upstream_values_hash, &[0u8; 32],
-                "fs[0] upstream_values_hash must be non-zero (PRD §4)"
-            );
-        }
-        other => panic!("fs[0] must be Value::GeometryHandle, got {:?}", other),
-    }
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.fs",
+        SelectorKind::Face,
+        GeometryHandleId(1),
+        |q| match q {
+            LeafQuery::ByNormal { dir, tol_rad } => {
+                assert_eq!(*dir, [0.0, 0.0, 1.0], "dir must be +z");
+                assert!(
+                    (*tol_rad - 1f64.to_radians()).abs() < 1e-9,
+                    "tol_rad must be 1°, got {tol_rad}"
+                );
+            }
+            other => panic!("faces_by_normal → ByNormal leaf, got {other:?}"),
+        },
+    );
 }
 
 /// `let es = edges_parallel_to(body, axis, tol)` with `let axis = vec3(0.0, 0.0, 1.0)`
-/// and `let tol = 1deg` must resolve to a `Value::List` of one
-/// `Value::GeometryHandle` (PRD §4 KGQ-ι). The single staged edge's tangent is
-/// `+z` (parallel to `axis`), so it survives the 1° tolerance. Pins the
-/// Vec3-arg + angle-arg resolution + delegation to
-/// `topology_selectors::edges_parallel_to` (sign-tolerant predicate) and the
-/// sub-handle output contract (task 3618).
+/// and `let tol = 1deg` must construct a typed `Value::Selector(Edge)` whose
+/// leaf is `ByParallel { axis: +z, tol: 1° }` over the parent box handle (task
+/// 4118 γ) — NOT an eagerly-filtered `Value::List`. Construction is kernel-FREE
+/// (UNSTAGED mock kernel, K2/BT7).
 #[test]
-fn edges_parallel_to_let_resolves_to_filtered_list_via_helper() {
+fn edges_parallel_to_let_constructs_typed_edge_by_parallel_selector() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
         let axis = vec3(0.0, 0.0, 1.0)\n    \
         let tol = 1deg\n    \
         let es = edges_parallel_to(body, axis, tol)\n}";
     let compiled = compile_no_errors(source);
-    let mut engine = engine_with_mock_kernel(|k| {
-        k.with_extracted_edges(GeometryHandleId(1), vec![GeometryHandleId(2)])
-            .with_edge_tangent_result(
-                GeometryHandleId(2),
-                Value::String("{\"x\":0.0,\"y\":0.0,\"z\":1.0}".to_string()),
-            )
-    });
+    let mut engine = engine_with_mock_kernel(|k| k);
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    let list = match result.values.get(&cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "Bracket.es must be Value::List of GeometryHandle sub-handles \
-             (PRD §4 KGQ-ι); got {:?}",
-            other
-        ),
-    };
-    assert_eq!(list.len(), 1, "expected 1 edge sub-handle");
-    match &list[0] {
-        Value::GeometryHandle {
-            kernel_handle,
-            upstream_values_hash,
-            ..
-        } => {
-            assert_eq!(
-                kernel_handle,
-                &GeometryHandleId(2),
-                "es[0] kernel_handle must be GHId(2)"
-            );
-            assert_ne!(
-                upstream_values_hash, &[0u8; 32],
-                "es[0] upstream_values_hash must be non-zero (PRD §4)"
-            );
-        }
-        other => panic!("es[0] must be Value::GeometryHandle, got {:?}", other),
-    }
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.es",
+        SelectorKind::Edge,
+        GeometryHandleId(1),
+        |q| match q {
+            LeafQuery::ByParallel { axis, tol_rad } => {
+                assert_eq!(*axis, [0.0, 0.0, 1.0], "axis must be +z");
+                assert!(
+                    (*tol_rad - 1f64.to_radians()).abs() < 1e-9,
+                    "tol_rad must be 1°, got {tol_rad}"
+                );
+            }
+            other => panic!("edges_parallel_to → ByParallel leaf, got {other:?}"),
+        },
+    );
 }
 
 /// `let es = edges_at_height(body, z, tol)` with `let z = 0mm` and
-/// `let tol = 0.01mm` must resolve to the height-filtered `Value::List` of
-/// edge sub-handles (PRD §4 KGQ-θ). The single staged edge's bbox z-extent is
-/// `[0, 0]` (exactly on the `z = 0` plane), within the 0.01 mm tolerance, so
-/// it survives. Pins the Length-scalar-arg resolution + delegation to
-/// `topology_selectors::edges_at_height` and the sub-handle output contract
-/// (task 3617).
+/// `let tol = 0.01mm` must construct a typed `Value::Selector(Edge)` whose leaf
+/// is `ByHeight { z: 0m, tol: 1e-5 m }` over the parent box handle (task 4118
+/// γ) — NOT an eagerly-filtered `Value::List`. Construction is kernel-FREE
+/// (UNSTAGED mock kernel, K2/BT7).
 #[test]
-fn edges_at_height_let_resolves_to_filtered_list_via_helper() {
+fn edges_at_height_let_constructs_typed_edge_by_height_selector() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
         let z = 0mm\n    \
         let tol = 0.01mm\n    \
         let es = edges_at_height(body, z, tol)\n}";
     let compiled = compile_no_errors(source);
-    let mut engine = engine_with_mock_kernel(|k| {
-        k.with_extracted_edges(GeometryHandleId(1), vec![GeometryHandleId(2)])
-            .with_bbox_result(
-                GeometryHandleId(2),
-                Value::String(
-                    "{\"xmin\":-0.005,\"ymin\":-0.005,\"zmin\":0.0,\
-                      \"xmax\":0.005,\"ymax\":0.005,\"zmax\":0.0}"
-                        .to_string(),
-                ),
-            )
-    });
+    let mut engine = engine_with_mock_kernel(|k| k);
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("Bracket", "es");
-    let list = match result.values.get(&cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "Bracket.es must be Value::List of GeometryHandle sub-handles \
-             (PRD §4 KGQ-θ); got {:?}",
-            other
-        ),
-    };
-    assert_eq!(list.len(), 1, "expected 1 edge sub-handle (z-plane filter)");
-    match &list[0] {
-        Value::GeometryHandle {
-            kernel_handle,
-            upstream_values_hash,
-            ..
-        } => {
-            assert_eq!(
-                kernel_handle,
-                &GeometryHandleId(2),
-                "es[0] kernel_handle must be GHId(2)"
-            );
-            assert_ne!(
-                upstream_values_hash, &[0u8; 32],
-                "es[0] upstream_values_hash must be non-zero (PRD §4)"
-            );
-        }
-        other => panic!("es[0] must be Value::GeometryHandle, got {:?}", other),
-    }
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.es",
+        SelectorKind::Edge,
+        GeometryHandleId(1),
+        |q| match q {
+            LeafQuery::ByHeight { z_m, tol_m } => {
+                assert!((*z_m - 0.0).abs() < 1e-12, "z_m must be 0m, got {z_m}");
+                assert!((*tol_m - 1e-5).abs() < 1e-12, "tol_m must be 1e-5m, got {tol_m}");
+            }
+            other => panic!("edges_at_height → ByHeight leaf, got {other:?}"),
+        },
+    );
 }
 
 /// `let neighbors = adjacent_faces(body, body)` must resolve to a
@@ -1000,90 +826,33 @@ fn tessellate_realizations_post_processes_topology_selectors() {
     );
 }
 
-/// Tessellate-path parity for the task-3560 selector cluster. Exercises one
-/// representative new selector — `edges(body)` — via
+/// Tessellate-path parity for the selector cluster under the task-4118 (γ)
+/// re-type. Exercises one representative selector — `edges(body)` — via
 /// `engine.tessellate_realizations(&compiled)` and asserts the same
-/// `Bracket.es == Value::List(Value::GeometryHandle(_))` outcome as the
-/// build-path test `edges_let_resolves_to_list_of_int_via_extract_edges`. Pins
-/// that all three call sites in `engine_build.rs` (build / build_snapshot /
-/// tessellate) consistently propagate the kernel-resolved value through the
-/// post-process; without this, a GUI overlay reading `TessellateResult.values`
-/// would see `Value::Undef` while a parallel build's overlay would see the
-/// sub-handle list.
-///
-/// Pinning `edges` specifically also pins the cluster-A widening of
-/// `Engine::post_process_topology_selectors` from `&dyn` to `&mut dyn
-/// GeometryKernel` at the tessellate site — `edges` calls
-/// `kernel.extract_edges(...)` which takes `&mut self`.
+/// `Bracket.es == Value::Selector(Edge)` (All leaf) outcome as the build-path
+/// test `edges_let_constructs_typed_edge_all_selector`. Pins that all three
+/// call sites in `engine_build.rs` (build / build_snapshot / tessellate)
+/// consistently package the typed selector through the post-process; without
+/// this, a GUI overlay reading `TessellateResult.values` would diverge from a
+/// parallel build's overlay. Construction is kernel-FREE (UNSTAGED mock kernel,
+/// K2/BT7).
 #[test]
 fn tessellate_realizations_post_processes_new_topology_selectors() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
         let es = edges(body)\n}";
     let compiled = compile_no_errors(source);
-    let mut engine = engine_with_mock_kernel(|k| {
-        k.with_extracted_edges(
-            GeometryHandleId(1),
-            vec![
-                GeometryHandleId(2),
-                GeometryHandleId(3),
-                GeometryHandleId(4),
-            ],
-        )
-    });
+    let mut engine = engine_with_mock_kernel(|k| k);
 
     let result = engine.tessellate_realizations(&compiled);
 
     let cell = ValueCellId::new("Bracket", "es");
-    let list = match result.values.get(&cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "TessellateResult.values must expose Value::List of GeometryHandle \
-             sub-handles for edges() cells (parity with BuildResult.values), got {:?}",
-            other
-        ),
-    };
-    assert_eq!(
-        list.len(),
-        3,
-        "expected 3 edge sub-handles on tessellate path"
-    );
-    let expected_ids = [
-        GeometryHandleId(2),
-        GeometryHandleId(3),
-        GeometryHandleId(4),
-    ];
-    let mut hashes: Vec<[u8; 32]> = Vec::new();
-    for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
-        match elem {
-            Value::GeometryHandle {
-                kernel_handle,
-                upstream_values_hash,
-                ..
-            } => {
-                assert_eq!(
-                    kernel_handle, expected_id,
-                    "es[{i}] kernel_handle must be {expected_id:?} on tessellate path"
-                );
-                hashes.push(*upstream_values_hash);
-            }
-            other => panic!(
-                "es[{i}] must be Value::GeometryHandle on tessellate path, got {:?}",
-                other
-            ),
-        }
-    }
-    assert_ne!(
-        hashes[0], hashes[1],
-        "tessellate edge 0 and 1 upstream hashes must differ"
-    );
-    assert_ne!(
-        hashes[1], hashes[2],
-        "tessellate edge 1 and 2 upstream hashes must differ"
-    );
-    assert_ne!(
-        hashes[0], hashes[2],
-        "tessellate edge 0 and 2 upstream hashes must differ"
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.es (tessellate path)",
+        SelectorKind::Edge,
+        GeometryHandleId(1),
+        |q| assert_eq!(*q, LeafQuery::All, "edges(body) → All leaf on tessellate path"),
     );
 }
 
@@ -1222,75 +991,29 @@ fn edges_and_faces_of_box_via_occt_return_canonical_counts() {
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
+    // Task 4118 (γ): es/fs cells now hold a typed `Value::Selector` (All leaf)
+    // built kernel-FREE, not an eagerly-extracted `Value::List`. The end-to-end
+    // Selector → List<Geometry> → resolve() path over real OCCT geometry (the
+    // canonical 12-edge / 6-face counts) is covered by the step-15 golden
+    // (`selector_coercion_golden.rs`) and the kernel_queries_* re-assertions,
+    // which exercise the compiler-inserted ResolveSelector coercion node. Here
+    // we pin that the OCCT build path packages the typed selector leaf over the
+    // realized box handle.
     let es_cell = ValueCellId::new("Bracket", "es");
-    let es_value = result
-        .values
-        .get(&es_cell)
-        .unwrap_or_else(|| panic!("Bracket.es must be present in BuildResult.values"));
-    let edges = match es_value {
-        Value::List(items) => items,
-        other => panic!(
-            "Bracket.es must be Value::List(...) via OCCT extract_edges, got {:?}",
-            other
-        ),
-    };
-    assert_eq!(
-        edges.len(),
-        12,
-        "Bracket.es must list exactly 12 edges (a cuboid's canonical edge \
-         count) via OCCT extract_edges, got {} edges",
-        edges.len()
+    assert_selector_leaf(
+        result.values.get(&es_cell),
+        "Bracket.es (OCCT path)",
+        SelectorKind::Edge,
+        GeometryHandleId(1),
+        |q| assert_eq!(*q, LeafQuery::All, "edges(body) → All leaf (OCCT path)"),
     );
-    let mut edge_hashes: Vec<[u8; 32]> = Vec::new();
-    for (i, item) in edges.iter().enumerate() {
-        match item {
-            Value::GeometryHandle {
-                upstream_values_hash,
-                ..
-            } => {
-                edge_hashes.push(*upstream_values_hash);
-            }
-            other => panic!(
-                "Bracket.es[{}] must be Value::GeometryHandle, got {:?}",
-                i, other
-            ),
-        }
-    }
-    // All 12 upstream_values_hashes must be pairwise distinct (PRD §4 iii).
-    for i in 0..edge_hashes.len() {
-        for j in (i + 1)..edge_hashes.len() {
-            assert_ne!(
-                edge_hashes[i], edge_hashes[j],
-                "edge {i} and {j} upstream hashes must differ (OCCT path)"
-            );
-        }
-    }
 
     let fs_cell = ValueCellId::new("Bracket", "fs");
-    let fs_value = result
-        .values
-        .get(&fs_cell)
-        .unwrap_or_else(|| panic!("Bracket.fs must be present in BuildResult.values"));
-    let faces = match fs_value {
-        Value::List(items) => items,
-        other => panic!(
-            "Bracket.fs must be Value::List(...) via OCCT extract_faces, got {:?}",
-            other
-        ),
-    };
-    assert_eq!(
-        faces.len(),
-        6,
-        "Bracket.fs must list exactly 6 faces (a cuboid's canonical face \
-         count) via OCCT extract_faces, got {} faces",
-        faces.len()
+    assert_selector_leaf(
+        result.values.get(&fs_cell),
+        "Bracket.fs (OCCT path)",
+        SelectorKind::Face,
+        GeometryHandleId(1),
+        |q| assert_eq!(*q, LeafQuery::All, "faces(body) → All leaf (OCCT path)"),
     );
-    for (i, item) in faces.iter().enumerate() {
-        assert!(
-            matches!(item, Value::GeometryHandle { .. }),
-            "Bracket.fs[{}] must be Value::GeometryHandle, got {:?}",
-            i,
-            item
-        );
-    }
 }

@@ -2642,6 +2642,299 @@ pub(crate) fn kernel_distance(
 //                          topology-selector helper, or the arg shape is
 //                          unsupported. Callers fall through to the cell's
 //                          compiled default.
+/// Resolve a selector constructor's parent-solid argument (`arg[0]`) to a
+/// [`reify_ir::value::GeometryHandleRef`] target for a kernel-FREE
+/// `Value::Selector` leaf (task 4118 γ).
+///
+/// Reuses [`resolve_parent_geometry_handle_arg`] — which reads the realized
+/// `Value::GeometryHandle` out of `values` — then repackages its three identity
+/// fields as a `GeometryHandleRef`. Falls through to `None` (cell stays at
+/// `Value::Undef`) when `arg[0]` is not yet a hydrated `Value::GeometryHandle`
+/// (PRD invariant #2: never partial-construct a selector target).
+fn resolve_selector_target(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+) -> Option<reify_ir::value::GeometryHandleRef> {
+    let (realization_ref, upstream_values_hash, kernel_handle) =
+        resolve_parent_geometry_handle_arg(expr, values)?;
+    Some(reify_ir::value::GeometryHandleRef {
+        realization_ref,
+        upstream_values_hash,
+        kernel_handle,
+    })
+}
+
+/// Package a kernel-FREE leaf `Value::Selector` (task 4118 γ): the 7
+/// predicate/all selector constructors evaluate to a typed
+/// `Value::Selector(kind)` pairing the parent solid handle (`target`) with a
+/// `LeafQuery` describing the predicate. NO kernel query is issued here — the
+/// `Selector → List<Geometry>` resolution is deferred to the compiler-inserted
+/// `ResolveSelector` coercion node, executed by `topology_selectors::resolve`
+/// (K2/BT7: zero kernel queries during construction).
+///
+/// `kind` and `query.required_kind()` are statically matched at every call site
+/// below, so the K1 kind-closure check in `SelectorValue::leaf` never fails in
+/// practice; the defensive `Err` arm emits a Warning and leaves the cell at
+/// `Undef` rather than silently dropping it.
+fn build_leaf_selector(
+    kind: reify_core::ty::SelectorKind,
+    target: reify_ir::value::GeometryHandleRef,
+    query: reify_ir::value::LeafQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    match reify_ir::value::SelectorValue::leaf(kind, target, query) {
+        Ok(sv) => Some(reify_ir::Value::Selector(sv)),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name}: selector kind-closure violation ({err:?}); cell left at Undef"
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// Kernel-bearing evaluation of the compiler-inserted `ResolveSelector`
+/// coercion node and `IndexAccess` over a selector (task 4118 γ, step-6).
+///
+/// `ResolveSelector { selector }` → reconstruct the inner `Value::Selector`
+/// (PREFERRED: inline from a nested selector `FunctionCall`, sidestepping
+/// value-cell ordering; else a `ValueRef` to an already-patched selector cell),
+/// call the single `topology_selectors::resolve` executor, and wrap the
+/// canonical-order handle ids as a `Value::List` of `Value::GeometryHandle`
+/// sub-handles via `make_sub_handle`.
+///
+/// `IndexAccess { object: ResolveSelector{..} | <selector FunctionCall>, index }`
+/// → resolve the selector to its list then return the indexed element (the
+/// `faces(s)[i]` curvature shape).
+///
+/// Returns `None` for any other expr shape (the geometry_ops `None`-means-skip
+/// contract: the cell is left for a sibling pass / the pure eval path).
+pub(crate) fn try_eval_resolve_selector(
+    expr: &reify_ir::CompiledExpr,
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    match &expr.kind {
+        reify_ir::CompiledExprKind::ResolveSelector { selector } => {
+            resolve_selector_to_list(selector, named_steps, values, kernel, diagnostics)
+        }
+        reify_ir::CompiledExprKind::IndexAccess { object, index } => {
+            // Only handle IndexAccess whose object is a selector / ResolveSelector;
+            // ordinary collection indexing is owned by the pure eval_expr path.
+            let inner_selector = match &object.kind {
+                reify_ir::CompiledExprKind::ResolveSelector { selector } => selector.as_ref(),
+                reify_ir::CompiledExprKind::FunctionCall { .. } => object.as_ref(),
+                _ => return None,
+            };
+            match resolve_selector_to_list(
+                inner_selector,
+                named_steps,
+                values,
+                kernel,
+                diagnostics,
+            )? {
+                reify_ir::Value::List(elems) => {
+                    let idx = resolve_index_usize(index, values)?;
+                    match elems.get(idx) {
+                        Some(v) => Some(v.clone()),
+                        None => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "selector index {idx} out of bounds (len {}); cell left at Undef",
+                                elems.len()
+                            )));
+                            Some(reify_ir::Value::Undef)
+                        }
+                    }
+                }
+                // resolve_selector_to_list downgraded to Undef (kernel error) —
+                // propagate so the cell is visibly degraded rather than skipped.
+                other => Some(other),
+            }
+        }
+        // `single(<selector>)` (task 4118 γ): the single()/list-helper coercion
+        // site (compiler step-10) wraps the selector argument in a
+        // `ResolveSelector`, so a `single(faces_by_normal(...))` cell compiles to
+        // `FunctionCall { "single", [ResolveSelector{..}] }`. The pure eval path
+        // cannot resolve the inner `ResolveSelector` (no kernel), so resolve it
+        // HERE and unwrap the unique element — yielding the `Geometry` handle that
+        // `single`'s `single(List<Geometry>) → Geometry` contract promises. This
+        // is the runtime half of the single()/list-helper coercion (the golden
+        // `top = single(faces_by_normal(b, +Z, 1deg))` shape).
+        //
+        // LOCKSTEP with the compiler: the set of coercing list-helpers is named
+        // by `reify_compiler::coerce::COERCING_LIST_HELPERS` (currently just
+        // `single`). This arm is the runtime counterpart that constant's doc
+        // requires — it is intentionally hard-pinned to `"single"` (not the whole
+        // set) because the unwrap-the-unique-element logic below is `single`'s
+        // specific `single(List<Geometry>) → Geometry` semantics. If a new
+        // coercing helper is ever added to `COERCING_LIST_HELPERS`, it needs its
+        // OWN arm here implementing that helper's semantics (e.g. `first` → index
+        // 0), not a widening of this `== "single"` guard.
+        reify_ir::CompiledExprKind::FunctionCall { function, args }
+            if function.name == "single" && args.len() == 1 =>
+        {
+            let selector_expr = match &args[0].kind {
+                reify_ir::CompiledExprKind::ResolveSelector { selector } => selector.as_ref(),
+                // Defensive: a bare selector FunctionCall (un-coerced) — still ours.
+                reify_ir::CompiledExprKind::FunctionCall { .. } => &args[0],
+                // Any other arg shape (a real List, a ValueRef to a List, …) is
+                // owned by the pure eval_expr path — skip.
+                _ => return None,
+            };
+            match resolve_selector_to_list(
+                selector_expr,
+                named_steps,
+                values,
+                kernel,
+                diagnostics,
+            )? {
+                reify_ir::Value::List(mut elems) => {
+                    if elems.len() == 1 {
+                        Some(elems.remove(0))
+                    } else {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "single(...) expected exactly 1 element, got {}; cell left at Undef",
+                            elems.len()
+                        )));
+                        Some(reify_ir::Value::Undef)
+                    }
+                }
+                // resolve_selector_to_list downgraded to Undef (kernel error) —
+                // propagate so the cell is visibly degraded rather than skipped.
+                other => Some(other),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Reconstruct the `Value::Selector` denoted by `selector_expr`, resolve it via
+/// `topology_selectors::resolve`, and wrap the canonical-order handle ids as a
+/// `Value::List` of `Value::GeometryHandle` sub-handles. Shared by the
+/// `ResolveSelector` and `IndexAccess`-over-selector arms of
+/// [`try_eval_resolve_selector`].
+///
+/// Returns `None` when the inner expr is not a selector we can reconstruct (so
+/// the caller skips the cell); `Some(Value::Undef)` + a Warning when `resolve()`
+/// fails at the kernel.
+///
+/// NOTE (sub-handle indexing): the resolved ids are enumerated by FILTERED
+/// position, so a predicate leaf's `[i]` does not preserve the parent's canonical
+/// TopExp index. For the call-site-transparent shapes in scope here — `All`-leaf
+/// indexing (`faces(b)[i]`, filtered == canonical) and single-element
+/// `single(predicate(...))` — filtered position equals the intended element.
+/// Canonical-index recovery for multi-element predicate `[i]` is a follow-up.
+fn resolve_selector_to_list(
+    selector_expr: &reify_ir::CompiledExpr,
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    // (1) Obtain the Value::Selector. PREFERRED: inline reconstruction from a
+    // nested selector FunctionCall (no value-cell ordering dependency). Else a
+    // ValueRef to an already-patched Value::Selector cell.
+    let sv = match &selector_expr.kind {
+        reify_ir::CompiledExprKind::FunctionCall { .. } => {
+            match try_eval_topology_selector(
+                selector_expr,
+                named_steps,
+                values,
+                kernel,
+                diagnostics,
+            )? {
+                reify_ir::Value::Selector(sv) => sv,
+                // FunctionCall resolved to a non-selector (a still-List selector
+                // like adjacent_faces, or Undef) — not ours to wrap.
+                _ => return None,
+            }
+        }
+        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id) {
+            Some(reify_ir::Value::Selector(sv)) => sv.clone(),
+            // Cell not yet patched to a selector / not a selector — skip.
+            _ => return None,
+        },
+        _ => return None,
+    };
+
+    // (2) Parent identity for sub-handle hashing: the (first) leaf target.
+    let target = first_leaf_target(&sv)?;
+    let sub_kind = match sv.kind {
+        reify_core::ty::SelectorKind::Face => crate::topology_selectors::SubKind::Face,
+        reify_core::ty::SelectorKind::Edge => crate::topology_selectors::SubKind::Edge,
+        reify_core::ty::SelectorKind::Body => crate::topology_selectors::SubKind::Solid,
+    };
+    let parent_rr = target.realization_ref.clone();
+    let parent_hash = target.upstream_values_hash;
+
+    // (3) Resolve via the single executor — the kernel-bearing query happens HERE,
+    // not at construction (K2/BT7).
+    match crate::topology_selectors::resolve(&sv, kernel, diagnostics) {
+        Ok(ids) => {
+            let elements = ids
+                .into_iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    crate::topology_selectors::make_sub_handle(
+                        &parent_rr,
+                        &parent_hash,
+                        sub_kind,
+                        i as u32,
+                        id,
+                    )
+                })
+                .collect();
+            Some(reify_ir::Value::List(elements))
+        }
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "resolve_selector: kernel error resolving selector: {err}; cell left at Undef"
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// First `Leaf` target reached by a left-most walk of the selector tree — the
+/// parent solid handle used for sub-handle identity. The 7 re-typed constructors
+/// only build `Leaf` nodes; composites walk to their first child for robustness.
+fn first_leaf_target(
+    sv: &reify_ir::value::SelectorValue,
+) -> Option<&reify_ir::value::GeometryHandleRef> {
+    fn walk(node: &reify_ir::value::SelectorNode) -> Option<&reify_ir::value::GeometryHandleRef> {
+        match node {
+            reify_ir::value::SelectorNode::Leaf { target, .. } => Some(target),
+            reify_ir::value::SelectorNode::Union(children)
+            | reify_ir::value::SelectorNode::Intersect(children) => {
+                children.first().and_then(|c| walk(&c.node))
+            }
+            reify_ir::value::SelectorNode::Difference(a, _) => walk(&a.node),
+        }
+    }
+    walk(&sv.node)
+}
+
+/// Resolve an `IndexAccess` index expr to a `usize`. Accepts an `Int` literal or
+/// a `ValueRef` to an `Int` cell; returns `None` for anything else or a negative
+/// index (the caller then leaves the cell untouched).
+fn resolve_index_usize(
+    index: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+) -> Option<usize> {
+    let v = match &index.kind {
+        reify_ir::CompiledExprKind::Literal(v) => v,
+        reify_ir::CompiledExprKind::ValueRef(id) => values.get(id)?,
+        _ => return None,
+    };
+    match v {
+        reify_ir::Value::Int(i) if *i >= 0 => Some(*i as usize),
+        _ => None,
+    }
+}
+
 pub(crate) fn try_eval_topology_selector(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
@@ -3108,54 +3401,31 @@ pub(crate) fn try_eval_topology_selector(
                 }
             }
         }
-        TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
-            // args[0]: geometry ValueRef → values map → full parent GeometryHandle.
-            // The parent's realization_ref + upstream_values_hash are needed to
-            // construct well-formed sub-handle values (PRD §4). Fall through when
-            // the arg cell is not yet a hydrated Value::GeometryHandle (PRD invariant
-            // #2: do not partially construct a sub-handle; cell retains its compiled
-            // default, i.e. stays at Value::Undef).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
-            let sub_kind = match helper {
-                TopologySelectorHelper::Edges => crate::topology_selectors::SubKind::Edge,
-                TopologySelectorHelper::Faces => crate::topology_selectors::SubKind::Face,
-                // Enumerate the complement explicitly (rather than `_`) so that
-                // adding a new `TopologySelectorHelper` variant and grouping it
-                // into the outer `Edges | Faces` or-pattern forces the compiler
-                // to error here instead of silently funnelling into
-                // `unreachable!()`.
-                TopologySelectorHelper::ClosestPoint
-                | TopologySelectorHelper::IsOn
-                | TopologySelectorHelper::AngleBetweenSurfaces
-                | TopologySelectorHelper::CenterOfMass
-                | TopologySelectorHelper::MomentOfInertia
-                | TopologySelectorHelper::EdgesByLength
-                | TopologySelectorHelper::FacesByArea
-                | TopologySelectorHelper::FacesByNormal
-                | TopologySelectorHelper::EdgesParallelTo
-                | TopologySelectorHelper::EdgesAtHeight
-                | TopologySelectorHelper::AdjacentFaces
-                | TopologySelectorHelper::SharedEdges
-                | TopologySelectorHelper::Angle
-                | TopologySelectorHelper::Contains
-                | TopologySelectorHelper::GeoEquiv
-                | TopologySelectorHelper::Normal
-                | TopologySelectorHelper::Curvature
-                | TopologySelectorHelper::Length
-                | TopologySelectorHelper::Perimeter
-                | TopologySelectorHelper::Distance
-                | TopologySelectorHelper::Intersects
-                | TopologySelectorHelper::Split => {
-                    unreachable!("Edges/Faces outer match guarantees this")
-                }
-            };
-            dispatch_extract_subshapes(
-                kernel,
-                parent_kernel_handle,
-                sub_kind,
-                &parent_rr,
-                &parent_hash,
+        // Task 4118 (γ): `edges(solid)` / `faces(solid)` build a kernel-FREE
+        // typed `Value::Selector(kind)` whose leaf is `All` over the parent
+        // solid handle — NOT an eagerly-extracted `Value::List`. The
+        // `Selector → List<Geometry>` resolution is deferred to the
+        // compiler-inserted `ResolveSelector` coercion node (K2/BT7: zero
+        // kernel queries during construction). `arg[0]` resolves from `values`
+        // (not `named_steps`) so the leaf target carries the parent's
+        // realization_ref + upstream_values_hash; falls through to None when the
+        // arg cell is not yet a hydrated Value::GeometryHandle (PRD invariant #2).
+        TopologySelectorHelper::Edges => {
+            let target = resolve_selector_target(&args[0], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::All,
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::Faces => {
+            let target = resolve_selector_target(&args[0], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::All,
                 &function.name,
                 diagnostics,
             )
@@ -3184,134 +3454,82 @@ pub(crate) fn try_eval_topology_selector(
             let query = reify_ir::GeometryQuery::InertiaTensor { handle, density };
             dispatch_inertia_tensor(kernel, &query, &function.name, diagnostics)
         }
+        // Task 4118 (γ): build a kernel-FREE `Value::Selector(Edge)` with a
+        // `ByLength` leaf. The Range<Length> arg maps directly to the leaf's
+        // (min_m, max_m); NO kernel filter runs here — deferred to resolve().
         TopologySelectorHelper::EdgesByLength => {
-            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
-            // Must resolve from `values` (not `named_steps`) so we get the parent's
-            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
-            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
-            // (PRD invariant #2: never partially construct a sub-handle).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
-            // args[1]: Range<Length> ValueRef/Literal → (lo_m, hi_m).
-            let (lo, hi) =
+            let target = resolve_selector_target(&args[0], values)?;
+            // args[1]: Range<Length> ValueRef/Literal → (min_m, max_m).
+            let (min_m, max_m) =
                 resolve_range_dim_arg(&args[1], values, reify_core::DimensionVector::LENGTH)?;
-            let filter_result =
-                crate::topology_selectors::edges_by_length(kernel, parent_kernel_handle, lo, hi);
-            dispatch_filtered_subhandles(
-                kernel,
-                parent_kernel_handle,
-                crate::topology_selectors::SubKind::Edge,
-                &parent_rr,
-                &parent_hash,
-                filter_result,
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::ByLength { min_m, max_m },
                 &function.name,
                 diagnostics,
             )
         }
+        // Task 4118 (γ): build a kernel-FREE `Value::Selector(Face)` with a
+        // `ByArea` leaf. `mm*mm` canonicalises to AREA (LENGTH² == AREA per
+        // dimension algebra); the range maps directly to (min_m2, max_m2).
         TopologySelectorHelper::FacesByArea => {
-            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
-            // Must resolve from `values` (not `named_steps`) so we get the parent's
-            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
-            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
-            // (PRD invariant #2: never partially construct a sub-handle).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
-            // args[1]: Range<Area> ValueRef/Literal → (lo_m2, hi_m2). `mm*mm`
-            // canonicalises to AREA (LENGTH² == AREA per dimension algebra).
-            let (lo, hi) =
+            let target = resolve_selector_target(&args[0], values)?;
+            // args[1]: Range<Area> ValueRef/Literal → (min_m2, max_m2).
+            let (min_m2, max_m2) =
                 resolve_range_dim_arg(&args[1], values, reify_core::DimensionVector::AREA)?;
-            let filter_result =
-                crate::topology_selectors::faces_by_area(kernel, parent_kernel_handle, lo, hi);
-            dispatch_filtered_subhandles(
-                kernel,
-                parent_kernel_handle,
-                crate::topology_selectors::SubKind::Face,
-                &parent_rr,
-                &parent_hash,
-                filter_result,
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByArea { min_m2, max_m2 },
                 &function.name,
                 diagnostics,
             )
         }
+        // Task 4118 (γ): build a kernel-FREE `Value::Selector(Face)` with a
+        // `ByNormal` leaf (dir + angular tolerance in SI radians).
         TopologySelectorHelper::FacesByNormal => {
-            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
-            // Must resolve from `values` (not `named_steps`) so we get the parent's
-            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
-            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
-            // (PRD invariant #2: never partially construct a sub-handle).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            let target = resolve_selector_target(&args[0], values)?;
             // args[1]: Vec3 direction ValueRef → values map → [f64; 3].
             let dir = resolve_vec3_arg(&args[1], values)?;
-            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
-            // (SI radians — `topology_selectors::faces_by_normal` expects rad).
-            let tol = resolve_angle_scalar_arg(&args[2], values)?;
-            let filter_result =
-                crate::topology_selectors::faces_by_normal(kernel, parent_kernel_handle, dir, tol);
-            dispatch_filtered_subhandles(
-                kernel,
-                parent_kernel_handle,
-                crate::topology_selectors::SubKind::Face,
-                &parent_rr,
-                &parent_hash,
-                filter_result,
+            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar (SI rad).
+            let tol_rad = resolve_angle_scalar_arg(&args[2], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByNormal { dir, tol_rad },
                 &function.name,
                 diagnostics,
             )
         }
+        // Task 4118 (γ): build a kernel-FREE `Value::Selector(Edge)` with a
+        // `ByParallel` leaf (axis + angular tolerance in SI radians).
         TopologySelectorHelper::EdgesParallelTo => {
-            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
-            // Must resolve from `values` (not `named_steps`) — same rationale as
-            // FacesByNormal (PRD §4 invariant #2).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            let target = resolve_selector_target(&args[0], values)?;
             // args[1]: Vec3 axis ValueRef → values map → [f64; 3].
             let axis = resolve_vec3_arg(&args[1], values)?;
-            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
-            // (SI radians — `topology_selectors::edges_parallel_to` expects rad).
-            let tol = resolve_angle_scalar_arg(&args[2], values)?;
-            let filter_result = crate::topology_selectors::edges_parallel_to(
-                kernel,
-                parent_kernel_handle,
-                axis,
-                tol,
-            );
-            dispatch_filtered_subhandles(
-                kernel,
-                parent_kernel_handle,
-                crate::topology_selectors::SubKind::Edge,
-                &parent_rr,
-                &parent_hash,
-                filter_result,
+            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar (SI rad).
+            let tol_rad = resolve_angle_scalar_arg(&args[2], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::ByParallel { axis, tol_rad },
                 &function.name,
                 diagnostics,
             )
         }
+        // Task 4118 (γ): build a kernel-FREE `Value::Selector(Edge)` with a
+        // `ByHeight` leaf (z-plane + tolerance, both SI metres).
         TopologySelectorHelper::EdgesAtHeight => {
-            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
-            // Must resolve from `values` (not `named_steps`) so we get the parent's
-            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
-            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
-            // (PRD invariant #2: never partially construct a sub-handle).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            let target = resolve_selector_target(&args[0], values)?;
             // args[1]: z plane ValueRef → values map → LENGTH Scalar (SI metres).
             let z_m = resolve_length_scalar_arg(&args[1], values)?;
             // args[2]: tolerance ValueRef → values map → LENGTH Scalar (SI metres).
             let tol_m = resolve_length_scalar_arg(&args[2], values)?;
-            let filter_result = crate::topology_selectors::edges_at_height(
-                kernel,
-                parent_kernel_handle,
-                z_m,
-                tol_m,
-            );
-            dispatch_filtered_subhandles(
-                kernel,
-                parent_kernel_handle,
-                crate::topology_selectors::SubKind::Edge,
-                &parent_rr,
-                &parent_hash,
-                filter_result,
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::ByHeight { z_m, tol_m },
                 &function.name,
                 diagnostics,
             )
@@ -3837,6 +4055,12 @@ impl TopologySelectorHelper {
 /// Returns `Some(Value::Undef)` (with a Warning diagnostic) on kernel error —
 /// preserving the same defensive-downgrade contract as the sibling dispatchers
 /// (`dispatch_point3_length_reply`, `dispatch_point_on_shape`, etc.).
+// Task 4118 (γ): the `edges`/`faces` All-leaf construction path is now
+// kernel-FREE (see `build_leaf_selector`), so eager sub-shape extraction has no
+// caller at construction time. Retained (allow dead_code) — the kernel-bearing
+// `ResolveSelector` resolution path (step-6) re-realizes selectors and may reuse
+// this eager-extraction shape; remove if it stays unused.
+#[allow(dead_code)]
 fn dispatch_extract_subshapes(
     kernel: &mut dyn reify_ir::GeometryKernel,
     parent_kernel_handle: GeometryHandleId,
@@ -10831,23 +11055,39 @@ mod tests {
             &mut diagnostics,
         );
 
-        let list = match result {
-            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+        // Task 4118 (γ): `edges` now constructs a kernel-FREE typed
+        // `Value::Selector(Edge)` (All leaf) over the parent solid. The arm
+        // resolves its target from `values` (the hydrated Value::GeometryHandle),
+        // so `named_steps` — and thus `KernelHandle.kernel` — is not consulted at
+        // all; the leaf target carries `parent_id` as its kernel_handle regardless
+        // of the deliberately-non-default `KernelId::Manifold` staged in named_steps.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(ref sv)) => sv.clone(),
             other => panic!(
-                "edges with KernelHandle{{Manifold, 1}} must return Some(List([..])), \
+                "edges with KernelHandle{{Manifold, 1}} must return Some(Value::Selector(..)), \
                  got {:?}; diagnostics: {:?}",
                 other, diagnostics
             ),
         };
         assert_eq!(
-            list.len(),
-            2,
-            "expected 2 edge sub-handles, got {}",
-            list.len()
+            sv.kind,
+            reify_core::ty::SelectorKind::Edge,
+            "edges → Edge kind"
         );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, parent_id,
+                    "leaf target kernel_handle must be parent_id (resolved from values, \
+                     KernelHandle.kernel ignored)"
+                );
+                assert_eq!(*query, reify_ir::value::LeafQuery::All, "edges → All leaf");
+            }
+            other => panic!("edges must be a Leaf selector node, got {:?}", other),
+        }
         assert!(
             diagnostics.is_empty(),
-            "no diagnostics expected for successful edge resolution, got: {:?}",
+            "no diagnostics expected for successful edge construction, got: {:?}",
             diagnostics
         );
     }
@@ -10951,49 +11191,44 @@ mod tests {
             &mut diagnostics,
         );
 
-        let list = match result {
-            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+        // Task 4118 (γ): construction is kernel-FREE — `edges(b)` builds a typed
+        // `Value::Selector(Edge)` with an `All` leaf over the parent solid handle,
+        // NOT an eagerly-extracted `Value::List` of sub-handles. The staged
+        // `with_extracted_edges` data is intentionally unused (zero kernel queries
+        // during construction, K2/BT7); the `Selector → List<Geometry>` resolution
+        // (extraction + per-element canonical hashing) is the ResolveSelector
+        // coercion node's job, covered by the try_eval_resolve_selector tests.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(ref sv)) => sv.clone(),
             other => panic!(
-                "expected Some(Value::List(..)), got {:?}; diagnostics: {:?}",
+                "expected Some(Value::Selector(..)), got {:?}; diagnostics: {:?}",
                 other, diagnostics
             ),
         };
-        assert_eq!(list.len(), 3, "expected 3 edge sub-handles");
-
-        let expected_ids = [
-            GeometryHandleId(2),
-            GeometryHandleId(3),
-            GeometryHandleId(4),
-        ];
-        let mut hashes: Vec<[u8; 32]> = Vec::new();
-        for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
-            match elem {
-                reify_ir::Value::GeometryHandle {
-                    realization_ref,
-                    upstream_values_hash,
-                    kernel_handle,
-                } => {
-                    assert_eq!(
-                        realization_ref.entity, parent_rr.entity,
-                        "elem[{i}] realization_ref.entity must match parent"
-                    );
-                    assert_eq!(
-                        realization_ref.index, parent_rr.index,
-                        "elem[{i}] realization_ref.index must match parent"
-                    );
-                    assert_eq!(
-                        kernel_handle, expected_id,
-                        "elem[{i}] kernel_handle must be {expected_id:?}"
-                    );
-                    hashes.push(*upstream_values_hash);
-                }
-                other => panic!("elem[{i}] is not Value::GeometryHandle: {:?}", other),
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Edge,
+            "edges(b) → Edge kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, parent_handle,
+                    "leaf target must be the parent solid handle"
+                );
+                assert_eq!(
+                    *query,
+                    reify_ir::value::LeafQuery::All,
+                    "edges(b) → All leaf"
+                );
             }
+            other => panic!("edges(b) must be a Leaf selector node, got {:?}", other),
         }
-        // All three upstream_values_hashes must be pairwise distinct (PRD §4 iii).
-        assert_ne!(hashes[0], hashes[1], "edge 0 and 1 hashes must differ");
-        assert_ne!(hashes[1], hashes[2], "edge 1 and 2 hashes must differ");
-        assert_ne!(hashes[0], hashes[2], "edge 0 and 2 hashes must differ");
+        assert!(
+            diagnostics.is_empty(),
+            "kernel-free construction must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
     }
 
     /// When the `values` map does not carry a `Value::GeometryHandle` for the
@@ -14354,6 +14589,205 @@ mod tests {
         );
     }
 
+    // ── step-5 (task 4118 γ): ResolveSelector kernel-bearing eval tests ──────
+    //
+    // These pin `try_eval_resolve_selector`, the kernel-bearing dispatch for the
+    // compiler-inserted `ResolveSelector` coercion node (and `IndexAccess` over a
+    // selector). It reconstructs the inner `Value::Selector` INLINE from the
+    // nested selector FunctionCall (sidestepping value-cell ordering), calls the
+    // single `topology_selectors::resolve` executor, and wraps the resulting
+    // canonical-order handle ids as `Value::List(Value::GeometryHandle)`
+    // sub-handles via `make_sub_handle`. RED until step-6 adds the function.
+
+    /// `ResolveSelector { faces(b) }` resolves the All-face leaf via the kernel
+    /// and yields a `Value::List` of three `Value::GeometryHandle` sub-handles,
+    /// matching a direct `resolve()` + `make_sub_handle`: canonical TopExp order,
+    /// per-element hashing, parent realization_ref inherited.
+    #[test]
+    fn resolve_selector_faces_all_yields_geometry_handle_list() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("BoxFaces", 0);
+        let parent_hash: [u8; 32] = [0x55; 32];
+
+        let mut kernel = MockGeometryKernel::new().with_extracted_faces(
+            parent_handle,
+            vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+            ],
+        );
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(parent_handle));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("BoxFaces", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+
+        // ResolveSelector { faces(b) } — inner selector is a nested FunctionCall,
+        // reconstructed inline (no value-cell ordering dependency).
+        let inner = topology_selector_call_one_value_ref(
+            "faces",
+            "BoxFaces",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let expr = reify_ir::CompiledExpr::resolve_selector(inner);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let list = match result {
+            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+            other => panic!(
+                "ResolveSelector{{faces(b)}} must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(list.len(), 3, "expected 3 resolved face sub-handles");
+
+        let expected_ids = [
+            GeometryHandleId(2),
+            GeometryHandleId(3),
+            GeometryHandleId(4),
+        ];
+        for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
+            let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+                &parent_hash,
+                crate::topology_selectors::SubKind::Face,
+                i as u32,
+            );
+            match elem {
+                reify_ir::Value::GeometryHandle {
+                    realization_ref,
+                    upstream_values_hash,
+                    kernel_handle,
+                } => {
+                    assert_eq!(
+                        realization_ref, &parent_rr,
+                        "elem[{i}] realization_ref must inherit parent"
+                    );
+                    assert_eq!(kernel_handle, expected_id, "elem[{i}] kernel_handle");
+                    assert_eq!(
+                        upstream_values_hash, &expected_hash,
+                        "elem[{i}] hash must be compose_sub_handle_hash(parent, Face, {i})"
+                    );
+                }
+                other => panic!("elem[{i}] must be Value::GeometryHandle, got {:?}", other),
+            }
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "successful resolve must emit zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `IndexAccess { object: ResolveSelector { faces(b) }, index: 0 }` recomputes
+    /// to the indexed sub-handle (the curvature_smoke `faces(s)[0]` shape): resolve
+    /// the selector to its list then index — element 0 is the canonical first face.
+    #[test]
+    fn resolve_selector_index_access_returns_indexed_handle() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent_handle = GeometryHandleId(1);
+        let parent_rr = RealizationNodeId::new("BoxFaces", 0);
+        let parent_hash: [u8; 32] = [0x55; 32];
+
+        let mut kernel = MockGeometryKernel::new().with_extracted_faces(
+            parent_handle,
+            vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+            ],
+        );
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(parent_handle));
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("BoxFaces", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_handle,
+            },
+        );
+
+        let inner = topology_selector_call_one_value_ref(
+            "faces",
+            "BoxFaces",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let object = reify_ir::CompiledExpr::resolve_selector(inner);
+        let index = reify_ir::CompiledExpr::literal(reify_ir::Value::Int(0), Type::Int);
+        let expr = reify_ir::CompiledExpr::index_access(object, index, Type::Geometry);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_resolve_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
+            &parent_hash,
+            crate::topology_selectors::SubKind::Face,
+            0,
+        );
+        match result {
+            Some(reify_ir::Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle,
+            }) => {
+                assert_eq!(realization_ref, parent_rr, "indexed handle realization_ref");
+                assert_eq!(
+                    kernel_handle,
+                    GeometryHandleId(2),
+                    "faces(b)[0] → canonical first face GHId(2)"
+                );
+                assert_eq!(
+                    upstream_values_hash, expected_hash,
+                    "indexed handle hash == compose_sub_handle_hash(parent, Face, 0)"
+                );
+            }
+            other => panic!(
+                "faces(b)[0] must yield Some(Value::GeometryHandle(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "successful index must emit zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
     // ── try_eval_topology_selector directional-selector dispatch unit tests ───
     // (task 3618, KGQ-ι: faces_by_normal + edges_parallel_to)
     //
@@ -14457,57 +14891,45 @@ mod tests {
             &mut diagnostics,
         );
 
-        let list = match result {
-            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+        // Task 4118 (γ): construction is kernel-FREE — `faces_by_normal(b, dir, tol)`
+        // builds a typed `Value::Selector(Face)` with a `ByNormal` leaf carrying the
+        // direction + angular tolerance, NOT an eagerly-filtered `Value::List`. The
+        // staged extract_faces / face-normal kernel data is intentionally unused
+        // (zero kernel queries during construction, K2/BT7); the predicate filter and
+        // canonical sub-handle indexing now run on the ResolveSelector / resolve()
+        // path (see the try_eval_resolve_selector tests).
+        let sv = match result {
+            Some(reify_ir::Value::Selector(ref sv)) => sv.clone(),
             other => panic!(
-                "faces_by_normal(..) must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                "faces_by_normal(..) must yield Some(Value::Selector(..)); got {:?}; diags: {:?}",
                 other, diagnostics
             ),
         };
         assert_eq!(
-            list.len(),
-            1,
-            "exactly 1 face matches +z within 1° (index 1); got {} elements; diags: {:?}",
-            list.len(),
-            diagnostics
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "faces_by_normal → Face kind"
         );
-
-        // Expected hash: canonical index 1 (GHId(3) is at position 1 in the list).
-        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
-            &parent_hash,
-            crate::topology_selectors::SubKind::Face,
-            1,
-        );
-
-        match &list[0] {
-            reify_ir::Value::GeometryHandle {
-                realization_ref,
-                upstream_values_hash,
-                kernel_handle,
-            } => {
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
                 assert_eq!(
-                    realization_ref, &parent_rr,
-                    "realization_ref must equal parent (full struct)"
+                    target.kernel_handle, parent_handle,
+                    "leaf target must be the parent solid handle"
                 );
                 assert_eq!(
-                    *kernel_handle,
-                    GeometryHandleId(3),
-                    "retained face must be GHId(3)"
-                );
-                assert_eq!(
-                    upstream_values_hash, &expected_hash,
-                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Face, 1) \
-                     — canonical index 1, NOT filtered position 0"
+                    *query,
+                    reify_ir::value::LeafQuery::ByNormal { dir: [0.0, 0.0, 1.0], tol_rad },
+                    "faces_by_normal → ByNormal leaf (dir +z, tol 1°)"
                 );
             }
             other => panic!(
-                "faces_by_normal result[0] must be Value::GeometryHandle, got {:?}",
+                "faces_by_normal must be a Leaf selector node, got {:?}",
                 other
             ),
         }
         assert!(
             diagnostics.is_empty(),
-            "happy-path faces_by_normal must emit zero diagnostics; got: {:?}",
+            "kernel-free construction must emit zero diagnostics; got: {:?}",
             diagnostics
         );
     }
@@ -14659,57 +15081,44 @@ mod tests {
             &mut diagnostics,
         );
 
-        let list = match result {
-            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+        // Task 4118 (γ): construction is kernel-FREE — `edges_parallel_to(b, axis, tol)`
+        // builds a typed `Value::Selector(Edge)` with a `ByParallel` leaf carrying the
+        // axis + angular tolerance, NOT an eagerly-filtered `Value::List`. The staged
+        // extract_edges / edge-tangent kernel data is intentionally unused (zero kernel
+        // queries during construction, K2/BT7); the predicate filter and canonical
+        // sub-handle indexing now run on the ResolveSelector / resolve() path.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(ref sv)) => sv.clone(),
             other => panic!(
-                "edges_parallel_to(..) must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                "edges_parallel_to(..) must yield Some(Value::Selector(..)); got {:?}; diags: {:?}",
                 other, diagnostics
             ),
         };
         assert_eq!(
-            list.len(),
-            1,
-            "exactly 1 edge is (anti-)parallel to +z (index 2, tangent −z); got {}; diags: {:?}",
-            list.len(),
-            diagnostics
+            sv.kind,
+            reify_core::ty::SelectorKind::Edge,
+            "edges_parallel_to → Edge kind"
         );
-
-        // Expected hash: canonical index 2 (GHId(4) is at position 2 in the list).
-        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
-            &parent_hash,
-            crate::topology_selectors::SubKind::Edge,
-            2,
-        );
-
-        match &list[0] {
-            reify_ir::Value::GeometryHandle {
-                realization_ref,
-                upstream_values_hash,
-                kernel_handle,
-            } => {
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
                 assert_eq!(
-                    realization_ref, &parent_rr,
-                    "realization_ref must equal parent (full struct)"
+                    target.kernel_handle, parent_handle,
+                    "leaf target must be the parent solid handle"
                 );
                 assert_eq!(
-                    *kernel_handle,
-                    GeometryHandleId(4),
-                    "retained edge must be GHId(4)"
-                );
-                assert_eq!(
-                    upstream_values_hash, &expected_hash,
-                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Edge, 2) \
-                     — canonical index 2, NOT filtered position 0"
+                    *query,
+                    reify_ir::value::LeafQuery::ByParallel { axis: [0.0, 0.0, 1.0], tol_rad },
+                    "edges_parallel_to → ByParallel leaf (axis +z, tol 1°)"
                 );
             }
             other => panic!(
-                "edges_parallel_to result[0] must be Value::GeometryHandle, got {:?}",
+                "edges_parallel_to must be a Leaf selector node, got {:?}",
                 other
             ),
         }
         assert!(
             diagnostics.is_empty(),
-            "happy-path edges_parallel_to must emit zero diagnostics; got: {:?}",
+            "kernel-free construction must emit zero diagnostics; got: {:?}",
             diagnostics
         );
     }

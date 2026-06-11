@@ -175,6 +175,10 @@ fn assert_no_unresolved(expr: &reify_ir::CompiledExpr) {
                 assert_no_unresolved(def);
             }
         }
+        // task 4118 (γ): recurse into the wrapped selector.
+        CompiledExprKind::ResolveSelector { selector } => {
+            assert_no_unresolved(selector);
+        }
     }
 }
 
