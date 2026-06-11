@@ -10814,23 +10814,39 @@ mod tests {
             &mut diagnostics,
         );
 
-        let list = match result {
-            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+        // Task 4118 (γ): `edges` now constructs a kernel-FREE typed
+        // `Value::Selector(Edge)` (All leaf) over the parent solid. The arm
+        // resolves its target from `values` (the hydrated Value::GeometryHandle),
+        // so `named_steps` — and thus `KernelHandle.kernel` — is not consulted at
+        // all; the leaf target carries `parent_id` as its kernel_handle regardless
+        // of the deliberately-non-default `KernelId::Manifold` staged in named_steps.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(ref sv)) => sv.clone(),
             other => panic!(
-                "edges with KernelHandle{{Manifold, 1}} must return Some(List([..])), \
+                "edges with KernelHandle{{Manifold, 1}} must return Some(Value::Selector(..)), \
                  got {:?}; diagnostics: {:?}",
                 other, diagnostics
             ),
         };
         assert_eq!(
-            list.len(),
-            2,
-            "expected 2 edge sub-handles, got {}",
-            list.len()
+            sv.kind,
+            reify_core::ty::SelectorKind::Edge,
+            "edges → Edge kind"
         );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, parent_id,
+                    "leaf target kernel_handle must be parent_id (resolved from values, \
+                     KernelHandle.kernel ignored)"
+                );
+                assert_eq!(*query, reify_ir::value::LeafQuery::All, "edges → All leaf");
+            }
+            other => panic!("edges must be a Leaf selector node, got {:?}", other),
+        }
         assert!(
             diagnostics.is_empty(),
-            "no diagnostics expected for successful edge resolution, got: {:?}",
+            "no diagnostics expected for successful edge construction, got: {:?}",
             diagnostics
         );
     }
@@ -10934,49 +10950,44 @@ mod tests {
             &mut diagnostics,
         );
 
-        let list = match result {
-            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+        // Task 4118 (γ): construction is kernel-FREE — `edges(b)` builds a typed
+        // `Value::Selector(Edge)` with an `All` leaf over the parent solid handle,
+        // NOT an eagerly-extracted `Value::List` of sub-handles. The staged
+        // `with_extracted_edges` data is intentionally unused (zero kernel queries
+        // during construction, K2/BT7); the `Selector → List<Geometry>` resolution
+        // (extraction + per-element canonical hashing) is the ResolveSelector
+        // coercion node's job, covered by the try_eval_resolve_selector tests.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(ref sv)) => sv.clone(),
             other => panic!(
-                "expected Some(Value::List(..)), got {:?}; diagnostics: {:?}",
+                "expected Some(Value::Selector(..)), got {:?}; diagnostics: {:?}",
                 other, diagnostics
             ),
         };
-        assert_eq!(list.len(), 3, "expected 3 edge sub-handles");
-
-        let expected_ids = [
-            GeometryHandleId(2),
-            GeometryHandleId(3),
-            GeometryHandleId(4),
-        ];
-        let mut hashes: Vec<[u8; 32]> = Vec::new();
-        for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
-            match elem {
-                reify_ir::Value::GeometryHandle {
-                    realization_ref,
-                    upstream_values_hash,
-                    kernel_handle,
-                } => {
-                    assert_eq!(
-                        realization_ref.entity, parent_rr.entity,
-                        "elem[{i}] realization_ref.entity must match parent"
-                    );
-                    assert_eq!(
-                        realization_ref.index, parent_rr.index,
-                        "elem[{i}] realization_ref.index must match parent"
-                    );
-                    assert_eq!(
-                        kernel_handle, expected_id,
-                        "elem[{i}] kernel_handle must be {expected_id:?}"
-                    );
-                    hashes.push(*upstream_values_hash);
-                }
-                other => panic!("elem[{i}] is not Value::GeometryHandle: {:?}", other),
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Edge,
+            "edges(b) → Edge kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, parent_handle,
+                    "leaf target must be the parent solid handle"
+                );
+                assert_eq!(
+                    *query,
+                    reify_ir::value::LeafQuery::All,
+                    "edges(b) → All leaf"
+                );
             }
+            other => panic!("edges(b) must be a Leaf selector node, got {:?}", other),
         }
-        // All three upstream_values_hashes must be pairwise distinct (PRD §4 iii).
-        assert_ne!(hashes[0], hashes[1], "edge 0 and 1 hashes must differ");
-        assert_ne!(hashes[1], hashes[2], "edge 1 and 2 hashes must differ");
-        assert_ne!(hashes[0], hashes[2], "edge 0 and 2 hashes must differ");
+        assert!(
+            diagnostics.is_empty(),
+            "kernel-free construction must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
     }
 
     /// When the `values` map does not carry a `Value::GeometryHandle` for the
@@ -14440,57 +14451,45 @@ mod tests {
             &mut diagnostics,
         );
 
-        let list = match result {
-            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+        // Task 4118 (γ): construction is kernel-FREE — `faces_by_normal(b, dir, tol)`
+        // builds a typed `Value::Selector(Face)` with a `ByNormal` leaf carrying the
+        // direction + angular tolerance, NOT an eagerly-filtered `Value::List`. The
+        // staged extract_faces / face-normal kernel data is intentionally unused
+        // (zero kernel queries during construction, K2/BT7); the predicate filter and
+        // canonical sub-handle indexing now run on the ResolveSelector / resolve()
+        // path (see the try_eval_resolve_selector tests).
+        let sv = match result {
+            Some(reify_ir::Value::Selector(ref sv)) => sv.clone(),
             other => panic!(
-                "faces_by_normal(..) must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                "faces_by_normal(..) must yield Some(Value::Selector(..)); got {:?}; diags: {:?}",
                 other, diagnostics
             ),
         };
         assert_eq!(
-            list.len(),
-            1,
-            "exactly 1 face matches +z within 1° (index 1); got {} elements; diags: {:?}",
-            list.len(),
-            diagnostics
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "faces_by_normal → Face kind"
         );
-
-        // Expected hash: canonical index 1 (GHId(3) is at position 1 in the list).
-        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
-            &parent_hash,
-            crate::topology_selectors::SubKind::Face,
-            1,
-        );
-
-        match &list[0] {
-            reify_ir::Value::GeometryHandle {
-                realization_ref,
-                upstream_values_hash,
-                kernel_handle,
-            } => {
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
                 assert_eq!(
-                    realization_ref, &parent_rr,
-                    "realization_ref must equal parent (full struct)"
+                    target.kernel_handle, parent_handle,
+                    "leaf target must be the parent solid handle"
                 );
                 assert_eq!(
-                    *kernel_handle,
-                    GeometryHandleId(3),
-                    "retained face must be GHId(3)"
-                );
-                assert_eq!(
-                    upstream_values_hash, &expected_hash,
-                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Face, 1) \
-                     — canonical index 1, NOT filtered position 0"
+                    *query,
+                    reify_ir::value::LeafQuery::ByNormal { dir: [0.0, 0.0, 1.0], tol_rad },
+                    "faces_by_normal → ByNormal leaf (dir +z, tol 1°)"
                 );
             }
             other => panic!(
-                "faces_by_normal result[0] must be Value::GeometryHandle, got {:?}",
+                "faces_by_normal must be a Leaf selector node, got {:?}",
                 other
             ),
         }
         assert!(
             diagnostics.is_empty(),
-            "happy-path faces_by_normal must emit zero diagnostics; got: {:?}",
+            "kernel-free construction must emit zero diagnostics; got: {:?}",
             diagnostics
         );
     }
@@ -14642,57 +14641,44 @@ mod tests {
             &mut diagnostics,
         );
 
-        let list = match result {
-            Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+        // Task 4118 (γ): construction is kernel-FREE — `edges_parallel_to(b, axis, tol)`
+        // builds a typed `Value::Selector(Edge)` with a `ByParallel` leaf carrying the
+        // axis + angular tolerance, NOT an eagerly-filtered `Value::List`. The staged
+        // extract_edges / edge-tangent kernel data is intentionally unused (zero kernel
+        // queries during construction, K2/BT7); the predicate filter and canonical
+        // sub-handle indexing now run on the ResolveSelector / resolve() path.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(ref sv)) => sv.clone(),
             other => panic!(
-                "edges_parallel_to(..) must yield Some(Value::List(..)); got {:?}; diags: {:?}",
+                "edges_parallel_to(..) must yield Some(Value::Selector(..)); got {:?}; diags: {:?}",
                 other, diagnostics
             ),
         };
         assert_eq!(
-            list.len(),
-            1,
-            "exactly 1 edge is (anti-)parallel to +z (index 2, tangent −z); got {}; diags: {:?}",
-            list.len(),
-            diagnostics
+            sv.kind,
+            reify_core::ty::SelectorKind::Edge,
+            "edges_parallel_to → Edge kind"
         );
-
-        // Expected hash: canonical index 2 (GHId(4) is at position 2 in the list).
-        let expected_hash = crate::topology_selectors::compose_sub_handle_hash(
-            &parent_hash,
-            crate::topology_selectors::SubKind::Edge,
-            2,
-        );
-
-        match &list[0] {
-            reify_ir::Value::GeometryHandle {
-                realization_ref,
-                upstream_values_hash,
-                kernel_handle,
-            } => {
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
                 assert_eq!(
-                    realization_ref, &parent_rr,
-                    "realization_ref must equal parent (full struct)"
+                    target.kernel_handle, parent_handle,
+                    "leaf target must be the parent solid handle"
                 );
                 assert_eq!(
-                    *kernel_handle,
-                    GeometryHandleId(4),
-                    "retained edge must be GHId(4)"
-                );
-                assert_eq!(
-                    upstream_values_hash, &expected_hash,
-                    "upstream_values_hash must be compose_sub_handle_hash(parent_hash, Edge, 2) \
-                     — canonical index 2, NOT filtered position 0"
+                    *query,
+                    reify_ir::value::LeafQuery::ByParallel { axis: [0.0, 0.0, 1.0], tol_rad },
+                    "edges_parallel_to → ByParallel leaf (axis +z, tol 1°)"
                 );
             }
             other => panic!(
-                "edges_parallel_to result[0] must be Value::GeometryHandle, got {:?}",
+                "edges_parallel_to must be a Leaf selector node, got {:?}",
                 other
             ),
         }
         assert!(
             diagnostics.is_empty(),
-            "happy-path edges_parallel_to must emit zero diagnostics; got: {:?}",
+            "kernel-free construction must emit zero diagnostics; got: {:?}",
             diagnostics
         );
     }
