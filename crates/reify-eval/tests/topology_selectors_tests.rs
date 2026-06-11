@@ -38,8 +38,10 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::{RealizationNodeId, ValueCellId};
+use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
+use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Freshness, Value};
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
@@ -53,18 +55,71 @@ const BOX_FACES_PATH: &str = concat!(
     "/../../examples/kernel_queries/box_faces.ri"
 );
 
+/// Assert a selector cell holds a kernel-free `Value::Selector(kind)` whose node
+/// is an `All` leaf targeting the parent solid (task 4118 γ).
+///
+/// The 7 predicate/all selector constructors — `edges(b)` / `faces(b)` among
+/// them — now evaluate to a typed `Value::Selector(kind)` instead of an eager
+/// `Value::List<GeometryHandle>`. Construction is KERNEL-FREE (K2/BT7): the cell
+/// holds the typed `All` leaf over the realized parent solid handle, and the
+/// `Selector → List<Geometry>` resolution (the canonical 12-edge / 6-face counts)
+/// is deferred to `topology_selectors::resolve` — exercised by the resolve() unit
+/// tests in `topology_selectors.rs` and the `single(faces_by_normal(...))` golden
+/// in `selector_coercion_golden.rs`.
+///
+/// `parent_realization` is the parent solid cell's `realization_ref`; the leaf
+/// target must point at the same realization (PRD §4 — same parent).
+fn assert_all_selector(
+    cell_value: Option<&Value>,
+    label: &str,
+    kind: SelectorKind,
+    parent_realization: &RealizationNodeId,
+) {
+    let sv = match cell_value {
+        Some(Value::Selector(sv)) => sv,
+        other => panic!(
+            "{label} must be a kernel-free Value::Selector(kind) (task 4118 γ; BT7), got: {other:?}"
+        ),
+    };
+    assert_eq!(sv.kind, kind, "{label}: selector kind");
+    match &sv.node {
+        SelectorNode::Leaf { target, query } => {
+            assert_eq!(*query, LeafQuery::All, "{label}: edges/faces(b) → All leaf");
+            assert_eq!(
+                target.realization_ref, *parent_realization,
+                "{label}: leaf target realization_ref must equal the parent solid realization \
+                 (PRD §4 — same parent)"
+            );
+        }
+        other => panic!("{label} must be a Leaf selector node, got: {other:?}"),
+    }
+}
+
+/// Extract a `Value::GeometryHandle` cell's `realization_ref`, panicking with
+/// `label` if the cell is missing or not a geometry handle.
+fn parent_realization_of(cell_value: Option<&Value>, label: &str) -> RealizationNodeId {
+    match cell_value {
+        Some(Value::GeometryHandle {
+            realization_ref, ..
+        }) => realization_ref.clone(),
+        other => panic!("{label} must hydrate to Value::GeometryHandle after build, got: {other:?}"),
+    }
+}
+
 // ── Integration test: edges(Solid) ──────────────────────────────────────────
 
 /// End-to-end acceptance pin for KGQ-η `edges(Solid)` sub-handle dispatch
 /// (PRD §4/§9, task 3616 step-8).
 ///
 /// Builds `box_edges.ri` with the real OCCT kernel and asserts that the
-/// `BoxEdges.es` cell is a `Value::List` of exactly 12 `Value::GeometryHandle`
-/// elements (a 10×20×30 mm box has 12 edges), with:
+/// `BoxEdges.es` cell holds a kernel-free `Value::Selector(Edge)` with an `All`
+/// leaf targeting the realized `BoxEdges.b` solid (task 4118 γ re-typed `edges(b)`
+/// from an eager `Value::List<GeometryHandle>` to the typed selector).
 ///
-/// - every element being `Value::GeometryHandle` (PRD §8.2: es[0] non-Undef)
-/// - all 12 `upstream_values_hash` values pairwise distinct (PRD §4 iii)
-/// - all 12 elements sharing one `realization_ref` (PRD §4 — same parent)
+/// The end-to-end resolution to the 12 edge sub-handles (a 10×20×30 mm box has
+/// 12 edges) is deferred to `topology_selectors::resolve` and verified by the
+/// resolve() unit tests and the `single(faces_by_normal(...))` golden
+/// (`selector_coercion_golden.rs`).
 ///
 /// Fixture is read and compiled unconditionally so fixture absence / compile
 /// regressions fail on every CI runner (not only OCCT-enabled ones).
@@ -101,64 +156,18 @@ fn box_edges_integration_test() {
     let mut engine = Engine::new(Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    let cell = ValueCellId::new("BoxEdges", "es");
-    let list = match result.values.get(&cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "BoxEdges.es must be Value::List of Value::GeometryHandle sub-handles \
-             (PRD §4 KGQ-η), got: {other:?}"
-        ),
-    };
-
-    assert_eq!(
-        list.len(),
-        12,
-        "a 10×20×30 mm box must have exactly 12 edges; BoxEdges.es has {} elements",
-        list.len()
+    // Task 4118 (γ): `edges(b)` now packages a kernel-free typed selector
+    // (`All` leaf over the parent solid handle), not an eager list of sub-handles.
+    let parent_realization = parent_realization_of(
+        result.values.get(&ValueCellId::new("BoxEdges", "b")),
+        "BoxEdges.b",
     );
-
-    // Collect realization_refs and upstream_values_hashes from all elements.
-    let mut hashes: Vec<[u8; 32]> = Vec::new();
-    let mut realization_refs: Vec<RealizationNodeId> = Vec::new();
-
-    for (i, elem) in list.iter().enumerate() {
-        match elem {
-            Value::GeometryHandle {
-                realization_ref,
-                upstream_values_hash,
-                ..
-            } => {
-                assert!(
-                    *upstream_values_hash != [0u8; 32],
-                    "es[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
-                );
-                hashes.push(*upstream_values_hash);
-                realization_refs.push(realization_ref.clone());
-            }
-            other => panic!(
-                "BoxEdges.es[{i}] must be Value::GeometryHandle (PRD §8.2 es[0] non-Undef), got: {other:?}"
-            ),
-        }
-    }
-
-    // All 12 upstream_values_hashes must be pairwise distinct (PRD §4 iii).
-    for i in 0..hashes.len() {
-        for j in (i + 1)..hashes.len() {
-            assert_ne!(
-                hashes[i], hashes[j],
-                "edges {i} and {j} must have distinct upstream_values_hashes (PRD §4 iii)"
-            );
-        }
-    }
-
-    // All 12 elements share the same parent realization_ref (PRD §4 — same parent).
-    let first_ref = &realization_refs[0];
-    for (i, r) in realization_refs.iter().enumerate() {
-        assert_eq!(
-            r, first_ref,
-            "es[{i}] realization_ref must equal the parent BoxEdges.b realization"
-        );
-    }
+    assert_all_selector(
+        result.values.get(&ValueCellId::new("BoxEdges", "es")),
+        "BoxEdges.es",
+        SelectorKind::Edge,
+        &parent_realization,
+    );
 }
 
 // ── Integration test: faces(Solid) ──────────────────────────────────────────
@@ -167,11 +176,14 @@ fn box_edges_integration_test() {
 /// (PRD §4/§9, task 3616 step-8).
 ///
 /// Builds `box_faces.ri` with the real OCCT kernel and asserts that the
-/// `BoxFaces.fs` cell is a `Value::List` of exactly 6 `Value::GeometryHandle`
-/// elements (a 10×20×30 mm box has 6 faces), with:
+/// `BoxFaces.fs` cell holds a kernel-free `Value::Selector(Face)` with an `All`
+/// leaf targeting the realized `BoxFaces.b` solid (task 4118 γ re-typed `faces(b)`
+/// from an eager `Value::List<GeometryHandle>` to the typed selector).
 ///
-/// - every element being `Value::GeometryHandle` (PRD §8.2 non-Undef)
-/// - all 6 `upstream_values_hash` values pairwise distinct (PRD §4 iii)
+/// The end-to-end resolution to the 6 face sub-handles (a 10×20×30 mm box has 6
+/// faces) is deferred to `topology_selectors::resolve` and verified by the
+/// resolve() unit tests and the `single(faces_by_normal(...))` golden
+/// (`selector_coercion_golden.rs`).
 ///
 /// Fixture is read and compiled unconditionally so fixture absence / compile
 /// regressions fail on every CI runner (not only OCCT-enabled ones).
@@ -201,49 +213,18 @@ fn box_faces_integration_test() {
     let mut engine = Engine::new(Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    let cell = ValueCellId::new("BoxFaces", "fs");
-    let list = match result.values.get(&cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "BoxFaces.fs must be Value::List of Value::GeometryHandle sub-handles \
-             (PRD §4 KGQ-η), got: {other:?}"
-        ),
-    };
-
-    assert_eq!(
-        list.len(),
-        6,
-        "a 10×20×30 mm box must have exactly 6 faces; BoxFaces.fs has {} elements",
-        list.len()
+    // Task 4118 (γ): `faces(b)` now packages a kernel-free typed selector
+    // (`All` leaf over the parent solid handle), not an eager list of sub-handles.
+    let parent_realization = parent_realization_of(
+        result.values.get(&ValueCellId::new("BoxFaces", "b")),
+        "BoxFaces.b",
     );
-
-    // All 6 upstream_values_hashes must be pairwise distinct (PRD §4 iii).
-    let mut hashes: Vec<[u8; 32]> = Vec::new();
-    for (i, elem) in list.iter().enumerate() {
-        match elem {
-            Value::GeometryHandle {
-                upstream_values_hash,
-                ..
-            } => {
-                assert!(
-                    *upstream_values_hash != [0u8; 32],
-                    "fs[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
-                );
-                hashes.push(*upstream_values_hash);
-            }
-            other => panic!(
-                "BoxFaces.fs[{i}] must be Value::GeometryHandle (PRD §8.2 non-Undef), got: {other:?}"
-            ),
-        }
-    }
-    for i in 0..hashes.len() {
-        for j in (i + 1)..hashes.len() {
-            assert_ne!(
-                hashes[i], hashes[j],
-                "faces {i} and {j} must have distinct upstream_values_hashes (PRD §4 iii)"
-            );
-        }
-    }
+    assert_all_selector(
+        result.values.get(&ValueCellId::new("BoxFaces", "fs")),
+        "BoxFaces.fs",
+        SelectorKind::Face,
+        &parent_realization,
+    );
 }
 
 // ── Freshness cascade test ───────────────────────────────────────────────────
@@ -263,9 +244,10 @@ fn box_faces_integration_test() {
 ///   2. `b`  — geometry value cell (R0 → b via realization_reads fold)
 ///   3. `es` — selector list cell (b → es via VC→VC reads edge)
 ///
-/// "12 edge cells Pending" is realized at list-cell granularity: the single
-/// `es` cell holding all 12 sub-handles goes Pending; the next read re-mints
-/// all 12 sub-handles.
+/// "12 edge cells Pending" is realized at selector-cell granularity: the single
+/// `es` cell holding the typed `Value::Selector(Edge)` (task 4118 γ) goes
+/// Pending; the next read re-resolves all 12 sub-handles via
+/// `topology_selectors::resolve`.
 ///
 /// Skips cleanly (early return) when OCCT is unavailable — both the build
 /// and the cascade assertions require OCCT to hydrate `b` into a real
@@ -306,14 +288,17 @@ fn box_edges_freshness_cascade() {
         "BoxEdges.b must hydrate to Value::GeometryHandle after build"
     );
 
-    // Sanity: the `es` cell must be a 12-element list of sub-handles.
+    // Sanity: the `es` cell must be the kernel-free typed selector (task 4118 γ
+    // re-typed `edges(b)` from an eager `Value::List` to `Value::Selector(Edge)`).
+    // The freshness cascade is unchanged: `es` still reads `[b]` (the selector
+    // leaf targets `b`'s realized handle), so the VC→VC edge that propagates
+    // Pending is preserved.
     let es_cell_id = ValueCellId::new("BoxEdges", "es");
-    match result.values.get(&es_cell_id) {
-        Some(Value::List(elems)) if elems.len() == 12 => {}
-        other => panic!(
-            "BoxEdges.es must be a 12-element Value::List of sub-handles before cascade; got: {other:?}"
-        ),
-    }
+    assert!(
+        matches!(result.values.get(&es_cell_id), Some(Value::Selector(_))),
+        "BoxEdges.es must be a kernel-free Value::Selector before cascade; got: {:?}",
+        result.values.get(&es_cell_id)
+    );
 
     // Define the three cascade nodes.
     let r0 = RealizationNodeId::new("BoxEdges", 0);

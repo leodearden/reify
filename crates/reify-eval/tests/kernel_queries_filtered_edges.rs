@@ -34,6 +34,7 @@
 //!      `ByArea { 196..225mm² }` leaf.
 //!    - `FilteredEdges.top_edges` is `Value::Selector(Edge)` with a
 //!      `ByHeight { z=15mm, tol=0.001mm }` leaf.
+//!
 //!    The handle COUNTS (4 y-edges / 2 z-faces / 4 top edges) are verified through
 //!    `topology_selectors::resolve` by the resolve() unit tests and the
 //!    `single(faces_by_normal(...))` golden (`selector_coercion_golden.rs`).
