@@ -27,6 +27,7 @@
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use reify_test_support::ignore_hygiene::extract_ignore_reason;
 use rusqlite::OptionalExtension;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------
@@ -766,13 +767,18 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut struct_hits: Vec<(String, usize, Kind, String)> = Vec::new();
     let mut cited: Vec<(String, usize, Vec<u32>, String)> = Vec::new();
 
-    for path in ctx.git.ls_files() {
-        if !is_swept_ext(&path) || is_allowlisted(&path) {
+    // Collect ls_files() once: the Vec drives the structural sweep; the HashSet
+    // is reused by the ζ inverse-lane membership test without a second git call.
+    let tracked_files: Vec<String> = ctx.git.ls_files();
+    let tracked_set: HashSet<String> = tracked_files.iter().cloned().collect();
+
+    for path in &tracked_files {
+        if !is_swept_ext(path) || is_allowlisted(path) {
             continue;
         }
         // Read the working tree directly (only enumeration is a git seam). Skip
         // unreadable paths fail-safe.
-        let content = match std::fs::read_to_string(ctx.project_root.join(&path)) {
+        let content = match std::fs::read_to_string(ctx.project_root.join(path)) {
             Ok(c) => c,
             Err(_) => continue,
         };
@@ -800,28 +806,41 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         })
         .collect();
 
-    // β liveness lane: open the task DB read-only; on success resolve the
-    // collected cites and merge the findings in. A missing/unreadable DB (open
-    // error) OR a prepare/probe failure on an existing-but-corrupt DB (resolve
-    // error) degrades the lane fail-soft (§6.7): exactly one stderr breadcrumb
-    // naming the resolved path, then the structural findings are returned
-    // unchanged. The exit class is untouched (Medium-neutral) — 125 is reserved
-    // for genuine arg/IO misconfig, never an absent optional substrate.
+    // β liveness lane + ζ inverse lane: open the task DB read-only; on success
+    // resolve BOTH the collected cites (β) AND the inverse-path check (ζ) so
+    // they degrade together under the single existing breadcrumb (§6.7).
+    // A missing/unreadable DB (open error) OR a prepare/probe failure on an
+    // existing-but-corrupt DB (resolve error) degrades both lanes fail-soft.
+    // The exit class is untouched (Medium-neutral) — 125 is reserved for genuine
+    // arg/IO misconfig, never an absent optional substrate.
     let db_path = tasks_db_path(&ctx.project_root);
-    match open_tasks_db(&db_path).and_then(|conn| resolve_liveness_keyed(&conn, &cited)) {
-        Ok(live) => keyed.extend(live),
+    let mut inverse_findings: Vec<Finding> = Vec::new();
+    match open_tasks_db(&db_path).and_then(|conn| {
+        let live = resolve_liveness_keyed(&conn, &cited)?;
+        let inv = resolve_inverse(&conn, ctx.git, &tracked_set)?;
+        Ok((live, inv))
+    }) {
+        Ok((live, inv)) => {
+            keyed.extend(live);
+            inverse_findings = inv;
+        }
         Err(_) => eprintln!(
             "reify-audit: tasks.db unreachable at '{}' — PTODO liveness degraded; structural checks still run",
             db_path.display()
         ),
     }
 
-    // Deterministic merged order across both lanes: (path, line). A given line
-    // yields at most one lane's entry (scan_file emits one LineClass per line),
-    // so there is no cross-lane tie; the stable sort preserves the per-marker
-    // multi-cite order within a line.
+    // Deterministic merged order across structural + liveness lanes: (path, line).
+    // A given line yields at most one lane's entry (scan_file emits one LineClass
+    // per line), so there is no cross-lane tie; the stable sort preserves the
+    // per-marker multi-cite order within a line.
     keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    keyed.into_iter().map(|(_path, _line, finding)| finding).collect()
+    let mut out: Vec<Finding> = keyed.into_iter().map(|(_path, _line, finding)| finding).collect();
+    // ζ inverse findings are already sorted by (task_id, path); append as a
+    // deterministic trailing block. Deleted paths are absent from tracked_set
+    // so they never share a (path,line) sort key with structural/liveness findings.
+    out.extend(inverse_findings);
+    out
 }
 
 #[cfg(test)]
