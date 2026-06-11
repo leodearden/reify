@@ -1,4 +1,5 @@
 {
+  "synthetic_load": true,
   "nproc": 32,
   "runs": [
     {

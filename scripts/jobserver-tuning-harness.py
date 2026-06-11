@@ -35,6 +35,7 @@ Environment variables (all optional, with sensible defaults)
   REIFY_TUNING_NPROC              Override nproc detection (default: os.sched_getaffinity)
   REIFY_TUNING_MARGIN             Timeout margin multiplier (default: 1.5)
   REIFY_TUNING_MAX_SANE_TIMEOUT   Maximum sane timeout in seconds (default: 7200)
+  REIFY_TUNING_MIN_SANE_TIMEOUT   Minimum sane timeout in seconds (default: 60)
   REIFY_TUNING_MIN_POLL_INTERVAL  Minimum poll interval in seconds (default: 0.05)
   REIFY_SCCACHE_CACHE_DIR         sccache cache directory to clear for cold runs
 """
@@ -89,6 +90,24 @@ try:
 except ValueError as _exc:
     sys.stderr.write(
         f"ERROR: REIFY_TUNING_MAX_SANE_TIMEOUT={_max_sane_raw!r}: {_exc}\n"
+        f"  Set to a positive integer\n"
+    )
+    sys.exit(1)
+
+# Lower-bound / load-realism floor (default 60 s).
+# Rationale: verify.sh cold-compile test passes (the slot ζ wires) run 60–75 min
+# (3600–4500 s); the smallest verify sub-step timeout is 5 min (300 s); the
+# synthetic CPU-burn stub produces ~2 s walls.  60 s sits ~30× above the stub
+# artifact and 5× below the smallest real budget — a categorical separator, not
+# a tuned tolerance.
+_min_sane_raw: str = os.environ.get("REIFY_TUNING_MIN_SANE_TIMEOUT", "60")
+try:
+    MIN_SANE_TIMEOUT: int = int(_min_sane_raw)
+    if MIN_SANE_TIMEOUT < 1:
+        raise ValueError("must be >= 1")
+except ValueError as _exc:
+    sys.stderr.write(
+        f"ERROR: REIFY_TUNING_MIN_SANE_TIMEOUT={_min_sane_raw!r}: {_exc}\n"
         f"  Set to a positive integer\n"
     )
     sys.exit(1)
@@ -691,6 +710,10 @@ def evaluate_acceptance(measurements: dict, derived: dict) -> tuple:
       2. occupancy sum == nproc throughout (token conservation)
       3. worst-case task < task_timeout (budget not exceeded)
       4. §10.4 escape-valve: single-pool cold task > MAX_SANE_TIMEOUT → FINDING
+      5. lower-bound floor: derived timeout < MIN_SANE_TIMEOUT →
+           hard FAIL (TIMEOUT_BELOW_FLOOR, ok=False) when unlabeled,
+           soft WARNING (SYNTHETIC_TIMEOUT_NOT_AUTHORITATIVE, ok=True) when
+           synthetic_load:true (escape-valve pattern — honest surfacing only)
 
     Returns
     -------
@@ -804,6 +827,68 @@ def evaluate_acceptance(measurements: dict, derived: dict) -> tuple:
             },
         })
         # Escape valve is NOT a hard fail — honest surfacing, caller decides.
+
+    # ── 5. Lower-bound / load-realism guard ─────────────────────────────────
+    # A sub-floor derived timeout ⟺ a sub-floor wall (since timeout =
+    # ceil(wall × MARGIN)), so one check on the derived timeout covers both
+    # "implausibly small wall" and "sub-floor derived timeout" without a second
+    # arbitrary wall-floor constant.  derive_constants arithmetic is UNCHANGED.
+    #
+    # Exemption: an explicit `synthetic_load: true` top-level key marks a
+    # deliberately-committed slot-dynamics record (balancer tuning only, not a
+    # verify.sh cold-compile substitute) → soft WARNING instead of hard FAIL.
+    # The exemption key must be manually added; it is NOT auto-stamped by
+    # --measure so a fresh synthetic --measure → --check FAILS loudly.
+    synthetic = bool(measurements.get("synthetic_load", False))
+    for _label, _key in (("task", "task_timeout_secs"), ("merge", "merge_timeout_secs")):
+        _val = derived.get(_key, 0)
+        # `0 < _val` is intentional: _val == 0 means "no matching runs / not
+        # measured" (derive_constants found no qualifying walls), which is a
+        # distinct missing-data condition and is out of scope for this guard.
+        # A zero timeout wired into verify.sh would be caught by check §3
+        # (TASK_TIMEOUT_UNDERBUDGET) or simply kill every job via `timeout 0`
+        # — a loud failure, not a silent one.
+        if 0 < _val < MIN_SANE_TIMEOUT:
+            if not synthetic:
+                findings.append({
+                    "code":     "TIMEOUT_BELOW_FLOOR",
+                    "severity": "error",
+                    "message":  (
+                        f"derived {_label}_timeout_secs={_val}s is below the sane "
+                        f"floor MIN_SANE_TIMEOUT={MIN_SANE_TIMEOUT}s and is NOT a "
+                        f"substitute for verify.sh's cold-compile outer_timeout "
+                        f"(60–75 min) — re-run --measure driven with a REAL "
+                        f"cold-verify load_cmd, or set \"synthetic_load\": true in "
+                        f"the record if this is intentionally synthetic "
+                        f"(balancer slot-dynamics tuning only)"
+                    ),
+                    "details": {
+                        "label":            _label,
+                        "timeout_secs":     _val,
+                        "min_sane_timeout": MIN_SANE_TIMEOUT,
+                        "synthetic":        synthetic,
+                    },
+                })
+                hard_fail = True
+            else:
+                # Honest-surfacing soft finding — mirrors ESCAPE_VALVE pattern.
+                findings.append({
+                    "code":     "SYNTHETIC_TIMEOUT_NOT_AUTHORITATIVE",
+                    "severity": "warning",
+                    "message":  (
+                        f"{_label}_timeout_secs={_val}s is derived from the "
+                        f"harness's synthetic load and must NOT be wired into "
+                        f"verify.sh; obtain authoritative timeouts by re-running "
+                        f"--measure with a real cold-verify load_cmd"
+                    ),
+                    "details": {
+                        "label":            _label,
+                        "timeout_secs":     _val,
+                        "min_sane_timeout": MIN_SANE_TIMEOUT,
+                        "synthetic":        synthetic,
+                    },
+                })
+                # Soft finding — do NOT set hard_fail (honest surfacing only).
 
     ok = not hard_fail
     return ok, findings
