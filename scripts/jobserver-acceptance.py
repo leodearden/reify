@@ -51,14 +51,52 @@ _teardown_service = _harness._teardown_service
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Acceptance analyzer stubs (implemented in steps 03-10)
+# Pure analyzers (step-04)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-# def merge_reached_full_allocation(series, nproc): ...
-# def utilization_ok(busy_frac, threshold): ...
+def merge_reached_full_allocation(series: list, nproc: int) -> bool:
+    """Return True if any sample in series has merge == nproc.
+
+    Scans the during-overlap FIONREAD occupancy time-series produced by
+    run_mixed_concurrent's background sampler.  Each sample is a dict with at
+    least a "merge" key holding the merge-pool token count.  Returns True when
+    the merge pool reached full token allocation (== nproc) while under
+    contention with the task pool — criterion (d) of the acceptance gate.
+
+    Returns False for an empty series (no sample → cannot assert full
+    allocation).
+    """
+    for sample in series:
+        if sample.get("merge", 0) >= nproc:
+            return True
+    return False
+
+
+def utilization_ok(busy_frac: float, threshold: float) -> bool:
+    """Return True when busy_frac >= threshold.
+
+    busy_frac is the busy-core fraction derived from ε's busy_fraction() over
+    two /proc/stat snapshots straddling a mixed run.  threshold is the
+    operator-configured or derived utilisation floor (criterion (a)).
+    """
+    return busy_frac >= threshold
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Acceptance gate evaluator and report renderer stubs (implemented in steps 05-08)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
 # def evaluate_acceptance_gate(measurements): ...
 # def render_acceptance_report(measurements, verdicts): ...
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Concurrent mixed-load driver stub (implemented in steps 09-10)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
 # def run_mixed_concurrent(merge_cmd, task_cmds, fifos, sampler_interval): ...
 
 
