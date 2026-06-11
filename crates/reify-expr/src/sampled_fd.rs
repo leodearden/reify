@@ -732,4 +732,114 @@ mod tests {
         assert_eq!(out.data.len(), grid_count * 3);
         assert!(out.data.iter().all(|&v| v == 0.0), "degenerate curl should be all-zero");
     }
+
+    // ── step-9: second-order convergence control + degenerate-axis handling ──
+
+    /// (a) Convergence guard: for f(x) = sin(x) sampled on two grids over the
+    /// same interval, halving the spacing should reduce the interior gradient
+    /// error by ≥ 3× (O(h²) central-difference scheme).
+    ///
+    /// This test validates the O(h²) interior scheme — if the implementation
+    /// accidentally used a first-order formula everywhere, the error ratio would
+    /// be ~2×, not ≥ 3×.
+    #[test]
+    fn gradient_sin_convergence_rate() {
+        // Coarse: 10 nodes over [0, π]
+        let n_coarse = 10usize;
+        let h_coarse = std::f64::consts::PI / (n_coarse - 1) as f64;
+        let sf_coarse = make_1d_scalar(n_coarse, h_coarse, |x| x.sin());
+
+        // Fine: 20 nodes over [0, π] (half spacing)
+        let n_fine = 20usize;
+        let h_fine = std::f64::consts::PI / (n_fine - 1) as f64;
+        let sf_fine = make_1d_scalar(n_fine, h_fine, |x| x.sin());
+
+        let grad_coarse = sampled_differential(&sf_coarse, DifferentialOp::Gradient);
+        let grad_fine = sampled_differential(&sf_fine, DifferentialOp::Gradient);
+
+        // Exact gradient: cos(x)
+        // Measure max error on interior nodes only (boundary nodes use 1st-order
+        // one-sided, giving only O(h) convergence; interior uses O(h²) central).
+        let coarse_err: f64 = (1..n_coarse - 1)
+            .map(|i| {
+                let x = i as f64 * h_coarse;
+                (grad_coarse.data[i] - x.cos()).abs()
+            })
+            .fold(0.0f64, f64::max);
+
+        let fine_err: f64 = (1..n_fine - 1)
+            .map(|i| {
+                let x = i as f64 * h_fine;
+                (grad_fine.data[i] - x.cos()).abs()
+            })
+            .fold(0.0f64, f64::max);
+
+        // Ratio ≥ 3× confirms O(h²) convergence rate (actual ~4× for central diff)
+        assert!(
+            fine_err <= coarse_err / 3.0,
+            "gradient convergence rate too low: coarse_err={coarse_err:.3e}, \
+             fine_err={fine_err:.3e}, ratio={:.2} (expected ≥ 3×)",
+            coarse_err / fine_err
+        );
+    }
+
+    /// (b) Degenerate axis: a Regular2D field with a singleton first axis
+    /// (axis_grids[0].len() == 1) yields gradient component 0 = 0 at every node.
+    #[test]
+    fn gradient_singleton_axis_yields_zero() {
+        // Build a 1×4 2-D field (singleton first axis)
+        let xs: Vec<f64> = vec![0.0]; // singleton
+        let ys: Vec<f64> = (0..4).map(|j| j as f64 * 1.0).collect();
+        let mut data = Vec::with_capacity(4);
+        for y in &ys {
+            data.push(3.0 * y + 1.0); // f = 3y + 1
+        }
+        let sf = SampledField {
+            name: "test-singleton".to_string(),
+            kind: SampledGridKind::Regular2D,
+            bounds_min: vec![0.0, 0.0],
+            bounds_max: vec![0.0, 3.0],
+            spacing: vec![1.0, 1.0],
+            axis_grids: vec![xs, ys],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        };
+        let out = sampled_differential(&sf, DifferentialOp::Gradient);
+
+        // out_stride = 2, grid_count = 4
+        assert_eq!(out.data.len(), 8);
+        for g in 0..4 {
+            let gx = out.data[g * 2];     // ∂f/∂x along singleton axis → 0
+            let gy = out.data[g * 2 + 1]; // ∂f/∂y = 3
+            assert!(
+                gx.abs() < 1e-12,
+                "node {g}: grad_x = {gx}, expected 0 (singleton axis)"
+            );
+            assert!(
+                (gy - 3.0).abs() < 1e-12,
+                "node {g}: grad_y = {gy}, expected 3.0"
+            );
+        }
+    }
+
+    /// Laplacian with <3 nodes on an axis: that axis contributes 0.
+    #[test]
+    fn laplacian_under_resolved_axis_contributes_zero() {
+        // 2×5 field: first axis has 2 nodes (< 3 → second_diff = 0 for that axis)
+        // f = x² + y² → ∇²f = 2 + 2 = 4, but since axis-0 has only 2 nodes,
+        // second_diff along axis 0 = 0, so only axis-1 contributes: ∇²f = 2
+        let nx = 2;
+        let ny = 5;
+        let sf = make_2d_scalar(nx, ny, 1.0, 1.0, |x, y| x * x + y * y);
+        let out = sampled_differential(&sf, DifferentialOp::Laplacian);
+
+        assert_eq!(out.data.len(), nx * ny);
+        for (g, &val) in out.data.iter().enumerate() {
+            assert!(
+                (val - 2.0).abs() < 1e-12,
+                "node {g}: laplacian = {val}, expected 2.0 (under-resolved axis-0 → 0)"
+            );
+        }
+    }
 }
