@@ -948,13 +948,14 @@ fn step_force_struct_has_correct_param_shape() {
 ///
 ///   - `at        : String`                   (PLACEHOLDER for LocationId)
 ///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
-///   - `impulse   : Real`                     (PLACEHOLDER for ImpulseDim = N·s)
+///   - `impulse   : Impulse`                  (N·s = momentum = kg·m·s⁻¹)
 ///   - `time      : Time`                     (delta-application time)
 ///
 /// Must refine `ForcingFunction` via `trait_bounds`. No defaults.
-/// `impulse : Real` is a PLACEHOLDER for the unrepresentable `ImpulseDim`
-/// (= N·s = momentum = MASS·LENGTH·TIME⁻¹; not in NAMED_DIMENSIONS).
-/// Constraint lands in step-10.
+/// `impulse` is now tightened from the `Real` PLACEHOLDER to the registered
+/// `Impulse` named dimension (= N·s = momentum = MASS·LENGTH·TIME⁻¹; task 4548
+/// added it to NAMED_DIMENSIONS). The positivity constraint is verified
+/// separately.
 #[test]
 fn impulse_force_struct_has_correct_param_shape() {
     let template = find_structure("ImpulseForce");
@@ -974,7 +975,14 @@ fn impulse_force_struct_has_correct_param_shape() {
     let expected: &[(&str, Type)] = &[
         ("at", Type::String),
         ("direction", Type::vec3(Type::dimensionless_scalar())),
-        ("impulse", Type::Real), // PLACEHOLDER for ImpulseDim (design-decision-3)
+        (
+            "impulse",
+            // Tightened from the `Real` PLACEHOLDER to the registered Impulse
+            // dimension (N·s = momentum = kg·m·s⁻¹) — task 4548.
+            Type::Scalar {
+                dimension: DimensionVector::IMPULSE,
+            },
+        ),
         (
             "time",
             Type::Scalar {
@@ -1345,10 +1353,12 @@ fn harmonic_force_constrains_amplitude_and_frequency_positive() {
 
 // ─── step-9 (η): ImpulseForce impulse positivity constraint ──────────────────
 
-/// `ImpulseForce` must declare exactly 1 constraint: `impulse > 0`.
+/// `ImpulseForce` must declare exactly 1 constraint: `impulse > 0 * 1N * 1s`.
 ///
-/// `impulse : Real` (PLACEHOLDER for ImpulseDim) uses bare `0` (not `0unit`)
-/// because the field is Real-typed — same shape as `n_modes > 0` on Int.
+/// `impulse : Impulse` (tightened from the `Real` PLACEHOLDER by task 4548) uses
+/// the dimensioned-zero form `0 * 1N * 1s` (N·s = kg·m·s⁻¹ = Impulse), since
+/// polymorphic-zero has not landed — same convention as `frequency > 0Hz` on the
+/// `Frequency`-typed HarmonicForce.frequency and `magnitude > 0N` on StepForce.
 /// Direction carries the sign; impulse is the positive scalar size.
 /// Mirrors `step_force_constrains_magnitude_positive` discipline (tight count==1).
 #[test]
@@ -1358,7 +1368,7 @@ fn impulse_force_constrains_impulse_positive() {
     assert_eq!(
         template.constraints.len(),
         1,
-        "ImpulseForce should declare exactly 1 constraint (impulse > 0); \
+        "ImpulseForce should declare exactly 1 constraint (impulse > 0 * 1N * 1s); \
          got {} constraints: {:?}",
         template.constraints.len(),
         template
@@ -1375,8 +1385,14 @@ fn impulse_force_constrains_impulse_positive() {
                     return false;
                 }
                 match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(0)) => true,
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    // Dimensioned-zero `0 * 1N * 1s` lowers to a Scalar literal of
+                    // dimension Impulse (N·s = kg·m·s⁻¹), mirroring StepForce's
+                    // `magnitude > 0N` → Literal(Scalar { si_value: 0.0, FORCE }).
+                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                        if *si_value == 0.0 && *dimension == DimensionVector::IMPULSE =>
+                    {
+                        true
+                    }
                     _ => false,
                 }
             }
@@ -1385,8 +1401,8 @@ fn impulse_force_constrains_impulse_positive() {
     });
     assert!(
         matched,
-        "ImpulseForce should declare `constraint impulse > 0`; \
-         got constraints: {:?}",
+        "ImpulseForce should declare `constraint impulse > 0 * 1N * 1s` \
+         (dimensioned-zero of dimension Impulse); got constraints: {:?}",
         template
             .constraints
             .iter()
