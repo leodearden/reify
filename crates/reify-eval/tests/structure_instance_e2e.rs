@@ -414,19 +414,17 @@ structure def RestartFixture {
     );
 }
 
-/// Scenario 9: the ComputeNode trampoline must accept a
-/// `Value::StructureInstance` argument.
+/// Scenario 9: the ComputeNode trampoline accepts a `Value::StructureInstance`
+/// argument (PRD `docs/prds/v0_3/compute-node-contract.md` §7.2 / scenario 9).
 ///
-/// Pins PRD `docs/prds/v0_3/compute-node-contract.md` §7.2 / scenario 9.
-/// The seam (task γ / 3422 — `test::identity` trampoline + `register_compute_fn`
-/// + `@optimized`→ComputeNode lowering) is live on main. This test exercises
-/// the full end-to-end path: `.ri` source with `@optimized("test::identity")`
-/// lowers to a ComputeNode, the trampoline receives a `Value::StructureInstance`
-/// argument, and the round-tripped value is observable in the eval result.
-/// This is defence-in-depth for the PRD scenario, not the SIR-α user-observable
-/// signal.
+/// The seam required by this scenario — task γ / 3422: synthetic `test::identity`
+/// trampoline pattern, per-Engine `register_compute_fn` registry, and
+/// `@optimized(...)`→ComputeNode lowering wire — landed on main and is live.
+/// This test pins that the trampoline path (not the inline-fallback body) accepts
+/// and round-trips a `Value::StructureInstance` end-to-end through a compiled
+/// `.ri` source. Defence-in-depth for compute-node-contract.md §7.2; not the
+/// SIR-α user-observable signal.
 #[test]
-#[ignore = "depends on compute-node-contract.md §8 task γ (ComputeFn registration seam)"]
 fn compute_node_trampoline_arm_accepts_structure_instance() {
     // The `@optimized` fn receives a trait-typed param reference so the call
     // site is an exact ElasticMaterial-to-ElasticMaterial match (no concrete
