@@ -339,6 +339,118 @@ PY
 assert "render_acceptance_report unit tests pass" \
     test "$_b3_exit" -eq 0
 
-# ── Blocks will be added by steps 09, 11 ──────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 4: run_mixed_concurrent unit tests (step-09 / step-10)
+#   Hermetic: mktemp FIFOs opened O_RDWR + fast stub commands (sleep-stubs).
+#   Uses the fionread_pair idiom from test_jobserver_balancer.sh:63-82.
+#
+#   Asserts:
+#   (a) merge and N tasks run CONCURRENTLY: total wall-clock < 0.9 * sequential
+#       sum of merge_wall + task_walls (proves overlap, not ε's sequential run)
+#   (b) background sampler collected ≥1 occupancy sample during the overlap
+#   (c) returned record has merge_wall, task_walls (len == N), exit_124_count,
+#       occupancy list with "merge"/"task"/"timestamp" keys
+#   (d) exit_124_count == 0 for stub commands that exit 0
+#   (e) a stub that exits with code 124 raises exit_124_count by 1
+#
+#   RED before step-10: run_mixed_concurrent absent → AttributeError.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 4: run_mixed_concurrent unit tests ---"
+
+_b4_exit=0
+{
+python3 - "$ACCEPT" <<'PY'
+import importlib.util, os, sys, time, tempfile
+
+spec = importlib.util.spec_from_file_location("ja", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# ── Create hermetic FIFOs opened O_RDWR so sample_pool_occupancy can ───────
+# open them O_RDONLY | O_NONBLOCK without blocking (Linux allows RDONLY|NONBLOCK
+# on a FIFO even without a writer as long as it was created).
+merge_fifo = tempfile.mktemp(prefix="/tmp/test-accept-merge-")
+task_fifo  = tempfile.mktemp(prefix="/tmp/test-accept-task-")
+os.mkfifo(merge_fifo)
+os.mkfifo(task_fifo)
+# Keep writer ends open so FIONREAD doesn't error on RDONLY open.
+merge_fd = os.open(merge_fifo, os.O_RDWR | os.O_NONBLOCK)
+task_fd  = os.open(task_fifo,  os.O_RDWR | os.O_NONBLOCK)
+
+fifos = {"merge_fifo": merge_fifo, "task_fifo": task_fifo}
+
+try:
+    # ── (a)+(b) concurrency + sampler ─────────────────────────────────────
+    # Use 0.4s stub commands: sequential sum ≈ 1.2s, concurrent ≈ 0.4s+overhead.
+    merge_cmd = [sys.executable, "-c", "import time; time.sleep(0.4)"]
+    task_cmds = [
+        [sys.executable, "-c", "import time; time.sleep(0.4)"],
+        [sys.executable, "-c", "import time; time.sleep(0.4)"],
+    ]
+    t_start = time.monotonic()
+    result = mod.run_mixed_concurrent(merge_cmd, task_cmds, fifos, sampler_interval=0.05)
+    total_wall = time.monotonic() - t_start
+
+    sequential_sum = result["merge_wall"] + sum(result["task_walls"])
+    if total_wall >= sequential_sum * 0.90:
+        errors.append(
+            f"(a) Not concurrent: total_wall={total_wall:.3f}s "
+            f">= 0.90 * sequential_sum={sequential_sum:.3f}s"
+        )
+
+    if len(result["occupancy"]) < 1:
+        errors.append("(b) sampler collected 0 occupancy samples during overlap")
+    for sample in result["occupancy"]:
+        for key in ("merge", "task", "timestamp"):
+            if key not in sample:
+                errors.append(f"(b) occupancy sample missing key {key!r}: {sample}")
+
+    # ── (c) record structure ───────────────────────────────────────────────
+    if not isinstance(result["merge_wall"], float):
+        errors.append(f"(c) merge_wall type={type(result['merge_wall'])}, want float")
+    if len(result["task_walls"]) != 2:
+        errors.append(f"(c) task_walls len={len(result['task_walls'])}, want 2")
+    if "exit_124_count" not in result:
+        errors.append("(c) result missing exit_124_count")
+
+    # ── (d) all-zero exit codes → exit_124_count == 0 ─────────────────────
+    if result["exit_124_count"] != 0:
+        errors.append(f"(d) exit_124_count={result['exit_124_count']}, want 0")
+
+    # ── (e) a task that exits 124 increments exit_124_count ──────────────
+    merge_cmd2 = [sys.executable, "-c", "import time; time.sleep(0.05)"]
+    task_cmds2 = [
+        [sys.executable, "-c", "import sys; sys.exit(124)"],
+    ]
+    r2 = mod.run_mixed_concurrent(merge_cmd2, task_cmds2, fifos, sampler_interval=0.1)
+    if r2["exit_124_count"] != 1:
+        errors.append(f"(e) exit_124_count={r2['exit_124_count']}, want 1 for exit-124 stub")
+
+finally:
+    os.close(merge_fd)
+    os.close(task_fd)
+    try:
+        os.unlink(merge_fifo)
+    except OSError:
+        pass
+    try:
+        os.unlink(task_fifo)
+    except OSError:
+        pass
+
+if errors:
+    sys.stderr.write("FAIL run_mixed_concurrent:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: run_mixed_concurrent")
+PY
+} || _b4_exit=$?
+
+assert "run_mixed_concurrent unit tests pass" \
+    test "$_b4_exit" -eq 0
+
+# ── Block will be added by step 11 ────────────────────────────────────────
 
 test_summary
