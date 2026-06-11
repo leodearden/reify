@@ -717,4 +717,40 @@ mod tests {
              got {result:?}",
         );
     }
+
+    // (e) DYNAMIC disconnected free node — a free node orphaned MID-SOLVE once
+    //     the tension-only active set drops its only cable (the review's
+    //     "touched by at least one active member" nuance, which the up-front
+    //     step-16 guard cannot catch). node 0=(0,0,0) fixed; node 1=(L,0,0)
+    //     free; a single cable (0,1) with prestress N0; apply an axial load
+    //     (−P,0,0) at node 1 with P = 2·N0 (toward the anchor). Pass 1 is
+    //     well-posed — c=(1,0,0), zero transverse load ⇒ u_x[1] = −P·L/(EA), so
+    //     dN = (EA/L)·u_x = −P and the cable's total force N0+dN = N0−P = −N0 < 0
+    //     ⇒ a guaranteed pass-1 drop. On pass 2 node 1 is touched by NO active
+    //     member, and the kernel must return SingularSystem rather than panic.
+    //
+    //     RED against post-step-16 code: the up-front `touched` check passes
+    //     (node 1 is cabled at the start), and pass 2's `solve_active_pass`
+    //     grounds only unconnected FIXED nodes — the free orphan node 1 reaches
+    //     solve_cg with no diagonal and trips extract_diag_jacobi's assert.
+    //     step-18 adds the per-pass free-orphan guard that makes this GREEN.
+    #[test]
+    fn singular_system_dynamic_orphan_after_cable_drop() {
+        let l = 2.0_f64;
+        let e = 200.0e9_f64;
+        let a = 1.0e-4_f64;
+        let n0 = 5_000.0_f64;
+        let p = 2.0 * n0; // axial load toward the anchor ⇒ cable slackens on pass 1
+        let nodes = vec![[0.0, 0.0, 0.0], [l, 0.0, 0.0]];
+        let members = vec![cable(0, 1, e, a, n0)];
+        let loads = vec![[0.0, 0.0, 0.0], [-p, 0.0, 0.0]];
+        let fixed_nodes = vec![0]; // node 1 free; orphaned once (0,1) drops
+        let result =
+            tensegrity_load_analysis(&nodes, &members, &loads, &fixed_nodes, &guard_options(64));
+        assert!(
+            matches!(result, Err(TensegrityLoadError::SingularSystem)),
+            "a free node orphaned by a mid-solve cable drop must be SingularSystem \
+             (not a panic), got {result:?}",
+        );
+    }
 }
