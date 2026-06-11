@@ -45,6 +45,13 @@ reify-build-utils.workspace = true
 
 [features]
 test-instrumentation = []
+# unified-dag (task 4357 δ): gates ONLY the production activation of the
+# `run_unified_pass` Kahn/Tarjan driver inside `Engine::build()` (via
+# `BuildScheduler::from_env`). The `engine_fixpoint` module and
+# `run_unified_pass` compile unconditionally so the cycle contract stays
+# unit-testable without the flag; this empty feature flips the env gate from
+# "always Legacy" to "UnifiedDag selectable via REIFY_BUILD_SCHEDULER".
+unified-dag = []
 
 [dev-dependencies]
 reify-ast.workspace = true
