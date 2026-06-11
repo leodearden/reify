@@ -379,4 +379,53 @@ assert "Block C: no systemctl restart while build is active (leak skipped)" \
 
 _cleanup_canary
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D: either FIFO missing → unconditional reseed (jobserver-dead path)
+#
+#   A missing FIFO means the custodian daemon is already dead (it holds both
+#   FIFOs O_RDWR while running). Nothing is in-flight → restart unconditionally,
+#   even if BUILD_ACTIVE_CMD reports an active build.
+#
+#   Case 1: only task FIFO exists (merge absent), BUILD_ACTIVE='echo 1' (active).
+#   Case 2: both FIFOs absent, BUILD_ACTIVE='echo 1' (active).
+#   Both must record a systemctl restart despite the apparent active build.
+#
+#   RED: step-6 enters the idle guard before checking FIFO existence; the
+#   guard fires on 'echo 1' and exits 0 without reseeding.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: missing FIFO → unconditional reseed (pre-guard) ---"
+
+# Case 1: only task FIFO exists, merge absent, build active
+_cleanup_canary
+_MERGE_FIFO="$(mktemp -u /tmp/test-canary-merge-XXXXXX)"   # will NOT be created
+_TASK_FIFO="$(mktemp -u /tmp/test-canary-task-XXXXXX)"
+_READY_FILE="$(mktemp /tmp/test-canary-ready-XXXXXX)"
+> "$_CALLS_FILE"
+
+# Create only the task FIFO (merge absent)
+hold_seed_fifos "/dev/null" "$_TASK_FIFO" 0 4 "$_READY_FILE"
+wait_for_ready "$_READY_FILE"
+# _MERGE_FIFO is a mktemp -u path that was never created — it's absent
+
+run_canary 'echo 1' || true   # build ACTIVE
+
+assert "Block D (case 1, merge absent + build active): canary calls systemctl restart" \
+    bash -c "grep -qF 'restart' '$_CALLS_FILE'"
+
+_cleanup_canary
+
+# Case 2: both FIFOs absent, build active
+_cleanup_canary
+_MERGE_FIFO="$(mktemp -u /tmp/test-canary-merge-XXXXXX)"   # never created
+_TASK_FIFO="$(mktemp -u /tmp/test-canary-task-XXXXXX)"     # never created
+> "$_CALLS_FILE"
+
+run_canary 'echo 1' || true   # build ACTIVE, both FIFOs absent
+
+assert "Block D (case 2, both absent + build active): canary calls systemctl restart" \
+    bash -c "grep -qF 'restart' '$_CALLS_FILE'"
+
+_cleanup_canary
+
 test_summary
