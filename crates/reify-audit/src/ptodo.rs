@@ -456,6 +456,31 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.2 cite extraction (β liveness lane) — `extract_cites`
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn extract_cites_collects_all_canonical_ids() {
+        // A single parenthesised cite.
+        assert_eq!(extract_cites("// TODO(#42): x"), vec![42]);
+        // Multiple bare cites in source order.
+        assert_eq!(extract_cites("see #1 and #200"), vec![1, 200]);
+        // `#0` is a valid 1-digit run → 0.
+        assert_eq!(extract_cites("#0"), vec![0]);
+    }
+
+    #[test]
+    fn extract_cites_rejects_non_cites() {
+        // `#` followed by non-digits → no cite.
+        assert_eq!(extract_cites("#abc"), Vec::<u32>::new());
+        // A bare `#` at line end → no cite.
+        assert_eq!(extract_cites("bare #"), Vec::<u32>::new());
+        // A 6-digit run exceeds the 1..=5 window (consistent with
+        // has_canonical_cite) → no cite (not a 5-digit prefix match).
+        assert_eq!(extract_cites("#123456"), Vec::<u32>::new());
+    }
+
+    // -------------------------------------------------------------------
     // §8.2/§6.4 malformed citations — Greek / PRD-relative / legacy
     // -------------------------------------------------------------------
 
