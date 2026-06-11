@@ -987,11 +987,26 @@ fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
             },
             None => Value::Undef,
         },
+        // PrincipalStresses: project via eigendecomposition (find_min selects
+        // eigs[0] or eigs[2]), then locate extremum index and decompose to a
+        // domain coordinate.  No codomain unwrap needed here — compute_argextremum
+        // returns a domain coord and never reads codomain_type.
+        // Mirrors the MaxShear/SafetyFactor arg-reduction arms structurally
+        // (task 4562).
+        FieldSourceKind::PrincipalStresses => {
+            match project_principal_stresses_sampled(lambda.as_ref(), find_min) {
+                Some(sf) => match argmax_argmin_index(&sf.data, find_min) {
+                    Some(linear) => arg_coord_from_index(&sf, linear, domain_type),
+                    None => Value::Undef,
+                },
+                None => Value::Undef,
+            }
+        }
         // Analytical/Composed 1-arg: stays honest-Undef (mirrors compute_extremum
         // above).  The 2-arg bounded form is in `compute_bounded_argextremum` /
         // `reduce_analytical_argextremum_bounded` (task 4561, step-4).
-        // Remaining deferred: Imported + derived wrappers — same rationale as
-        // in compute_extremum.
+        // Remaining deferred: Imported + differential wrappers
+        // (Gradient/Divergence/Curl/Laplacian) — differential-field-reductions PRD.
         // Pinned by the same step-15 / S5 negative-path tests as compute_extremum.
         _ => Value::Undef,
     }
