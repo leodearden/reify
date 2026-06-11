@@ -508,6 +508,14 @@ fn resolve_liveness_keyed(
     conn: &rusqlite::Connection,
     cited: &[(String, usize, Vec<u32>, String)],
 ) -> rusqlite::Result<Vec<(String, usize, Finding)>> {
+    // §6.7 normative (PRD `reify-audit-ptodo-detector.md` line 181, "rows
+    // filtered to `tag='master'`"): the reify task DB uses the single canonical
+    // `master` tag context, so a cite is resolved ONLY there. Consequence — an id
+    // that exists solely under a non-master tag is invisible to this query and
+    // classifies as `unknown-id` (neither tracked nor orphaned); this is the
+    // intended master-only semantics, pinned by the integration test
+    // `liveness::non_master_tag_resolves_as_unknown_id` (tests/ptodo.rs). Should a
+    // multi-tag task DB ever be introduced, revisit this filter alongside §8.2.
     let mut stmt = conn.prepare("SELECT status FROM tasks WHERE tag = 'master' AND id = ?1")?;
     let mut out = Vec::new();
 

@@ -381,4 +381,29 @@ mod liveness {
 
         assert!(findings.is_empty(), "one live cite suffices; got {findings:?}");
     }
+
+    /// §6.7 master-only resolution (normative — PRD line 181 "rows filtered to
+    /// `tag='master'`"): a cite whose id exists ONLY under a non-master tag is
+    /// invisible to the liveness query and classifies as `unknown-id`, exactly as
+    /// a wholly-absent id would — NOT tracked, NOT orphaned. Pins the documented
+    /// master-only assumption so introducing a multi-tag task DB is a conscious,
+    /// test-breaking decision rather than a silent classification change.
+    #[test]
+    fn non_master_tag_resolves_as_unknown_id() {
+        let conn = seed_tasks_db();
+        // id 7 exists and is live, but only under a non-master tag → the
+        // `tag='master'` query never sees it.
+        insert_task(&conn, "feature-x", 7, "pending");
+
+        let cited = vec![marker("t.rs", 1, &[7], "// TODO(#7): x")];
+        let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
+
+        assert_eq!(findings.len(), 1, "got {findings:?}");
+        assert!(
+            findings[0].summary.starts_with("unknown-id:"),
+            "non-master-tag id must classify as unknown-id: {}",
+            findings[0].summary
+        );
+        assert!(findings[0].summary.contains("#7"), "{}", findings[0].summary);
+    }
 }
