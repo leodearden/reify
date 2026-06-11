@@ -12,8 +12,8 @@
 //! [0] structure       : Tensegrity              (Value::StructureInstance)
 //! [1] prestress       : List<Force>             (List of Scalar{FORCE}) — one
 //!                                                 per member, struts-then-cables
-//! [2] youngs_modulus  : Scalar                  (broadcast E, shared section)
-//! [3] area            : Scalar                  (broadcast A, shared section)
+//! [2] youngs_modulus  : Pressure                (broadcast E, shared section)
+//! [3] area            : Area                    (broadcast A, shared section)
 //! [4] loads           : List<Vector3<Force>>    (per-node external force)
 //! [5] supports        : List<Int>               (fixed node indices)
 //! ```
