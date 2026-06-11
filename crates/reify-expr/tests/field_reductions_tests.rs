@@ -827,18 +827,26 @@ fn all_reductions_on_imported_field_return_undef() {
     assert_all_reductions_undef(field, field_type, "Imported");
 }
 
-/// `max`/`min`/`argmax`/`argmin` over a derived source that is NOT
-/// `FieldSourceKind::VonMises` return `Value::Undef` (deferred — PRD §13
-/// line 238). Using `MaxShear` as the representative still-deferred source
-/// after `VonMises` was promoted to a fully-handled source kind in β.
+/// `max`/`min`/`argmax`/`argmin` over a derived source that is NOT yet
+/// fully handled (still deferred) return `Value::Undef`. Using
+/// `PrincipalStresses` as the representative still-deferred source after
+/// both `VonMises` (task 4085) and `MaxShear` (task 4543) were promoted to
+/// fully-handled source kinds.
 ///
-/// This test is the surviving "other derived sources stay deferred" pin
-/// after `all_reductions_on_derived_field_return_undef` was repurposed from
-/// `VonMises` to `MaxShear` in task 4085 step S5.
+/// This test is the surviving "other derived sources stay deferred" pin.
+/// It was repurposed VonMises → MaxShear in task 4085 step S5, and
+/// MaxShear → PrincipalStresses in task 4543 step S5.
+/// PrincipalStresses is the next still-deferred pointwise derived kind
+/// (→ task 4562).
 #[test]
 fn all_reductions_on_derived_non_vonmises_field_return_undef() {
-    let (field, field_type) = make_constant_real_analytical_field(FieldSourceKind::MaxShear);
-    assert_all_reductions_undef(field, field_type, "derived (MaxShear — still deferred)");
+    let (field, field_type) =
+        make_constant_real_analytical_field(FieldSourceKind::PrincipalStresses);
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "derived (PrincipalStresses — still deferred → task 4562)",
+    );
 }
 
 // ── Step 17: NaN-skip and empty-data semantics ──────────────────────────────
@@ -2678,4 +2686,284 @@ fn all_reductions_on_max_shear_field_with_non_sampled_lambda_return_undef() {
         Value::Undef,
     );
     assert_all_reductions_undef(field, field_type, "MaxShear with non-Sampled lambda (Undef)");
+}
+
+// ── Step S1 (SafetyFactor): max / min reduce a SafetyFactor-derived field ───
+//
+// These tests are RED before the SafetyFactor arm is implemented in
+// `field_reductions.rs` (returns Value::Undef at the catch-all).
+// After step-6 they become GREEN.
+//
+// SafetyFactor lambda = Value::List[inner_tensor_field, yield_val].
+// For uniaxial σ: vM = σ exactly → SF = yield / σ.
+
+/// `max` / `min` over a SafetyFactor-source field.
+///
+/// Inner tensor field: uniaxial σ = {100e6, 250e6, 50e6} → vM = σ →
+/// SF = 250e6 / {100e6, 250e6, 50e6} = {2.5, 1.0, 5.0} (dimensionless Real).
+/// Expected: max = Real(5.0), min = Real(1.0).
+///
+/// **RED before step-6**.
+#[test]
+fn max_min_safety_factor_derived_sampled_field_returns_correct_extremum() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Build the inner Sampled tensor field (stride-9 uniaxial windows).
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(50e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+
+    // SafetyFactor lambda = Value::List[tensor_field, yield_val]
+    let yield_val = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+    let lambda = Value::List(vec![inner_tensor_field, yield_val]);
+
+    // SafetyFactor field: domain=Length, codomain=Real (dimensionless)
+    let (sf_field, sf_field_type) = make_field_with_source(
+        length.clone(),
+        Type::Real,
+        FieldSourceKind::SafetyFactor,
+        lambda,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max → Real(5.0) (SF of σ=50e6 window: 250e6/50e6=5.0)
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(sf_field.clone(), sf_field_type.clone())],
+        Type::Real,
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Real(5.0),
+        "max(SafetyFactor field) should return Real(5.0) (SF of σ=50e6 window)"
+    );
+
+    // min → Real(1.0) (SF of σ=250e6 window: 250e6/250e6=1.0)
+    let min_expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(sf_field, sf_field_type)],
+        Type::Real,
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Real(1.0),
+        "min(SafetyFactor field) should return Real(1.0) (SF of σ=250e6 window)"
+    );
+}
+
+/// `argmax` / `argmin` over a SafetyFactor-source 1-D field.
+///
+/// σ = {100e6, 250e6, 50e6} → SF = {2.5, 1.0, 5.0}.
+/// argmax → index 2 → coord 2.0 m; argmin → index 1 → coord 1.0 m.
+///
+/// **RED before step-6**.
+#[test]
+fn argmax_argmin_safety_factor_field_1d_returns_coord() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(50e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+    let yield_val = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+    let lambda = Value::List(vec![inner_tensor_field, yield_val]);
+    let (sf_field, sf_field_type) = make_field_with_source(
+        length.clone(),
+        Type::Real,
+        FieldSourceKind::SafetyFactor,
+        lambda,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → index 2 → coord 2.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(sf_field.clone(), sf_field_type.clone())],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(SafetyFactor 1-D field) should return coord at SF max (index 2 → 2.0 m)"
+    );
+
+    // argmin → index 1 → coord 1.0 m
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(sf_field, sf_field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(SafetyFactor 1-D field) should return coord at SF min (index 1 → 1.0 m)"
+    );
+}
+
+/// All-hydrostatic windows: vM = 0, SF = yield/0 = +∞.
+/// The is_finite() reduction gate skips +∞, so all reductions return Undef.
+///
+/// Pins the hydrostatic-poison convention (matches the `safety_factor` builtin:
+/// yield/0 → +∞ → `sanitize_value` → Undef; the is_finite() gate in
+/// `argmax_argmin_index` enforces the same outcome for the field reduction).
+#[test]
+fn reductions_on_safety_factor_field_with_hydrostatic_windows_return_undef() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Hydrostatic window: [p, 0, 0, 0, p, 0, 0, 0, p] — vM = 0.
+    let p = 100e6_f64;
+    let hydrostatic_window: [f64; 9] = [p, 0.0, 0.0, 0.0, p, 0.0, 0.0, 0.0, p];
+
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0],
+        vec![hydrostatic_window, hydrostatic_window],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+    let yield_val = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+    let lambda = Value::List(vec![inner_tensor_field, yield_val]);
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        Type::Real,
+        FieldSourceKind::SafetyFactor,
+        lambda,
+    );
+
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "SafetyFactor with hydrostatic windows (vM=0 → SF=+∞ → skipped → Undef)",
+    );
+}
+
+/// Defensive: all four reductions return `Value::Undef` for malformed
+/// SafetyFactor lambda — pins the `project_safety_factor_sampled` defensive arms.
+///
+/// Tests three malformed cases:
+/// (1) non-List lambda (Value::Undef) — level-1 guard rejects non-List.
+/// (2) wrong-arity List (3 elements) — level-1 guard rejects `len != 2`.
+/// (3) non-numeric yield (Value::Undef in list position 1) — `yield_val.as_f64()` returns None.
+#[test]
+fn all_reductions_on_safety_factor_field_with_malformed_lambda_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+
+    // Case 1: non-List lambda
+    let (field1, field_type1) = make_field_with_source(
+        Type::Real,
+        Type::Real,
+        FieldSourceKind::SafetyFactor,
+        Value::Undef,
+    );
+    assert_all_reductions_undef(
+        field1,
+        field_type1,
+        "SafetyFactor with non-List lambda (Undef)",
+    );
+
+    // Build a valid inner tensor field for cases 2 and 3.
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0],
+        vec![uniaxial_window(100e6), uniaxial_window(200e6)],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::Real);
+
+    // Case 2: wrong-arity List (3 elements instead of 2)
+    let yield_val = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+    let (field2, field_type2) = make_field_with_source(
+        Type::Real,
+        Type::Real,
+        FieldSourceKind::SafetyFactor,
+        Value::List(vec![
+            inner_tensor_field.clone(),
+            yield_val.clone(),
+            Value::Real(0.0),
+        ]),
+    );
+    assert_all_reductions_undef(
+        field2,
+        field_type2,
+        "SafetyFactor with wrong-arity List (3 elements)",
+    );
+
+    // Case 3: non-numeric yield (Value::Undef in position 1)
+    let (field3, field_type3) = make_field_with_source(
+        Type::Real,
+        pressure,
+        FieldSourceKind::SafetyFactor,
+        Value::List(vec![inner_tensor_field, Value::Undef]),
+    );
+    assert_all_reductions_undef(
+        field3,
+        field_type3,
+        "SafetyFactor with non-numeric yield (Undef in position 1)",
+    );
+}
+
+/// 2-arg `max|min|argmax|argmin(field, bbox)` over a SafetyFactor-source field → Undef.
+///
+/// Mirrors `bounded_reductions_on_derived_maxshear_field_return_undef`:
+/// the bounded form is not supported for derived SafetyFactor fields.
+#[test]
+fn bounded_reductions_on_derived_safetyfactor_field_return_undef() {
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        Type::Real,
+        FieldSourceKind::SafetyFactor,
+        Value::Undef,
+    );
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+    for op in ["max", "min", "argmax", "argmin"] {
+        let expr = make_bounded_call(op, field.clone(), field_type.clone(), bbox.clone(), Type::Real);
+        assert_eq!(
+            eval_expr(&expr, &ctx),
+            Value::Undef,
+            "{op}(SafetyFactor field, bbox) should be Undef (bounded form not supported for derived)"
+        );
+    }
 }
