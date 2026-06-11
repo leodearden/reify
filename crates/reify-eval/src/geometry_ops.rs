@@ -2642,6 +2642,58 @@ pub(crate) fn kernel_distance(
 //                          topology-selector helper, or the arg shape is
 //                          unsupported. Callers fall through to the cell's
 //                          compiled default.
+/// Resolve a selector constructor's parent-solid argument (`arg[0]`) to a
+/// [`reify_ir::value::GeometryHandleRef`] target for a kernel-FREE
+/// `Value::Selector` leaf (task 4118 γ).
+///
+/// Reuses [`resolve_parent_geometry_handle_arg`] — which reads the realized
+/// `Value::GeometryHandle` out of `values` — then repackages its three identity
+/// fields as a `GeometryHandleRef`. Falls through to `None` (cell stays at
+/// `Value::Undef`) when `arg[0]` is not yet a hydrated `Value::GeometryHandle`
+/// (PRD invariant #2: never partial-construct a selector target).
+fn resolve_selector_target(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+) -> Option<reify_ir::value::GeometryHandleRef> {
+    let (realization_ref, upstream_values_hash, kernel_handle) =
+        resolve_parent_geometry_handle_arg(expr, values)?;
+    Some(reify_ir::value::GeometryHandleRef {
+        realization_ref,
+        upstream_values_hash,
+        kernel_handle,
+    })
+}
+
+/// Package a kernel-FREE leaf `Value::Selector` (task 4118 γ): the 7
+/// predicate/all selector constructors evaluate to a typed
+/// `Value::Selector(kind)` pairing the parent solid handle (`target`) with a
+/// `LeafQuery` describing the predicate. NO kernel query is issued here — the
+/// `Selector → List<Geometry>` resolution is deferred to the compiler-inserted
+/// `ResolveSelector` coercion node, executed by `topology_selectors::resolve`
+/// (K2/BT7: zero kernel queries during construction).
+///
+/// `kind` and `query.required_kind()` are statically matched at every call site
+/// below, so the K1 kind-closure check in `SelectorValue::leaf` never fails in
+/// practice; the defensive `Err` arm emits a Warning and leaves the cell at
+/// `Undef` rather than silently dropping it.
+fn build_leaf_selector(
+    kind: reify_core::ty::SelectorKind,
+    target: reify_ir::value::GeometryHandleRef,
+    query: reify_ir::value::LeafQuery,
+    helper_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    match reify_ir::value::SelectorValue::leaf(kind, target, query) {
+        Ok(sv) => Some(reify_ir::Value::Selector(sv)),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name}: selector kind-closure violation ({err:?}); cell left at Undef"
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
 pub(crate) fn try_eval_topology_selector(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
@@ -3108,54 +3160,31 @@ pub(crate) fn try_eval_topology_selector(
                 }
             }
         }
-        TopologySelectorHelper::Edges | TopologySelectorHelper::Faces => {
-            // args[0]: geometry ValueRef → values map → full parent GeometryHandle.
-            // The parent's realization_ref + upstream_values_hash are needed to
-            // construct well-formed sub-handle values (PRD §4). Fall through when
-            // the arg cell is not yet a hydrated Value::GeometryHandle (PRD invariant
-            // #2: do not partially construct a sub-handle; cell retains its compiled
-            // default, i.e. stays at Value::Undef).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
-            let sub_kind = match helper {
-                TopologySelectorHelper::Edges => crate::topology_selectors::SubKind::Edge,
-                TopologySelectorHelper::Faces => crate::topology_selectors::SubKind::Face,
-                // Enumerate the complement explicitly (rather than `_`) so that
-                // adding a new `TopologySelectorHelper` variant and grouping it
-                // into the outer `Edges | Faces` or-pattern forces the compiler
-                // to error here instead of silently funnelling into
-                // `unreachable!()`.
-                TopologySelectorHelper::ClosestPoint
-                | TopologySelectorHelper::IsOn
-                | TopologySelectorHelper::AngleBetweenSurfaces
-                | TopologySelectorHelper::CenterOfMass
-                | TopologySelectorHelper::MomentOfInertia
-                | TopologySelectorHelper::EdgesByLength
-                | TopologySelectorHelper::FacesByArea
-                | TopologySelectorHelper::FacesByNormal
-                | TopologySelectorHelper::EdgesParallelTo
-                | TopologySelectorHelper::EdgesAtHeight
-                | TopologySelectorHelper::AdjacentFaces
-                | TopologySelectorHelper::SharedEdges
-                | TopologySelectorHelper::Angle
-                | TopologySelectorHelper::Contains
-                | TopologySelectorHelper::GeoEquiv
-                | TopologySelectorHelper::Normal
-                | TopologySelectorHelper::Curvature
-                | TopologySelectorHelper::Length
-                | TopologySelectorHelper::Perimeter
-                | TopologySelectorHelper::Distance
-                | TopologySelectorHelper::Intersects
-                | TopologySelectorHelper::Split => {
-                    unreachable!("Edges/Faces outer match guarantees this")
-                }
-            };
-            dispatch_extract_subshapes(
-                kernel,
-                parent_kernel_handle,
-                sub_kind,
-                &parent_rr,
-                &parent_hash,
+        // Task 4118 (γ): `edges(solid)` / `faces(solid)` build a kernel-FREE
+        // typed `Value::Selector(kind)` whose leaf is `All` over the parent
+        // solid handle — NOT an eagerly-extracted `Value::List`. The
+        // `Selector → List<Geometry>` resolution is deferred to the
+        // compiler-inserted `ResolveSelector` coercion node (K2/BT7: zero
+        // kernel queries during construction). `arg[0]` resolves from `values`
+        // (not `named_steps`) so the leaf target carries the parent's
+        // realization_ref + upstream_values_hash; falls through to None when the
+        // arg cell is not yet a hydrated Value::GeometryHandle (PRD invariant #2).
+        TopologySelectorHelper::Edges => {
+            let target = resolve_selector_target(&args[0], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::All,
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::Faces => {
+            let target = resolve_selector_target(&args[0], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::All,
                 &function.name,
                 diagnostics,
             )
@@ -3184,134 +3213,82 @@ pub(crate) fn try_eval_topology_selector(
             let query = reify_ir::GeometryQuery::InertiaTensor { handle, density };
             dispatch_inertia_tensor(kernel, &query, &function.name, diagnostics)
         }
+        // Task 4118 (γ): build a kernel-FREE `Value::Selector(Edge)` with a
+        // `ByLength` leaf. The Range<Length> arg maps directly to the leaf's
+        // (min_m, max_m); NO kernel filter runs here — deferred to resolve().
         TopologySelectorHelper::EdgesByLength => {
-            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
-            // Must resolve from `values` (not `named_steps`) so we get the parent's
-            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
-            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
-            // (PRD invariant #2: never partially construct a sub-handle).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
-            // args[1]: Range<Length> ValueRef/Literal → (lo_m, hi_m).
-            let (lo, hi) =
+            let target = resolve_selector_target(&args[0], values)?;
+            // args[1]: Range<Length> ValueRef/Literal → (min_m, max_m).
+            let (min_m, max_m) =
                 resolve_range_dim_arg(&args[1], values, reify_core::DimensionVector::LENGTH)?;
-            let filter_result =
-                crate::topology_selectors::edges_by_length(kernel, parent_kernel_handle, lo, hi);
-            dispatch_filtered_subhandles(
-                kernel,
-                parent_kernel_handle,
-                crate::topology_selectors::SubKind::Edge,
-                &parent_rr,
-                &parent_hash,
-                filter_result,
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::ByLength { min_m, max_m },
                 &function.name,
                 diagnostics,
             )
         }
+        // Task 4118 (γ): build a kernel-FREE `Value::Selector(Face)` with a
+        // `ByArea` leaf. `mm*mm` canonicalises to AREA (LENGTH² == AREA per
+        // dimension algebra); the range maps directly to (min_m2, max_m2).
         TopologySelectorHelper::FacesByArea => {
-            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
-            // Must resolve from `values` (not `named_steps`) so we get the parent's
-            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
-            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
-            // (PRD invariant #2: never partially construct a sub-handle).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
-            // args[1]: Range<Area> ValueRef/Literal → (lo_m2, hi_m2). `mm*mm`
-            // canonicalises to AREA (LENGTH² == AREA per dimension algebra).
-            let (lo, hi) =
+            let target = resolve_selector_target(&args[0], values)?;
+            // args[1]: Range<Area> ValueRef/Literal → (min_m2, max_m2).
+            let (min_m2, max_m2) =
                 resolve_range_dim_arg(&args[1], values, reify_core::DimensionVector::AREA)?;
-            let filter_result =
-                crate::topology_selectors::faces_by_area(kernel, parent_kernel_handle, lo, hi);
-            dispatch_filtered_subhandles(
-                kernel,
-                parent_kernel_handle,
-                crate::topology_selectors::SubKind::Face,
-                &parent_rr,
-                &parent_hash,
-                filter_result,
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByArea { min_m2, max_m2 },
                 &function.name,
                 diagnostics,
             )
         }
+        // Task 4118 (γ): build a kernel-FREE `Value::Selector(Face)` with a
+        // `ByNormal` leaf (dir + angular tolerance in SI radians).
         TopologySelectorHelper::FacesByNormal => {
-            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
-            // Must resolve from `values` (not `named_steps`) so we get the parent's
-            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
-            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
-            // (PRD invariant #2: never partially construct a sub-handle).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            let target = resolve_selector_target(&args[0], values)?;
             // args[1]: Vec3 direction ValueRef → values map → [f64; 3].
             let dir = resolve_vec3_arg(&args[1], values)?;
-            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
-            // (SI radians — `topology_selectors::faces_by_normal` expects rad).
-            let tol = resolve_angle_scalar_arg(&args[2], values)?;
-            let filter_result =
-                crate::topology_selectors::faces_by_normal(kernel, parent_kernel_handle, dir, tol);
-            dispatch_filtered_subhandles(
-                kernel,
-                parent_kernel_handle,
-                crate::topology_selectors::SubKind::Face,
-                &parent_rr,
-                &parent_hash,
-                filter_result,
+            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar (SI rad).
+            let tol_rad = resolve_angle_scalar_arg(&args[2], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByNormal { dir, tol_rad },
                 &function.name,
                 diagnostics,
             )
         }
+        // Task 4118 (γ): build a kernel-FREE `Value::Selector(Edge)` with a
+        // `ByParallel` leaf (axis + angular tolerance in SI radians).
         TopologySelectorHelper::EdgesParallelTo => {
-            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
-            // Must resolve from `values` (not `named_steps`) — same rationale as
-            // FacesByNormal (PRD §4 invariant #2).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            let target = resolve_selector_target(&args[0], values)?;
             // args[1]: Vec3 axis ValueRef → values map → [f64; 3].
             let axis = resolve_vec3_arg(&args[1], values)?;
-            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar
-            // (SI radians — `topology_selectors::edges_parallel_to` expects rad).
-            let tol = resolve_angle_scalar_arg(&args[2], values)?;
-            let filter_result = crate::topology_selectors::edges_parallel_to(
-                kernel,
-                parent_kernel_handle,
-                axis,
-                tol,
-            );
-            dispatch_filtered_subhandles(
-                kernel,
-                parent_kernel_handle,
-                crate::topology_selectors::SubKind::Edge,
-                &parent_rr,
-                &parent_hash,
-                filter_result,
+            // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar (SI rad).
+            let tol_rad = resolve_angle_scalar_arg(&args[2], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::ByParallel { axis, tol_rad },
                 &function.name,
                 diagnostics,
             )
         }
+        // Task 4118 (γ): build a kernel-FREE `Value::Selector(Edge)` with a
+        // `ByHeight` leaf (z-plane + tolerance, both SI metres).
         TopologySelectorHelper::EdgesAtHeight => {
-            // args[0]: parent geometry ValueRef → values map → full Value::GeometryHandle.
-            // Must resolve from `values` (not `named_steps`) so we get the parent's
-            // realization_ref + upstream_values_hash for sub-handle construction (PRD §4).
-            // Falls through to None when the arg cell is not a hydrated Value::GeometryHandle
-            // (PRD invariant #2: never partially construct a sub-handle).
-            let (parent_rr, parent_hash, parent_kernel_handle) =
-                resolve_parent_geometry_handle_arg(&args[0], values)?;
+            let target = resolve_selector_target(&args[0], values)?;
             // args[1]: z plane ValueRef → values map → LENGTH Scalar (SI metres).
             let z_m = resolve_length_scalar_arg(&args[1], values)?;
             // args[2]: tolerance ValueRef → values map → LENGTH Scalar (SI metres).
             let tol_m = resolve_length_scalar_arg(&args[2], values)?;
-            let filter_result = crate::topology_selectors::edges_at_height(
-                kernel,
-                parent_kernel_handle,
-                z_m,
-                tol_m,
-            );
-            dispatch_filtered_subhandles(
-                kernel,
-                parent_kernel_handle,
-                crate::topology_selectors::SubKind::Edge,
-                &parent_rr,
-                &parent_hash,
-                filter_result,
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Edge,
+                target,
+                reify_ir::value::LeafQuery::ByHeight { z_m, tol_m },
                 &function.name,
                 diagnostics,
             )
@@ -3837,6 +3814,12 @@ impl TopologySelectorHelper {
 /// Returns `Some(Value::Undef)` (with a Warning diagnostic) on kernel error —
 /// preserving the same defensive-downgrade contract as the sibling dispatchers
 /// (`dispatch_point3_length_reply`, `dispatch_point_on_shape`, etc.).
+// Task 4118 (γ): the `edges`/`faces` All-leaf construction path is now
+// kernel-FREE (see `build_leaf_selector`), so eager sub-shape extraction has no
+// caller at construction time. Retained (allow dead_code) — the kernel-bearing
+// `ResolveSelector` resolution path (step-6) re-realizes selectors and may reuse
+// this eager-extraction shape; remove if it stays unused.
+#[allow(dead_code)]
 fn dispatch_extract_subshapes(
     kernel: &mut dyn reify_ir::GeometryKernel,
     parent_kernel_handle: GeometryHandleId,

@@ -212,15 +212,20 @@ pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
 /// Task 2699 names — compile-time type only; eval dispatch is task 2691.
 /// Until then, cells hold `Value::Undef`, which `value_type_kind_matches`
 /// accepts for any type (`reify_eval::lib:196`):
-/// - `edges(solid)`                          → `Type::List(Geometry)`
-/// - `faces(solid)`                          → `Type::List(Geometry)`
-/// - `edges_by_length(solid, range)`         → `Type::List(Geometry)`
-/// - `faces_by_area(solid, range)`           → `Type::List(Geometry)`
-/// - `faces_by_normal(solid, dir, tol)`      → `Type::List(Geometry)`
-/// - `edges_parallel_to(solid, dir, tol)`    → `Type::List(Geometry)`
-/// - `edges_at_height(solid, h, tol)`        → `Type::List(Geometry)`
-/// - `adjacent_faces(solid, face)`           → `Type::List(Geometry)`
-/// - `shared_edges(face1, face2)`            → `Type::List(Geometry)`
+/// Task 4118 (γ) — the 7 predicate/all selector constructors evaluate to a
+/// typed `Value::Selector(kind)`, so their compile-time result type is
+/// `Type::Selector(kind)`. The compiler inserts a `ResolveSelector` coercion
+/// node to bridge `Selector → List<Geometry>` at the three consumption sites
+/// (param-binding, single()/list-helper, IndexAccess-object):
+/// - `edges(solid)`                          → `Type::Selector(Edge)`
+/// - `faces(solid)`                          → `Type::Selector(Face)`
+/// - `edges_by_length(solid, range)`         → `Type::Selector(Edge)`
+/// - `faces_by_area(solid, range)`           → `Type::Selector(Face)`
+/// - `faces_by_normal(solid, dir, tol)`      → `Type::Selector(Face)`
+/// - `edges_parallel_to(solid, dir, tol)`    → `Type::Selector(Edge)`
+/// - `edges_at_height(solid, h, tol)`        → `Type::Selector(Edge)`
+/// - `adjacent_faces(solid, face)`           → `Type::List(Geometry)` (relational)
+/// - `shared_edges(face1, face2)`            → `Type::List(Geometry)` (relational)
 /// - `center_of_mass(solid, density)`        → `Type::point3(Type::length())`
 /// - `moment_of_inertia(solid, density)`     → `Type::tensor(2, 3, MomentOfInertia)`
 ///
@@ -233,11 +238,22 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         "closest_point" => Type::point3(Type::length()),
         "is_on" => Type::Bool,
         "angle_between_surfaces" => Type::angle(),
-        // Task 2699 — compile-time type wiring; eval dispatch is task 2691
-        "edges" | "faces" | "edges_by_length" | "faces_by_area" | "faces_by_normal"
-        | "edges_parallel_to" | "edges_at_height" | "adjacent_faces" | "shared_edges" => {
-            Type::List(Box::new(Type::Geometry))
-        }
+        // Task 4118 (γ) — the 7 predicate/all selector constructors are typed
+        // `Type::Selector(kind)` (Edge / Face per the constructor). The compiler
+        // bridges `Selector → List<Geometry>` via a `ResolveSelector` coercion
+        // node at the three consumption sites.
+        "edges" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "faces" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "edges_by_length" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "faces_by_area" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "faces_by_normal" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "edges_parallel_to" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "edges_at_height" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        // Task 2699 — relational selectors stay List<Geometry>: adjacent_faces /
+        // shared_edges have no `LeafQuery` representation (4117's LeafQuery =
+        // {Named,All,ByNormal,ByArea,ByLength,ByHeight,ByParallel}), so they are
+        // out of scope for the Selector re-type.
+        "adjacent_faces" | "shared_edges" => Type::List(Box::new(Type::Geometry)),
         // Task 4190 — split(solid, plane) -> List<Solid>. Same List<Geometry>
         // result type as the edge/face selectors; eval dispatch via
         // TopologySelectorHelper::Split in try_eval_topology_selector.
