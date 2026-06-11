@@ -25,22 +25,15 @@
 //
 // Type-coercion notes:
 //
-//   Material (updated task γ/4441 — direct passing now works):
+//   Material (task γ/4441 + task δ/4442 — direct-pass form):
 //     `solve_elastic_static` declares `material: ConstitutiveLaw`. As of
 //     task γ/4441, `trait ElasticMaterial : ConstitutiveLaw` holds; the
 //     conformance post-pass (`phase_fn_arg_conformance` → `satisfies_trait_bound`
 //     → `trait_satisfies`) walks refinement chains transitively, so
-//     `Steel_AISI_1045()` may now be passed DIRECTLY to `solve_elastic_static`
-//     without a wrapper — it transitively conforms to `ConstitutiveLaw` via
-//     `ElasticMaterial : ConstitutiveLaw`.
-//
-//     The `ConstitutiveLawInput` wrapper below is VESTIGIAL (retained pending
-//     task δ which migrates callers to the direct-pass form). It continues to
-//     compile: `ci.law` has declared type `ConstitutiveLaw`, which is an exact
-//     match. Task δ will remove the wrapper and update this call to pass
-//     `material` directly.
-//
-//     See `solver_elastic.ri` for the `ConstitutiveLawInput` doc comment.
+//     `Steel_AISI_1045()` is passed DIRECTLY to `solve_elastic_static` — it
+//     transitively conforms to `ConstitutiveLaw` via `ElasticMaterial :
+//     ConstitutiveLaw`.  The `ConstitutiveLawInput` shim was retired in task
+//     δ/4442; no wrapper is needed.
 //
 //   Loads / supports (tightened task 4093):
 //     `solve_elastic_static` now declares `loads: List<Load>` and
@@ -65,13 +58,6 @@ structure FeaCantileverSmoke {
     // Supports: fully clamped (fixed) at the beam root.
     let mount = FixedSupport(target: "root")
 
-    // Vestigial wrapper (task γ/4441): Steel_AISI_1045 now conforms transitively
-    // to ConstitutiveLaw via `trait ElasticMaterial : ConstitutiveLaw`, so
-    // `material` can be passed directly to solve_elastic_static without this
-    // wrapper. Retained here pending task δ which migrates callers.
-    // `ci.law` still resolves to compile-time type ConstitutiveLaw (exact match).
-    let ci = ConstitutiveLawInput(law: material)
-
     // FEA solve: the @optimized dispatcher routes this call to the
     // `solver::elastic_static` trampoline in
     //   crates/reify-eval/src/compute_targets/elastic_static.rs
@@ -84,7 +70,7 @@ structure FeaCantileverSmoke {
     // in solver_elastic.ri).  Bare `ElasticOptions()` uses all solver defaults
     // (P1 elements, max_iter=1000, tolerance=1e-6, …).
     let result = solve_elastic_static(
-        ci.law, length, width, height, [tip_load], [mount], ElasticOptions()
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
     )
 
     // Geometry realization: provides the surface mesh that task δ (4087) renders
