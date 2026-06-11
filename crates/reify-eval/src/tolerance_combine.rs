@@ -465,6 +465,107 @@ pub fn conforms_to_output(
     false
 }
 
+/// Where a recognized Output occurrence sends its geometry — resolved from the
+/// occurrence's `format` field value by [`extract_output_export_spec`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutputTarget {
+    /// Serialize a file in the given format (`OutputFormat.STEP/STL/ThreeMF`).
+    File(reify_ir::ExportFormat),
+    /// A `DisplayOutput` (`OutputFormat.Display`) — recognized as a conforming
+    /// Output but file emission is deferred (the viewport drive is a sibling
+    /// PRD). `build_outputs` surfaces an info diagnostic
+    /// ([`crate::I_DISPLAY_OUTPUT_DEFERRED`]) and emits no file.
+    DisplayDeferred,
+}
+
+/// The per-instance export spec read off a realized Output occurrence's
+/// [`reify_ir::value::StructureInstanceData`] fields.
+///
+/// Sibling to [`extract_output_tolerance_bound`] in this Output-recognition
+/// module: that extractor is template/constraint-scoped (tolerance only),
+/// whereas this reader is per-instance (the `format`/`path`/`resolution` that
+/// the io-export δ driver consumes). Co-locating them satisfies the task's
+/// "driver and tolerance pipeline share one Output-recognition path" directive
+/// without changing the existing extractor's signature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputExportSpec {
+    /// The resolved target: a file format or display-deferred.
+    pub format: OutputTarget,
+    /// The destination path, verbatim from the occurrence's `path` field.
+    /// Empty for a `DisplayDeferred` occurrence that declares no path.
+    pub path: String,
+    /// STL tessellation tolerance (SI metres) from the occurrence's
+    /// `resolution` Length field, if present. Informational in δ — the demanded
+    /// tolerance is threaded through `build()`'s realization pass, not
+    /// re-tessellated per occurrence in v1; ε/γ consume this.
+    pub tess_tol: Option<f64>,
+}
+
+/// Read the [`OutputExportSpec`] off a realized Output-occurrence instance
+/// value, or `None` if `instance` is not a recognizable Output spec.
+///
+/// # Gates
+///
+/// 1. **Instance** — `instance` must be a [`Value::StructureInstance`].
+/// 2. **Format** — its `format` field must be a
+///    `Value::Enum { type_name: "OutputFormat", variant }`; the variant maps
+///    `STEP→File(Step)`, `STL→File(Stl)`, `ThreeMF→File(ThreeMF)`,
+///    `Display→DisplayDeferred`. Any other (absent / non-enum / unknown
+///    variant) → `None`.
+/// 3. **Path** — a `Value::String` `path` field is required for *file* targets
+///    (absent or non-String → `None`); for `DisplayDeferred` a missing/non-String
+///    path is tolerated (a viewport sink has no file path) and yields an empty
+///    `path`.
+/// 4. **Resolution** — a `Value::Scalar` `resolution` field with `LENGTH`
+///    dimension becomes `tess_tol` (its SI value); absent/non-LENGTH → `None`.
+///
+/// Keying the target on the resolved `format` *value* (not the instance type
+/// name) is robust to user-defined Output occurrences that set
+/// `format : OutputFormat`.
+pub fn extract_output_export_spec(instance: &Value) -> Option<OutputExportSpec> {
+    // Gate 1: must be a StructureInstance.
+    let Value::StructureInstance(data) = instance else {
+        return None;
+    };
+    let fields = &data.fields;
+
+    // Gate 2: `format` must be an OutputFormat enum; map variant → target.
+    let format = match fields.get("format") {
+        Some(Value::Enum { type_name, variant }) if type_name == "OutputFormat" => {
+            match variant.as_str() {
+                "STEP" => OutputTarget::File(reify_ir::ExportFormat::Step),
+                "STL" => OutputTarget::File(reify_ir::ExportFormat::Stl),
+                "ThreeMF" => OutputTarget::File(reify_ir::ExportFormat::ThreeMF),
+                "Display" => OutputTarget::DisplayDeferred,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+
+    // Gate 3: path — required-as-String for file targets; optional for display.
+    let path = match (fields.get("path"), &format) {
+        (Some(Value::String(s)), _) => s.clone(),
+        (_, OutputTarget::DisplayDeferred) => String::new(),
+        _ => return None,
+    };
+
+    // Gate 4: `resolution` Length → tess_tol (SI metres); else None.
+    let tess_tol = match fields.get("resolution") {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *dimension == DimensionVector::LENGTH => Some(*si_value),
+        _ => None,
+    };
+
+    Some(OutputExportSpec {
+        format,
+        path,
+        tess_tol,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
