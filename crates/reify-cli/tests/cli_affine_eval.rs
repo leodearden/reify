@@ -25,12 +25,16 @@ fn eval_affine_constructors_prints_affine_maps() {
     );
     // affine_scale(2.0, 1.0, 0.5) → diag(2, 1, 0.5), zero translation.
     assert!(
-        stdout.contains("affine_map(linear=[[2, 0, 0], [0, 1, 0], [0, 0, 0.5]], translation=[0, 0, 0])"),
+        stdout.contains(
+            "affine_map(linear=[[2, 0, 0], [0, 1, 0], [0, 0, 0.5]], translation=[0, 0, 0])"
+        ),
         "stdout should print the affine_scale AffineMap value; got: {stdout}"
     );
     // affine_from_transform(transform3_identity()) → identity AffineMap.
     assert!(
-        stdout.contains("affine_map(linear=[[1, 0, 0], [0, 1, 0], [0, 0, 1]], translation=[0, 0, 0])"),
+        stdout.contains(
+            "affine_map(linear=[[1, 0, 0], [0, 1, 0], [0, 0, 1]], translation=[0, 0, 0])"
+        ),
         "stdout should print the identity AffineMap value for id; got: {stdout}"
     );
 }
