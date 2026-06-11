@@ -142,6 +142,11 @@ impl DimensionVector {
     pub const FREQUENCY: DimensionVector = DimensionVector::from_exps(&[(2, -1)]);
     /// Force: kg·m·s⁻² (same as module-scope `FORCE` — kept in parallel for ergonomics).
     pub const FORCE: DimensionVector = DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -2)]);
+    /// Impulse: N·s = momentum = kg·m·s⁻¹ (Force × Time, equivalently Mass × Velocity).
+    /// Distinct from FORCE (kg·m·s⁻²) by one s-exponent. Registered under TWO
+    /// names in `NAMED_DIMENSIONS` ("Impulse" canonical, "Momentum" alias) since
+    /// impulse (J = ∫F dt) and momentum (p = m·v) are dimensionally identical.
+    pub const IMPULSE: DimensionVector = DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -1)]);
     /// Energy: kg·m²·s⁻²
     pub const ENERGY: DimensionVector = DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2)]);
     /// Power: kg·m²·s⁻³
@@ -539,6 +544,16 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     // says `Curvature`.
     (DimensionVector::CURVATURE, "Curvature"),
     (DimensionVector::FRACTURE_TOUGHNESS, "FractureToughness"),
+    // Task 4548 / stdlib placeholder registry B: `Impulse` (N·s = momentum =
+    // kg·m·s⁻¹) registered for `ImpulseForce.impulse`. `Momentum` is
+    // dimensionally identical (p = m·v); placed AFTER "Impulse" so the
+    // first-match scan in `canonical_name` returns "Impulse" for the shared
+    // dim (Impulse is the only current consumer). The name→dim direction
+    // (resolve_dimension_type / resolve_type_name) finds the "Momentum" entry
+    // when source syntax says `Momentum`. Mirrors the Curvature/AbsorptionCoeff
+    // and TranslationalStiffness/Stiffness alias precedent.
+    (DimensionVector::IMPULSE, "Impulse"),
+    (DimensionVector::IMPULSE, "Momentum"),
 ];
 
 impl fmt::Display for DimensionVector {
