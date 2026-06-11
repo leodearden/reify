@@ -16,7 +16,7 @@ mod common;
 mod ptodo {
 
 use reify_audit::{
-    AuditContext, EvidenceRef, Finding, GitCommit, MockGitOps, MockJCodemunchOps, Pattern,
+    AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern,
     Severity,
 };
 use rusqlite::Connection;
