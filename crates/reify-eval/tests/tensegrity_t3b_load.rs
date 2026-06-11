@@ -483,3 +483,75 @@ fn solver_tensegrity_load_target_is_registered() {
         }
     }
 }
+
+// ── step-19: disconnected-free-node never-panic regression guard ─────────────
+//
+// The review's explicit producer-side ask (robustness_panic_on_valid_input): a
+// Tensegrity carrying a free ORPHAN node must reach the kernel (clearing every
+// trampoline guard) and come back as a clean `Failed` diagnostic, NOT a panic.
+// The 6-input payload is well-formed (prestress len 2 == members 2, loads len 4
+// == nodes 4, supports in range), so it reaches the kernel, whose step-16
+// up-front guard returns `SingularSystem`; the existing `run()`/`describe()`
+// mapping turns that into an `E_TensegrityLoadInfeasible` "singular tangent
+// system" `Failed` outcome with NO reify-eval production change. RED against the
+// original unfixed code (the orphan panics through the uncatchable trampoline);
+// GREEN once step-16 lands — this locks the never-panic-on-valid-input contract
+// end-to-end.
+
+/// Collinear two-cable string with a FREE ORPHAN node 3 at `(5L, 5L, 0)` that is
+/// touched by no member and absent from the supports: `anchor(0) — free(1) —
+/// anchor(2)` plus the isolated node 3. `struts: []`, cables `[[0,1],[1,2]]`.
+fn two_cable_string_with_orphan(l: f64) -> Value {
+    let nodes = Value::List(vec![
+        node(0.0, 0.0, 0.0),         // 0 — anchor
+        node(l, 0.0, 0.0),           // 1 — free + cabled
+        node(2.0 * l, 0.0, 0.0),     // 2 — anchor
+        node(5.0 * l, 5.0 * l, 0.0), // 3 — FREE ORPHAN: no member, not a support
+    ]);
+    let struts = Value::List(vec![]);
+    let cables = Value::List(vec![
+        Value::List(vec![Value::Int(0), Value::Int(1)]),
+        Value::List(vec![Value::Int(1), Value::Int(2)]),
+    ]);
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(), nodes),
+        ("struts".to_string(), struts),
+        ("cables".to_string(), cables),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// A free orphan node (referenced by no member, not a support) must surface as
+/// an `E_TensegrityLoadInfeasible` "singular tangent system" `Failed` outcome
+/// rather than panicking through the uncatchable trampoline. The 6-input payload
+/// clears every trampoline guard (prestress len 2 == members 2, loads len 4 ==
+/// nodes 4, supports in range 0..4), so the kernel is actually reached, and its
+/// step-16 up-front guard returns `SingularSystem`.
+#[test]
+fn trampoline_disconnected_free_node_is_failed_not_panic() {
+    let l = 2.0_f64;
+    let value_inputs = vec![
+        two_cable_string_with_orphan(l),
+        Value::List(vec![force(5_000.0), force(5_000.0)]), // 2 prestress == 2 cables
+        pressure(200.0e9),
+        area(1.0e-4),
+        Value::List(vec![
+            force_vec(0.0, 0.0, 0.0),  // node 0 (anchor)
+            force_vec(0.0, 50.0, 0.0), // node 1 (free) — transverse load
+            force_vec(0.0, 0.0, 0.0),  // node 2 (anchor)
+            force_vec(0.0, 0.0, 0.0),  // node 3 (orphan) — unloaded
+        ]),
+        Value::List(vec![Value::Int(0), Value::Int(2)]), // node 3 deliberately free
+    ];
+    assert_failed_infeasible(
+        call_tensegrity_load(&value_inputs),
+        "singular tangent system",
+    );
+}
