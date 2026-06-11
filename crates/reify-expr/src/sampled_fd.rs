@@ -43,6 +43,11 @@
 //! * Smooth non-polynomial (e.g. `sin(x)`): interior central-difference error
 //!   is O(h²) — halving spacing reduces it ≥ 3× (convergence-rate assertion).
 
+// All items in this module are pub(crate) producers for future consumers ε/ζ
+// (calculus.rs dispatch) and are exercised only via in-crate unit tests until
+// those tasks land.  Suppress dead-code lint for the whole module.
+#![allow(dead_code)]
+
 use std::sync::atomic::AtomicBool;
 
 use reify_ir::{SampledField, SampledGridKind};
@@ -92,7 +97,7 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
     let dims = axis_dims(sf);
     let n_axes = dims.len();
     let grid_count: usize = dims.iter().product();
-    let in_stride = if grid_count > 0 { sf.data.len() / grid_count } else { 1 };
+    let in_stride = sf.data.len().checked_div(grid_count).unwrap_or(1);
 
     match op {
         DifferentialOp::Gradient => {
@@ -100,11 +105,10 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
             debug_assert_eq!(in_stride, 1, "Gradient: expected scalar input (stride 1)");
             let out_stride = n_axes;
             let mut data = vec![0.0f64; grid_count * out_stride];
-            for g in 0..grid_count {
+            for (g, chunk) in data.chunks_mut(out_stride).enumerate() {
                 let mi = decode_index(g, &dims);
-                for c in 0..n_axes {
-                    data[g * out_stride + c] =
-                        first_diff_along_axis(&sf.data, &dims, &sf.spacing, &mi, c, 1, 0);
+                for (c, out) in chunk.iter_mut().enumerate() {
+                    *out = first_diff_along_axis(&sf.data, &dims, &sf.spacing, &mi, c, 1, 0);
                 }
             }
             clone_geometry(sf, data)
@@ -116,13 +120,13 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
             // (PRD §6). Higher-order boundary treatment deferred to η per PRD §10.
             debug_assert_eq!(in_stride, 1, "Laplacian: expected scalar input (stride 1)");
             let mut data = vec![0.0f64; grid_count];
-            for g in 0..grid_count {
+            for (g, val) in data.iter_mut().enumerate() {
                 let mi = decode_index(g, &dims);
                 let mut lap = 0.0;
                 for axis in 0..n_axes {
                     lap += second_diff_along_axis(&sf.data, &dims, &sf.spacing, &mi, axis, 1, 0);
                 }
-                data[g] = lap;
+                *val = lap;
             }
             clone_geometry(sf, data)
         }
@@ -135,7 +139,7 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
                 "Divergence: expected vector input (stride == axis count {n_axes})"
             );
             let mut data = vec![0.0f64; grid_count];
-            for g in 0..grid_count {
+            for (g, val) in data.iter_mut().enumerate() {
                 let mi = decode_index(g, &dims);
                 let mut div = 0.0;
                 for c in 0..n_axes {
@@ -143,7 +147,7 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
                         &sf.data, &dims, &sf.spacing, &mi, c, in_stride, c,
                     );
                 }
-                data[g] = div;
+                *val = div;
             }
             clone_geometry(sf, data)
         }
@@ -169,15 +173,15 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
             // Each partial ∂F_c/∂x_a is computed by first_diff_along_axis with
             // axis=a, stride=3, comp=c.  Output is interleaved node-major: stride 3.
             let mut data = vec![0.0f64; grid_count * 3];
-            for g in 0..grid_count {
+            for (g, chunk) in data.chunks_mut(3).enumerate() {
                 let mi = decode_index(g, &dims);
                 let d = |axis: usize, comp: usize| -> f64 {
                     first_diff_along_axis(&sf.data, &dims, &sf.spacing, &mi, axis, 3, comp)
                 };
                 // axis indices: 0=x, 1=y, 2=z; component indices: 0=F_x, 1=F_y, 2=F_z
-                data[g * 3]     = d(1, 2) - d(2, 1); // curl_x
-                data[g * 3 + 1] = d(2, 0) - d(0, 2); // curl_y
-                data[g * 3 + 2] = d(0, 1) - d(1, 0); // curl_z
+                chunk[0] = d(1, 2) - d(2, 1); // curl_x
+                chunk[1] = d(2, 0) - d(0, 2); // curl_y
+                chunk[2] = d(0, 1) - d(1, 0); // curl_z
             }
             clone_geometry(sf, data)
         }
@@ -383,9 +387,9 @@ mod tests {
         let xs: Vec<f64> = (0..nx).map(|i| i as f64 * hx).collect();
         let ys: Vec<f64> = (0..ny).map(|j| j as f64 * hy).collect();
         let mut data = Vec::with_capacity(nx * ny);
-        for i in 0..nx {
-            for j in 0..ny {
-                data.push(f(xs[i], ys[j]));
+        for &x in &xs {
+            for &y in &ys {
+                data.push(f(x, y));
             }
         }
         SampledField {
@@ -414,10 +418,10 @@ mod tests {
         let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
         let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
         let mut data = Vec::with_capacity(nx * ny * nz);
-        for i in 0..nx {
-            for j in 0..ny {
-                for k in 0..nz {
-                    data.push(f(xs[i], ys[j], zs[k]));
+        for &x in &xs {
+            for &y in &ys {
+                for &z in &zs {
+                    data.push(f(x, y, z));
                 }
             }
         }
@@ -531,9 +535,9 @@ mod tests {
         let xs: Vec<f64> = (0..nx).map(|i| i as f64 * hx).collect();
         let ys: Vec<f64> = (0..ny).map(|j| j as f64 * hy).collect();
         let mut data = Vec::with_capacity(nx * ny * 2);
-        for i in 0..nx {
-            for j in 0..ny {
-                let v = f(xs[i], ys[j]);
+        for &x in &xs {
+            for &y in &ys {
+                let v = f(x, y);
                 data.push(v[0]);
                 data.push(v[1]);
             }
@@ -564,10 +568,10 @@ mod tests {
         let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
         let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
         let mut data = Vec::with_capacity(nx * ny * nz * 3);
-        for i in 0..nx {
-            for j in 0..ny {
-                for k in 0..nz {
-                    let v = f(xs[i], ys[j], zs[k]);
+        for &x in &xs {
+            for &y in &ys {
+                for &z in &zs {
+                    let v = f(x, y, z);
                     data.push(v[0]);
                     data.push(v[1]);
                     data.push(v[2]);
