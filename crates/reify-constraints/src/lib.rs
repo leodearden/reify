@@ -434,6 +434,90 @@ mod tests {
     }
 
     #[test]
+    fn operator_undefined_tensor_operand() {
+        // A Tensor value compared to a scalar — eval_cmp falls through to
+        // as_f64 which returns None for Tensor → Undef. All leaves are defined,
+        // so the message must say "operator undefined" naming "Tensor", not
+        // "undefined inputs".
+        let checker = SimpleConstraintChecker;
+        let tensor_cell = vcid("Obj", "tensor_field");
+        let tensor_ref = CompiledExpr::value_ref(tensor_cell.clone(), Type::Real);
+        let one_mm = CompiledExpr::literal(mm(1.0), Type::length());
+        let expr = CompiledExpr::binop(BinOp::Gt, tensor_ref, one_mm, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(tensor_cell, Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]));
+
+        let input = ConstraintInput {
+            constraints: Cow::Owned(vec![(cnid("Obj", 0), &expr)]),
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+        let msg = &results[0].diagnostics.messages[0].message;
+        assert!(
+            msg.contains("operator undefined"),
+            "expected 'operator undefined' in message: {msg}"
+        );
+        assert!(
+            msg.contains("Tensor"),
+            "expected 'Tensor' in message: {msg}"
+        );
+        assert!(
+            !msg.contains("undefined inputs"),
+            "expected NO 'undefined inputs' in message: {msg}"
+        );
+    }
+
+    #[test]
+    fn operator_undefined_dimension_mismatch() {
+        // Length scalar vs mass scalar — eval_cmp returns Undef on dimension
+        // mismatch. Both leaves are defined, so the message must say
+        // "operator undefined" naming "Scalar" (both operands), not "undefined inputs".
+        let checker = SimpleConstraintChecker;
+        let len_cell = vcid("Obj", "len_val");
+        let mass_cell = vcid("Obj", "mass_val");
+        let len_ref = CompiledExpr::value_ref(len_cell.clone(), Type::length());
+        let mass_ref = CompiledExpr::value_ref(
+            mass_cell.clone(),
+            Type::Scalar { dimension: DimensionVector::MASS },
+        );
+        let expr = CompiledExpr::binop(BinOp::Gt, len_ref, mass_ref, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(len_cell, mm(1.0));
+        values.insert(mass_cell, Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS });
+
+        let input = ConstraintInput {
+            constraints: Cow::Owned(vec![(cnid("Obj", 0), &expr)]),
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+        let msg = &results[0].diagnostics.messages[0].message;
+        assert!(
+            msg.contains("operator undefined"),
+            "expected 'operator undefined' in message: {msg}"
+        );
+        assert!(
+            msg.contains("Scalar"),
+            "expected 'Scalar' in message: {msg}"
+        );
+        assert!(
+            !msg.contains("undefined inputs"),
+            "expected NO 'undefined inputs' in message: {msg}"
+        );
+    }
+
+    #[test]
     fn violated_constraint_carries_constraint_violated_code() {
         let checker = SimpleConstraintChecker;
         let expr = thickness_gt_2mm();
