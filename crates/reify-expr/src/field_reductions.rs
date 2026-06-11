@@ -624,20 +624,28 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
             Some(sf) => reduce_sampled_extremum(&sf, codomain_type, find_min),
             None => Value::Undef,
         },
+        // SafetyFactor: unwrap List[tensor_field, yield_val], project each window
+        // via yield / vM. Hydrostatic windows (vM=0 → +∞) are dropped by the
+        // is_finite() gate; all-hydrostatic fields return Undef.
+        // Malformed lambda (non-List, wrong arity, non-numeric yield) → None → Undef.
+        FieldSourceKind::SafetyFactor => match project_safety_factor_sampled(lambda.as_ref()) {
+            Some(sf) => reduce_sampled_extremum(&sf, codomain_type, find_min),
+            None => Value::Undef,
+        },
         // Analytical/Composed 1-arg: stays honest-Undef — no bounds are
         // supplied, so a global extremum is ill-posed for an unbounded analytical
         // domain.  The 2-arg bounded form `max(field, bbox)` is implemented in
         // `compute_bounded_extremum` / `reduce_analytical_extremum_bounded`
         // (task 4561, step-4).  Remaining deferred: Imported (no lambda data)
         // and derived wrappers (Gradient/Divergence/Curl/Laplacian/
-        // PrincipalStresses/SafetyFactor) — sampled-subfield reduction for
-        // those still requires PRD §13 line 238 scope.
+        // PrincipalStresses) — sampled-subfield reduction for those still
+        // requires PRD §13 line 238 scope.
         //
         // Pinned by the step-15 / S5 negative-path tests:
         // - all_reductions_on_analytical_field_return_undef
         // - all_reductions_on_composed_field_return_undef
         // - all_reductions_on_imported_field_return_undef
-        // - all_reductions_on_derived_non_vonmises_field_return_undef
+        // - all_reductions_on_derived_non_vonmises_field_return_undef (→ PrincipalStresses)
         _ => Value::Undef,
     }
 }
@@ -745,6 +753,47 @@ fn project_max_shear_sampled(lambda: &Value) -> Option<SampledField> {
     project_sampled_tensor_windows(lambda, reify_stdlib::compute_max_shear_3x3)
 }
 
+/// Project the backing Sampled tensor field + yield scalar stored in a
+/// SafetyFactor field's lambda slot into a fresh stride-1 scalar `SampledField`.
+///
+/// # Lambda layout
+///
+/// The lambda slot of a `SafetyFactor` field is `Value::List([field, yield_val])`:
+/// - `items[0]` = the original Sampled tensor `Value::Field` (same kind as VonMises/MaxShear)
+/// - `items[1]` = the yield-strength scalar (any numeric `Value` with `as_f64()`)
+///
+/// This mirrors `analysis::sample_safety_factor_at_point` (which also pulls the
+/// field as element 0 and the yield value as element 1).
+///
+/// Returns `None` if:
+/// - `lambda` is not a `Value::List` of exactly 2 elements
+/// - the yield value does not convert to `f64` (`as_f64()` returns None)
+/// - the inner field does not unwrap as a stride-9 Sampled tensor field
+///   (delegated to [`project_sampled_tensor_windows`])
+///
+/// # Projection
+///
+/// Per-window: `yield_f64 / compute_von_mises_3x3(w)`.
+/// For hydrostatic windows (vM = 0), the result is `+∞`, which is then
+/// dropped by the existing `is_finite()` gate in `argmax_argmin_index`,
+/// matching the stdlib `safety_factor` builtin's poison convention.
+fn project_safety_factor_sampled(lambda: &Value) -> Option<SampledField> {
+    // Level 1: unwrap the List[tensor_field, yield_val] pair.
+    let (field_val, yield_val) = match lambda {
+        Value::List(items) if items.len() == 2 => (&items[0], &items[1]),
+        _ => return None,
+    };
+
+    // Extract the yield scalar as f64.
+    let yield_f64 = yield_val.as_f64()?;
+
+    // Project each window: yield / vM.  Hydrostatic (vM=0) yields +∞ and
+    // is skipped by the is_finite() gate downstream.
+    project_sampled_tensor_windows(field_val, move |w| {
+        yield_f64 / reify_stdlib::compute_von_mises_3x3(w)
+    })
+}
+
 /// Reduce a `SampledField`'s data buffer to a single extremum value,
 /// wrapped per the codomain type.
 ///
@@ -819,6 +868,16 @@ fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
         // MaxShear: same pattern as VonMises — project via `compute_max_shear_3x3`,
         // then locate the extremum index and decompose to a domain coordinate.
         FieldSourceKind::MaxShear => match project_max_shear_sampled(lambda.as_ref()) {
+            Some(sf) => match argmax_argmin_index(&sf.data, find_min) {
+                Some(linear) => arg_coord_from_index(&sf, linear, domain_type),
+                None => Value::Undef,
+            },
+            None => Value::Undef,
+        },
+        // SafetyFactor: project via yield/vM, then locate extremum index and
+        // decompose to a domain coordinate. Hydrostatic windows yield +∞ and
+        // are skipped by the is_finite() gate in argmax_argmin_index.
+        FieldSourceKind::SafetyFactor => match project_safety_factor_sampled(lambda.as_ref()) {
             Some(sf) => match argmax_argmin_index(&sf.data, find_min) {
                 Some(linear) => arg_coord_from_index(&sf, linear, domain_type),
                 None => Value::Undef,
