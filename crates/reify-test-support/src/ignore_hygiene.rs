@@ -13,14 +13,18 @@ fn is_doc_comment_line(line: &str) -> bool {
 
 /// Extract the reason string from a single `#[ignore = "..."]` attribute line.
 ///
-/// Returns `Some(reason)` for the canonical rustfmt form
-/// `#[ignore = "reason"]` (space-equals-space-quote), where `reason` is the
-/// slice between the opening `"` and the next raw `"` byte. Returns `None`
-/// for:
+/// Returns `Some(reason)` for `#[ignore = "reason"]` and related non-canonical
+/// forms (optional whitespace around `=`, e.g. `#[ignore="reason"]`), where
+/// `reason` is the slice between the opening `"` and the next raw `"` byte.
+/// Returns `None` for:
 /// - bare `#[ignore]` attributes (no reason string)
 /// - non-`#[ignore]` lines
 /// - `///` and `//!` doc-comment lines (prose mentions of the attribute)
-/// - non-canonical forms (e.g. no spaces around `=`)
+///
+/// The parse mirrors [`ignore_attr`]'s trim-based approach so both functions
+/// agree on which forms carry a reason — closing the silent-escape hole where
+/// a hand-edited `#[ignore="blocked"]` (no spaces) would be classified
+/// `WithReason` by `ignore_attr` but yield `None` here.
 ///
 /// **Note:** escaped quotes (`\"`) inside the reason are not handled — the
 /// reason is truncated at the first raw `"`. No current source file uses
@@ -36,10 +40,13 @@ pub fn extract_ignore_reason(line: &str) -> Option<&str> {
     if is_doc_comment_line(line) {
         return None;
     }
-    // Recognise only the canonical rustfmt form: trim leading whitespace, then
-    // match the `#[ignore = "` prefix exactly (space-equals-space-quote).
-    // Non-canonical forms (no spaces around `=`) are silently ignored.
-    let rest = line.trim_start().strip_prefix("#[ignore = \"")?;
+    // Mirror ignore_attr's trim-based parse: strip `#[ignore`, consume optional
+    // whitespace, `=`, optional whitespace, then the opening `"`.  This handles
+    // canonical `#[ignore = "..."]` and non-canonical `#[ignore="..."]` alike.
+    let t = line.trim_start();
+    let rest = t.strip_prefix("#[ignore")?;
+    let rest = rest.trim_start().strip_prefix('=')?;
+    let rest = rest.trim_start().strip_prefix('"')?;
     // The reason is everything up to the first raw `"` (escaped-quote
     // limitation documented in the function doc comment above).
     let end = rest.find('"')?;
@@ -883,6 +890,17 @@ mod tests {
     fn eir_inner_doc_comment_returns_none() {
         let line = ["//! example: #[ignore", " = \"r\"]"].concat();
         assert_eq!(extract_ignore_reason(&line), None);
+    }
+
+    /// (h) Non-canonical `#[ignore="reason"]` (no spaces around `=`) → Some("reason").
+    /// Pins that extract_ignore_reason agrees with ignore_attr's WithReason
+    /// classification for hand-edited/macro-expanded non-spaced forms so a
+    /// blocker-prose reason like `#[ignore="blocked"]` is not silently escaped.
+    #[test]
+    fn eir_non_canonical_no_spaces_returns_reason() {
+        // Assembled at runtime so this file does not self-trigger.
+        let line = ["#[ignore", "=\"pending fillet binding\"]"].concat();
+        assert_eq!(extract_ignore_reason(&line), Some("pending fillet binding"));
     }
 
     // ── walk_test_rs_files ────────────────────────────────────────────────────

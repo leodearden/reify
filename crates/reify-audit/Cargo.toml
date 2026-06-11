@@ -26,6 +26,11 @@ ureq = { version = "2.10", default-features = false, features = ["json"] }
 # call reify_test_support::ignore_hygiene::extract_ignore_reason (§8.3 γ lane).
 # Acyclic: reify-test-support depends on reify-ast/core/ir/syntax/compiler —
 # none of which depend on reify-audit. PRD §4/§8.3/§10 sanction this direction.
+# Build-graph note: the transitive compiler-stack deps inflate the audit binary's
+# build graph. This cost was weighed against extracting extract_ignore_reason into
+# a new dep-free leaf crate; the alternative was declined because the function is
+# ~15 lines, a new crate adds more ceremony than it saves, and the PRD explicitly
+# chose reuse. Re-evaluate if reify-test-support's deps grow significantly.
 reify-test-support.workspace = true
 
 [[bin]]

@@ -1001,6 +1001,23 @@ mod tests {
         assert_eq!(got, expected);
     }
 
+    /// Non-canonical `#[ignore="blocked"]` (no spaces around `=`) — identical
+    /// to the canonical form from scan_file's perspective: extract_ignore_reason
+    /// mirrors ignore_attr's tolerance of non-spaced forms.
+    #[test]
+    fn scan_file_ignore_non_canonical_form_blocker_prose() {
+        let content = "#[ignore=\"pending fillet binding\"]";
+        let got = scan_file(content, true);
+        assert_eq!(
+            got,
+            vec![(
+                1,
+                LineClass::Structural(Kind::Untracked),
+                "#[ignore=\"pending fillet binding\"]".to_string(),
+            )]
+        );
+    }
+
     // -------------------------------------------------------------------
     // §8 unified scan — `scan_file` (Structural + Cited) (β liveness lane)
     // -------------------------------------------------------------------
