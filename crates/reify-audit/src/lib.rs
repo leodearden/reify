@@ -347,6 +347,15 @@ pub trait GitOps {
     /// Fail-safe: returns `false` on any git error or spawn failure (exit 128
     /// from an unknown commit correctly maps to "not an ancestor").
     fn is_ancestor(&self, commit: &str, branch: &str) -> bool;
+
+    /// Equivalent of `git -C <root> ls-files`: every tracked file path,
+    /// root-relative, one per line. Used by the PTODO structural lane to
+    /// enumerate the working-tree files it scans (content is then read
+    /// directly via `std::fs`, not through this seam). Fail-safe: returns an
+    /// empty vec on any git error (missing repo, spawn failure) — the
+    /// structural lane treats "no tracked files" and "git failed" identically
+    /// (it simply finds nothing to scan).
+    fn ls_files(&self) -> Vec<String>;
 }
 
 /// Production [`GitOps`] impl that shells out to `git`. Untested by the
@@ -619,6 +628,17 @@ impl GitOps for RealGitOps {
             .map(|(i, l)| (i + 1, l.to_string()))
             .collect()
     }
+
+    fn ls_files(&self) -> Vec<String> {
+        let Some(stdout) = self.run_or_warn("ls-files", &["ls-files"]) else {
+            return vec![];
+        };
+        stdout
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -641,6 +661,7 @@ pub struct MockGitOps {
     file_lines_on: HashMap<(String, String), Vec<(usize, String)>>,
     path_tracked_on: HashMap<(String, String), bool>,
     is_ancestor: HashMap<(String, String), bool>,
+    ls_files: Vec<String>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -712,6 +733,11 @@ impl MockGitOps {
         self.file_lines_on
             .insert((reference.to_string(), path.to_string()), lines);
     }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_ls_files(&mut self, files: Vec<String>) {
+        self.ls_files = files;
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -767,6 +793,10 @@ impl GitOps for MockGitOps {
             .get(&(commit.to_string(), branch.to_string()))
             .copied()
             .unwrap_or(false)
+    }
+
+    fn ls_files(&self) -> Vec<String> {
+        self.ls_files.clone()
     }
 }
 
