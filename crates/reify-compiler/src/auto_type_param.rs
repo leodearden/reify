@@ -881,10 +881,10 @@ pub fn seed_candidate_value_map(
 
     let mut map = ValueMap::new();
     for cell in &candidate_template.value_cells {
-        if let Some(expr) = &cell.default_expr {
-            if let CompiledExprKind::Literal(v) = &expr.kind {
-                map.insert(ValueCellId::new(param_member, &cell.id.member), v.clone());
-            }
+        if let Some(expr) = &cell.default_expr
+            && let CompiledExprKind::Literal(v) = &expr.kind
+        {
+            map.insert(ValueCellId::new(param_member, &cell.id.member), v.clone());
         }
     }
     map
