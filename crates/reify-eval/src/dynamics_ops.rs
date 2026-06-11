@@ -2032,28 +2032,6 @@ mod derive_mechanism_mass_props_tests {
             .unwrap_or_else(|| panic!("first body missing derived_mass_props key"))
     }
 
-    /// Helper: check that the first body of a patched mechanism does NOT carry
-    /// `derived_mass_props`.
-    fn assert_first_body_has_no_derived(patched: &Value) {
-        let mech_map = match patched {
-            Value::Map(m) => m,
-            other => panic!("expected Map, got {other:?}"),
-        };
-        let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
-            Some(Value::List(b)) => b,
-            _ => panic!("mechanism missing bodies"),
-        };
-        let body_map = match &bodies[0] {
-            Value::Map(b) => b,
-            other => panic!("body must be a Map, got {other:?}"),
-        };
-        assert!(
-            !body_map.contains_key(&Value::String("derived_mass_props".to_string())),
-            "body must NOT carry derived_mass_props; keys = {:?}",
-            body_map.keys().collect::<Vec<_>>()
-        );
-    }
-
     // ── (a) GeometryHandle body → Some(patched) with additive derived_mass_props ─
 
     /// A mechanism body with solid = GeometryHandle and the water-default density
