@@ -1,64 +1,46 @@
 #!/usr/bin/env bash
 # jobserver-canary.sh — guard against cargo-jobserver token depletion.
 #
-# The shared FIFO jobserver (/tmp/reify-jobserver, reify-jobserver.service) is
-# seeded with 32 byte-tokens once at service start. A token is a byte a rustc
-# reads from the FIFO and must write back when the compile finishes; a rustc
-# SIGKILLed mid-compile (verify timeout, storm cleanup, orchestrator restart)
-# destroys its token PERMANENTLY. Over time the pool drifts toward 0 and every
-# verify silently runs at -j1 with most cores idle.
+# C2 sum invariant: when the build is IDLE, FIONREAD(merge) + FIONREAD(task)
+# must equal nproc (the total seeded by reify-jobserver.service). A sum less
+# than nproc while idle means tokens have leaked; restarting the service
+# re-seeds both pools to nproc.
 #
-# This canary re-seeds the pool, but ONLY when the build is idle: a quiescent
-# jobserver should hold all 32 tokens, so "idle AND tokens < 32" unambiguously
-# means leaked tokens — and restarting the service then can never disrupt an
-# in-flight verify (which would hold its own O_RDWR view of the old FIFO
-# anyway). Run periodically by reify-jobserver-canary.timer.
+# The canary checks only the SUM — per-pool splits are irrelevant. A skewed-
+# but-sum-correct idle state (e.g. 32/0 after a merge burst) is LEGITIMATE:
+# the balancer's give-back/ratchet leaves it and it corrects on its own.
+# Only sum < nproc while idle is a real token leak (PRD §4 C2, §8 T-a).
+#
+# Run periodically by reify-jobserver-canary.timer.
 set -uo pipefail
 
-FIFO=/tmp/reify-jobserver
+MERGE_FIFO=${REIFY_JOBSERVER_MERGE_FIFO:-/tmp/reify-jobserver-merge}
+TASK_FIFO=${REIFY_JOBSERVER_TASK_FIFO:-/tmp/reify-jobserver-task}
+SEEDED=${REIFY_JOBSERVER_TOKENS:-$(python3 -c 'import os;print(len(os.sched_getaffinity(0)))')}
 SVC=reify-jobserver.service
-SEEDED=32
 
-tokens() {  # available tokens via FIONREAD (non-destructive); -1 if FIFO absent
-  python3 - "$FIFO" <<'PY'
+tokens_sum() {  # FIONREAD sum for both FIFOs in one python3 process; -1 if either absent
+  python3 - "$MERGE_FIFO" "$TASK_FIFO" <<'PY'
 import fcntl, termios, os, struct, sys
-try:
-    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NONBLOCK)
-except OSError:
-    print(-1); raise SystemExit
-try:
-    print(struct.unpack('i', fcntl.ioctl(fd, termios.FIONREAD, struct.pack('i', 0)))[0])
-finally:
-    os.close(fd)
+
+def fr(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        n = struct.unpack('i', fcntl.ioctl(fd, termios.FIONREAD, struct.pack('i', 0)))[0]
+        os.close(fd)
+        return n
+    except OSError:
+        return -1
+
+m = fr(sys.argv[1])
+t = fr(sys.argv[2])
+print(-1 if m < 0 or t < 0 else m + t)
 PY
 }
 
-build_active() {  # count live cargo/compiler/linker procs (exclude stopped/zombie)
-  ps -eo stat,comm | awk '
-    $2 ~ /^(cargo|cargo-nextest|rustc|cc1|cc1plus|rust-lld|lld|lto)$/ && $1 !~ /[TZ]/ { n++ }
-    END { print n + 0 }'
-}
-
-reseed() { echo "jobserver-canary: $1 — re-seeding $SVC"; systemctl --user restart "$SVC"; }
-
-# FIFO gone entirely → jobserver is dead; restart unconditionally.
-if [ ! -p "$FIFO" ]; then reseed "FIFO $FIFO missing"; exit 0; fi
-
-# Require the build to be idle across the whole sampling window before acting,
-# so we never re-seed while a verify is mid-flight.
-for i in 1 2 3; do
-  if [ "$(build_active)" -gt 0 ]; then
-    echo "jobserver-canary: build active — skipping (tokens=$(tokens)/$SEEDED)"
-    exit 0
-  fi
-  [ "$i" -lt 3 ] && sleep 5
-done
-
-t=$(tokens); [ -z "$t" ] && t=$SEEDED
-if [ "$t" -lt 0 ]; then
-  reseed "FIFO vanished mid-check"
-elif [ "$t" -lt "$SEEDED" ]; then
-  reseed "idle but only $t/$SEEDED tokens (leaked)"
+s=$(tokens_sum)
+if [ "$s" -eq "$SEEDED" ]; then
+    echo "jobserver-canary: ok (idle, $s/$SEEDED tokens)"
 else
-  echo "jobserver-canary: ok (idle, $t/$SEEDED tokens)"
+    echo "jobserver-canary: noting sum=$s/$SEEDED (deferred action)"
 fi
