@@ -1691,12 +1691,20 @@ fn max_analytical_domain_exceeds_bbox_dim_returns_undef() {
     );
 }
 
-/// 2-arg `max|min|argmax|argmin(field, bbox)` over a VonMises-source field → Undef.
+/// 2-arg `max|min|argmax|argmin(field, bbox)` over a VonMises-source field with a
+/// **malformed lambda** (`Value::Undef`) returns `Value::Undef` defensively.
 ///
-/// The bounded form is scoped to Analytical/Composed/Sampled.
-/// VonMises 2-arg → `_` arm → Undef.
+/// The VonMises bounded arm calls `project_von_mises_sampled(lambda)`.  When
+/// `lambda` is `Value::Undef` (not a valid inner tensor `Value::Field { source:
+/// Sampled, .. }`), `project_von_mises_sampled` returns `None` and the bounded
+/// reduction returns `Undef` — the same defensive fallback as the 1-arg VonMises
+/// path for a malformed field.  This test pins that behaviour so the defensive
+/// `None => Undef` arm is not accidentally removed.
+///
+/// For the positive case (well-formed VonMises + real tensor data), see
+/// `bounded_reductions_on_vonmises_field_clips_to_subregion`.
 #[test]
-fn bounded_reductions_on_vonmises_field_return_undef() {
+fn bounded_reductions_on_vonmises_field_with_malformed_lambda_returns_undef() {
     let (field, field_type) = make_field_with_source(
         Type::Real,
         Type::Real,
@@ -1711,9 +1719,114 @@ fn bounded_reductions_on_vonmises_field_return_undef() {
         assert_eq!(
             eval_expr(&expr, &ctx),
             Value::Undef,
-            "{op}(VonMises field, bbox) should be Undef (bounded form not supported for VonMises)"
+            "{op}(VonMises field with Undef lambda, bbox) should be Undef (malformed inner field)"
         );
     }
+}
+
+/// 2-arg `max|min|argmax|argmin(field, bbox)` over a **well-formed** VonMises-source
+/// field clips the projected scalar sub-region correctly.
+///
+/// Inner tensor field: 1-D axis = [0.0, 1.0, 2.0, 3.0, 4.0], uniaxial windows:
+/// σ_xx = {100e6, 250e6, 175e6, 200e6, 50e6} → vM = {100e6, 250e6, 175e6, 200e6, 50e6}.
+///
+/// Bounding box: x ∈ [1.0, 3.0] → in-bounds nodes at indices 1, 2, 3
+/// → projected values {250e6, 175e6, 200e6}.
+///
+/// Expected:
+/// - max = 250e6 Pa (at x = 1.0)
+/// - min = 175e6 Pa (at x = 2.0)
+/// - argmax = Real(1.0)
+/// - argmin = Real(2.0)
+#[test]
+fn bounded_reductions_on_vonmises_field_clips_to_subregion() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+
+    // Build the inner Sampled tensor field (stride-9 uniaxial windows).
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+            uniaxial_window(200e6),
+            uniaxial_window(50e6),
+        ],
+    );
+    // Domain of inner tensor field is Real (raw float coords).
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::Real);
+
+    // Outer VonMises field: domain=Real, codomain=PRESSURE, lambda=inner tensor field.
+    let (vonmises_field, vonmises_field_type) = make_field_with_source(
+        Type::Real,
+        pressure.clone(),
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+
+    // Bounding box: x ∈ [1.0, 3.0] (clips to indices 1, 2, 3).
+    let bbox = make_bbox([1.0, 0.0, 0.0], [3.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max(vonmises_field, bbox) — should return 250e6 Pa (projected max in sub-region)
+    let max_expr = make_bounded_call(
+        "max",
+        vonmises_field.clone(),
+        vonmises_field_type.clone(),
+        bbox.clone(),
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar { si_value: 250e6, dimension: DimensionVector::PRESSURE },
+        "max(VonMises field, bbox=[1,3]) should return 250e6 Pa (vM max in sub-region)"
+    );
+
+    // min(vonmises_field, bbox) — should return 175e6 Pa
+    let min_expr = make_bounded_call(
+        "min",
+        vonmises_field.clone(),
+        vonmises_field_type.clone(),
+        bbox.clone(),
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Scalar { si_value: 175e6, dimension: DimensionVector::PRESSURE },
+        "min(VonMises field, bbox=[1,3]) should return 175e6 Pa (vM min in sub-region)"
+    );
+
+    // argmax(vonmises_field, bbox) — should return Real(1.0) (coord at index 1)
+    let argmax_expr = make_bounded_call(
+        "argmax",
+        vonmises_field.clone(),
+        vonmises_field_type.clone(),
+        bbox.clone(),
+        Type::Real,
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Real(1.0),
+        "argmax(VonMises field, bbox=[1,3]) should return Real(1.0) (coord of vM max)"
+    );
+
+    // argmin(vonmises_field, bbox) — should return Real(2.0) (coord at index 2)
+    let argmin_expr = make_bounded_call(
+        "argmin",
+        vonmises_field.clone(),
+        vonmises_field_type.clone(),
+        bbox.clone(),
+        Type::Real,
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Real(2.0),
+        "argmin(VonMises field, bbox=[1,3]) should return Real(2.0) (coord of vM min)"
+    );
 }
 
 /// 2-arg `max|min|argmax|argmin(field, bbox)` over an Imported-source field → Undef.

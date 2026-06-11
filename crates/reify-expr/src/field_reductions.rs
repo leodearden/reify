@@ -20,13 +20,19 @@
 //!   This mirrors `reify_stdlib::fea::envelope_tensor_projection` (the
 //!   proven two-pass pattern in this codebase).
 //!
-//! `FieldSourceKind::Analytical` and `FieldSourceKind::Composed` are
-//! supported via the **2-arg bounded form** `max|min|argmax|argmin(field, bounds)`:
+//! `FieldSourceKind::Analytical`, `FieldSourceKind::Composed`, and
+//! `FieldSourceKind::VonMises` are also supported via the **2-arg bounded
+//! form** `max|min|argmax|argmin(field, bounds)`:
 //!
 //! - **Analytical / Composed (2-arg bounded)** — a fixed-density grid of
 //!   [`GRID_SAMPLES_PER_AXIS`]^n nodes is sampled over the bounding box.
 //!   The extremum is the grid-resolution optimum.  See `compute_bounded_extremum`
 //!   for the resolution/tolerance contract.
+//! - **VonMises (2-arg bounded)** — the backing Sampled tensor field is
+//!   projected per 9-float window via `project_von_mises_sampled`, and the
+//!   resulting stride-1 scalar `SampledField` is clipped to the bounding box
+//!   via the same sub-region logic as `Sampled`.  Malformed lambda →
+//!   `Value::Undef` defensively.
 //!
 //! All other source kinds (`Imported`, and the derived wrappers
 //! `Gradient`/`Divergence`/`Curl`/`Laplacian`/`PrincipalStresses`/
@@ -218,9 +224,16 @@ fn domain_dim(domain_type: &Type) -> Option<usize> {
 ///
 /// Requires `domain_dim(domain_type) <= lo.len()`; else `Value::Undef`.
 ///
+/// # VonMises (bounded)
+///
+/// The backing Sampled tensor field is projected via [`project_von_mises_sampled`]
+/// and the resulting stride-1 scalar `SampledField` is clipped to the bounding
+/// box via [`reduce_sampled_extremum_bounded`].  Malformed lambda (not a valid
+/// inner tensor field) → `Value::Undef` defensively.
+///
 /// # Other sources
 ///
-/// `VonMises`/`Imported`/derived sources → `Value::Undef`.
+/// `Imported`/derived sources → `Value::Undef`.
 fn compute_bounded_extremum(
     field: &Value,
     bounds: &Value,
@@ -245,6 +258,15 @@ fn compute_bounded_extremum(
                 reduce_sampled_extremum_bounded(sf, &lo, &hi, codomain_type, find_min)
             }
             _ => Value::Undef,
+        },
+        // VonMises: project the backing tensor field per 9-float window, then clip
+        // the projected scalar SampledField to the bounding box. Mirrors the 1-arg
+        // VonMises path in compute_extremum — project-then-delegate, reusing the
+        // Sampled sub-region path. Malformed lambda → None from
+        // project_von_mises_sampled → Undef.
+        FieldSourceKind::VonMises => match project_von_mises_sampled(lambda.as_ref()) {
+            Some(sf) => reduce_sampled_extremum_bounded(&sf, &lo, &hi, codomain_type, find_min),
+            None => Value::Undef,
         },
         // Analytical/Composed: fixed-density grid-sampler over the bounding box.
         // The 1-arg form stays honest-Undef (compute_extremum above) — no bounds,
@@ -272,9 +294,9 @@ fn compute_bounded_extremum(
 
 /// Shared body for `compute_argmax_bounded` / `compute_argmin_bounded`.
 ///
-/// See [`compute_bounded_extremum`] for the Sampled / Analytical / Composed
-/// dispatch logic; this variant returns the domain coord at the extremum
-/// (via [`wrap_coord_for_domain`]) rather than the codomain value.
+/// See [`compute_bounded_extremum`] for the Sampled / VonMises / Analytical /
+/// Composed dispatch logic; this variant returns the domain coord at the
+/// extremum (via [`wrap_coord_for_domain`]) rather than the codomain value.
 fn compute_bounded_argextremum(
     field: &Value,
     bounds: &Value,
@@ -297,6 +319,14 @@ fn compute_bounded_argextremum(
                 reduce_sampled_argextremum_bounded(sf, &lo, &hi, domain_type, find_min)
             }
             _ => Value::Undef,
+        },
+        // VonMises: mirrors the 1-arg argextremum VonMises path — project, then
+        // clip the projected scalar SampledField to the bounding box.
+        FieldSourceKind::VonMises => match project_von_mises_sampled(lambda.as_ref()) {
+            Some(sf) => {
+                reduce_sampled_argextremum_bounded(&sf, &lo, &hi, domain_type, find_min)
+            }
+            None => Value::Undef,
         },
         FieldSourceKind::Analytical | FieldSourceKind::Composed => {
             let n = match domain_dim(domain_type) {
