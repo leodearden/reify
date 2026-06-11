@@ -268,4 +268,75 @@ for _ba_split in "${_ba_splits[@]}"; do
     _cleanup_canary
 done
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B: real leak (sum < TOKENS) while idle → reseed + sum restored
+#
+#   hold_seed_fifos at merge=2/task=1 (sum=3 < TOKENS=4 → genuine leaked state).
+#   With idle build ('echo 0'):
+#   (a) The canary must call `systemctl --user restart reify-jobserver.service`.
+#   (b) End-to-end "sum restored": with REIFY_TEST_SPAWN_BALANCER=1 the
+#       systemctl stub respawns a real balancer; wait_for_seed polls until
+#       fionread_sum == TOKENS (4), confirming the restart re-seeded both pools.
+#
+#   RED: step-2 impl has no reseed branch — leaked sum → "deferred action" log
+#   with no restart → assert (a) fails.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: idle leak → reseed (and end-to-end sum restored) ---"
+
+# (a) Leak → restart recorded
+_cleanup_canary
+_MERGE_FIFO="$(mktemp -u /tmp/test-canary-merge-XXXXXX)"
+_TASK_FIFO="$(mktemp -u /tmp/test-canary-task-XXXXXX)"
+_READY_FILE="$(mktemp /tmp/test-canary-ready-XXXXXX)"
+> "$_CALLS_FILE"
+
+hold_seed_fifos "$_MERGE_FIFO" "$_TASK_FIFO" 2 1 "$_READY_FILE"   # sum=3 < 4
+wait_for_ready "$_READY_FILE"
+
+run_canary 'echo 0' || true
+
+assert "Block B (a): canary calls systemctl --user restart (leaked idle state)" \
+    bash -c "grep -qF 'restart' '$_CALLS_FILE'"
+
+assert "Block B (a): restart targets reify-jobserver.service" \
+    bash -c "grep -qF 'reify-jobserver.service' '$_CALLS_FILE'"
+
+_cleanup_canary
+
+# (b) End-to-end: restart → real balancer → sum restored to TOKENS
+_cleanup_canary
+_MERGE_FIFO="$(mktemp -u /tmp/test-canary-merge-XXXXXX)"
+_TASK_FIFO="$(mktemp -u /tmp/test-canary-task-XXXXXX)"
+_READY_FILE="$(mktemp /tmp/test-canary-ready-XXXXXX)"
+_BB_BAL_PID_FILE="$(mktemp /tmp/test-canary-balpid-XXXXXX)"
+> "$_CALLS_FILE"
+
+hold_seed_fifos "$_MERGE_FIFO" "$_TASK_FIFO" 2 1 "$_READY_FILE"   # sum=3 < 4
+wait_for_ready "$_READY_FILE"
+
+_bb_seeded=0
+_REIFY_TEST_BALANCER_SCRIPT="$BALANCER" \
+_REIFY_TEST_MERGE_FIFO="$_MERGE_FIFO" \
+_REIFY_TEST_TASK_FIFO="$_TASK_FIFO" \
+_REIFY_TEST_BALANCER_PID_FILE="$_BB_BAL_PID_FILE" \
+REIFY_TEST_SPAWN_BALANCER=1 \
+    run_canary 'echo 0' || true
+
+# Wait for the balancer the stub respawned to re-seed both pools
+if wait_for_seed 15; then
+    _bb_seeded=1
+fi
+
+# Read spawned balancer PID so cleanup can kill it
+if [ -s "$_BB_BAL_PID_FILE" ]; then
+    _BALANCER_PID="$(cat "$_BB_BAL_PID_FILE")"
+fi
+
+assert "Block B (b): sum restored to TOKENS after restart+reseed" \
+    test "$_bb_seeded" -eq 1
+
+rm -f "$_BB_BAL_PID_FILE"
+_cleanup_canary
+
 test_summary
