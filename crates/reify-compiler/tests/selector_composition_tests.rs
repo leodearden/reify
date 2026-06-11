@@ -247,3 +247,97 @@ fn difference_same_kind_compiles_clean_with_face_selector_type() {
         sel_expr.result_type
     );
 }
+
+// ── (c) Named-leaf constructors: face/edge/solid_body ────────────────────────
+// RED until step-8 adds face/edge/solid_body to GEOMETRY_TOPOLOGY_SELECTOR_NAMES
+// and topology_selector_result_type in crates/reify-compiler/src/units.rs.
+//
+// Design note: the BodySelector ctor is `solid_body(g, name)`, NOT `body(g, name)`.
+// `body` is the RBD mechanism constructor (joint_signatures.rs → StructureRef("Mechanism")).
+// The existing family-disjointness tests in units.rs guard against `body` entering
+// GEOMETRY_TOPOLOGY_SELECTOR_NAMES.  The step-8 impl unit test additionally asserts
+// `!GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&"body")` directly.
+
+/// `face(b, "top")` source — compiles to `Type::Selector(Face)` after step-8.
+const SOURCE_FACE_NAMED: &str = r#"
+structure def FaceNamed {
+    let b = box(10mm, 10mm, 10mm)
+    let sel = face(b, "top")
+}
+"#;
+
+/// `edge(b, "rim")` source — compiles to `Type::Selector(Edge)` after step-8.
+const SOURCE_EDGE_NAMED: &str = r#"
+structure def EdgeNamed {
+    let b = box(10mm, 10mm, 10mm)
+    let sel = edge(b, "rim")
+}
+"#;
+
+/// `solid_body(b, "core")` source — compiles to `Type::Selector(Body)` after step-8.
+const SOURCE_SOLID_BODY_NAMED: &str = r#"
+structure def SolidBodyNamed {
+    let b = box(10mm, 10mm, 10mm)
+    let sel = solid_body(b, "core")
+}
+"#;
+
+/// `face(b, "top")` must compile without errors and infer `Type::Selector(Face)`.
+/// RED until step-8 adds `face` to GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+#[test]
+fn face_named_ctor_types_as_face_selector() {
+    let compiled = compile_source_with_stdlib(SOURCE_FACE_NAMED);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "face(b, \"top\"): must compile without errors; got: {errors:#?}"
+    );
+    let sel_expr = cell_default_expr(&compiled, "sel");
+    assert_eq!(
+        sel_expr.result_type,
+        Type::Selector(SelectorKind::Face),
+        "face(b, \"top\") must infer Type::Selector(Face), got {:?}",
+        sel_expr.result_type
+    );
+}
+
+/// `edge(b, "rim")` must compile without errors and infer `Type::Selector(Edge)`.
+/// RED until step-8 adds `edge` to GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+#[test]
+fn edge_named_ctor_types_as_edge_selector() {
+    let compiled = compile_source_with_stdlib(SOURCE_EDGE_NAMED);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "edge(b, \"rim\"): must compile without errors; got: {errors:#?}"
+    );
+    let sel_expr = cell_default_expr(&compiled, "sel");
+    assert_eq!(
+        sel_expr.result_type,
+        Type::Selector(SelectorKind::Edge),
+        "edge(b, \"rim\") must infer Type::Selector(Edge), got {:?}",
+        sel_expr.result_type
+    );
+}
+
+/// `solid_body(b, "core")` must compile without errors and infer `Type::Selector(Body)`.
+/// RED until step-8 adds `solid_body` to GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+/// Closes the `solid_body` vs `body` naming decision (PRD §11.1):
+/// `body` stays as the RBD mechanism constructor → `StructureRef("Mechanism")`.
+#[test]
+fn solid_body_named_ctor_types_as_body_selector() {
+    let compiled = compile_source_with_stdlib(SOURCE_SOLID_BODY_NAMED);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "solid_body(b, \"core\"): must compile without errors; got: {errors:#?}"
+    );
+    let sel_expr = cell_default_expr(&compiled, "sel");
+    assert_eq!(
+        sel_expr.result_type,
+        Type::Selector(SelectorKind::Body),
+        "solid_body(b, \"core\") must infer Type::Selector(Body) (not StructureRef(\"Mechanism\") \
+        which is the `body(...)` RBD ctor type); got {:?}",
+        sel_expr.result_type
+    );
+}
