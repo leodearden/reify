@@ -175,11 +175,154 @@ def evaluate_acceptance_gate(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Report renderer stub (implemented in steps 07-08)
+# Report renderer (step-08)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-# def render_acceptance_report(measurements, verdicts): ...
+def render_acceptance_report(measurements: dict, verdicts: dict) -> str:
+    """Render a markdown acceptance report from A/B measurements and verdicts.
+
+    Returns a markdown string containing:
+      - Title + PRD/leaf-η citation
+      - A/B comparison section (single-pool baseline vs dual-pool, same instrument)
+      - Per-run table: service | regime | cache_state | busy_fraction |
+                       merge_wall_s | slowest_task_wall_s | exit_124
+      - Four-criteria verdict block: (a)–(d) with PASS/FAIL
+      - ζ′/4520 budget floor section: merge wall + slowest task wall as the
+        authoritative floor for timeout re-derivation
+
+    This is the ζ′/4520 floor document.  Numbers here must be REAL
+    verify.sh walls, never synthetic stubs.
+    """
+    nproc = measurements["nproc"]
+    threshold = measurements["utilization_threshold"]
+    baseline = measurements["baseline"]
+    dual = measurements["dual_pool"]
+
+    def _slowest(run: dict) -> float:
+        walls = run.get("task_walls", [])
+        return max(walls) if walls else 0.0
+
+    lines: list = []
+
+    # ── Title ─────────────────────────────────────────────────────────────────
+    lines.append("# Jobserver Balancer η Acceptance Report")
+    lines.append("")
+    lines.append(
+        "PRD: `docs/prds/jobserver-merge-priority-balancer.md` §9 leaf η  "
+    )
+    lines.append(f"nproc: **{nproc}**  ")
+    lines.append(f"utilization_threshold: **{threshold}**  ")
+    overall = "PASS" if all(v == "PASS" for v in verdicts.values()) else "FAIL"
+    lines.append(f"Overall: **{overall}**")
+    lines.append("")
+
+    # ── A/B Comparison section ─────────────────────────────────────────────
+    lines.append("## A/B Comparison: single-pool baseline vs dual-pool (same instrument)")
+    lines.append("")
+    lines.append(
+        "**Baseline (A):** single-pool service, one merge + N task verifies "
+        "concurrent under the standing 60m/75m verify.sh budgets.  "
+    )
+    lines.append(
+        "**Dual-pool (B):** same concurrent load on the deployed "
+        "`jobserver-balancer.py` dual-pool service.  "
+    )
+    lines.append(
+        "esc-4520-22 (disposition D): numbers here are REAL verify.sh "
+        "walls — NOT ε's synthetic ~2s CPU-burn stub."
+    )
+    lines.append("")
+
+    # ── Per-run table ──────────────────────────────────────────────────────
+    lines.append("## Per-Run Measurements")
+    lines.append("")
+    lines.append(
+        "| service | regime | cache_state | busy_fraction | "
+        "merge_wall_s | slowest_task_wall_s | exit_124 |"
+    )
+    lines.append(
+        "|---------|--------|-------------|---------------|"
+        "-------------|---------------------|----------|"
+    )
+    for run in (baseline, dual):
+        svc = run.get("service", "—")
+        regime = run.get("regime", "mixed")
+        cache = run.get("cache_state", "—")
+        bf = run.get("busy_fraction", 0.0)
+        mw = run.get("merge_wall", 0.0)
+        st = _slowest(run)
+        e124 = run.get("exit_124_count", 0)
+        lines.append(
+            f"| {svc} | {regime} | {cache} | {bf:.3f} | {mw:.1f} | {st:.1f} | {e124} |"
+        )
+    lines.append("")
+
+    # ── Verdict block ──────────────────────────────────────────────────────
+    lines.append("## Acceptance Criteria Verdicts")
+    lines.append("")
+    dual_bf = dual.get("busy_fraction", 0.0)
+    dual_mw = dual.get("merge_wall", 0.0)
+    base_mw = baseline.get("merge_wall", 0.0)
+    e124 = dual.get("exit_124_count", 0)
+    lines.append(
+        f"| criterion | description | value | verdict |"
+    )
+    lines.append(
+        f"|-----------|-------------|-------|---------|"
+    )
+    lines.append(
+        f"| (a) | box utilisation ≈ nproc (dual-pool mixed run) "
+        f"| busy_fraction={dual_bf:.3f} >= {threshold} "
+        f"| **{verdicts.get('a', '—')}** |"
+    )
+    lines.append(
+        f"| (b) | merge wall-clock improved vs baseline "
+        f"| dual={dual_mw:.1f}s < baseline={base_mw:.1f}s "
+        f"| **{verdicts.get('b', '—')}** |"
+    )
+    lines.append(
+        f"| (c) | no task verify exits 124 under standing budgets "
+        f"| exit_124_count={e124} "
+        f"| **{verdicts.get('c', '—')}** |"
+    )
+    series = dual.get("occupancy", [])
+    max_merge = max((s.get("merge", 0) for s in series), default=0)
+    lines.append(
+        f"| (d) | merge pool reached full allocation under contention "
+        f"| max_merge={max_merge} vs nproc={nproc} "
+        f"| **{verdicts.get('d', '—')}** |"
+    )
+    lines.append("")
+
+    # ── ζ′/4520 budget floor section ──────────────────────────────────────
+    lines.append("## ζ′/4520 Budget Floor")
+    lines.append("")
+    lines.append(
+        "This section records the authoritative timing floor that "
+        "task ζ′/4520 consumes to re-derive the verify.sh outer-timeout "
+        "budgets.  Numbers are REAL verify.sh walls from the dual-pool mixed "
+        "run (baseline numbers provided for same-instrument A/B context)."
+    )
+    lines.append("")
+    lines.append("| run | merge_wall_s | slowest_task_wall_s | cache_state |")
+    lines.append("|-----|-------------|---------------------|-------------|")
+    lines.append(
+        f"| baseline (single-pool) | {base_mw:.1f} | {_slowest(baseline):.1f} "
+        f"| {baseline.get('cache_state', '—')} |"
+    )
+    lines.append(
+        f"| dual-pool (accepted) | {dual_mw:.1f} | {_slowest(dual):.1f} "
+        f"| {dual.get('cache_state', '—')} |"
+    )
+    lines.append("")
+    lines.append(
+        f"**ζ′ floor (dual-pool):** merge_wall={dual_mw:.1f}s, "
+        f"slowest_task_wall={_slowest(dual):.1f}s"
+    )
+    lines.append("")
+
+    return "\n".join(lines)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
