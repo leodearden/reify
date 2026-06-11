@@ -275,7 +275,7 @@ impl ImpulseTrain {
     }
 
     /// Sum of all impulse amplitudes (should equal 1.0 for any well-formed shaper).
-    // G-allow: impulse-shaping producer (amplitude-sum check), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
+    // G-allow: impulse-shaping well-formedness helper (amplitude-sum check), task #3866 (ε); permanent internal helper called only within impulse_shaper.rs + unit tests; input_shape_value entry point is wired via `input_shape_trampoline` in trajectory_ops.rs.
     pub fn amplitude_sum(&self) -> f64 {
         self.impulses.iter().map(|imp| imp.amplitude).sum()
     }
@@ -283,7 +283,6 @@ impl ImpulseTrain {
     /// Time offset of the last (trailing) impulse (= the shaper delay Δ).
     ///
     /// Returns 0.0 for a single-impulse identity train.
-    // G-allow: impulse-shaping producer (shaper-delay query), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
     pub fn trailing_time(&self) -> f64 {
         self.impulses.last().map(|imp| imp.time).unwrap_or(0.0)
     }
@@ -346,7 +345,6 @@ impl ImpulseTrain {
 /// The output remains valid for `t ∈ [0, t_domain + train.trailing_time()]`.
 /// After that the final value is frozen (all samples beyond `t_domain` clamp to
 /// `f(t_domain)` and `Σ A_i = 1`).
-// G-allow: impulse-shaping producer (shaped-command convolution), task #3866 (ε, DONE); consumer is task #3867 (ζ — input_shape dispatcher), PENDING, so no in-tree caller yet.
 pub fn convolve_at<F: Fn(f64) -> f64>(
     train: &ImpulseTrain,
     f: &F,

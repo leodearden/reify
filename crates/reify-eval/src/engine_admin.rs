@@ -1634,7 +1634,7 @@ impl Engine {
         self.panic_on_eval_cells.clear();
     }
 
-    // ── Task 3541: warm-pool event drain + journal recording ─────────────────
+    // ── Task 3582: warm-pool event drain + journal recording ─────────────────
 
     /// Drain the warm pool's buffered telemetry events, record each as an
     /// [`crate::journal::EvalEvent`] on the diagnostic journal, and return the
@@ -1656,7 +1656,7 @@ impl Engine {
     /// (check, edit_check, build, tessellate_snapshot, etc.).  This is the
     /// eval-boundary call site that wires the existing warm_pool event buffer
     /// to the diagnostic journal, subsuming M-010.
-    // G-allow: task #3541 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (engine.rs) wiring lands in subsequent #3541 steps
+    // G-allow: task #3582 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (engine.rs) wiring lands with #3582 (drain-wiring tracker, pending)
     pub fn drain_and_record_warm_pool_events(&mut self) -> Vec<crate::warm_pool::WarmPoolEvent> {
         let events = self.warm_pool.drain_events();
         let version = reify_core::VersionId(self.next_version_id.saturating_sub(1));

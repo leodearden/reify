@@ -174,10 +174,9 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
 
     // Enforce module-path declaration (spec §7.1/§7.2, task γ).
     // parsed.path == ModulePath::single(module_name) by construction (PRD D-6).
-    if let Some(diag) = reify_compiler::check_module_path_decl(
-        parsed.declared_module_path.as_ref(),
-        &parsed.path,
-    ) {
+    if let Some(diag) =
+        reify_compiler::check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path)
+    {
         compiled.diagnostics.push(diag);
     }
 
@@ -413,20 +412,51 @@ fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
 }
 
 /// Usage line printed to stderr for any `reify check` usage error.
-const CHECK_USAGE: &str =
-    "Usage: reify check [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
+const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
+/// `reify check <file>` — lightweight static constraint checker.
+///
+/// ## Engine posture: deliberately NO compute trampolines
+///
+/// The non-[`RepresentationWithin`] path uses `Engine::new(None) + check()`;
+/// the [`RepresentationWithin`] path uses `Engine::with_registered_kernel +
+/// check()`.  Neither path calls [`configured_eval_engine`] nor registers the
+/// FEA/buckling/modal compute trampolines
+/// ([`register_compute_trampolines`]).
+///
+/// Consequence: `@optimized("solver::elastic_static")` FEA-result constraints
+/// (e.g. `constraint peak_stress < limit` over `result.max_von_mises`) evaluate
+/// against the body-inline `undef` fallback and report **Indeterminate** under
+/// `reify check`.  They are NOT a gate; `reify build` or `reify eval` are the
+/// FEA exit-code gate.
+///
+/// **Rationale:** registering compute trampolines here would run a potentially
+/// slow FEA solve inside the lightweight static-check path, violating the design
+/// intent that *check attaches no kernel by design*.  The trampoline-free posture
+/// is an executable contract locked by `check_fea_violated_constraint_is_not_gated`
+/// in `cli_build_fea.rs`; changing it requires updating that test intentionally.
+///
+/// **Known limitation:** `reify check` still surfaces the engine-owned
+/// `Severity::Error` "no registered compute trampoline (falling back to
+/// body-inlining)" diagnostic on stderr for `@optimized` FEA solves.  The
+/// severity is owned by `engine_eval.rs`; downgrading it to a warning is a
+/// separate engine-side concern (deferred, out of scope for this CLI task).
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
     // `--purpouse` fails loud instead of being silently treated as a file path.
     let mut purpose_values: Vec<String> = Vec::new();
     let mut cfg_values: Vec<String> = Vec::new();
+    let mut strict = false;
     let mut file: Option<&str> = None;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
         match a {
+            "--strict" => {
+                strict = true;
+                i += 1;
+            }
             "--purpose" => {
                 if i + 1 >= args.len() {
                     eprintln!("Error: --purpose requires a value");
@@ -512,8 +542,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
         let checker = SimpleConstraintChecker;
         let result = if module_has_representation_within(&compiled) {
             // Kernel-backed path for RepresentationWithin assertions (task-4199 γ).
-            let mut engine =
-                reify_eval::Engine::with_registered_kernel(Box::new(checker));
+            let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
             engine.set_capture_repr_tol(true);
             engine.tessellate_realizations(&compiled);
             engine.check(&compiled)
@@ -530,20 +559,13 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        match outcome {
-            ConstraintOutcome::AllSatisfied => {
-                println!("All constraints satisfied.");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeIndeterminate(n) => {
-                println!("No constraints violated ({n} indeterminate).");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeViolated => {
-                println!("Some constraints violated.");
-                ExitCode::FAILURE
-            }
-        }
+        finish_check(
+            &outcome,
+            &result.constraint_results,
+            strict,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        )
     } else {
         // --purpose path: replicates the canonical
         // eval → activate_purpose → check_constraints_with_values sequence
@@ -577,8 +599,8 @@ fn cmd_check(args: &[String]) -> ExitCode {
             // preserves existing single-param CLI tests (C6).
             // Everything else (len>=2, or len==1 with a named param like part:PartA):
             // route through activate_purpose_with_bindings for C2/C3 validation.
-            let is_bare_single = activation.bindings.len() == 1
-                && activation.bindings[0].param.is_none();
+            let is_bare_single =
+                activation.bindings.len() == 1 && activation.bindings[0].param.is_none();
 
             if is_bare_single {
                 engine.activate_purpose(&activation.name, &activation.bindings[0].entity);
@@ -615,9 +637,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
                     .iter()
                     .map(|b| (b.param.clone().unwrap_or_default(), b.entity.clone()))
                     .collect();
-                if let Err(e) =
-                    engine.activate_purpose_with_bindings(&activation.name, &pairs)
-                {
+                if let Err(e) = engine.activate_purpose_with_bindings(&activation.name, &pairs) {
                     eprintln!("Error: {e}");
                     return ExitCode::FAILURE;
                 }
@@ -647,20 +667,13 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // Same outcome → summary + exit-code mapping as the no-purpose path,
         // so a purpose-injected violation behaves identically to a structure
         // constraint violation in stdout and shell exit semantics.
-        match outcome {
-            ConstraintOutcome::AllSatisfied => {
-                println!("All constraints satisfied.");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeIndeterminate(n) => {
-                println!("No constraints violated ({n} indeterminate).");
-                ExitCode::SUCCESS
-            }
-            ConstraintOutcome::SomeViolated => {
-                println!("Some constraints violated.");
-                ExitCode::FAILURE
-            }
-        }
+        finish_check(
+            &outcome,
+            &constraint_results,
+            strict,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        )
     }
 }
 
@@ -734,10 +747,13 @@ fn cmd_build(args: &[String]) -> ExitCode {
     // and to exclude the `-o` value from the positional-file scan below so
     // that `reify build -o out.step file.ri` doesn't mistakenly treat
     // `out.step` as the input file.
-    let o_value_pos: Option<usize> = args
-        .iter()
-        .position(|a| a == "-o")
-        .and_then(|i| if i + 1 < args.len() { Some(i + 1) } else { None });
+    let o_value_pos: Option<usize> = args.iter().position(|a| a == "-o").and_then(|i| {
+        if i + 1 < args.len() {
+            Some(i + 1)
+        } else {
+            None
+        }
+    });
 
     // Pick the first positional token: not a flag (`-`-prefixed) and not the
     // value following `-o`.  This makes flag ordering irrelevant, so both
@@ -793,7 +809,25 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     let checker = SimpleConstraintChecker;
+    // Register FEA/buckling/modal + shell-extract compute trampolines so that
+    // `@optimized("solver::elastic_static")` targets dispatch to the real solver
+    // rather than body-inlining.  Without these registrations the engine emits an
+    // Error-severity "no registered compute trampoline" diagnostic and FEA-result
+    // constraints evaluate to Indeterminate.
+    //
+    // NOTE: cmd_build intentionally does NOT call `configured_eval_engine` (which
+    // also adds `.with_solver(production())`).  The DimensionalSolver resolves
+    // `auto` params via a synthetic Chebyshev-centre objective even when no explicit
+    // `minimize`/`maximize` directive is present; wiring it here would change the
+    // observable behaviour of existing `auto`-param fixtures (bracket_indeterminate,
+    // bracket_all_indeterminate) from INDETERMINATE → SATISFIED.  cmd_build's
+    // solver-free posture is intentional; cmd_eval wires the full solver via
+    // `configured_eval_engine` because it explicitly models the full evaluation path.
+    // The FEA trampoline is pure-Rust and independent of the DimensionalSolver, so
+    // the solve runs correctly here without `.with_solver`.  See `build_is_success`
+    // for the (c) exit-code gate.
     let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    register_compute_trampolines(&mut engine);
     let result = engine.build(&compiled, format);
 
     let outcome = report_eval_output(
@@ -825,16 +859,25 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 }
                 println!("Wrote {} ({} bytes)", path, data.len());
             }
-            match outcome {
-                ConstraintOutcome::AllSatisfied => ExitCode::SUCCESS,
+            // Emit the per-outcome status message (unchanged from pre-4458),
+            // then decide exit via build_is_success — which also gates on
+            // Severity::Error diagnostics, matching cmd_eval's Error gate
+            // (task 4458 fix (c)).  See `build_is_success` for rationale.
+            match &outcome {
+                ConstraintOutcome::AllSatisfied => {}
                 ConstraintOutcome::SomeIndeterminate(n) => {
                     println!("No constraints violated ({n} indeterminate).");
-                    ExitCode::SUCCESS
                 }
                 ConstraintOutcome::SomeViolated => {
                     println!("Some constraints violated.");
-                    ExitCode::FAILURE
                 }
+            }
+            let has_error_diagnostic =
+                result.diagnostics.iter().any(|d| d.severity == Severity::Error);
+            if build_is_success(&outcome, has_error_diagnostic) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
             }
         }
         None => {
@@ -842,6 +885,17 @@ fn cmd_build(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Register all FEA/buckling/modal and shell-extract compute trampolines on `engine`.
+///
+/// This is the single source of truth for the trampoline set shared between
+/// `cmd_build` (solver-free, calls this directly) and [`configured_eval_engine`]
+/// (full solver).  Adding a new trampoline here automatically covers both paths and
+/// prevents silent drift between them.
+fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
+    reify_eval::compute_targets::register_compute_fns(engine);
+    reify_eval::register_shell_extract_compute_fns(engine);
 }
 
 /// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
@@ -857,20 +911,24 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// Both the geometry branch (`with_registered_kernel + build()`) and the plain
 /// branch (`Engine::new(None) + eval()`) share this setup; only the constructor
 /// and the terminal `build()`/`eval()` call differ.  Factoring the shared setup
-/// here eliminates the duplicated `.with_solver` + `register_compute_fns` block
-/// that would otherwise appear verbatim in each branch.
+/// here eliminates the duplicated `.with_solver` + [`register_compute_trampolines`]
+/// block that would otherwise appear verbatim in each branch.
 ///
-/// Both the FEA/buckling/modal trampolines (`register_compute_fns`) and the
-/// shell-extract trampoline (`register_shell_extract_compute_fns`) are registered
-/// here, mirroring the GUI's call pair (gui/src-tauri/src/engine.rs).  Without
-/// the shell-extract registration, shell-classified `@optimized("solver::elastic_static")`
-/// solves would hit `DispatchError::Failed` in `insert_shell_extract_upstream` and
-/// emit a misleading "falling back to tet meshing" warning even though the FEA
-/// trampoline independently re-classifies and runs the correct shell solve.
+/// Both the FEA/buckling/modal trampolines and the shell-extract trampoline are
+/// registered here via [`register_compute_trampolines`], mirroring the GUI's call
+/// pair (gui/src-tauri/src/engine.rs).  Without the shell-extract registration,
+/// shell-classified `@optimized("solver::elastic_static")` solves would hit
+/// `DispatchError::Failed` in `insert_shell_extract_upstream` and emit a misleading
+/// "falling back to tet meshing" warning even though the FEA trampoline independently
+/// re-classifies and runs the correct shell solve.
+///
+/// NOTE: `cmd_build` intentionally does NOT use this helper — it calls
+/// [`register_compute_trampolines`] directly (without `.with_solver`) to preserve
+/// cmd_build's solver-free posture for `auto`-param fixtures.  See the comment in
+/// `cmd_build` for rationale.
 fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
     let mut engine = engine.with_solver(Box::new(reify_constraints::SolverRegistry::production()));
-    reify_eval::compute_targets::register_compute_fns(&mut engine);
-    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    register_compute_trampolines(&mut engine);
     engine
 }
 
@@ -938,9 +996,9 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         // that run_post_processes/post_process_geometry_queries fires and resolves
         // geometry-query value cells (mass, centroid, volume, …).
         // geometry_output is discarded — reify eval is a value inspector only.
-        let result = configured_eval_engine(
-            reify_eval::Engine::with_registered_kernel(Box::new(SimpleConstraintChecker)),
-        )
+        let result = configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
+            SimpleConstraintChecker,
+        )))
         .build(&compiled, reify_ir::ExportFormat::Step);
         (result.values, result.diagnostics)
     } else {
@@ -949,9 +1007,10 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         // cli_integration_smoke) remain on the exact unchanged code path.
         // Note: register_compute_fns is still required so `@optimized` targets
         // dispatch to their solver kernels (task 3794 / esc-3794-183).
-        let result = configured_eval_engine(
-            reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None),
-        )
+        let result = configured_eval_engine(reify_eval::Engine::new(
+            Box::new(SimpleConstraintChecker),
+            None,
+        ))
         .eval(&compiled);
         (result.values, result.diagnostics)
     };
@@ -969,10 +1028,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    if diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error)
-    {
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -980,8 +1036,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
 }
 
 /// Usage line printed to stderr for any `reify doc` usage error.
-const DOC_USAGE: &str =
-    "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]\n       reify doc --stdlib --out <dir>";
+const DOC_USAGE: &str = "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]\n       reify doc --stdlib --out <dir>";
 
 /// Output format for `reify doc`.
 ///
@@ -994,7 +1049,6 @@ enum Format {
     Markdown,
     Json,
 }
-
 
 fn cmd_doc(args: &[String]) -> ExitCode {
     if args.is_empty() {
@@ -1209,8 +1263,7 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         }
         Format::Markdown => {
             let opts = reify_doc::fmt_markdown::MarkdownOptions { split };
-            let rendered =
-                reify_doc::fmt_markdown::render_markdown(&model, Some(&xrefs), &opts);
+            let rendered = reify_doc::fmt_markdown::render_markdown(&model, Some(&xrefs), &opts);
             match rendered {
                 reify_doc::fmt_markdown::MarkdownOutput::Single(body) => {
                     write_single_file_or_stdout(
@@ -1416,6 +1469,47 @@ fn cmd_lsp() -> ExitCode {
     }
 }
 
+/// Pure exit-decision helper for `reify build`.
+///
+/// Returns `true` when the build should exit 0 (success), `false` when it
+/// should exit non-zero (failure).  Two independent gates cause failure:
+///
+/// 1. A [`ConstraintOutcome::SomeViolated`] result — one or more constraints
+///    were violated.
+/// 2. `has_error_diagnostic` — at least one [`reify_core::Severity::Error`]
+///    diagnostic was emitted (e.g. "no registered compute trampoline"), even
+///    if the constraint outcome is [`ConstraintOutcome::AllSatisfied`] or
+///    [`ConstraintOutcome::SomeIndeterminate`].
+///
+/// This resolves task-4458 concern (c): `cmd_build` previously exited 0 when
+/// an `Error`-severity engine diagnostic was emitted alongside a non-violated
+/// constraint outcome.  This helper aligns `cmd_build`'s exit code with
+/// `cmd_eval`'s `Severity::Error` gate (see `cmd_eval` at the
+/// `diagnostics.iter().any(|d| d.severity == Severity::Error)` check).
+///
+/// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
+/// unit-testable; callers convert to `ExitCode` at the boundary.
+fn build_is_success(outcome: &ConstraintOutcome, has_error_diagnostic: bool) -> bool {
+    !has_error_diagnostic && !matches!(outcome, ConstraintOutcome::SomeViolated)
+}
+
+/// Pure exit-decision helper for `reify check`.
+///
+/// Returns `true` when the overall outcome should cause a non-zero exit:
+/// - [`ConstraintOutcome::SomeViolated`] always fails.
+/// - [`ConstraintOutcome::SomeIndeterminate`] fails only when `strict` is `true`.
+/// - [`ConstraintOutcome::AllSatisfied`] never fails.
+///
+/// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
+/// unit-testable; callers convert to `ExitCode` at the boundary.
+fn check_fails(outcome: &ConstraintOutcome, strict: bool) -> bool {
+    match outcome {
+        ConstraintOutcome::SomeViolated => true,
+        ConstraintOutcome::SomeIndeterminate(_) => strict,
+        ConstraintOutcome::AllSatisfied => false,
+    }
+}
+
 /// Outcome of constraint checking.
 #[derive(Debug, PartialEq)]
 enum ConstraintOutcome {
@@ -1425,6 +1519,46 @@ enum ConstraintOutcome {
     SomeIndeterminate(usize),
     /// At least one constraint evaluated to `Violated`.
     SomeViolated,
+}
+
+/// Return the display label for a constraint entry: the `label` field when
+/// present, or the [`ConstraintNodeId`] Display representation as a fallback.
+///
+/// Shared by [`report_constraint_results`] and [`report_indeterminate_detail`]
+/// so both use the same label-or-id formatting without duplication.
+fn constraint_display_label(entry: &reify_eval::ConstraintCheckEntry) -> String {
+    match entry.label.as_deref() {
+        Some(l) => l.to_string(),
+        None => format!("{}", entry.id),
+    }
+}
+
+/// Write the strict-failure detail block for indeterminate constraints.
+///
+/// Emits a header naming the count of `Indeterminate` entries and a generic
+/// "why" (inputs undefined), then one indented line per `Indeterminate` entry
+/// using [`constraint_display_label`]. Only `Indeterminate` entries are listed;
+/// `Satisfied` and `Violated` entries are silently skipped.
+///
+/// `n` is the already-computed indeterminate count from
+/// [`ConstraintOutcome::SomeIndeterminate`]; it is used directly in the header
+/// to avoid recomputing the same count independently of [`report_constraint_results`].
+fn report_indeterminate_detail(
+    n: usize,
+    results: &[reify_eval::ConstraintCheckEntry],
+    out: &mut impl std::io::Write,
+) {
+    let _ = writeln!(
+        out,
+        "Strict check failed: {n} constraint(s) INDETERMINATE \
+         \u{2014} inputs undefined (e.g. auto-params unresolved or geometry did not realize):"
+    );
+    for entry in results
+        .iter()
+        .filter(|e| e.satisfaction == reify_ir::Satisfaction::Indeterminate)
+    {
+        let _ = writeln!(out, "  {}", constraint_display_label(entry));
+    }
 }
 
 /// Report constraint check results to the given writer.
@@ -1460,9 +1594,7 @@ fn report_constraint_results(
                 "INDETERMINATE"
             }
         };
-        let id_str = format!("{}", entry.id);
-        let label = entry.label.as_deref().unwrap_or(&id_str);
-        let _ = writeln!(out, "  {} {}", status, label);
+        let _ = writeln!(out, "  {} {}", status, constraint_display_label(entry));
     }
     if violated {
         ConstraintOutcome::SomeViolated
@@ -1544,11 +1676,72 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
         // so a RepresentationWithin inside a `when ... { constraint ... }` block
         // is also detected.
         t.guarded_groups.iter().any(|g| {
-            g.constraints.iter().chain(g.else_constraints.iter()).any(|c| {
-                reify_eval::tolerance_combine::recognize_representation_within(&c.expr).is_some()
-            })
+            g.constraints
+                .iter()
+                .chain(g.else_constraints.iter())
+                .any(|c| {
+                    reify_eval::tolerance_combine::recognize_representation_within(&c.expr)
+                        .is_some()
+                })
         })
     })
+}
+
+/// Write the terminal summary for `reify check` and return the appropriate
+/// [`ExitCode`].
+///
+/// Replaces the two byte-identical terminal `match outcome` blocks in
+/// `cmd_check` (no-purpose path and `--purpose` path) with a single
+/// implementation so the strict upgrade logic lives in one place.
+///
+/// * [`ConstraintOutcome::AllSatisfied`] → `"All constraints satisfied."` + SUCCESS (to `out`)
+/// * [`ConstraintOutcome::SomeViolated`] → `"Some constraints violated."` + FAILURE (to `out`)
+/// * [`ConstraintOutcome::SomeIndeterminate(n)`]:
+///   * `strict=false` → legacy `"No constraints violated ({n} indeterminate)."` + SUCCESS (to `out`)
+///   * `strict=true`  → [`report_indeterminate_detail`] output + FAILURE (to `err`)
+///
+/// Success-path summaries go to `out` (stdout). The strict-failure narrative goes
+/// to `err` (stderr) — conventional for error diagnostics and avoids polluting the
+/// stdout stream on the failure path. The exit code remains the machine-parseable
+/// contract in both cases.
+///
+/// **Intentional duplication in strict mode:** when `strict=true` and constraints are
+/// INDETERMINATE, callers first invoke [`report_eval_output`] (which writes
+/// `INDETERMINATE <label>` status lines to stdout via [`report_constraint_results`])
+/// and then call this function, which emits [`report_indeterminate_detail`] to `err`.
+/// A machine consumer scanning both streams will therefore see each indeterminate
+/// constraint listed in two different formats. This is conventional (per-item status
+/// lines on stdout + a failure summary on stderr) and intentional — not a bug.
+///
+/// Without `--strict` every existing literal string and exit code is preserved
+/// byte-for-byte (C2 — backward-compatible behavior).
+fn finish_check(
+    outcome: &ConstraintOutcome,
+    results: &[reify_eval::ConstraintCheckEntry],
+    strict: bool,
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> std::process::ExitCode {
+    match outcome {
+        ConstraintOutcome::AllSatisfied => {
+            let _ = writeln!(out, "All constraints satisfied.");
+        }
+        ConstraintOutcome::SomeViolated => {
+            let _ = writeln!(out, "Some constraints violated.");
+        }
+        ConstraintOutcome::SomeIndeterminate(n) => {
+            if strict {
+                report_indeterminate_detail(*n, results, err);
+            } else {
+                let _ = writeln!(out, "No constraints violated ({n} indeterminate).");
+            }
+        }
+    }
+    if check_fails(outcome, strict) {
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
+    }
 }
 
 /// Report constraint results and eval diagnostics in a consistent order.
@@ -1626,8 +1819,8 @@ fn cmd_mcp_server(args: &[String]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_eval::ConstraintCheckEntry;
     use reify_core::ConstraintNodeId;
+    use reify_eval::ConstraintCheckEntry;
     use reify_ir::Satisfaction;
 
     /// Helper: capture `report_constraint_results` output into an in-memory
@@ -2062,6 +2255,225 @@ mod tests {
         assert!(build_cfg_set(&["=bad".to_string()]).is_err());
     }
 
+    // ── step-1: RED unit tests for check_fails ────────────────────────────────
+
+    #[test]
+    fn check_fails_all_satisfied_is_false_regardless_of_strict() {
+        assert!(
+            !check_fails(&ConstraintOutcome::AllSatisfied, false),
+            "AllSatisfied + strict=false should be false"
+        );
+        assert!(
+            !check_fails(&ConstraintOutcome::AllSatisfied, true),
+            "AllSatisfied + strict=true should be false"
+        );
+    }
+
+    #[test]
+    fn check_fails_some_violated_is_true_regardless_of_strict() {
+        assert!(
+            check_fails(&ConstraintOutcome::SomeViolated, false),
+            "SomeViolated + strict=false should be true"
+        );
+        assert!(
+            check_fails(&ConstraintOutcome::SomeViolated, true),
+            "SomeViolated + strict=true should be true"
+        );
+    }
+
+    #[test]
+    fn check_fails_some_indeterminate_false_when_not_strict() {
+        assert!(
+            !check_fails(&ConstraintOutcome::SomeIndeterminate(1), false),
+            "SomeIndeterminate + strict=false should be false (indeterminate is not a failure without --strict)"
+        );
+        assert!(
+            !check_fails(&ConstraintOutcome::SomeIndeterminate(3), false),
+            "SomeIndeterminate(3) + strict=false should be false"
+        );
+    }
+
+    #[test]
+    fn check_fails_some_indeterminate_true_when_strict() {
+        assert!(
+            check_fails(&ConstraintOutcome::SomeIndeterminate(1), true),
+            "SomeIndeterminate + strict=true should be true (--strict promotes indeterminate to failure)"
+        );
+        assert!(
+            check_fails(&ConstraintOutcome::SomeIndeterminate(2), true),
+            "SomeIndeterminate(2) + strict=true should be true"
+        );
+    }
+
+    // ── end step-1 ────────────────────────────────────────────────────────────
+
+    // ── step-3: RED unit tests for report_indeterminate_detail ───────────────
+
+    #[test]
+    fn report_indeterminate_detail_lists_only_indeterminate_entries() {
+        // Mix: satisfied, indeterminate (with label), violated, indeterminate
+        // (no label — must fall back to id Display "Foo#constraint[3]").
+        let entries = vec![
+            make_entry("Bracket", 0, Some("c_ok"), Satisfaction::Satisfied),
+            make_entry("Bracket", 1, Some("c_bad"), Satisfaction::Indeterminate),
+            make_entry("Bracket", 2, Some("c_v"), Satisfaction::Violated),
+            make_entry("Foo", 3, None, Satisfaction::Indeterminate),
+        ];
+        let mut buf = Vec::new();
+        report_indeterminate_detail(2, &entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        // (a) Header names the count (2) and mentions undefined inputs.
+        assert!(
+            output.contains("2"),
+            "header should name the indeterminate count (2), got: {output}"
+        );
+        assert!(
+            output.contains("undefined"),
+            "header should mention undefined inputs, got: {output}"
+        );
+
+        // (b) Lists "c_bad" and id-Display fallback "Foo#constraint[3]".
+        assert!(
+            output.contains("c_bad"),
+            "output should list 'c_bad', got: {output}"
+        );
+        assert!(
+            output.contains("Foo#constraint[3]"),
+            "output should list id fallback 'Foo#constraint[3]', got: {output}"
+        );
+
+        // (c) Does NOT list "c_ok" or "c_v" (only Indeterminate entries).
+        assert!(
+            !output.contains("c_ok"),
+            "output must NOT list satisfied constraint 'c_ok', got: {output}"
+        );
+        assert!(
+            !output.contains("c_v"),
+            "output must NOT list violated constraint 'c_v', got: {output}"
+        );
+    }
+
+    #[test]
+    fn report_indeterminate_detail_single_entry_count_one() {
+        let entries = vec![make_entry(
+            "Part",
+            0,
+            Some("load"),
+            Satisfaction::Indeterminate,
+        )];
+        let mut buf = Vec::new();
+        report_indeterminate_detail(1, &entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        // Count is 1 and the labelled constraint is listed.
+        assert!(
+            output.contains("1"),
+            "header should name the indeterminate count (1), got: {output}"
+        );
+        assert!(
+            output.contains("load"),
+            "output should list 'load', got: {output}"
+        );
+    }
+
+    // ── end step-3 ────────────────────────────────────────────────────────────
+
+    // ── step-5: RED unit tests for finish_check writer output ────────────────
+
+    #[test]
+    fn finish_check_non_strict_indeterminate_emits_unchanged_summary() {
+        // (a) !strict + SomeIndeterminate(1) → byte-identical "No constraints
+        // violated (1 indeterminate).\n" regression guard.
+        let entries = vec![make_entry(
+            "Bracket",
+            1,
+            Some("tolerance"),
+            Satisfaction::Indeterminate,
+        )];
+        let outcome = ConstraintOutcome::SomeIndeterminate(1);
+        let mut buf = Vec::new();
+        let mut err_buf = Vec::new();
+        finish_check(&outcome, &entries, false, &mut buf, &mut err_buf);
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            output, "No constraints violated (1 indeterminate).\n",
+            "non-strict SomeIndeterminate(1) must produce the exact legacy summary line"
+        );
+    }
+
+    #[test]
+    fn finish_check_strict_indeterminate_emits_detail_not_legacy_line() {
+        // (b) strict + SomeIndeterminate → the strict-failure block goes to `err`
+        // (stderr); `out` (stdout) must remain empty. The failure narrative must
+        // contain "Strict check failed" and name the indeterminate constraint; the
+        // legacy summary "No constraints violated" must NOT appear in either stream.
+        let entries = vec![make_entry(
+            "Bracket",
+            1,
+            Some("tolerance"),
+            Satisfaction::Indeterminate,
+        )];
+        let outcome = ConstraintOutcome::SomeIndeterminate(1);
+        let mut buf = Vec::new();
+        let mut err_buf = Vec::new();
+        finish_check(&outcome, &entries, true, &mut buf, &mut err_buf);
+        let out_str = String::from_utf8(buf).unwrap();
+        let err_str = String::from_utf8(err_buf).unwrap();
+        assert!(
+            err_str.contains("Strict check failed"),
+            "strict SomeIndeterminate: 'Strict check failed' must appear on stderr, got err: {err_str}"
+        );
+        assert!(
+            err_str.contains("tolerance"),
+            "strict SomeIndeterminate: constraint name 'tolerance' must appear on stderr, got err: {err_str}"
+        );
+        assert!(
+            !out_str.contains("No constraints violated"),
+            "strict SomeIndeterminate: 'No constraints violated' must NOT appear on stdout, got: {out_str}"
+        );
+        assert!(
+            !out_str.contains("Strict check failed"),
+            "strict SomeIndeterminate: 'Strict check failed' must NOT appear on stdout, got: {out_str}"
+        );
+    }
+
+    #[test]
+    fn finish_check_all_satisfied_either_strict() {
+        // (c) AllSatisfied (either strict value) → "All constraints satisfied.\n".
+        let entries: Vec<reify_eval::ConstraintCheckEntry> = vec![];
+        let outcome = ConstraintOutcome::AllSatisfied;
+        for strict in [false, true] {
+            let mut buf = Vec::new();
+            let mut err_buf = Vec::new();
+            finish_check(&outcome, &entries, strict, &mut buf, &mut err_buf);
+            let output = String::from_utf8(buf).unwrap();
+            assert_eq!(
+                output, "All constraints satisfied.\n",
+                "AllSatisfied (strict={strict}) must produce 'All constraints satisfied.'"
+            );
+        }
+    }
+
+    #[test]
+    fn finish_check_some_violated_either_strict() {
+        // (d) SomeViolated (either strict value) → "Some constraints violated.\n".
+        let entries: Vec<reify_eval::ConstraintCheckEntry> = vec![];
+        let outcome = ConstraintOutcome::SomeViolated;
+        for strict in [false, true] {
+            let mut buf = Vec::new();
+            let mut err_buf = Vec::new();
+            finish_check(&outcome, &entries, strict, &mut buf, &mut err_buf);
+            let output = String::from_utf8(buf).unwrap();
+            assert_eq!(
+                output, "Some constraints violated.\n",
+                "SomeViolated (strict={strict}) must produce 'Some constraints violated.'"
+            );
+        }
+    }
+
+    // ── end step-5 ────────────────────────────────────────────────────────────
+
     #[test]
     fn report_eval_output_returns_correct_outcome_variants() {
         let no_diags: Vec<reify_core::Diagnostic> = vec![];
@@ -2128,8 +2540,7 @@ structure def Bracket : Physical {
     param material : Material = Steel_AISI_1045()
 }
 "#;
-        let compiled_geo =
-            reify_test_support::parse_and_compile_with_stdlib(geometry_source);
+        let compiled_geo = reify_test_support::parse_and_compile_with_stdlib(geometry_source);
         assert!(
             module_has_geometry(&compiled_geo),
             "Bracket : Physical should be detected as a geometry module"
@@ -2142,8 +2553,7 @@ structure def Plain {
     let y = x + 2.0
 }
 "#;
-        let compiled_plain =
-            reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
         assert!(
             !module_has_geometry(&compiled_plain),
             "Plain numeric module should NOT be detected as a geometry module"
@@ -2157,15 +2567,16 @@ structure def Plain {
         //
         // Constructed directly via the builder API (no stdlib compile needed)
         // so we can precisely control which fields are set.
-        let geo_cell_only = reify_test_support::CompiledModuleBuilder::new(
-            reify_core::ModulePath::new(vec!["test".to_string()]),
-        )
-        .template(
-            reify_test_support::TopologyTemplateBuilder::new("GeoCell")
-                .param("GeoCell", "shape", reify_core::Type::Geometry, None)
-                .build(),
-        )
-        .build();
+        let geo_cell_only =
+            reify_test_support::CompiledModuleBuilder::new(reify_core::ModulePath::new(vec![
+                "test".to_string(),
+            ]))
+            .template(
+                reify_test_support::TopologyTemplateBuilder::new("GeoCell")
+                    .param("GeoCell", "shape", reify_core::Type::Geometry, None)
+                    .build(),
+            )
+            .build();
         assert!(
             module_has_geometry(&geo_cell_only),
             "Module with a Type::Geometry value cell (no realization ops) should be \
@@ -2233,5 +2644,48 @@ structure Plain {
             "module without RepresentationWithin constraints must NOT be detected \
              (routing gate must return false — C2 path preserved)"
         );
+    }
+}
+
+#[cfg(test)]
+mod build_is_success_tests {
+    use super::{build_is_success, ConstraintOutcome};
+
+    /// (AllSatisfied, no error diagnostic) → success.
+    #[test]
+    fn all_satisfied_no_error_is_success() {
+        assert!(build_is_success(&ConstraintOutcome::AllSatisfied, false));
+    }
+
+    /// (AllSatisfied, has error diagnostic) → failure.
+    /// Mirrors cmd_eval's Severity::Error gate (task 4458 fix (c)).
+    #[test]
+    fn all_satisfied_with_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::AllSatisfied, true));
+    }
+
+    /// (SomeIndeterminate, no error diagnostic) → success.
+    /// Indeterminate constraints do not gate build; geometry is still written.
+    #[test]
+    fn some_indeterminate_no_error_is_success() {
+        assert!(build_is_success(&ConstraintOutcome::SomeIndeterminate(2), false));
+    }
+
+    /// (SomeIndeterminate, has error diagnostic) → failure.
+    #[test]
+    fn some_indeterminate_with_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::SomeIndeterminate(2), true));
+    }
+
+    /// (SomeViolated, no error diagnostic) → failure.
+    #[test]
+    fn some_violated_no_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::SomeViolated, false));
+    }
+
+    /// (SomeViolated, has error diagnostic) → failure.
+    #[test]
+    fn some_violated_with_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::SomeViolated, true));
     }
 }

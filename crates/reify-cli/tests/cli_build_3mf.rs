@@ -45,13 +45,17 @@ fn build_box_to_3mf_writes_valid_package() {
 
     // Stored/uncompressed: OPC part names and model XML appear literally in raw bytes.
     assert!(
-        bytes.windows(b"3D/3dmodel.model".len())
+        bytes
+            .windows(b"3D/3dmodel.model".len())
             .any(|w| w == b"3D/3dmodel.model"),
         "output bytes must contain '3D/3dmodel.model' (got STEP or other format?)"
     );
 
     let tri_needle = b"<triangle ";
-    let tri_count = bytes.windows(tri_needle.len()).filter(|w| *w == tri_needle).count();
+    let tri_count = bytes
+        .windows(tri_needle.len())
+        .filter(|w| *w == tri_needle)
+        .count();
     assert!(
         tri_count > 0,
         "3MF output must contain at least one <triangle> element"

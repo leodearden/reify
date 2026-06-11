@@ -1613,6 +1613,30 @@ pub(crate) fn compile_expr_guarded(
                         padded_args.extend(default_exprs);
                         return build_user_function_call_expr(name, padded_args, result_type);
                     }
+                    // NoMatch-arm secondary resolution (task 4118 γ, coercion
+                    // site #1: param-binding). A `Selector(k)` argument coerces
+                    // one-directionally to a `List<Geometry>` param (task 4117 β
+                    // `type_compatible`), but `resolve_function_overload` matches
+                    // by exact equality and rejected it. Retry with the β
+                    // coercion (mirroring `try_default_padding` above) and, on a
+                    // unique non-generic match, wrap each Selector arg in
+                    // `ResolveSelector`. See esc-4118-61.
+                    if let Some(matched_fn) =
+                        coerce::try_selector_coerced_overload(&named_candidates, &arg_types)
+                    {
+                        if let Some(msg) = deprecation_message(&matched_fn.annotations) {
+                            emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
+                        }
+                        let result_type = matched_fn.return_type.clone();
+                        let coerced_args: Vec<CompiledExpr> = compiled_args
+                            .into_iter()
+                            .zip(matched_fn.params.iter())
+                            .map(|(arg, (_, param_ty))| {
+                                coerce::coerce_selector_arg(arg, param_ty)
+                            })
+                            .collect();
+                        return build_user_function_call_expr(name, coerced_args, result_type);
+                    }
                     // User functions with this name exist, but none match — error with candidates
                     let candidate_sigs: Vec<String> = named_candidates
                         .iter()
@@ -1720,6 +1744,19 @@ pub(crate) fn compile_expr_guarded(
                     // and `dynamics_constructor_names_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates.
+                    // task 4118 γ — list-helper selector coercion (insertion
+                    // site #2). When `single(selector)` is called, wrap the
+                    // `Selector(k)` argument in `ResolveSelector` so the helper
+                    // sees `List<Geometry>` and `infer_list_helper_return_type`
+                    // (below) collapses `single(List<Geometry>)` → `Geometry`
+                    // instead of the first-arg fallback leaving the cell typed
+                    // `Selector(k)`. A no-op for every other name / non-selector
+                    // arg. Shadows `compiled_args` so BOTH the result-type
+                    // inference below and the emitted `FunctionCall` carry the
+                    // wrapped argument. Gated on the same β `type_compatible`
+                    // rule as sites #1/#3 (centralized in `coerce.rs`).
+                    let compiled_args = coerce::coerce_list_helper_args(name, compiled_args);
+
                     let resolved = ResolvedFunction {
                         name: name.clone(),
                         qualified_name: format!("std::{}", name),
@@ -2914,6 +2951,20 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
+            // task 4118 γ — IndexAccess-object selector coercion (insertion
+            // site #3). After step-4 `faces(b)` / `faces_by_normal(...)` are
+            // `Selector(k)`, not `List`. Wrap the object in `ResolveSelector`
+            // (→ `List<Geometry>`) so the element type resolves to `Geometry`
+            // below, instead of hitting the non-collection hard error. A no-op
+            // for any non-`Selector` object — real `List`/`Map` and genuinely
+            // non-indexable values pass through unchanged, preserving their
+            // existing element-type / hard-error handling. Gated on the same β
+            // `type_compatible` rule as sites #1/#2 (centralized in `coerce.rs`).
+            let compiled_obj = coerce::coerce_selector_arg(
+                compiled_obj,
+                &Type::List(Box::new(Type::Geometry)),
+            );
+
             // Infer result type from collection's element type.
             // Anti-cascade guard (task-448): if the object is already
             // poisoned, propagate Type::Error rather than falling back to

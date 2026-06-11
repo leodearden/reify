@@ -76,6 +76,16 @@ const SKIP_SET: &[(&str, &str)] = &[
          Parse-only smoke is in crates/reify-eval/tests/topology_selector_smoke_tests.rs; \
          full coverage will land via task 2691.",
     ),
+    (
+        "trajectory/tots_optimal_ptp.ri",
+        "complex TOTS SQP example (task 3872) exceeds the 10s per-file compile \
+         budget on loaded CI (~13.4s observed). Unlike the two entries above, \
+         this file DOES compile cleanly — it is a perf-only skip and is \
+         deliberately NOT mirrored into examples_smoke.rs::SKIP_SET (which is \
+         reserved for files that do not yet compile). Compile-correctness stays \
+         covered by examples_smoke.rs::all_examples_parse_and_compile_with_stdlib \
+         and crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs.",
+    ),
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -41,10 +41,6 @@ structure FeaShellTooThickAuto {
     // Supports: fully clamped (fixed) at the block root.
     let mount = FixedSupport(target: "root")
 
-    // Wrap material in ConstitutiveLawInput so that member-access .law has
-    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
-    let ci = ConstitutiveLawInput(law: material)
-
     // FEA solve: bare `ElasticOptions()` — `shell_force` defaults to `Auto`.
     // Direct list literals type-check against List<Load> / List<Support> (task 4093).
     // The trampoline detects height/min(L,W) = 1.0 ≥ 0.2 (too thick), pushes a
@@ -52,7 +48,7 @@ structure FeaShellTooThickAuto {
     // falls through to the tet/solid path.  The solve succeeds; `shell_channels`
     // stays `Value::Undef` (no ShellStress on the tet route).
     let result = solve_elastic_static(
-        ci.law, length, width, height, [tip_load], [mount], ElasticOptions()
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
     )
 
     // Geometry realization: box for GUI visualization (deferred GHR-β, no

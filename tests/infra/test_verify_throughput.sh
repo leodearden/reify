@@ -63,7 +63,16 @@ make_branch_fixture() {
                  "in make_branch_fixture." >&2
             exit 1
         }
-    done < <(grep -E 'source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
+    # Anchor to start-of-line (optionally indented) so the grep matches real
+    # `source "$SCRIPT_DIR/lib.sh"` STATEMENTS only — not comment lines that
+    # merely mention the token (e.g. verify.sh's task-4523 selective-infra note
+    # "`source "$SCRIPT_DIR/' never appears here."). Defense in depth: the
+    # `sed -n …p` then prints ONLY lines whose capture actually matched, so a
+    # token-mentioning line that ever slips past the anchor still can't be
+    # emitted as a bogus lib path — the old plain `sed` left such a line
+    # untouched, and the whole comment was then treated as a missing lib path
+    # (a false preflight failure).
+    done < <(grep -E '^[[:space:]]*source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
                  | sed -n 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|p' || true)
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"

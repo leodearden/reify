@@ -238,11 +238,17 @@ describe('folding', () => {
 
     // Find Ctrl-Shift-[ binding in keymap facet and invoke it directly.
     // (Synthetic keydown does not drive CodeMirror keymaps in jsdom.)
-    const { foldedRanges } = await import('@codemirror/language');
+    const { foldedRanges, forceParsing } = await import('@codemirror/language');
     const { keymap } = await import('@codemirror/view');
     const allBindings = view.state.facet(keymap).flat();
     const foldBinding = allBindings.find((b) => b.key === 'Ctrl-Shift-[');
     expect(foldBinding).toBeDefined(); // confirms the binding is registered
+    // Ensure the Lezer syntax tree is fully parsed before invoking foldCode.
+    // syntaxFolding() returns null when tree.length < lineEnd; in jsdom the
+    // incremental parser may not have run yet after a single flushMacrotasks(0).
+    // forceParsing() calls ensureSyntaxTree synchronously and dispatches an
+    // empty transaction to apply the result to view.state.
+    forceParsing(view, view.state.doc.length, 2000);
     foldBinding!.run!(view);
     await flushMacrotasks(0);
 
@@ -471,11 +477,16 @@ describe('combined session — all five affordances', () => {
 
     // 3. Folding: Ctrl+Shift+[ via keymap-facet fallback (risk R1 confirmed).
     view.dispatch({ selection: { anchor: 0 } });
-    const { foldedRanges } = await import('@codemirror/language');
+    const { foldedRanges, forceParsing } = await import('@codemirror/language');
     const { keymap } = await import('@codemirror/view');
     const allBindings = view.state.facet(keymap).flat();
     const foldBinding = allBindings.find((b) => b.key === 'Ctrl-Shift-[');
     expect(foldBinding).toBeDefined();
+    // The Lezer tree is parsed incrementally in jsdom; after the rename +
+    // find-refs steps mutate the doc, the tree may not be fully parsed when
+    // foldCode runs, so syntaxFolding() returns null and nothing folds. Force
+    // a synchronous parse of the whole doc before folding to remove the race.
+    forceParsing(view, view.state.doc.length, 2000);
     foldBinding!.run!(view);
     await flushMacrotasks(0);
     let foldCount = 0;

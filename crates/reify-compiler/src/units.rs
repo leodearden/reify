@@ -212,15 +212,20 @@ pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
 /// Task 2699 names — compile-time type only; eval dispatch is task 2691.
 /// Until then, cells hold `Value::Undef`, which `value_type_kind_matches`
 /// accepts for any type (`reify_eval::lib:196`):
-/// - `edges(solid)`                          → `Type::List(Geometry)`
-/// - `faces(solid)`                          → `Type::List(Geometry)`
-/// - `edges_by_length(solid, range)`         → `Type::List(Geometry)`
-/// - `faces_by_area(solid, range)`           → `Type::List(Geometry)`
-/// - `faces_by_normal(solid, dir, tol)`      → `Type::List(Geometry)`
-/// - `edges_parallel_to(solid, dir, tol)`    → `Type::List(Geometry)`
-/// - `edges_at_height(solid, h, tol)`        → `Type::List(Geometry)`
-/// - `adjacent_faces(solid, face)`           → `Type::List(Geometry)`
-/// - `shared_edges(face1, face2)`            → `Type::List(Geometry)`
+/// Task 4118 (γ) — the 7 predicate/all selector constructors evaluate to a
+/// typed `Value::Selector(kind)`, so their compile-time result type is
+/// `Type::Selector(kind)`. The compiler inserts a `ResolveSelector` coercion
+/// node to bridge `Selector → List<Geometry>` at the three consumption sites
+/// (param-binding, single()/list-helper, IndexAccess-object):
+/// - `edges(solid)`                          → `Type::Selector(Edge)`
+/// - `faces(solid)`                          → `Type::Selector(Face)`
+/// - `edges_by_length(solid, range)`         → `Type::Selector(Edge)`
+/// - `faces_by_area(solid, range)`           → `Type::Selector(Face)`
+/// - `faces_by_normal(solid, dir, tol)`      → `Type::Selector(Face)`
+/// - `edges_parallel_to(solid, dir, tol)`    → `Type::Selector(Edge)`
+/// - `edges_at_height(solid, h, tol)`        → `Type::Selector(Edge)`
+/// - `adjacent_faces(solid, face)`           → `Type::List(Geometry)` (relational)
+/// - `shared_edges(face1, face2)`            → `Type::List(Geometry)` (relational)
 /// - `center_of_mass(solid, density)`        → `Type::point3(Type::length())`
 /// - `moment_of_inertia(solid, density)`     → `Type::tensor(2, 3, MomentOfInertia)`
 ///
@@ -233,11 +238,22 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         "closest_point" => Type::point3(Type::length()),
         "is_on" => Type::Bool,
         "angle_between_surfaces" => Type::angle(),
-        // Task 2699 — compile-time type wiring; eval dispatch is task 2691
-        "edges" | "faces" | "edges_by_length" | "faces_by_area" | "faces_by_normal"
-        | "edges_parallel_to" | "edges_at_height" | "adjacent_faces" | "shared_edges" => {
-            Type::List(Box::new(Type::Geometry))
-        }
+        // Task 4118 (γ) — the 7 predicate/all selector constructors are typed
+        // `Type::Selector(kind)` (Edge / Face per the constructor). The compiler
+        // bridges `Selector → List<Geometry>` via a `ResolveSelector` coercion
+        // node at the three consumption sites.
+        "edges" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "faces" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "edges_by_length" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "faces_by_area" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "faces_by_normal" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "edges_parallel_to" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "edges_at_height" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        // Task 2699 — relational selectors stay List<Geometry>: adjacent_faces /
+        // shared_edges have no `LeafQuery` representation (4117's LeafQuery =
+        // {Named,All,ByNormal,ByArea,ByLength,ByHeight,ByParallel}), so they are
+        // out of scope for the Selector re-type.
+        "adjacent_faces" | "shared_edges" => Type::List(Box::new(Type::Geometry)),
         // Task 4190 — split(solid, plane) -> List<Solid>. Same List<Geometry>
         // result type as the edge/face selectors; eval dispatch via
         // TopologySelectorHelper::Split in try_eval_topology_selector.
@@ -580,19 +596,36 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
 const FACE_PRODUCING_SELECTOR_NAMES: &[&str] =
     &["faces", "faces_by_area", "faces_by_normal", "adjacent_faces"];
 
-/// Returns `true` iff `arg.kind` is an `IndexAccess` whose `object` is a
-/// `FunctionCall` whose `function.name` is in [`FACE_PRODUCING_SELECTOR_NAMES`].
+/// Returns `true` iff `arg.kind` is an `IndexAccess` whose `object` resolves to
+/// a `FunctionCall` whose `function.name` is in [`FACE_PRODUCING_SELECTOR_NAMES`].
 ///
 /// Structural surface detection — mirrors the `math_fn_result_type` precedent
 /// of inspecting the COMPILED-ARG STRUCTURE rather than the undifferentiated
 /// first-arg type (which would be `Type::Geometry` for both faces and edges
 /// after index access, offering no discrimination). Called by
 /// [`geometry_query_arg_aware_result_type`].
+///
+/// **Two object shapes (task 4118 γ).** After step-12 inserts the
+/// `Selector → List<Geometry>` coercion, a re-typed face selector is wrapped in
+/// a `ResolveSelector` coercion node between the `IndexAccess` object and the
+/// selector `FunctionCall`:
+/// `IndexAccess{ object: ResolveSelector{ FunctionCall{faces} } }`. The detector
+/// unwraps that node to reach the inner `FunctionCall`. Still-`List<Geometry>`
+/// selectors (e.g. `adjacent_faces`, which has no `Selector` re-typing and so no
+/// coercion) keep the bare `IndexAccess{ FunctionCall }` shape, handled by the
+/// fallback that inspects `object` directly.
 fn is_surface_producing_arg(arg: &reify_ir::CompiledExpr) -> bool {
     use reify_ir::CompiledExprKind;
-    if let CompiledExprKind::IndexAccess { object, .. } = &arg.kind
-        && let CompiledExprKind::FunctionCall { function, .. } = &object.kind
-    {
+    let CompiledExprKind::IndexAccess { object, .. } = &arg.kind else {
+        return false;
+    };
+    // Unwrap a ResolveSelector coercion node (re-typed face selectors); else
+    // inspect the object directly (still-List selectors like adjacent_faces).
+    let inner = match &object.kind {
+        CompiledExprKind::ResolveSelector { selector } => selector.as_ref(),
+        _ => object.as_ref(),
+    };
+    if let CompiledExprKind::FunctionCall { function, .. } = &inner.kind {
         return FACE_PRODUCING_SELECTOR_NAMES.contains(&function.name.as_str());
     }
     false
@@ -1258,34 +1291,44 @@ mod tests {
     // one-line table edit — no per-name boilerplate.
     fn task_2699_topology_selector_cases() -> Vec<(&'static str, reify_core::Type)> {
         vec![
+            // Task 4118 (γ): the 7 predicate/all selector constructors now
+            // evaluate to a typed `Value::Selector(kind)` and so are typed
+            // `Type::Selector(kind)` at compile time (not `List<Geometry>`).
+            // The compiler inserts a `ResolveSelector` coercion node at the
+            // three consumption sites (param-binding, single()/list-helper,
+            // IndexAccess-object) to bridge `Selector → List<Geometry>`.
             (
                 "edges",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
             (
                 "faces",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
             ),
             (
                 "edges_by_length",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
             (
                 "faces_by_area",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
             ),
             (
                 "faces_by_normal",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
             ),
             (
                 "edges_parallel_to",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
             (
                 "edges_at_height",
-                reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+                reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
             ),
+            // adjacent_faces / shared_edges remain List<Geometry>: they are
+            // RELATIONAL queries with no `LeafQuery` representation (4117's
+            // LeafQuery = {Named,All,ByNormal,ByArea,ByLength,ByHeight,
+            // ByParallel}), so they are out of scope for the Selector re-type.
             (
                 "adjacent_faces",
                 reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
@@ -1330,6 +1373,55 @@ mod tests {
                 "topology_selector_result_type({name:?}) must equal {expected:?} (task 2699 §3.9)"
             );
         }
+    }
+
+    // Task 4118 (γ): the 7 predicate/all selector constructors are typed
+    // `Type::Selector(kind)` (Edge / Face per the constructor), NOT
+    // `List<Geometry>`. The compiler bridges `Selector → List<Geometry>` via a
+    // `ResolveSelector` coercion node at the three consumption sites.
+    #[test]
+    fn topology_selector_result_type_for_re_typed_selectors_is_typed_selector() {
+        use reify_core::Type;
+        use reify_core::ty::SelectorKind;
+        // edges/faces (All) and the predicate selectors.
+        assert_eq!(
+            topology_selector_result_type("faces"),
+            Some(Type::Selector(SelectorKind::Face))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        assert_eq!(
+            topology_selector_result_type("faces_by_normal"),
+            Some(Type::Selector(SelectorKind::Face))
+        );
+        assert_eq!(
+            topology_selector_result_type("faces_by_area"),
+            Some(Type::Selector(SelectorKind::Face))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges_by_length"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges_at_height"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        assert_eq!(
+            topology_selector_result_type("edges_parallel_to"),
+            Some(Type::Selector(SelectorKind::Edge))
+        );
+        // Relational selectors stay List<Geometry> (out of scope for the
+        // Selector re-type — no LeafQuery representation).
+        assert_eq!(
+            topology_selector_result_type("adjacent_faces"),
+            Some(Type::List(Box::new(Type::Geometry)))
+        );
+        assert_eq!(
+            topology_selector_result_type("shared_edges"),
+            Some(Type::List(Box::new(Type::Geometry)))
+        );
     }
 
     // --- Task 3603 / GHR-α — geometry-query registry (PRD §1 Phase 1) ---
@@ -2628,6 +2720,56 @@ mod tests {
                 dimension: DimensionVector::CURVATURE,
             }),
             "geometry_query_result_type(\"curvature\") must remain Scalar<Curvature> (default table)"
+        );
+    }
+
+    /// Wrap `selector_call` in `ResolveSelector` then `IndexAccess[0]` — the
+    /// NEW shape produced after task 4118 step-12 inserts the coercion node
+    /// between the `IndexAccess` object and the selector `FunctionCall`:
+    /// `IndexAccess{ object: ResolveSelector{ FunctionCall }, .. }`.
+    fn index_0_resolve_selector(
+        selector_call: reify_ir::CompiledExpr,
+    ) -> reify_ir::CompiledExpr {
+        index_0(reify_ir::CompiledExpr::resolve_selector(selector_call))
+    }
+
+    /// task 4118 step-13/14 — the detector must see THROUGH a `ResolveSelector`
+    /// wrapper. After step-12, inline `faces(s)[0]` lowers to
+    /// `IndexAccess{ object: ResolveSelector{ FunctionCall{faces} } }`;
+    /// `is_surface_producing_arg` must still return true for the face-producing
+    /// selectors and false for the curve selector `edges` wrapped the same way.
+    ///
+    /// RED until step-14 unwraps the `ResolveSelector` between the `IndexAccess`
+    /// object and the selector `FunctionCall`.
+    #[test]
+    fn is_surface_producing_arg_sees_through_resolve_selector_wrapper() {
+        for sel in ["faces", "faces_by_area", "faces_by_normal"] {
+            let wrapped = index_0_resolve_selector(make_selector_call(sel));
+            assert!(
+                is_surface_producing_arg(&wrapped),
+                "is_surface_producing_arg must see through ResolveSelector to the \
+                 face-producing selector {sel:?}"
+            );
+        }
+        let wrapped_edges = index_0_resolve_selector(make_selector_call("edges"));
+        assert!(
+            !is_surface_producing_arg(&wrapped_edges),
+            "is_surface_producing_arg must return false for a ResolveSelector-wrapped \
+             curve selector (edges)"
+        );
+    }
+
+    /// Regression pin: the bare (un-wrapped) `IndexAccess{ FunctionCall }` shape
+    /// must STILL be recognized — `adjacent_faces` stays `List<Geometry>` (no
+    /// `ResolveSelector` wrapper), and the hand-built fixtures above depend on
+    /// the bare-FunctionCall fallback. (Green before AND after step-14.)
+    #[test]
+    fn is_surface_producing_arg_still_recognizes_bare_function_call() {
+        let bare = index_0(make_selector_call("adjacent_faces"));
+        assert!(
+            is_surface_producing_arg(&bare),
+            "is_surface_producing_arg must still match the bare \
+             IndexAccess{{FunctionCall}} shape (adjacent_faces stays List<Geometry>)"
         );
     }
 

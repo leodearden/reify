@@ -61,7 +61,7 @@ fn line_has_bare_scalar(line: &str) -> bool {
 
         // 1. Check character immediately after "Scalar" — must not be `<` or ASCII letter.
         let after_ok = match line[abs + 6..].chars().next() {
-            None => true,                                           // end of string / line
+            None => true, // end of string / line
             Some(c) => c != '<' && !c.is_ascii_alphabetic(),
         };
 
@@ -106,9 +106,7 @@ fn corpus_has_zero_bare_scalar_annotations() {
     // Exclude this guard-test file itself — it contains `: Scalar` in its own
     // comments, strings, and unit-test literals.  Scanning it would create
     // self-referential false positives that prevent the test from ever going GREEN.
-    files.retain(|p| {
-        p.file_name().and_then(|f| f.to_str()) != Some("corpus_no_bare_scalar.rs")
-    });
+    files.retain(|p| p.file_name().and_then(|f| f.to_str()) != Some("corpus_no_bare_scalar.rs"));
 
     let mut violations: Vec<String> = Vec::new();
 
@@ -167,18 +165,24 @@ mod predicate_tests {
 
     #[test]
     fn detects_bare_scalar_followed_by_paren() {
-        assert!(line_has_bare_scalar("    fn area(w: Scalar, h: Scalar) -> Scalar"));
+        assert!(line_has_bare_scalar(
+            "    fn area(w: Scalar, h: Scalar) -> Scalar"
+        ));
     }
 
     #[test]
     fn detects_bare_scalar_in_inline_ri_string() {
-        assert!(line_has_bare_scalar(r#"    let src = "param w: Scalar = 50mm";"#));
+        assert!(line_has_bare_scalar(
+            r#"    let src = "param w: Scalar = 50mm";"#
+        ));
     }
 
     // Should NOT match (correctly excluded)
     #[test]
     fn excludes_double_colon_scalar() {
-        assert!(!line_has_bare_scalar("    let t = Type::Scalar { dimension: LENGTH };"));
+        assert!(!line_has_bare_scalar(
+            "    let t = Type::Scalar { dimension: LENGTH };"
+        ));
     }
 
     #[test]

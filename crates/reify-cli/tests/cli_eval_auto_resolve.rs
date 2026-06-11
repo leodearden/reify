@@ -32,9 +32,7 @@ fn eval_resolves_auto_param_via_default_solver() {
         .lines()
         .find(|l| l.contains("thickness") && l.contains('='))
         .unwrap_or_else(|| {
-            panic!(
-                "no 'thickness = ...' line found in stdout:\n{stdout}\nstderr:\n{stderr}"
-            )
+            panic!("no 'thickness = ...' line found in stdout:\n{stdout}\nstderr:\n{stderr}")
         });
 
     // 2. RHS must not be "undef"
@@ -53,9 +51,7 @@ fn eval_resolves_auto_param_via_default_solver() {
     // 3. Leading token of the RHS should parse as a finite f64 ≤ 0.005 (5 mm in SI)
     let si_token = rhs.split_whitespace().next().unwrap_or("");
     let si_value: f64 = si_token.parse().unwrap_or_else(|_| {
-        panic!(
-            "RHS leading token {si_token:?} is not a valid f64;\nline: {thickness_line:?}"
-        )
+        panic!("RHS leading token {si_token:?} is not a valid f64;\nline: {thickness_line:?}")
     });
 
     assert!(
@@ -89,8 +85,7 @@ fn eval_resolves_auto_param_via_default_solver() {
         });
 
     assert_eq!(
-        thickness_line,
-        thickness_line2,
+        thickness_line, thickness_line2,
         "resolved thickness line must be byte-identical across two runs (determinism check)"
     );
 }

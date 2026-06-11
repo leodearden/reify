@@ -4532,6 +4532,10 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
                 ordered_args.iter().map(|(_, e)| format_expr(e)).collect();
             format!("{}({})", type_name, arg_strs.join(", "))
         }
+        // task 4118 (γ): the Selector→List<Geometry> coercion is compiler-
+        // inserted and invisible in source, so format transparently as the
+        // inner selector (the user wrote `faces(b)`, not a coercion wrapper).
+        CompiledExprKind::ResolveSelector { selector } => format_expr(selector),
     }
 }
 

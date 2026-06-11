@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use reify_compiler::ValueCellKind;
+use reify_ir::{DeterminacyState, Value};
 use reify_mcp::{
     ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, ReifyToolContext,
     SelectionInfo, SetParamResult, SourceContent, SourceLocationInfo, ToolError, UpdateResult,
 };
-use reify_ir::{DeterminacyState, Value};
 
 /// Tracks the state of an open file.
 struct FileEntry {
@@ -85,10 +85,8 @@ impl CliToolContext {
 
         // Prelude-aware parse for AST-shape consistency across reify-lsp/-cli;
         // see task 2525.
-        let parsed = reify_compiler::parse_with_stdlib(
-            &source,
-            reify_core::ModulePath::single(module_name),
-        );
+        let parsed =
+            reify_compiler::parse_with_stdlib(&source, reify_core::ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
             let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
@@ -228,10 +226,8 @@ impl ReifyToolContext for CliToolContext {
         for diag in &compiled.diagnostics {
             // Use the first label's span if available, otherwise default to (1,1)
             let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first() {
-                let (l, c) =
-                    reify_core::byte_offset_to_line_col(source, label.span.start as usize);
-                let (el, ec) =
-                    reify_core::byte_offset_to_line_col(source, label.span.end as usize);
+                let (l, c) = reify_core::byte_offset_to_line_col(source, label.span.start as usize);
+                let (el, ec) = reify_core::byte_offset_to_line_col(source, label.span.end as usize);
                 (l as u32, c as u32, el as u32, ec as u32)
             } else {
                 (1, 1, 1, 1)
@@ -400,10 +396,8 @@ impl ReifyToolContext for CliToolContext {
 
         // Prelude-aware parse for AST-shape consistency across reify-lsp/-cli;
         // see task 2525.
-        let parsed = reify_compiler::parse_with_stdlib(
-            content,
-            reify_core::ModulePath::single(module_name),
-        );
+        let parsed =
+            reify_compiler::parse_with_stdlib(content, reify_core::ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
             // Parse failed — return failure WITHOUT modifying any state.
@@ -1042,10 +1036,8 @@ mod tests {
     #[test]
     fn invalid_parse_input_is_actually_unparseable() {
         // Check 1: the syntax parser itself reports errors.
-        let parsed = reify_syntax::parse(
-            INVALID_PARSE_INPUT,
-            reify_core::ModulePath::single("probe"),
-        );
+        let parsed =
+            reify_syntax::parse(INVALID_PARSE_INPUT, reify_core::ModulePath::single("probe"));
         assert!(
             !parsed.errors.is_empty(),
             "INVALID_PARSE_INPUT must produce a parse error; the grammar may have changed. \

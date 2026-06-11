@@ -1,0 +1,23 @@
+// B1 generic-user-fns integration example (task 4233 δ).
+//
+// Exercises the type-level identity function `id<T>` end-to-end and pins
+// example-tier erasure parity: `id(5mm)` and its monomorphic twin
+// `id_length(5mm)` must evaluate to identical values.
+//
+// Exact-bound constraints (±0.001mm) make `reify check` a deterministic
+// value gate; the ±1µm window is tighter than any floating-point rounding
+// at this magnitude.
+
+fn id<T>(x: T) -> T { x }
+
+fn id_length(x: Length) -> Length { x }
+
+structure def GenericsIdentity {
+    let a      = id(5mm)
+    let a_mono = id_length(5mm)
+
+    constraint a      > 4.999mm
+    constraint a      < 5.001mm
+    constraint a_mono > 4.999mm
+    constraint a_mono < 5.001mm
+}

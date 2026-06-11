@@ -12,12 +12,11 @@
 // Geometry: 500 mm long bar, 25 mm × 25 mm cross-section (L/h = 20,
 // within the P1-honest slender-beam range).  1 kN tip load; fixed root support.
 //
-// Type-coercion note (task δ/3780 ConstitutiveLaw surface):
-//   solve_elastic_static declares `material: ConstitutiveLaw`.  Wrap each
-//   material in `ConstitutiveLawInput(law: mat)` so `.law` carries compile-time
-//   type ConstitutiveLaw (satisfying the exact-type-equality overload resolver).
-//   See solver_elastic.ri ConstitutiveLawInput doc.  TODO(trait-coerce): remove
-//   the wrapper once trait subtype coercion is supported at fn call sites.
+// Type-coercion note (task γ/4441 + task δ/4442 — direct-pass):
+//   solve_elastic_static declares `material: ConstitutiveLaw`.  Each material
+//   is passed DIRECTLY — `Steel_AISI_1045` conforms transitively via
+//   `ElasticMaterial : ConstitutiveLaw`; `TransverseIsotropicMaterial` conforms
+//   directly.  The `ConstitutiveLawInput` shim was retired in task δ/4442.
 //
 // Loads/supports note (task 4093):
 //   `solve_elastic_static` now declares `loads: List<Load>` / `supports: List<Support>`.
@@ -42,9 +41,8 @@ structure AnisotropicBar {
     // Provides the reference structural response against which the transverse-
     // isotropic arm is compared.
     let iso_material = Steel_AISI_1045()
-    let iso_ci       = ConstitutiveLawInput(law: iso_material)
     let iso_result   = solve_elastic_static(
-        iso_ci.law, length, width, height, [tip_load], [mount], ElasticOptions()
+        iso_material, length, width, height, [tip_load], [mount], ElasticOptions()
     )
     // Peak von Mises stress — the only scalar structural response in ElasticResult.
     // (ElasticResult exposes per-node displacement as a Field<Point3<Length>,
@@ -86,9 +84,8 @@ structure AnisotropicBar {
         y_axis: vec3(0m, 0m, 1m),   // in-plane dir 2 (z-global)
         z_axis: vec3(1m, 0m, 0m),   // weak axial dir along beam length (x-global)
     )
-    let ti_ci     = ConstitutiveLawInput(law: ti_material)
     let ti_result = solve_elastic_static(
-        ti_ci.law, length, width, height, [tip_load], [mount], ElasticOptions()
+        ti_material, length, width, height, [tip_load], [mount], ElasticOptions()
     )
     // Peak von Mises stress for the TI arm — materially larger than iso_peak_von_mises
     // because the weak axial direction is aligned with the bending-loaded axis.
