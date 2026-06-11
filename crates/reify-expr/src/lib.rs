@@ -295,6 +295,55 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 {
                     field_reductions::compute_argmin(&evaluated_args[0])
                 }
+                // Bounded reductions: max/min/argmax/argmin(field, bounds: BoundingBox).
+                // Placed after the 1-arg arms; disjoint arg-count means no shadowing
+                // of the 1-arg form or the binary numeric max/min(a, b).
+                // A non-BoundingBox 2nd arg does NOT match this guard and falls
+                // through to eval_builtin (→ Undef for Field operands).
+                "max"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. })
+                        && matches!(&evaluated_args[1], Value::BoundingBox { .. }) =>
+                {
+                    field_reductions::compute_max_bounded(
+                        &evaluated_args[0],
+                        &evaluated_args[1],
+                        ctx,
+                    )
+                }
+                "min"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. })
+                        && matches!(&evaluated_args[1], Value::BoundingBox { .. }) =>
+                {
+                    field_reductions::compute_min_bounded(
+                        &evaluated_args[0],
+                        &evaluated_args[1],
+                        ctx,
+                    )
+                }
+                "argmax"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. })
+                        && matches!(&evaluated_args[1], Value::BoundingBox { .. }) =>
+                {
+                    field_reductions::compute_argmax_bounded(
+                        &evaluated_args[0],
+                        &evaluated_args[1],
+                        ctx,
+                    )
+                }
+                "argmin"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. })
+                        && matches!(&evaluated_args[1], Value::BoundingBox { .. }) =>
+                {
+                    field_reductions::compute_argmin_bounded(
+                        &evaluated_args[0],
+                        &evaluated_args[1],
+                        ctx,
+                    )
+                }
                 // flat_map(list, lambda): apply `lambda` to each element of
                 // `list`, expect each call to return a list, and concatenate
                 // the per-element results into a single flat list. Intercepted
