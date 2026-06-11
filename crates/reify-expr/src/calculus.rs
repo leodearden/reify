@@ -286,6 +286,11 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
 /// - Argument must be an Analytical or Composed Field
 /// - Domain must be `Point{n, scalar}` (n ≥ 1)
 /// - Codomain must be `Vector{n, scalar}` with matching dimension n
+///
+/// **Scope note:** Sampled-field eager-lowering (analogous to the gradient/laplacian ε branch)
+/// is deliberately deferred to task ζ (divergence/curl over Sampled vector input). Until then,
+/// a `FieldSourceKind::Sampled` argument falls through `validate_differentiable_field` →
+/// `Value::Undef`, which is the correct ζ-pending behaviour.
 pub(crate) fn compute_divergence(field_val: &Value) -> Value {
     let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "divergence")
     {
@@ -356,6 +361,11 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
 /// - Argument must be an Analytical or Composed Field
 /// - Domain must be `Point{3, scalar}`
 /// - Codomain must be `Vector{3, scalar}`
+///
+/// **Scope note:** Sampled-field eager-lowering (analogous to the gradient/laplacian ε branch)
+/// is deliberately deferred to task ζ (divergence/curl over Sampled vector input). Until then,
+/// a `FieldSourceKind::Sampled` argument falls through `validate_differentiable_field` →
+/// `Value::Undef`, which is the correct ζ-pending behaviour.
 pub(crate) fn compute_curl(field_val: &Value) -> Value {
     let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "curl") {
         Some(pair) => pair,
@@ -2594,9 +2604,6 @@ mod tests {
     /// compute_gradient on a well-formed 1D sampled scalar field (f = 2x+3) returns
     /// a Sampled field whose data equals the exact gradient (2.0 everywhere, <1e-12)
     /// and whose codomain_type is the 1D gradient quotient (Real for dimensionless).
-    ///
-    /// Currently RED: compute_gradient returns Value::Undef for any Sampled field.
-    /// Will be GREEN after step-2 implements the eager-lower branch.
     #[test]
     fn gradient_sampled_1d_affine_returns_sampled_field_with_exact_gradient() {
         let sf = make_sampled_1d_scalar(5, 1.0, |x| 2.0 * x + 3.0);
@@ -2669,9 +2676,6 @@ mod tests {
     /// compute_laplacian on a well-formed 1D sampled scalar field (f = a*x² + b*x + c)
     /// returns a Sampled field whose data equals the exact constant 2nd derivative (2a,
     /// <1e-12 at every node incl. boundaries) and whose codomain_type is Real.
-    ///
-    /// Currently RED: compute_laplacian returns Value::Undef for any Sampled field.
-    /// Will be GREEN after step-4 implements the eager-lower branch.
     #[test]
     fn laplacian_sampled_1d_quadratic_returns_sampled_field_with_exact_laplacian() {
         // f(x) = 3x² + 2x + 1  ⟹  ∇²f = 6 everywhere (2a = 2×3 = 6)

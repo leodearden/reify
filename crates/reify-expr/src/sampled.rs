@@ -113,6 +113,15 @@ pub fn sample_at_point(
     // `grid_count == 0` → degenerate; fall through to scalar path which will surface the
     // invariant violation via the interpolate_Nd assert (same as before this change).
     let grid_count: usize = field.axis_grids.iter().map(|g| g.len()).product();
+    // Invariant: data.len() must be an exact multiple of grid_count for elaborator-validated
+    // and ε-produced fields.  A debug_assert catches mis-constructed fields in debug builds
+    // rather than silently sampling with a truncated stride.
+    debug_assert!(
+        grid_count == 0 || field.data.len() % grid_count == 0,
+        "SampledField data length {} is not a multiple of grid_count {}; field layout is corrupt",
+        field.data.len(),
+        grid_count,
+    );
     // stride = data.len() / grid_count, clamped to ≥ 1.
     // checked_div returns None when grid_count == 0 (degenerate); .unwrap_or(1) keeps the scalar
     // path so the interpolate_Nd assert surfaces the invariant violation unchanged.
@@ -377,10 +386,7 @@ mod tests {
 
     /// sample_at_point on a stride-2 Regular2D field with constant components (comp0=3.0,
     /// comp1=5.0) at an in-bounds point returns Value::Vector([Real(3.0), Real(5.0)]).
-    ///
-    /// Currently RED: the stride-1 path passes data.len()=18 to interpolate_2d which
-    /// asserts data.len()==9 → panic.
-    /// Will be GREEN after step-6 deinterleaves per-component before calling interpolate_2d.
+    /// Pins the stride-n deinterleave + interpolate path introduced in ε step-6.
     #[test]
     fn sample_at_point_stride2_constant_returns_vector() {
         // 3×3 grid, constant components: comp0 = 3.0, comp1 = 5.0 everywhere.
@@ -407,9 +413,7 @@ mod tests {
 
     /// sample_at_point on a stride-2 Regular2D field with linearly-varying components
     /// (comp0=x, comp1=y) at a grid node returns the exact per-component values.
-    ///
-    /// Currently RED: same panic as above.
-    /// Will be GREEN after step-6.
+    /// Linear interpolation on a grid node is exact by construction.
     #[test]
     fn sample_at_point_stride2_linear_at_grid_node_is_exact() {
         // 3×3 grid: comp0(i,j) = x_i, comp1(i,j) = y_j.
