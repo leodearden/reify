@@ -448,7 +448,125 @@ def run_mixed_concurrent(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CLI entry point — mode stubs (implemented in step-12)
+# Real A/B campaign driver (step-12 — wired in main()'s --run dispatch)
+# ──────────────────────────────────────────────────────────────────────────────
+
+import json as _json_module
+
+
+def _run_campaign(
+    output_path: str,
+    ntasks: int = 1,
+    cache_state: str = "warm",
+    utilization_threshold: float = 0.85,
+    sampler_interval: float = 5.0,
+) -> None:
+    """Capture REAL same-instrument A/B measurements and write JSON.
+
+    Runs two concurrent mixed-load sessions back-to-back:
+      A (baseline): single-pool service provisioned via ε _provision_service;
+                    no balancer in the path; merge and tasks share one FIFO.
+      B (dual-pool): the DEPLOYED reify-jobserver.service (merge-pool +
+                     task-pool managed by jobserver-balancer.py).
+
+    Each session:  1 merge verify (DF_VERIFY_ROLE=merge, 75m budget) +
+                   ntasks task verifies (DF_VERIFY_ROLE=task, 60m budget),
+                   all run CONCURRENTLY via run_mixed_concurrent.
+
+    Records sccache cache_state (operator-supplied), busy_fraction, per-process
+    walls, exit-124 counts, and the FIONREAD occupancy time-series.
+
+    Writes the measurements dict as JSON to output_path for --evaluate/--report.
+
+    SAFETY NOTE: This function runs real verify.sh builds.  Run ONLY on the
+    deployed host with the dual-pool reify-jobserver.service active.  The
+    single-pool baseline is self-provisioned in a private tmpdir and torn down
+    automatically; it does NOT touch the live service.
+    """
+    repo_root = pathlib.Path(__file__).parent.parent.resolve()
+    verify_sh = str(repo_root / "scripts" / "verify.sh")
+    balancer_path = str(pathlib.Path(__file__).parent / "jobserver-balancer.py")
+
+    nproc = _harness.NPROC
+
+    # Build the command lists with standing timeout budgets
+    # merge: DF_VERIFY_ROLE=merge, release budget 75m
+    # task:  DF_VERIFY_ROLE=task,  debug budget 60m
+    _merge_env = {"DF_VERIFY_ROLE": "merge"}
+    _task_env = {"DF_VERIFY_ROLE": "task"}
+
+    def _make_verify_cmd(role: str, timeout_min: int) -> list:
+        env_prefix = [f"{k}={v}" for k, v in ({"DF_VERIFY_ROLE": role}).items()]
+        return [
+            "env", f"DF_VERIFY_ROLE={role}",
+            "timeout", "--kill-after=60", f"{timeout_min}m",
+            "bash", verify_sh,
+        ]
+
+    merge_cmd = _make_verify_cmd("merge", 75)
+    task_cmds = [_make_verify_cmd("task", 60) for _ in range(ntasks)]
+
+    sys.stderr.write(
+        f"[η --run] Starting A/B campaign: {ntasks} task(s), "
+        f"cache={cache_state}, threshold={utilization_threshold}\n"
+    )
+
+    # ── Run A: single-pool baseline ────────────────────────────────────────
+    sys.stderr.write("[η --run] Provisioning single-pool baseline…\n")
+    infra_a = _provision_service(
+        _harness.SERVICE_SINGLE_POOL,
+        nproc,
+        balancer_path,
+    )
+    fifos_a = {
+        "merge_fifo": infra_a["merge_fifo"],
+        "task_fifo": infra_a["task_fifo"],
+    }
+    try:
+        sys.stderr.write("[η --run] Running baseline mixed concurrent…\n")
+        baseline_rec = run_mixed_concurrent(
+            merge_cmd, task_cmds, fifos_a,
+            sampler_interval=sampler_interval,
+            service=_harness.SERVICE_SINGLE_POOL,
+            cache_state=cache_state,
+        )
+    finally:
+        _teardown_service(infra_a)
+        sys.stderr.write("[η --run] Baseline service torn down.\n")
+
+    # ── Run B: deployed dual-pool service ──────────────────────────────────
+    merge_fifo_live = _harness.MERGE_FIFO
+    task_fifo_live = _harness.TASK_FIFO
+    if not os.path.exists(merge_fifo_live) or not os.path.exists(task_fifo_live):
+        raise RuntimeError(
+            f"Live dual-pool FIFOs not found: "
+            f"{merge_fifo_live!r}, {task_fifo_live!r}.  "
+            f"Is reify-jobserver.service running?  "
+            f"Run: systemctl --user status reify-jobserver.service"
+        )
+    fifos_b = {"merge_fifo": merge_fifo_live, "task_fifo": task_fifo_live}
+    sys.stderr.write("[η --run] Running dual-pool mixed concurrent…\n")
+    dualpool_rec = run_mixed_concurrent(
+        merge_cmd, task_cmds, fifos_b,
+        sampler_interval=sampler_interval,
+        service=_harness.SERVICE_DUAL_POOL,
+        cache_state=cache_state,
+    )
+
+    # ── Write measurements JSON ────────────────────────────────────────────
+    measurements = {
+        "nproc": nproc,
+        "utilization_threshold": utilization_threshold,
+        "baseline": baseline_rec,
+        "dual_pool": dualpool_rec,
+    }
+    with open(output_path, "w") as _f:
+        _json_module.dump(measurements, _f, indent=2)
+    sys.stderr.write(f"[η --run] Measurements written to {output_path}\n")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CLI entry point (step-12)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -467,6 +585,25 @@ def main() -> None:
         help="Capture REAL same-instrument A/B measurements and write JSON",
     )
     p_run.add_argument("output", help="Output measurements JSON path")
+    p_run.add_argument(
+        "--ntasks", type=int, default=1, metavar="N",
+        help="Number of concurrent task verifies (default: 1)",
+    )
+    p_run.add_argument(
+        "--cache-state", choices=["warm", "cold"], default="warm",
+        dest="cache_state",
+        help="sccache state for this run (default: warm)",
+    )
+    p_run.add_argument(
+        "--utilization-threshold", type=float, default=0.85,
+        dest="utilization_threshold",
+        help="Busy-core fraction floor for criterion (a) (default: 0.85)",
+    )
+    p_run.add_argument(
+        "--sampler-interval", type=float, default=5.0,
+        dest="sampler_interval",
+        help="Seconds between FIONREAD samples (default: 5.0)",
+    )
 
     p_evaluate = sub.add_parser(
         "evaluate",
@@ -495,12 +632,41 @@ def main() -> None:
         parser.print_help()
         sys.exit(0)
 
-    # Stubs — each mode will be wired in step-12.
-    sys.stderr.write(
-        f"ERROR: --{args.mode} mode not yet implemented\n"
-        f"  (will be wired in step-12 of task η/4521)\n"
-    )
-    sys.exit(2)
+    import json as _json
+
+    # ── --evaluate: load measurements, evaluate gate, exit 0/1 ───────────
+    if args.mode == "evaluate":
+        with open(args.input) as _f:
+            measurements = _json.load(_f)
+        ok, verdicts, findings = evaluate_acceptance_gate(measurements)
+        overall = "PASS" if ok else "FAIL"
+        print(f"Acceptance gate: {overall}")
+        for crit in ("a", "b", "c", "d"):
+            print(f"  ({crit}) {verdicts.get(crit, '—')}")
+        if findings:
+            print("\nFindings:")
+            for finding in findings:
+                print(f"  {finding}")
+        sys.exit(0 if ok else 1)
+
+    # ── --report: load measurements, evaluate, render, write/print ────────
+    if args.mode == "report":
+        with open(args.input) as _f:
+            measurements = _json.load(_f)
+        _ok, verdicts, _findings = evaluate_acceptance_gate(measurements)
+        report = render_acceptance_report(measurements, verdicts)
+        if args.output:
+            with open(args.output, "w") as _f:
+                _f.write(report)
+            sys.stderr.write(f"Report written to {args.output}\n")
+        else:
+            print(report)
+        sys.exit(0)
+
+    # ── --run: capture REAL same-instrument A/B measurements ─────────────
+    if args.mode == "run":
+        _run_campaign(args.output)
+        sys.exit(0)
 
 
 if __name__ == "__main__":
