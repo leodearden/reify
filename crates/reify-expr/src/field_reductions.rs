@@ -787,6 +787,21 @@ fn project_max_shear_sampled(lambda: &Value) -> Option<SampledField> {
 /// For hydrostatic windows (vM = 0), the result is `+∞`, which is then
 /// dropped by the existing `is_finite()` gate in `argmax_argmin_index`,
 /// matching the stdlib `safety_factor` builtin's poison convention.
+///
+/// # Divergence from the `safety_factor` pointwise builtin
+///
+/// The stdlib `safety_factor` builtin (`reify-stdlib/src/analysis.rs`) does
+/// **not** guard against non-positive yield: it computes `yield / vM` for
+/// any yield value, so a negative yield produces a finite negative safety
+/// factor rather than `Undef`.  This path intentionally diverges — a
+/// non-positive yield is treated as a malformed lambda (`None →
+/// Value::Undef`) because a negative or zero yield strength is physically
+/// meaningless for a field reduction and would silently pass the
+/// `is_finite()` gate, producing nonsensical extrema.  The stdlib builtin
+/// does not have this guard; if it is ever aligned, this guard can be
+/// removed.  See also: `bounded_reductions_on_derived_safetyfactor_field_return_undef`
+/// in field_reductions_tests.rs for a regression pin that documents the
+/// non-positive-yield → Undef behaviour.
 fn project_safety_factor_sampled(lambda: &Value) -> Option<SampledField> {
     // Level 1: unwrap the List[tensor_field, yield_val] pair.
     let (field_val, yield_val) = match lambda {
