@@ -402,18 +402,22 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
         let has_canon = has_canonical_cite(line);
 
         if is_rust && let Some(form) = ignore_attr(line) {
-            // (2) #[ignore] (.rs only). γ reason policy:
+            // (2) #[ignore] (.rs only). γ reason policy (cite-first, §8.3):
             //   bare → Structural(BareIgnore);
-            //   reason-bearing: extract reason; if it has blocker-prose →
-            //     Structural(Untracked); else (operational) → no entry.
-            //   Cite-first override (step-8 γ) applied in the WithReason arm.
+            //   reason-bearing: extract reason;
+            //     if it has a canonical cite → Cited(ids) (β liveness);
+            //     else if it has blocker-prose → Structural(Untracked);
+            //     else (operational) → no entry.
             match form {
                 IgnoreForm::Bare => {
                     out.push((line_no, LineClass::Structural(Kind::BareIgnore), line.trim().to_string()));
                 }
                 IgnoreForm::WithReason => {
                     if let Some(reason) = extract_ignore_reason(line) {
-                        if has_blocker_prose(reason) {
+                        if has_canonical_cite(reason) {
+                            // cite-first (§8.3): reason contains a canonical #NNNN → β resolves it.
+                            out.push((line_no, LineClass::Cited(extract_cites(reason)), line.trim().to_string()));
+                        } else if has_blocker_prose(reason) {
                             out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
                         }
                         // else: operational reason → no entry (pass)
