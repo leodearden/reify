@@ -408,6 +408,14 @@ fn dedup_in_place(ids: &mut Vec<u32>) {
 /// its [`LineClass::Structural`] entries, yielding one `(line_no, kind,
 /// marker_text)` per structurally-offending line. The `Cited` markers drop out
 /// here; they are resolved by the β liveness lane in [`check`].
+///
+/// Retained as the documented "structural lane = scan_file ∩ Structural"
+/// derivation and exercised directly by the α precedence unit tests
+/// (`classify_file_precedence_rust`, `classify_file_non_rust_skips_macro_and_ignore`);
+/// [`check`] itself now drives [`scan_file`] directly (it needs the `Cited`
+/// markers the structural filter discards), so this helper has no non-test
+/// caller — hence `#[allow(dead_code)]`.
+#[allow(dead_code)]
 fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
     scan_file(content, is_rust)
         .into_iter()
@@ -469,6 +477,21 @@ pub fn resolve_liveness(
     conn: &rusqlite::Connection,
     cited: &[(String, usize, Vec<u32>, String)],
 ) -> rusqlite::Result<Vec<Finding>> {
+    Ok(resolve_liveness_keyed(conn, cited)?
+        .into_iter()
+        .map(|(_path, _line, finding)| finding)
+        .collect())
+}
+
+/// Internal variant of [`resolve_liveness`] that tags each finding with its
+/// `(path, line)` sort key, so [`check`] can merge the liveness findings with
+/// the structural ones into a single deterministic `(path, line)`-ordered
+/// stream. [`resolve_liveness`] is the thin public wrapper that drops the keys;
+/// the findings and their order are identical either way.
+fn resolve_liveness_keyed(
+    conn: &rusqlite::Connection,
+    cited: &[(String, usize, Vec<u32>, String)],
+) -> rusqlite::Result<Vec<(String, usize, Finding)>> {
     let mut stmt = conn.prepare("SELECT status FROM tasks WHERE tag = 'master' AND id = ?1")?;
     let mut out = Vec::new();
 
@@ -492,18 +515,19 @@ pub fn resolve_liveness(
         }
 
         for (id, status) in resolved {
-            match status {
+            let finding = match status {
                 // Present and — since !any_live — necessarily terminal → orphaned.
-                Some(s) => out.push(liveness_finding(
+                Some(s) => liveness_finding(
                     path,
                     format!("orphaned: line {line}: #{id} status={s}: {text}"),
-                )),
+                ),
                 // Absent → unknown-id.
-                None => out.push(liveness_finding(
+                None => liveness_finding(
                     path,
                     format!("unknown-id: line {line}: #{id}: {text}"),
-                )),
-            }
+                ),
+            };
+            out.push((path.clone(), *line, finding));
         }
     }
 
@@ -525,50 +549,81 @@ fn liveness_finding(path: &str, summary: String) -> Finding {
 // §5 detector entry point — working-tree sweep
 // -----------------------------------------------------------------------
 
-/// PTODO structural-lane sweep (§5/§8). Enumerates tracked files via the git
-/// seam ([`GitOps::ls_files`](crate::GitOps::ls_files)), keeps only swept
-/// extensions that are not allowlisted (§6.8), reads each file's **working-tree**
-/// content directly (`std::fs::read_to_string` — only enumeration is a git
-/// dependency; the lane "runs everywhere, including worktrees"), and classifies
-/// each line via [`classify_file`].
+/// PTODO sweep (§5/§8) — both lanes. Enumerates tracked files via the git seam
+/// ([`GitOps::ls_files`](crate::GitOps::ls_files)), keeps only swept extensions
+/// that are not allowlisted (§6.8), reads each file's **working-tree** content
+/// directly (`std::fs::read_to_string` — only enumeration is a git dependency;
+/// the lane "runs everywhere, including worktrees"), and classifies each line via
+/// the single [`scan_file`] pass.
 ///
-/// Every offending line becomes one Medium-severity [`Finding`] whose `task_id`
-/// is the file path and whose summary is the §8.3 `"<kind>: line N: <text>"`
-/// prefix form. Unreadable paths (deleted / binary / permission) are skipped
-/// fail-safe. Findings are returned in deterministic `(path, line_no)` order.
+/// That one pass feeds both lanes: [`LineClass::Structural`] lines become α
+/// structural findings; [`LineClass::Cited`] markers are resolved against the
+/// task DB by the β liveness lane. The task DB is opened read-only at
+/// [`tasks_db_path`]; when it is absent or unreadable the liveness lane is
+/// skipped and only the structural findings are returned (the §6.7 fail-soft
+/// breadcrumb is wired in a later step).
+///
+/// Every finding is Medium severity with `task_id` = file path and a summary of
+/// the §8.3 `"<kind>: line N: <text>"` prefix form. Unreadable paths (deleted /
+/// binary / permission) are skipped fail-safe. Findings are returned in
+/// deterministic `(path, line)` order across both lanes.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    // (path, line_no, kind, marker_text) for every offending line.
-    let mut hits: Vec<(String, usize, Kind, String)> = Vec::new();
+    // Structural offenders (α) and cited markers (β) from the single scan_file
+    // pass, kept separate so each feeds its own lane.
+    let mut struct_hits: Vec<(String, usize, Kind, String)> = Vec::new();
+    let mut cited: Vec<(String, usize, Vec<u32>, String)> = Vec::new();
 
     for path in ctx.git.ls_files() {
         if !is_swept_ext(&path) || is_allowlisted(&path) {
             continue;
         }
-        // Structural lane reads the working tree directly (only enumeration is
-        // a git seam). Skip unreadable paths fail-safe.
+        // Read the working tree directly (only enumeration is a git seam). Skip
+        // unreadable paths fail-safe.
         let content = match std::fs::read_to_string(ctx.project_root.join(&path)) {
             Ok(c) => c,
             Err(_) => continue,
         };
         let is_rust = path.ends_with(".rs");
-        for (line_no, kind, text) in classify_file(&content, is_rust) {
-            hits.push((path.clone(), line_no, kind, text));
+        for (line_no, class, text) in scan_file(&content, is_rust) {
+            match class {
+                LineClass::Structural(kind) => struct_hits.push((path.clone(), line_no, kind, text)),
+                LineClass::Cited(ids) => cited.push((path.clone(), line_no, ids, text)),
+            }
         }
     }
 
-    // Deterministic ordering: (path, line_no). Line numbers are excluded from
-    // the task_id identity but kept in the human-readable summary detail.
-    hits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-    hits.into_iter()
-        .map(|(path, line_no, kind, text)| Finding {
-            pattern: Pattern::PTodo,
-            severity: Severity::Medium,
-            summary: format!("{}: line {}: {}", kind.as_str(), line_no, text),
-            task_id: path.clone(),
-            evidence: vec![EvidenceRef::File { path }],
+    // α structural findings, each tagged with its (path, line) sort key.
+    let mut keyed: Vec<(String, usize, Finding)> = struct_hits
+        .into_iter()
+        .map(|(path, line_no, kind, text)| {
+            let finding = Finding {
+                pattern: Pattern::PTodo,
+                severity: Severity::Medium,
+                summary: format!("{}: line {}: {}", kind.as_str(), line_no, text),
+                task_id: path.clone(),
+                evidence: vec![EvidenceRef::File { path: path.clone() }],
+            };
+            (path, line_no, finding)
         })
-        .collect()
+        .collect();
+
+    // β liveness lane: open the task DB read-only; on success resolve the
+    // collected cites and merge the findings in. A missing/unreadable DB (or a
+    // prepare/probe failure) simply skips the lane — the §6.7 degradation
+    // breadcrumb is wired in a later step; the structural lane is unaffected.
+    let db_path = tasks_db_path(&ctx.project_root);
+    if let Ok(conn) = open_tasks_db(&db_path)
+        && let Ok(live) = resolve_liveness_keyed(&conn, &cited)
+    {
+        keyed.extend(live);
+    }
+
+    // Deterministic merged order across both lanes: (path, line). A given line
+    // yields at most one lane's entry (scan_file emits one LineClass per line),
+    // so there is no cross-lane tie; the stable sort preserves the per-marker
+    // multi-cite order within a line.
+    keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    keyed.into_iter().map(|(_path, _line, finding)| finding).collect()
 }
 
 #[cfg(test)]
