@@ -14,9 +14,10 @@
 //!   io_export.ri       — Physical+Elastic+Strong trait conformance, tolerancing
 //!                        subs, and geometry (box) for export-ready parts
 
+use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DimensionVector, Severity, ValueCellId};
-use reify_ir::Value;
-use reify_test_support::make_simple_engine;
+use reify_ir::{ExportFormat, Value};
+use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
 
@@ -168,6 +169,73 @@ fn assert_complex(
             "{}.{} should be Value::Complex, got {:?}",
             entity, member, other
         ),
+    }
+}
+
+// ── OCCT-build helpers (GHR-ζ mass-revival) ──────────────────────────────────
+
+/// Compile `source` with stdlib (asserting no error-severity diagnostics), then —
+/// if OCCT is available — build through a real-OCCT `Engine` and return the
+/// `BuildResult`. Returns `None` when OCCT is unavailable (caller skips numeric
+/// assertions). Mirrors `compile_and_build_occt` in geometry_query_kernel_dispatch.rs.
+fn compile_and_build_occt(source: &str) -> Option<reify_eval::BuildResult> {
+    let compiled = parse_and_compile_with_stdlib(source);
+    {
+        let errs: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errs.is_empty(),
+            "fixture should compile with no error-severity diagnostics, got:\n{:#?}",
+            errs
+        );
+    }
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping real-OCCT assertions: OCCT not available");
+        return None;
+    }
+    let checker = SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    Some(engine.build(&compiled, ExportFormat::Step))
+}
+
+/// Assert `value` is a `Value::Scalar` of dimension `dim` whose `si_value` is
+/// within 1e-6 relative of `expected`.
+fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64, what: &str) {
+    match value {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            assert_eq!(
+                *dimension, dim,
+                "{what}: expected dimension {dim:?}, got {dimension:?}"
+            );
+            let rel = (si_value - expected).abs() / expected.abs();
+            assert!(
+                rel < 1e-6,
+                "{what}: si_value {si_value:.12} not within 1e-6 relative of \
+                 {expected:.12} (rel={rel:.3e})"
+            );
+        }
+        other => panic!("{what}: expected Value::Scalar{{{dim:?}}}, got {other:?}"),
+    }
+}
+
+/// Read the runtime `density` (SI kg·m⁻³) from a structure's evaluated
+/// `material` StructureInstance cell. Lets expected mass track the actual
+/// material constant rather than a hardcoded literal.
+fn material_density_si(result: &reify_eval::BuildResult, structure: &str) -> f64 {
+    match result.values.get(&ValueCellId::new(structure, "material")) {
+        Some(Value::StructureInstance(data)) => match data.fields.get("density") {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => panic!("{structure}.material.density should be Scalar, got {other:?}"),
+        },
+        other => panic!("{structure}.material should be StructureInstance, got {other:?}"),
     }
 }
 
@@ -534,35 +602,29 @@ fn io_export_smoke() {
 
 // ── step-11: io_export_mass_computed ─────────────────────────────────────────
 
-/// Asserts ExportPart.mass = volume * density = 0.001 * 7850 = 7.85 (Value::Real).
-/// Steel AISI 1020: density=7850 kg/m³, volume=0.001 m³.
+/// `ExportPart.mass` folds via the landed GHR-ζ dispatch (task 3608):
+/// `mass = volume(geometry) * material.density`, where
+///   - `geometry = box(100mm, 50mm, 10mm)` → analytic volume 5e-5 m³
+///   - `material.density ≈ 7850 kg/m³` (runtime-read from the `material` StructureInstance slot)
+///   → `mass ≈ 0.3925 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
 ///
-/// Post-GHR-α (task 3603 / PRD §8 Phase 1): spec-shape `Physical` computes
-/// `mass = volume(geometry) * material.density`, typecheck-only at Phase 1.
-/// Runtime kernel dispatch for `volume(geometry)` arrives in Phase 6 (GHR-ζ),
-/// so `mass` evaluates to `Value::Undef`. Revived once geometry-derived
-/// computation lands.
+/// Requires the real-OCCT `Engine::build()` path — `post_process_geometry_queries` runs
+/// only on the build path with a registered kernel. Skips cleanly when OCCT is unavailable.
 #[test]
-#[ignore = "Phase 6 will revive — GHR-ζ (geometry-handle-runtime PRD): mass = volume(geometry) * material.density needs kernel dispatch"]
 fn io_export_mass_computed() {
-    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
-
-    let mass_id = ValueCellId::new("ExportPart", "mass");
-    let mass_val = result
-        .values
-        .get(&mass_id)
-        .unwrap_or_else(|| panic!("ExportPart.mass not found in eval result"));
-
-    match mass_val {
-        Value::Real(v) => {
-            assert!(
-                (v - 7.85).abs() < 1e-9,
-                "ExportPart.mass should be ≈7.85 (= 0.001 * 7850), got {}",
-                v
-            );
-        }
-        other => panic!("ExportPart.mass should be Value::Real, got {:?}", other),
-    }
+    let source = std::fs::read_to_string(PATH_IO_EXPORT)
+        .unwrap_or_else(|e| panic!("{} should exist: {}", PATH_IO_EXPORT, e));
+    let Some(result) = compile_and_build_occt(&source) else {
+        return;
+    };
+    let box_v = 0.100 * 0.050 * 0.010; // 5e-5 m³: box(100mm, 50mm, 10mm)
+    let density = material_density_si(&result, "ExportPart");
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new("ExportPart", "mass")),
+        DimensionVector::MASS,
+        box_v * density,
+        "ExportPart.mass",
+    );
 }
 
 // ── step-11: io_export_tolerance_upper_limit ─────────────────────────────────
