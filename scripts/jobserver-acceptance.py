@@ -73,14 +73,48 @@ def merge_reached_full_allocation(series: list, nproc: int) -> bool:
     return False
 
 
-def utilization_ok(busy_frac: float, threshold: float) -> bool:
-    """Return True when busy_frac >= threshold.
+def utilization_ok(
+    dual_frac: float, baseline_frac: float, tolerance: float = 0.03
+) -> bool:
+    """Return True when the dual-pool run's busy-core fraction is within
+    *tolerance* of the single-pool baseline's, same regime (criterion (a)).
 
-    busy_frac is the busy-core fraction derived from ε's busy_fraction() over
-    two /proc/stat snapshots straddling a mixed run.  threshold is the
-    operator-configured or derived utilisation floor (criterion (a)).
+    Re-specified 2026-06-11 (Leo-ratified, /unblock 4521): the original
+    absolute floor (busy >= 0.85) was dominated by workload shape, not
+    balancer behaviour — cold builds spend real wall in serial phases
+    (link steps, crate-graph stragglers, npm) regardless of jobserver
+    policy, so an absolute threshold measures the workload, while the
+    criterion's intent is "the partition must not strand cores".  The
+    relative form measures exactly that: the dual-pool partition may cost
+    at most *tolerance* busy-core fraction versus the shared single pool
+    under the same load and cache state.
+
+    Both fractions come from ε's busy_fraction() over /proc/stat snapshots
+    straddling each mixed run (same instrument on both sides).
     """
-    return busy_frac >= threshold
+    return dual_frac >= baseline_frac - tolerance
+
+
+def merge_ratchet_observed(series: list, merge_baseline: int) -> bool:
+    """Return True if any sample shows merge-pool tokens strictly above the
+    seeded baseline partition — the observable form of criterion (d).
+
+    Amended oracle (Leo-ratified 2026-06-11, /unblock 4521): the original
+    wording ("FIONREAD shows merge -> nproc while contested") conflates
+    allocation with availability — FIONREAD counts FREE tokens, and a merge
+    hungry enough to trigger donation is HOLDING tokens at that same moment,
+    so free == nproc requires full allocation AND a momentarily idle merge
+    cargo (fleeting by construction; the balancer's 1s idle-reset fires in
+    exactly that window).  What IS observable, and is the PRD §4 ratchet's
+    defining behaviour, is the merge pool's free count strictly exceeding
+    its seeded baseline: tokens the balancer moved task->merge under
+    contention.  merge_baseline mirrors the balancer's partition formula
+    (TOKENS - max(1, TOKENS // 4); 24 for nproc=32).
+    """
+    for sample in series:
+        if sample.get("merge", 0) > merge_baseline:
+            return True
+    return False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -98,7 +132,10 @@ def evaluate_acceptance_gate(
     measurements : dict
         Same-instrument A/B capture produced by --run.  Required keys:
           nproc                 int    — core count
-          utilization_threshold float  — busy-core fraction floor for (a)
+          utilization_tolerance float  — max busy-fraction the dual-pool
+                                         partition may cost vs the single-pool
+                                         baseline, same regime (criterion (a),
+                                         re-specified 2026-06-11; default 0.03)
           baseline              dict   — single-pool mixed-run record
           dual_pool             dict   — dual-pool mixed-run record
 
@@ -116,22 +153,25 @@ def evaluate_acceptance_gate(
         findings : list[str] — human-readable failure descriptions (empty on pass)
     """
     nproc = measurements["nproc"]
-    threshold = measurements["utilization_threshold"]
+    tolerance = measurements.get("utilization_tolerance", 0.03)
     baseline = measurements["baseline"]
     dual = measurements["dual_pool"]
 
     verdicts: dict = {}
     findings: list = []
 
-    # ── (a) box ≈ fully utilised ──────────────────────────────────────────
-    busy_frac = dual["busy_fraction"]
-    if utilization_ok(busy_frac, threshold):
+    # ── (a) partition strands no cores: dual busy within tolerance of
+    #        the single-pool baseline, same regime ─────────────────────────
+    dual_busy = dual["busy_fraction"]
+    base_busy = baseline["busy_fraction"]
+    if utilization_ok(dual_busy, base_busy, tolerance):
         verdicts["a"] = "PASS"
     else:
         verdicts["a"] = "FAIL"
         findings.append(
-            f"(a) utilization FAIL: dual-pool busy_fraction={busy_frac:.3f} "
-            f"< threshold={threshold:.3f}"
+            f"(a) utilization FAIL: dual-pool busy_fraction={dual_busy:.3f} "
+            f"more than tolerance={tolerance:.3f} below single-pool "
+            f"baseline={base_busy:.3f}"
         )
 
     # ── (b) merge wall-clock improved vs single-pool baseline ────────────
@@ -158,16 +198,20 @@ def evaluate_acceptance_gate(
             f"priority — candidate to revisit absolute priority allocation."
         )
 
-    # ── (d) merge pool reached full allocation under contention ──────────
+    # ── (d) contention ratchet observed: merge pool strictly above its
+    #        seeded baseline partition (amended oracle, 2026-06-11) ────────
     series = dual["occupancy"]
-    if merge_reached_full_allocation(series, nproc):
+    merge_baseline = nproc - max(1, nproc // 4)  # mirrors jobserver-balancer.py
+    if merge_ratchet_observed(series, merge_baseline):
         verdicts["d"] = "PASS"
     else:
         verdicts["d"] = "FAIL"
         findings.append(
-            f"(d) merge pool never reached full allocation (nproc={nproc}) "
-            f"during contention; max merge observed="
-            f"{max((s.get('merge', 0) for s in series), default=0)}"
+            f"(d) merge pool never exceeded its seeded baseline "
+            f"({merge_baseline}) during contention — ratchet not observed; "
+            f"max merge observed="
+            f"{max((s.get('merge', 0) for s in series), default=0)} "
+            f"(nproc={nproc})"
         )
 
     ok = all(v == "PASS" for v in verdicts.values())
@@ -195,7 +239,7 @@ def render_acceptance_report(measurements: dict, verdicts: dict) -> str:
     verify.sh walls, never synthetic stubs.
     """
     nproc = measurements["nproc"]
-    threshold = measurements["utilization_threshold"]
+    tolerance = measurements.get("utilization_tolerance", 0.03)
     baseline = measurements["baseline"]
     dual = measurements["dual_pool"]
 
@@ -212,7 +256,7 @@ def render_acceptance_report(measurements: dict, verdicts: dict) -> str:
         "PRD: `docs/prds/jobserver-merge-priority-balancer.md` §9 leaf η  "
     )
     lines.append(f"nproc: **{nproc}**  ")
-    lines.append(f"utilization_threshold: **{threshold}**  ")
+    lines.append(f"utilization_tolerance: **{tolerance}** (dual vs single-pool baseline, same regime)  ")
     overall = "PASS" if all(v == "PASS" for v in verdicts.values()) else "FAIL"
     lines.append(f"Overall: **{overall}**")
     lines.append("")
@@ -271,9 +315,10 @@ def render_acceptance_report(measurements: dict, verdicts: dict) -> str:
     lines.append(
         f"|-----------|-------------|-------|---------|"
     )
+    base_bf = baseline.get("busy_fraction", 0.0)
     lines.append(
-        f"| (a) | box utilisation ≈ nproc (dual-pool mixed run) "
-        f"| busy_fraction={dual_bf:.3f} >= {threshold} "
+        f"| (a) | partition strands no cores (dual busy within tolerance of baseline) "
+        f"| dual={dual_bf:.3f} >= baseline={base_bf:.3f} − {tolerance} "
         f"| **{verdicts.get('a', '—')}** |"
     )
     lines.append(
@@ -288,9 +333,10 @@ def render_acceptance_report(measurements: dict, verdicts: dict) -> str:
     )
     series = dual.get("occupancy", [])
     max_merge = max((s.get("merge", 0) for s in series), default=0)
+    merge_baseline = nproc - max(1, nproc // 4)
     lines.append(
-        f"| (d) | merge pool reached full allocation under contention "
-        f"| max_merge={max_merge} vs nproc={nproc} "
+        f"| (d) | contention ratchet observed (merge pool above seeded baseline; amended oracle) "
+        f"| max_merge={max_merge} > baseline={merge_baseline} (nproc={nproc}) "
         f"| **{verdicts.get('d', '—')}** |"
     )
     lines.append("")
@@ -516,7 +562,7 @@ def _run_campaign(
     output_path: str,
     ntasks: int = 1,
     cache_state: str = "warm",
-    utilization_threshold: float = 0.85,
+    utilization_tolerance: float = 0.03,
     sampler_interval: float = 5.0,
     task_repo: str = None,
 ) -> None:
@@ -586,7 +632,7 @@ def _run_campaign(
 
     sys.stderr.write(
         f"[η --run] Starting A/B campaign: {ntasks} task(s), "
-        f"cache={cache_state}, threshold={utilization_threshold}\n"
+        f"cache={cache_state}, tolerance={utilization_tolerance}\n"
     )
 
     # ── Run A: single-pool baseline ────────────────────────────────────────
@@ -641,7 +687,7 @@ def _run_campaign(
     # ── Write measurements JSON ────────────────────────────────────────────
     measurements = {
         "nproc": nproc,
-        "utilization_threshold": utilization_threshold,
+        "utilization_tolerance": utilization_tolerance,
         "baseline": baseline_rec,
         "dual_pool": dualpool_rec,
     }
@@ -680,9 +726,12 @@ def main() -> None:
         help="sccache state for this run (default: warm)",
     )
     p_run.add_argument(
-        "--utilization-threshold", type=float, default=0.85,
-        dest="utilization_threshold",
-        help="Busy-core fraction floor for criterion (a) (default: 0.85)",
+        "--utilization-tolerance", type=float, default=0.03,
+        dest="utilization_tolerance",
+        help=(
+            "Max busy-core fraction the dual-pool partition may cost vs the "
+            "single-pool baseline, same regime (criterion (a); default: 0.03)"
+        ),
     )
     p_run.add_argument(
         "--sampler-interval", type=float, default=5.0,
@@ -762,7 +811,7 @@ def main() -> None:
             args.output,
             ntasks=args.ntasks,
             cache_state=args.cache_state,
-            utilization_threshold=args.utilization_threshold,
+            utilization_tolerance=args.utilization_tolerance,
             sampler_interval=args.sampler_interval,
             task_repo=args.task_repo,
         )

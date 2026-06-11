@@ -87,16 +87,41 @@ if mod.merge_reached_full_allocation([], NPROC):
 # ── utilization_ok ────────────────────────────────────────────────────────
 
 # (d) busy_frac >= threshold → True
-if not mod.utilization_ok(0.92, 0.85):
-    errors.append("(d) expected True for 0.92 >= 0.85")
+# Relative oracle (re-specified 2026-06-11): dual within tolerance of the
+# single-pool baseline, same regime.
+if not mod.utilization_ok(0.92, 0.90, 0.03):
+    errors.append("(d) expected True for dual 0.92 vs baseline 0.90 (above)")
 
-# (e) busy_frac == threshold → True (boundary)
-if not mod.utilization_ok(0.85, 0.85):
-    errors.append("(e) expected True for exact boundary 0.85 == 0.85")
+# (e) dual exactly tolerance below baseline → True (boundary)
+if not mod.utilization_ok(0.87, 0.90, 0.03):
+    errors.append("(e) expected True for exact boundary 0.87 == 0.90 - 0.03")
 
-# (f) busy_frac < threshold → False
-if mod.utilization_ok(0.70, 0.85):
-    errors.append("(f) expected False for 0.70 < 0.85")
+# (f) dual more than tolerance below baseline → False
+if mod.utilization_ok(0.80, 0.90, 0.03):
+    errors.append("(f) expected False for dual 0.80 vs baseline 0.90 (gap 0.10 > 0.03)")
+
+# ── merge_ratchet_observed (criterion (d), amended oracle) ───────────────
+MERGE_BASELINE = NPROC - max(1, NPROC // 4)   # mirrors jobserver-balancer.py: 6 for 8
+
+# (g) a sample strictly above the seeded baseline → True (donation observed)
+series_ratchet = [
+    {"merge": 6, "task": 2, "ts": 0.0},
+    {"merge": 7, "task": 1, "ts": 0.1},   # 7 > baseline 6 — ratchet fired
+]
+if not mod.merge_ratchet_observed(series_ratchet, MERGE_BASELINE):
+    errors.append("(g) expected True when a sample exceeds the seeded baseline")
+
+# (h) never above baseline → False (free == baseline is NOT a donation)
+series_flat = [
+    {"merge": 6, "task": 2, "ts": 0.0},
+    {"merge": 5, "task": 3, "ts": 0.1},
+]
+if mod.merge_ratchet_observed(series_flat, MERGE_BASELINE):
+    errors.append("(h) expected False when merge never exceeds the baseline")
+
+# (i) empty series → False
+if mod.merge_ratchet_observed([], MERGE_BASELINE):
+    errors.append("(i) expected False for empty series")
 
 if errors:
     sys.stderr.write("FAIL analyzers:\n" + "\n".join("  " + e for e in errors) + "\n")
@@ -137,13 +162,13 @@ spec.loader.exec_module(mod)
 errors = []
 
 NPROC = 8
-THRESH = 0.85
+TOLERANCE = 0.03
 
 def make_ok_measurements():
     """All-pass synthetic A/B fixture."""
     return {
         "nproc": NPROC,
-        "utilization_threshold": THRESH,
+        "utilization_tolerance": TOLERANCE,
         "baseline": {
             "service": "single-pool",
             "regime": "mixed",
@@ -180,12 +205,12 @@ for crit in ("a", "b", "c", "d"):
 if findings:
     errors.append(f"(all-pass) unexpected findings: {findings}")
 
-# ── (a) fails: busy_fraction below threshold ──────────────────────────────
+# ── (a) fails: dual busy more than tolerance below the baseline ──────────
 m_a = make_ok_measurements()
-m_a["dual_pool"]["busy_fraction"] = 0.60   # below 0.85 threshold
+m_a["dual_pool"]["busy_fraction"] = 0.60   # baseline 0.96 − 0.03 = 0.93 floor
 ok_a, verdicts_a, findings_a = mod.evaluate_acceptance_gate(m_a)
 if ok_a:
-    errors.append("(a-fail) expected ok=False when busy_fraction < threshold")
+    errors.append("(a-fail) expected ok=False when dual busy is > tolerance below baseline")
 if verdicts_a.get("a") != "FAIL":
     errors.append(f"(a-fail) criterion a verdict={verdicts_a.get('a')!r}, want FAIL")
 
@@ -211,15 +236,15 @@ escape_valve_present = any("10.4" in f or "escape" in f.lower() or "absolute pri
 if not escape_valve_present:
     errors.append(f"(c-fail) §10.4 escape-valve note missing from findings: {findings_c}")
 
-# ── (d) fails: merge never reaches nproc ─────────────────────────────────
+# ── (d) fails: merge never exceeds its seeded baseline (amended oracle) ──
 m_d = make_ok_measurements()
 m_d["dual_pool"]["occupancy"] = [
     {"merge": 4, "task": 4, "ts": 0.0},
     {"merge": 6, "task": 2, "ts": 0.5},
-]  # merge reaches max 6, not NPROC=8
+]  # max 6 == baseline partition (8 − max(1, 8//4) = 6) — never ABOVE it
 ok_d, verdicts_d, findings_d = mod.evaluate_acceptance_gate(m_d)
 if ok_d:
-    errors.append("(d-fail) expected ok=False when merge never reaches nproc")
+    errors.append("(d-fail) expected ok=False when merge never exceeds its baseline")
 if verdicts_d.get("d") != "FAIL":
     errors.append(f"(d-fail) criterion d verdict={verdicts_d.get('d')!r}, want FAIL")
 
@@ -264,7 +289,7 @@ errors = []
 
 measurements = {
     "nproc": 8,
-    "utilization_threshold": 0.85,
+    "utilization_tolerance": 0.03,
     "baseline": {
         "service": "single-pool",
         "regime": "mixed",
@@ -475,7 +500,7 @@ _report_out=$(mktemp /tmp/test-accept-report-XXXXXX.md)
 cat > "$_fix_ok" <<'JSON'
 {
   "nproc": 8,
-  "utilization_threshold": 0.85,
+  "utilization_tolerance": 0.03,
   "baseline": {
     "service": "single-pool",
     "regime": "mixed",
@@ -505,7 +530,7 @@ JSON
 cat > "$_fix_fail" <<'JSON'
 {
   "nproc": 8,
-  "utilization_threshold": 0.85,
+  "utilization_tolerance": 0.03,
   "baseline": {
     "service": "single-pool",
     "regime": "mixed",
