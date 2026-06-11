@@ -420,15 +420,10 @@ EOF
 
     chmod +x "$repo_dir/scripts/jobserver-canary.sh" "$repo_dir/scripts/jobserver-balancer.py"
     systemctl --user daemon-reload
-    # Disable any stale canary timer that was enabled before the alpha release.
-    # The legacy timer targets /tmp/reify-jobserver (single FIFO, now defunct) and
-    # would trigger an unconditional restart before its build-idle guard each tick,
-    # SIGKILLing in-flight rustc and permanently leaking held tokens.  A plain
-    # drop from 'enable --now' does NOT stop an already-running timer on hosts
-    # provisioned before alpha, so we explicitly disable --now (guarded because
-    # set -euo pipefail is active and the unit may already be absent/disabled).
-    systemctl --user disable --now reify-jobserver-canary.timer 2>/dev/null || true
-    systemctl --user enable --now sccache.service reify-jobserver.service
+    # γ/4517 rewrote jobserver-canary.sh for the dual-FIFO pools; η/4521
+    # validated the end-to-end acceptance criteria before landing.  The C2
+    # canary timer is now live.
+    systemctl --user enable --now sccache.service reify-jobserver.service reify-jobserver-canary.timer
 }
 
 if systemctl --user show-environment &>/dev/null; then
