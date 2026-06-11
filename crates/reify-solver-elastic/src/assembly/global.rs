@@ -2733,4 +2733,128 @@ mod tests {
             "examples should list all 9 orphan (node,axis) pairs sorted by (node, axis)",
         );
     }
+
+    // ─── prereq-2: shared-DOF box-mesh fixture ────────────────────────────────
+
+    /// Split a hex cell into 6 P1 tets via the Kuhn triangulation.
+    ///
+    /// Identical to the helper in `tests/determinism.rs` (copied per the
+    /// established per-test-file pattern). All 6 tets share the main diagonal
+    /// from `c[0]` to `c[6]`.
+    ///
+    /// Corner ordering:
+    /// ```text
+    /// c[0]=(ix,iy,iz)     c[4]=(ix,iy,iz+1)
+    /// c[1]=(ix+1,iy,iz)   c[5]=(ix+1,iy,iz+1)
+    /// c[2]=(ix+1,iy+1,iz) c[6]=(ix+1,iy+1,iz+1)
+    /// c[3]=(ix,iy+1,iz)   c[7]=(ix,iy+1,iz+1)
+    /// ```
+    fn kuhn_split_hex_to_six_tets_fixture(c: [usize; 8]) -> [[usize; 4]; 6] {
+        [
+            [c[0], c[1], c[2], c[6]], // σ=(x,y,z)
+            [c[0], c[1], c[5], c[6]], // σ=(x,z,y)
+            [c[0], c[3], c[2], c[6]], // σ=(y,x,z)
+            [c[0], c[3], c[7], c[6]], // σ=(y,z,x)
+            [c[0], c[4], c[5], c[6]], // σ=(z,x,y)
+            [c[0], c[4], c[7], c[6]], // σ=(z,y,x)
+        ]
+    }
+
+    /// Build a `[0,Lx]×[0,Ly]×[0,Lz]` structured P1 tet mesh with
+    /// `nx×ny×nz` hex cells, each Kuhn-split into 6 tets.
+    ///
+    /// Node indexing: `iz*(ny+1)*(nx+1) + iy*(nx+1) + ix`.
+    /// Identical to `box_p1_mesh` in `tests/determinism.rs`.
+    fn box_p1_mesh_fixture(
+        lx: f64,
+        ly: f64,
+        lz: f64,
+        nx: usize,
+        ny: usize,
+        nz: usize,
+    ) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+        let nnx = nx + 1;
+        let nny = ny + 1;
+        let nnz = nz + 1;
+
+        let mut nodes = Vec::with_capacity(nnx * nny * nnz);
+        for iz in 0..nnz {
+            for iy in 0..nny {
+                for ix in 0..nnx {
+                    nodes.push([
+                        ix as f64 * lx / nx as f64,
+                        iy as f64 * ly / ny as f64,
+                        iz as f64 * lz / nz as f64,
+                    ]);
+                }
+            }
+        }
+
+        let node_idx =
+            |ix: usize, iy: usize, iz: usize| iz * nny * nnx + iy * nnx + ix;
+
+        let mut connectivity = Vec::with_capacity(6 * nx * ny * nz);
+        for iz in 0..nz {
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let c = [
+                        node_idx(ix, iy, iz),
+                        node_idx(ix + 1, iy, iz),
+                        node_idx(ix + 1, iy + 1, iz),
+                        node_idx(ix, iy + 1, iz),
+                        node_idx(ix, iy, iz + 1),
+                        node_idx(ix + 1, iy, iz + 1),
+                        node_idx(ix + 1, iy + 1, iz + 1),
+                        node_idx(ix, iy + 1, iz + 1),
+                    ];
+                    for tet in kuhn_split_hex_to_six_tets_fixture(c) {
+                        connectivity.push(tet);
+                    }
+                }
+            }
+        }
+
+        (nodes, connectivity)
+    }
+
+    /// Build the shared-DOF 3×3×3 box-mesh fixture for assembly-determinism
+    /// unit tests.
+    ///
+    /// Geometry: `[0,1]×[0,1]×[0,1]`, `3×3×3` hex cells →
+    /// `4×4×4 = 64` nodes, `6×27 = 162` P1 tet elements.
+    ///
+    /// Total triplets: `162 × 144 = 23 328`. Interior nodes (e.g. node at
+    /// position `(1/3, 1/3, 1/3)`) are shared by up to 8 hex cells × 6 tets
+    /// = 48 elements, so the most-shared `(row, col)` pairs in the assembled
+    /// K receive up to 48 duplicate contributions — well into faer's
+    /// large-array argsort / quicksort regime (above the ~20-element
+    /// insertion-sort threshold). Element geometries vary across the mesh
+    /// (the 6 Kuhn-split tets per hex cell have distinct shapes), so
+    /// contributions to shared `(row, col)` pairs carry distinct values —
+    /// FP non-associativity from different summation orders produces
+    /// observable K differences.
+    ///
+    /// Returns `(n_nodes, ke_list, conns)`.
+    fn build_shared_dof_box_3x3x3(
+        mat: &IsotropicElastic,
+    ) -> (usize, Vec<ElementStiffness>, Vec<[usize; 4]>) {
+        let (nodes, conns) = box_p1_mesh_fixture(1.0, 1.0, 1.0, 3, 3, 3);
+        let n_nodes = nodes.len(); // 4×4×4 = 64
+        assert_eq!(conns.len(), 6 * 27, "expected 162 elements for 3×3×3 hex mesh");
+
+        let ke_list: Vec<ElementStiffness> = conns
+            .iter()
+            .map(|conn| {
+                let phys: [[f64; 3]; 4] = [
+                    nodes[conn[0]],
+                    nodes[conn[1]],
+                    nodes[conn[2]],
+                    nodes[conn[3]],
+                ];
+                element_stiffness_p1(&phys, mat)
+            })
+            .collect();
+
+        (n_nodes, ke_list, conns)
+    }
 }
