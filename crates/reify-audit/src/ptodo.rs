@@ -1008,7 +1008,7 @@ mod tests {
             "// TODO(#4553): x",          // 1 comment marker + canonical cite -> Cited([4553])
             "// #42",                     // 2 cite-only, no marker -> no entry (prev for 3)
             "    todo!()",                // 3 stub macro, cite directly above -> Cited([42])
-            "    #[ignore = \"see #42\"]", // 4 reason-bearing ignore -> no entry (deferred to γ)
+            "    #[ignore = \"see #42\"]", // 4 reason-bearing with cite -> Cited([42]) (γ cite-first)
             "// TODO: wire this",         // 5 marker, no cite -> Structural(Untracked)
             "// TODO(#5): x  // ptodo:allow", // 6 inline escape on a cited line -> skipped
         ];
@@ -1018,17 +1018,41 @@ mod tests {
         let expected: Vec<(usize, LineClass, String)> = vec![
             (1, LineClass::Cited(vec![4553]), "// TODO(#4553): x".to_string()),
             (3, LineClass::Cited(vec![42]), "todo!()".to_string()),
+            // γ cite-first: reason "see #42" has a canonical cite → Cited([42]).
+            (4, LineClass::Cited(vec![42]), "#[ignore = \"see #42\"]".to_string()),
             (5, LineClass::Structural(Kind::Untracked), "// TODO: wire this".to_string()),
         ];
         assert_eq!(got, expected);
 
         // Regression: classify_file is exactly scan_file filtered to its
-        // Structural variants — the Cited markers (1, 3) and the suppressed
-        // lines (2, 4, 6) drop out, leaving byte-identical α output.
+        // Structural variants — the Cited markers (1, 3, 4) and the suppressed
+        // lines (2, 6) drop out, leaving byte-identical α output.
         let classified = classify_file(&content, true);
         let expected_structural: Vec<(usize, Kind, String)> =
             vec![(5, Kind::Untracked, "// TODO: wire this".to_string())];
         assert_eq!(classified, expected_structural);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.3 γ cite-first path — reason with canonical cite → Cited (β lane)
+    // -------------------------------------------------------------------
+
+    /// `#[ignore = "blocked on #4444"]` — cite wins over blocker-prose.
+    /// `#[ignore = "see #42"]`          — cite without blocker-prose.
+    #[test]
+    fn scan_file_ignore_reason_with_cite_emits_cited_entry() {
+        let lines = [
+            "#[ignore = \"blocked on #4444\"]", // 1 cite wins over "blocked" prose → Cited([4444])
+            "#[ignore = \"see #42\"]",          // 2 cite, no blocker-prose → Cited([42])
+        ];
+        let content = lines.join("\n");
+        let got = scan_file(&content, true);
+
+        let expected: Vec<(usize, LineClass, String)> = vec![
+            (1, LineClass::Cited(vec![4444]), "#[ignore = \"blocked on #4444\"]".to_string()),
+            (2, LineClass::Cited(vec![42]),   "#[ignore = \"see #42\"]".to_string()),
+        ];
+        assert_eq!(got, expected);
     }
 
     // -------------------------------------------------------------------
