@@ -3119,6 +3119,7 @@ fn diagonal_window(a: f64, b: f64, c: f64) -> [f64; 9] {
 ///   - w0: [20e6, 30e6, 100e6]  → min_entry=20e6,  max_entry=100e6
 ///   - w1: [40e6, 50e6,  60e6]  → min_entry=40e6,  max_entry=60e6
 ///   - w2: [-70e6, 5e6,  10e6]  → min_entry=-70e6, max_entry=10e6
+///
 /// Global max = max(100e6, 60e6, 10e6) = 100e6 Pa.
 /// Global min = min(20e6, 40e6, -70e6) = -70e6 Pa.
 ///
