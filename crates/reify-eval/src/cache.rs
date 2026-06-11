@@ -1690,6 +1690,83 @@ mod tests {
     use super::*;
     use reify_core::{ConstraintNodeId, RealizationNodeId, Type, ValueCellId};
 
+    /// Task 4357 δ (step-1): `NodeId::describe()` must return a distinct,
+    /// human-readable, kind-naming string for each of the five variants —
+    /// each containing its kind word AND the underlying id's Display. The
+    /// five outputs must be pairwise distinct. Used by `run_unified_pass`'s
+    /// `E_EVAL_CYCLE`/`E_EVAL_UNRESOLVED` messages to name graph members.
+    ///
+    /// RED until step-2 adds `NodeId::describe()`.
+    #[test]
+    fn node_id_describe_names_every_kind_distinctly() {
+        use reify_core::{ComputeNodeId, ResolutionNodeId};
+
+        let value = NodeId::Value(ValueCellId::new("A", "x"));
+        let constraint = NodeId::Constraint(ConstraintNodeId::new("A", 0));
+        let realization = NodeId::Realization(RealizationNodeId::new("A", 0));
+        let resolution = NodeId::Resolution(ResolutionNodeId::new("A", 0));
+        let compute = NodeId::Compute(ComputeNodeId::new("A", 0));
+
+        let dv = value.describe();
+        let dc = constraint.describe();
+        let dr = realization.describe();
+        let ds = resolution.describe();
+        let dk = compute.describe();
+
+        // Each description names its kind word.
+        assert!(dv.contains("value"), "value describe must name kind: {dv}");
+        assert!(
+            dc.contains("constraint"),
+            "constraint describe must name kind: {dc}"
+        );
+        assert!(
+            dr.contains("realization"),
+            "realization describe must name kind: {dr}"
+        );
+        assert!(
+            ds.contains("resolution"),
+            "resolution describe must name kind: {ds}"
+        );
+        assert!(
+            dk.contains("compute"),
+            "compute describe must name kind: {dk}"
+        );
+
+        // Each description embeds the underlying id's Display.
+        assert!(
+            dv.contains(&ValueCellId::new("A", "x").to_string()),
+            "value describe must embed id Display: {dv}"
+        );
+        assert!(
+            dc.contains(&ConstraintNodeId::new("A", 0).to_string()),
+            "constraint describe must embed id Display: {dc}"
+        );
+        assert!(
+            dr.contains(&RealizationNodeId::new("A", 0).to_string()),
+            "realization describe must embed id Display: {dr}"
+        );
+        assert!(
+            ds.contains(&ResolutionNodeId::new("A", 0).to_string()),
+            "resolution describe must embed id Display: {ds}"
+        );
+        assert!(
+            dk.contains(&ComputeNodeId::new("A", 0).to_string()),
+            "compute describe must embed id Display: {dk}"
+        );
+
+        // Pairwise distinct across all five variants.
+        let all = [&dv, &dc, &dr, &ds, &dk];
+        for i in 0..all.len() {
+            for j in (i + 1)..all.len() {
+                assert_ne!(
+                    all[i], all[j],
+                    "describe outputs must be pairwise distinct: {} vs {}",
+                    all[i], all[j]
+                );
+            }
+        }
+    }
+
     #[test]
     fn node_id_from_value_cell_id() {
         let vcid = ValueCellId::new("Bracket", "width");
