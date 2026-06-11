@@ -414,6 +414,33 @@ fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
 /// Usage line printed to stderr for any `reify check` usage error.
 const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
+/// `reify check <file>` — lightweight static constraint checker.
+///
+/// ## Engine posture: deliberately NO compute trampolines
+///
+/// The non-[`RepresentationWithin`] path uses `Engine::new(None) + check()`;
+/// the [`RepresentationWithin`] path uses `Engine::with_registered_kernel +
+/// check()`.  Neither path calls [`configured_eval_engine`] nor registers the
+/// FEA/buckling/modal compute trampolines
+/// ([`register_compute_trampolines`]).
+///
+/// Consequence: `@optimized("solver::elastic_static")` FEA-result constraints
+/// (e.g. `constraint peak_stress < limit` over `result.max_von_mises`) evaluate
+/// against the body-inline `undef` fallback and report **Indeterminate** under
+/// `reify check`.  They are NOT a gate; `reify build` or `reify eval` are the
+/// FEA exit-code gate.
+///
+/// **Rationale:** registering compute trampolines here would run a potentially
+/// slow FEA solve inside the lightweight static-check path, violating the design
+/// intent that *check attaches no kernel by design*.  The trampoline-free posture
+/// is an executable contract locked by `check_fea_violated_constraint_is_not_gated`
+/// in `cli_build_fea.rs`; changing it requires updating that test intentionally.
+///
+/// **Known limitation:** `reify check` still surfaces the engine-owned
+/// `Severity::Error` "no registered compute trampoline (falling back to
+/// body-inlining)" diagnostic on stderr for `@optimized` FEA solves.  The
+/// severity is owned by `engine_eval.rs`; downgrading it to a warning is a
+/// separate engine-side concern (deferred, out of scope for this CLI task).
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
@@ -782,7 +809,25 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     let checker = SimpleConstraintChecker;
+    // Register FEA/buckling/modal + shell-extract compute trampolines so that
+    // `@optimized("solver::elastic_static")` targets dispatch to the real solver
+    // rather than body-inlining.  Without these registrations the engine emits an
+    // Error-severity "no registered compute trampoline" diagnostic and FEA-result
+    // constraints evaluate to Indeterminate.
+    //
+    // NOTE: cmd_build intentionally does NOT call `configured_eval_engine` (which
+    // also adds `.with_solver(production())`).  The DimensionalSolver resolves
+    // `auto` params via a synthetic Chebyshev-centre objective even when no explicit
+    // `minimize`/`maximize` directive is present; wiring it here would change the
+    // observable behaviour of existing `auto`-param fixtures (bracket_indeterminate,
+    // bracket_all_indeterminate) from INDETERMINATE → SATISFIED.  cmd_build's
+    // solver-free posture is intentional; cmd_eval wires the full solver via
+    // `configured_eval_engine` because it explicitly models the full evaluation path.
+    // The FEA trampoline is pure-Rust and independent of the DimensionalSolver, so
+    // the solve runs correctly here without `.with_solver`.  See `build_is_success`
+    // for the (c) exit-code gate.
     let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    register_compute_trampolines(&mut engine);
     let result = engine.build(&compiled, format);
 
     let outcome = report_eval_output(
@@ -814,16 +859,25 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 }
                 println!("Wrote {} ({} bytes)", path, data.len());
             }
-            match outcome {
-                ConstraintOutcome::AllSatisfied => ExitCode::SUCCESS,
+            // Emit the per-outcome status message (unchanged from pre-4458),
+            // then decide exit via build_is_success — which also gates on
+            // Severity::Error diagnostics, matching cmd_eval's Error gate
+            // (task 4458 fix (c)).  See `build_is_success` for rationale.
+            match &outcome {
+                ConstraintOutcome::AllSatisfied => {}
                 ConstraintOutcome::SomeIndeterminate(n) => {
                     println!("No constraints violated ({n} indeterminate).");
-                    ExitCode::SUCCESS
                 }
                 ConstraintOutcome::SomeViolated => {
                     println!("Some constraints violated.");
-                    ExitCode::FAILURE
                 }
+            }
+            let has_error_diagnostic =
+                result.diagnostics.iter().any(|d| d.severity == Severity::Error);
+            if build_is_success(&outcome, has_error_diagnostic) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
             }
         }
         None => {
@@ -831,6 +885,17 @@ fn cmd_build(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Register all FEA/buckling/modal and shell-extract compute trampolines on `engine`.
+///
+/// This is the single source of truth for the trampoline set shared between
+/// `cmd_build` (solver-free, calls this directly) and [`configured_eval_engine`]
+/// (full solver).  Adding a new trampoline here automatically covers both paths and
+/// prevents silent drift between them.
+fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
+    reify_eval::compute_targets::register_compute_fns(engine);
+    reify_eval::register_shell_extract_compute_fns(engine);
 }
 
 /// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
@@ -846,20 +911,24 @@ fn cmd_build(args: &[String]) -> ExitCode {
 /// Both the geometry branch (`with_registered_kernel + build()`) and the plain
 /// branch (`Engine::new(None) + eval()`) share this setup; only the constructor
 /// and the terminal `build()`/`eval()` call differ.  Factoring the shared setup
-/// here eliminates the duplicated `.with_solver` + `register_compute_fns` block
-/// that would otherwise appear verbatim in each branch.
+/// here eliminates the duplicated `.with_solver` + [`register_compute_trampolines`]
+/// block that would otherwise appear verbatim in each branch.
 ///
-/// Both the FEA/buckling/modal trampolines (`register_compute_fns`) and the
-/// shell-extract trampoline (`register_shell_extract_compute_fns`) are registered
-/// here, mirroring the GUI's call pair (gui/src-tauri/src/engine.rs).  Without
-/// the shell-extract registration, shell-classified `@optimized("solver::elastic_static")`
-/// solves would hit `DispatchError::Failed` in `insert_shell_extract_upstream` and
-/// emit a misleading "falling back to tet meshing" warning even though the FEA
-/// trampoline independently re-classifies and runs the correct shell solve.
+/// Both the FEA/buckling/modal trampolines and the shell-extract trampoline are
+/// registered here via [`register_compute_trampolines`], mirroring the GUI's call
+/// pair (gui/src-tauri/src/engine.rs).  Without the shell-extract registration,
+/// shell-classified `@optimized("solver::elastic_static")` solves would hit
+/// `DispatchError::Failed` in `insert_shell_extract_upstream` and emit a misleading
+/// "falling back to tet meshing" warning even though the FEA trampoline independently
+/// re-classifies and runs the correct shell solve.
+///
+/// NOTE: `cmd_build` intentionally does NOT use this helper — it calls
+/// [`register_compute_trampolines`] directly (without `.with_solver`) to preserve
+/// cmd_build's solver-free posture for `auto`-param fixtures.  See the comment in
+/// `cmd_build` for rationale.
 fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
     let mut engine = engine.with_solver(Box::new(reify_constraints::SolverRegistry::production()));
-    reify_eval::compute_targets::register_compute_fns(&mut engine);
-    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    register_compute_trampolines(&mut engine);
     engine
 }
 
@@ -1398,6 +1467,30 @@ fn cmd_lsp() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Pure exit-decision helper for `reify build`.
+///
+/// Returns `true` when the build should exit 0 (success), `false` when it
+/// should exit non-zero (failure).  Two independent gates cause failure:
+///
+/// 1. A [`ConstraintOutcome::SomeViolated`] result — one or more constraints
+///    were violated.
+/// 2. `has_error_diagnostic` — at least one [`reify_core::Severity::Error`]
+///    diagnostic was emitted (e.g. "no registered compute trampoline"), even
+///    if the constraint outcome is [`ConstraintOutcome::AllSatisfied`] or
+///    [`ConstraintOutcome::SomeIndeterminate`].
+///
+/// This resolves task-4458 concern (c): `cmd_build` previously exited 0 when
+/// an `Error`-severity engine diagnostic was emitted alongside a non-violated
+/// constraint outcome.  This helper aligns `cmd_build`'s exit code with
+/// `cmd_eval`'s `Severity::Error` gate (see `cmd_eval` at the
+/// `diagnostics.iter().any(|d| d.severity == Severity::Error)` check).
+///
+/// Returns `bool` (not [`std::process::ExitCode`]) so the gate is directly
+/// unit-testable; callers convert to `ExitCode` at the boundary.
+fn build_is_success(outcome: &ConstraintOutcome, has_error_diagnostic: bool) -> bool {
+    !has_error_diagnostic && !matches!(outcome, ConstraintOutcome::SomeViolated)
 }
 
 /// Pure exit-decision helper for `reify check`.
@@ -2551,5 +2644,48 @@ structure Plain {
             "module without RepresentationWithin constraints must NOT be detected \
              (routing gate must return false — C2 path preserved)"
         );
+    }
+}
+
+#[cfg(test)]
+mod build_is_success_tests {
+    use super::{build_is_success, ConstraintOutcome};
+
+    /// (AllSatisfied, no error diagnostic) → success.
+    #[test]
+    fn all_satisfied_no_error_is_success() {
+        assert!(build_is_success(&ConstraintOutcome::AllSatisfied, false));
+    }
+
+    /// (AllSatisfied, has error diagnostic) → failure.
+    /// Mirrors cmd_eval's Severity::Error gate (task 4458 fix (c)).
+    #[test]
+    fn all_satisfied_with_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::AllSatisfied, true));
+    }
+
+    /// (SomeIndeterminate, no error diagnostic) → success.
+    /// Indeterminate constraints do not gate build; geometry is still written.
+    #[test]
+    fn some_indeterminate_no_error_is_success() {
+        assert!(build_is_success(&ConstraintOutcome::SomeIndeterminate(2), false));
+    }
+
+    /// (SomeIndeterminate, has error diagnostic) → failure.
+    #[test]
+    fn some_indeterminate_with_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::SomeIndeterminate(2), true));
+    }
+
+    /// (SomeViolated, no error diagnostic) → failure.
+    #[test]
+    fn some_violated_no_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::SomeViolated, false));
+    }
+
+    /// (SomeViolated, has error diagnostic) → failure.
+    #[test]
+    fn some_violated_with_error_is_failure() {
+        assert!(!build_is_success(&ConstraintOutcome::SomeViolated, true));
     }
 }
