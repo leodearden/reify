@@ -411,8 +411,13 @@ pub(crate) fn assert_dag_complete_from_graph(
 
 /// Wrapper for NodeId that implements Ord based on Debug representation.
 /// Used for deterministic tie-breaking in topological sort.
+///
+/// Promoted to `pub(crate)` (task 4357 δ) so `engine_fixpoint::run_unified_pass`
+/// reuses the SAME determinism tie-break for its Kahn worklist ready-set and
+/// Tarjan outer-iteration/successor order — a single source of total ordering,
+/// no duplicated wrapper.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DebugOrd(NodeId);
+pub(crate) struct DebugOrd(pub(crate) NodeId);
 
 impl PartialOrd for DebugOrd {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {

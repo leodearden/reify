@@ -2625,6 +2625,53 @@ impl Engine {
             );
         }
 
+        // Task 4357 δ: unified build-DAG cycle contract. When the active
+        // scheduler is UnifiedDag, run the pure structural planner
+        // (`run_unified_pass`) over α's forward dependency-trace graph and append
+        // its E_EVAL_CYCLE / E_EVAL_UNRESOLVED diagnostics to the build result.
+        //
+        // UNLIKE the β assert block above, this is deliberately NOT
+        // `#[cfg(debug_assertions)]`-gated: the driver emits real user-facing
+        // diagnostics that must surface in RELEASE builds too. On an acyclic
+        // module the driver's residue is empty and it emits zero diagnostics, so
+        // the BuildResult stays byte-identical to the LegacyMultiPass default.
+        // No-op when eval_state is None (empty module or compile-only build) or
+        // when the scheduler is LegacyMultiPass (the default). The driver is a
+        // pure planner — it executes no nodes; ε wires executors onto the
+        // schedule and retires the legacy loop.
+        //
+        // KNOWN δ behaviour — cyclic modules carry TWO cycle reports. On a cyclic
+        // input the legacy `detect_let_cycle` (engine_eval.rs) has already pushed
+        // its own UN-CODED "circular let-binding dependency" diagnostic into this
+        // same Vec via check()/eval(), so under UnifiedDag the structured
+        // `DiagnosticCode::EvalCycle` is ADDITIVE alongside it — one user cycle
+        // surfaces both a legacy (code-less) and a unified (coded) report. This is
+        // intentional for δ's additive, byte-preserving-on-acyclic wiring: the
+        // driver itself emits exactly ONE EvalCycle per SCC (pinned by the
+        // integration test), and de-duplicating against / retiring the legacy
+        // emission belongs to ε, which replaces the legacy build loop wholesale.
+        // Acyclic inputs are unaffected (residue == ∅ ⇒ zero added diagnostics).
+        if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag
+            && let Some(state) = self.eval_state.as_ref()
+        {
+            let pass = crate::engine_fixpoint::run_unified_pass(
+                &state.snapshot.graph,
+                &state.trace_map,
+            );
+            // δ consumes ONLY `pass.diagnostics` here; `pass.schedule`
+            // (`Vec<NodeId>`) and `pass.residue` (`HashSet<NodeId>`) are
+            // intentionally materialized then dropped. In δ the driver is purely
+            // the cycle-contract gate — the schedule is consumed by ε's executors
+            // once they replace the legacy build loop, so it is built now to keep
+            // `run_unified_pass` a single (schedule, residue, diagnostics) entry
+            // point across both stages. The discard cost is O(V+E) and rides the
+            // UnifiedDag path ONLY, which is gated OFF by default (LegacyMultiPass
+            // ⇒ this whole block is skipped), so the production default pays
+            // nothing. A diagnostics-only entry point was weighed and declined: it
+            // would fork the driver right before ε needs the full triple back.
+            diagnostics.extend(pass.diagnostics);
+        }
+
         BuildResult {
             values,
             constraint_results: check_result.constraint_results,
