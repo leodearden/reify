@@ -360,6 +360,17 @@ pub enum FieldSourceKind {
     /// `Value::List` containing `[original_field, yield_val]`; see
     /// `Value::Field.lambda` for the storage-layout contract.
     SafetyFactor,
+    /// A field produced by the language-level `restrict()` operator, confining
+    /// sampling to a geometric region.  The stored `lambda` in the associated
+    /// `Value::Field` is a `Value::List` containing `[inner_field, region]`
+    /// where `inner_field` is sampled for points inside `region` and
+    /// `Value::Undef` is returned for points outside.
+    ///
+    /// **α scaffold (task 4219)**: the `sample` dispatch returns `Value::Undef`
+    /// unconditionally pending the OCCT point-in-region containment hook.
+    /// Task δ implements `contains(region, point)` and changes the behaviour to
+    /// `inside → sample_field_at(inner_field, at)` / `outside → Value::Undef`.
+    Restricted,
 }
 
 // ── Topology-Selector substrate (task 4116 / α) ────────────────────────────
@@ -864,11 +875,14 @@ pub enum Value {
         ///
         /// | `source` variant(s)                                                         | stored value         |
         /// |-----------------------------------------------------------------------------|----------------------|
-        /// | `Analytical`, `Composed`                                                    | `Value::Lambda`      |
+        /// | `Analytical`                                                                | `Value::Lambda`      |
+        /// | `Composed` (inline-compose form)                                            | `Value::Lambda`      |
+        /// | `Composed` (callable-compose list form, task 4219 §5.2)                    | `Value::List[f, g]` where `f` is the outer field and `g` the inner field; `sample(composed, p) == f(g(p))` |
         /// | `Sampled`                                                                   | `Value::SampledField` (v0.2) |
         /// | `Imported`                                                                  | `Value::Undef`       |
         /// | `Gradient`, `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear` | `Value::Field` (the original source field) |
         /// | `SafetyFactor`                                                              | `Value::List` containing `[original_field, yield_val]` |
+        /// | `Restricted` (task 4219 §5.3, scaffold)                                    | `Value::List[inner_field, region]`; task δ adds OCCT containment |
         lambda: Arc<Value>,
     },
     /// Lambda closure: captures environment values and body expression.

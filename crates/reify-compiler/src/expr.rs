@@ -1829,12 +1829,14 @@ pub(crate) fn compile_expr_guarded(
                     // `is_geometry_kinematic_query` → `is_geometry_topology_selector` →
                     // `is_geometry_query` → `is_geometry_function` →
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
-                    // `is_dynamics_constructor` →
+                    // `is_dynamics_constructor` → `is_affine_map_constructor` →
+                    // `is_math_typed_fn` → `is_joint_typed_fn` →
+                    // `is_analysis_typed_fn` → `is_field_op` →
                     // first-arg fallback. The five geometry-name families plus the
-                    // RBD-β `is_dynamics_query` family (task 3829) and the task-4278
-                    // `is_dynamics_constructor` family are pinned disjoint in
-                    // `units.rs::tests::{geometry,dynamics}_query_names_are_disjoint_from_other_families`
-                    // and `dynamics_constructor_names_are_disjoint_from_other_families`,
+                    // RBD-β `is_dynamics_query` family (task 3829), the task-4278
+                    // `is_dynamics_constructor` family, and the std.fields α
+                    // `is_field_op` family (task 4219) are pinned disjoint in
+                    // `units.rs::tests::*_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates.
                     // task 4118 γ — list-helper selector coercion (insertion
@@ -2049,6 +2051,35 @@ pub(crate) fn compile_expr_guarded(
                         // test in `units.rs`, so this arm's position in the
                         // ladder is unobservable.
                         analysis_fn_result_type(name, &compiled_args)
+                    } else if is_field_op(name) && let Some(t) = field_op_result_type(
+                        name,
+                        &compiled_args
+                            .iter()
+                            .map(|a| a.result_type.clone())
+                            .collect::<Vec<_>>(),
+                    ) {
+                        // std.fields α (task 4219, PRD §5.1) — field-op name family:
+                        //   fn_field(Function{[D]→C})        → Field<D, C>
+                        //   from_samples(List<D>,List<C>,_)  → Field<D, C>
+                        //   restrict(Field<D,C>, region)     → Field<D, C>
+                        //   compose(Field<B,C>, Field<A,B>)  → Field<A, C>
+                        //   sample(Field<D,C>, _)            → C   (THE §5.1 FIX)
+                        //   gradient / divergence / curl / laplacian
+                        //                                    → Field<D, result>
+                        //                                      (correct codomain)
+                        //
+                        // `field_op_result_type` returns `None` when arg[0] is not
+                        // the expected shape (e.g. not a Field for `sample`), so
+                        // mis-shaped calls fall through to the first-arg fallback
+                        // unchanged — zero regression guarantee.
+                        //
+                        // Eval-time dispatch for sample/gradient/divergence/curl/
+                        // laplacian lives in `reify-expr`; fn_field/from_samples/
+                        // restrict/compose arrive in tasks β/γ/δ.  The FIELD_OP
+                        // family is pinned disjoint from all sibling families
+                        // (units.rs `field_op_names_are_disjoint_from_other_families`),
+                        // so this arm's position in the ladder is unobservable.
+                        t
                     } else {
                         compiled_args
                             .first()

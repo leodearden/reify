@@ -209,152 +209,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             // so they're handled here rather than in stdlib.
             match function.name.as_str() {
                 "sample" if evaluated_args.len() == 2 => {
-                    if let Value::Field {
-                        lambda,
-                        source,
-                        domain_type,
-                        codomain_type,
-                    } = &evaluated_args[0]
-                    {
-                        match (lambda.as_ref(), source) {
-                            (Value::Lambda { .. }, _) => {
-                                apply_lambda_with_point_unpacking(lambda, &evaluated_args[1], ctx)
-                            }
-                            // Sampled-field dispatch (task 2341): runtime
-                            // helper extracts query coords, detects OOB,
-                            // and dispatches to interp::interpolate_Nd.
-                            (Value::SampledField(sf), FieldSourceKind::Sampled) => {
-                                sampled::sample_at_point(sf, &evaluated_args[1], codomain_type, ctx)
-                            }
-                            // Imported-field dispatch (task 3576 PRD §80): imported fields
-                            // lower to a SampledField via read_vdb_file in elaborate_field
-                            // and are sampled identically to Sampled fields — "indistinguishable
-                            // from sampled at the field-machinery level".
-                            (Value::SampledField(sf), FieldSourceKind::Imported) => {
-                                sampled::sample_at_point(sf, &evaluated_args[1], codomain_type, ctx)
-                            }
-                            // Derived-field case: lambda slot contains the original field.
-                            // Pass codomain_type (the derived field's already-divided codomain,
-                            // stamped by compute_gradient / compute_divergence / etc.) instead
-                            // of the inner field's codomain — eliminates redundant division
-                            // inside the numerical compute functions.
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::Gradient,
-                            ) => calculus::compute_numerical_gradient_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                domain_type,
-                                codomain_type,
-                                ctx,
-                            ),
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::Divergence,
-                            ) => calculus::compute_numerical_divergence_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                domain_type,
-                                codomain_type,
-                                ctx,
-                            ),
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::Curl,
-                            ) => calculus::compute_numerical_curl_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                domain_type,
-                                codomain_type,
-                                ctx,
-                            ),
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::Laplacian,
-                            ) => calculus::compute_numerical_laplacian_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                domain_type,
-                                codomain_type,
-                                ctx,
-                            ),
-                            // Analysis field wrappers: sample the inner field, then
-                            // apply the analysis builtin pointwise.
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::VonMises,
-                            ) => analysis::sample_von_mises_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                codomain_type,
-                                ctx,
-                            ),
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::PrincipalStresses,
-                            ) => analysis::sample_principal_stresses_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                codomain_type,
-                                ctx,
-                            ),
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::MaxShear,
-                            ) => analysis::sample_max_shear_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                codomain_type,
-                                ctx,
-                            ),
-                            // SafetyFactor: lambda slot is List[field, yield_val],
-                            // not a nested Field — match on the source kind directly.
-                            (_, FieldSourceKind::SafetyFactor) => {
-                                analysis::sample_safety_factor_at_point(
-                                    lambda,
-                                    &evaluated_args[1],
-                                    codomain_type,
-                                    ctx,
-                                )
-                            }
-                            _ => {
-                                #[cfg(debug_assertions)]
-                                eprintln!(
-                                    "[reify-expr] sample: Field lambda is not a Lambda: {:?}",
-                                    lambda
-                                );
-                                Value::Undef
-                            }
-                        }
-                    } else {
-                        #[cfg(debug_assertions)]
-                        eprintln!(
-                            "[reify-expr] sample: first argument is not a Field: {:?}",
-                            evaluated_args[0]
-                        );
-                        Value::Undef
-                    }
+                    sample_field_at(&evaluated_args[0], &evaluated_args[1], ctx)
                 }
                 "gradient" if evaluated_args.len() == 1 => {
                     calculus::compute_gradient(&evaluated_args[0])
@@ -2090,6 +1945,172 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 /// unpacking), preserving the single-param binding contract.
 ///
 /// See also: `calculus.rs::extract_point_coords`.
+/// Sample `field` at `at`, dispatching over the stored lambda form.
+///
+/// This is the shared core of the `"sample"` builtin arm extracted from the
+/// inline match (std.fields α, task 4219).  Calling it recursively enables
+/// the Composed-list-form dispatch (`sample_field_at(f, sample_field_at(g, p))`).
+///
+/// | `source` + lambda                          | behaviour                                           |
+/// |--------------------------------------------|-----------------------------------------------------|
+/// | any + `Value::Lambda`                      | apply lambda directly (point unpacking if needed)   |
+/// | `Sampled`/`Imported` + `Value::SampledField` | grid interpolation via `sampled::sample_at_point`  |
+/// | `Gradient`/`Divergence`/`Curl`/`Laplacian` + inner `Value::Field` | numerical calculus helpers |
+/// | `VonMises`/`PrincipalStresses`/`MaxShear` + inner `Value::Field`  | analysis wrappers          |
+/// | `SafetyFactor` (any lambda)                | `analysis::sample_safety_factor_at_point`           |
+/// | `Composed` + `Value::List[f, g]`           | `sample_field_at(f, sample_field_at(g, at))`        |
+/// | `Restricted` + `Value::List[inner, region]`| stub → `Value::Undef` (task δ: OCCT containment)   |
+fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
+    if let Value::Field {
+        lambda,
+        source,
+        domain_type,
+        codomain_type,
+    } = field
+    {
+        match (lambda.as_ref(), source) {
+            (Value::Lambda { .. }, _) => {
+                apply_lambda_with_point_unpacking(lambda, at, ctx)
+            }
+            // Sampled-field dispatch (task 2341): runtime helper extracts query
+            // coords, detects OOB, and dispatches to interp::interpolate_Nd.
+            (Value::SampledField(sf), FieldSourceKind::Sampled) => {
+                sampled::sample_at_point(sf, at, codomain_type, ctx)
+            }
+            // Imported-field dispatch (task 3576 PRD §80): imported fields
+            // lower to a SampledField via read_vdb_file in elaborate_field
+            // and are sampled identically to Sampled fields — "indistinguishable
+            // from sampled at the field-machinery level".
+            (Value::SampledField(sf), FieldSourceKind::Imported) => {
+                sampled::sample_at_point(sf, at, codomain_type, ctx)
+            }
+            // Derived-field case: lambda slot contains the original field.
+            // Pass codomain_type (the derived field's already-divided codomain,
+            // stamped by compute_gradient / compute_divergence / etc.) instead
+            // of the inner field's codomain — eliminates redundant division
+            // inside the numerical compute functions.
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::Gradient,
+            ) => calculus::compute_numerical_gradient_at_point(
+                inner_lambda,
+                at,
+                domain_type,
+                codomain_type,
+                ctx,
+            ),
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::Divergence,
+            ) => calculus::compute_numerical_divergence_at_point(
+                inner_lambda,
+                at,
+                domain_type,
+                codomain_type,
+                ctx,
+            ),
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::Curl,
+            ) => calculus::compute_numerical_curl_at_point(
+                inner_lambda,
+                at,
+                domain_type,
+                codomain_type,
+                ctx,
+            ),
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::Laplacian,
+            ) => calculus::compute_numerical_laplacian_at_point(
+                inner_lambda,
+                at,
+                domain_type,
+                codomain_type,
+                ctx,
+            ),
+            // Analysis field wrappers: sample the inner field, then apply the
+            // analysis builtin pointwise.
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::VonMises,
+            ) => analysis::sample_von_mises_at_point(inner_lambda, at, codomain_type, ctx),
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::PrincipalStresses,
+            ) => analysis::sample_principal_stresses_at_point(
+                inner_lambda,
+                at,
+                codomain_type,
+                ctx,
+            ),
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::MaxShear,
+            ) => analysis::sample_max_shear_at_point(inner_lambda, at, codomain_type, ctx),
+            // SafetyFactor: lambda slot is List[field, yield_val],
+            // not a nested Field — match on the source kind directly.
+            (_, FieldSourceKind::SafetyFactor) => {
+                analysis::sample_safety_factor_at_point(lambda, at, codomain_type, ctx)
+            }
+            // Composed list-form (std.fields α, task 4219, PRD §5.2):
+            // lambda slot is Value::List[f, g] where f is the outer field and
+            // g is the inner field.  sample(composed, p) == f(g(p)).
+            // Convention: items[0] = f (outer), items[1] = g (inner).
+            (Value::List(items), FieldSourceKind::Composed) if items.len() == 2 => {
+                let intermediate = sample_field_at(&items[1], at, ctx);
+                sample_field_at(&items[0], &intermediate, ctx)
+            }
+            // Restricted scaffold (std.fields α, task 4219, PRD §5.3 option (b)):
+            // lambda slot is Value::List[inner_field, region].  Returns Undef
+            // unconditionally pending the OCCT point-in-region containment hook.
+            // Task δ implements contains(region, point) and changes this to:
+            //   inside  → sample_field_at(inner_field, at)
+            //   outside → Value::Undef
+            (Value::List(items), FieldSourceKind::Restricted) if items.len() == 2 => {
+                let _ = (&items[0], &items[1]); // inner_field, region — reserved for task δ
+                Value::Undef
+            }
+            _ => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[reify-expr] sample: Field lambda is not a Lambda: {:?}",
+                    lambda
+                );
+                Value::Undef
+            }
+        }
+    } else {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[reify-expr] sample: first argument is not a Field: {:?}",
+            field
+        );
+        Value::Undef
+    }
+}
+
 pub(crate) fn apply_lambda_with_point_unpacking(
     lambda: &Value,
     point: &Value,

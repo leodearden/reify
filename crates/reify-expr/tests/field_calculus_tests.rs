@@ -120,7 +120,8 @@ fn make_field_with_source_builds_field_with_given_source() {
             | FieldSourceKind::VonMises
             | FieldSourceKind::PrincipalStresses
             | FieldSourceKind::MaxShear
-            | FieldSourceKind::SafetyFactor => {}
+            | FieldSourceKind::SafetyFactor
+            | FieldSourceKind::Restricted => {}
         }
     }
 
@@ -137,6 +138,7 @@ fn make_field_with_source_builds_field_with_given_source() {
         FieldSourceKind::PrincipalStresses,
         FieldSourceKind::MaxShear,
         FieldSourceKind::SafetyFactor,
+        FieldSourceKind::Restricted,
     ] {
         let (field, field_type) =
             make_field_with_source(Type::Real, Type::Real, source_kind.clone(), lambda.clone());

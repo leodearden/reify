@@ -507,6 +507,393 @@ pub(crate) fn is_dynamics_constructor(name: &str) -> bool {
     DYNAMICS_CONSTRUCTOR_NAMES.contains(&name)
 }
 
+/// The complete set of stdlib **field-op** names recognised by the compiler
+/// (std.fields α, task 4219). A dedicated name family, structurally parallel
+/// to the sibling classification families above.
+///
+/// Per PRD docs/prds/v0_6/std-fields-api.md §5.1:
+///
+/// ```text
+/// fn fn_field(f: Function)                    -> Field<D, C>
+/// fn from_samples(pts: List<D>, vals: List<C>, method) -> Field<D, C>
+/// fn restrict(f: Field<D,C>, region: Geometry) -> Field<D, C>
+/// fn compose(f: Field<B,C>, g: Field<A,B>)    -> Field<A, C>
+/// fn sample(f: Field<D,C>, p: D)              -> C   (THE FIX: codomain)
+/// fn gradient(f: Field<D,C>)                  -> Field<D, …>
+/// fn divergence(f: Field<D,C>)                -> Field<D, …>
+/// fn curl(f: Field<D,C>)                      -> Field<D, …>
+/// fn laplacian(f: Field<D,C>)                 -> Field<D, …>
+/// ```
+///
+/// **Disjointness contract**: this list MUST remain disjoint from all six
+/// sibling families. A name living in two families would silently route
+/// through whichever arm is dispatched first in `expr.rs`'s
+/// `NoUserFunctions` ladder. Pinned by both directions:
+/// `is_field_op_recognises_all_field_op_names` (membership) AND
+/// `field_op_names_are_disjoint_from_other_families` (forward) plus the
+/// `!FIELD_OP_NAMES.contains(name)` asserts in the six sibling
+/// disjointness tests (reverse).
+///
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in
+/// [`field_op_result_type`].  Pinned by
+/// `field_op_names_each_have_a_result_type`, which iterates this slice
+/// directly (not a hand-maintained fixture) and asserts every entry has a
+/// matching arm.  Without this test, a name added to the slice without a
+/// parallel arm would silently return `None` and fall through to the
+/// first-arg fallback — exactly the mistyping the family was created to fix.
+///
+/// **Phase Tier-1 trade**: compile-time return-type wiring only.
+/// `fn_field` / `from_samples` / `restrict` / `compose` eval-time dispatch
+/// arrives in tasks β/γ/δ; `sample`/`gradient`/`divergence`/`curl`/
+/// `laplacian` already dispatch in `reify-expr`.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const FIELD_OP_NAMES: &[&str] = &[
+    "fn_field",
+    "from_samples",
+    "restrict",
+    "compose",
+    "sample",
+    "gradient",
+    "divergence",
+    "curl",
+    "laplacian",
+];
+
+pub(crate) fn is_field_op(name: &str) -> bool {
+    FIELD_OP_NAMES.contains(&name)
+}
+
+// ---------------------------------------------------------------------------
+// Dim helpers — faithful copies of reify-expr/src/calculus.rs:19-130.
+//
+// Behavioural source of truth: `reify_expr::calculus`.  These duplicates exist
+// because `reify-compiler` depends on `reify-expr` ONLY as a dev-dependency, so
+// production compiler code cannot import from `reify_expr::calculus` at the lib
+// level.  Any change to the gradient/divergence/curl/laplacian codomain logic in
+// `calculus.rs` must be mirrored here.  The table test
+// `field_op_result_type_gradient_is_codomain_correct` pins the gradient case;
+// integration tests in `crates/reify-compiler/tests/field_op_typing_tests.rs`
+// exercise the compile surface end-to-end.
+// ---------------------------------------------------------------------------
+
+/// Returns `Some(dimension)` for `Type::Scalar { dimension }` and
+/// `Some(DimensionVector::DIMENSIONLESS)` for `Type::Real | Type::Int`.
+/// Returns `None` for all other types.
+///
+/// Mirrors `reify_expr::calculus::scalar_dimension`.
+fn scalar_dimension_for_field_op(ty: &reify_core::Type) -> Option<reify_core::DimensionVector> {
+    use reify_core::{DimensionVector, Type};
+    match ty {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+        _ => None,
+    }
+}
+
+/// Domain-side analog of `scalar_dimension_for_field_op`, unwrapping
+/// `Type::Point { quantity }` before delegating to `scalar_dimension_for_field_op`.
+///
+/// Mirrors `reify_expr::calculus::domain_dimension`.
+fn domain_dimension_for_field_op(ty: &reify_core::Type) -> Option<reify_core::DimensionVector> {
+    use reify_core::Type;
+    match ty {
+        Type::Point { quantity, .. } => scalar_dimension_for_field_op(quantity),
+        _ => scalar_dimension_for_field_op(ty),
+    }
+}
+
+/// Returns `Type::Real` if `ty` is a dimensionless `Scalar`, otherwise returns
+/// a clone of `ty`.  Shared fallback for all four differential operators.
+///
+/// Mirrors `reify_expr::calculus::dimensionless_fallback`.
+fn dimensionless_fallback_for_field_op(ty: &reify_core::Type) -> reify_core::Type {
+    use reify_core::{DimensionVector, Type};
+    match ty {
+        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
+        _ => ty.clone(),
+    }
+}
+
+/// Compute the quotient Type for a differential operator result.
+///
+/// Returns `Scalar { dimension: cd / dd^exponent }` when both dimensions are
+/// non-DIMENSIONLESS; `Type::Real` when the quotient is DIMENSIONLESS; and
+/// `fallback` in all other cases.
+///
+/// Mirrors `reify_expr::calculus::dim_quotient_type`.
+fn dim_quotient_type_for_field_op(
+    codomain_dim: Option<reify_core::DimensionVector>,
+    domain_dim: Option<reify_core::DimensionVector>,
+    domain_exponent: i8,
+    fallback: reify_core::Type,
+) -> reify_core::Type {
+    use reify_core::{DimensionVector, Type};
+    match (codomain_dim, domain_dim) {
+        (Some(cd), Some(dd))
+            if cd != DimensionVector::DIMENSIONLESS && dd != DimensionVector::DIMENSIONLESS =>
+        {
+            let result_dim = if domain_exponent == 1 {
+                cd.div(&dd)
+            } else {
+                cd.div(&dd.pow(domain_exponent))
+            };
+            if result_dim != DimensionVector::DIMENSIONLESS {
+                Type::Scalar {
+                    dimension: result_dim,
+                }
+            } else {
+                Type::Real
+            }
+        }
+        _ => fallback,
+    }
+}
+
+/// Compile-time return type for a field-op call, per PRD §5.1.
+///
+/// Returns `Some(Type)` when `name` is a recognised field-op name AND the
+/// argument shape matches (i.e. the call is well-typed for this arm).
+/// Returns `None` when:
+/// - `name` is not a field-op name, OR
+/// - the argument shape doesn't match (e.g. `arg_types[0]` is not a `Field`
+///   for `sample`/`gradient`/`restrict`/`compose`, or not a `Function` for
+///   `fn_field`).
+///
+/// A `None` result means the caller should fall through to its default
+/// first-arg-fallback type-inference, preserving zero regression for existing
+/// code that passes mis-shaped arguments.
+///
+/// # Relationship to eval-time dispatch
+///
+/// This function sets the **compile-time** `result_type` on the cell; it does
+/// NOT perform eval.  At eval time `reify-expr` dispatches the same names.
+/// The two layers must agree on the result type for well-typed calls — the
+/// table test `field_op_result_type_matches_prd_5_1_table` (+ the gradient
+/// variant) pins the contract.
+pub(crate) fn field_op_result_type(
+    name: &str,
+    arg_types: &[reify_core::Type],
+) -> Option<reify_core::Type> {
+    // Fast rejection: if the name is not in the field-op family, return None
+    // immediately.  This also makes `is_field_op` / `FIELD_OP_NAMES` reachable
+    // from production code (the `_ => None` wildcard below handles the same
+    // case, but the early return here satisfies the dead_code lint).
+    if !is_field_op(name) {
+        return None;
+    }
+    use reify_core::Type;
+
+    match name {
+        // fn_field(f: Function{params, return_type}) → Field<params[0], return_type>
+        "fn_field" => {
+            if let Some(Type::Function { params, return_type }) = arg_types.first() {
+                let domain = params.first()?.clone();
+                Some(Type::Field {
+                    domain: Box::new(domain),
+                    codomain: return_type.clone(),
+                })
+            } else {
+                None
+            }
+        }
+
+        // from_samples(List<D>, List<C>, method) → Field<D, C>
+        "from_samples" => {
+            if arg_types.len() < 2 {
+                return None;
+            }
+            if let (Type::List(d), Type::List(c)) = (&arg_types[0], &arg_types[1]) {
+                Some(Type::Field {
+                    domain: d.clone(),
+                    codomain: c.clone(),
+                })
+            } else {
+                None
+            }
+        }
+
+        // restrict(Field<D,C>, region) → Field<D,C>  (type unchanged)
+        "restrict" => {
+            if let Some(Type::Field { domain, codomain }) = arg_types.first() {
+                Some(Type::Field {
+                    domain: domain.clone(),
+                    codomain: codomain.clone(),
+                })
+            } else {
+                None
+            }
+        }
+
+        // compose(Field<B,C>, Field<A,B>) → Field<A,C>
+        "compose" => {
+            if arg_types.len() < 2 {
+                return None;
+            }
+            if let (
+                Type::Field { codomain: c, .. },
+                Type::Field { domain: a, .. },
+            ) = (&arg_types[0], &arg_types[1])
+            {
+                Some(Type::Field {
+                    domain: a.clone(),
+                    codomain: c.clone(),
+                })
+            } else {
+                None
+            }
+        }
+
+        // sample(Field<D,C>, p) → C   THE §5.1 FIX: codomain, not Field
+        "sample" => {
+            if let Some(Type::Field { codomain, .. }) = arg_types.first() {
+                Some(*codomain.clone())
+            } else {
+                None
+            }
+        }
+
+        // gradient(Field<D,C>) → Field<D, result_codomain>
+        // 1D (scalar D): result_codomain = gradient_quantity (scalar or Real)
+        // nD (Point{n, scalar} D): result_codomain = Vector{n, gradient_quantity}
+        "gradient" => {
+            if let Some(Type::Field { domain, codomain }) = arg_types.first() {
+                let n = match domain.as_ref() {
+                    d if scalar_dimension_for_field_op(d).is_some() => 1,
+                    Type::Point { n, quantity }
+                        if scalar_dimension_for_field_op(quantity).is_some() =>
+                    {
+                        *n
+                    }
+                    _ => return None,
+                };
+                let gradient_quantity = dim_quotient_type_for_field_op(
+                    scalar_dimension_for_field_op(codomain),
+                    domain_dimension_for_field_op(domain),
+                    1,
+                    dimensionless_fallback_for_field_op(codomain),
+                );
+                let result_codomain = if n == 1 {
+                    gradient_quantity
+                } else {
+                    Type::Vector {
+                        n,
+                        quantity: Box::new(gradient_quantity),
+                    }
+                };
+                Some(Type::Field {
+                    domain: domain.clone(),
+                    codomain: Box::new(result_codomain),
+                })
+            } else {
+                None
+            }
+        }
+
+        // divergence(Field<Point{n,scalar}, Vector{n,scalar}>) → Field<D, scalar_codomain>
+        "divergence" => {
+            if let Some(Type::Field { domain, codomain }) = arg_types.first() {
+                // Domain must be Point{n, scalar}
+                let n = match domain.as_ref() {
+                    Type::Point { n, quantity }
+                        if scalar_dimension_for_field_op(quantity).is_some() =>
+                    {
+                        *n
+                    }
+                    _ => return None,
+                };
+                // Codomain must be Vector{n, scalar}
+                let codomain_quantity = match codomain.as_ref() {
+                    Type::Vector {
+                        n: vec_n,
+                        quantity,
+                    } if *vec_n == n && scalar_dimension_for_field_op(quantity).is_some() => {
+                        quantity.as_ref()
+                    }
+                    _ => return None,
+                };
+                let result_codomain = dim_quotient_type_for_field_op(
+                    scalar_dimension_for_field_op(codomain_quantity),
+                    domain_dimension_for_field_op(domain),
+                    1,
+                    dimensionless_fallback_for_field_op(codomain_quantity),
+                );
+                Some(Type::Field {
+                    domain: domain.clone(),
+                    codomain: Box::new(result_codomain),
+                })
+            } else {
+                None
+            }
+        }
+
+        // curl(Field<Point{3,scalar}, Vector{3,scalar}>) → Field<D, Vector{3,result}>
+        "curl" => {
+            if let Some(Type::Field { domain, codomain }) = arg_types.first() {
+                // Domain must be Point{3, scalar}
+                match domain.as_ref() {
+                    Type::Point { n: 3, quantity }
+                        if scalar_dimension_for_field_op(quantity).is_some() => {}
+                    _ => return None,
+                }
+                // Codomain must be Vector{3, scalar}
+                let codomain_quantity = match codomain.as_ref() {
+                    Type::Vector { n: 3, quantity }
+                        if scalar_dimension_for_field_op(quantity).is_some() =>
+                    {
+                        quantity.as_ref()
+                    }
+                    _ => return None,
+                };
+                let result_component = dim_quotient_type_for_field_op(
+                    scalar_dimension_for_field_op(codomain_quantity),
+                    domain_dimension_for_field_op(domain),
+                    1,
+                    dimensionless_fallback_for_field_op(codomain_quantity),
+                );
+                Some(Type::Field {
+                    domain: domain.clone(),
+                    codomain: Box::new(Type::vec3(result_component)),
+                })
+            } else {
+                None
+            }
+        }
+
+        // laplacian(Field<D, scalar_codomain>) → Field<D, scalar_codomain/domain²>
+        "laplacian" => {
+            if let Some(Type::Field { domain, codomain }) = arg_types.first() {
+                // Domain: scalar or Point{n, scalar}
+                let domain_ok = scalar_dimension_for_field_op(domain).is_some()
+                    || matches!(domain.as_ref(),
+                        Type::Point { quantity, .. }
+                            if scalar_dimension_for_field_op(quantity).is_some()
+                    );
+                if !domain_ok {
+                    return None;
+                }
+                // Codomain must be scalar
+                scalar_dimension_for_field_op(codomain)?;
+                let result_codomain = dim_quotient_type_for_field_op(
+                    scalar_dimension_for_field_op(codomain),
+                    domain_dimension_for_field_op(domain),
+                    2,
+                    dimensionless_fallback_for_field_op(codomain),
+                );
+                Some(Type::Field {
+                    domain: domain.clone(),
+                    codomain: Box::new(result_codomain),
+                })
+            } else {
+                None
+            }
+        }
+
+        // Unknown name — not a field op.
+        _ => None,
+    }
+}
+
 /// Result type per geometry-query helper. Sets the cell's `result_type` so
 /// that downstream `value_type_kind_matches` accepts the post-process
 /// `Value` (which is `Value::Undef` until GHR-ζ Phase 6 wires kernel
@@ -1607,6 +1994,11 @@ mod tests {
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
             );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family, task 4219)"
+            );
         }
     }
 
@@ -1664,6 +2056,11 @@ mod tests {
                 !ANALYSIS_FN_NAMES.contains(name),
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family, task 4219)"
             );
         }
     }
@@ -1726,6 +2123,11 @@ mod tests {
                 !ANALYSIS_FN_NAMES.contains(name),
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family, task 4219)"
             );
         }
     }
@@ -1834,6 +2236,11 @@ mod tests {
                 !ANALYSIS_FN_NAMES.contains(name),
                 "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
                  ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family, task 4219)"
             );
         }
     }
@@ -2898,5 +3305,515 @@ mod tests {
                  AFFINE_MAP_CONSTRUCTOR_NAMES (affine-map constructor family)"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 4219 — std.fields α: field-op compiler signatures
+    // -----------------------------------------------------------------------
+
+    /// `is_field_op` must return `true` for every name in `FIELD_OP_NAMES`
+    /// and `false` for unrelated / empty names.
+    ///
+    /// RED until `FIELD_OP_NAMES` / `is_field_op` are defined in `units.rs`.
+    #[test]
+    fn is_field_op_recognises_all_field_op_names() {
+        for name in &[
+            "fn_field",
+            "from_samples",
+            "restrict",
+            "compose",
+            "sample",
+            "gradient",
+            "divergence",
+            "curl",
+            "laplacian",
+        ] {
+            assert!(
+                is_field_op(name),
+                "is_field_op({name:?}) must be true (std.fields α PRD §5.1)"
+            );
+        }
+        // Unrelated names must not be recognised.
+        assert!(!is_field_op("box"), "must reject geometry constructor 'box'");
+        assert!(!is_field_op("volume"), "must reject geometry query 'volume'");
+        assert!(!is_field_op("vec"), "must reject math-linalg 'vec'");
+        assert!(!is_field_op(""), "must reject empty name");
+        assert!(!is_field_op("SAMPLE"), "must be case-sensitive");
+    }
+
+    /// Disjointness invariant — forward direction (each `FIELD_OP_NAMES`
+    /// entry must NOT appear in any of the six sibling family slices).
+    /// Without this, a field-op name added that also lived in e.g.
+    /// `GEOMETRY_QUERY_NAMES` would silently route through the
+    /// geometry-query arm (dispatched earlier in the ladder) and the
+    /// field-op arm would be dead code.
+    ///
+    /// RED until `FIELD_OP_NAMES` is defined in `units.rs`.
+    #[test]
+    fn field_op_names_are_disjoint_from_other_families() {
+        // List-helper free-fn names (`infer_list_helper_return_type`'s match
+        // arms) have no public single-source slice — they are hardcoded match
+        // arms — so this local fixture mirrors them (amendment: reviewer
+        // suggestion S3). The list-helper arm sits EARLIER in expr.rs's
+        // NoUserFunctions ladder, so a field-op name colliding with one would
+        // be silently shadowed and the field-op arm would become dead code.
+        const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
+
+        for name in FIELD_OP_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family — earlier \
+                 arm in the NoUserFunctions ladder would shadow it)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            // List-helper family — an EARLIER ladder arm; a collision would
+            // shadow the field-op arm (reviewer suggestion S3).
+            assert!(
+                !LIST_HELPER_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be a list-helper \
+                 (`single` / `flat_map` — earlier arm in the NoUserFunctions \
+                 ladder would shadow it)"
+            );
+        }
+    }
+
+    /// Per PRD §5.1: `field_op_result_type` must resolve each field-op name
+    /// to the expected return type when given well-shaped arguments.
+    ///
+    /// Mirrors `geometry_query_result_type_for_all_phase1_names_matches_table`
+    /// (units.rs:1302). Model: geometry query table test.
+    ///
+    /// RED until `field_op_result_type` is implemented in units.rs.
+    #[test]
+    fn field_op_result_type_matches_prd_5_1_table() {
+        use reify_core::{DimensionVector, Type};
+
+        // fn_field(Function{params:[Real], return_type:Real}) → Field<Real,Real>
+        assert_eq!(
+            field_op_result_type(
+                "fn_field",
+                &[Type::Function {
+                    params: vec![Type::Real],
+                    return_type: Box::new(Type::Real),
+                }]
+            ),
+            Some(Type::Field {
+                domain: Box::new(Type::Real),
+                codomain: Box::new(Type::Real),
+            }),
+            "fn_field(Function{{[Real]->Real}}) must produce Field<Real,Real> (PRD §5.1)"
+        );
+
+        // from_samples(List<Point3<Length>>, List<Scalar<Temperature>>, method)
+        //   → Field<Point3<Length>, Scalar<Temperature>>
+        let p3l = Type::point3(Type::length());
+        let s_temp = Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE,
+        };
+        assert_eq!(
+            field_op_result_type(
+                "from_samples",
+                &[
+                    Type::List(Box::new(p3l.clone())),
+                    Type::List(Box::new(s_temp.clone())),
+                    Type::Real, // method arg — ignored for typing
+                ]
+            ),
+            Some(Type::Field {
+                domain: Box::new(p3l.clone()),
+                codomain: Box::new(s_temp.clone()),
+            }),
+            "from_samples(List<D>,List<C>,_) must produce Field<D,C> (PRD §5.1)"
+        );
+
+        // restrict(Field<Real,Real>, _) → Field<Real,Real>  (domain/codomain unchanged)
+        let field_rr = Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::Real),
+        };
+        assert_eq!(
+            field_op_result_type("restrict", &[field_rr.clone(), Type::Geometry]),
+            Some(field_rr),
+            "restrict(Field<D,C>, _) must return the field type unchanged (PRD §5.1)"
+        );
+
+        // compose(Field<B=Real, C=Scalar<Temp>>, Field<A=Point3<Length>, B=Real>)
+        //   → Field<A=Point3<Length>, C=Scalar<Temp>>
+        let field_b_c = Type::Field {
+            domain: Box::new(Type::Real),       // B
+            codomain: Box::new(s_temp.clone()), // C
+        };
+        let field_a_b = Type::Field {
+            domain: Box::new(p3l.clone()), // A
+            codomain: Box::new(Type::Real), // B
+        };
+        assert_eq!(
+            field_op_result_type("compose", &[field_b_c, field_a_b]),
+            Some(Type::Field {
+                domain: Box::new(p3l.clone()),      // A
+                codomain: Box::new(s_temp.clone()), // C
+            }),
+            "compose(Field<B,C>, Field<A,B>) must produce Field<A,C> (PRD §5.1)"
+        );
+
+        // sample(Field<Real,Real>, Real) → Real   (THE §5.1 FIX: codomain, not Field)
+        assert_eq!(
+            field_op_result_type(
+                "sample",
+                &[
+                    Type::Field {
+                        domain: Box::new(Type::Real),
+                        codomain: Box::new(Type::Real),
+                    },
+                    Type::Real,
+                ]
+            ),
+            Some(Type::Real),
+            "sample(Field<Real,Real>, Real) must produce Real (codomain), not Field (PRD §5.1 FIX)"
+        );
+
+        // sample(Field<Point3<Length>, Scalar<Temperature>>, Point3<Length>)
+        //   → Scalar<Temperature>
+        assert_eq!(
+            field_op_result_type(
+                "sample",
+                &[
+                    Type::Field {
+                        domain: Box::new(p3l.clone()),
+                        codomain: Box::new(s_temp.clone()),
+                    },
+                    p3l.clone(),
+                ]
+            ),
+            Some(s_temp.clone()),
+            "sample(Field<P3<L>,Sc<T>>, P3<L>) must produce Sc<T> (codomain) (PRD §5.1)"
+        );
+
+        // --- divergence/curl/laplacian: dimensional case pins cd/dd^exp quotient ---
+
+        // divergence(Field<Point3<Length>, Vector3<Scalar<Temperature>>)
+        //   → Field<Point3<Length>, Scalar<Temperature/Length>>
+        // (dimensional quotient cd/dd^1 is asserted — not just dimensionless)
+        let v3_temp = Type::vec3(s_temp.clone());
+        let div_result_scalar = Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH),
+        };
+        assert_eq!(
+            field_op_result_type(
+                "divergence",
+                &[Type::Field {
+                    domain: Box::new(p3l.clone()),
+                    codomain: Box::new(v3_temp.clone()),
+                }]
+            ),
+            Some(Type::Field {
+                domain: Box::new(p3l.clone()),
+                codomain: Box::new(div_result_scalar),
+            }),
+            "divergence(Field<P3<L>,V3<Temp>>) must produce Field<P3<L>,Sc<Temp/L>> (PRD §5.1)"
+        );
+
+        // curl(Field<Point3<Length>, Vector3<Scalar<Temperature>>)
+        //   → Field<Point3<Length>, Vector3<Scalar<Temperature/Length>>>
+        // (dimensional quotient cd/dd^1 per component; n==3 constraint exercised)
+        let curl_component_scalar = Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH),
+        };
+        assert_eq!(
+            field_op_result_type(
+                "curl",
+                &[Type::Field {
+                    domain: Box::new(p3l.clone()),
+                    codomain: Box::new(v3_temp.clone()),
+                }]
+            ),
+            Some(Type::Field {
+                domain: Box::new(p3l.clone()),
+                codomain: Box::new(Type::vec3(curl_component_scalar)),
+            }),
+            "curl(Field<P3<L>,V3<Temp>>) must produce Field<P3<L>,V3<Temp/L>> (PRD §5.1)"
+        );
+
+        // laplacian(Field<Point3<Length>, Scalar<Temperature>>)
+        //   → Field<Point3<Length>, Scalar<Temperature/Length²>>
+        // (domain_exponent=2 is asserted; laplacian-specific path)
+        let lap_result_scalar = Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE
+                .div(&DimensionVector::LENGTH.pow(2)),
+        };
+        assert_eq!(
+            field_op_result_type(
+                "laplacian",
+                &[Type::Field {
+                    domain: Box::new(p3l.clone()),
+                    codomain: Box::new(s_temp.clone()),
+                }]
+            ),
+            Some(Type::Field {
+                domain: Box::new(p3l.clone()),
+                codomain: Box::new(lap_result_scalar),
+            }),
+            "laplacian(Field<P3<L>,Sc<Temp>>) must produce Field<P3<L>,Sc<Temp/L²>> (PRD §5.1)"
+        );
+    }
+
+    /// Gradient codomain promotion + dimension quotient — §5.1 invariant.
+    ///
+    /// 1D case: gradient(Field<Real,Real>) → Field<Real,Real>
+    ///   (dimensionless/dimensionless fallback → Real codomain; n=1 keeps scalar)
+    ///
+    /// nD case: gradient(Field<Point3<Length>, Scalar<Temperature>>)
+    ///   → Field<Point3<Length>, Vector{n:3, quantity: Scalar<Temperature/Length>}>
+    ///   (mirrors calculus.rs compute_gradient nD branch)
+    ///
+    /// RED until `field_op_result_type` is implemented in units.rs.
+    #[test]
+    fn field_op_result_type_gradient_is_codomain_correct() {
+        use reify_core::{DimensionVector, Type};
+
+        // 1D case: gradient(Field<Real,Real>) → Field<Real,Real>
+        assert_eq!(
+            field_op_result_type(
+                "gradient",
+                &[Type::Field {
+                    domain: Box::new(Type::Real),
+                    codomain: Box::new(Type::Real),
+                }]
+            ),
+            Some(Type::Field {
+                domain: Box::new(Type::Real),
+                codomain: Box::new(Type::Real),
+            }),
+            "gradient(Field<Real,Real>) must produce Field<Real,Real> (1D dimensionless case)"
+        );
+
+        // nD case: gradient(Field<Point3<Length>, Scalar<Temperature>>)
+        //   → Field<Point3<Length>, Vector{n:3, Scalar<Temperature/Length>}>
+        let p3l = Type::point3(Type::length());
+        let gradient_qty = Type::Scalar {
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH),
+        };
+        let expected = Type::Field {
+            domain: Box::new(p3l.clone()),
+            codomain: Box::new(Type::Vector {
+                n: 3,
+                quantity: Box::new(gradient_qty),
+            }),
+        };
+        assert_eq!(
+            field_op_result_type(
+                "gradient",
+                &[Type::Field {
+                    domain: Box::new(p3l),
+                    codomain: Box::new(Type::Scalar {
+                        dimension: DimensionVector::TEMPERATURE,
+                    }),
+                }]
+            ),
+            Some(expected),
+            "gradient(Field<Point3<Length>,Scalar<Temp>>) must produce \
+             Field<Point3<Length>,Vector3<Temp/Length>> (PRD §5.1 gradient codomain)"
+        );
+    }
+
+    /// Maintenance invariant — iterates `FIELD_OP_NAMES` *directly* (not a
+    /// hand-maintained fixture) and asserts every entry returns `Some` from
+    /// `field_op_result_type` when given well-shaped arguments.
+    ///
+    /// Without this test, a name added to `FIELD_OP_NAMES` without a parallel
+    /// arm in `field_op_result_type` would silently return `None` and fall
+    /// through to the first-arg fallback — exactly the mistyping the family
+    /// was created to fix.  The `_ => None` wildcard makes the failure
+    /// invisible to table-driven tests that iterate a hand-maintained fixture
+    /// rather than the slice itself.
+    ///
+    /// Mirrors `geometry_query_names_each_have_a_result_type` (units.rs).
+    #[test]
+    fn field_op_names_each_have_a_result_type() {
+        use reify_core::Type;
+
+        // Well-shaped args for each name.  One canonical set is enough;
+        // exhaustive shape coverage is the job of the table test.
+        let field_rr = Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::Real),
+        };
+        // divergence / curl require Point{n,scalar} domain + Vector{n,scalar} codomain
+        let p3_real = Type::point3(Type::Real);
+        let v3_real = Type::vec3(Type::Real);
+        let field_p3_v3 = Type::Field {
+            domain: Box::new(p3_real),
+            codomain: Box::new(v3_real),
+        };
+
+        for name in FIELD_OP_NAMES {
+            let args: Vec<Type> = match *name {
+                "fn_field" => vec![Type::Function {
+                    params: vec![Type::Real],
+                    return_type: Box::new(Type::Real),
+                }],
+                "from_samples" => vec![
+                    Type::List(Box::new(Type::Real)),
+                    Type::List(Box::new(Type::Real)),
+                    Type::Real,
+                ],
+                "compose" => vec![field_rr.clone(), field_rr.clone()],
+                "divergence" | "curl" => vec![field_p3_v3.clone()],
+                // restrict / sample / gradient / laplacian all accept Field<Real,Real>
+                _ => vec![field_rr.clone()],
+            };
+            assert!(
+                field_op_result_type(name, &args).is_some(),
+                "FIELD_OP_NAMES entry {name:?} has no matching arm in \
+                 field_op_result_type — adding a name to the slice \
+                 REQUIRES a parallel arm in field_op_result_type"
+            );
+        }
+    }
+
+    /// When arg[0] is not a Field (for sample/gradient/restrict/compose) or not
+    /// a Function (for fn_field), `field_op_result_type` must return `None` so
+    /// the `expr.rs` caller falls through to its first-arg fallback unchanged —
+    /// zero regression guarantee for mis-shaped call sites.
+    ///
+    /// RED until `field_op_result_type` is implemented in units.rs.
+    #[test]
+    fn field_op_result_type_returns_none_for_mismatched_arg_shapes() {
+        use reify_core::Type;
+
+        // sample: arg[0] must be Field
+        assert_eq!(
+            field_op_result_type("sample", &[Type::Real, Type::Real]),
+            None,
+            "sample with non-Field arg[0] must return None (falls through to first-arg fallback)"
+        );
+
+        // gradient: arg[0] must be Field
+        assert_eq!(
+            field_op_result_type("gradient", &[Type::Real]),
+            None,
+            "gradient with non-Field arg[0] must return None"
+        );
+
+        // restrict: arg[0] must be Field
+        assert_eq!(
+            field_op_result_type("restrict", &[Type::Real, Type::Real]),
+            None,
+            "restrict with non-Field arg[0] must return None"
+        );
+
+        // compose: arg[0] must be Field
+        assert_eq!(
+            field_op_result_type("compose", &[Type::Real, Type::Real]),
+            None,
+            "compose with non-Field args must return None"
+        );
+
+        // fn_field: arg[0] must be Function
+        assert_eq!(
+            field_op_result_type("fn_field", &[Type::Real]),
+            None,
+            "fn_field with non-Function arg[0] must return None"
+        );
+
+        // curl: n must be exactly 3; a 2-component domain/codomain must return None
+        let p2_real = Type::Point {
+            n: 2,
+            quantity: Box::new(Type::Real),
+        };
+        let v2_real = Type::Vector {
+            n: 2,
+            quantity: Box::new(Type::Real),
+        };
+        assert_eq!(
+            field_op_result_type(
+                "curl",
+                &[Type::Field {
+                    domain: Box::new(p2_real),
+                    codomain: Box::new(v2_real),
+                }]
+            ),
+            None,
+            "curl with n=2 (not 3) must return None — n==3 constraint"
+        );
+
+        // divergence: codomain must be a Vector; scalar codomain must return None
+        let p3_real = Type::point3(Type::Real);
+        let s_real = Type::Scalar {
+            dimension: reify_core::DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            field_op_result_type(
+                "divergence",
+                &[Type::Field {
+                    domain: Box::new(p3_real),
+                    codomain: Box::new(s_real),
+                }]
+            ),
+            None,
+            "divergence with scalar codomain (not Vector) must return None"
+        );
+
+        // Empty arg list for any field op must return None (out-of-bounds guard)
+        assert_eq!(
+            field_op_result_type("sample", &[]),
+            None,
+            "sample with empty args must return None"
+        );
+        assert_eq!(
+            field_op_result_type("fn_field", &[]),
+            None,
+            "fn_field with empty args must return None"
+        );
     }
 }
