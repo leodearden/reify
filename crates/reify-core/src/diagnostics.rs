@@ -1918,6 +1918,39 @@ pub enum DiagnosticCode {
     /// the out-of-scope variant fired when the intrinsic is used outside a purpose
     /// constraint position entirely.
     DeterminacyIntrinsicArg,
+    /// Origin: `crates/reify-eval/src/engine_fixpoint.rs::run_unified_pass`
+    /// (task 4357 δ; unified build-DAG Stage B Tarjan-SCC discriminator).
+    ///
+    /// Canonical message form (one diagnostic per strongly-connected component):
+    /// `"evaluation cycle detected: [<member>, <member>, …]"`, where each
+    /// member is rendered via [`crate::NodeId::describe`] along a deterministic
+    /// ordered path (mirroring the legacy `detect_let_cycle` `[a, b, c]` shape).
+    ///
+    /// Emitted as a `Severity::Error` when the online Kahn worklist leaves a
+    /// residue whose induced subgraph contains a true cycle (`|SCC| > 1`, or a
+    /// singleton carrying a self-edge). Singleton-no-self-edge residue members
+    /// are stranded-downstream and do NOT emit this code. Kind-agnostic: detects
+    /// value↔value, geom↔constraint, realization↔realization (GeomRef::Sub) and
+    /// any other cross-kind cycle over the edges α's trace map encodes.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_EVAL_CYCLE`.
+    EvalCycle,
+    /// Origin: `crates/reify-eval/src/engine_fixpoint.rs::run_unified_pass`
+    /// (task 4357 δ; geometry-backed-constraint-on-auto guard).
+    ///
+    /// Canonical message form:
+    /// `"unresolved constraint: <constraint-describe> transitively depends on
+    /// auto parameter(s) through geometry-backed inputs"`.
+    ///
+    /// Emitted as a `Severity::Error` when a constraint's transitive auto-read
+    /// closure (its `realization_reads`, then each backing realization's
+    /// `reads` + `realization_reads`, recursively) reaches an `auto` value cell
+    /// (`ValueCellKind::is_auto`). The unified pass declines to solve that
+    /// class. Independent of the cycle residue (a pure structural classifier
+    /// over existing edges).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_EVAL_UNRESOLVED`.
+    EvalUnresolved,
 }
 
 /// A diagnostic message with location and optional labels.
