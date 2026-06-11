@@ -1340,6 +1340,426 @@ fn max_sampled_field_bounded_empty_subregion_returns_undef() {
     );
 }
 
+// ── Bounded Analytical/Composed grid-sampling tests (step-3 RED / step-4 GREEN) ──
+//
+// The Analytical/Composed arm in compute_bounded_extremum / compute_bounded_argextremum
+// is NOT yet implemented (step-4).  All positive tests below currently return
+// Value::Undef — they become GREEN in step-4.
+//
+// Negative pins (tests 5-8 below) already expect Value::Undef and pass now;
+// they remain GREEN after step-4 lands.
+
+// ── step-3 helper: build an Analytical 1-D lambda ──────────────────────────
+//
+// Lambda `|x| scale * x` over Type::Real domain — evaluates to a Real.
+//
+// Body = BinOp::Mul(literal(scale), value_ref(x_id)).
+fn make_linear_lambda(scale: f64) -> Value {
+    let x_id = ValueCellId::new("$lambda_linear.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(scale), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    make_value_lambda(vec![("x", x_id)], body, ValueMap::new())
+}
+
+// ── step-3 helper: build a quadratic-peak lambda ────────────────────────────
+//
+// Lambda `|x| apex - (x - center)^2` — evaluated via `(x-center)*(x-center)`.
+//
+// Body = Sub(literal(apex), Mul(Sub(x_ref, literal(center)), Sub(x_ref, literal(center)))).
+fn make_quadratic_peak_lambda(apex: f64, center: f64) -> Value {
+    let x_id = ValueCellId::new("$lambda_peak.S", "x");
+    let x_ref = || CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let diff = CompiledExpr::binop(
+        BinOp::Sub,
+        x_ref(),
+        CompiledExpr::literal(Value::Real(center), Type::Real),
+        Type::Real,
+    );
+    let diff2 = CompiledExpr::binop(
+        BinOp::Sub,
+        x_ref(),
+        CompiledExpr::literal(Value::Real(center), Type::Real),
+        Type::Real,
+    );
+    let sq = CompiledExpr::binop(BinOp::Mul, diff, diff2, Type::Real);
+    let body = CompiledExpr::binop(
+        BinOp::Sub,
+        CompiledExpr::literal(Value::Real(apex), Type::Real),
+        sq,
+        Type::Real,
+    );
+    make_value_lambda(vec![("x", x_id)], body, ValueMap::new())
+}
+
+// ── step-3 helper: build a 2-D additive lambda ──────────────────────────────
+//
+// Lambda `|x, y| x + y` — parameters are individually bound; called via
+// `apply_lambda_with_point_unpacking` which auto-unpacks Point(x,y) into (x, y).
+fn make_sum2d_lambda() -> Value {
+    let x_id = ValueCellId::new("$lambda_sum2d.S", "x");
+    let y_id = ValueCellId::new("$lambda_sum2d.S", "y");
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new())
+}
+
+// ── step-3 helper: build a NaN-returning lambda ─────────────────────────────
+//
+// Lambda `|x| NaN` — body is a literal `Value::Real(f64::NAN)`.
+// Used to verify that all-non-finite results → Undef (the grid-sampler
+// skips non-finite values via `as_f64()` + `is_finite()`).
+fn make_nan_lambda() -> Value {
+    let x_id = ValueCellId::new("$lambda_nan.S", "x");
+    let body = CompiledExpr::literal(Value::Real(f64::NAN), Type::Real);
+    make_value_lambda(vec![("x", x_id)], body, ValueMap::new())
+}
+
+// ── step-3 helper: build a Vector-returning lambda ──────────────────────────
+//
+// Lambda `|x| [1, 2, 3]` — body is a literal Vector.
+// `as_f64()` on a Vector returns None → result is skipped by the grid-sampler → Undef.
+fn make_vector_returning_lambda() -> Value {
+    let x_id = ValueCellId::new("$lambda_vec.S", "x");
+    let vec_val = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let body = CompiledExpr::literal(vec_val, Type::vec3(Type::Real));
+    make_value_lambda(vec![("x", x_id)], body, ValueMap::new())
+}
+
+/// `max(analytical_1d, bbox)` over a monotonic linear field `|x| 3*x`
+/// with bbox x∈[0,4].
+///
+/// Grid: 11 nodes on [0,4] → {0.0, 0.4, 0.8, ..., 4.0}.
+/// Max at x=4 (endpoint, always a grid node) → 3*4 = 12.0 EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn max_analytical_1d_linear_returns_max_at_endpoint() {
+    let lambda = make_linear_lambda(3.0);
+    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(12.0),
+        "max(|x| 3x, bbox x∈[0,4]) = 12.0 at x=4 (endpoint node, exact)"
+    );
+}
+
+/// `min(analytical_1d, bbox)` over `|x| 3*x` with bbox x∈[0,4].
+///
+/// Min at x=0 (endpoint) → 0.0 EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn min_analytical_1d_linear_returns_min_at_endpoint() {
+    let lambda = make_linear_lambda(3.0);
+    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("min", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(0.0),
+        "min(|x| 3x, bbox x∈[0,4]) = 0.0 at x=0 (endpoint node, exact)"
+    );
+}
+
+/// `argmax(analytical_1d, bbox)` over `|x| 3*x` with bbox x∈[0,4].
+///
+/// argmax at x=4 → Value::Real(4.0) EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn argmax_analytical_1d_linear_returns_coord_at_endpoint() {
+    let lambda = make_linear_lambda(3.0);
+    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmax", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(4.0),
+        "argmax(|x| 3x, bbox x∈[0,4]) = 4.0 (endpoint node, exact)"
+    );
+}
+
+/// `argmin(analytical_1d, bbox)` over `|x| 3*x` with bbox x∈[0,4].
+///
+/// argmin at x=0 → Value::Real(0.0) EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn argmin_analytical_1d_linear_returns_coord_at_endpoint() {
+    let lambda = make_linear_lambda(3.0);
+    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmin", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(0.0),
+        "argmin(|x| 3x, bbox x∈[0,4]) = 0.0 (endpoint node, exact)"
+    );
+}
+
+/// `max(analytical_1d, bbox)` over a quadratic-peak field `|x| 10-(x-2)^2`
+/// with bbox x∈[0,4].
+///
+/// Grid: 11 nodes on [0,4] → node 5 is x=2.0 (box center, exact because
+/// count is ODD).  f(2.0) = 10 - 0 = 10.0 EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn max_analytical_1d_interior_peak_returns_peak_value() {
+    let lambda = make_quadratic_peak_lambda(10.0, 2.0);
+    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(10.0),
+        "max(|x| 10-(x-2)^2, bbox x∈[0,4]) = 10.0 (box-center node x=2, exact)"
+    );
+}
+
+/// `argmax(analytical_1d, bbox)` over `|x| 10-(x-2)^2` with bbox x∈[0,4].
+///
+/// argmax at x=2.0 (box-center node) → Value::Real(2.0) EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn argmax_analytical_1d_interior_peak_returns_center_coord() {
+    let lambda = make_quadratic_peak_lambda(10.0, 2.0);
+    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmax", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(2.0),
+        "argmax(|x| 10-(x-2)^2, bbox x∈[0,4]) = 2.0 (box-center node, exact)"
+    );
+}
+
+/// `max(analytical_2d, bbox)` over `|x,y| x+y` with Point2<Real> domain,
+/// bbox [0,2]×[0,3].
+///
+/// Grid: 11×11 nodes.  Max at corner (2.0, 3.0) → f(2,3) = 5.0 EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn max_analytical_2d_additive_returns_max_at_corner() {
+    let lambda = make_sum2d_lambda();
+    let domain = Type::Point { n: 2, quantity: Box::new(Type::Real) };
+    let (field, field_type) = make_analytical_field(domain, Type::Real, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [2.0, 3.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(5.0),
+        "max(|x,y| x+y, bbox [0,2]×[0,3]) = 5.0 at corner (2,3), exact"
+    );
+}
+
+/// `argmax(analytical_2d, bbox)` over `|x,y| x+y` with Point2<Real> domain,
+/// bbox [0,2]×[0,3].
+///
+/// argmax at corner (2.0, 3.0) → Value::Point([Real(2.0), Real(3.0)]) EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn argmax_analytical_2d_additive_returns_corner_point() {
+    let lambda = make_sum2d_lambda();
+    let domain = Type::Point { n: 2, quantity: Box::new(Type::Real) };
+    let (field, field_type) = make_analytical_field(domain, Type::Real, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [2.0, 3.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmax", field, field_type, bbox, Type::Point { n: 2, quantity: Box::new(Type::Real) });
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Point(vec![Value::Real(2.0), Value::Real(3.0)]),
+        "argmax(|x,y| x+y, bbox [0,2]×[0,3]) = Point(2.0, 3.0) at corner, exact"
+    );
+}
+
+/// `max(composed_field, bbox)` over a Composed-source field with `|x| 2*x`
+/// lambda, bbox x∈[0,5].
+///
+/// Composed source shares the Analytical grid-sampler path.
+/// Max at x=5 (endpoint) → 2*5 = 10.0 EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn max_composed_field_bounded_shares_analytical_path() {
+    let lambda = make_linear_lambda(2.0);
+    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, FieldSourceKind::Composed, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [5.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(10.0),
+        "max(|x| 2x composed, bbox x∈[0,5]) = 10.0 at x=5 (endpoint node, exact)"
+    );
+}
+
+// ── Negative pins: edge-case and source-kind guards ─────────────────────────
+//
+// These tests expect Value::Undef now AND after step-4.
+
+/// `max(analytical, bbox)` where the lambda always returns NaN → Undef.
+///
+/// The grid-sampler skips non-finite values (`as_f64()` + `is_finite()`);
+/// all 11 nodes skipped → Undef.
+///
+/// GREEN now (Analytical → Undef) and GREEN after step-4 (all-NaN → Undef).
+#[test]
+fn max_analytical_all_nan_lambda_returns_undef() {
+    let lambda = make_nan_lambda();
+    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "max(analytical, bbox) where lambda always returns NaN should be Undef"
+    );
+}
+
+/// `max(analytical, bbox)` where the lambda returns a non-orderable Vector → Undef.
+///
+/// The grid-sampler calls `as_f64()` on each lambda result; Vector returns None → skipped.
+/// All nodes skipped → Undef.
+///
+/// GREEN now (Analytical → Undef) and GREEN after step-4 (non-orderable → Undef).
+#[test]
+fn max_analytical_vector_codomain_returns_undef() {
+    let lambda = make_vector_returning_lambda();
+    let vec3_type = Type::vec3(Type::Real);
+    let (field, field_type) = make_analytical_field(Type::Real, vec3_type, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "max(analytical, bbox) where lambda returns Vector should be Undef (non-orderable)"
+    );
+}
+
+/// `max(analytical_4d, bbox_3d)` where the domain requires 4 coords but the
+/// BoundingBox only provides 3 → Undef.
+///
+/// GREEN now (Analytical → Undef) and GREEN after step-4 (n > bbox_dim → Undef).
+#[test]
+fn max_analytical_domain_exceeds_bbox_dim_returns_undef() {
+    let lambda = make_linear_lambda(1.0);
+    // Point4<Real> domain — needs 4 bbox coords; our 3-coord bbox only has lo.len()==3.
+    let domain = Type::Point { n: 4, quantity: Box::new(Type::Real) };
+    let (field, field_type) = make_analytical_field(domain, Type::Real, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 4.0, 4.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "max(Point4 domain, 3-coord bbox) should be Undef (domain dim > bbox coord count)"
+    );
+}
+
+/// 2-arg `max|min|argmax|argmin(field, bbox)` over a VonMises-source field → Undef.
+///
+/// The bounded form is scoped to Analytical/Composed/Sampled.
+/// VonMises 2-arg → `_` arm → Undef.
+#[test]
+fn bounded_reductions_on_vonmises_field_return_undef() {
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        Type::Real,
+        FieldSourceKind::VonMises,
+        Value::Undef,
+    );
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+    for op in ["max", "min", "argmax", "argmin"] {
+        let expr = make_bounded_call(op, field.clone(), field_type.clone(), bbox.clone(), Type::Real);
+        assert_eq!(
+            eval_expr(&expr, &ctx),
+            Value::Undef,
+            "{op}(VonMises field, bbox) should be Undef (bounded form not supported for VonMises)"
+        );
+    }
+}
+
+/// 2-arg `max|min|argmax|argmin(field, bbox)` over an Imported-source field → Undef.
+#[test]
+fn bounded_reductions_on_imported_field_return_undef() {
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        Type::Real,
+        FieldSourceKind::Imported,
+        Value::Undef,
+    );
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+    for op in ["max", "min", "argmax", "argmin"] {
+        let expr = make_bounded_call(op, field.clone(), field_type.clone(), bbox.clone(), Type::Real);
+        assert_eq!(
+            eval_expr(&expr, &ctx),
+            Value::Undef,
+            "{op}(Imported field, bbox) should be Undef (bounded form not supported for Imported)"
+        );
+    }
+}
+
+/// 2-arg `max|min|argmax|argmin(field, bbox)` over a MaxShear-source field → Undef.
+#[test]
+fn bounded_reductions_on_derived_maxshear_field_return_undef() {
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        Type::Real,
+        FieldSourceKind::MaxShear,
+        Value::Undef,
+    );
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+    for op in ["max", "min", "argmax", "argmin"] {
+        let expr = make_bounded_call(op, field.clone(), field_type.clone(), bbox.clone(), Type::Real);
+        assert_eq!(
+            eval_expr(&expr, &ctx),
+            Value::Undef,
+            "{op}(MaxShear field, bbox) should be Undef (bounded form not supported for derived)"
+        );
+    }
+}
+
 // ── Step S1: max / min reduce a VonMises-derived Sampled field ──────────────
 //
 // These tests are RED before the VonMises arm is implemented in
