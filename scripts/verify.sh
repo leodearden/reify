@@ -773,20 +773,25 @@ add_test_passes() {
     add "@@SEMAPHORE_ACQUIRE@@"
 
     local profile rel outer_timeout
-    # Timeout budgets sized to absorb a COLD merge-worktree workspace compile.
-    # Bumped 2026-06-03 (Leo) after recurring exit-124 cold-compile timeouts on the
-    # merge gate (esc-4178 / esc-4180 cluster killed the debug nextest mid-compile at
-    # the old 30m). sccache shares rustc output across worktrees, so warm runs finish
-    # well inside these — the larger caps only bite a genuinely cold cache.
-    # Phase 1's persistent warm merge worktree (κ = dark_factory:1692, landed at
-    # 8eceebc7e7) ensures warm verifies finish inside 60m; task #4447's debug
-    # outer_timeout 60m→90m bump is retired (task 4453) and the debug budget is
-    # restored to its pre-bump 60m value.
-    # NOTE: the outer timeouts are asserted in tests/infra/test_occt_flock_gate.sh
-    # (Test 17) — keep them in sync.
+    # Outer timeout: single unified budget re-derived from η/4521's authoritative
+    # real-load floor (task 4520/ζ′).
+    # Floor: 798.9 s (worst-observed cold real-load, genuinely cold-cache, quiet box
+    # with warm host sccache — see docs/prds/jobserver-merge-priority-balancer
+    # .acceptance-report.md §"ζ′/4520 budget floor (authoritative)").
+    # Derivation: ceil(798.9 × 4.5 production-weighted margin) = ceil(3595.05 s) =
+    # 3596 s → rounded up to clean minute-granularity = 60m (3600 s).
+    # Bound 3600 s > floor 798.9 s by construction. The 4.5× margin weights ambient
+    # production contention on top of the quiet-box measurement (the η report endorses
+    # the standing ≈4.5× headroom as appropriate). The debug --workspace pass (all
+    # crates) is the HEAVIER compile and already clears 60m battle-tested (task 4453,
+    # zero exit-124 under η's real-load gate); the lighter release-sensitive-subset
+    # pass clears 60m a fortiori — the prior 75m release budget was load-inconsistent
+    # band-aid lineage (esc-4178/esc-4180/#4447/#4453).
+    # NOTE: both outer timeouts are asserted in tests/infra/test_occt_flock_gate.sh
+    # (Test 17 — debug pass, Test 17b — release pass) — keep them in sync.
     for profile in "${PROFILES[@]}"; do
         if [ "$profile" = "release" ]; then
-            rel=" --release"; outer_timeout="75m"
+            rel=" --release"; outer_timeout="60m"
         else
             rel=""; outer_timeout="60m"
         fi
