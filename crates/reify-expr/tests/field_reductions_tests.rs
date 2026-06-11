@@ -2688,6 +2688,38 @@ fn all_reductions_on_max_shear_field_with_non_sampled_lambda_return_undef() {
     assert_all_reductions_undef(field, field_type, "MaxShear with non-Sampled lambda (Undef)");
 }
 
+/// All four reductions return `Value::Undef` when every MaxShear window is NaN
+/// (all-out-of-solid FEA sentinel).
+///
+/// Pins the FEA out-of-solid path: `compute_max_shear_3x3([NaN; 9])` returns
+/// `f64::NAN` (eigenvalues → None → NAN), the `is_finite()` gate in
+/// `argmax_argmin_index` skips every window, and all reductions return Undef.
+/// Also validates that the `debug_assert` NaN short-circuit added in step-2 does
+/// NOT panic on all-NaN input (regression pin for the symmetry-assert fix).
+#[test]
+fn reductions_on_max_shear_field_all_nan_windows_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let nan_sf = make_sampled_tensor_1d(
+        "all_nan",
+        vec![0.0, 1.0],
+        vec![[f64::NAN; 9], [f64::NAN; 9]],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(nan_sf, Type::Real);
+    let (field, field_type) = make_field_with_source(
+        Type::Real,
+        pressure,
+        FieldSourceKind::MaxShear,
+        inner_tensor_field,
+    );
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "MaxShear with all-NaN windows (all-out-of-solid → Undef)",
+    );
+}
+
 // ── Step S1 (SafetyFactor): max / min reduce a SafetyFactor-derived field ───
 //
 // These tests are RED before the SafetyFactor arm is implemented in
@@ -2871,6 +2903,41 @@ fn reductions_on_safety_factor_field_with_hydrostatic_windows_return_undef() {
         field,
         field_type,
         "SafetyFactor with hydrostatic windows (vM=0 → SF=+∞ → skipped → Undef)",
+    );
+}
+
+/// All four reductions return `Value::Undef` when every SafetyFactor window is
+/// NaN (all-out-of-solid FEA sentinel).
+///
+/// Pins the out-of-solid path: `yield / compute_von_mises_3x3([NaN; 9])` =
+/// `yield / NaN` = NaN, which is non-finite and skipped by `is_finite()`,
+/// so all reductions return Undef.
+#[test]
+fn reductions_on_safety_factor_field_all_nan_windows_return_undef() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let nan_sf = make_sampled_tensor_1d(
+        "all_nan",
+        vec![0.0, 1.0],
+        vec![[f64::NAN; 9], [f64::NAN; 9]],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(nan_sf, length.clone());
+    let yield_val = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+    let lambda = Value::List(vec![inner_tensor_field, yield_val]);
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        Type::Real,
+        FieldSourceKind::SafetyFactor,
+        lambda,
+    );
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "SafetyFactor with all-NaN windows (all-out-of-solid → Undef)",
     );
 }
 

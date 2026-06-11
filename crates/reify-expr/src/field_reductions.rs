@@ -42,6 +42,13 @@
 //!   resulting stride-1 scalar `SampledField` is clipped to the bounding box
 //!   via the same sub-region logic as `Sampled`.  Malformed lambda →
 //!   `Value::Undef` defensively. (task 4561)
+//! - **MaxShear / SafetyFactor (2-arg bounded)** — NOT YET SUPPORTED; both
+//!   return `Value::Undef` from the bounded fall-through (`_ => Undef`).
+//!   These share the same stride-9 Sampled backing as VonMises, so the bounded
+//!   clip extension is a straightforward follow-up (route projected scalar field
+//!   through the sub-region clip already used for the VonMises bounded arm).
+//!   Pinned by `bounded_reductions_on_derived_maxshear_field_return_undef` /
+//!   `bounded_reductions_on_derived_safetyfactor_field_return_undef`.
 //!
 //! All other source kinds (`Imported`, and the derived wrappers
 //! `Gradient`/`Divergence`/`Curl`/`Laplacian`/`PrincipalStresses`) return
