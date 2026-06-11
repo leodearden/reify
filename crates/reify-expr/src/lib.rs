@@ -881,6 +881,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             lets,
             ctx,
         ),
+
+        // task 4118 (γ): Selector→List<Geometry> coercion node. In the
+        // registry-free evaluator this is a PASSTHROUGH — evaluate the inner
+        // selector (yielding a `Value::Selector`) and return it unchanged.
+        // Resolving the selector into a concrete `Value::List` of geometry
+        // handles requires a `GeometryKernel`, so the real coercion happens in
+        // the kernel-bearing post-process (reify-eval), not here.
+        CompiledExprKind::ResolveSelector { selector } => eval_expr(selector, ctx),
     }
 }
 

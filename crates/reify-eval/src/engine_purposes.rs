@@ -1095,6 +1095,11 @@ fn expand_purpose_reflective_placeholders(
                 expand_purpose_reflective_placeholders(def, queries, bindings, value_cells);
             }
         }
+        // task 4118 (γ): recurse into the wrapped selector so any reflective
+        // placeholders beneath the Selector→List<Geometry> coercion expand.
+        CompiledExprKind::ResolveSelector { selector } => {
+            expand_purpose_reflective_placeholders(selector, queries, bindings, value_cells);
+        }
     }
 }
 

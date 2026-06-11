@@ -194,6 +194,22 @@ pub enum CompiledExprKind {
         /// — those operations act on surrounding-scope refs only.
         lets: Vec<(String, CompiledExpr)>,
     },
+    /// Compiler-inserted Selector→`List<Geometry>` coercion node (task 4118, γ).
+    ///
+    /// Wraps an inner expression whose `result_type` is `Selector(k)` and
+    /// presents a `result_type` of `List<Geometry>`. Emitted by the compiler
+    /// at the THREE coercion sites — param-binding, the `single()`/list-helper
+    /// path, and the `IndexAccess` object — gated on the β
+    /// `type_compat::type_compatible(List<Geometry>, Selector(k))` rule.
+    ///
+    /// Evaluation is split by layer:
+    /// - The registry-free `reify-expr` evaluator is a PASSTHROUGH: it
+    ///   evaluates the inner selector to a `Value::Selector` and returns it
+    ///   unchanged (real List resolution needs a `GeometryKernel`).
+    /// - The kernel-bearing post-process (`reify-eval`) resolves the selector
+    ///   via `topology_selectors::resolve` into a `Value::List` of
+    ///   `Value::GeometryHandle`s.
+    ResolveSelector { selector: Box<CompiledExpr> },
 }
 
 /// Determinacy predicate kinds.
@@ -354,7 +370,7 @@ pub struct CompiledFnBody {
 ///
 /// Bytes `[20]`–`[23]` are reserved by `CachedResult::content_hash` in
 /// `reify-eval/src/cache.rs` (a distinct hash domain; sharing bytes would
-/// confuse future readers). Next new `CompiledExpr` variant: use `[28]`.
+/// confuse future readers). Next new `CompiledExpr` variant: use `[29]`.
 pub const TAG_LITERAL: u8 = 0;
 pub const TAG_VALUE_REF: u8 = 1;
 pub const TAG_BIN_OP: u8 = 2;
@@ -382,6 +398,12 @@ pub const TAG_MATCH: u8 = 24;
 pub const TAG_PURPOSE_REFLECTIVE_AGGREGATION: u8 = 25;
 pub const TAG_REFLECTIVE_CELL_LIST: u8 = 26;
 pub const TAG_CROSS_SUB_GEOMETRY_REF: u8 = 27;
+/// task 4118 (γ): compiler-inserted Selector→`List<Geometry>` coercion node.
+/// Uses `[28]` per the header note above — bytes `[20]`–`[23]` are
+/// convention-reserved for `CachedResult::content_hash`'s distinct domain, so
+/// the next free `CompiledExpr` tag after `TAG_CROSS_SUB_GEOMETRY_REF` (27) is
+/// 28. (The plan's draft cited 21; superseded by the in-code reservation.)
+pub const TAG_RESOLVE_SELECTOR: u8 = 28;
 
 impl CompiledExpr {
     /// Create a literal expression.
@@ -569,6 +591,9 @@ impl CompiledExpr {
                 for (_, def) in defaults {
                     def.walk(f);
                 }
+            }
+            CompiledExprKind::ResolveSelector { selector } => {
+                selector.walk(f);
             }
         }
     }
@@ -840,6 +865,12 @@ impl CompiledExpr {
                     result_type,
                 )
             }
+            CompiledExprKind::ResolveSelector { selector } => {
+                // Rebuild via `resolve_selector` so the variant (and its fixed
+                // List<Geometry> result_type) survive the hash-rebuild path.
+                let new_selector = selector.map_value_refs(f);
+                CompiledExpr::resolve_selector(new_selector)
+            }
         }
     }
 
@@ -994,6 +1025,9 @@ impl CompiledExpr {
                 for (_, def) in defaults {
                     def.collect_value_refs_inner(refs);
                 }
+            }
+            CompiledExprKind::ResolveSelector { selector } => {
+                selector.collect_value_refs_inner(refs);
             }
         }
     }
@@ -1169,6 +1203,27 @@ impl CompiledExpr {
         }
     }
 
+    /// Create a `ResolveSelector` coercion node (task 4118, γ).
+    ///
+    /// Wraps `selector` (whose `result_type` is expected to be `Selector(k)`)
+    /// and fixes the node's `result_type` to `List<Geometry>`. The result type
+    /// is NOT a parameter — the coercion target is invariant by construction,
+    /// which keeps the three compiler insertion sites (param-binding,
+    /// `single()`/list-helper, `IndexAccess` object) from each having to
+    /// re-derive it. Hash seeds with `TAG_RESOLVE_SELECTOR` so a wrapped
+    /// selector cannot collide with the bare inner expression.
+    pub fn resolve_selector(selector: CompiledExpr) -> Self {
+        let content_hash =
+            ContentHash::of(&[TAG_RESOLVE_SELECTOR]).combine(selector.content_hash);
+        CompiledExpr {
+            kind: CompiledExprKind::ResolveSelector {
+                selector: Box::new(selector),
+            },
+            result_type: Type::List(Box::new(Type::Geometry)),
+            content_hash,
+        }
+    }
+
     /// Rewrite all `ValueRef` cell IDs whose entity matches `from_entity`,
     /// replacing the entity part with `to_entity`. This is used during purpose
     /// activation to remap compiled references from the purpose's parameter
@@ -1326,6 +1381,9 @@ impl CompiledExpr {
                     def.remap_entity(from_entity, to_entity);
                 }
             }
+            CompiledExprKind::ResolveSelector { selector } => {
+                selector.remap_entity(from_entity, to_entity);
+            }
         }
     }
 
@@ -1479,6 +1537,9 @@ impl CompiledExpr {
                 for (_, def) in defaults {
                     def.remap_cell(from, to);
                 }
+            }
+            CompiledExprKind::ResolveSelector { selector } => {
+                selector.remap_cell(from, to);
             }
         }
     }
