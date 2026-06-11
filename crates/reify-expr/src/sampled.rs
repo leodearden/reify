@@ -222,3 +222,150 @@ fn wrap_result(v: f64, codomain_type: &Type) -> Value {
         _ => Value::Real(v),
     }
 }
+
+// ─── tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use reify_core::Type;
+    use reify_ir::{InterpolationKind, SampledField, SampledGridKind, Value, ValueMap};
+
+    use crate::EvalContext;
+    use super::sample_at_point;
+
+    // ── fixture helpers ──────────────────────────────────────────────────────
+
+    /// Build a Regular1D scalar (stride-1) field.
+    fn make_1d_scalar(n: usize, h: f64, f: impl Fn(f64) -> f64) -> SampledField {
+        let axis: Vec<f64> = (0..n).map(|i| i as f64 * h).collect();
+        let data: Vec<f64> = axis.iter().map(|&x| f(x)).collect();
+        SampledField {
+            name: "test-1d".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![(n - 1) as f64 * h],
+            spacing: vec![h],
+            axis_grids: vec![axis],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build a Regular2D stride-2 field (interleaved node-major: data[g*2+0]=comp0, [g*2+1]=comp1).
+    fn make_2d_stride2(
+        nx: usize,
+        ny: usize,
+        hx: f64,
+        hy: f64,
+        f: impl Fn(f64, f64) -> [f64; 2],
+    ) -> SampledField {
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * hx).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * hy).collect();
+        let mut data = Vec::with_capacity(nx * ny * 2);
+        for &x in &xs {
+            for &y in &ys {
+                let v = f(x, y);
+                data.push(v[0]);
+                data.push(v[1]);
+            }
+        }
+        SampledField {
+            name: "test-2d-stride2".to_string(),
+            kind: SampledGridKind::Regular2D,
+            bounds_min: vec![0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * hx, (ny - 1) as f64 * hy],
+            spacing: vec![hx, hy],
+            axis_grids: vec![xs, ys],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    // ── ε step-5a: stride-1 regression ──────────────────────────────────────
+
+    /// sample_at_point on a stride-1 Regular1D scalar field returns the interpolated
+    /// Value::Real — regression pin for the existing scalar path.
+    ///
+    /// f(x) = 2x + 3 sampled at x=2.0 → 2*2+3 = 7.0 (exact at grid node).
+    /// Must be GREEN before and after step-6 (scalar path is branch-guarded, bit-identical).
+    #[test]
+    fn sample_at_point_stride1_scalar_returns_real() {
+        let sf = make_1d_scalar(5, 1.0, |x| 2.0 * x + 3.0);
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let result = sample_at_point(&sf, &Value::Real(2.0), &Type::Real, &ctx);
+        assert_eq!(result, Value::Real(7.0), "stride-1 scalar sample must return Real(7.0)");
+    }
+
+    // ── ε step-5b: stride-2 constant 2D field — currently RED ───────────────
+
+    /// sample_at_point on a stride-2 Regular2D field with constant components (comp0=3.0,
+    /// comp1=5.0) at an in-bounds point returns Value::Vector([Real(3.0), Real(5.0)]).
+    ///
+    /// Currently RED: the stride-1 path passes data.len()=18 to interpolate_2d which
+    /// asserts data.len()==9 → panic.
+    /// Will be GREEN after step-6 deinterleaves per-component before calling interpolate_2d.
+    #[test]
+    fn sample_at_point_stride2_constant_returns_vector() {
+        // 3×3 grid, constant components: comp0 = 3.0, comp1 = 5.0 everywhere.
+        let sf = make_2d_stride2(3, 3, 1.0, 1.0, |_x, _y| [3.0, 5.0]);
+        // codomain = Vector{2, Real} — the stride-2 type produced by 2D gradient
+        let codomain = Type::Vector {
+            n: 2,
+            quantity: Box::new(Type::Real),
+        };
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        // Sample at an in-bounds interior point (not necessarily a grid node)
+        let point = Value::Vector(vec![Value::Real(0.5), Value::Real(0.5)]);
+        let result = sample_at_point(&sf, &point, &codomain, &ctx);
+        match &result {
+            Value::Vector(comps) => {
+                assert_eq!(comps.len(), 2, "stride-2 result must have 2 components");
+                assert_eq!(comps[0], Value::Real(3.0), "comp0 must be Real(3.0)");
+                assert_eq!(comps[1], Value::Real(5.0), "comp1 must be Real(5.0)");
+            }
+            other => panic!("expected Value::Vector, got {:?}", other),
+        }
+    }
+
+    /// sample_at_point on a stride-2 Regular2D field with linearly-varying components
+    /// (comp0=x, comp1=y) at a grid node returns the exact per-component values.
+    ///
+    /// Currently RED: same panic as above.
+    /// Will be GREEN after step-6.
+    #[test]
+    fn sample_at_point_stride2_linear_at_grid_node_is_exact() {
+        // 3×3 grid: comp0(i,j) = x_i, comp1(i,j) = y_j.
+        let sf = make_2d_stride2(3, 3, 1.0, 1.0, |x, y| [x, y]);
+        let codomain = Type::Vector {
+            n: 2,
+            quantity: Box::new(Type::Real),
+        };
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        // Sample at grid node (1.0, 2.0) — node g = 1*3+2 = 5
+        let point = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
+        let result = sample_at_point(&sf, &point, &codomain, &ctx);
+        match &result {
+            Value::Vector(comps) => {
+                assert_eq!(comps.len(), 2, "stride-2 result must have 2 components");
+                let c0 = match &comps[0] {
+                    Value::Real(v) => *v,
+                    other => panic!("comp0 must be Real, got {:?}", other),
+                };
+                let c1 = match &comps[1] {
+                    Value::Real(v) => *v,
+                    other => panic!("comp1 must be Real, got {:?}", other),
+                };
+                assert!((c0 - 1.0).abs() < 1e-12, "comp0 at grid node (1,2) must be 1.0, got {c0}");
+                assert!((c1 - 2.0).abs() < 1e-12, "comp1 at grid node (1,2) must be 2.0, got {c1}");
+            }
+            other => panic!("expected Value::Vector, got {:?}", other),
+        }
+    }
+}
