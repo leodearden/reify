@@ -826,6 +826,70 @@ pub fn filter_feasible_candidates(
     }
 }
 
+// ─── β helper: per-candidate ValueMap setup (PRD §5.2) ──────────────────────
+
+/// Build a per-candidate [`reify_ir::ValueMap`] seeded with the candidate
+/// template's **direct literal defaults**, keyed under the supplied
+/// `param_member` name.
+///
+/// # Purpose
+///
+/// This is the per-candidate ValueMap setup primitive for PRD §5.2 β.  When
+/// a parameterized template declares `param seal : T` and a constraint reads
+/// `seal.thickness`, the constraint checker needs a `ValueMap` entry for
+/// `seal.thickness` populated with the candidate's resolved literal default so
+/// the checker can evaluate the constraint against a concrete value instead of
+/// `Undef`.
+///
+/// # Seeding rule (one-level, literal-only)
+///
+/// For each `ValueCellDecl` in `candidate_template.value_cells`:
+/// - If `default_expr` is `Some(expr)` **and** `expr.kind` is
+///   `CompiledExprKind::Literal(v)`, insert
+///   `(ValueCellId::new(param_member, cell.id.member), v.clone())`.
+/// - Otherwise (no default, or a non-literal / computed default) skip the
+///   cell — it is left `Undef` in the caller's ValueMap.
+///
+/// Only direct literal constants are extracted.  Nested member chains and
+/// computed defaults (e.g. expressions involving other cells) are deferred to
+/// PRD §14.3; `reify-compiler` cannot run the evaluator, so non-literal
+/// defaults cannot be reduced to a `Value` at this layer.
+///
+/// # Key convention
+///
+/// Keys use `ValueCellId::new(param_member, field)` so that a constraint
+/// `seal.thickness < bore_radius` in the parameterized template resolves
+/// against the seeded `seal.thickness` entry.  The `param_member` argument
+/// is the **name of the `auto:` type-parameter's value cell** in the
+/// parameterized template (e.g. `"seal"` for `param seal : T`), not the
+/// candidate structure's own name.
+///
+/// # γ handoff
+///
+/// This helper is `pub` and unwired by design.  γ wires it into the DFS
+/// per-leaf / Phase-B loop — specifically at the three
+/// `NOTE(substitution-pass-trigger)` sites in this file — as part of the
+/// same code region as γ's BFS-soundness joint-recheck.  β deliberately
+/// does NOT touch those sites so γ can build on β sequentially without
+/// collision.
+pub fn seed_candidate_value_map(
+    candidate_template: &crate::types::TopologyTemplate,
+    param_member: &str,
+) -> reify_ir::ValueMap {
+    use reify_core::ValueCellId;
+    use reify_ir::{CompiledExprKind, ValueMap};
+
+    let mut map = ValueMap::new();
+    for cell in &candidate_template.value_cells {
+        if let Some(expr) = &cell.default_expr
+            && let CompiledExprKind::Literal(v) = &expr.kind
+        {
+            map.insert(ValueCellId::new(param_member, &cell.id.member), v.clone());
+        }
+    }
+    map
+}
+
 // ─── Phase C: selection (strict-vs-free dispatch + lexicographic tiebreak) ──
 
 /// The result of [`select_candidate`].

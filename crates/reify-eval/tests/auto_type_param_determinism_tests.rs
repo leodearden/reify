@@ -86,6 +86,17 @@ const SKIP_SET: &[(&str, &str)] = &[
          covered by examples_smoke.rs::all_examples_parse_and_compile_with_stdlib \
          and crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs.",
     ),
+    (
+        "auto/bearing_constraint_select.ri",
+        "strict `auto: Seal` with two stub-feasible candidates (ThinSeal, ThickSeal) \
+         resolves Ambiguous under the compile-time stub checker → E_AUTO_TYPE_PARAM_AMBIGUOUS \
+         Error; the zero-Error gate cannot pass. The unique-survivor selection \
+         (ThinSeal, whose thickness=1mm satisfies the `seal.thickness < bore_radius` \
+         constraint) is a REAL-checker behaviour exercised by task ζ's reify-eval \
+         auto_type_param_completion_e2e harness under SimpleConstraintChecker. \
+         Per-candidate ValueMap setup is delivered by task 4433 β \
+         (seed_candidate_value_map); loop wiring by γ.",
+    ),
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

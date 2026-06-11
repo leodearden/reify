@@ -23,9 +23,10 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 ///
 /// Default: empty — all 43 example files compile clean on HEAD after task #2346
 /// (recursive examples_smoke discovery) was merged on 2026-04-26.
-const SKIP_SET: &[(&str, &str)] = &[(
-    "topology_selectors/fillet_top_edges.ri",
-    "topology-selectors PRD task 7 worked example; \
+const SKIP_SET: &[(&str, &str)] = &[
+    (
+        "topology_selectors/fillet_top_edges.ri",
+        "topology-selectors PRD task 7 worked example; \
          compile_with_stdlib gated on the missing 3-arg fillet(solid, edges, radius) \
          stdlib binding — current compiler only wires 2-arg fillet(solid, radius) \
          (crates/reify-compiler/src/geometry_modify.rs:115). \
@@ -33,7 +34,19 @@ const SKIP_SET: &[(&str, &str)] = &[(
          Gated compile-with-stdlib smoke is in \
          crates/reify-eval/tests/topology_selector_smoke_tests.rs::\
          fillet_top_edges_compiles_with_stdlib_no_errors (#[ignore]).",
-)];
+    ),
+    (
+        "auto/bearing_constraint_select.ri",
+        "strict `auto: Seal` with two stub-feasible candidates (ThinSeal, ThickSeal) \
+         resolves Ambiguous under the compile-time stub checker → E_AUTO_TYPE_PARAM_AMBIGUOUS \
+         Error; the zero-Error gate cannot pass. The unique-survivor selection \
+         (ThinSeal, whose thickness=1mm satisfies the `seal.thickness < bore_radius` \
+         constraint) is a REAL-checker behaviour exercised by task ζ's reify-eval \
+         auto_type_param_completion_e2e harness under SimpleConstraintChecker. \
+         Per-candidate ValueMap setup is delivered by task 4433 β \
+         (seed_candidate_value_map); loop wiring by γ.",
+    ),
+];
 
 /// Bulk smoke: walk `examples/*.ri`, parse each file and compile it with the
 /// stdlib prelude, accumulate every file that produces an Error-severity
