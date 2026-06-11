@@ -2763,6 +2763,16 @@ pub(crate) fn try_eval_resolve_selector(
         // `single`'s `single(List<Geometry>) → Geometry` contract promises. This
         // is the runtime half of the single()/list-helper coercion (the golden
         // `top = single(faces_by_normal(b, +Z, 1deg))` shape).
+        //
+        // LOCKSTEP with the compiler: the set of coercing list-helpers is named
+        // by `reify_compiler::coerce::COERCING_LIST_HELPERS` (currently just
+        // `single`). This arm is the runtime counterpart that constant's doc
+        // requires — it is intentionally hard-pinned to `"single"` (not the whole
+        // set) because the unwrap-the-unique-element logic below is `single`'s
+        // specific `single(List<Geometry>) → Geometry` semantics. If a new
+        // coercing helper is ever added to `COERCING_LIST_HELPERS`, it needs its
+        // OWN arm here implementing that helper's semantics (e.g. `first` → index
+        // 0), not a widening of this `== "single"` guard.
         reify_ir::CompiledExprKind::FunctionCall { function, args }
             if function.name == "single" && args.len() == 1 =>
         {

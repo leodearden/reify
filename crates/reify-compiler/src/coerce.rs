@@ -11,6 +11,33 @@
 //! [`type_compatible`]`(List<Geometry>, Selector(k))` shipped by task 4117. This
 //! module *reads* that rule; it does not extend `type_compat.rs`.
 //!
+//! ## Runtime-resolution scope (compile-time wrap vs. kernel pass)
+//!
+//! These three sites are **compiler** coercions: each inserts a `ResolveSelector`
+//! node so the call type-checks and the emitted IR carries the correct
+//! `List<Geometry>` shape. Turning a `ResolveSelector` into a concrete
+//! `Value::List` of handles is the job of `reify_eval`'s
+//! `try_eval_resolve_selector` / `post_process_topology_selectors` pass, which
+//! only resolves a cell whose **top-level** `default_expr` is a `ResolveSelector`,
+//! an `IndexAccess`-over-selector, or `single(<selector>)`.
+//!
+//! A `ResolveSelector` nested **inside a user-function-call argument** — e.g.
+//! `let n = takes_faces(faces(b))`, compiled to
+//! `UserFunctionCall { takes_faces, [ResolveSelector{ faces(b) }] }` — is
+//! therefore NOT kernel-resolved: the pure (registry-free) evaluator passes
+//! `ResolveSelector` through as the inner `Value::Selector`, so a user-function
+//! body that consumes the parameter as `List<Geometry>` would observe an
+//! unresolved `Value::Selector` at runtime. The param-binding site (#1) below is
+//! consequently a **compile-time-only** coercion today — it makes the call
+//! type-check, but does not by itself guarantee a resolved list inside the callee.
+//!
+//! This is an accepted limitation of the ratified γ scope: the user-observable
+//! signal is `single(faces_by_normal(...))` (golden, fully wired end-to-end), and
+//! the only other consumer — 3-arg edge-targeted `fillet` — is out of scope
+//! (esc-4118-52). Resolving nested-argument `ResolveSelector`s at runtime is a
+//! documented follow-up, not a working path today; do not mistake the
+//! compile-time wrap for a runtime resolution.
+//!
 //! **Why a `NoMatch`-arm retry for site #1?** `resolve_function_overload` matches
 //! parameters by *exact* type equality, so a `Selector(k)` argument fed to a
 //! `List<Geometry>` parameter is an `OverloadResolution::NoMatch` — the primary
@@ -44,6 +71,27 @@ pub(crate) fn coerce_selector_arg(arg: CompiledExpr, param_ty: &Type) -> Compile
     }
 }
 
+/// List-helper names whose first argument participates in the Selector →
+/// `List<Geometry>` γ coercion (insertion site #2, PRD §4.4). Currently only
+/// `single`.
+///
+/// **Lockstep invariant** — every name here MUST have a matching runtime
+/// resolution arm in `reify_eval::geometry_ops::try_eval_resolve_selector`,
+/// because the compiler wraps `helper(<selector>)`'s argument in a
+/// `ResolveSelector` that the pure (kernel-free) evaluator cannot resolve. Adding
+/// a name here WITHOUT adding the paired eval arm makes `helper(selector(...))`
+/// cells silently fall through to the pure path and retain an unresolved
+/// `Value::Selector` at runtime.
+///
+/// The compiler and eval sites cannot share this constant directly: the eval
+/// crate would need it re-exported from `reify-compiler`'s crate root
+/// (`lib.rs`), which is outside task 4118's file scope. The two are therefore
+/// kept in lockstep by cross-referencing comments — see the `single` arm of
+/// `try_eval_resolve_selector` in `crates/reify-eval/src/geometry_ops.rs`. A
+/// future task owning `reify-compiler/src/lib.rs` can promote this to a shared
+/// `pub` constant.
+const COERCING_LIST_HELPERS: &[&str] = &["single"];
+
 /// List-helper selector coercion (insertion site #2). When the `single`
 /// list-helper receives a `Selector(k)` first argument, wrap it in
 /// `ResolveSelector` so the helper sees `List<Geometry>` and
@@ -51,14 +99,15 @@ pub(crate) fn coerce_selector_arg(arg: CompiledExpr, param_ty: &Type) -> Compile
 /// collapses `single(List<Geometry>)` → `Geometry` (instead of the first-arg
 /// fallback leaving the cell typed `Selector(k)`).
 ///
-/// Scoped to `single` — the ratified γ coercion target (PRD §4.4). `flat_map`'s
-/// first argument is also a `List<_>`, but its element type flows into a
-/// separately-compiled user lambda, so it is intentionally left out of scope
-/// here. Every other name — and any non-`Selector` first argument — passes
-/// through untouched, gated on the same β `type_compatible` rule via
-/// [`coerce_selector_arg`] ("do not coerce when arg is already a List").
+/// Scoped to the [`COERCING_LIST_HELPERS`] set (currently just `single`) — the
+/// ratified γ coercion target (PRD §4.4). `flat_map`'s first argument is also a
+/// `List<_>`, but its element type flows into a separately-compiled user lambda,
+/// so it is intentionally left out of scope here. Every other name — and any
+/// non-`Selector` first argument — passes through untouched, gated on the same β
+/// `type_compatible` rule via [`coerce_selector_arg`] ("do not coerce when arg is
+/// already a List").
 pub(crate) fn coerce_list_helper_args(name: &str, args: Vec<CompiledExpr>) -> Vec<CompiledExpr> {
-    if name != "single" {
+    if !COERCING_LIST_HELPERS.contains(&name) {
         return args;
     }
     let list_geometry = Type::List(Box::new(Type::Geometry));
@@ -125,6 +174,19 @@ pub(crate) fn try_selector_coerced_overload<'a>(
                     .iter()
                     .zip(arg_types.iter())
                     .all(|((_, param_ty), arg_ty)| {
+                        // Non-selector args keep EXACT equality, deliberately
+                        // mirroring the primary `resolve_function_overload`
+                        // (type_compat.rs): it likewise matches concrete params by
+                        // `param_ty == arg_ty` and does NOT apply Int→Real (or any
+                        // other) widening during overload selection — `f(Int)` and
+                        // `f(Real)` are distinct overloads there. Reusing
+                        // `type_compatible` here would make this retry STRICTLY
+                        // MORE permissive than the primary path (enabling widening
+                        // only when a Selector arg is also present), an
+                        // inconsistency — not a "strict superset". So a call that
+                        // needs BOTH a selector coercion AND a separate widening
+                        // (e.g. Int→Real on another arg) intentionally stays a
+                        // no-match, exactly as it would with no selector at all.
                         param_ty == arg_ty || selector_coerces_to_param(param_ty, arg_ty)
                     })
         })
