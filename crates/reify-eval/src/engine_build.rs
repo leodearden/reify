@@ -6724,6 +6724,40 @@ fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
 mod tests {
     use super::*;
 
+    /// step-05 (RED): `resolve_artifact_path` resolves an `Output` occurrence's
+    /// raw `path` field against the design-file directory, an optional
+    /// `--out-dir` override, or verbatim when already absolute.
+    ///
+    /// This is the pure core of the B7 design-relative-path rule
+    /// (`docs/prds/v0_6/io-export-import-completion.md` §7.3): a relative
+    /// occurrence path joins onto `out_dir_override.unwrap_or(design_dir)` — so
+    /// the override is a CI escape hatch that beats the design dir — while an
+    /// absolute path ignores both bases. Encapsulating the rule here makes
+    /// `build_outputs`'s `ExportArtifact.path` fully resolved and unit-testable
+    /// without spawning the CLI binary.
+    #[test]
+    fn resolve_artifact_path_handles_relative_override_and_absolute() {
+        use std::path::{Path, PathBuf};
+
+        // Relative path + design dir, no override → joins onto the design dir.
+        assert_eq!(
+            resolve_artifact_path("o.stl", Path::new("/d"), None),
+            PathBuf::from("/d/o.stl"),
+        );
+
+        // Relative path + override → the override wins over the design dir.
+        assert_eq!(
+            resolve_artifact_path("o.stl", Path::new("/d"), Some(Path::new("/ci"))),
+            PathBuf::from("/ci/o.stl"),
+        );
+
+        // Absolute path → verbatim, ignoring both bases.
+        assert_eq!(
+            resolve_artifact_path("/abs/x.stl", Path::new("/d"), Some(Path::new("/ci"))),
+            PathBuf::from("/abs/x.stl"),
+        );
+    }
+
     /// step-09 (RED): `seed_cross_sub_named_steps` must thread [`KernelHandle`]
     /// (not bare [`GeometryHandleId`]) through `named_steps` /
     /// `module_named_steps`.
