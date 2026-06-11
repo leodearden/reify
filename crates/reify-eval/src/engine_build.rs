@@ -6781,6 +6781,155 @@ mod tests {
         );
     }
 
+    // ── build_outputs occurrence-driven export (io-export δ steps 7–14) ───────
+
+    /// Recording kernel for the io-export δ driver tests: delegates the full
+    /// `GeometryKernel` surface to a `MockGeometryKernel`, and additionally
+    /// captures (a) every handle `execute` produced — so a test can identify the
+    /// realized geometry handle (e.g. the `part` box) the occurrence's `subject`
+    /// must resolve to — and (b) every `export(handle, format)` call's
+    /// `(handle, format)` pair. `export` still delegates to the inner mock (which
+    /// writes `MOCK_EXPORT_DATA`), so `ExportArtifact.bytes` is non-empty.
+    /// Capturing the export format proves the DSL `Output` occurrence — not a
+    /// hardcoded CLI flag — drove the serializer.
+    struct ExportRecordingKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        executed: std::sync::Arc<std::sync::Mutex<Vec<reify_ir::GeometryHandleId>>>,
+        exported: std::sync::Arc<
+            std::sync::Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
+        >,
+    }
+
+    impl reify_ir::GeometryKernel for ExportRecordingKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            let result = self.inner.execute(op);
+            if let Ok(handle) = &result {
+                self.executed.lock().unwrap().push(handle.id);
+            }
+            result
+        }
+
+        fn query(
+            &self,
+            q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            self.exported.lock().unwrap().push((handle, format));
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+
+        fn make_compound(
+            &mut self,
+            handles: &[reify_ir::GeometryHandleId],
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.inner.make_compound(handles)
+        }
+    }
+
+    /// step-07 (RED): `build_outputs` drives a single `STLOutput` occurrence to
+    /// exactly one `ExportArtifact` whose `format` (STL) and `path` ("o.stl",
+    /// resolved design-relative) come from the DSL, and whose exported handle is
+    /// the realized `part` box (the occurrence's `subject`).
+    ///
+    /// Asserting the single export's `format == Stl` proves the DSL occurrence —
+    /// not a hardcoded flag — chose the serializer (B5); asserting its handle is
+    /// one the kernel realized proves the `subject: part` arg resolved to live
+    /// geometry.
+    ///
+    /// RED until step-08 adds `Engine::build_outputs`: the method does not yet
+    /// exist, so this test fails to compile.
+    #[test]
+    fn build_outputs_drives_single_stl_output() {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel {
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
+            executed: Arc::clone(&executed),
+            exported: Arc::clone(&exported),
+        };
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+
+        assert_eq!(
+            artifacts.len(),
+            1,
+            "exactly one ExportArtifact for the single STLOutput occurrence, got {}",
+            artifacts.len()
+        );
+        let art = &artifacts[0];
+        assert_eq!(
+            art.format,
+            reify_ir::ExportFormat::Stl,
+            "the DSL STLOutput occurrence must drive ExportFormat::Stl"
+        );
+        assert_eq!(
+            art.path,
+            PathBuf::from("/tmp/d/o.stl"),
+            "a relative occurrence path joins onto the design dir (B7)"
+        );
+        assert!(
+            !art.bytes.is_empty(),
+            "the kernel export() must have written bytes into the artifact"
+        );
+
+        let exported = exported.lock().unwrap().clone();
+        assert_eq!(
+            exported.len(),
+            1,
+            "exactly one export() call for the single occurrence, got {}",
+            exported.len()
+        );
+        assert_eq!(
+            exported[0].1,
+            reify_ir::ExportFormat::Stl,
+            "the recorded export() format must be Stl (DSL-driven, not flag-driven)"
+        );
+        let executed = executed.lock().unwrap().clone();
+        assert!(
+            executed.contains(&exported[0].0),
+            "the exported handle {:?} must be a realized kernel handle (the resolved \
+             `subject: part`); realized handles were {:?}",
+            exported[0].0,
+            executed
+        );
+    }
+
     /// step-09 (RED): `seed_cross_sub_named_steps` must thread [`KernelHandle`]
     /// (not bare [`GeometryHandleId`]) through `named_steps` /
     /// `module_named_steps`.
