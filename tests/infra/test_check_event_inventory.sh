@@ -409,5 +409,125 @@ assert "--bidirectional does not classify §10 channel as §1 phantom" \
 assert "--bidirectional --strict exits 0 when §10 channel is not misclassified as §1 phantom" \
     "$CHECK_SCRIPT" --repo-root "$_fix12dir" --strict --bidirectional
 
+# ==============================================================================
+# Check 13: forward-pass / orphan-pass hermeticity
+# Build-artifact .rs files under gen/ and target/ must NOT be scanned by the
+# forward pass. If they are scanned, transient emit literals in those dirs are
+# flagged as orphans, causing false-positive failures during concurrent builds
+# (esc-4357-20, task-4529).
+# ==============================================================================
+echo ""
+echo "--- Check 13: forward-pass hermeticity (prune gen/ and target/) ---"
+
+_fix13dir="$_tmpdir/fix13"
+mkdir -p "$_fix13dir/docs" \
+         "$_fix13dir/gui/src-tauri/src" \
+         "$_fix13dir/gui/src-tauri/gen/schemas" \
+         "$_fix13dir/gui/src-tauri/target/debug/build"
+
+cat > "$_fix13dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+| Channel | Notes |
+|---|---|
+| `mesh-update` | wired |
+INVENTORY
+
+# Legitimate source file — registered channel, no orphan.
+cat > "$_fix13dir/gui/src-tauri/src/real.rs" <<'RUST'
+fn emit_real(app: &AppHandle) {
+    app.emit("mesh-update", ());
+}
+RUST
+
+# Transient codegen artifact in gen/ — must NOT be scanned.
+cat > "$_fix13dir/gui/src-tauri/gen/schemas/transient.rs" <<'RUST'
+fn emit_transient(app: &AppHandle) {
+    app.emit("transient-build-artifact", ());
+}
+RUST
+
+# Transient build artifact in target/ — must NOT be scanned.
+cat > "$_fix13dir/gui/src-tauri/target/debug/build/gen.rs" <<'RUST'
+fn emit_target(app: &AppHandle) {
+    app.emit("target-build-artifact", ());
+}
+RUST
+
+_fix13_stderr="$_tmpdir/fix13_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix13dir" 2>"$_fix13_stderr" || true
+
+assert "Check 13: gen/ artifact 'transient-build-artifact' does NOT appear in stderr" \
+    bash -c "! grep -q 'transient-build-artifact' '$_fix13_stderr'"
+
+assert "Check 13: target/ artifact 'target-build-artifact' does NOT appear in stderr" \
+    bash -c "! grep -q 'target-build-artifact' '$_fix13_stderr'"
+
+assert "Check 13: no 'orphan' line in stderr (no false-positive orphans)" \
+    bash -c "! grep -q 'orphan' '$_fix13_stderr'"
+
+assert "Check 13: exits 0 in warning mode" \
+    "$CHECK_SCRIPT" --repo-root "$_fix13dir"
+
+assert "Check 13: exits 0 under --strict (no false-positive orphan)" \
+    "$CHECK_SCRIPT" --repo-root "$_fix13dir" --strict
+
+# ==============================================================================
+# Check 14: bidirectional / reverse-pass hermeticity
+# A §1 channel whose ONLY literal occurrence is inside a pruned build-artifact
+# dir (gen/) must still be reported as a phantom. Pre-fix, the unpruned reverse
+# grep finds the gen/ literal, counts it as wiring, and suppresses the phantom
+# warning — a false NEGATIVE (esc-4357-20, task-4529).
+# ==============================================================================
+echo ""
+echo "--- Check 14: bidirectional reverse-pass hermeticity (prune gen/ phantom) ---"
+
+_fix14dir="$_tmpdir/fix14"
+mkdir -p "$_fix14dir/docs" \
+         "$_fix14dir/gui/src-tauri/src" \
+         "$_fix14dir/gui/src-tauri/gen/schemas"
+
+cat > "$_fix14dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `wired-ok` | wired |
+| `only-in-gen` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+# Legitimately wired channel in src/.
+cat > "$_fix14dir/gui/src-tauri/src/real.rs" <<'RUST'
+fn emit_real(app: &AppHandle) {
+    app.emit("wired-ok", ());
+}
+RUST
+
+# The ONLY literal occurrence of "only-in-gen" lives inside a pruned gen/ artifact.
+# With the fix, the reverse grep must NOT find it — only-in-gen should be phantom.
+cat > "$_fix14dir/gui/src-tauri/gen/schemas/built.rs" <<'RUST'
+// Codegen artifact — this literal must NOT count as source wiring.
+const CHANNEL: &str = "only-in-gen";
+RUST
+
+_fix14_stderr="$_tmpdir/fix14_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix14dir" --bidirectional 2>"$_fix14_stderr" || true
+
+assert "Check 14: --bidirectional still flags 'only-in-gen' as phantom (gen/ must not count as wiring)" \
+    grep -q 'only-in-gen' "$_fix14_stderr"
+
+assert "Check 14: --bidirectional does NOT flag 'wired-ok' as phantom" \
+    bash -c "! grep -q 'wired-ok' '$_fix14_stderr'"
+
+assert "Check 14: --bidirectional --strict exits non-zero (only-in-gen is a phantom)" \
+    bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix14dir' --bidirectional --strict"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
