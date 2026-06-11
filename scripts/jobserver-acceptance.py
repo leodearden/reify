@@ -84,11 +84,101 @@ def utilization_ok(busy_frac: float, threshold: float) -> bool:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Acceptance gate evaluator and report renderer stubs (implemented in steps 05-08)
+# Acceptance gate evaluator (step-06)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-# def evaluate_acceptance_gate(measurements): ...
+def evaluate_acceptance_gate(
+    measurements: dict,
+) -> "tuple[bool, dict, list]":
+    """Evaluate the four η acceptance criteria against A/B measurements.
+
+    Parameters
+    ----------
+    measurements : dict
+        Same-instrument A/B capture produced by --run.  Required keys:
+          nproc                 int    — core count
+          utilization_threshold float  — busy-core fraction floor for (a)
+          baseline              dict   — single-pool mixed-run record
+          dual_pool             dict   — dual-pool mixed-run record
+
+        Each run record must carry:
+          busy_fraction  float — busy-core fraction (from ε busy_fraction)
+          merge_wall     float — merge verify wall-clock seconds
+          exit_124_count int   — number of timeout exits (exit code 124)
+          occupancy      list  — FIONREAD time-series from background sampler
+
+    Returns
+    -------
+    (ok, verdicts, findings)
+        ok       : bool — True only when ALL four criteria pass
+        verdicts : dict — {"a": "PASS"|"FAIL", "b": ..., "c": ..., "d": ...}
+        findings : list[str] — human-readable failure descriptions (empty on pass)
+    """
+    nproc = measurements["nproc"]
+    threshold = measurements["utilization_threshold"]
+    baseline = measurements["baseline"]
+    dual = measurements["dual_pool"]
+
+    verdicts: dict = {}
+    findings: list = []
+
+    # ── (a) box ≈ fully utilised ──────────────────────────────────────────
+    busy_frac = dual["busy_fraction"]
+    if utilization_ok(busy_frac, threshold):
+        verdicts["a"] = "PASS"
+    else:
+        verdicts["a"] = "FAIL"
+        findings.append(
+            f"(a) utilization FAIL: dual-pool busy_fraction={busy_frac:.3f} "
+            f"< threshold={threshold:.3f}"
+        )
+
+    # ── (b) merge wall-clock improved vs single-pool baseline ────────────
+    dual_wall = dual["merge_wall"]
+    base_wall = baseline["merge_wall"]
+    if dual_wall < base_wall:
+        verdicts["b"] = "PASS"
+    else:
+        verdicts["b"] = "FAIL"
+        findings.append(
+            f"(b) merge wall NOT improved: dual-pool={dual_wall:.1f}s "
+            f">= baseline={base_wall:.1f}s"
+        )
+
+    # ── (c) no task verify spuriously exits 124 ──────────────────────────
+    exit124 = dual["exit_124_count"]
+    if exit124 == 0:
+        verdicts["c"] = "PASS"
+    else:
+        verdicts["c"] = "FAIL"
+        findings.append(
+            f"(c) spurious timeout(s): exit_124_count={exit124} > 0.  "
+            f"§10.4 escape-valve: task could not fit even at implicit-only "
+            f"priority — candidate to revisit absolute priority allocation."
+        )
+
+    # ── (d) merge pool reached full allocation under contention ──────────
+    series = dual["occupancy"]
+    if merge_reached_full_allocation(series, nproc):
+        verdicts["d"] = "PASS"
+    else:
+        verdicts["d"] = "FAIL"
+        findings.append(
+            f"(d) merge pool never reached full allocation (nproc={nproc}) "
+            f"during contention; max merge observed="
+            f"{max((s.get('merge', 0) for s in series), default=0)}"
+        )
+
+    ok = all(v == "PASS" for v in verdicts.values())
+    return ok, verdicts, findings
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Report renderer stub (implemented in steps 07-08)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
 # def render_acceptance_report(measurements, verdicts): ...
 
 
