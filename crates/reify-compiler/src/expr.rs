@@ -2951,6 +2951,20 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
+            // task 4118 γ — IndexAccess-object selector coercion (insertion
+            // site #3). After step-4 `faces(b)` / `faces_by_normal(...)` are
+            // `Selector(k)`, not `List`. Wrap the object in `ResolveSelector`
+            // (→ `List<Geometry>`) so the element type resolves to `Geometry`
+            // below, instead of hitting the non-collection hard error. A no-op
+            // for any non-`Selector` object — real `List`/`Map` and genuinely
+            // non-indexable values pass through unchanged, preserving their
+            // existing element-type / hard-error handling. Gated on the same β
+            // `type_compatible` rule as sites #1/#2 (centralized in `coerce.rs`).
+            let compiled_obj = coerce::coerce_selector_arg(
+                compiled_obj,
+                &Type::List(Box::new(Type::Geometry)),
+            );
+
             // Infer result type from collection's element type.
             // Anti-cascade guard (task-448): if the object is already
             // poisoned, propagate Type::Error rather than falling back to
