@@ -2786,6 +2786,103 @@ mod tests {
         }
     }
 
+    // --- step-1 (task 4119 δ): is_geometry_let selector-call routing ---
+
+    /// `is_geometry_let` must return FALSE for `union`/`difference` when ANY
+    /// operand is a direct selector constructor call (`faces(b)`, `edges(b)`,
+    /// etc.), so those compositions route to the value-typing path (and later
+    /// emit `E_SELECTOR_KIND_MISMATCH` for mixed kinds) rather than the CSG
+    /// `compile_boolean_op` path.
+    ///
+    /// At the same time it must STILL return TRUE for CSG `union`/`difference`
+    /// whose operands are pure geometry (e.g. `box(…)`, `union(box(…), box(…))`).
+    ///
+    /// `intersect` is NOT a geometry function (`GEOMETRY_FUNCTION_NAMES` does
+    /// not include it) so it already routes to the value path regardless.
+    #[test]
+    fn is_geometry_let_selector_operand_excludes_union_difference() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+
+        // --- selector-operand cases (must NOT be geometry lets) ---
+
+        // union(faces(b), edges(b)) — mixed-kind but the operands are selector calls
+        let union_sel = {
+            let faces_b = make_call_with_arity("faces", 1);
+            let edges_b = make_call_with_arity("edges", 1);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "union".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![faces_b, edges_b],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            !is_geometry_let(&union_sel, &functions, &known),
+            "union(faces(b), edges(b)) must NOT be a geometry let — \
+             selector operands divert to the value-typing path"
+        );
+
+        // difference(faces(b), faces_by_normal(b, …)) — same-kind, both selector calls
+        let diff_sel = {
+            let faces_b = make_call_with_arity("faces", 1);
+            let fbn = make_call_with_arity("faces_by_normal", 3);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "difference".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![faces_b, fbn],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            !is_geometry_let(&diff_sel, &functions, &known),
+            "difference(faces(b), faces_by_normal(b,...)) must NOT be a geometry let — \
+             selector operands divert to the value-typing path"
+        );
+
+        // --- CSG cases (must STILL be geometry lets) ---
+
+        // union(box(…), box(…)) — both operands are geometry constructors
+        let union_csg = {
+            let box1 = make_call_with_arity("box", 3);
+            let box2 = make_call_with_arity("box", 3);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "union".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![box1, box2],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            is_geometry_let(&union_csg, &functions, &known),
+            "union(box(…), box(…)) must STILL be a geometry let — CSG path preserved"
+        );
+
+        // difference(box(…), cylinder(…)) — geometry operands
+        let diff_csg = {
+            let box1 = make_call_with_arity("box", 3);
+            let cyl = make_call_with_arity("cylinder", 2);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "difference".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![box1, cyl],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            is_geometry_let(&diff_csg, &functions, &known),
+            "difference(box(…), cylinder(…)) must STILL be a geometry let — CSG path preserved"
+        );
+    }
+
     // --- compile_geometry_call: Conditional emits Error (task 3395) ---
 
     /// `compile_geometry_call` must emit a clean Error diagnostic (and return
