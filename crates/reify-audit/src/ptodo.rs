@@ -25,6 +25,7 @@
 //! §6.7 (liveness degradation contract).
 
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use reify_test_support::ignore_hygiene::extract_ignore_reason;
 use rusqlite::OptionalExtension;
 use std::path::{Path, PathBuf};
 
@@ -373,10 +374,12 @@ enum LineClass {
 ///
 /// Precedence per line (first match wins; at most one entry per line):
 /// 1. `ptodo:allow` inline escape → the line is skipped entirely (§6.8).
-/// 2. `#[ignore]` (`.rs`): bare → `Structural(BareIgnore)`; reason-bearing → no
-///    entry (deferred to γ — intentionally NOT cite-checked, so its `#N` reason
-///    ids never reach β). Checked before comment markers so a reason string is
-///    not misread as a marker.
+/// 2. `#[ignore]` (`.rs`): bare → `Structural(BareIgnore)`; reason-bearing →
+///    γ reason policy: extract reason via [`extract_ignore_reason`]; if it
+///    contains a canonical `#NNNN` cite → `Cited(ids)` (step-8; β liveness);
+///    else if it has blocker-prose → `Structural(Untracked)`; else (operational)
+///    → no entry. Checked before comment markers so a reason string is not
+///    misread as a marker.
 /// 3. comment marker (all exts): canonical `#NNNN` → `Cited(on-line cites)`
 ///    (tracked → β liveness-checks); malformed cite → `Structural(MalformedCite)`;
 ///    else `Structural(Untracked)`.
@@ -399,10 +402,24 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
         let has_canon = has_canonical_cite(line);
 
         if is_rust && let Some(form) = ignore_attr(line) {
-            // (2) #[ignore] (.rs only). Reason-bearing forms defer to γ and are
-            // NOT cite-checked (their #N reason ids are γ's job, not β's).
-            if form == IgnoreForm::Bare {
-                out.push((line_no, LineClass::Structural(Kind::BareIgnore), line.trim().to_string()));
+            // (2) #[ignore] (.rs only). γ reason policy:
+            //   bare → Structural(BareIgnore);
+            //   reason-bearing: extract reason; if it has blocker-prose →
+            //     Structural(Untracked); else (operational) → no entry.
+            //   Cite-first override (step-8 γ) applied in the WithReason arm.
+            match form {
+                IgnoreForm::Bare => {
+                    out.push((line_no, LineClass::Structural(Kind::BareIgnore), line.trim().to_string()));
+                }
+                IgnoreForm::WithReason => {
+                    if let Some(reason) = extract_ignore_reason(line) {
+                        if has_blocker_prose(reason) {
+                            out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
+                        }
+                        // else: operational reason → no entry (pass)
+                    }
+                    // extract_ignore_reason returned None (non-canonical form) → no entry
+                }
             }
         } else if find_comment_marker(line).is_some() {
             // (3) comment markers (all swept exts).
