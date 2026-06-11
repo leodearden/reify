@@ -396,7 +396,7 @@ EOF
 
     cat > "$unit_dir/reify-jobserver-canary.service" <<EOF
 [Unit]
-Description=Re-seed the cargo jobserver FIFO if tokens have leaked (idle-only check)
+Description=Re-seed the dual-pool cargo jobserver (merge+task FIFOs) if tokens have leaked — idle-only, C2 sum<nproc check
 
 [Service]
 Type=oneshot
