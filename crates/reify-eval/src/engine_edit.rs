@@ -1543,6 +1543,12 @@ impl Engine {
         // for forall over deferred-count collections is anchored in
         // `reify-compiler/src/forall_elaborate.rs`'s module docstring; that
         // contract names this engine_edit hook point explicitly.
+        //
+        // task 4530: track whether this phase mutated the graph (added/removed
+        // instance cells or emitted/drained forall constraints). If so, the
+        // install at the end rebuilds reverse_index/trace_map/demand to keep
+        // dirty_cone and constraints_dirty correct for grown instances.
+        let mut structural_mutation = false;
         {
             let collection_subs = new_snapshot.graph.collection_subs.clone();
             // Hoisted out of the per-col_sub loop: cloning every iteration
@@ -1570,6 +1576,10 @@ impl Engine {
                     new_snapshot.graph.constraints.remove(stale_id);
                     self.cache.invalidate(&NodeId::Constraint(stale_id.clone()));
                 }
+                // task 4530: stale constraints were removed → graph structure changed
+                if drained.iter().any(|v| !v.is_empty()) {
+                    structural_mutation = true;
+                }
             }
             new_snapshot
                 .forall_emitted
@@ -1590,6 +1600,10 @@ impl Engine {
                 if new_count_val == old_count_val {
                     continue;
                 }
+
+                // task 4530: the count changed → instance cells will be added/removed
+                // and forall constraints re-emitted for this sub.
+                structural_mutation = true;
 
                 // Helper closure: resolve a collection count value to an integer.
                 // Returns (count, optional warning diagnostic).
@@ -1916,7 +1930,43 @@ impl Engine {
 
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
-        self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
+
+        // task 4530: if the collection-count re-elaboration phase mutated the
+        // graph (added/removed instance cells or emitted/drained forall
+        // constraints), rebuild reverse_index, trace_map, and demand against
+        // the final new_snapshot.graph before installing. This restores the
+        // dep-structure invariant that subsequent edit_param calls rely on:
+        //
+        //   reverse_index — dirty_cone reachability AND the constraints_dirty
+        //     solver gate miss grown instances entirely when stale.
+        //   demand — compute_eval_set excludes grown cells if built from the
+        //     pre-grow graph (build_demand_for_graph over n=2 omits bolts[2..3]).
+        //   trace_map — topo-sort of grown nodes in compute_eval_set.
+        //
+        // Mirrors edit_source step-15 (engine_edit.rs:3326-3331).
+        // When false (plain param edits), the cheap snapshot-only path is kept.
+        if structural_mutation {
+            let compiled_fields = Arc::clone(&self.compiled_fields);
+            let new_reverse_index =
+                crate::deps::ReverseDependencyIndex::build_from_graph_and_fields(
+                    &new_snapshot.graph,
+                    &compiled_fields,
+                );
+            let new_trace_map =
+                crate::deps::build_trace_map_and_fields(&new_snapshot.graph, &compiled_fields);
+            // build_demand_for_graph borrows new_snapshot.graph by ref; the
+            // borrows end before new_snapshot is moved into st.snapshot below.
+            let new_demand = crate::engine_eval::build_demand_for_graph(&new_snapshot.graph);
+            // Install demand on self first (disjoint field from eval_state),
+            // then snapshot + dep-structures together via the eval_state guard.
+            self.demand = new_demand;
+            let st = self.eval_state.as_mut().unwrap();
+            st.snapshot = new_snapshot;
+            st.reverse_index = new_reverse_index;
+            st.trace_map = new_trace_map;
+        } else {
+            self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
+        }
 
         // Drain runtime diagnostics (task 2341 step-16) into the result
         // diagnostics vec. The sink was populated by `eval_expr` calls
