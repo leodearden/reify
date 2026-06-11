@@ -44,7 +44,13 @@ use reify_solver_elastic::{
     TensegrityLoadSolve, tensegrity_load_analysis,
 };
 
+use super::tensegrity_crack::{check_index, crack_index_pairs, crack_nodes};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
+
+/// Diagnostic mnemonic for this trampoline, threaded into the shared
+/// `tensegrity_crack` helpers so their located errors carry the same prefix as
+/// the inline guards in [`run`].
+const CODE: &str = "E_TensegrityLoadInfeasible";
 
 /// Trampoline for `solver::tensegrity_load`. See the module doc for the
 /// input/output contract.
@@ -138,7 +144,12 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
     Ok(build_result(&solve))
 }
 
-// ── input cracking (mirrors form_find.rs Tensegrity field shape) ──────────────
+// ── input cracking ────────────────────────────────────────────────────────────
+//
+// Topology cracking (nodes, struts/cables index pairs, scalar/index validation)
+// is shared with the form-find trampoline via `super::tensegrity_crack`. The
+// crackers below are specific to this trampoline's load-analysis inputs
+// (dimensioned section scalars, per-node force vectors, support indices).
 
 /// Cracked Tensegrity topology: node coordinates, member index pairs in
 /// struts-then-cables order, and the matching per-member [`MemberKind`] tags.
@@ -156,10 +167,10 @@ fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
         }
     };
 
-    let nodes = crack_nodes(fields.get(&"nodes".to_string()))?;
+    let nodes = crack_nodes(fields.get(&"nodes".to_string()), CODE)?;
     let n = nodes.len();
-    let struts = crack_index_pairs(fields.get(&"struts".to_string()), n, "struts")?;
-    let cables = crack_index_pairs(fields.get(&"cables".to_string()), n, "cables")?;
+    let struts = crack_index_pairs(fields.get(&"struts".to_string()), "struts", n, CODE)?;
+    let cables = crack_index_pairs(fields.get(&"cables".to_string()), "cables", n, CODE)?;
 
     // Struts first, then cables — `prestress[i]` aligns with this order.
     let mut members = Vec::with_capacity(struts.len() + cables.len());
@@ -173,82 +184,6 @@ fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
         kinds.push(MemberKind::Cable);
     }
     Ok((nodes, members, kinds))
-}
-
-/// Crack `Tensegrity.nodes` (a `List<Point>`) into `[f64; 3]` SI coordinates.
-fn crack_nodes(v: Option<&Value>) -> Result<Vec<[f64; 3]>, String> {
-    let list = match v {
-        Some(Value::List(ns)) => ns,
-        other => {
-            return Err(format!(
-                "E_TensegrityLoadInfeasible: Tensegrity.nodes must be a list of points, got {other:?}"
-            ));
-        }
-    };
-    let mut out = Vec::with_capacity(list.len());
-    for (i, node) in list.iter().enumerate() {
-        match node {
-            Value::Point(c) | Value::Vector(c) if c.len() == 3 => {
-                let bad = || {
-                    format!(
-                        "E_TensegrityLoadInfeasible: Tensegrity.nodes[{i}] has a non-numeric coordinate"
-                    )
-                };
-                out.push([
-                    scalar_f64(&c[0]).ok_or_else(bad)?,
-                    scalar_f64(&c[1]).ok_or_else(bad)?,
-                    scalar_f64(&c[2]).ok_or_else(bad)?,
-                ]);
-            }
-            other => {
-                return Err(format!(
-                    "E_TensegrityLoadInfeasible: Tensegrity.nodes[{i}] must be a 3-component point, got {other:?}"
-                ));
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Crack a `List<List<Int>>` connectivity field into index pairs, range-checking
-/// each endpoint against the node count `n` so an out-of-range member index is a
-/// located trampoline-level error rather than a generic kernel `DimensionMismatch`.
-fn crack_index_pairs(
-    v: Option<&Value>,
-    n: usize,
-    field: &str,
-) -> Result<Vec<(usize, usize)>, String> {
-    let list = match v {
-        Some(Value::List(pairs)) => pairs,
-        other => {
-            return Err(format!(
-                "E_TensegrityLoadInfeasible: Tensegrity.{field} must be a list of index pairs, got {other:?}"
-            ));
-        }
-    };
-    let mut out = Vec::with_capacity(list.len());
-    for (i, pair) in list.iter().enumerate() {
-        let (from, to) = match pair {
-            Value::List(idx) if idx.len() == 2 => match (&idx[0], &idx[1]) {
-                (Value::Int(a), Value::Int(b)) => (*a, *b),
-                _ => {
-                    return Err(format!(
-                        "E_TensegrityLoadInfeasible: Tensegrity.{field}[{i}] must be two integer indices"
-                    ));
-                }
-            },
-            _ => {
-                return Err(format!(
-                    "E_TensegrityLoadInfeasible: Tensegrity.{field}[{i}] must be a 2-element index list"
-                ));
-            }
-        };
-        out.push((
-            check_index(from, n, &format!("Tensegrity.{field}[{i}] start"))?,
-            check_index(to, n, &format!("Tensegrity.{field}[{i}] end"))?,
-        ));
-    }
-    Ok(out)
 }
 
 /// Crack a `List<Force>` into f64 newtons. Each entry must be FORCE-dimensioned
@@ -277,7 +212,8 @@ fn crack_forces(v: &Value, what: &str) -> Result<Vec<f64>, String> {
 
 /// Crack a single dimensioned `Scalar` into an f64, requiring its unit to equal
 /// `expected`. A bare `Real` is still accepted — the dimensionless ergonomic
-/// escape hatch [`scalar_f64`] already allowed (so `[1.0, …]`-style literals keep
+/// escape hatch [`scalar_f64`](super::tensegrity_crack::scalar_f64) already
+/// allowed (so `[1.0, …]`-style literals keep
 /// working) — but a *dimensioned* `Scalar` whose unit disagrees (e.g. an Area
 /// passed where a Pressure is expected: the classic `youngs_modulus` ↔ `area`
 /// argument swap, or a Length where a Force is expected) is rejected with a
@@ -372,7 +308,7 @@ fn crack_supports(v: &Value, n: usize) -> Result<Vec<usize>, String> {
     let mut out = Vec::with_capacity(list.len());
     for (i, item) in list.iter().enumerate() {
         match item {
-            Value::Int(a) => out.push(check_index(*a, n, &format!("supports[{i}]"))?),
+            Value::Int(a) => out.push(check_index(*a, n, &format!("supports[{i}]"), CODE)?),
             other => {
                 return Err(format!(
                     "E_TensegrityLoadInfeasible: supports[{i}] must be an integer node index, got {other:?}"
@@ -381,29 +317,6 @@ fn crack_supports(v: &Value, n: usize) -> Result<Vec<usize>, String> {
         }
     }
     Ok(out)
-}
-
-/// Extract an f64 from a Scalar (any dimension) or a bare Real.
-fn scalar_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::Scalar { si_value, .. } => Some(*si_value),
-        Value::Real(r) => Some(*r),
-        _ => None,
-    }
-}
-
-/// Range-check a signed node index against `0..n`, returning a located
-/// `… index N is out of range 0..n` error (the `form_find::check_index`
-/// discipline). A negative index — or one at/after the node count — is rejected
-/// here rather than wrapping to a huge `usize` and indexing out of bounds in the
-/// kernel.
-fn check_index(idx: i64, n: usize, ctx: &str) -> Result<usize, String> {
-    if idx < 0 || idx as usize >= n {
-        return Err(format!(
-            "E_TensegrityLoadInfeasible: {ctx} index {idx} is out of range 0..{n}"
-        ));
-    }
-    Ok(idx as usize)
 }
 
 // ── result construction ──────────────────────────────────────────────────────

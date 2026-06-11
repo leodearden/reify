@@ -47,7 +47,13 @@ use reify_solver_elastic::{
     form_find_free,
 };
 
+use super::tensegrity_crack::{check_index, crack_index_pairs, crack_nodes, scalar_f64};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
+
+/// Diagnostic mnemonic for this trampoline, threaded into the shared
+/// `tensegrity_crack` helpers so their located errors carry the same prefix as
+/// the inline guards below.
+const CODE: &str = "E_FormFindInfeasible";
 
 /// Trampoline for `solver::form_find`. See the module doc for the input/output
 /// contract.
@@ -96,7 +102,12 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
     Ok(build_result(&solve))
 }
 
-// ── input cracking (reuses the tensegrity.rs Tensegrity field shape) ──────────
+// ── input cracking ────────────────────────────────────────────────────────────
+//
+// Topology cracking (nodes, struts/cables index pairs, scalar/index validation)
+// is shared with the tensegrity-load trampoline via `super::tensegrity_crack`.
+// The crackers below are specific to this trampoline's form-find inputs
+// (anchors, force-density reals, group ids / reference group).
 
 /// Cracked Tensegrity topology: node coordinates, member index pairs in
 /// struts-then-cables order, and the matching per-member [`MemberKind`] tags.
@@ -115,10 +126,10 @@ fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
         }
     };
 
-    let nodes = crack_nodes(fields.get(&"nodes".to_string()))?;
+    let nodes = crack_nodes(fields.get(&"nodes".to_string()), CODE)?;
     let n = nodes.len();
-    let struts = crack_index_pairs(fields.get(&"struts".to_string()), "struts", n)?;
-    let cables = crack_index_pairs(fields.get(&"cables".to_string()), "cables", n)?;
+    let struts = crack_index_pairs(fields.get(&"struts".to_string()), "struts", n, CODE)?;
+    let cables = crack_index_pairs(fields.get(&"cables".to_string()), "cables", n, CODE)?;
 
     // Struts first, then cables — `force_densities[i]` aligns with this order.
     let mut members = Vec::with_capacity(struts.len() + cables.len());
@@ -134,80 +145,6 @@ fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
     Ok((nodes, members, kinds))
 }
 
-/// Crack `Tensegrity.nodes` (a `List<Point>`) into `[f64; 3]` SI coordinates.
-fn crack_nodes(v: Option<&Value>) -> Result<Vec<[f64; 3]>, String> {
-    let list = match v {
-        Some(Value::List(ns)) => ns,
-        other => {
-            return Err(format!(
-                "E_FormFindInfeasible: Tensegrity.nodes must be a list of points, got {other:?}"
-            ));
-        }
-    };
-    let mut out = Vec::with_capacity(list.len());
-    for (i, node) in list.iter().enumerate() {
-        match node {
-            Value::Point(c) if c.len() == 3 => {
-                let bad = || {
-                    format!(
-                        "E_FormFindInfeasible: Tensegrity.nodes[{i}] has a non-numeric coordinate"
-                    )
-                };
-                out.push([
-                    scalar_f64(&c[0]).ok_or_else(bad)?,
-                    scalar_f64(&c[1]).ok_or_else(bad)?,
-                    scalar_f64(&c[2]).ok_or_else(bad)?,
-                ]);
-            }
-            other => {
-                return Err(format!(
-                    "E_FormFindInfeasible: Tensegrity.nodes[{i}] must be a 3-component point, got {other:?}"
-                ));
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Crack a `List<List<Int>>` connectivity field into range-checked index pairs.
-fn crack_index_pairs(
-    v: Option<&Value>,
-    field: &str,
-    n: usize,
-) -> Result<Vec<(usize, usize)>, String> {
-    let list = match v {
-        Some(Value::List(pairs)) => pairs,
-        other => {
-            return Err(format!(
-                "E_FormFindInfeasible: Tensegrity.{field} must be a list of index pairs, got {other:?}"
-            ));
-        }
-    };
-    let mut out = Vec::with_capacity(list.len());
-    for (i, pair) in list.iter().enumerate() {
-        let (from, to) = match pair {
-            Value::List(idx) if idx.len() == 2 => match (&idx[0], &idx[1]) {
-                (Value::Int(a), Value::Int(b)) => (*a, *b),
-                _ => {
-                    return Err(format!(
-                        "E_FormFindInfeasible: Tensegrity.{field}[{i}] must be two integer indices"
-                    ));
-                }
-            },
-            _ => {
-                return Err(format!(
-                    "E_FormFindInfeasible: Tensegrity.{field}[{i}] must be a 2-element index list"
-                ));
-            }
-        };
-        out.push((
-            check_index(from, n, &format!("Tensegrity.{field}[{i}] start"))?,
-            check_index(to, n, &format!("Tensegrity.{field}[{i}] end"))?,
-        ));
-    }
-    Ok(out)
-}
-
 /// Crack a `List<Int>` of node indices (the anchors), range-checked against `n`.
 fn crack_anchors(v: &Value, n: usize) -> Result<Vec<usize>, String> {
     let list = match v {
@@ -221,7 +158,7 @@ fn crack_anchors(v: &Value, n: usize) -> Result<Vec<usize>, String> {
     let mut out = Vec::with_capacity(list.len());
     for (i, item) in list.iter().enumerate() {
         match item {
-            Value::Int(a) => out.push(check_index(*a, n, &format!("anchors[{i}]"))?),
+            Value::Int(a) => out.push(check_index(*a, n, &format!("anchors[{i}]"), CODE)?),
             other => {
                 return Err(format!(
                     "E_FormFindInfeasible: anchors[{i}] must be an integer node index, got {other:?}"
@@ -254,26 +191,6 @@ fn crack_reals(v: &Value, what: &str) -> Result<Vec<f64>, String> {
         }
     }
     Ok(out)
-}
-
-/// Extract an f64 from a Scalar (any dimension) or a bare Real. `point3(1m, …)`
-/// lowers each component to `Scalar{LENGTH}`; `[1.0, …]` lowers to `Real`.
-fn scalar_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::Scalar { si_value, .. } => Some(*si_value),
-        Value::Real(r) => Some(*r),
-        _ => None,
-    }
-}
-
-/// Range-check a signed node index against `0..n`, with a located error.
-fn check_index(idx: i64, n: usize, ctx: &str) -> Result<usize, String> {
-    if idx < 0 || idx as usize >= n {
-        return Err(format!(
-            "E_FormFindInfeasible: {ctx} index {idx} is out of range 0..{n}"
-        ));
-    }
-    Ok(idx as usize)
 }
 
 // ── result construction ──────────────────────────────────────────────────────

@@ -21,6 +21,9 @@ pub mod elastic_static;
 pub mod form_find;
 pub mod multi_case;
 pub mod shell_solve;
+/// Shared Tensegrity input-cracking helpers (node / index-pair / scalar / index
+/// validation) reused by the `form_find` and `tensegrity_load` trampolines.
+mod tensegrity_crack;
 pub mod tensegrity_load;
 
 // ── Shared field-construction helpers ───────────────────────────────────────
