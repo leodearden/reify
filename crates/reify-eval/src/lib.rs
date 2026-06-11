@@ -21,7 +21,8 @@ pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
 mod engine_compute;
 pub use engine_compute::{
-    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
+    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizedContent,
+    RealizationReadHandle,
 };
 pub use graph::CancellationHandle;
 pub use graph::RealizationKernelProvenance;
