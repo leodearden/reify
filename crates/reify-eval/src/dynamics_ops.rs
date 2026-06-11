@@ -134,15 +134,28 @@ fn com_value(com: [f64; 3]) -> Value {
     )
 }
 
-/// Inertia `Value` for `MassProperties.inertia : Matrix<3,3,Real>` — a 3×3
-/// `Value::Matrix` of plain `Real` cells (so the existing
-/// `dynamics_psd::inertia_3x3_from_value` parser and the engine PSD hook read
-/// it unchanged).
+/// Inertia `Value` for `MassProperties.inertia : Matrix<3,3,MomentOfInertia>` —
+/// a 3×3 `Value::Matrix` of `MomentOfInertia`-dimensioned `Value::Scalar` cells
+/// (kg·m²). Each cell carries `si_value` == the raw f64 from the geometric query
+/// and `dimension == DimensionVector::MOMENT_OF_INERTIA`.
+///
+/// The PSD hook (`dynamics_psd`) and the RNEA extraction path
+/// (`inertia_3x3_from_value`) both read cells via `cell_f64`, which accepts
+/// `Value::Scalar{si_value,..}` and strips to `si_value` — so all downstream
+/// numeric outputs (eigenvalues, RNEA τ) are byte-identical to the former
+/// `Value::Real` encoding. Mirrors `com_value`'s `LENGTH` pattern.
 fn inertia_value(inertia: [[f64; 3]; 3]) -> Value {
     Value::Matrix(
         inertia
             .iter()
-            .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+            .map(|row| {
+                row.iter()
+                    .map(|&x| Value::Scalar {
+                        si_value: x,
+                        dimension: DimensionVector::MOMENT_OF_INERTIA,
+                    })
+                    .collect()
+            })
             .collect(),
     )
 }
