@@ -31,7 +31,9 @@
 
 use std::collections::HashSet;
 
+use reify_core::ty::SelectorKind;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, hash::ContentHash};
+use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorNode, SelectorValue};
 use reify_ir::{
     FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value,
 };
@@ -1317,6 +1319,151 @@ pub(crate) fn parse_bbox_axis_extents_json(s: &str, axis: u8) -> Option<(f64, f6
         }
     })?;
     Some((min_v?, max_v?))
+}
+
+// ── Selector resolution executor (task 4118, γ) ────────────────────────────
+
+/// Resolve a constructed [`SelectorValue`] to the concrete list of geometry
+/// sub-shape handles it selects, in canonical first-seen
+/// (`TopExp::MapShapes`) order with K3 dedup.
+///
+/// This is the **single** executor that lowers the kernel-free 4117 selector
+/// substrate to handles; it is shared by the `ResolveSelector` coercion node
+/// (the .ri-language `Selector → List<Geometry>` bridge) and by downstream
+/// kernel consumers (e.g. the FEA path / task 4092).
+///
+/// Dispatch on the [`SelectorNode`] tree:
+/// * `Leaf { target, query }` → delegates each [`LeafQuery`] to the existing
+///   predicate fn (verbatim reuse), passing `target.kernel_handle`:
+///   `ByNormal`→[`faces_by_normal`], `ByArea`→[`faces_by_area`],
+///   `ByLength`→[`edges_by_length`], `ByHeight`→[`edges_at_height`],
+///   `ByParallel`→[`edges_parallel_to`]; `All` → `extract_faces` /
+///   `extract_edges` per the selector's [`SelectorKind`]; `Named` → interim
+///   D8 stub (full name→handle resolution is δ / persistent-naming-v2).
+/// * `Union` → set-union of child results, first-seen order.
+/// * `Intersect` → set-intersection (membership in every child), preserving
+///   the first child's canonical order.
+/// * `Difference(a, b)` → `a` minus `b` by [`GeometryHandleId`].
+///
+/// All composite combinators dedup by [`GeometryHandleId`] so a sub-shape that
+/// appears under multiple children is emitted at most once (K3).
+///
+/// # Errors
+///
+/// Propagates any [`QueryError`] from the underlying predicate fns or kernel
+/// extraction (e.g. `InvalidHandle`, `QueryFailed`). Soft conditions (e.g. the
+/// interim `W_TOPOLOGY_TAG_STALE` for `Named`) are pushed onto `diagnostics`
+/// rather than returned as errors.
+pub fn resolve<K: GeometryKernel + ?Sized>(
+    selector: &SelectorValue,
+    kernel: &mut K,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    match &selector.node {
+        SelectorNode::Leaf { target, query } => {
+            resolve_leaf(selector.kind, target, query, kernel, diagnostics)
+        }
+        SelectorNode::Union(children) => {
+            let mut out: Vec<GeometryHandleId> = Vec::new();
+            let mut seen: HashSet<GeometryHandleId> = HashSet::new();
+            for child in children {
+                for id in resolve(child, kernel, diagnostics)? {
+                    if seen.insert(id) {
+                        out.push(id);
+                    }
+                }
+            }
+            Ok(out)
+        }
+        SelectorNode::Intersect(children) => {
+            // Resolve every child, then keep ids present in all of them,
+            // preserving the first child's canonical first-seen order.
+            let mut resolved: Vec<Vec<GeometryHandleId>> = Vec::with_capacity(children.len());
+            for child in children {
+                resolved.push(resolve(child, kernel, diagnostics)?);
+            }
+            // `intersect`'s constructor rejects an empty children list, so
+            // `split_first` normally yields a `first`; treat the impossible
+            // empty case as the empty selection rather than panicking.
+            let Some((first, rest)) = resolved.split_first() else {
+                return Ok(Vec::new());
+            };
+            let rest_sets: Vec<HashSet<GeometryHandleId>> =
+                rest.iter().map(|v| v.iter().copied().collect()).collect();
+            let mut out: Vec<GeometryHandleId> = Vec::new();
+            let mut seen: HashSet<GeometryHandleId> = HashSet::new();
+            for &id in first {
+                if seen.insert(id) && rest_sets.iter().all(|s| s.contains(&id)) {
+                    out.push(id);
+                }
+            }
+            Ok(out)
+        }
+        SelectorNode::Difference(a, b) => {
+            let a_ids = resolve(a, kernel, diagnostics)?;
+            let b_set: HashSet<GeometryHandleId> =
+                resolve(b, kernel, diagnostics)?.into_iter().collect();
+            let mut out: Vec<GeometryHandleId> = Vec::new();
+            let mut seen: HashSet<GeometryHandleId> = HashSet::new();
+            for id in a_ids {
+                if !b_set.contains(&id) && seen.insert(id) {
+                    out.push(id);
+                }
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// Resolve a single [`SelectorNode::Leaf`] by delegating to the matching
+/// predicate fn (verbatim reuse) or the kind's bulk extractor.
+///
+/// `target.kernel_handle` is the realized parent solid's ephemeral kernel
+/// handle — the same `GeometryHandleId` the predicate fns expect as their
+/// `handle` argument.
+fn resolve_leaf<K: GeometryKernel + ?Sized>(
+    kind: SelectorKind,
+    target: &GeometryHandleRef,
+    query: &LeafQuery,
+    kernel: &mut K,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let handle = target.kernel_handle;
+    match query {
+        LeafQuery::ByNormal { dir, tol_rad } => faces_by_normal(kernel, handle, *dir, *tol_rad),
+        LeafQuery::ByArea { min_m2, max_m2 } => faces_by_area(kernel, handle, *min_m2, *max_m2),
+        LeafQuery::ByLength { min_m, max_m } => edges_by_length(kernel, handle, *min_m, *max_m),
+        LeafQuery::ByHeight { z_m, tol_m } => edges_at_height(kernel, handle, *z_m, *tol_m),
+        LeafQuery::ByParallel { axis, tol_rad } => {
+            edges_parallel_to(kernel, handle, *axis, *tol_rad)
+        }
+        LeafQuery::All => match kind {
+            SelectorKind::Face => kernel.extract_faces(handle),
+            SelectorKind::Edge => kernel.extract_edges(handle),
+            SelectorKind::Body => Err(QueryError::QueryFailed(
+                "resolve: All-selector over Body kind is unsupported (no body \
+                 sub-shape extraction primitive)"
+                    .into(),
+            )),
+        },
+        LeafQuery::Named(_label) => {
+            // Interim D8 behavior: full name→handle resolution is δ /
+            // persistent-naming-v2. No FeatureTagTable is plumbed through
+            // resolve(), so emit a stale-tag warning and resolve to the empty
+            // selection rather than panicking. The 7 re-typed constructors
+            // never build a Named leaf, so this path is unreachable from the
+            // .ri surface today; it exists so resolve() is total over the
+            // substrate.
+            diagnostics.push(
+                Diagnostic::warning(
+                    "named topology selectors are not yet resolvable \
+                     (persistent naming v2); selector resolved to empty",
+                )
+                .with_code(DiagnosticCode::TopologyTagStale),
+            );
+            Ok(Vec::new())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2899,8 +3046,10 @@ mod tests {
     // of the kind, and composites (`Union`/`Intersect`/`Difference`)
     // set-combine the children's id lists with K3 dedup in canonical
     // first-seen (`TopExp::MapShapes`) order.
-    use reify_core::ty::SelectorKind;
-    use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+    //
+    // `SelectorKind`, `LeafQuery`, `SelectorValue`, and `GeometryHandleRef`
+    // come in via `use super::*` (they are module-level imports used by
+    // `resolve`).
 
     /// Build a `GeometryHandleRef` target with the given ephemeral kernel id.
     /// `CountingKernel::extract_edges`/`extract_faces` ignore the handle
