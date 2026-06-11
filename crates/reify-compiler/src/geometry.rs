@@ -144,26 +144,29 @@ pub(crate) fn is_geometry_let(
 ) -> bool {
     match &expr.kind {
         reify_ast::ExprKind::FunctionCall { name, args, .. } => {
+            // Disambiguate the CSG `sweep(profile, path) -> Solid` (docs §3,
+            // 2-ary geometry) from the kinematic
+            // `sweep(mechanism, joint, range, steps) -> List<Snapshot>`
+            // (docs §13.4, 4-ary eval-time builtin) by arity. The 4-arg
+            // form is not a geometry let — it routes through eval-time
+            // dispatch where the kinematic arm resolves it. Other arities
+            // still flow into compile_geometry_call's sweep arm and get
+            // its strict "expects exactly 2 arguments" diagnostic.
+            let is_kinematic_sweep = name == "sweep" && args.len() == 4;
+            // Task 4119 δ: disambiguate CSG `union`/`intersection`/`difference`
+            // (geometry boolean ops) from selector-composition `union`/`difference`
+            // (selector algebra combinators). When ANY operand is syntactically a
+            // selector-producing expression the call routes to the value-typing path
+            // where E_SELECTOR_KIND_MISMATCH is checked. Mirrors the sweep-arity
+            // guard above. `intersect` is never a geometry function so it never
+            // reaches this arm; the guard only fires for the three CSG names.
+            let is_selector_composition =
+                matches!(name.as_str(), "union" | "intersection" | "difference")
+                    && args.iter().any(|a| is_selector_expr(a, functions));
             is_geometry_function(name)
                 && !functions.iter().any(|f| f.name == *name)
-                // Disambiguate the CSG `sweep(profile, path) -> Solid` (docs §3,
-                // 2-ary geometry) from the kinematic
-                // `sweep(mechanism, joint, range, steps) -> List<Snapshot>`
-                // (docs §13.4, 4-ary eval-time builtin) by arity. The 4-arg
-                // form is not a geometry let — it routes through eval-time
-                // dispatch where the kinematic arm resolves it. Other arities
-                // still flow into compile_geometry_call's sweep arm and get
-                // its strict "expects exactly 2 arguments" diagnostic.
-                && !(name == "sweep" && args.len() == 4)
-                // Task 4119 δ: disambiguate CSG `union`/`intersection`/`difference`
-                // (geometry boolean ops) from selector-composition `union`/`difference`
-                // (selector algebra combinators). When ANY operand is syntactically a
-                // selector-producing expression the call routes to the value-typing path
-                // where E_SELECTOR_KIND_MISMATCH is checked. Mirrors the sweep-arity
-                // guard above. `intersect` is never a geometry function so it never
-                // reaches this arm; the guard only fires for the three CSG names.
-                && !(matches!(name.as_str(), "union" | "intersection" | "difference")
-                    && args.iter().any(|a| is_selector_expr(a, functions)))
+                && !is_kinematic_sweep
+                && !is_selector_composition
         }
         // No `!functions.iter().any(...)` guard needed: `known_geometry_lets` is
         // populated only from let-binding names (never function names), and an Ident
