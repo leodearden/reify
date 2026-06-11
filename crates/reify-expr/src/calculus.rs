@@ -234,21 +234,19 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
         domain_type,
         codomain_type,
     } = field_val
+        && let Value::SampledField(sf) = lambda.as_ref()
+        && let Some(result_codomain) = gradient_result_codomain(domain_type, codomain_type)
     {
-        if let Value::SampledField(sf) = lambda.as_ref() {
-            if let Some(result_codomain) = gradient_result_codomain(domain_type, codomain_type) {
-                let out = crate::sampled_fd::sampled_differential(
-                    sf,
-                    crate::sampled_fd::DifferentialOp::Gradient,
-                );
-                return Value::Field {
-                    domain_type: domain_type.clone(),
-                    codomain_type: result_codomain,
-                    source: FieldSourceKind::Sampled,
-                    lambda: Arc::new(Value::SampledField(out)),
-                };
-            }
-        }
+        let out = crate::sampled_fd::sampled_differential(
+            sf,
+            crate::sampled_fd::DifferentialOp::Gradient,
+        );
+        return Value::Field {
+            domain_type: domain_type.clone(),
+            codomain_type: result_codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(out)),
+        };
     }
 
     let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "gradient") {
@@ -474,21 +472,19 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
         domain_type,
         codomain_type,
     } = field_val
+        && let Value::SampledField(sf) = lambda.as_ref()
+        && let Some(result_codomain) = laplacian_result_codomain(domain_type, codomain_type)
     {
-        if let Value::SampledField(sf) = lambda.as_ref() {
-            if let Some(result_codomain) = laplacian_result_codomain(domain_type, codomain_type) {
-                let out = crate::sampled_fd::sampled_differential(
-                    sf,
-                    crate::sampled_fd::DifferentialOp::Laplacian,
-                );
-                return Value::Field {
-                    domain_type: domain_type.clone(),
-                    codomain_type: result_codomain,
-                    source: FieldSourceKind::Sampled,
-                    lambda: Arc::new(Value::SampledField(out)),
-                };
-            }
-        }
+        let out = crate::sampled_fd::sampled_differential(
+            sf,
+            crate::sampled_fd::DifferentialOp::Laplacian,
+        );
+        return Value::Field {
+            domain_type: domain_type.clone(),
+            codomain_type: result_codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(out)),
+        };
     }
 
     let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "laplacian") {

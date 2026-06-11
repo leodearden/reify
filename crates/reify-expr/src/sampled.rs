@@ -103,23 +103,95 @@ pub fn sample_at_point(
         return Value::Undef;
     }
 
-    // 1D / 2D / 3D dispatch: the per-axis flat-data layout follows
-    // `interp.rs`'s row-major convention (axis-0 outermost). The elaborator
-    // (`engine_eval::build_sampled_field`) enforces three runtime invariants
-    // before constructing the `SampledField` reached by this dispatch:
+    // Compute grid node count and data stride.
     //
-    // 1. each axis spacing is strictly positive and finite,
-    // 2. each axis grid has at least 2 nodes (i.e.
-    //    `axis_grids[i].len() >= 2`),
-    // 3. `data.len() == product(axis_grids[i].len())` — row-major flatten,
-    //    axis-0 outermost.
+    // For elaborator-validated scalar fields, `data.len() == grid_count` (stride 1).
+    // For ε eager-lowered gradient/laplacian Sampled outputs, `data.len() == grid_count * n_axes`
+    // (stride = n_axes).  The stride is derived directly from the data buffer so this dispatch
+    // is robust to any multi-component output without re-parsing the codomain arity.
     //
-    // Any violation poisons the field to `Value::Undef` at elaboration time
-    // and emits a `DiagnosticCode::FieldSampledInvalidConfig` warning, so by
-    // the time control reaches this dispatch the `interp::interpolate_Nd`
-    // primitives' internal `assert!`s on grid length, axis-grid length, and
-    // data length cannot fire from sampled-field input.
+    // `grid_count == 0` → degenerate; fall through to scalar path which will surface the
+    // invariant violation via the interpolate_Nd assert (same as before this change).
+    let grid_count: usize = field.axis_grids.iter().map(|g| g.len()).product();
+    // stride = data.len() / grid_count, clamped to ≥ 1.
+    // checked_div returns None when grid_count == 0 (degenerate); .unwrap_or(1) keeps the scalar
+    // path so the interpolate_Nd assert surfaces the invariant violation unchanged.
+    // For data.len() < grid_count, result is 0; .max(1) also keeps the scalar path.
+    let stride = field.data.len().checked_div(grid_count).unwrap_or(1).max(1);
+
     let method: InterpolationMethod = field.interpolation.into();
+
+    // ── stride > 1: multi-component path (ε) ────────────────────────────────
+    // Deinterleave each component from `data[g * stride + c]`, interpolate with
+    // the same kernels as the scalar path, assemble Value::Vector.
+    // Diagnostics are forwarded from component 0 only (not once per component).
+    if stride > 1 {
+        // Extract the per-component type from the codomain.
+        // Vector{n, quantity} → quantity; any other codomain → codomain itself (fallback).
+        let component_type: &Type = match codomain_type {
+            Type::Vector { quantity, .. } => quantity.as_ref(),
+            _ => codomain_type,
+        };
+
+        let mut components = Vec::with_capacity(stride);
+        let mut first_diagnostics: Option<Vec<Diagnostic>> = None;
+
+        for c in 0..stride {
+            // Deinterleave: collect every c-th element from the interleaved buffer.
+            let values_c: Vec<f64> =
+                (0..grid_count).map(|g| field.data[g * stride + c]).collect();
+
+            let result_c: InterpolationResult = match field.kind {
+                SampledGridKind::Regular1D => {
+                    interpolate_1d(method, &field.axis_grids[0], &values_c, coords[0])
+                }
+                SampledGridKind::Regular2D => interpolate_2d(
+                    method,
+                    &field.axis_grids[0],
+                    &field.axis_grids[1],
+                    &values_c,
+                    (coords[0], coords[1]),
+                ),
+                SampledGridKind::Regular3D => interpolate_3d(
+                    method,
+                    &field.axis_grids[0],
+                    &field.axis_grids[1],
+                    &field.axis_grids[2],
+                    &values_c,
+                    (coords[0], coords[1], coords[2]),
+                ),
+            };
+
+            let comp_f64 = result_c.value;
+            // Capture diagnostics from the first component only (RBF/Kriging fallback etc.).
+            if c == 0 {
+                first_diagnostics = Some(result_c.diagnostics);
+            }
+            components.push(wrap_result(comp_f64, component_type));
+        }
+
+        // Forward first-component diagnostics once to the runtime sink.
+        if let Some(diags) = first_diagnostics
+            && !diags.is_empty()
+            && let Some(sink) = ctx.diagnostics
+        {
+            let mut borrow = sink.borrow_mut();
+            for d in diags {
+                borrow.push(d);
+            }
+        }
+
+        return Value::Vector(components);
+    }
+
+    // ── stride ≤ 1: existing scalar path — bit-identical to the original ────
+    //
+    // The elaborator (`engine_eval::build_sampled_field`) enforces:
+    // 1. each axis spacing is strictly positive and finite,
+    // 2. each axis grid has at least 2 nodes,
+    // 3. `data.len() == product(axis_grids[i].len())`.
+    // Any violation poisons the field to Value::Undef at elaboration time, so the
+    // interpolate_Nd asserts below cannot fire from elaborator-validated input.
     let result: InterpolationResult = match field.kind {
         SampledGridKind::Regular1D => {
             interpolate_1d(method, &field.axis_grids[0], &field.data, coords[0])
