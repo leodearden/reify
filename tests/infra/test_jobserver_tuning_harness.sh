@@ -1265,4 +1265,269 @@ fi
 assert "anti-drift: balancer defaults match committed derived constants" \
     test "$_b9d_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 10: lower-bound / load-realism guard
+#
+# (a) CONFIG: mod.MIN_SANE_TIMEOUT exists as int ≥ 1; env-override plumbing works
+# (b) HARD FAIL (unlabeled sub-floor): derive yields task/merge_timeout < 60s
+#     → evaluate_acceptance ok=False, TIMEOUT_BELOW_FLOOR error
+# (c) REALISTIC-LOAD PATH: realistic walls (120s/240s) → ok=True, no floor finding
+# (d) SYNTHETIC SOFT PATH: sub-floor + synthetic_load:true → ok=True,
+#     SYNTHETIC_TIMEOUT_NOT_AUTHORITATIVE warning
+# (e) --check EXIT-CODE CONTRACT: sub-floor exits 1; synthetic_load:true exits 0
+# (f) GOLDEN: committed measurements JSON has synthetic_load == True
+#
+# RED before step-2: mod.MIN_SANE_TIMEOUT raises AttributeError and no
+# floor/synthetic findings are emitted.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 10: lower-bound / load-realism guard ---"
+
+_b10_exit=0
+{
+python3 - "$HARNESS" <<'PY'
+import importlib.util, sys, json, tempfile, subprocess, os
+
+spec = importlib.util.spec_from_file_location("jth", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+HARNESS_PATH = sys.argv[1]
+errors = []
+NPROC_F = 32
+
+def _run(service, regime, cache, busy, merge_wall, task_wall, occ_sum=NPROC_F, exit_124=0):
+    return {
+        "service":        service,
+        "regime":         regime,
+        "cache_state":    cache,
+        "busy_fraction":  busy,
+        "occupancy":      [{"merge": occ_sum, "task": 0, "sum": occ_sum, "timestamp": 1.0}],
+        "merge_wall":     merge_wall,
+        "task_wall":      task_wall,
+        "exit_124_count": exit_124,
+        "nproc":          NPROC_F,
+    }
+
+# Sub-floor record: single-pool just-task cold wall=1.0s, single-pool just-merge warm wall=1.0s
+# → derive_constants: task_timeout_secs=ceil(1.0*1.5)=2, merge_timeout_secs=ceil(1.0*1.5)=2
+# Both below the 60s floor.
+def _subfloor_measurements():
+    return {
+        "nproc": NPROC_F,
+        "runs": [
+            _run("single-pool","just-task",  "warm", 0.95, 0.0,  1.0),
+            _run("single-pool","just-task",  "cold", 0.95, 0.0,  1.0),
+            _run("single-pool","just-merge", "warm", 0.95, 1.0,  0.0),
+            _run("single-pool","just-merge", "cold", 0.95, 1.0,  0.0),
+            _run("single-pool","mixed",      "warm", 0.95, 1.0,  1.0),
+            _run("single-pool","mixed",      "cold", 0.95, 1.0,  1.0),
+            _run("dual-pool",  "just-task",  "warm", 0.95, 0.0,  1.0),
+            _run("dual-pool",  "just-task",  "cold", 0.95, 0.0,  1.0),
+            _run("dual-pool",  "just-merge", "warm", 0.95, 1.0,  0.0),
+            _run("dual-pool",  "just-merge", "cold", 0.95, 1.0,  0.0),
+            _run("dual-pool",  "mixed",      "warm", 0.95, 1.0,  1.0),
+            _run("dual-pool",  "mixed",      "cold", 0.95, 1.0,  1.0),
+        ],
+    }
+
+# ── (a) CONFIG: MIN_SANE_TIMEOUT module attribute ────────────────────────────
+if not hasattr(mod, "MIN_SANE_TIMEOUT"):
+    errors.append("(a) MIN_SANE_TIMEOUT attribute missing from harness module")
+elif not isinstance(mod.MIN_SANE_TIMEOUT, int):
+    errors.append(f"(a) MIN_SANE_TIMEOUT is not int: {type(mod.MIN_SANE_TIMEOUT)!r}")
+elif mod.MIN_SANE_TIMEOUT < 1:
+    errors.append(f"(a) MIN_SANE_TIMEOUT={mod.MIN_SANE_TIMEOUT} < 1")
+
+# env-override: load the harness in a clean subprocess with
+# REIFY_TUNING_MIN_SANE_TIMEOUT=120, assert the module's MIN_SANE_TIMEOUT == 120
+# (mirrors the Block 9d clean-env subprocess pattern).
+result_a_env = subprocess.run(
+    [sys.executable, "-c",
+     f"""
+import importlib.util, os
+os.environ["REIFY_TUNING_MIN_SANE_TIMEOUT"] = "120"
+spec = importlib.util.spec_from_file_location("jth", {HARNESS_PATH!r})
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.MIN_SANE_TIMEOUT)
+"""],
+    capture_output=True, text=True,
+)
+if result_a_env.returncode != 0:
+    errors.append(
+        f"(a) env-override subprocess failed: {result_a_env.stderr.strip()}"
+    )
+else:
+    got = result_a_env.stdout.strip()
+    if got != "120":
+        errors.append(
+            f"(a) env-override: expected MIN_SANE_TIMEOUT=120, got {got!r}"
+        )
+
+# ── (b) HARD FAIL: unlabeled sub-floor → ok=False, TIMEOUT_BELOW_FLOOR error ─
+m_sub = _subfloor_measurements()
+derived_sub = mod.derive_constants(m_sub)
+ok_b, findings_b = mod.evaluate_acceptance(m_sub, derived_sub)
+
+if ok_b:
+    errors.append(
+        f"(b) sub-floor unlabeled: expected ok=False, got True "
+        f"(task_timeout_secs={derived_sub.get('task_timeout_secs')}, "
+        f"merge_timeout_secs={derived_sub.get('merge_timeout_secs')})"
+    )
+floor_findings_b = [f for f in findings_b if f.get("code") == "TIMEOUT_BELOW_FLOOR"]
+if not floor_findings_b:
+    errors.append(
+        f"(b) sub-floor unlabeled: expected TIMEOUT_BELOW_FLOOR finding, "
+        f"got codes={[f.get('code') for f in findings_b]}"
+    )
+else:
+    for f in floor_findings_b:
+        if f.get("severity") != "error":
+            errors.append(
+                f"(b) TIMEOUT_BELOW_FLOOR severity: expected 'error', "
+                f"got {f.get('severity')!r}"
+            )
+
+# ── (c) REALISTIC-LOAD PATH: realistic walls → ok=True, no floor findings ────
+# single-pool just-task cold 120s → task_timeout=ceil(120*1.5)=180 > 60s floor
+# single-pool just-merge warm 240s → merge_timeout=ceil(240*1.5)=360 > 60s floor
+m_real = {
+    "nproc": NPROC_F,
+    "runs": [
+        _run("single-pool","just-task",  "warm", 0.95, 0.0,   90.0),
+        _run("single-pool","just-task",  "cold", 0.95, 0.0,  120.0),
+        _run("single-pool","just-merge", "warm", 0.95, 240.0,  0.0),
+        _run("single-pool","just-merge", "cold", 0.95, 220.0,  0.0),
+        _run("single-pool","mixed",      "warm", 0.95, 210.0, 100.0),
+        _run("single-pool","mixed",      "cold", 0.95, 230.0, 115.0),
+        _run("dual-pool",  "just-task",  "warm", 0.95, 0.0,   88.0),
+        _run("dual-pool",  "just-task",  "cold", 0.95, 0.0,  118.0),
+        _run("dual-pool",  "just-merge", "warm", 0.95, 235.0,  0.0),
+        _run("dual-pool",  "just-merge", "cold", 0.95, 215.0,  0.0),
+        _run("dual-pool",  "mixed",      "warm", 0.95, 205.0,  92.0),
+        _run("dual-pool",  "mixed",      "cold", 0.95, 225.0, 110.0),
+    ],
+}
+derived_real = mod.derive_constants(m_real)
+ok_c, findings_c = mod.evaluate_acceptance(m_real, derived_real)
+
+if not ok_c:
+    errors.append(
+        f"(c) realistic load: expected ok=True, got False "
+        f"(task_timeout_secs={derived_real.get('task_timeout_secs')}, "
+        f"merge_timeout_secs={derived_real.get('merge_timeout_secs')})"
+    )
+floor_codes = {"TIMEOUT_BELOW_FLOOR", "SYNTHETIC_TIMEOUT_NOT_AUTHORITATIVE"}
+bad_c = [f for f in findings_c if f.get("code") in floor_codes]
+if bad_c:
+    errors.append(
+        f"(c) realistic load: unexpected floor finding(s): "
+        f"{[f.get('code') for f in bad_c]}"
+    )
+
+# ── (d) SYNTHETIC SOFT PATH: sub-floor + synthetic_load:true → ok=True, warning ─
+m_synth = dict(_subfloor_measurements())
+m_synth["synthetic_load"] = True
+derived_synth = mod.derive_constants(m_synth)
+ok_d, findings_d = mod.evaluate_acceptance(m_synth, derived_synth)
+
+if not ok_d:
+    errors.append(
+        "(d) synthetic soft: expected ok=True (soft warning), got False"
+    )
+synth_findings = [f for f in findings_d
+                  if f.get("code") == "SYNTHETIC_TIMEOUT_NOT_AUTHORITATIVE"]
+if not synth_findings:
+    errors.append(
+        f"(d) synthetic soft: expected SYNTHETIC_TIMEOUT_NOT_AUTHORITATIVE finding, "
+        f"got codes={[f.get('code') for f in findings_d]}"
+    )
+else:
+    for f in synth_findings:
+        if f.get("severity") != "warning":
+            errors.append(
+                f"(d) SYNTHETIC_TIMEOUT_NOT_AUTHORITATIVE severity: "
+                f"expected 'warning', got {f.get('severity')!r}"
+            )
+
+# ── (e) --check EXIT-CODE CONTRACT ───────────────────────────────────────────
+def _write_meas(data):
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, prefix="/tmp/test-b10-"
+    )
+    json.dump(data, tmp)
+    tmp.close()
+    return tmp.name
+
+# (e1) unlabeled sub-floor → --check exits 1
+path_e1 = _write_meas(_subfloor_measurements())
+try:
+    rc_e1 = subprocess.run(
+        [sys.executable, HARNESS_PATH, "--check", path_e1],
+        capture_output=True,
+    ).returncode
+    if rc_e1 != 1:
+        errors.append(
+            f"(e) sub-floor unlabeled: expected --check exit 1, got {rc_e1}"
+        )
+finally:
+    os.unlink(path_e1)
+
+# (e2) sub-floor + synthetic_load:true → --check exits 0
+path_e2 = _write_meas({**_subfloor_measurements(), "synthetic_load": True})
+try:
+    rc_e2 = subprocess.run(
+        [sys.executable, HARNESS_PATH, "--check", path_e2],
+        capture_output=True,
+    ).returncode
+    if rc_e2 != 0:
+        errors.append(
+            f"(e) synthetic_load:true: expected --check exit 0, got {rc_e2}"
+        )
+finally:
+    os.unlink(path_e2)
+
+if errors:
+    for e in errors:
+        print("FAIL:", e, file=sys.stderr)
+    raise SystemExit(1)
+
+print("lower-bound/load-realism guard: all assertions passed")
+PY
+} || _b10_exit=$?
+
+assert "lower-bound/load-realism guard: MIN_SANE_TIMEOUT + floor + synthetic exemption" \
+    test "$_b10_exit" -eq 0
+
+# (f) GOLDEN: committed measurements JSON has synthetic_load == True
+_b10f_exit=0
+if [ -f "$MEASUREMENTS_JSON" ]; then
+{
+python3 - "$MEASUREMENTS_JSON" <<'PY'
+import sys, json
+
+meas_path = sys.argv[1]
+with open(meas_path) as f:
+    meas = json.load(f)
+
+if meas.get("synthetic_load") is not True:
+    print(
+        f"FAIL: committed measurements JSON missing 'synthetic_load: true' "
+        f"(got {meas.get('synthetic_load')!r})",
+        file=sys.stderr
+    )
+    raise SystemExit(1)
+
+print("golden: committed measurements JSON has synthetic_load == True")
+PY
+} || _b10f_exit=$?
+else
+    _b10f_exit=1
+fi
+
+assert "golden: committed measurements JSON has synthetic_load == True (pre-1 exemption)" \
+    test "$_b10f_exit" -eq 0
+
 test_summary
