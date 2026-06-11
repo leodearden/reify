@@ -194,6 +194,19 @@ pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     // it returns a multi-output List<Geometry>, matching the topology-selector
     // eval path (try_eval_topology_selector / execute_split).
     "split",
+    // Task 4119 δ — Named-leaf constructors for the three SelectorKind variants.
+    // `face(geometry, name) -> Selector(Face)`, `edge(geometry, name) ->
+    // Selector(Edge)`, `solid_body(geometry, name) -> Selector(Body)`.
+    // These join the topology-selector family (not GEOMETRY_FUNCTION_NAMES) so
+    // they route through the value-typing path (selector_composition_result_type
+    // / topology_selector_result_type) and are excluded from CSG geometry-let
+    // routing by `is_selector_expr` in geometry.rs.
+    // NOTE: `body` is intentionally absent — it is the RBD mechanism constructor
+    // in JOINT_TYPED_FN_NAMES (→ StructureRef("Mechanism")).  `solid_body` is
+    // the PRD §11.1 alternative name, verified free across all family lists.
+    "face",
+    "edge",
+    "solid_body",
 ];
 
 pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
@@ -258,6 +271,13 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         // result type as the edge/face selectors; eval dispatch via
         // TopologySelectorHelper::Split in try_eval_topology_selector.
         "split" => Type::List(Box::new(Type::Geometry)),
+        // Task 4119 δ — Named-leaf constructors (PRD §11.1).
+        // `face(geometry, name)` / `edge(geometry, name)` / `solid_body(geometry, name)`
+        // each return the per-kind Selector type.  `body` is NOT listed here —
+        // it remains the RBD mechanism constructor (StructureRef("Mechanism")).
+        "face" => Type::Selector(reify_core::ty::SelectorKind::Face),
+        "edge" => Type::Selector(reify_core::ty::SelectorKind::Edge),
+        "solid_body" => Type::Selector(reify_core::ty::SelectorKind::Body),
         "center_of_mass" => Type::point3(Type::length()),
         "moment_of_inertia" => Type::tensor(
             2,
@@ -2912,6 +2932,54 @@ mod tests {
     #[test]
     fn split_is_not_a_geometry_kinematic_query() {
         assert!(!is_geometry_kinematic_query("split"));
+    }
+
+    // --- Named-leaf constructors (task 4119 δ, step-8 GREEN) -----------------
+    //
+    // `face(geometry, name) -> Selector(Face)`, `edge(geometry, name) ->
+    // Selector(Edge)`, `solid_body(geometry, name) -> Selector(Body)` join the
+    // topology-selector family.  `body` is intentionally absent (RBD ctor).
+
+    #[test]
+    fn is_geometry_topology_selector_recognises_face_edge_solid_body() {
+        assert!(is_geometry_topology_selector("face"));
+        assert!(is_geometry_topology_selector("edge"));
+        assert!(is_geometry_topology_selector("solid_body"));
+    }
+
+    #[test]
+    fn topology_selector_result_type_named_ctors() {
+        assert_eq!(
+            topology_selector_result_type("face"),
+            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Face))
+        );
+        assert_eq!(
+            topology_selector_result_type("edge"),
+            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge))
+        );
+        assert_eq!(
+            topology_selector_result_type("solid_body"),
+            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Body))
+        );
+    }
+
+    /// Guard: `body` must NOT be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+    /// `body` is the RBD mechanism constructor (JOINT_TYPED_FN_NAMES →
+    /// StructureRef("Mechanism")); `solid_body` is the Named-leaf BodySelector
+    /// ctor (PRD §11.1).  This test catches any accidental future collision.
+    #[test]
+    fn body_is_not_a_topology_selector_solid_body_is_the_named_ctor() {
+        assert!(
+            !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&"body"),
+            "`body` must NOT be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES — it is the \
+             RBD mechanism constructor (JOINT_TYPED_FN_NAMES); use `solid_body` \
+             for the Named-leaf BodySelector ctor (PRD §11.1)"
+        );
+        assert!(
+            is_geometry_topology_selector("solid_body"),
+            "`solid_body` must be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES (the Named-leaf \
+             BodySelector ctor, PRD §11.1)"
+        );
     }
 
     /// Disjointness regression-lock for the §13 joint-constructor family
