@@ -410,11 +410,8 @@ fn check_strict_all_indeterminate_lists_all() {
 /// break the happy path.
 #[test]
 fn check_strict_all_satisfied_still_exits_success() {
-    let (status, stdout, stderr) = common::run_with_args(&[
-        "check",
-        "--strict",
-        &common::fixture_path("bracket.ri"),
-    ]);
+    let (status, stdout, stderr) =
+        common::run_with_args(&["check", "--strict", &common::fixture_path("bracket.ri")]);
 
     assert!(
         status.success(),
@@ -431,10 +428,8 @@ fn check_strict_all_satisfied_still_exits_success() {
 /// legacy line; explicit opt-in guard.
 #[test]
 fn check_indeterminate_without_strict_unchanged() {
-    let (status, stdout, stderr) = common::run_with_args(&[
-        "check",
-        &common::fixture_path("bracket_indeterminate.ri"),
-    ]);
+    let (status, stdout, stderr) =
+        common::run_with_args(&["check", &common::fixture_path("bracket_indeterminate.ri")]);
 
     assert!(
         status.success(),

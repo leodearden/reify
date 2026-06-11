@@ -174,10 +174,9 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
 
     // Enforce module-path declaration (spec §7.1/§7.2, task γ).
     // parsed.path == ModulePath::single(module_name) by construction (PRD D-6).
-    if let Some(diag) = reify_compiler::check_module_path_decl(
-        parsed.declared_module_path.as_ref(),
-        &parsed.path,
-    ) {
+    if let Some(diag) =
+        reify_compiler::check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path)
+    {
         compiled.diagnostics.push(diag);
     }
 
@@ -413,8 +412,7 @@ fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
 }
 
 /// Usage line printed to stderr for any `reify check` usage error.
-const CHECK_USAGE: &str =
-    "Usage: reify check [--strict] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
+const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
@@ -517,8 +515,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
         let checker = SimpleConstraintChecker;
         let result = if module_has_representation_within(&compiled) {
             // Kernel-backed path for RepresentationWithin assertions (task-4199 γ).
-            let mut engine =
-                reify_eval::Engine::with_registered_kernel(Box::new(checker));
+            let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
             engine.set_capture_repr_tol(true);
             engine.tessellate_realizations(&compiled);
             engine.check(&compiled)
@@ -535,7 +532,13 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        finish_check(&outcome, &result.constraint_results, strict, &mut std::io::stdout(), &mut std::io::stderr())
+        finish_check(
+            &outcome,
+            &result.constraint_results,
+            strict,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        )
     } else {
         // --purpose path: replicates the canonical
         // eval → activate_purpose → check_constraints_with_values sequence
@@ -569,8 +572,8 @@ fn cmd_check(args: &[String]) -> ExitCode {
             // preserves existing single-param CLI tests (C6).
             // Everything else (len>=2, or len==1 with a named param like part:PartA):
             // route through activate_purpose_with_bindings for C2/C3 validation.
-            let is_bare_single = activation.bindings.len() == 1
-                && activation.bindings[0].param.is_none();
+            let is_bare_single =
+                activation.bindings.len() == 1 && activation.bindings[0].param.is_none();
 
             if is_bare_single {
                 engine.activate_purpose(&activation.name, &activation.bindings[0].entity);
@@ -607,9 +610,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
                     .iter()
                     .map(|b| (b.param.clone().unwrap_or_default(), b.entity.clone()))
                     .collect();
-                if let Err(e) =
-                    engine.activate_purpose_with_bindings(&activation.name, &pairs)
-                {
+                if let Err(e) = engine.activate_purpose_with_bindings(&activation.name, &pairs) {
                     eprintln!("Error: {e}");
                     return ExitCode::FAILURE;
                 }
@@ -639,7 +640,13 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // Same outcome → summary + exit-code mapping as the no-purpose path,
         // so a purpose-injected violation behaves identically to a structure
         // constraint violation in stdout and shell exit semantics.
-        finish_check(&outcome, &constraint_results, strict, &mut std::io::stdout(), &mut std::io::stderr())
+        finish_check(
+            &outcome,
+            &constraint_results,
+            strict,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        )
     }
 }
 
@@ -713,10 +720,13 @@ fn cmd_build(args: &[String]) -> ExitCode {
     // and to exclude the `-o` value from the positional-file scan below so
     // that `reify build -o out.step file.ri` doesn't mistakenly treat
     // `out.step` as the input file.
-    let o_value_pos: Option<usize> = args
-        .iter()
-        .position(|a| a == "-o")
-        .and_then(|i| if i + 1 < args.len() { Some(i + 1) } else { None });
+    let o_value_pos: Option<usize> = args.iter().position(|a| a == "-o").and_then(|i| {
+        if i + 1 < args.len() {
+            Some(i + 1)
+        } else {
+            None
+        }
+    });
 
     // Pick the first positional token: not a flag (`-`-prefixed) and not the
     // value following `-o`.  This makes flag ordering irrelevant, so both
@@ -917,9 +927,9 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         // that run_post_processes/post_process_geometry_queries fires and resolves
         // geometry-query value cells (mass, centroid, volume, …).
         // geometry_output is discarded — reify eval is a value inspector only.
-        let result = configured_eval_engine(
-            reify_eval::Engine::with_registered_kernel(Box::new(SimpleConstraintChecker)),
-        )
+        let result = configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
+            SimpleConstraintChecker,
+        )))
         .build(&compiled, reify_ir::ExportFormat::Step);
         (result.values, result.diagnostics)
     } else {
@@ -928,9 +938,10 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         // cli_integration_smoke) remain on the exact unchanged code path.
         // Note: register_compute_fns is still required so `@optimized` targets
         // dispatch to their solver kernels (task 3794 / esc-3794-183).
-        let result = configured_eval_engine(
-            reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None),
-        )
+        let result = configured_eval_engine(reify_eval::Engine::new(
+            Box::new(SimpleConstraintChecker),
+            None,
+        ))
         .eval(&compiled);
         (result.values, result.diagnostics)
     };
@@ -948,10 +959,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    if diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error)
-    {
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -959,8 +967,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
 }
 
 /// Usage line printed to stderr for any `reify doc` usage error.
-const DOC_USAGE: &str =
-    "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]\n       reify doc --stdlib --out <dir>";
+const DOC_USAGE: &str = "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]\n       reify doc --stdlib --out <dir>";
 
 /// Output format for `reify doc`.
 ///
@@ -973,7 +980,6 @@ enum Format {
     Markdown,
     Json,
 }
-
 
 fn cmd_doc(args: &[String]) -> ExitCode {
     if args.is_empty() {
@@ -1188,8 +1194,7 @@ fn cmd_doc(args: &[String]) -> ExitCode {
         }
         Format::Markdown => {
             let opts = reify_doc::fmt_markdown::MarkdownOptions { split };
-            let rendered =
-                reify_doc::fmt_markdown::render_markdown(&model, Some(&xrefs), &opts);
+            let rendered = reify_doc::fmt_markdown::render_markdown(&model, Some(&xrefs), &opts);
             match rendered {
                 reify_doc::fmt_markdown::MarkdownOutput::Single(body) => {
                     write_single_file_or_stdout(
@@ -1578,9 +1583,13 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
         // so a RepresentationWithin inside a `when ... { constraint ... }` block
         // is also detected.
         t.guarded_groups.iter().any(|g| {
-            g.constraints.iter().chain(g.else_constraints.iter()).any(|c| {
-                reify_eval::tolerance_combine::recognize_representation_within(&c.expr).is_some()
-            })
+            g.constraints
+                .iter()
+                .chain(g.else_constraints.iter())
+                .any(|c| {
+                    reify_eval::tolerance_combine::recognize_representation_within(&c.expr)
+                        .is_some()
+                })
         })
     })
 }
@@ -1602,6 +1611,14 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
 /// to `err` (stderr) — conventional for error diagnostics and avoids polluting the
 /// stdout stream on the failure path. The exit code remains the machine-parseable
 /// contract in both cases.
+///
+/// **Intentional duplication in strict mode:** when `strict=true` and constraints are
+/// INDETERMINATE, callers first invoke [`report_eval_output`] (which writes
+/// `INDETERMINATE <label>` status lines to stdout via [`report_constraint_results`])
+/// and then call this function, which emits [`report_indeterminate_detail`] to `err`.
+/// A machine consumer scanning both streams will therefore see each indeterminate
+/// constraint listed in two different formats. This is conventional (per-item status
+/// lines on stdout + a failure summary on stderr) and intentional — not a bug.
 ///
 /// Without `--strict` every existing literal string and exit code is preserved
 /// byte-for-byte (C2 — backward-compatible behavior).
@@ -1709,8 +1726,8 @@ fn cmd_mcp_server(args: &[String]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_eval::ConstraintCheckEntry;
     use reify_core::ConstraintNodeId;
+    use reify_eval::ConstraintCheckEntry;
     use reify_ir::Satisfaction;
 
     /// Helper: capture `report_constraint_results` output into an in-memory
@@ -2246,9 +2263,12 @@ mod tests {
 
     #[test]
     fn report_indeterminate_detail_single_entry_count_one() {
-        let entries = vec![
-            make_entry("Part", 0, Some("load"), Satisfaction::Indeterminate),
-        ];
+        let entries = vec![make_entry(
+            "Part",
+            0,
+            Some("load"),
+            Satisfaction::Indeterminate,
+        )];
         let mut buf = Vec::new();
         report_indeterminate_detail(1, &entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
@@ -2272,17 +2292,19 @@ mod tests {
     fn finish_check_non_strict_indeterminate_emits_unchanged_summary() {
         // (a) !strict + SomeIndeterminate(1) → byte-identical "No constraints
         // violated (1 indeterminate).\n" regression guard.
-        let entries = vec![
-            make_entry("Bracket", 1, Some("tolerance"), Satisfaction::Indeterminate),
-        ];
+        let entries = vec![make_entry(
+            "Bracket",
+            1,
+            Some("tolerance"),
+            Satisfaction::Indeterminate,
+        )];
         let outcome = ConstraintOutcome::SomeIndeterminate(1);
         let mut buf = Vec::new();
         let mut err_buf = Vec::new();
         finish_check(&outcome, &entries, false, &mut buf, &mut err_buf);
         let output = String::from_utf8(buf).unwrap();
         assert_eq!(
-            output,
-            "No constraints violated (1 indeterminate).\n",
+            output, "No constraints violated (1 indeterminate).\n",
             "non-strict SomeIndeterminate(1) must produce the exact legacy summary line"
         );
     }
@@ -2293,9 +2315,12 @@ mod tests {
         // (stderr); `out` (stdout) must remain empty. The failure narrative must
         // contain "Strict check failed" and name the indeterminate constraint; the
         // legacy summary "No constraints violated" must NOT appear in either stream.
-        let entries = vec![
-            make_entry("Bracket", 1, Some("tolerance"), Satisfaction::Indeterminate),
-        ];
+        let entries = vec![make_entry(
+            "Bracket",
+            1,
+            Some("tolerance"),
+            Satisfaction::Indeterminate,
+        )];
         let outcome = ConstraintOutcome::SomeIndeterminate(1);
         let mut buf = Vec::new();
         let mut err_buf = Vec::new();
@@ -2331,8 +2356,7 @@ mod tests {
             finish_check(&outcome, &entries, strict, &mut buf, &mut err_buf);
             let output = String::from_utf8(buf).unwrap();
             assert_eq!(
-                output,
-                "All constraints satisfied.\n",
+                output, "All constraints satisfied.\n",
                 "AllSatisfied (strict={strict}) must produce 'All constraints satisfied.'"
             );
         }
@@ -2349,8 +2373,7 @@ mod tests {
             finish_check(&outcome, &entries, strict, &mut buf, &mut err_buf);
             let output = String::from_utf8(buf).unwrap();
             assert_eq!(
-                output,
-                "Some constraints violated.\n",
+                output, "Some constraints violated.\n",
                 "SomeViolated (strict={strict}) must produce 'Some constraints violated.'"
             );
         }
@@ -2424,8 +2447,7 @@ structure def Bracket : Physical {
     param material : Material = Steel_AISI_1045()
 }
 "#;
-        let compiled_geo =
-            reify_test_support::parse_and_compile_with_stdlib(geometry_source);
+        let compiled_geo = reify_test_support::parse_and_compile_with_stdlib(geometry_source);
         assert!(
             module_has_geometry(&compiled_geo),
             "Bracket : Physical should be detected as a geometry module"
@@ -2438,8 +2460,7 @@ structure def Plain {
     let y = x + 2.0
 }
 "#;
-        let compiled_plain =
-            reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
         assert!(
             !module_has_geometry(&compiled_plain),
             "Plain numeric module should NOT be detected as a geometry module"
@@ -2453,15 +2474,16 @@ structure def Plain {
         //
         // Constructed directly via the builder API (no stdlib compile needed)
         // so we can precisely control which fields are set.
-        let geo_cell_only = reify_test_support::CompiledModuleBuilder::new(
-            reify_core::ModulePath::new(vec!["test".to_string()]),
-        )
-        .template(
-            reify_test_support::TopologyTemplateBuilder::new("GeoCell")
-                .param("GeoCell", "shape", reify_core::Type::Geometry, None)
-                .build(),
-        )
-        .build();
+        let geo_cell_only =
+            reify_test_support::CompiledModuleBuilder::new(reify_core::ModulePath::new(vec![
+                "test".to_string(),
+            ]))
+            .template(
+                reify_test_support::TopologyTemplateBuilder::new("GeoCell")
+                    .param("GeoCell", "shape", reify_core::Type::Geometry, None)
+                    .build(),
+            )
+            .build();
         assert!(
             module_has_geometry(&geo_cell_only),
             "Module with a Type::Geometry value cell (no realization ops) should be \
