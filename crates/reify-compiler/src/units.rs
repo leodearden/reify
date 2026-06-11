@@ -270,6 +270,80 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
     })
 }
 
+/// Classify `union`/`intersect`/`difference` calls whose operands are
+/// `Type::Selector(kind)` — the selector-composition algebra (task 4119 δ).
+///
+/// Enforces the **K1 kind-closure invariant** at compile time: all operands must
+/// carry the SAME `reify_core::ty::SelectorKind`.  On mismatch emits exactly one
+/// [`DiagnosticCode::SelectorKindMismatch`] (`E_SELECTOR_KIND_MISMATCH`) diagnostic
+/// naming both kinds (using `SelectorKind`'s `Display` impl, e.g. `"FaceSelector"`
+/// and `"EdgeSelector"`); returns `Some(Type::Selector(first_kind))` as the
+/// anti-cascade result so downstream type-checks receive a valid selector type and
+/// do not cascade.
+///
+/// Returns `None` for:
+/// - any name other than `union`, `intersect`, or `difference` (caller falls through)
+/// - calls whose selector-type operands are ALL non-`Selector` types (the CSG
+///   `union(box, box)` / `difference(box, box)` cases — caller falls through to
+///   `is_geometry_function`)
+///
+/// Arity enforcement (union/intersect ≥ 2, difference == 2) is the responsibility
+/// of the eval-side `expected_arity` gate; this function only classifies the type.
+///
+/// Inserted as a ladder arm **before** `is_geometry_function` in
+/// `crates/reify-compiler/src/expr.rs` so that selector compositions are given their
+/// correct `Type::Selector(k)` result type before the function-name-based fallback
+/// assigns `Type::dimensionless_scalar()`.
+pub(crate) fn selector_composition_result_type(
+    name: &str,
+    compiled_args: &[CompiledExpr],
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    if !matches!(name, "union" | "intersect" | "difference") {
+        return None;
+    }
+
+    // Collect the `reify_core::ty::SelectorKind` from every selector-typed arg.
+    // If no arg is a Selector type, this is a CSG call — return None so the caller
+    // falls through to `is_geometry_function`.
+    let selector_kinds: Vec<reify_core::ty::SelectorKind> = compiled_args
+        .iter()
+        .filter_map(|arg| match &arg.result_type {
+            Type::Selector(k) => Some(*k),
+            _ => None,
+        })
+        .collect();
+
+    if selector_kinds.is_empty() {
+        return None;
+    }
+
+    let first_kind = selector_kinds[0];
+
+    // Check K1: all selector operands must share the same kind.
+    if let Some(&mismatch_kind) = selector_kinds.iter().find(|&&k| k != first_kind) {
+        // Emit exactly ONE E_SELECTOR_KIND_MISMATCH naming both kinds.
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "selector composition kind mismatch: cannot compose {} and {}",
+                first_kind, mismatch_kind,
+            ))
+            .with_code(DiagnosticCode::SelectorKindMismatch)
+            .with_label(DiagnosticLabel::new(
+                call_span,
+                "mixed-kind selector composition",
+            )),
+        );
+        // Anti-cascade: return first_kind's type so downstream checks receive a valid
+        // (if wrong-kind) selector type and do not cascade.
+        return Some(Type::Selector(first_kind));
+    }
+
+    // All selector operands have the same kind — valid K1 composition.
+    Some(Type::Selector(first_kind))
+}
+
 /// The complete set of AffineMap **constructor** free-function names recognised
 /// by the compiler (PRD §4.2, task β). A sibling classifier list to the geometry
 /// families above. Unlike [`GEOMETRY_FUNCTION_NAMES`] (geometry-handle producers

@@ -1827,7 +1827,8 @@ pub(crate) fn compile_expr_guarded(
                     // **Internal-arm precedence (within `NoUserFunctions`).** The arms
                     // below are checked in order: `is_geometry_query_helper` →
                     // `is_geometry_kinematic_query` → `is_geometry_topology_selector` →
-                    // `is_geometry_query` → `is_geometry_function` →
+                    // `is_geometry_query` → `selector_composition_result_type` (task 4119 δ)
+                    // → `is_geometry_function` →
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
@@ -1838,7 +1839,9 @@ pub(crate) fn compile_expr_guarded(
                     // `is_field_op` family (task 4219) are pinned disjoint in
                     // `units.rs::tests::*_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
-                    // satisfy two predicates.
+                    // satisfy two predicates. `selector_composition_result_type` is
+                    // arg-aware (returns None for CSG non-selector operands) so CSG
+                    // `union`/`difference` still reach `is_geometry_function`.
                     // task 4118 γ — list-helper selector coercion (insertion
                     // site #2). When `single(selector)` is called, wrap the
                     // `Selector(k)` argument in `ResolveSelector` so the helper
@@ -1919,6 +1922,20 @@ pub(crate) fn compile_expr_guarded(
                         )
                         .or_else(|| geometry_query_result_type(name))
                         .expect("is_geometry_query implies result type")
+                    } else if let Some(t) = selector_composition_result_type(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    ) {
+                        // task 4119 δ — selector-composition algebra
+                        // (union/intersect/difference over Type::Selector operands).
+                        // Enforces K1 kind-closure: emits E_SELECTOR_KIND_MISMATCH and
+                        // returns Type::Selector(first_kind) on mismatch; otherwise
+                        // returns Type::Selector(common_kind) for same-kind composition.
+                        // Returns None for non-selector operands so CSG
+                        // union/difference fall through to `is_geometry_function`.
+                        t
                     } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
                     } else if let Some(t) = infer_list_helper_return_type(name, &compiled_args) {
