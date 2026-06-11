@@ -596,19 +596,36 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
 const FACE_PRODUCING_SELECTOR_NAMES: &[&str] =
     &["faces", "faces_by_area", "faces_by_normal", "adjacent_faces"];
 
-/// Returns `true` iff `arg.kind` is an `IndexAccess` whose `object` is a
-/// `FunctionCall` whose `function.name` is in [`FACE_PRODUCING_SELECTOR_NAMES`].
+/// Returns `true` iff `arg.kind` is an `IndexAccess` whose `object` resolves to
+/// a `FunctionCall` whose `function.name` is in [`FACE_PRODUCING_SELECTOR_NAMES`].
 ///
 /// Structural surface detection — mirrors the `math_fn_result_type` precedent
 /// of inspecting the COMPILED-ARG STRUCTURE rather than the undifferentiated
 /// first-arg type (which would be `Type::Geometry` for both faces and edges
 /// after index access, offering no discrimination). Called by
 /// [`geometry_query_arg_aware_result_type`].
+///
+/// **Two object shapes (task 4118 γ).** After step-12 inserts the
+/// `Selector → List<Geometry>` coercion, a re-typed face selector is wrapped in
+/// a `ResolveSelector` coercion node between the `IndexAccess` object and the
+/// selector `FunctionCall`:
+/// `IndexAccess{ object: ResolveSelector{ FunctionCall{faces} } }`. The detector
+/// unwraps that node to reach the inner `FunctionCall`. Still-`List<Geometry>`
+/// selectors (e.g. `adjacent_faces`, which has no `Selector` re-typing and so no
+/// coercion) keep the bare `IndexAccess{ FunctionCall }` shape, handled by the
+/// fallback that inspects `object` directly.
 fn is_surface_producing_arg(arg: &reify_ir::CompiledExpr) -> bool {
     use reify_ir::CompiledExprKind;
-    if let CompiledExprKind::IndexAccess { object, .. } = &arg.kind
-        && let CompiledExprKind::FunctionCall { function, .. } = &object.kind
-    {
+    let CompiledExprKind::IndexAccess { object, .. } = &arg.kind else {
+        return false;
+    };
+    // Unwrap a ResolveSelector coercion node (re-typed face selectors); else
+    // inspect the object directly (still-List selectors like adjacent_faces).
+    let inner = match &object.kind {
+        CompiledExprKind::ResolveSelector { selector } => selector.as_ref(),
+        _ => object.as_ref(),
+    };
+    if let CompiledExprKind::FunctionCall { function, .. } = &inner.kind {
         return FACE_PRODUCING_SELECTOR_NAMES.contains(&function.name.as_str());
     }
     false
