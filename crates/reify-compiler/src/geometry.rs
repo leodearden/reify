@@ -2744,6 +2744,7 @@ mod tests {
         reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: name.to_string(),
+                arg_names: vec![None; n],
                 args,
             },
             span: reify_core::SourceSpan::new(0, 1),
@@ -3188,6 +3189,7 @@ mod tests {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "box".to_string(),
                 args: vec![num(w), num(h), num(d)],
+                arg_names: vec![None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         }
@@ -3212,7 +3214,7 @@ mod tests {
         let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
 
         let args = match &merged.kind {
-            reify_ast::ExprKind::FunctionCall { name, args } => {
+            reify_ast::ExprKind::FunctionCall { name, args, .. } => {
                 assert_eq!(name, "box");
                 assert_eq!(args.len(), 3);
                 args
@@ -3383,6 +3385,7 @@ mod tests {
                     make_box_with_values(1.0, 1.0, 1.0),
                     make_box_with_values(1.0, 1.0, 1.0),
                 ],
+                arg_names: vec![None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
@@ -3394,6 +3397,7 @@ mod tests {
                     make_box_with_values(2.0, 2.0, 2.0),
                     make_box_with_values(2.0, 2.0, 2.0),
                 ],
+                arg_names: vec![None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
@@ -3403,7 +3407,7 @@ mod tests {
 
         // Merged root should be union(...)
         let (name, args) = match &merged.kind {
-            reify_ast::ExprKind::FunctionCall { name, args } => (name, args),
+            reify_ast::ExprKind::FunctionCall { name, args, .. } => (name, args),
             other => panic!("expected FunctionCall, got {:?}", other),
         };
         assert_eq!(name, "union");
@@ -3412,7 +3416,7 @@ mod tests {
         // Each sub-arg should be box(C,C,C)
         for (i, sub) in args.iter().enumerate() {
             let sub_args = match &sub.kind {
-                reify_ast::ExprKind::FunctionCall { name, args } => {
+                reify_ast::ExprKind::FunctionCall { name, args, .. } => {
                     assert_eq!(name, "box", "sub-arg {} should be box", i);
                     args
                 }
@@ -3476,7 +3480,7 @@ mod tests {
         );
         let hoisted = result.unwrap();
         match &hoisted.kind {
-            reify_ast::ExprKind::FunctionCall { name, args } => {
+            reify_ast::ExprKind::FunctionCall { name, args, .. } => {
                 assert_eq!(name, "box", "hoisted should be box");
                 assert_eq!(args.len(), 3);
                 for arg in args {
@@ -3669,6 +3673,7 @@ mod tests {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "translate".to_string(),
                 args: vec![make_box_with_values(1.0, 1.0, 1.0), one(), zero(), zero()],
+                arg_names: vec![None, None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
@@ -3677,6 +3682,7 @@ mod tests {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "translate".to_string(),
                 args: vec![make_call_with_arity("cylinder", 2), one(), zero(), zero()],
+                arg_names: vec![None, None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
