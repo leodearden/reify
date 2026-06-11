@@ -10,6 +10,7 @@
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar).
 
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use rusqlite::OptionalExtension;
 use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------
@@ -432,6 +433,92 @@ fn tasks_db_path(project_root: &Path) -> PathBuf {
         return PathBuf::from(v);
     }
     project_root.join(".taskmaster/tasks/tasks.db")
+}
+
+/// §6.7 read-only open of the task DB. `SQLITE_OPEN_READ_ONLY` never creates
+/// the file and errors when it is absent (the degradation trigger), and dodges
+/// the URI `file:…?mode=ro` path-escaping fragility on tempdir paths. An
+/// existing-but-unreadable DB surfaces later as a prepare error in
+/// [`resolve_liveness`], which also degrades.
+fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
+    rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+}
+
+/// §8.4 terminal statuses: a cite resolving to one of these is "dead" and
+/// orphans its marker. Every other present status (pending / in-progress /
+/// blocked / deferred) is live (η later flips orphaned to High; β keeps all
+/// liveness kinds Medium).
+fn is_terminal_status(status: &str) -> bool {
+    status == "done" || status == "cancelled"
+}
+
+/// §8.2/§8.3 liveness resolution: per cited marker, resolve each `#NNNN` id's
+/// status against the task DB and classify.
+///
+/// §8.2 multi-cite rule — "one live cite suffices for tracking": if ANY cite
+/// resolves to a present non-terminal status the marker is tracked and emits
+/// nothing. Otherwise every dead cite is explained — a present terminal cite
+/// (done / cancelled) → one `orphaned` finding (summary carries `#id` +
+/// status); an absent cite → one `unknown-id` finding. All findings are
+/// [`Pattern::PTodo`] / [`Severity::Medium`] (§8.4) with `task_id = path` and a
+/// single [`EvidenceRef::File`] ref.
+///
+/// A statement-prepare error (missing `tasks` table / corrupt DB) is propagated
+/// as `Err` so [`check`] degrades fail-soft (§6.7) instead of panicking.
+pub fn resolve_liveness(
+    conn: &rusqlite::Connection,
+    cited: &[(String, usize, Vec<u32>, String)],
+) -> rusqlite::Result<Vec<Finding>> {
+    let mut stmt = conn.prepare("SELECT status FROM tasks WHERE tag = 'master' AND id = ?1")?;
+    let mut out = Vec::new();
+
+    for (path, line, ids, text) in cited {
+        // Resolve every cite once; remember each id's status (None = absent).
+        let mut resolved: Vec<(u32, Option<String>)> = Vec::with_capacity(ids.len());
+        let mut any_live = false;
+        for &id in ids {
+            let status: Option<String> = stmt
+                .query_row(rusqlite::params![id], |row| row.get::<_, String>(0))
+                .optional()?;
+            if status.as_deref().is_some_and(|s| !is_terminal_status(s)) {
+                any_live = true;
+            }
+            resolved.push((id, status));
+        }
+
+        // §8.2: a single live cite tracks the whole marker → no finding.
+        if any_live {
+            continue;
+        }
+
+        for (id, status) in resolved {
+            match status {
+                // Present and — since !any_live — necessarily terminal → orphaned.
+                Some(s) => out.push(liveness_finding(
+                    path,
+                    format!("orphaned: line {line}: #{id} status={s}: {text}"),
+                )),
+                // Absent → unknown-id.
+                None => out.push(liveness_finding(
+                    path,
+                    format!("unknown-id: line {line}: #{id}: {text}"),
+                )),
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// Build a Medium PTODO liveness [`Finding`] at `path` with the given summary.
+fn liveness_finding(path: &str, summary: String) -> Finding {
+    Finding {
+        pattern: Pattern::PTodo,
+        severity: Severity::Medium,
+        summary,
+        task_id: path.to_string(),
+        evidence: vec![EvidenceRef::File { path: path.to_string() }],
+    }
 }
 
 // -----------------------------------------------------------------------
