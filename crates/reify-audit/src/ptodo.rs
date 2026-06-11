@@ -632,6 +632,40 @@ mod tests {
         assert_eq!(got, expected);
     }
 
+    // -------------------------------------------------------------------
+    // §8 unified scan — `scan_file` (Structural + Cited) (β liveness lane)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn scan_file_emits_cited_and_structural() {
+        // is_rust=true so the macro / #[ignore] rules are live.
+        let lines = [
+            "// TODO(#4553): x",          // 1 comment marker + canonical cite -> Cited([4553])
+            "// #42",                     // 2 cite-only, no marker -> no entry (prev for 3)
+            "    todo!()",                // 3 stub macro, cite directly above -> Cited([42])
+            "    #[ignore = \"see #42\"]", // 4 reason-bearing ignore -> no entry (deferred to γ)
+            "// TODO: wire this",         // 5 marker, no cite -> Structural(Untracked)
+            "// TODO(#5): x  // ptodo:allow", // 6 inline escape on a cited line -> skipped
+        ];
+        let content = lines.join("\n");
+
+        let got = scan_file(&content, true);
+        let expected: Vec<(usize, LineClass, String)> = vec![
+            (1, LineClass::Cited(vec![4553]), "// TODO(#4553): x".to_string()),
+            (3, LineClass::Cited(vec![42]), "todo!()".to_string()),
+            (5, LineClass::Structural(Kind::Untracked), "// TODO: wire this".to_string()),
+        ];
+        assert_eq!(got, expected);
+
+        // Regression: classify_file is exactly scan_file filtered to its
+        // Structural variants — the Cited markers (1, 3) and the suppressed
+        // lines (2, 4, 6) drop out, leaving byte-identical α output.
+        let classified = classify_file(&content, true);
+        let expected_structural: Vec<(usize, Kind, String)> =
+            vec![(5, Kind::Untracked, "// TODO: wire this".to_string())];
+        assert_eq!(classified, expected_structural);
+    }
+
     #[test]
     fn classify_file_non_rust_skips_macro_and_ignore() {
         // is_rust=false: comment markers and phantom phrases still fire (all
