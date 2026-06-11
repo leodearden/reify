@@ -120,9 +120,9 @@ pub struct UnifiedPassResult {
 /// land in `residue`. O(V+E).
 ///
 /// Stage B runs Tarjan SCC over the residue subgraph, emitting one
-/// `E_EVAL_CYCLE` per genuine multi-node cycle (`|SCC| > 1`). Singleton
-/// self-loops (step-12) and the `E_EVAL_UNRESOLVED` auto-guard (step-14) are
-/// layered on in later steps.
+/// `E_EVAL_CYCLE` per genuine cycle — a multi-node SCC (`|SCC| > 1`) or a
+/// singleton self-loop. The `E_EVAL_UNRESOLVED` auto-guard (step-14) is layered
+/// on in a later step.
 pub fn run_unified_pass(
     graph: &EvaluationGraph,
     traces: &HashMap<NodeId, DependencyTrace>,
@@ -189,15 +189,17 @@ pub fn run_unified_pass(
 
     // --- Stage B: Tarjan SCC over the residue subgraph → E_EVAL_CYCLE ---
     // Decompose the residue's induced subgraph into strongly-connected
-    // components. A `|SCC| > 1` component is a genuine multi-node cycle and
-    // earns exactly one `E_EVAL_CYCLE`. Singleton SCCs are deferred: a singleton
-    // WITH a self-edge is a self-loop cycle (handled in step-12), and a singleton
-    // WITHOUT a self-edge is stranded-downstream (no diagnostic). Both SCC
-    // enumeration and per-SCC member ordering ride `DebugOrd`, so the diagnostic
-    // vector is deterministic regardless of HashMap iteration order.
+    // components. A genuine cycle is either a multi-node SCC (`|SCC| > 1`) or a
+    // singleton carrying a self-edge (`let x = x`); each earns exactly one
+    // `E_EVAL_CYCLE`. A singleton WITHOUT a self-edge is stranded downstream of
+    // another cycle — left in residue, NO diagnostic. SCC enumeration, per-SCC
+    // member ordering, and the inter-SCC order (by DebugOrd-min member) all ride
+    // `DebugOrd`, so the diagnostic vector is deterministic regardless of
+    // HashMap iteration order.
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     for scc in residue_sccs(&residue, &adjacency) {
-        if scc.len() > 1 {
+        let is_cycle = scc.len() > 1 || (scc.len() == 1 && has_self_edge(&scc[0], &adjacency));
+        if is_cycle {
             diagnostics.push(eval_cycle_diagnostic(&scc, &adjacency));
         }
     }
@@ -218,6 +220,13 @@ fn debug_ord_sorted(nodes: impl IntoIterator<Item = NodeId>) -> Vec<NodeId> {
     let mut ordered: Vec<DebugOrd> = nodes.into_iter().map(DebugOrd).collect();
     ordered.sort();
     ordered.into_iter().map(|DebugOrd(n)| n).collect()
+}
+
+/// Does `node` carry a self-edge — does its own forward adjacency list itself?
+/// A singleton SCC with a self-edge is a `let x = x` self-loop cycle; without
+/// one it is stranded downstream and earns no diagnostic.
+fn has_self_edge(node: &NodeId, adjacency: &HashMap<NodeId, Vec<NodeId>>) -> bool {
+    adjacency.get(node).is_some_and(|succs| succs.contains(node))
 }
 
 /// DebugOrd-ordered forward successors of `node`, restricted to `within`.
