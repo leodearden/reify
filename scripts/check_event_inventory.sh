@@ -5,15 +5,27 @@
 # Policy: PRD §11 Q4 — start as warning; promote via --strict after
 #         one release cycle of observed drift.
 #
+# Source enumeration (hermetic, task-4572): both passes operate on the shared
+# _tracked_rs array — `git ls-files 'gui/src-tauri/*.rs'` lists ONLY indexed
+# (tracked) files, so untracked/transient build artifacts are excluded by
+# construction regardless of which directory they land in. This supersedes the
+# directory-name PRUNE_DIRS mechanism from task-4529 (esc-4357-20) and closes
+# the gap where transients land outside the named dirs (esc-3798-78). Single-
+# star pathspec: git * is not path-boundary-aware, so it matches recursively at
+# every depth AND the top-level build.rs (same set as the prior find -name).
+# Staged-only coverage: a new .emit("new-channel", …) call in an unstaged file
+# is not detected until the file is `git add`ed. This is intentional — the
+# verify/CI gate always runs on staged/committed trees.
+#
 # Forward pass: extracts literal channel names from .emit("name", …) call sites
-# under gui/src-tauri/ and warns if any are absent from docs/gui-event-channels.md.
+# in tracked sources and warns if any are absent from docs/gui-event-channels.md.
 #
 # Reverse pass (--bidirectional, opt-in): for each §1-registered channel in the
 # inventory, verifies that a quoted string literal "channel-name" appears somewhere
-# in gui/src-tauri/**/*.rs. §1-only scoping: §2 (FICTION → WIRED) rows are
+# in a tracked .rs source. §1-only scoping: §2 (FICTION → WIRED) rows are
 # pre-implementation and intentionally excluded to avoid phantom-warning noise.
 # Permissive scan: searches for the channel name as a quoted literal anywhere in
-# *.rs, not just in .emit(…) form — this naturally covers dynamic-emit patterns;
+# tracked *.rs, not just in .emit(…) form — naturally covers dynamic-emit patterns;
 # see docs/gui-event-channels.md §1 producer columns for the source-of-truth list
 # of which sites produce which channel literal. No hardcoded allowlist needed.
 # Opt-in per esc-3552-52 reviewer note; default-on deferred pending §2 graduation.
@@ -44,7 +56,11 @@ Options:
                      §1-scoped: §2 (FICTION → WIRED) rows are excluded pending
                      §2 graduation. Opt-in per esc-3552-52 reviewer note.
   --repo-root DIR    Repository root (default: git rev-parse --show-toplevel).
+                     Must be a git work tree; exits 1 with an error otherwise.
   -h, --help         Show this message.
+
+Note: only git-tracked (staged) .rs files are scanned. A .emit("new-channel")
+call in an unstaged file is not detected until the file is added to the index.
 USAGE
 }
 
@@ -69,53 +85,6 @@ fi
 INVENTORY="$REPO_ROOT/docs/gui-event-channels.md"
 SRC_DIR="$REPO_ROOT/gui/src-tauri"
 
-# Build-artifact directories under SRC_DIR that must never be scanned.
-# Rationale: the infra-check lane runs concurrently with a build lane (verify.sh
-# "Overlap join" region). Tauri codegen writes transient .rs files to gen/ during
-# any `cargo build -p reify-gui`; the Rust compiler writes to target/. A transient
-# emit literal in those dirs would be flagged as a false-positive orphan/phantom.
-#
-# target/ and gen/ are the two real build-output dirs at the top of SRC_DIR
-# (.gitignore'd: /target:5, gen/:36 in gui/src-tauri/.gitignore).
-#
-# dist and node_modules are defensive guards — they do NOT currently exist under
-# gui/src-tauri/ (their .gitignore entries are for gui/dist/:49 and
-# node_modules/:14 under the parent gui/ directory). They are included to guard
-# against future Tauri or JS tooling additions to gui/src-tauri that could
-# otherwise silently introduce false-positive scan hits.
-#
-# The find prune uses -name (basename match), NOT -path anchored to SRC_DIR.
-# This is intentional: gen and target are project-reserved build-output names
-# under gui/src-tauri; no tracked .rs source module should ever carry either
-# name at any depth. If a future source module were named gen/ or target/ it
-# would need renaming (both are conventional build-dir names that confuse tools).
-# The grep --exclude-dir side is inherently basename-only (grep has no path-prune
-# equivalent), so basename matching is also the only consistent option across
-# both scan forms.
-# No tracked .rs lives under any of these four names; pruning is safe.
-# See esc-4357-20 (flake), task-4529 (fix).
-PRUNE_DIRS=(target gen node_modules dist)
-
-# Pre-build a find prune expression: \( -type d \( -name a -o -name b ... \) -prune \)
-# and a grep --exclude-dir arg list, both derived from PRUNE_DIRS.
-_find_prune_expr=()
-_grep_exclude_args=()
-for _d in "${PRUNE_DIRS[@]}"; do
-    _grep_exclude_args+=("--exclude-dir=$_d")
-done
-# Build the find -prune clause: ( -type d ( -name a -o -name b -o ... ) -prune )
-_find_prune_expr+=(\( -type d \()
-_first=1
-for _d in "${PRUNE_DIRS[@]}"; do
-    if [[ $_first -eq 1 ]]; then
-        _find_prune_expr+=(-name "$_d")
-        _first=0
-    else
-        _find_prune_expr+=(-o -name "$_d")
-    fi
-done
-_find_prune_expr+=(\) -prune \))
-
 if [[ ! -f "$INVENTORY" ]]; then
     echo "ERROR: inventory file not found: $INVENTORY" >&2
     exit 1
@@ -125,6 +94,23 @@ if [[ ! -d "$SRC_DIR" ]]; then
     echo "ERROR: source directory not found: $SRC_DIR" >&2
     exit 1
 fi
+
+if ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "ERROR: repo-root is not a git work tree: $REPO_ROOT" >&2
+    exit 1
+fi
+
+# Build the absolute-path array of tracked .rs sources under gui/src-tauri/.
+# git ls-files -z lists only indexed (tracked) files — untracked/transient
+# build artifacts are excluded by construction regardless of which directory
+# they land in (esc-4357-20, esc-3798-78). Supersedes task-4529 PRUNE_DIRS.
+# Single-star pathspec: git * is NOT path-boundary-aware, so
+# 'gui/src-tauri/*.rs' recursively matches at every depth AND the top-level
+# build.rs (verified 37 files), reproducing the prior find -name '*.rs' set.
+_tracked_rs=()
+while IFS= read -r -d '' _f; do
+    _tracked_rs+=("$REPO_ROOT/$_f")
+done < <(git -C "$REPO_ROOT" ls-files -z -- 'gui/src-tauri/*.rs' 2>/dev/null)
 
 # Build the set of registered channel names using the published grep contract:
 # | `channel-name` | — matches every event-channel row in §1 / §2.
@@ -139,14 +125,10 @@ registered=$(grep -oP '\| `\K[a-z0-9-]+(?=` \|)' "$INVENTORY" | sort -u || true)
 #   app.emit(
 #       "evaluation-status",
 # Dynamic forms (.emit(&name, …) or .emit(event_name, …)) produce no match.
-emit_channels=$(
-    find "$SRC_DIR" \
-        "${_find_prune_expr[@]}" \
-        -o \( -type f -name "*.rs" -exec \
-            perl -0777 -ne 'print "$1\n" while /\.emit\(\s*"([a-z0-9-]+)"/gm' {} + \
-        \) \
-    2>/dev/null | sort -u || true
-)
+emit_channels=""
+if [[ ${#_tracked_rs[@]} -gt 0 ]]; then
+    emit_channels=$(perl -0777 -ne 'print "$1\n" while /\.emit\(\s*"([a-z0-9-]+)"/gm' "${_tracked_rs[@]}" 2>/dev/null | sort -u || true)
+fi
 
 # Compare: flag any emit-site literal not present in the registered set.
 orphan_count=0
@@ -155,7 +137,7 @@ while IFS= read -r channel; do
     if ! printf '%s\n' "$registered" | grep -qx "$channel"; then
         orphan_count=$((orphan_count + 1))
         echo "WARNING: orphan channel '$channel' (not in docs/gui-event-channels.md):" >&2
-        grep -rn --include="*.rs" "${_grep_exclude_args[@]}" "\"$channel\"" "$SRC_DIR" >&2 || true
+        grep -n -- "\"$channel\"" "${_tracked_rs[@]}" >&2 || true
     fi
 done <<< "$emit_channels"
 
@@ -164,8 +146,8 @@ if [[ $orphan_count -gt 0 ]]; then
 fi
 
 # Reverse pass (--bidirectional): for each §1-registered channel, verify it has
-# at least one quoted string literal occurrence in gui/src-tauri/**/*.rs.
-# §1-only: awk extracts between ^## §1 and the next ^## §[0-9] heading.
+# at least one quoted string literal occurrence in the tracked _tracked_rs set.
+# §1-only: awk extracts between ^## §1 and the next ^## §[0-9]+ heading.
 # Permissive scan: grep -F '"channel-name"' matches any literal occurrence,
 # not just .emit("…") form, so dynamic-emit patterns are naturally covered.
 phantom_count=0
@@ -176,7 +158,7 @@ if [[ $BIDIRECTIONAL -eq 1 ]]; then
     )
     while IFS= read -r ch; do
         [[ -z "$ch" ]] && continue
-        if ! grep -rqF "\"$ch\"" --include="*.rs" "${_grep_exclude_args[@]}" "$SRC_DIR" 2>/dev/null; then
+        if [[ ${#_tracked_rs[@]} -eq 0 ]] || ! grep -qF -- "\"$ch\"" "${_tracked_rs[@]}" 2>/dev/null; then
             phantom_count=$((phantom_count + 1))
             echo "WARNING: phantom channel '$ch' registered in inventory but no source occurrence in gui/src-tauri/" >&2
         fi

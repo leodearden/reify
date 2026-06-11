@@ -24,6 +24,15 @@ echo "=== check_event_inventory.sh tests ==="
 _tmpdir=$(mktemp -d)
 trap 'rm -rf "$_tmpdir"' EXIT
 
+# Helper: initialise a minimal git repo in DIR and stage the given relative paths.
+# No commit needed — git ls-files reads the index, so staging suffices; skipping
+# commits avoids the need for user.name/user.email identity and hooks.
+_init_repo() {
+    local dir="$1"; shift
+    git init -q "$dir"
+    git -C "$dir" add "$@"
+}
+
 # ==============================================================================
 # Check 0: script exists and is executable
 # ==============================================================================
@@ -74,6 +83,7 @@ fn emit_something(app: &AppHandle) {
     app.emit("orphan-channel-fixture", ()).ok();
 }
 RUST
+_init_repo "$_fix2dir" gui/src-tauri/src/test_emit.rs
 
 _fix2_stderr="$_tmpdir/fix2_stderr.txt"
 "$CHECK_SCRIPT" --repo-root "$_fix2dir" 2>"$_fix2_stderr" || true
@@ -110,6 +120,7 @@ fn emit_multiline(app: &AppHandle) {
     ).ok();
 }
 RUST
+_init_repo "$_fix2bdir" gui/src-tauri/src/test_multiline_emit.rs
 
 _fix2b_stderr="$_tmpdir/fix2b_stderr.txt"
 "$CHECK_SCRIPT" --repo-root "$_fix2bdir" 2>"$_fix2b_stderr" || true
@@ -151,6 +162,7 @@ fn emit_something(app: &AppHandle) {
     app.emit("mesh-update", payload);
 }
 RUST
+_init_repo "$_fix4dir" gui/src-tauri/src/test_emit.rs
 
 _fix4_stderr="$_tmpdir/fix4_stderr.txt"
 "$CHECK_SCRIPT" --repo-root "$_fix4dir" 2>"$_fix4_stderr" || true
@@ -184,6 +196,7 @@ fn emit_dynamic(app: &AppHandle, event_name: &str) {
     app.emit(event_name, payload).ok();
 }
 RUST
+_init_repo "$_fix5dir" gui/src-tauri/src/test_emit.rs
 
 _fix5_stderr="$_tmpdir/fix5_stderr.txt"
 "$CHECK_SCRIPT" --repo-root "$_fix5dir" 2>"$_fix5_stderr" || true
@@ -224,6 +237,7 @@ fn emit_something(app: &AppHandle) {
     app.emit("mesh-update", payload);
 }
 RUST
+_init_repo "$_fix6dir" gui/src-tauri/src/test_emit.rs
 
 _fix6_stderr="$_tmpdir/fix6_stderr.txt"
 "$CHECK_SCRIPT" --repo-root "$_fix6dir" --bidirectional 2>"$_fix6_stderr" || true
@@ -268,6 +282,7 @@ fn push_event(events: &mut Vec<(String, Payload)>, payload: Payload) {
     events.push(("dyn-channel".to_string(), payload));
 }
 RUST
+_init_repo "$_fix7dir" gui/src-tauri/src/test_dyn.rs
 
 _fix7_stderr="$_tmpdir/fix7_stderr.txt"
 "$CHECK_SCRIPT" --repo-root "$_fix7dir" --bidirectional 2>"$_fix7_stderr" || true
@@ -310,6 +325,7 @@ fn emit_something(app: &AppHandle) {
     app.emit("wired-ok", payload);
 }
 RUST
+_init_repo "$_fix8dir" gui/src-tauri/src/test_emit.rs
 
 _fix8_stderr="$_tmpdir/fix8_stderr.txt"
 "$CHECK_SCRIPT" --repo-root "$_fix8dir" --bidirectional 2>"$_fix8_stderr" || true
@@ -399,6 +415,7 @@ fn emit_something(app: &AppHandle) {
     app.emit("wired-ok", payload);
 }
 RUST
+_init_repo "$_fix12dir" gui/src-tauri/src/test_emit.rs
 
 _fix12_stderr="$_tmpdir/fix12_stderr.txt"
 "$CHECK_SCRIPT" --repo-root "$_fix12dir" --bidirectional 2>"$_fix12_stderr" || true
@@ -411,13 +428,15 @@ assert "--bidirectional --strict exits 0 when §10 channel is not misclassified 
 
 # ==============================================================================
 # Check 13: forward-pass / orphan-pass hermeticity
-# Build-artifact .rs files under gen/ and target/ must NOT be scanned by the
-# forward pass. If they are scanned, transient emit literals in those dirs are
-# flagged as orphans, causing false-positive failures during concurrent builds
-# (esc-4357-20, task-4529).
+# Untracked build-artifact .rs files must NOT be scanned by the forward pass.
+# git ls-files enumerates only tracked (indexed) sources, so untracked/transient
+# artifacts are excluded by construction regardless of which directory they land
+# in (esc-4357-20, esc-3798-78, task-4529 → task-4572).
+# Fixture: only gui/src-tauri/src/real.rs is staged; gen/ and target/ artifacts
+# are left UNTRACKED so git ls-files never lists them.
 # ==============================================================================
 echo ""
-echo "--- Check 13: forward-pass hermeticity (prune gen/ and target/) ---"
+echo "--- Check 13: forward-pass hermeticity (untracked build artifacts excluded by git ls-files) ---"
 
 _fix13dir="$_tmpdir/fix13"
 mkdir -p "$_fix13dir/docs" \
@@ -440,19 +459,20 @@ fn emit_real(app: &AppHandle) {
 }
 RUST
 
-# Transient codegen artifact in gen/ — must NOT be scanned.
+# Transient codegen artifact in gen/ — left UNTRACKED, must NOT be scanned.
 cat > "$_fix13dir/gui/src-tauri/gen/schemas/transient.rs" <<'RUST'
 fn emit_transient(app: &AppHandle) {
     app.emit("transient-build-artifact", ());
 }
 RUST
 
-# Transient build artifact in target/ — must NOT be scanned.
+# Transient build artifact in target/ — left UNTRACKED, must NOT be scanned.
 cat > "$_fix13dir/gui/src-tauri/target/debug/build/gen.rs" <<'RUST'
 fn emit_target(app: &AppHandle) {
     app.emit("target-build-artifact", ());
 }
 RUST
+_init_repo "$_fix13dir" gui/src-tauri/src/real.rs
 
 _fix13_stderr="$_tmpdir/fix13_stderr.txt"
 "$CHECK_SCRIPT" --repo-root "$_fix13dir" 2>"$_fix13_stderr" || true
@@ -474,13 +494,14 @@ assert "Check 13: exits 0 under --strict (no false-positive orphan)" \
 
 # ==============================================================================
 # Check 14: bidirectional / reverse-pass hermeticity
-# A §1 channel whose ONLY literal occurrence is inside a pruned build-artifact
-# dir (gen/) must still be reported as a phantom. Pre-fix, the unpruned reverse
-# grep finds the gen/ literal, counts it as wiring, and suppresses the phantom
-# warning — a false NEGATIVE (esc-4357-20, task-4529).
+# A §1 channel whose ONLY literal occurrence is inside an untracked build-artifact
+# file (gen/) must still be reported as a phantom. git ls-files excludes untracked
+# files, so the gen/ literal does NOT count as source wiring (esc-4357-20,
+# task-4529 → task-4572).
+# Fixture: only gui/src-tauri/src/real.rs is staged; gen/ artifact is UNTRACKED.
 # ==============================================================================
 echo ""
-echo "--- Check 14: bidirectional reverse-pass hermeticity (prune gen/ phantom) ---"
+echo "--- Check 14: bidirectional reverse-pass hermeticity (untracked gen/ artifact excluded by git ls-files) ---"
 
 _fix14dir="$_tmpdir/fix14"
 mkdir -p "$_fix14dir/docs" \
@@ -510,12 +531,13 @@ fn emit_real(app: &AppHandle) {
 }
 RUST
 
-# The ONLY literal occurrence of "only-in-gen" lives inside a pruned gen/ artifact.
-# With the fix, the reverse grep must NOT find it — only-in-gen should be phantom.
+# The ONLY literal occurrence of "only-in-gen" lives inside an untracked gen/ artifact.
+# With the fix, the reverse pass must NOT find it — only-in-gen should be phantom.
 cat > "$_fix14dir/gui/src-tauri/gen/schemas/built.rs" <<'RUST'
 // Codegen artifact — this literal must NOT count as source wiring.
 const CHANNEL: &str = "only-in-gen";
 RUST
+_init_repo "$_fix14dir" gui/src-tauri/src/real.rs
 
 _fix14_stderr="$_tmpdir/fix14_stderr.txt"
 "$CHECK_SCRIPT" --repo-root "$_fix14dir" --bidirectional 2>"$_fix14_stderr" || true
@@ -528,6 +550,168 @@ assert "Check 14: --bidirectional does NOT flag 'wired-ok' as phantom" \
 
 assert "Check 14: --bidirectional --strict exits non-zero (only-in-gen is a phantom)" \
     bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix14dir' --bidirectional --strict"
+
+# ==============================================================================
+# Check 15: forward-pass tracked-only hermeticity (esc-3798-78 / task-4572)
+# A transient .rs file under src/ (a directory PRUNE_DIRS never pruned by name)
+# must NOT be scanned if it is UNTRACKED — it models a concurrent build lane
+# writing a file that is not yet in the index. git ls-files excludes it by
+# construction; the old find-based scan would flag it as an orphan.
+# RED against the current find-based script: find scans the untracked
+# src/transient.rs → orphan flagged → assertions 1/2/4 fail.
+# GREEN only after the git ls-files implementation excludes untracked files.
+# ==============================================================================
+echo ""
+echo "--- Check 15: forward-pass tracked-only hermeticity (src/ transient, esc-3798-78) ---"
+
+_fix15dir="$_tmpdir/fix15"
+mkdir -p "$_fix15dir/docs" "$_fix15dir/gui/src-tauri/src"
+
+cat > "$_fix15dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+| Channel | Notes |
+|---|---|
+| `mesh-update` | wired |
+INVENTORY
+
+# TRACKED: legitimate source file with a registered channel — no orphan.
+cat > "$_fix15dir/gui/src-tauri/src/real.rs" <<'RUST'
+fn emit_real(app: &AppHandle) {
+    app.emit("mesh-update", ());
+}
+RUST
+
+# UNTRACKED: transient file dropped by a concurrent build lane under src/.
+# NOT staged — models esc-3798-78 where the transient landed outside gen/target.
+cat > "$_fix15dir/gui/src-tauri/src/transient.rs" <<'RUST'
+fn emit_transient(app: &AppHandle) {
+    app.emit("untracked-orphan", ());
+}
+RUST
+
+# Stage only real.rs; transient.rs stays untracked.
+_init_repo "$_fix15dir" gui/src-tauri/src/real.rs
+
+_fix15_stderr="$_tmpdir/fix15_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix15dir" 2>"$_fix15_stderr" || true
+
+assert "Check 15: 'untracked-orphan' does NOT appear in stderr (untracked file excluded)" \
+    bash -c "! grep -q 'untracked-orphan' '$_fix15_stderr'"
+
+assert "Check 15: no 'orphan' line in stderr (no false-positive from src/ transient)" \
+    bash -c "! grep -q 'orphan' '$_fix15_stderr'"
+
+assert "Check 15: exits 0 in warning mode" \
+    "$CHECK_SCRIPT" --repo-root "$_fix15dir"
+
+assert "Check 15: exits 0 under --strict (no false-positive orphan from untracked transient)" \
+    "$CHECK_SCRIPT" --repo-root "$_fix15dir" --strict
+
+# ==============================================================================
+# Check 16: reverse-pass (--bidirectional) tracked-only hermeticity (task-4572)
+# A §1 channel whose ONLY literal lives in an UNTRACKED src/extra.rs must be
+# flagged as a phantom — the untracked file must NOT count as source wiring.
+# The untracked file is placed under src/ (a directory PRUNE_DIRS never prunes
+# by name), proving git ls-files closes the gap directory-name pruning left.
+# RED against the current reverse pass: grep -r "$SRC_DIR" finds the untracked
+# extra.rs literal → only-in-untracked NOT flagged → assertions 1/3 fail.
+# GREEN only after the git ls-files implementation excludes untracked files.
+# ==============================================================================
+echo ""
+echo "--- Check 16: reverse-pass tracked-only hermeticity (src/ untracked, task-4572) ---"
+
+_fix16dir="$_tmpdir/fix16"
+mkdir -p "$_fix16dir/docs" "$_fix16dir/gui/src-tauri/src"
+
+cat > "$_fix16dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `wired-ok` | wired |
+| `only-in-untracked` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+# TRACKED: legitimately wired channel in src/.
+cat > "$_fix16dir/gui/src-tauri/src/real.rs" <<'RUST'
+fn emit_real(app: &AppHandle) {
+    app.emit("wired-ok", ());
+}
+RUST
+
+# UNTRACKED: the ONLY occurrence of "only-in-untracked" is here.
+# NOT staged — models a concurrent build lane's transient file under src/.
+# This must NOT count as source wiring for the reverse pass.
+cat > "$_fix16dir/gui/src-tauri/src/extra.rs" <<'RUST'
+// Untracked transient — literal must not count as wiring.
+const C: &str = "only-in-untracked";
+RUST
+
+# Stage only real.rs; extra.rs stays untracked.
+_init_repo "$_fix16dir" gui/src-tauri/src/real.rs
+
+_fix16_stderr="$_tmpdir/fix16_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix16dir" --bidirectional 2>"$_fix16_stderr" || true
+
+assert "Check 16: 'only-in-untracked' IS flagged as phantom (untracked literal must not count as wiring)" \
+    grep -q 'only-in-untracked' "$_fix16_stderr"
+
+assert "Check 16: 'wired-ok' is NOT flagged as phantom" \
+    bash -c "! grep -q 'wired-ok' '$_fix16_stderr'"
+
+assert "Check 16: --bidirectional --strict exits non-zero (only-in-untracked is a phantom)" \
+    bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix16dir' --bidirectional --strict"
+
+# ==============================================================================
+# Check 17: non-git repo-root exits with a clear error
+# When --repo-root points at a plain directory (not a git work tree), the script
+# must exit non-zero with an error message. Without this check the tool degrades
+# asymmetrically: the forward pass silently exits 0 (empty source list → no
+# orphans ever flagged) while the reverse pass flags every §1 channel as phantom
+# — an inconsistent and surprising failure mode.
+# ==============================================================================
+echo ""
+echo "--- Check 17: non-git repo-root exits with error ---"
+
+_fix17dir="$_tmpdir/fix17"
+mkdir -p "$_fix17dir/docs" "$_fix17dir/gui/src-tauri/src"
+
+cat > "$_fix17dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `some-channel` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+# No git init — _fix17dir is a plain directory, intentionally not a git work tree.
+
+_fix17_stderr="$_tmpdir/fix17_stderr.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix17dir" 2>"$_fix17_stderr" || true
+
+assert "Check 17: non-git repo-root exits non-zero" \
+    bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix17dir' 2>/dev/null"
+
+assert "Check 17: stderr contains ERROR about non-git work tree" \
+    grep -qi 'error.*git' "$_fix17_stderr"
+
+assert "Check 17: --bidirectional also exits non-zero on non-git repo-root" \
+    bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix17dir' --bidirectional 2>/dev/null"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
