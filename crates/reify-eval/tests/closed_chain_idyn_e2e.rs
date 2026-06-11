@@ -733,56 +733,71 @@ fn closed_4bar_virtual_work_identity() {
     //   J_eff = I_cr + m_cp·a² + (I_cp + I_ct + I_rt) / 9
     //         = 0.10 + 3·0.04² + (0.20 + 0.02 + 0.01)/9
     //         = 0.10 + 0.0048 + 0.23/9   ← (I_cp+I_ct+I_rt)/9: each term (ω_abs/ω)²=1/9
-    //         ≈ 0.130356 kg·m²
+    //         = 0.13035555... kg·m²  (2933/22500; f64 = 0.13035555555555556)
     //   (Coupler COM at crank-tip B: |v_B|=ω·a; crank/rocker COMs at pivots: v=0;
     //    coupler_tip/rocker_tip COMs at standstill pivot C: v=0; see header.)
     //
     // At α=π rad/s² (chosen ≠ω for accels≠vels distinctness on sample_1):
-    //   dE_dt_analytic = J_eff · ω · α = 0.130356 · 2π · π ≈ 2.573 W.
+    //   dE_dt_analytic = J_eff · ω · α = 0.13035555... · 2π · π ≈ 2.573116 W.
     //
-    // Tolerance (G6 DERIVE-AND-BIND; NOT the 2-prismatic 1 µW literal):
-    //   The power floor ~|λ|·O(ε_N·ω) where ε_N≤tol_pos_m=1e-6 m, ω=2π.
-    //   A-priori: |λ|~O(1 kg·π·0.12 m)~0.38 Nm → floor~2.4 µW.
-    //   tol is set to 10× the MEASURED floor (power_0.abs()), with the
-    //   provenance and measured value recorded in the comment below.
-    //   Step-4 replaces this placeholder with the measured binding.
+    // Tolerance (G6 DERIVE-AND-BIND; step-4 measured, NOT the 2-prismatic 1 µW literal):
+    //   A-priori floor estimate: |λ|~0.38 Nm, ε_N≤1e-6 m → ~2.4 µW.
+    //   Measured (step-4): power_0=5.8e−17 W, delta_b=−4.4e−16 W (≈1 ULP).
+    //   tol = 1e−12 W (1 picoW) = 2254× measured max_floor; see binding comment below.
     let omega = 2.0 * std::f64::consts::PI; // crank rate (rad/s)
     let alpha = std::f64::consts::PI;        // chosen crank angular accel (rad/s²), ≠ω
-    let j_eff = 0.130356_f64;               // kg·m² (see provenance above)
-    let de_dt_analytic = j_eff * omega * alpha; // ≈ 2.573 W
 
-    // PLACEHOLDER tolerance — finalized in step-4 to 10× MEASURED power_0 floor.
-    // The a-priori estimate (~24 µW) confirms the placeholder (1e-2 W) is safe.
-    let tol = 1e-2_f64;
+    // J_eff computed from the EXACT same f64 literals as closed_4bar_idyn.ri (prereq-1):
+    //   J_eff = I_cr + m_cp·a² + (I_cp + I_ct + I_rt) / 9
+    //         = 0.10 + 3.0×(0.04)² + (0.20+0.02+0.01)/9
+    //         = 0.10 + 0.0048 + 0.23/9
+    //         = 0.13035555555555556 kg·m²  (best f64 for 2933/22500)
+    // Using the SAME literals as the .ri ensures the formula matches the bridge
+    // to floating-point precision (verified in step-4: delta_b = −4.4e−16 W ≈ 1 ULP).
+    let j_eff: f64 = 0.10 + 3.0 * 0.04 * 0.04 + (0.20 + 0.02 + 0.01) / 9.0;
+    let de_dt_analytic = j_eff * omega * alpha; // ≈ 2.573116 W
 
-    // Measurement print (TEMPORARY - remove after recording floor):
-    eprintln!("[B7 MEASURE] power_0={:.6e} W, power_alpha={:.6e} W, increment={:.6e} W",
-              power_0, power_alpha, power_alpha - power_0);
+    // Tolerance binding (G6 DERIVE-AND-BIND; step-4 measured, NOT the 2-prismatic 1 µW literal):
+    //
+    //   Measured floor (step-4, 2026-06-11):
+    //     power_0  =  5.813114e−17 W  (Newton-residual standstill floor; ≈ 0)
+    //     delta_b  = −4.440892e−16 W  (formula–bridge precision; ≈ 1 ULP of 2.57 W)
+    //     max_floor =  4.440892e−16 W
+    //
+    //   tol = 1e−12 W  (1 picoW)
+    //     = 2254 × max_floor  (>> ≥10× G6 safety-factor requirement)
+    //     = de_dt_analytic / 2.57e12  (non-vacuous: result >> tol by 12 orders)
+    //
+    //   The formula matches the bridge to ~1 ULP because J_eff uses the SAME f64
+    //   literals as the .ri; the Newton solver converges well below tol_pos_m=1e-6.
+    //   A tolerance of 1 µW (the 2-prismatic literal) would also pass but lacks the
+    //   DERIVED provenance required by capability-manifest β G6 (esc-3821-44/esc-3453).
+    let tol = 1e-12_f64; // 1 picoW; 2254× measured max_floor
 
-    // Margin guard: dE/dt ≫ tol (test is non-vacuous; dE/dt≈2.573 W ≫ 0.01 W).
+    // Margin guard: dE/dt ≫ tol (test is non-vacuous; dE/dt≈2.573 W ≫ 1e-12 W).
     assert!(
-        de_dt_analytic > tol * 10.0,
+        de_dt_analytic > tol * 1e10,
         "analytic dE/dt ({de_dt_analytic:.6} W) must be ≫ tol ({tol:.6e} W) \
          for a non-vacuous test (margin guard)"
     );
 
     // (a) α=0 sample: |power_0| < tol validates ½q̇ᵀṀq̇=0 at standstill AND
-    //     measures the Newton-residual floor for this four-bar.
+    //     confirms the Newton-residual floor is below tol (measured: 5.8e−17 W).
     assert!(
         power_0.abs() < tol,
         "power at accels=0 (power_0={power_0:.6e} W) must be < tol={tol:.6e} W \
-         (validates ½q̇ᵀṀq̇=0 at standstill pivot-C AND measures residual floor). \
-         A mismatch indicates a real bridge bug — diagnose, do not retune. \
-         Step-4 finalizes tol to 10× this measured floor."
+         (validates ½q̇ᵀṀq̇=0 at standstill pivot-C AND confirms residual floor < tol). \
+         Measured floor: 5.8e−17 W. A mismatch indicates a real bridge bug — diagnose, do not retune."
     );
 
     // (b) Power increment isolates J_eff·ω·α and cancels the floor.
     let delta = (power_alpha - power_0) - de_dt_analytic;
     assert!(
         delta.abs() < tol,
-        "virtual-work identity: (power_α − power_0) = {:.6} W, analytic dE/dt = {:.6} W, \
+        "virtual-work identity: (power_α − power_0) = {:.9} W, analytic dE/dt = {:.9} W, \
          Δ = {:.6e} W (tol = {tol:.6e} W). \
-         J_eff = {j_eff} kg·m², ω = {omega:.6} rad/s, α = {alpha:.6} rad/s². \
+         J_eff = {j_eff:.17} kg·m², ω = {omega:.9} rad/s, α = {alpha:.9} rad/s². \
+         Measured delta_b: −4.4e−16 W. \
          A mismatch indicates a real bridge bug — diagnose, do not retune.",
         power_alpha - power_0,
         de_dt_analytic,
