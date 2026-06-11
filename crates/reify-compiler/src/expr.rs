@@ -1316,7 +1316,7 @@ pub(crate) fn compile_expr_guarded(
                 result_type,
             )
         }
-        reify_ast::ExprKind::FunctionCall { name, args } => {
+        reify_ast::ExprKind::FunctionCall { name, args, arg_names } => {
             // ── task 3808 (δ): semantic gate — reject `auto` in function-call args ──
             // Named-arg `auto` (both strict `ExprKind::Auto { free: false }` and free
             // `ExprKind::Auto { free: true }`) is valid only at a BINDING SITE (sub
@@ -4606,10 +4606,12 @@ pub structure Rack {
     }
 
     fn call_expr(name: &str, args: Vec<reify_ast::Expr>) -> reify_ast::Expr {
+        let n = args.len();
         reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: name.to_string(),
                 args,
+                arg_names: vec![None; n],
             },
             span: SourceSpan::prelude(),
         }

@@ -124,7 +124,7 @@ fn assert_function_call_named_arg_value_auto(source: &str, expected_free: bool) 
         other => panic!("expected Let, got {:?}", other),
     };
     let (name, args) = match &let_decl.value.kind {
-        ExprKind::FunctionCall { name, args } => (name, args),
+        ExprKind::FunctionCall { name, args, .. } => (name, args),
         other => panic!("expected FunctionCall, got {:?}", other),
     };
     assert_eq!(name, "Bearing", "unexpected function name");
@@ -373,7 +373,7 @@ fn function_call_named_arg_value_non_auto_lowers_normally() {
         other => panic!("expected Let, got {:?}", other),
     };
     let args = match &let_decl.value.kind {
-        ExprKind::FunctionCall { name, args } => {
+        ExprKind::FunctionCall { name, args, .. } => {
             assert_eq!(name, "Bearing");
             args
         }

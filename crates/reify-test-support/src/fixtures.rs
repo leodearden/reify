@@ -347,6 +347,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                                 span: SourceSpan::new(375, 384),
                             },
                         ],
+                        arg_names: vec![None, None, None],
                     },
                     span: SourceSpan::new(356, 385),
                 },

@@ -97,7 +97,7 @@ pub(crate) fn is_geometry_let(
     known_geometry_lets: &HashSet<&str>,
 ) -> bool {
     match &expr.kind {
-        reify_ast::ExprKind::FunctionCall { name, args } => {
+        reify_ast::ExprKind::FunctionCall { name, args, .. } => {
             is_geometry_function(name)
                 && !functions.iter().any(|f| f.name == *name)
                 // Disambiguate the CSG `sweep(profile, path) -> Solid` (docs §3,
@@ -488,10 +488,12 @@ fn merge_branches(
         reify_ast::ExprKind::FunctionCall {
             name: name_a,
             args: args_a,
+            ..
         },
         reify_ast::ExprKind::FunctionCall {
             name: name_b,
             args: args_b,
+            ..
         },
     ) = (&a_eff.kind, &b_eff.kind)
         && name_a == name_b
@@ -506,10 +508,12 @@ fn merge_branches(
             .zip(args_b.iter())
             .map(|(x, y)| merge_branches(cond, x, y, functions, outer_span))
             .collect();
+        let n = merged_args.len();
         return reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: name_a.clone(),
                 args: merged_args,
+                arg_names: vec![None; n],
             },
             span: a_eff.span,
         };
@@ -838,7 +842,7 @@ pub(crate) fn compile_geometry_call(
     }
 
     let (name, args) = match &expr.kind {
-        reify_ast::ExprKind::FunctionCall { name, args } => (name.as_str(), args),
+        reify_ast::ExprKind::FunctionCall { name, args, .. } => (name.as_str(), args),
         _ => return None,
     };
 
@@ -1915,6 +1919,7 @@ mod tests {
                 kind: reify_ast::ExprKind::FunctionCall {
                     name: name.to_string(),
                     args: vec![],
+                    arg_names: vec![],
                 },
                 span: reify_core::SourceSpan::new(0, 1),
             };
@@ -2512,6 +2517,7 @@ mod tests {
                     },
                     span: reify_core::SourceSpan::new(0, 1),
                 }],
+                arg_names: vec![None],
             },
             span: reify_core::SourceSpan::new(0, 10),
         };
@@ -2571,6 +2577,7 @@ mod tests {
                         span: reify_core::SourceSpan::new(0, 1),
                     },
                 ],
+                arg_names: vec![None, None],
             },
             span: reify_core::SourceSpan::new(0, 10),
         };
@@ -2660,6 +2667,7 @@ mod tests {
                         span: reify_core::SourceSpan::new(0, 1),
                     },
                 ],
+                arg_names: vec![None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 10),
         };

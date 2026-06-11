@@ -3475,6 +3475,7 @@ impl<'a> Lowering<'a> {
             kind: ExprKind::FunctionCall {
                 name: "complex".to_string(),
                 args: vec![re_expr, im_expr],
+                arg_names: vec![None, None],
             },
             span: self.span(node),
         })
@@ -3583,12 +3584,14 @@ impl<'a> Lowering<'a> {
         let name = self.node_text(name_node).to_string();
 
         let mut args = Vec::new();
+        let mut arg_names = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
-                    if let Some(expr) = self.lower_call_argument(arg_child) {
+                    if let Some((arg_name, expr)) = self.lower_call_argument(arg_child) {
+                        arg_names.push(arg_name);
                         args.push(expr);
                     }
                 }
@@ -3596,30 +3599,33 @@ impl<'a> Lowering<'a> {
         }
 
         Some(Expr {
-            kind: ExprKind::FunctionCall { name, args },
+            kind: ExprKind::FunctionCall { name, args, arg_names },
             span: self.span(node),
         })
     }
 
     /// Lower a single child of `argument_list`, which may be either a bare
-    /// `_expression` or a `named_argument`. For named arguments, the name is
-    /// stripped and only the value is kept as a positional arg — matching the
-    /// positional-only shape of `ExprKind::FunctionCall`.
+    /// `_expression` or a `named_argument`. Returns `(label, value)` where
+    /// `label` is `None` for positional arguments and `Some(name)` for named
+    /// arguments like `foo(a: 1.0)`.
     ///
     /// The `named_argument` branch delegates to `lower_binding_value` (not
     /// `lower_expr`), making this the **second AST-observable caller** of grammar
     /// slot 5 (`named_argument.value`). The first caller is `lower_named_arg`
     /// (via `named_argument_list` for `sub` instantiations). See
     /// `lower_binding_value`'s doc-comment for the full two-caller enumeration.
-    fn lower_call_argument(&self, node: tree_sitter::Node) -> Option<Expr> {
+    fn lower_call_argument(&self, node: tree_sitter::Node) -> Option<(Option<String>, Expr)> {
         if !node.is_named() {
             return None;
         }
         if node.kind() == "named_argument" {
+            let name_node = node.child_by_field_name("name")?;
+            let arg_name = self.node_text(name_node).to_string();
             let value_node = node.child_by_field_name("value")?;
-            return self.lower_binding_value(value_node);
+            let expr = self.lower_binding_value(value_node)?;
+            return Some((Some(arg_name), expr));
         }
-        self.lower_expr(node)
+        Some((None, self.lower_expr(node)?))
     }
 
     fn lower_list_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
@@ -3690,7 +3696,7 @@ impl<'a> Lowering<'a> {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
-                    if let Some(expr) = self.lower_call_argument(arg_child) {
+                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
                         args.push(expr);
                     }
                 }
@@ -3784,13 +3790,14 @@ impl<'a> Lowering<'a> {
 
         // Collect positional args from the `argument_list` child (same logic as
         // `lower_function_call`, reusing the existing `lower_call_argument` helper).
+        // Trait method calls don't carry named-arg labels, so the label is discarded here.
         let mut args = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
-                    if let Some(expr) = self.lower_call_argument(arg_child) {
+                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
                         args.push(expr);
                     }
                 }
@@ -4155,7 +4162,7 @@ mod tests {
         };
         assert_eq!(body.name, "body");
         match &body.value.kind {
-            ExprKind::FunctionCall { name, args } => {
+            ExprKind::FunctionCall { name, args, .. } => {
                 assert_eq!(name, "box");
                 assert_eq!(args.len(), 3);
                 assert!(matches!(&args[0].kind, ExprKind::Ident(n) if n == "width"));
