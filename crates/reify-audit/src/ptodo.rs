@@ -10,6 +10,7 @@
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar).
 
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------
 // §8.1 marker recognition (pure, hand-rolled — no `regex` dep per design §12)
@@ -414,6 +415,23 @@ fn classify_file(content: &str, is_rust: bool) -> Vec<(usize, Kind, String)> {
             LineClass::Cited(_) => None,
         })
         .collect()
+}
+
+// -----------------------------------------------------------------------
+// §6.7 liveness lane — task-DB path resolution
+// -----------------------------------------------------------------------
+
+/// §6.7 task-DB path resolution: the `REIFY_PTODO_TASKS_DB` env override (used
+/// verbatim when set and non-empty), else `<project_root>/.taskmaster/tasks/
+/// tasks.db`. `std::env::var_os` is a *read*, which is safe under edition 2024
+/// (unlike `set_var`); tests exercise the override only via subprocess env.
+fn tasks_db_path(project_root: &Path) -> PathBuf {
+    if let Some(v) = std::env::var_os("REIFY_PTODO_TASKS_DB")
+        && !v.is_empty()
+    {
+        return PathBuf::from(v);
+    }
+    project_root.join(".taskmaster/tasks/tasks.db")
 }
 
 // -----------------------------------------------------------------------
