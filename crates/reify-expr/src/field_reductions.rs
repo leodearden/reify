@@ -454,6 +454,7 @@ fn reduce_sampled_argextremum_bounded(
 ///
 /// Track the best (first-wins on ties via `total_cmp`) over all finite results.
 /// Returns `Value::Undef` when all nodes are skipped.
+#[allow(clippy::too_many_arguments)]
 fn reduce_analytical_extremum_bounded(
     lambda: &Value,
     lo: &[f64],
