@@ -218,7 +218,11 @@ fn decode_index(g: usize, dims: &[usize]) -> Vec<usize> {
     mi
 }
 
-/// `flat_index` with one axis overridden to `new_val`.
+/// `flat_index` with one axis component overridden to `new_val`.
+///
+/// Used by the FD kernels to address the `i±1` and boundary neighbours of a
+/// node: clone the multi-index, replace the target-axis slot, and compute the
+/// flat row-major address for indexing into the interleaved data buffer.
 fn flat_index_with(mi: &[usize], dims: &[usize], axis: usize, new_val: usize) -> usize {
     let mut mi2 = mi.to_vec();
     mi2[axis] = new_val;
