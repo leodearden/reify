@@ -3019,6 +3019,137 @@ mod tests {
         );
     }
 
+    // ── task 4440 β: Gravity arm → body_force ────────────────────────────────
+
+    /// step-1 RED (task 4440 β): `extract_loads` must accept a `density: f64`
+    /// second argument and return a 3-tuple `([f64;3], Vec<PressureSpec>, [f64;3])`
+    /// where the third element is the accumulated gravity body-force vector
+    /// `Σ ρ·magnitude·direction` over all `Gravity` items.
+    ///
+    /// Cases:
+    ///   (a) Gravity{ρ=7850, m=9.80665, dir=[0,0,-1]} → body_force≈[0,0,-76982.2]
+    ///   (b) Gravity{magnitude=0} → body_force=[0,0,0]
+    ///   (c) Gravity{dir=[1,0,0]} → body_force along +X only
+    ///   (d) mixed [Gravity, PointLoad] → Gravity→body_force AND PointLoad→tip_force
+    ///       (both accumulate, disjoint)
+    ///   (e) two Gravity items accumulate (sum)
+    ///
+    /// RED: `extract_loads` currently has signature `(val: &Value) ->
+    /// ([f64;3], Vec<PressureSpec>)` (1 arg, 2-tuple); calling it with a
+    /// density argument and destructuring as a 3-tuple is a compile-fail.
+    #[test]
+    fn extract_loads_gravity_arm_computes_body_force() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        fn make_gravity(magnitude_si: f64, direction: [f64; 3]) -> Value {
+            let fields: PersistentMap<String, Value> = [
+                (
+                    "magnitude".to_string(),
+                    Value::Scalar {
+                        si_value: magnitude_si,
+                        dimension: DimensionVector::ACCELERATION,
+                    },
+                ),
+                (
+                    "direction".to_string(),
+                    Value::List(vec![
+                        Value::Real(direction[0]),
+                        Value::Real(direction[1]),
+                        Value::Real(direction[2]),
+                    ]),
+                ),
+            ]
+            .into_iter()
+            .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "Gravity".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        }
+
+        fn make_point_load(force: f64) -> Value {
+            let fields: PersistentMap<String, Value> =
+                [("force".to_string(), Value::Real(force))].into_iter().collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "PointLoad".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        }
+
+        const DENSITY: f64 = 7850.0;
+        const GRAV: f64 = 9.80665;
+        // body_force_z = -(ρ · g) = -(7850 · 9.80665) ≈ -76982.2 N/m³
+        let expected_bfz = -(DENSITY * GRAV);
+        const TOL: f64 = 1e-3;
+
+        // (a) Standard gravity, direction [0,0,-1] → body_force≈[0,0,-76982.2]
+        let loads_a = Value::List(vec![make_gravity(GRAV, [0.0, 0.0, -1.0])]);
+        let ([tfx, tfy, tfz], pressures_a, [bfx, bfy, bfz]) =
+            extract_loads(&loads_a, DENSITY);
+        assert!(pressures_a.is_empty(), "(a) no pressures expected");
+        assert!((tfx).abs() < 1e-9, "(a) tip_force x must be 0, got {tfx}");
+        assert!((tfy).abs() < 1e-9, "(a) tip_force y must be 0, got {tfy}");
+        assert!((tfz).abs() < 1e-9, "(a) tip_force z must be 0, got {tfz}");
+        assert!((bfx).abs() < TOL, "(a) body_force x must be ~0, got {bfx}");
+        assert!((bfy).abs() < TOL, "(a) body_force y must be ~0, got {bfy}");
+        assert!(
+            (bfz - expected_bfz).abs() < TOL,
+            "(a) body_force z must be ≈{expected_bfz:.1}, got {bfz}"
+        );
+
+        // (b) magnitude=0 → body_force=[0,0,0]
+        let loads_b = Value::List(vec![make_gravity(0.0, [0.0, 0.0, -1.0])]);
+        let (_, _, [bfx, bfy, bfz]) = extract_loads(&loads_b, DENSITY);
+        assert!((bfx).abs() < 1e-9, "(b) body_force x must be 0, got {bfx}");
+        assert!((bfy).abs() < 1e-9, "(b) body_force y must be 0, got {bfy}");
+        assert!((bfz).abs() < 1e-9, "(b) body_force z must be 0, got {bfz}");
+
+        // (c) direction [1,0,0] → body_force along +X only
+        let loads_c = Value::List(vec![make_gravity(GRAV, [1.0, 0.0, 0.0])]);
+        let (_, _, [bfx, bfy, bfz]) = extract_loads(&loads_c, DENSITY);
+        assert!(
+            (bfx - (DENSITY * GRAV)).abs() < TOL,
+            "(c) body_force x must be ≈{:.1}, got {bfx}",
+            DENSITY * GRAV
+        );
+        assert!((bfy).abs() < 1e-9, "(c) body_force y must be 0, got {bfy}");
+        assert!((bfz).abs() < 1e-9, "(c) body_force z must be 0, got {bfz}");
+
+        // (d) mixed [Gravity, PointLoad]: Gravity→body_force, PointLoad→tip_force
+        let loads_d = Value::List(vec![
+            make_gravity(GRAV, [0.0, 0.0, -1.0]),
+            make_point_load(500.0),
+        ]);
+        let ([tfx, tfy, tfz], _, [bfx, bfy, bfz]) = extract_loads(&loads_d, DENSITY);
+        // PointLoad (no direction) → default -Z → tip_force = [0, 0, -500]
+        assert!((tfx).abs() < 1e-9, "(d) tip_force x must be 0, got {tfx}");
+        assert!((tfy).abs() < 1e-9, "(d) tip_force y must be 0, got {tfy}");
+        assert!((tfz - (-500.0)).abs() < 1e-9, "(d) tip_force z must be -500, got {tfz}");
+        // Gravity → body_force z ≈ -76982.2
+        assert!((bfx).abs() < TOL, "(d) body_force x must be 0, got {bfx}");
+        assert!((bfy).abs() < TOL, "(d) body_force y must be 0, got {bfy}");
+        assert!(
+            (bfz - expected_bfz).abs() < TOL,
+            "(d) body_force z must be ≈{expected_bfz:.1}, got {bfz}"
+        );
+
+        // (e) two Gravity items accumulate: 2 × body_force_z
+        let loads_e = Value::List(vec![
+            make_gravity(GRAV, [0.0, 0.0, -1.0]),
+            make_gravity(GRAV, [0.0, 0.0, -1.0]),
+        ]);
+        let (_, _, [_, _, bfz]) = extract_loads(&loads_e, DENSITY);
+        let expected_double = 2.0 * expected_bfz;
+        assert!(
+            (bfz - expected_double).abs() < TOL,
+            "(e) two Gravity items: body_force z must be ≈{expected_double:.1}, got {bfz}"
+        );
+    }
+
     // ── task 4366: cancel short-circuit + cadence ─────────────────────────────
 
     /// step-1 RED (task 4366): when the progress closure returns
