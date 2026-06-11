@@ -248,6 +248,127 @@ pub(crate) fn eval_all_args_to_f64(
         .collect()
 }
 
+/// Canonicalize sub-handle `kernel_handle` ids into the canonical edge/face
+/// order: ascending `kernel_handle` id, deduplicated. Single source of truth
+/// for the "canonical order + dedup" step, shared by `resolve_subhandle_list`
+/// (which layers the cross-solid membership gate on top) and the
+/// `compile_geometry_op` `ModifyKind::Fillet` eval arm, so the two never drift
+/// on ordering/dedup (task 3205 reviewer note). Ascending id matches
+/// `extract_edges`' TopExp mint order, so a curated subset lines up with the
+/// kernel's edge map.
+fn canonical_subhandle_ids(
+    ids: impl IntoIterator<Item = GeometryHandleId>,
+) -> Vec<GeometryHandleId> {
+    // `BTreeSet` gives dedup (by id) + ascending canonical order in a single
+    // structure — `GeometryHandleId` is `Ord`.
+    ids.into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Lower a `List<Geometry>` of KGQ topology sub-handles to a canonical
+/// `Vec<GeometryHandleId>` (task 3205 — the curated edge/face SELECTION SEAM).
+///
+/// This helper is **kernel-free** (pure `Value` → `Value`): it never touches
+/// the geometry kernel, so it is callable from BOTH [`compile_geometry_op`]
+/// (the legacy eval lowering site, which has no kernel parameter and runs in a
+/// phase where the parent shape is not yet realized) AND the unified
+/// build-DAG driver (engine-unified-build-dag task η).
+///
+/// The cross-solid gate is `realization_ref` equality: every KGQ sub-handle
+/// inherits its parent solid's `realization_ref` unchanged (KGQ-η PRD §4
+/// invariant i, see [`crate::topology_selectors::make_sub_handle`]), so a
+/// handle minted from a different solid carries a different `realization_ref`
+/// and is rejected. The hash domain for these sub-handles is
+/// [`crate::topology_selectors::compose_sub_handle_hash`] /
+/// [`crate::topology_selectors::SubKind`]; this resolver reads only the
+/// already-built `realization_ref` + `kernel_handle`, so it needs no rehash.
+///
+/// Contract:
+///   - `arg` MUST be a `Value::List`; any other shape is a hard `Err`.
+///   - `parent` MUST be a `Value::GeometryHandle`; its `realization_ref` is the
+///     membership key.
+///   - every element MUST be a `Value::GeometryHandle` whose `realization_ref`
+///     equals the parent's — an element from a different solid is `Err`
+///     (cross-solid).
+///   - the resulting ids are **deduped** by `kernel_handle` and returned in
+///     **ascending canonical order** (matching `extract_edges`' TopExp mint
+///     order, so a curated subset lines up with the kernel's edge map).
+///   - an **empty** input list is a legitimate `Ok(vec![])`. The anti-zero-
+///     edges (`E_EMPTY_SELECTION`) guard — which distinguishes "selector
+///     present but resolved to nothing" from "no selector at all" — is the
+///     eval arm's job, NOT this structural resolver's.
+// `#[allow(dead_code)]`: forward-looking selection-resolver seam. The legacy
+// eval arm (`compile_geometry_op`'s `ModifyKind::Fillet`) cannot call the full
+// resolver because the parent solid's `Value::GeometryHandle` is not realized in
+// phase P2 (it enters `values` only in P3 — see the task-3205 plan), so that arm
+// shares only the structural `canonical_subhandle_ids` canonicalization and skips
+// the cross-solid membership gate. The full cross-solid resolver is consumed by
+// engine-unified-build-dag η/ε, whose in-loop driver has the realized parent
+// handle. Exercised now by the `resolve_subhandle_list_*` unit tests below.
+// TODO(tasks 4360/4358): drop this `#[allow(dead_code)]` once η/ε's in-loop
+// driver calls `resolve_subhandle_list` from production code.
+#[allow(dead_code)]
+pub(crate) fn resolve_subhandle_list(
+    arg: &reify_ir::Value,
+    parent: &reify_ir::Value,
+) -> Result<Vec<GeometryHandleId>, String> {
+    let parent_ref = match parent {
+        reify_ir::Value::GeometryHandle {
+            realization_ref, ..
+        } => realization_ref,
+        other => {
+            return Err(format!(
+                "resolve_subhandle_list: parent must be a Geometry handle, got {:?}",
+                other
+            ));
+        }
+    };
+
+    let elems = match arg {
+        reify_ir::Value::List(elems) => elems,
+        other => {
+            return Err(format!(
+                "resolve_subhandle_list: edge selector must be a List<Geometry>, got {:?}",
+                other
+            ));
+        }
+    };
+
+    // Validate every element (cross-solid membership gate), collecting raw
+    // kernel_handles; `canonical_subhandle_ids` then dedups + sorts them into
+    // canonical order — the SAME canonicalization the eval Fillet arm uses, so
+    // the two cannot drift on ordering/dedup.
+    let mut ids: Vec<GeometryHandleId> = Vec::with_capacity(elems.len());
+    for (i, elem) in elems.iter().enumerate() {
+        match elem {
+            reify_ir::Value::GeometryHandle {
+                realization_ref,
+                kernel_handle,
+                ..
+            } => {
+                if realization_ref != parent_ref {
+                    return Err(format!(
+                        "resolve_subhandle_list: edge[{}] belongs to a different solid \
+                         ({} != parent {}) — cross-solid edge selection is rejected",
+                        i, realization_ref, parent_ref
+                    ));
+                }
+                ids.push(*kernel_handle);
+            }
+            other => {
+                return Err(format!(
+                    "resolve_subhandle_list: edge[{}] must be a Geometry sub-handle, got {:?}",
+                    i, other
+                ));
+            }
+        }
+    }
+
+    Ok(canonical_subhandle_ids(ids))
+}
+
 /// Validate and convert a pattern count from f64 to usize.
 ///
 /// Rejects non-positive values, non-integers, and values exceeding
@@ -597,10 +718,144 @@ pub(crate) fn compile_geometry_op(
                     .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
             };
             match kind {
-                reify_compiler::ModifyKind::Fillet => Ok(reify_ir::GeometryOp::Fillet {
-                    target: target_id,
-                    radius: eval_arg("radius")?,
-                }),
+                reify_compiler::ModifyKind::Fillet => {
+                    // Evaluate radius FIRST, while the `eval_arg` closure (which
+                    // borrows `diagnostics` mutably) is still live — this keeps
+                    // the missing-radius Warning behaviour identical to the
+                    // 2-arg path.
+                    let radius = eval_arg("radius")?;
+                    // Is a curated edge selector present? Presence of an "edges"
+                    // named arg distinguishes the 3-arg `fillet(solid, edges,
+                    // radius)` form from the 2-arg `fillet(solid, radius)`
+                    // back-compat form. `args` is shared-borrowed (compatible
+                    // with the closure's shared borrow of `args`).
+                    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
+                    // No explicit `drop(eval_arg)` is needed to release the
+                    // closure's `&mut diagnostics` borrow: `eval_arg` is not used
+                    // again on the Fillet path after the `radius` call above, so
+                    // NLL ends its borrow here — letting the empty-selection arm
+                    // below push its own EmptyEdgeSelection diagnostic. (An
+                    // explicit `drop` of the non-Drop closure trips
+                    // `clippy::drop_non_drop`.)
+                    match edges_expr {
+                        // 2-arg form: no selector → empty edges = all-edges
+                        // back-compat (legacy `fillet(solid, radius)`).
+                        None => Ok(reify_ir::GeometryOp::Fillet {
+                            target: target_id,
+                            edges: vec![],
+                            radius,
+                        }),
+                        // 3-arg form: evaluate the selector and resolve it.
+                        Some(expr) => {
+                            let edges_val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(values, functions, meta_map),
+                            );
+                            match &edges_val {
+                                reify_ir::Value::List(elems) => {
+                                    // Extract each sub-handle's kernel_handle,
+                                    // ERRORING on any element that is NOT a
+                                    // Geometry sub-handle — mirroring
+                                    // `resolve_subhandle_list`'s strictness so a
+                                    // partially-malformed selector (some handles,
+                                    // some non-handles) surfaces an error rather
+                                    // than silently filleting only the surviving
+                                    // subset (the latent trap the task-3205
+                                    // reviewer flagged: a `filter_map` here would
+                                    // drop the bad elements and only an
+                                    // ALL-dropped list would trip
+                                    // EmptyEdgeSelection). `resolve_subhandle_list`
+                                    // layers a cross-solid membership gate on top;
+                                    // this legacy P2 arm cannot run that gate (the
+                                    // parent handle is not realized here — full
+                                    // parent-membership/cross-solid resolution is
+                                    // engine-unified-build-dag η's in-loop job),
+                                    // but it SHARES both the reject-non-handle
+                                    // policy AND the `canonical_subhandle_ids`
+                                    // (ascending order + dedup) canonicalization,
+                                    // so the two never drift.
+                                    let mut raw_ids: Vec<GeometryHandleId> =
+                                        Vec::with_capacity(elems.len());
+                                    for (i, e) in elems.iter().enumerate() {
+                                        match e {
+                                            reify_ir::Value::GeometryHandle {
+                                                kernel_handle,
+                                                ..
+                                            } => raw_ids.push(*kernel_handle),
+                                            other => {
+                                                return Err(format!(
+                                                    "fillet(solid, edges, radius): edge \
+                                                     selector element [{}] is not a Geometry \
+                                                     sub-handle (got {:?}) — the edge selector \
+                                                     must be a List of edge handles",
+                                                    i, other
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    let resolved = canonical_subhandle_ids(raw_ids);
+                                    // ANTI-ZERO-EDGES: a present selector that
+                                    // resolves to ZERO edges must NEVER silently
+                                    // fall through to the all-edges path (the
+                                    // task-3295 fake-done trap). Emit a blocking
+                                    // E_EMPTY_SELECTION and return Err.
+                                    if resolved.is_empty() {
+                                        diagnostics.push(
+                                            Diagnostic::error(
+                                                "fillet(solid, edges, radius): edge selector \
+                                                 resolved to zero edges — refusing to silently \
+                                                 fillet all edges",
+                                            )
+                                            .with_code(
+                                                reify_core::DiagnosticCode::EmptyEdgeSelection,
+                                            ),
+                                        );
+                                        return Err(
+                                            "fillet: edge selector resolved to zero edges"
+                                                .to_string(),
+                                        );
+                                    }
+                                    Ok(reify_ir::GeometryOp::Fillet {
+                                        target: target_id,
+                                        edges: resolved,
+                                        radius,
+                                    })
+                                }
+                                // The selector did not resolve to a List — on the
+                                // legacy pipeline it is `Undef` (the edges
+                                // selector resolves in P4, after this P2 arm).
+                                // This is NOT an empty selection, so do NOT emit
+                                // E_EMPTY_SELECTION (that would false-positive on
+                                // every legacy 3-arg fillet); return a plain Err
+                                // so the cell stays Undef and η resolves it
+                                // in-loop.
+                                //
+                                // The message is deliberately USER-ACTIONABLE (not
+                                // the old internal "did not resolve to a List"
+                                // string): on the current pipeline this `Err` is
+                                // surfaced verbatim as `failed to compile geometry
+                                // operation: <msg>` (engine_build.rs), so a user
+                                // who writes 3-arg `fillet(solid, edges, radius)`
+                                // today gets a diagnostic that explains the
+                                // staging and points at the 2-arg fallback. Pinned
+                                // by `compile_geometry_op_fillet_legacy_selector_
+                                // unresolved_is_user_actionable`. The
+                                // engine-unified-build-dag η/ε work (tasks
+                                // 4360/4358) removes this arm once the in-loop
+                                // selector resolution lands.
+                                other => Err(format!(
+                                    "fillet(solid, edges, radius): curated edge selection is \
+                                     not yet available on the current build pipeline — the edge \
+                                     selector cannot be resolved at the point this fillet runs. \
+                                     Use 2-arg fillet(solid, radius) to fillet all edges, or \
+                                     wait for curated edge selection (engine-unified-build-dag \
+                                     tasks 4360/4358). [edge selector evaluated to {:?}]",
+                                    other
+                                )),
+                            }
+                        }
+                    }
+                }
                 reify_compiler::ModifyKind::Chamfer => Ok(reify_ir::GeometryOp::Chamfer {
                     target: target_id,
                     distance: eval_arg("distance")?,
@@ -7829,6 +8084,266 @@ mod tests {
         assert!(
             diagnostics.is_empty(),
             "no diagnostics expected when all Modify args are present, got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ── Fillet eval-arm: anti-zero-edges + 2-arg back-compat (task 3205 step-9/10) ──
+
+    /// Build a `CompiledExpr` literal that evaluates to an empty `Value::List`
+    /// — a present-but-empty edge selector. Drives the anti-zero-edges
+    /// (E_EMPTY_SELECTION) eval-arm path.
+    fn empty_list_literal() -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::List(vec![]),
+            reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+        )
+    }
+
+    /// (a) ANTI-ZERO-EDGES: a 3-arg Fillet whose `edges` arg is PRESENT but
+    /// evaluates to an empty `Value::List` must NOT silently fall through to
+    /// the all-edges path. `compile_geometry_op` returns `Err`, pushes exactly
+    /// one diagnostic carrying `DiagnosticCode::EmptyEdgeSelection`, and
+    /// produces NO `GeometryOp::Fillet`. Closes the task-3295 fake-done trap.
+    #[test]
+    fn compile_geometry_op_fillet_empty_edge_selection_errors_with_code() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // 3-arg form: args carry "target" (the solid expr), an "edges" selector
+        // that evaluates to Value::List(vec![]), and "radius".
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("edges".into(), empty_list_literal()),
+                ("radius".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "a present edge selector resolving to zero edges must Err (never \
+             fall through to all-edges), got {:?}",
+            result
+        );
+        let empty_sel: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::EmptyEdgeSelection))
+            .collect();
+        assert_eq!(
+            empty_sel.len(),
+            1,
+            "expected exactly one EmptyEdgeSelection diagnostic, got diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (b) 2-arg back-compat: a Fillet with NO `edges` arg lowers to
+    /// `GeometryOp::Fillet{edges: vec![], ..}` (the all-edges path) with NO
+    /// `EmptyEdgeSelection` diagnostic — "no selector" is legitimately
+    /// all-edges, distinct from "selector present but empty".
+    #[test]
+    fn compile_geometry_op_fillet_2arg_no_edges_arg_is_all_edges_back_compat() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("radius".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Fillet { target, edges, .. }) => {
+                assert_eq!(
+                    target,
+                    GeometryHandleId(10),
+                    "target must resolve via Step(0)"
+                );
+                assert!(
+                    edges.is_empty(),
+                    "2-arg fillet (no edges arg) must lower to empty edges \
+                     (all-edges back-compat), got {:?}",
+                    edges
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Fillet) for 2-arg fillet, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "2-arg fillet must NOT emit an EmptyEdgeSelection diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (c) INTERMEDIATE UX: on the legacy pipeline a 3-arg `fillet(solid, edges,
+    /// radius)` reaches this eval arm with the `edges` selector still UNRESOLVED
+    /// (runtime `Value::Undef` — the selector resolves in P4, after this P2 arm).
+    /// That is NOT an empty selection, so the arm must NOT emit
+    /// `EmptyEdgeSelection`; instead it returns a USER-ACTIONABLE `Err` (surfaced
+    /// verbatim as `failed to compile geometry operation: <msg>`), not the old
+    /// internal "did not resolve to a List" string. This pins the staging UX
+    /// until engine-unified-build-dag η/ε (tasks 4360/4358) make curated
+    /// selection reachable end-to-end. (Reviewer test_coverage note, task 3205.)
+    #[test]
+    fn compile_geometry_op_fillet_legacy_selector_unresolved_is_user_actionable() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // 3-arg form whose "edges" selector evaluates to `Value::Undef` — the
+        // legacy-pipeline state where the selector has not yet resolved. Its
+        // STATIC type is `List<Geometry>`, but its runtime value is `Undef`.
+        let unresolved_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Undef,
+            reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("edges".into(), unresolved_selector),
+                ("radius".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "an unresolved legacy edge selector must Err (stays Undef for η \
+                 to resolve in-loop), got Ok({:?})",
+                other
+            ),
+        };
+        // User-actionable: names the call form, points at the 2-arg fallback,
+        // and does NOT leak the old internal "did not resolve to a List" string.
+        assert!(
+            msg.contains("fillet(solid, edges, radius)"),
+            "diagnostic must name the 3-arg call form, got: {msg:?}"
+        );
+        assert!(
+            msg.contains("2-arg fillet(solid, radius)"),
+            "diagnostic must point the user at the 2-arg all-edges fallback, got: {msg:?}"
+        );
+        assert!(
+            !msg.contains("did not resolve to a List"),
+            "diagnostic must not surface the raw internal 'did not resolve to a \
+             List' string, got: {msg:?}"
+        );
+        // The deferral is preserved: an unresolved selector is NOT an empty
+        // selection, so it must NEVER trip the anti-zero-edges guard.
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "an unresolved (non-List) selector must NOT emit EmptyEdgeSelection \
+             (that would false-positive on every legacy 3-arg fillet), got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (d) MALFORMED ELEMENT: a 3-arg Fillet whose `edges` selector resolves to a
+    /// List containing a NON-handle element must `Err` on the bad element rather
+    /// than silently filleting only the surviving handle subset. This mirrors
+    /// `resolve_subhandle_list`'s reject-non-handle strictness so the eval arm
+    /// and the full resolver share one validation policy. The malformed case is
+    /// distinct from an EMPTY selection, so it must NOT trip EmptyEdgeSelection.
+    /// (Reviewer robustness note, task 3205.)
+    #[test]
+    fn compile_geometry_op_fillet_malformed_element_errors_not_empty_selection() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // "edges" resolves to a List with a non-handle element (a bare Real) —
+        // a partially-malformed selector. The old `filter_map` would have
+        // silently dropped it; the strict arm errors on it.
+        let malformed_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::List(vec![reify_ir::Value::Real(1.0)]),
+            reify_core::Type::List(Box::new(reify_core::Type::Real)),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("edges".into(), malformed_selector),
+                ("radius".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "a selector with a non-handle element must Err (never silently \
+                 fillet the surviving subset), got Ok({:?})",
+                other
+            ),
+        };
+        assert!(
+            msg.contains("not a Geometry sub-handle"),
+            "diagnostic must flag the non-handle element, got: {msg:?}"
+        );
+        // A malformed element is NOT an empty selection — it must error on the
+        // element, never reach (and so never trip) the anti-zero-edges guard.
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a malformed-element selector must NOT emit EmptyEdgeSelection, got: {:?}",
             diagnostics
         );
     }
@@ -18148,6 +18663,165 @@ mod tests {
             matches!(diagnostics[0].severity, reify_core::Severity::Warning),
             "diagnostic must be a Warning, got {:?}",
             diagnostics[0].severity
+        );
+    }
+
+    // ── resolve_subhandle_list (task 3205 step-7/8) ───────────────────────
+    //
+    // `resolve_subhandle_list(arg, parent)` is the KERNEL-FREE (pure
+    // Value→Value) helper that lowers a List<Geometry> of KGQ sub-handles to a
+    // canonical `Vec<GeometryHandleId>`: it requires a List of `GeometryHandle`
+    // elements, rejects any element whose `realization_ref` differs from the
+    // parent's (cross-solid gate), dedups by `kernel_handle`, and returns the
+    // ids in ascending canonical order (matching extract_edges' mint order).
+    // These cases are built from DIRECTLY-CONSTRUCTED handles via
+    // `make_sub_handle` — no live build / scheduling required.
+
+    /// (a) Happy path: a List of N edge sub-handles all sharing the parent's
+    /// `realization_ref` resolves to their `kernel_handle` ids in ascending-id
+    /// canonical order. The sub-handles are constructed OUT of ascending order
+    /// to prove the resolver sorts (canonical = ascending kernel_handle id,
+    /// matching extract_edges' TopExp mint order).
+    #[test]
+    fn resolve_subhandle_list_happy_path_canonical_order() {
+        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
+        let parent_hash = [7u8; 32];
+        let parent = reify_ir::Value::GeometryHandle {
+            realization_ref: ra.clone(),
+            upstream_values_hash: parent_hash,
+            kernel_handle: GeometryHandleId(1),
+        };
+        // kernel handles deliberately scrambled to prove ascending canonical sort.
+        let scrambled = [103u64, 101, 102, 100];
+        let edges: Vec<reify_ir::Value> = scrambled
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| {
+                crate::topology_selectors::make_sub_handle(
+                    &ra,
+                    &parent_hash,
+                    crate::topology_selectors::SubKind::Edge,
+                    i as u32,
+                    GeometryHandleId(id),
+                )
+            })
+            .collect();
+        let arg = reify_ir::Value::List(edges);
+        let result = super::resolve_subhandle_list(&arg, &parent);
+        assert_eq!(
+            result,
+            Ok(vec![
+                GeometryHandleId(100),
+                GeometryHandleId(101),
+                GeometryHandleId(102),
+                GeometryHandleId(103),
+            ]),
+            "happy path must resolve sub-handles to kernel_handle ids in \
+             ascending canonical order"
+        );
+    }
+
+    /// (b) Dedup: the same sub-handle listed twice collapses to one entry.
+    #[test]
+    fn resolve_subhandle_list_dedups_repeated_handle() {
+        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
+        let parent_hash = [9u8; 32];
+        let parent = reify_ir::Value::GeometryHandle {
+            realization_ref: ra.clone(),
+            upstream_values_hash: parent_hash,
+            kernel_handle: GeometryHandleId(1),
+        };
+        let edge = crate::topology_selectors::make_sub_handle(
+            &ra,
+            &parent_hash,
+            crate::topology_selectors::SubKind::Edge,
+            0,
+            GeometryHandleId(200),
+        );
+        let arg = reify_ir::Value::List(vec![edge.clone(), edge]);
+        let result = super::resolve_subhandle_list(&arg, &parent);
+        assert_eq!(
+            result,
+            Ok(vec![GeometryHandleId(200)]),
+            "a repeated sub-handle must dedup to a single kernel_handle"
+        );
+    }
+
+    /// (c) Cross-solid rejection: a sub-handle whose `realization_ref` differs
+    /// from the parent's is rejected (a handle minted from a different solid).
+    #[test]
+    fn resolve_subhandle_list_rejects_cross_solid_handle() {
+        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
+        let rb = reify_core::identity::RealizationNodeId::new("PartB", 0);
+        let parent_hash = [1u8; 32];
+        let other_hash = [2u8; 32];
+        let parent = reify_ir::Value::GeometryHandle {
+            realization_ref: ra.clone(),
+            upstream_values_hash: parent_hash,
+            kernel_handle: GeometryHandleId(1),
+        };
+        // One legit edge from PartA, one foreign edge from PartB.
+        let good = crate::topology_selectors::make_sub_handle(
+            &ra,
+            &parent_hash,
+            crate::topology_selectors::SubKind::Edge,
+            0,
+            GeometryHandleId(100),
+        );
+        let foreign = crate::topology_selectors::make_sub_handle(
+            &rb,
+            &other_hash,
+            crate::topology_selectors::SubKind::Edge,
+            0,
+            GeometryHandleId(101),
+        );
+        let arg = reify_ir::Value::List(vec![good, foreign]);
+        let result = super::resolve_subhandle_list(&arg, &parent);
+        assert!(
+            result.is_err(),
+            "a sub-handle from a different realization_ref must be rejected \
+             (cross-solid), got {:?}",
+            result
+        );
+    }
+
+    /// (d) Non-List arg: a non-List `Value` (e.g. `Real`) is rejected — the
+    /// resolver requires a `List<Geometry>`.
+    #[test]
+    fn resolve_subhandle_list_rejects_non_list_arg() {
+        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
+        let parent = reify_ir::Value::GeometryHandle {
+            realization_ref: ra,
+            upstream_values_hash: [3u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+        let arg = reify_ir::Value::Real(2.0);
+        let result = super::resolve_subhandle_list(&arg, &parent);
+        assert!(
+            result.is_err(),
+            "a non-List arg must be rejected, got {:?}",
+            result
+        );
+    }
+
+    /// (e) Empty List: an empty selector list resolves to `Ok(vec![])`. The
+    /// anti-zero-edges (E_EMPTY_SELECTION) guard lives in the eval arm, NOT in
+    /// this kernel-free resolver — the resolver's job is purely structural.
+    #[test]
+    fn resolve_subhandle_list_empty_list_is_ok_empty() {
+        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
+        let parent = reify_ir::Value::GeometryHandle {
+            realization_ref: ra,
+            upstream_values_hash: [4u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+        let arg = reify_ir::Value::List(vec![]);
+        let result = super::resolve_subhandle_list(&arg, &parent);
+        assert_eq!(
+            result,
+            Ok(Vec::<GeometryHandleId>::new()),
+            "an empty selector List must resolve to Ok(empty) — the \
+             anti-zero-edges guard lives in the eval arm, not the resolver"
         );
     }
 }

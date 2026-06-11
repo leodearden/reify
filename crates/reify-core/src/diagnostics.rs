@@ -227,6 +227,23 @@ pub enum DiagnosticCode {
     /// accepted. Non-fatal — the op is still lowered (mirrors [`GeometryUnbounded`]).
     /// See `docs/prds/geometry-primitive-constructors.md` task α.
     GeometryProfileRequired,
+    /// Origin: the eval `ModifyKind::Fillet` 3-arg arm in
+    /// `crates/reify-eval/src/geometry_ops.rs` (curated-fillet anti-zero-edges guard).
+    /// Canonical message form:
+    /// `"fillet(...): edge selector resolved to zero edges"`.
+    ///
+    /// Emitted as a `Severity::Error` when a *present* (3-arg
+    /// `fillet(solid, edges, radius)`) edge selector resolves to an **empty**
+    /// vector. This is a hard user error: the op must NEVER silently fall through
+    /// to the all-edges path (which would fake-complete the build with an
+    /// unintended geometry — the task-3295 trap). The 2-arg back-compat form
+    /// `fillet(solid, radius)` has no selector argument, so its empty edge list
+    /// legitimately means all-edges and does NOT emit this code.
+    ///
+    /// The PRD-prose mnemonic is `E_EMPTY_SELECTION` (see
+    /// `docs/prds/geometry-modify-sweep-completion.md`); per the `E_*` → Error
+    /// severity convention this is always a blocking error.
+    EmptyEdgeSelection,
     /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
     /// Replaces canonical messages:
     /// - `"constraint <id> violated"` (Bool(false) branch, Severity::Error)
@@ -2342,6 +2359,20 @@ mod tests {
     fn diagnostic_code_geometry_profile_required_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::GeometryProfileRequired).unwrap();
         assert_eq!(s, "\"GeometryProfileRequired\"");
+    }
+
+    // --- EmptyEdgeSelection tests (geom-modify curated-fillet task 3205) ---
+    // Pairs with the anti-zero-edges guard in the eval ModifyKind::Fillet 3-arg
+    // arm: a present (3-arg) edge selector that resolves to an empty vector emits
+    // a blocking diagnostic with this code instead of silently filleting all edges.
+
+    /// `DiagnosticCode::EmptyEdgeSelection` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the GeometryUnbounded
+    /// shape so a future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_empty_edge_selection_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::EmptyEdgeSelection);
+        assert_eq!(d.code, Some(DiagnosticCode::EmptyEdgeSelection));
     }
 
     // --- Shadowing tests (task 2310 — spec §8.5) ---

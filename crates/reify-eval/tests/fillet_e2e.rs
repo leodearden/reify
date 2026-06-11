@@ -45,9 +45,14 @@ fn fillet_compiler_rejects_one_arg() {
     );
 }
 
-/// fillet() with 3 args should produce diagnostics (too many args).
+/// fillet() with 3 args is the curated-edge form `fillet(solid, edges, radius)`
+/// (task 3205): the compiler now RECOGNISES it and produces a `Modify(Fillet)`
+/// realization, rather than rejecting it as a wrong arg count. The 2-arg
+/// all-edges form remains valid (see `fillet_compiler_accepts_two_args`); only
+/// arities other than 2 or 3 are arg-count errors (see
+/// `fillet_compiler_rejects_one_arg`).
 #[test]
-fn fillet_compiler_rejects_three_args() {
+fn fillet_compiler_accepts_three_args_curated_edges() {
     let source = r#"structure S {
     param target: Length = 5mm
     param rad: Length = 2mm
@@ -69,12 +74,16 @@ fn fillet_compiler_rejects_three_args() {
         })
     });
     assert!(
-        !compiled.diagnostics.is_empty(),
-        "expected error diagnostic for wrong arg count (3 args)"
+        has_fillet_op,
+        "3-arg fillet(solid, edges, radius) should now produce a Modify(Fillet) op (task 3205)"
     );
     assert!(
-        !has_fillet_op,
-        "should not produce Modify(Fillet) op with wrong arg count (3 args)"
+        !compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("expects 2 or 3 arguments")),
+        "3-arg fillet must not emit an arg-count diagnostic (3 is a valid arity), got: {:?}",
+        compiled.diagnostics
     );
 }
 
@@ -160,7 +169,7 @@ fn fillet_through_full_eval_pipeline() {
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {
-        GeometryOp::Fillet { target, radius } => {
+        GeometryOp::Fillet { target, radius, .. } => {
             assert_eq!(
                 *target, target_handle,
                 "Fillet target should be handle from op 0 ({:?}), got {:?}",
@@ -205,7 +214,7 @@ fn fillet_modify_only_needs_radius_arg() {
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {
-        GeometryOp::Fillet { target, radius } => {
+        GeometryOp::Fillet { target, radius, .. } => {
             assert_eq!(
                 *target, target_handle,
                 "Fillet target should be handle from op 0 ({:?}), got {:?}",

@@ -616,6 +616,7 @@ mod tests {
         let err = kernel
             .execute(&GeometryOp::Fillet {
                 target: GeometryHandleId(1),
+                edges: vec![],
                 radius: Value::Real(0.1),
             })
             .expect_err("Fillet must be rejected on Sdf");

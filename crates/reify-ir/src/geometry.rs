@@ -582,8 +582,14 @@ pub enum GeometryOp {
         right: GeometryHandleId,
     },
     /// Fillet (round) edges by radius.
+    ///
+    /// `edges` is the curated selection of edges to round. An **empty** list is
+    /// the all-edges back-compat path (legacy 2-arg `fillet(solid, radius)`); a
+    /// non-empty list names the specific edges to round (3-arg
+    /// `fillet(solid, edges, radius)`).
     Fillet {
         target: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
         radius: Value,
     },
     /// Chamfer edges by distance.
@@ -6347,6 +6353,7 @@ mod tests {
                 "Fillet",
                 GeometryOp::Fillet {
                     target: GeometryHandleId(1),
+                    edges: vec![],
                     radius: Value::Real(0.001),
                 },
             ),
@@ -7478,5 +7485,45 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         let removed = table.remove(GeometryHandleId(99));
         assert!(removed.is_none(), "remove of absent id must return None");
+    }
+
+    /// `GeometryOp::Fillet` records a curated `edges` selection alongside
+    /// `target`/`radius`. A non-empty list names the specific edges to round;
+    /// an empty list is the all-edges back-compat path (legacy 2-arg fillet).
+    #[test]
+    fn fillet_records_curated_edges_selection() {
+        // Curated selection: four named edges.
+        let curated = GeometryOp::Fillet {
+            target: GeometryHandleId(1),
+            edges: vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+                GeometryHandleId(5),
+            ],
+            radius: Value::Real(0.002),
+        };
+        match curated {
+            GeometryOp::Fillet { edges, .. } => {
+                assert_eq!(edges.len(), 4, "curated fillet must record all 4 edges");
+            }
+            _ => panic!("expected GeometryOp::Fillet"),
+        }
+
+        // Back-compat: empty edges = all-edges fillet.
+        let all_edges = GeometryOp::Fillet {
+            target: GeometryHandleId(1),
+            edges: vec![],
+            radius: Value::Real(0.002),
+        };
+        match all_edges {
+            GeometryOp::Fillet { edges, .. } => {
+                assert!(
+                    edges.is_empty(),
+                    "2-arg back-compat fillet must record an empty edge selection"
+                );
+            }
+            _ => panic!("expected GeometryOp::Fillet"),
+        }
     }
 }

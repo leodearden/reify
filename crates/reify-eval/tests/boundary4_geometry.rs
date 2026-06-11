@@ -255,6 +255,7 @@ mod occt_tests {
         let filleted = kernel
             .execute(&GeometryOp::Fillet {
                 target: handle.id,
+                edges: vec![],
                 radius: mm(2.0),
             })
             .unwrap();
