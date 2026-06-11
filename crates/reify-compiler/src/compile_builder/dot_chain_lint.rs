@@ -695,6 +695,7 @@ mod tests {
                 ArmKind::FunctionCallFirstArg => ExprKind::FunctionCall {
                     name: "f".to_string(),
                     args: vec![leaf],
+                    arg_names: vec![None],
                 },
                 ArmKind::ConditionalCondition => ExprKind::Conditional {
                     condition: Box::new(leaf),
@@ -796,6 +797,7 @@ mod tests {
                 ArmKind::FunctionCallSecondArg => ExprKind::FunctionCall {
                     name: "f".to_string(),
                     args: vec![shallow_leaf(span), leaf],
+                    arg_names: vec![None, None],
                 },
                 ArmKind::ListLiteralSecond => ExprKind::ListLiteral(vec![shallow_leaf(span), leaf]),
                 ArmKind::SetLiteralSecond => ExprKind::SetLiteral(vec![shallow_leaf(span), leaf]),

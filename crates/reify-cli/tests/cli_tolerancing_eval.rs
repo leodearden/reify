@@ -96,28 +96,27 @@ fn eval_std_tolerancing_surface_example_succeeds() {
         "stdout should contain 'prof_zone = 0.00003 m' (ProfileOfSurfaceRelated.nominal_zone = 0.03mm w/ datum_refs, not undef);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
-    // ── α zone_shape param-order fix: value-pins for Location/Orientation callouts ──
-    // `zone_shape` is declared *beyond* its refined trait (LocationTolerance /
-    // OrientationTolerance do not declare it) and therefore requires placement
-    // BEFORE `material_condition` to avoid the binder misbinding `nominal_zone`
-    // to undef (same workaround as datum_refs in Runout/Profile…Related).
-    // These pins catch a regression if zone_shape is ever reordered back after
-    // material_condition in the tolerancing.ri declaration.
+    // ── Value-pins for Location/Orientation callouts (by-name binder guard) ──
+    // The eval-engine named-argument binder now binds strictly by parameter name
+    // (task-4522), so beyond-trait params such as `zone_shape` no longer need to
+    // precede `material_condition` in the declaration order. These pins verify that
+    // the by-name binder correctly routes the arguments and keeps nominal_zone
+    // materialising a real scalar.
     //
     //   pos_zone = efz(0.1mm, MMC, 0mm) = 0.1mm = 0.0001 m
     //     Position with explicit MMC — proves the beyond-trait zone_shape param
     //     does not corrupt nominal_zone when material_condition is explicit.
     //   par_zone = efz(0.04mm, RFS, 0mm) = 0.04mm = 0.00004 m
     //     Parallelism with IMPLICIT material_condition (RFS default) — the critical
-    //     case: without the param-order fix, the binder misbinds material_condition
-    //     to undef when zone_shape follows it, producing par_zone = undef.
+    //     case: the old positional binder would misbind material_condition to undef
+    //     when zone_shape followed it; the by-name binder handles this correctly.
     assert!(
         stdout.contains("pos_zone = 0.0001 m"),
-        "stdout should contain 'pos_zone = 0.0001 m' (Position.nominal_zone = 0.1mm under MMC, not undef — zone_shape param-order fix);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "stdout should contain 'pos_zone = 0.0001 m' (Position.nominal_zone = 0.1mm under MMC, not undef);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
         stdout.contains("par_zone = 0.00004 m"),
-        "stdout should contain 'par_zone = 0.00004 m' (Parallelism.nominal_zone = 0.04mm under RFS default, not undef — zone_shape param-order fix);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "stdout should contain 'par_zone = 0.00004 m' (Parallelism.nominal_zone = 0.04mm under RFS default, not undef);\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 

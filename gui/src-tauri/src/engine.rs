@@ -3603,7 +3603,7 @@ fn walk_function_calls(
 ) {
     use reify_ast::ExprKind;
     match &expr.kind {
-        ExprKind::FunctionCall { name, args } => {
+        ExprKind::FunctionCall { name, args, .. } => {
             on_call(name, args);
             // Recurse into all args so nested calls are also visited.
             for arg in args {
@@ -3684,7 +3684,7 @@ fn collect_snapshot_bind_pairs(expr: &reify_ast::Expr, pairs: &mut Vec<(String, 
             let pairs_before = pairs.len();
             for elem in elems {
                 let (bind_name, bind_args) = match &elem.kind {
-                    ExprKind::FunctionCall { name, args } => (name, args),
+                    ExprKind::FunctionCall { name, args, .. } => (name, args),
                     _ => continue,
                 };
                 if bind_name != "bind" || bind_args.len() != 2 {

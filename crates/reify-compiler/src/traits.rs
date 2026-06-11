@@ -386,7 +386,7 @@ fn try_desugar_determinacy_intrinsic(
     scope: &CompilationScope,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Result<reify_ast::Expr, ()>> {
-    let reify_ast::ExprKind::FunctionCall { name, args } = &expr.kind else {
+    let reify_ast::ExprKind::FunctionCall { name, args, .. } = &expr.kind else {
         return None;
     };
     let member = determinacy_intrinsic_member(name.as_str())?;
@@ -454,6 +454,7 @@ fn try_desugar_determinacy_intrinsic(
                         kind: reify_ast::ExprKind::Ident("__p".to_string()),
                         span,
                     }],
+                    arg_names: vec![None],
                 },
                 span,
             }),

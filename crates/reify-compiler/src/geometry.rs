@@ -97,7 +97,7 @@ pub(crate) fn is_geometry_let(
     known_geometry_lets: &HashSet<&str>,
 ) -> bool {
     match &expr.kind {
-        reify_ast::ExprKind::FunctionCall { name, args } => {
+        reify_ast::ExprKind::FunctionCall { name, args, .. } => {
             is_geometry_function(name)
                 && !functions.iter().any(|f| f.name == *name)
                 // Disambiguate the CSG `sweep(profile, path) -> Solid` (docs §3,
@@ -488,10 +488,12 @@ fn merge_branches(
         reify_ast::ExprKind::FunctionCall {
             name: name_a,
             args: args_a,
+            ..
         },
         reify_ast::ExprKind::FunctionCall {
             name: name_b,
             args: args_b,
+            ..
         },
     ) = (&a_eff.kind, &b_eff.kind)
         && name_a == name_b
@@ -506,10 +508,12 @@ fn merge_branches(
             .zip(args_b.iter())
             .map(|(x, y)| merge_branches(cond, x, y, functions, outer_span))
             .collect();
+        let n = merged_args.len();
         return reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: name_a.clone(),
                 args: merged_args,
+                arg_names: vec![None; n],
             },
             span: a_eff.span,
         };
@@ -838,7 +842,7 @@ pub(crate) fn compile_geometry_call(
     }
 
     let (name, args) = match &expr.kind {
-        reify_ast::ExprKind::FunctionCall { name, args } => (name.as_str(), args),
+        reify_ast::ExprKind::FunctionCall { name, args, .. } => (name.as_str(), args),
         _ => return None,
     };
 
@@ -1915,6 +1919,7 @@ mod tests {
                 kind: reify_ast::ExprKind::FunctionCall {
                     name: name.to_string(),
                     args: vec![],
+                    arg_names: vec![],
                 },
                 span: reify_core::SourceSpan::new(0, 1),
             };
@@ -2512,6 +2517,7 @@ mod tests {
                     },
                     span: reify_core::SourceSpan::new(0, 1),
                 }],
+                arg_names: vec![None],
             },
             span: reify_core::SourceSpan::new(0, 10),
         };
@@ -2571,6 +2577,7 @@ mod tests {
                         span: reify_core::SourceSpan::new(0, 1),
                     },
                 ],
+                arg_names: vec![None, None],
             },
             span: reify_core::SourceSpan::new(0, 10),
         };
@@ -2660,6 +2667,7 @@ mod tests {
                         span: reify_core::SourceSpan::new(0, 1),
                     },
                 ],
+                arg_names: vec![None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 10),
         };
@@ -2736,6 +2744,7 @@ mod tests {
         reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: name.to_string(),
+                arg_names: vec![None; n],
                 args,
             },
             span: reify_core::SourceSpan::new(0, 1),
@@ -3180,6 +3189,7 @@ mod tests {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "box".to_string(),
                 args: vec![num(w), num(h), num(d)],
+                arg_names: vec![None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         }
@@ -3204,7 +3214,7 @@ mod tests {
         let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
 
         let args = match &merged.kind {
-            reify_ast::ExprKind::FunctionCall { name, args } => {
+            reify_ast::ExprKind::FunctionCall { name, args, .. } => {
                 assert_eq!(name, "box");
                 assert_eq!(args.len(), 3);
                 args
@@ -3375,6 +3385,7 @@ mod tests {
                     make_box_with_values(1.0, 1.0, 1.0),
                     make_box_with_values(1.0, 1.0, 1.0),
                 ],
+                arg_names: vec![None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
@@ -3386,6 +3397,7 @@ mod tests {
                     make_box_with_values(2.0, 2.0, 2.0),
                     make_box_with_values(2.0, 2.0, 2.0),
                 ],
+                arg_names: vec![None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
@@ -3395,7 +3407,7 @@ mod tests {
 
         // Merged root should be union(...)
         let (name, args) = match &merged.kind {
-            reify_ast::ExprKind::FunctionCall { name, args } => (name, args),
+            reify_ast::ExprKind::FunctionCall { name, args, .. } => (name, args),
             other => panic!("expected FunctionCall, got {:?}", other),
         };
         assert_eq!(name, "union");
@@ -3404,7 +3416,7 @@ mod tests {
         // Each sub-arg should be box(C,C,C)
         for (i, sub) in args.iter().enumerate() {
             let sub_args = match &sub.kind {
-                reify_ast::ExprKind::FunctionCall { name, args } => {
+                reify_ast::ExprKind::FunctionCall { name, args, .. } => {
                     assert_eq!(name, "box", "sub-arg {} should be box", i);
                     args
                 }
@@ -3468,7 +3480,7 @@ mod tests {
         );
         let hoisted = result.unwrap();
         match &hoisted.kind {
-            reify_ast::ExprKind::FunctionCall { name, args } => {
+            reify_ast::ExprKind::FunctionCall { name, args, .. } => {
                 assert_eq!(name, "box", "hoisted should be box");
                 assert_eq!(args.len(), 3);
                 for arg in args {
@@ -3661,6 +3673,7 @@ mod tests {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "translate".to_string(),
                 args: vec![make_box_with_values(1.0, 1.0, 1.0), one(), zero(), zero()],
+                arg_names: vec![None, None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
@@ -3669,6 +3682,7 @@ mod tests {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "translate".to_string(),
                 args: vec![make_call_with_arity("cylinder", 2), one(), zero(), zero()],
+                arg_names: vec![None, None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
