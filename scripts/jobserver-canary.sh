@@ -38,7 +38,27 @@ print(-1 if m < 0 or t < 0 else m + t)
 PY
 }
 
+build_active() {  # count live cargo/compiler/linker procs (exclude stopped/zombie)
+  if [ -n "${REIFY_JOBSERVER_BUILD_ACTIVE_CMD:-}" ]; then
+    bash -c "$REIFY_JOBSERVER_BUILD_ACTIVE_CMD"
+  else
+    ps -eo stat,comm | awk '
+      $2 ~ /^(cargo|cargo-nextest|rustc|cc1|cc1plus|rust-lld|lld|lto)$/ && $1 !~ /[TZ]/ { n++ }
+      END { print n + 0 }'
+  fi
+}
+
 reseed() { echo "jobserver-canary: $1 — re-seeding $SVC"; systemctl --user restart "$SVC"; }
+
+# Require the build to be idle across the whole sampling window before acting,
+# so we never re-seed while a verify is mid-flight.
+for i in 1 2 3; do
+  if [ "$(build_active)" -gt 0 ]; then
+    echo "jobserver-canary: build active — skipping (sum=$(tokens_sum)/$SEEDED)"
+    exit 0
+  fi
+  [ "$i" -lt 3 ] && sleep "${REIFY_JOBSERVER_CANARY_SETTLE_SLEEP:-5}"
+done
 
 s=$(tokens_sum)
 if [ "$s" -lt 0 ]; then
