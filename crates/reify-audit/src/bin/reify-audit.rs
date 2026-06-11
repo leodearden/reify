@@ -611,10 +611,11 @@ fn main() -> ExitCode {
         let run_p1 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P1"));
         let run_p2 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P2"));
         let run_p5 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P5"));
-        // PDEAD, PUNTESTED, and PLAYER are opt-in only — not part of the default all-detector sweep.
+        // PDEAD, PUNTESTED, PLAYER, and PTODO are opt-in only — not part of the default all-detector sweep.
         let run_pdead = run_pdead(&args);
         let run_puntested = run_puntested(&args);
         let run_player = run_player(&args);
+        let run_ptodo = run_ptodo(&args);
 
         let mut all = Vec::new();
         if run_p1 {
@@ -634,6 +635,12 @@ fn main() -> ExitCode {
         }
         if run_player {
             all.extend(reify_audit::player::check(&ctx));
+        }
+        // PTODO structural lane: ls_files enumeration + working-tree fs reads.
+        // Needs neither jcodemunch (needs_jcodemunch=false → NoopJCodemunchOps)
+        // nor a live task DB (structural lane ignores task_metadata).
+        if run_ptodo {
+            all.extend(reify_audit::ptodo::check(&ctx));
         }
         all
     };
