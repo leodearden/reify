@@ -3017,22 +3017,7 @@ mod tests {
         // For offset_revolute_z(L=0.1): transform_at = {R_z(θ), (L,0,0)}.
         // T_world = I ∘ transform_at = {R_z(θ), (0.1, 0, 0)}.
         // Translation is (0.1, 0, 0) regardless of θ — the offset is baked in.
-        let snap_map = match &snap {
-            Value::Map(m) => m,
-            other => panic!("expected Snapshot Map, got {:?}", other),
-        };
-        let bodies = match snap_map.get(&Value::String("bodies".to_string())) {
-            Some(Value::List(b)) => b,
-            other => panic!("expected bodies List, got {:?}", other),
-        };
-        assert_eq!(bodies.len(), 1, "one body in the snapshot");
-        let body_rec = match &bodies[0] {
-            Value::Map(b) => b,
-            other => panic!("expected body record Map, got {:?}", other),
-        };
-        let wt = body_rec
-            .get(&Value::String("world_transform".to_string()))
-            .expect("body record must carry world_transform (offset dynamics test)");
+        let wt = crate::test_fixtures::body_world_transform(&snap, 0);
 
         // Decompose world_transform.
         let (rotation, translation) = match wt {
@@ -3102,13 +3087,14 @@ mod tests {
 
         let value = field(&forces[0], "JointForce", "value");
         let torque = num(field(value, "ScalarTorque", "magnitude"));
-        // For offset_revolute_z(0.1): axis = Z, CoM = (0,0,−0.1) in body frame.
-        // World CoM = R_z(θ)·(0,0,−0.1) + (0.1,0,0) = (0.1, 0, −0.1).
-        // Gravity τ_z = (r × F)·ẑ where r = CoM − pivot = (0,0,−0.1) and F = (0,0,−g).
-        // r × F = (0,0,−0.1) × (0,0,−g) = (0,0,0) — CoM lies on the Z axis, so τ_z = 0.
+        // Finitude/shape check: inverse_dynamics must return a well-formed, finite result.
+        // Note: this is NOT an offset-discriminating assertion — the CoM lies on the Z
+        // rotation axis, so τ_z = (r × F)·ẑ = 0 regardless of pivot offset. A precise
+        // analytic torque identity is β/B7's deliverable.
         assert!(
-            torque.abs() < 1e-6,
-            "B3 dynamics: torque must be ~0 for on-axis CoM (analytic Z-torque = 0), got {torque}"
+            torque.is_finite() && torque.abs() < 1e-6,
+            "B3 dynamics: inverse_dynamics must return a finite result \
+             (on-axis CoM, analytic τ_z = 0); got {torque}"
         );
     }
 }

@@ -115,3 +115,26 @@ pub(crate) fn offset_prismatic_x(len_m: f64) -> Value {
 pub(crate) fn two_link_offset_chain() -> (Value, Value) {
     (offset_revolute_z(0.3), offset_revolute_z(0.2))
 }
+
+/// Extract the `world_transform` value for body at `idx` from a `snapshot` result.
+///
+/// Panics with a descriptive message if the snapshot is not a Map, the `"bodies"` field
+/// is not a List, the body at `idx` is not a Map, or `"world_transform"` is absent.
+/// Shared by snapshot.rs and dynamics/eval.rs tests to avoid repeating the
+/// nested-extraction boilerplate.
+pub(crate) fn body_world_transform(snap: &Value, idx: usize) -> &Value {
+    let m = match snap {
+        Value::Map(m) => m,
+        other => panic!("expected Snapshot Map, got {:?}", other),
+    };
+    let bodies = match m.get(&Value::String("bodies".to_string())) {
+        Some(Value::List(b)) => b,
+        other => panic!("expected bodies List in snapshot, got {:?}", other),
+    };
+    let body = match &bodies[idx] {
+        Value::Map(b) => b,
+        other => panic!("expected body record Map at index {idx}, got {:?}", other),
+    };
+    body.get(&Value::String("world_transform".to_string()))
+        .expect("body record must carry world_transform")
+}

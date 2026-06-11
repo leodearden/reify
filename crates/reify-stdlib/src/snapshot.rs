@@ -1163,8 +1163,8 @@ pub(crate) fn make_binding(joint: Value, value: Value) -> Value {
 mod tests {
     use crate::eval_builtin;
     use crate::test_fixtures::{
-        angle_range_0_to_pi, axis_x_unit, axis_z_unit, length_range_0_to_1m, offset_revolute_z,
-        planar_xy_joint, two_link_offset_chain,
+        angle_range_0_to_pi, axis_x_unit, axis_z_unit, body_world_transform, length_range_0_to_1m,
+        offset_revolute_z, planar_xy_joint, two_link_offset_chain,
     };
     use reify_ir::Value;
     use std::collections::BTreeMap;
@@ -3161,21 +3161,8 @@ mod tests {
         let mech_offset = eval_builtin("body", &[mech_offset, solid.clone(), j_offset.clone()]);
         let bind_offset = eval_builtin("bind", &[j_offset.clone(), Value::angle(v)]);
         let snap_offset = eval_builtin("snapshot", &[mech_offset, Value::List(vec![bind_offset])]);
-        let snap_offset_map = match &snap_offset {
-            Value::Map(m) => m,
-            other => panic!("expected Snapshot Map (offset), got {:?}", other),
-        };
-        let bodies_offset = match snap_offset_map.get(&Value::String("bodies".to_string())) {
-            Some(Value::List(b)) => b,
-            other => panic!("expected bodies List (offset), got {:?}", other),
-        };
-        let wt_offset = match &bodies_offset[0] {
-            Value::Map(b) => b
-                .get(&Value::String("world_transform".to_string()))
-                .expect("body record must have world_transform (offset)"),
-            other => panic!("expected body Map (offset), got {:?}", other),
-        };
-        let (_, [tx_off, ty_off, _]) = decompose_transform_for_assert(wt_offset);
+        let (_, [tx_off, ty_off, _]) =
+            decompose_transform_for_assert(body_world_transform(&snap_offset, 0));
 
         // ── Without offset joint ──────────────────────────────────────────
         let j_bare = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
@@ -3183,21 +3170,8 @@ mod tests {
         let mech_bare = eval_builtin("body", &[mech_bare, solid.clone(), j_bare.clone()]);
         let bind_bare = eval_builtin("bind", &[j_bare.clone(), Value::angle(v)]);
         let snap_bare = eval_builtin("snapshot", &[mech_bare, Value::List(vec![bind_bare])]);
-        let snap_bare_map = match &snap_bare {
-            Value::Map(m) => m,
-            other => panic!("expected Snapshot Map (bare), got {:?}", other),
-        };
-        let bodies_bare = match snap_bare_map.get(&Value::String("bodies".to_string())) {
-            Some(Value::List(b)) => b,
-            other => panic!("expected bodies List (bare), got {:?}", other),
-        };
-        let wt_bare = match &bodies_bare[0] {
-            Value::Map(b) => b
-                .get(&Value::String("world_transform".to_string()))
-                .expect("body record must have world_transform (bare)"),
-            other => panic!("expected body Map (bare), got {:?}", other),
-        };
-        let (_, [tx_bare, ty_bare, _]) = decompose_transform_for_assert(wt_bare);
+        let (_, [tx_bare, ty_bare, _]) =
+            decompose_transform_for_assert(body_world_transform(&snap_bare, 0));
 
         // The offset (0.3 m at +X) must shift the translation relative to the bare joint.
         // For revolute-Z with origin=(0.3,0,0): world translation = (0.3, 0, 0) regardless of θ.
@@ -3207,9 +3181,10 @@ mod tests {
             "B8 route-4: offset joint tx should differ from bare (offset=0.3m): \
              off={tx_off:.6}, bare={tx_bare:.6}"
         );
-        // ty should also match expected values (bare revolute gives 0, offset gives 0)
-        let _ = ty_off;
-        let _ = ty_bare;
+        // ty must be 0 for both: revolute-Z origin is purely in X, so the Y component
+        // of the world translation is zero regardless of whether an X-offset is present.
+        assert!(ty_off.abs() < 1e-9, "B8 route-4: offset ty should be 0, got {ty_off:.3e}");
+        assert!(ty_bare.abs() < 1e-9, "B8 route-4: bare ty should be 0, got {ty_bare:.3e}");
     }
 
     // ── KIN-OFFSET γ step-4 (B3): 2-link offset chain FK analytic ────────────────
