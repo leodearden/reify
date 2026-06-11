@@ -755,6 +755,10 @@ fn closed_4bar_virtual_work_identity() {
     // The a-priori estimate (~24 µW) confirms the placeholder (1e-2 W) is safe.
     let tol = 1e-2_f64;
 
+    // Measurement print (TEMPORARY - remove after recording floor):
+    eprintln!("[B7 MEASURE] power_0={:.6e} W, power_alpha={:.6e} W, increment={:.6e} W",
+              power_0, power_alpha, power_alpha - power_0);
+
     // Margin guard: dE/dt ≫ tol (test is non-vacuous; dE/dt≈2.573 W ≫ 0.01 W).
     assert!(
         de_dt_analytic > tol * 10.0,

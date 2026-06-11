@@ -3,8 +3,13 @@
 // task 4391 option C; the EXPRESSIBLE successor to the descoped 4146 revolute
 // 4-bar that shipped a 2-prismatic loop instead).
 //
+// β2 update (task 4429): two-sample trajectory added (accels=0; accels=vels×α/ω)
+// and energy-ledger derivation documented (see §β2 below). The B6 constraint-rank
+// and B7 virtual-work-identity assertions are in
+// crates/reify-eval/tests/closed_chain_idyn_e2e.rs.
+//
 // PRD: docs/prds/v0_6/kinematic-inter-joint-offsets.md task β (§1 consumer,
-// §8 boundary test B4, §9).
+// §8 boundary test B4/B6/B7, §9).
 //
 // ── Why this example can exist now (esc-4146-280 §0 gap, now closed) ──────────
 // Task 4146 could NOT build a revolute 4-bar e2e: the pre-4331 kinematic layer
@@ -63,17 +68,42 @@
 // matching both rely on.
 //
 // ── Scope boundary (β1 vs β2) ────────────────────────────────────────────────
-// β1 (this file + the B4 live loop-residual tests) delivers the committable
-// example and the genuinely nonzero-residual configuration. This file is the
-// COMPLETE worked example — it assembles the closed mechanism and calls
-// `inverse_dynamics(m, traj)` through the landed 4146 bridge UNCHANGED — but β1
-// asserts NOTHING about the `forces` result. The constraint-rank (B6) and
-// virtual-work power-identity (B7, with the derived G6 tolerance) assertions on
-// `forces` are sibling β2's, which reuses this file without edits (and may
-// retune the trajectory rates/accels it needs).
+// β1 (task 4428) delivered the committable example, the genuinely nonzero-residual
+// configuration, and the B4 live loop-residual tests. β2 (task 4429) adds the
+// two-sample trajectory, the B6 constraint-rank signal, and the B7 virtual-work
+// power-identity headline.
+//
+// ── β2 energy-ledger derivation ──────────────────────────────────────────────
+// The linkage is planar in XY; default_gravity=[0,0,−9.81] ⊥ plane ⇒ dPE/dt=0.
+// At the assembled config (θ_crank=45°, coupler straight, ω=2π rad/s):
+//
+//   (1) Standstill at C (coupler_tip/rocker_tip pivot):
+//       v_B = ω·a (crank tip), ω_coupler_abs = 2π − 8π/3 = −2π/3 = −ω/3.
+//       Since a = b/3 = 40/120, v_C = 0 exactly (see header geometry).
+//
+//   (2) ½q̇ᵀṀq̇ = 0 (J′_eff(45°) = 0; effective inertia is stationary at C).
+//       dE/dt = dKE/dt = q̇ᵀMq̈ exactly.
+//
+//   (3) Effective inertia (independent Lagrangian energy method):
+//       J_eff = I_cr + m_cp·a² + (I_cp + I_ct + I_rt) / 9
+//             = 0.10 + 3·0.04² + (0.20 + 0.02 + 0.01)/9
+//             = 0.10 + 0.0048 + 0.23/9   ≈ 0.130356 kg·m²
+//       (crank/rocker COMs at pivots: v=0; coupler COM at B: |v_B|=ω·a;
+//        coupler_tip/rocker_tip COMs at standstill C: v=0; see header.)
+//
+//   (4) Loading accels = vels×(α/ω) gives q̇ᵀMq̈ = J_eff·ω·α.
+//       Chosen α = π rad/s² (≠ ω=2π, so accels ≠ vels on sample_1):
+//       dE/dt = J_eff · 2π · π ≈ 0.130356 · 2π² ≈ 2.573 W.
+//
+//   (5) Two-sample trajectory:
+//       sample_0: accels=0          → power_0 ≈ 0 (Newton-residual floor)
+//       sample_1: accels=vels×(π/2π) → power_α ≈ 2.573 W
+//       Increment power_α − power_0 isolates J_eff·ω·α and cancels the floor.
+//       B7's tolerance = 10× MEASURED power_0 (step-4 finalized; see test).
 //
 // Running `reify eval examples/dynamics/closed_4bar_idyn.ri` evaluates the five
-// revolute joint cells, the assembled closed mechanism, and the `forces` cell.
+// revolute joint cells, the assembled closed mechanism, and the `forces` cell
+// (a List<List<JointForce>> of shape 2×5: two samples × 5 spanning-tree joints).
 structure def ClosedFourBarIdyn {
     // Rotation axis shared by all five revolute joints (planar linkage in XY).
     let axis_z = vec3(0, 0, 1)
@@ -129,7 +159,7 @@ structure def ClosedFourBarIdyn {
     // Closing edge: the coupler-tip joint meets the rocker-tip joint at pivot C.
     let m = body(m5, mp_closing, j_coupler_tip, j_rocker_tip)
 
-    // ── One-sample joint-space trajectory at the ASSEMBLED configuration ─────
+    // ── Two-sample joint-space trajectory at the ASSEMBLED configuration ─────
     //   values[0..6] : per-body joint positions, in BODIES order (crank,
     //                  coupler, coupler_tip, rocker, rocker_tip, closing), in
     //                  radians. These are the analytically-solved closure
@@ -146,14 +176,26 @@ structure def ClosedFourBarIdyn {
     //                    ω_rocker  = 0,
     //                    ω_rocker_tip = ω_input + ω_coupler = −2π/3
     //                  for the prescribed crank rate ω_input = 2π rad/s.
-    //   accels[0..5] : per spanning-tree DOF generalized accelerations. Zero
-    //                  here — β1 asserts nothing about `forces`; β2 owns the
-    //                  dynamics validation and may retune these.
-    let sample = TrajectorySample(t: 0s, values: [0.7853981633974483, 0.0, 0.0, 1.8039163646188838, -1.0185182012214355, 0.0], vels: [6.283185307179586, -8.377580409572781, 0.0, 0.0, -2.0943951023931953], accels: [0.0, 0.0, 0.0, 0.0, 0.0])
-    let traj = MotionTrajectory(mechanism: 0.0, samples: [sample])
+    //   accels[0..5] (sample_0): zero — measures the Newton-residual power
+    //                  floor at this config (should be ≈ 0; β2 B7 validates).
+    //   accels[0..5] (sample_1): vels × (α/ω) = vels × (π/(2π)) = vels × 0.5
+    //                  where α = π rad/s² (chosen ≠ ω for accels≠vels distinctness).
+    //                  Gives dE/dt = J_eff·ω·α = 0.130356·2π·π ≈ 2.573 W.
+    //                  See energy-ledger derivation in the §β2 header above.
+    let sample_0 = TrajectorySample(t: 0s, values: [0.7853981633974483, 0.0, 0.0, 1.8039163646188838, -1.0185182012214355, 0.0], vels: [6.283185307179586, -8.377580409572781, 0.0, 0.0, -2.0943951023931953], accels: [0.0, 0.0, 0.0, 0.0, 0.0])
+    // sample_1 accels = vels × (π / 2π) = vels × 0.5 (α = π rad/s²):
+    //   q̈_0 = 2π × 0.5    = π           ≈ 3.141592653589793 rad/s²
+    //   q̈_1 = −8π/3 × 0.5 = −4π/3       ≈ −4.1887902047863905 rad/s² (relative, coupler)
+    //   q̈_2 = 0                          (coupler_tip, no relative accel)
+    //   q̈_3 = 0                          (rocker, no acceleration since ω_rk=0)
+    //   q̈_4 = −2π/3 × 0.5 = −π/3        ≈ −1.0471975511965976 rad/s² (relative, rocker_tip)
+    let sample_1 = TrajectorySample(t: 1s, values: [0.7853981633974483, 0.0, 0.0, 1.8039163646188838, -1.0185182012214355, 0.0], vels: [6.283185307179586, -8.377580409572781, 0.0, 0.0, -2.0943951023931953], accels: [3.141592653589793, -4.1887902047863905, 0.0, 0.0, -1.0471975511965976])
+    let traj = MotionTrajectory(mechanism: 0.0, samples: [sample_0, sample_1])
 
     // Closed-chain inverse dynamics through the landed 4146 bridge, UNCHANGED.
-    // β1 asserts nothing about this cell; β2 (B6 constraint-rank, B7
-    // virtual-work identity) reads it.
+    // β2 reads this cell: B6 checks the live constraint rank (m_eff=2 from the
+    // loop Jacobian at the assembled config); B7 checks the virtual-work power
+    // identity Σ τ_i·q̇_i = J_eff·ω·α ≈ 2.573 W across the two samples.
+    // forces: List<List<JointForce>> of shape 2×5 (two samples × 5 tree joints).
     let forces = inverse_dynamics(m, traj)
 }
