@@ -75,7 +75,7 @@ impl BuildScheduler {
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use reify_core::Diagnostic;
+use reify_core::{Diagnostic, DiagnosticCode};
 
 use crate::cache::NodeId;
 use crate::deps::DependencyTrace;
@@ -119,8 +119,10 @@ pub struct UnifiedPassResult {
 /// Cyclic nodes never reach in-degree 0, so they are never popped/scheduled and
 /// land in `residue`. O(V+E).
 ///
-/// Stage B (Tarjan SCC over the residue → `E_EVAL_CYCLE`) and the
-/// `E_EVAL_UNRESOLVED` auto-guard are layered on in later steps.
+/// Stage B runs Tarjan SCC over the residue subgraph, emitting one
+/// `E_EVAL_CYCLE` per genuine multi-node cycle (`|SCC| > 1`). Singleton
+/// self-loops (step-12) and the `E_EVAL_UNRESOLVED` auto-guard (step-14) are
+/// layered on in later steps.
 pub fn run_unified_pass(
     graph: &EvaluationGraph,
     traces: &HashMap<NodeId, DependencyTrace>,
@@ -185,11 +187,199 @@ pub fn run_unified_pass(
     let scheduled: HashSet<NodeId> = schedule.iter().cloned().collect();
     let residue: HashSet<NodeId> = node_set.difference(&scheduled).cloned().collect();
 
+    // --- Stage B: Tarjan SCC over the residue subgraph → E_EVAL_CYCLE ---
+    // Decompose the residue's induced subgraph into strongly-connected
+    // components. A `|SCC| > 1` component is a genuine multi-node cycle and
+    // earns exactly one `E_EVAL_CYCLE`. Singleton SCCs are deferred: a singleton
+    // WITH a self-edge is a self-loop cycle (handled in step-12), and a singleton
+    // WITHOUT a self-edge is stranded-downstream (no diagnostic). Both SCC
+    // enumeration and per-SCC member ordering ride `DebugOrd`, so the diagnostic
+    // vector is deterministic regardless of HashMap iteration order.
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    for scc in residue_sccs(&residue, &adjacency) {
+        if scc.len() > 1 {
+            diagnostics.push(eval_cycle_diagnostic(&scc, &adjacency));
+        }
+    }
+
     UnifiedPassResult {
         schedule,
         residue,
-        diagnostics: Vec::new(),
+        diagnostics,
     }
+}
+
+/// Sort nodes by the shared [`DebugOrd`] total order (Debug-repr lexicographic).
+///
+/// The SINGLE source of determinism for every order-sensitive Stage B step —
+/// SCC outer iteration, successor enumeration, and the per-SCC ordered path —
+/// so no HashMap iteration order ever leaks into the diagnostic vector.
+fn debug_ord_sorted(nodes: impl IntoIterator<Item = NodeId>) -> Vec<NodeId> {
+    let mut ordered: Vec<DebugOrd> = nodes.into_iter().map(DebugOrd).collect();
+    ordered.sort();
+    ordered.into_iter().map(|DebugOrd(n)| n).collect()
+}
+
+/// DebugOrd-ordered forward successors of `node`, restricted to `within`.
+fn ordered_successors_within(
+    node: &NodeId,
+    adjacency: &HashMap<NodeId, Vec<NodeId>>,
+    within: &HashSet<NodeId>,
+) -> Vec<NodeId> {
+    debug_ord_sorted(
+        adjacency
+            .get(node)
+            .into_iter()
+            .flatten()
+            .filter(|s| within.contains(*s))
+            .cloned(),
+    )
+}
+
+/// Tarjan strongly-connected components over the subgraph induced on `residue`
+/// (forward adjacency restricted to residue members).
+///
+/// Iterative (explicit work stack) to stay O(V+E) without recursion-depth risk
+/// on long stranded chains. Outer node iteration and successor enumeration are
+/// both `DebugOrd`-ordered, and the returned SCC list is sorted by each SCC's
+/// DebugOrd-min member, so the result is fully deterministic.
+fn residue_sccs(
+    residue: &HashSet<NodeId>,
+    adjacency: &HashMap<NodeId, Vec<NodeId>>,
+) -> Vec<Vec<NodeId>> {
+    /// One explicit DFS frame: a node, its DebugOrd-ordered residue-successors,
+    /// and a cursor into that successor list.
+    struct Frame {
+        node: NodeId,
+        succs: Vec<NodeId>,
+        next: usize,
+    }
+
+    let mut index_counter = 0usize;
+    let mut indices: HashMap<NodeId, usize> = HashMap::new();
+    let mut lowlinks: HashMap<NodeId, usize> = HashMap::new();
+    let mut on_stack: HashSet<NodeId> = HashSet::new();
+    let mut tstack: Vec<NodeId> = Vec::new();
+    let mut sccs: Vec<Vec<NodeId>> = Vec::new();
+
+    for root in debug_ord_sorted(residue.iter().cloned()) {
+        if indices.contains_key(&root) {
+            continue;
+        }
+        // Register + push the root frame.
+        indices.insert(root.clone(), index_counter);
+        lowlinks.insert(root.clone(), index_counter);
+        index_counter += 1;
+        tstack.push(root.clone());
+        on_stack.insert(root.clone());
+        let succs = ordered_successors_within(&root, adjacency, residue);
+        let mut work: Vec<Frame> = vec![Frame {
+            node: root,
+            succs,
+            next: 0,
+        }];
+
+        while let Some(top) = work.last().map(|f| f.node.clone()) {
+            let frame_idx = work.len() - 1;
+            let (next, succ_len) = {
+                let f = &work[frame_idx];
+                (f.next, f.succs.len())
+            };
+            if next < succ_len {
+                let w = work[frame_idx].succs[next].clone();
+                work[frame_idx].next += 1;
+                if !indices.contains_key(&w) {
+                    // Tree edge: register w and descend.
+                    indices.insert(w.clone(), index_counter);
+                    lowlinks.insert(w.clone(), index_counter);
+                    index_counter += 1;
+                    tstack.push(w.clone());
+                    on_stack.insert(w.clone());
+                    let succs = ordered_successors_within(&w, adjacency, residue);
+                    work.push(Frame {
+                        node: w,
+                        succs,
+                        next: 0,
+                    });
+                } else if on_stack.contains(&w) {
+                    // Back/cross edge to a stack node: pull lowlink down to its index.
+                    let wi = indices[&w];
+                    let cur = lowlinks[&top];
+                    lowlinks.insert(top.clone(), cur.min(wi));
+                }
+            } else {
+                // Successors exhausted: if `top` is an SCC root, pop the component.
+                if lowlinks[&top] == indices[&top] {
+                    let mut scc: Vec<NodeId> = Vec::new();
+                    loop {
+                        let w = tstack.pop().expect("tarjan stack nonempty at SCC root");
+                        on_stack.remove(&w);
+                        scc.push(w.clone());
+                        if w == top {
+                            break;
+                        }
+                    }
+                    sccs.push(scc);
+                }
+                let low = lowlinks[&top];
+                work.pop();
+                if let Some(parent) = work.last() {
+                    // Propagate child lowlink to parent on return.
+                    let pnode = parent.node.clone();
+                    let pcur = lowlinks[&pnode];
+                    lowlinks.insert(pnode, pcur.min(low));
+                }
+            }
+        }
+    }
+
+    // Deterministic SCC order: by each component's DebugOrd-min member.
+    sccs.sort_by_key(|scc| scc.iter().cloned().map(DebugOrd).min());
+    sccs
+}
+
+/// A deterministic ordered path through an SCC's members for the diagnostic
+/// message: an iterative pre-order DFS confined to the SCC, starting at the
+/// DebugOrd-min member and following SCC-internal successors in DebugOrd order.
+///
+/// Because the component is strongly connected, this reaches EVERY member, so
+/// the path names them all (the acceptance bars require each member named).
+fn scc_ordered_path(scc: &[NodeId], adjacency: &HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId> {
+    let scc_set: HashSet<NodeId> = scc.iter().cloned().collect();
+    let start = match debug_ord_sorted(scc.iter().cloned()).into_iter().next() {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let mut path: Vec<NodeId> = Vec::new();
+    let mut visited: HashSet<NodeId> = HashSet::new();
+    let mut stack = vec![start];
+    while let Some(node) = stack.pop() {
+        if !visited.insert(node.clone()) {
+            continue;
+        }
+        path.push(node.clone());
+        // Push successors in REVERSE DebugOrd order so they pop ascending.
+        let mut succ = ordered_successors_within(&node, adjacency, &scc_set);
+        succ.reverse();
+        for s in succ {
+            if !visited.contains(&s) {
+                stack.push(s);
+            }
+        }
+    }
+    path
+}
+
+/// Build one `E_EVAL_CYCLE` diagnostic for a cyclic SCC, naming its members via
+/// [`NodeId::describe`] along the deterministic ordered path.
+fn eval_cycle_diagnostic(scc: &[NodeId], adjacency: &HashMap<NodeId, Vec<NodeId>>) -> Diagnostic {
+    let members = scc_ordered_path(scc, adjacency)
+        .iter()
+        .map(NodeId::describe)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Diagnostic::error(format!("evaluation cycle detected: [{members}]"))
+        .with_code(DiagnosticCode::EvalCycle)
 }
 
 #[cfg(test)]
