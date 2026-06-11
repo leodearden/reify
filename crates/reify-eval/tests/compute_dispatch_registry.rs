@@ -46,10 +46,12 @@ fn _seam_pin_api_surface() {
     // ComputeDispatchRegistry is constructible
     let _registry = ComputeDispatchRegistry::new();
 
-    // RealizationReadHandle is constructible
-    let _handle = RealizationReadHandle {
-        node_id: reify_core::RealizationNodeId::new("test", 0),
-    };
+    // RealizationReadHandle is constructible via the public constructor
+    let _handle = RealizationReadHandle::new(
+        reify_core::RealizationNodeId::new("test", 0),
+        reify_core::ContentHash(0),
+        None,
+    );
 
     // CancellationHandle: cancel() and is_cancelled()
     let ch = CancellationHandle::new();

@@ -5,9 +5,10 @@
 // `ComputeDispatchRegistry`, `DispatchError`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use reify_core::{ComputeNodeId, Diagnostic, RealizationNodeId, ValueCellId, VersionId};
-use reify_ir::{OpaqueState, Value};
+use reify_core::{ComputeNodeId, ContentHash, Diagnostic, RealizationNodeId, ValueCellId, VersionId};
+use reify_ir::{Mesh, OpaqueState, SampledField, Value, VolumeMesh};
 
 use crate::cache::NodeId;
 use crate::graph::CancellationHandle;
@@ -99,19 +100,95 @@ pub enum DispatchError {
     Failed(Vec<Diagnostic>),
 }
 
-/// Minimal read-only wrapper over a realization node identity.
+/// The content of a realized geometry node.
+///
+/// Wraps the three concrete content kinds the realization pipeline can produce,
+/// each held behind an `Arc` for cheap cloning and multi-consumer sharing.
+/// `Arc<T>: Clone` is unconditional, so this enum derives `Clone` even though
+/// `SampledField` itself is not `Clone` (PRD §3.1 realization-read-api.md).
+///
+/// `None` content on a [`RealizationReadHandle`] (BRep-only or honest degradation)
+/// means every accessor returns `None` — no content is fabricated, no panic
+/// occurs (invariants §3.2-5 of the PRD).
+///
+/// See `docs/prds/v0_6/realization-read-api.md` task α §3.1.
+#[derive(Debug, Clone)]
+pub enum RealizedContent {
+    /// A signed-distance field (volumetric scalar field).
+    Sdf(Arc<SampledField>),
+    /// A tessellated surface mesh.
+    SurfaceMesh(Arc<Mesh>),
+    /// A tetrahedral volume mesh.
+    VolumeMesh(Arc<VolumeMesh>),
+}
+
+/// Minimal read-only wrapper over a realization node identity and its optional content.
 ///
 /// Passed to [`ComputeFn`] invocations that declare realization inputs.
-/// Content accessors (geometry data, mesh bytes, etc.) are deferred to
-/// downstream slices (δ/ε/ζ); for γ, only the node identity is accessible.
-/// The wrapper exists so that the `ComputeFn` signature is contract-stable
-/// for downstream slices that will read realization content.
+/// `content_hash` identifies the content (matches the compute-cache key's
+/// realization hash). The `content()` accessor returns the payload when content
+/// is available; `None` when BRep-only or not yet hydrated (honest-degradation
+/// invariant §3.2-5, realization-read-api.md §3.2).
 ///
-/// See `docs/prds/v0_3/compute-node-contract.md` §9 Q8.
+/// The `content` field is private: `new()` is the sole construction path,
+/// honouring PRD §3.1 "only the Engine-side constructor builds handles".
+///
+/// See `docs/prds/v0_6/realization-read-api.md` task α §3.1/§3.2.
 #[derive(Debug, Clone)]
 pub struct RealizationReadHandle {
     /// Identity of the realization node this handle references.
     pub node_id: RealizationNodeId,
+    /// Content hash of the realization (mirrors the compute-cache key).
+    pub content_hash: ContentHash,
+    /// Optional content payload.  Private so `new()` is the sole construction
+    /// path (PRD §3.1).
+    content: Option<RealizedContent>,
+}
+
+impl RealizationReadHandle {
+    /// Construct a handle from its three components.
+    ///
+    /// `pub` (not `pub(crate)`) because external integration tests and future
+    /// η two-way boundary tests construct handles from outside this crate.
+    pub fn new(
+        node_id: RealizationNodeId,
+        content_hash: ContentHash,
+        content: Option<RealizedContent>,
+    ) -> Self {
+        Self { node_id, content_hash, content }
+    }
+
+    /// Return a reference to the content payload, or `None` when absent.
+    pub fn content(&self) -> Option<&RealizedContent> {
+        self.content.as_ref()
+    }
+
+    /// Return a reference to the inner [`SampledField`] when the content is
+    /// [`RealizedContent::Sdf`]; `None` otherwise.
+    pub fn sdf(&self) -> Option<&SampledField> {
+        match self.content.as_ref() {
+            Some(RealizedContent::Sdf(a)) => Some(a),
+            _ => None,
+        }
+    }
+
+    /// Return a reference to the inner [`Mesh`] when the content is
+    /// [`RealizedContent::SurfaceMesh`]; `None` otherwise.
+    pub fn surface_mesh(&self) -> Option<&Mesh> {
+        match self.content.as_ref() {
+            Some(RealizedContent::SurfaceMesh(a)) => Some(a),
+            _ => None,
+        }
+    }
+
+    /// Return a reference to the inner [`VolumeMesh`] when the content is
+    /// [`RealizedContent::VolumeMesh`]; `None` otherwise.
+    pub fn volume_mesh(&self) -> Option<&VolumeMesh> {
+        match self.content.as_ref() {
+            Some(RealizedContent::VolumeMesh(a)) => Some(a),
+            _ => None,
+        }
+    }
 }
 
 /// Per-Engine registry mapping `@optimized` target strings to [`ComputeFn`]
@@ -453,7 +530,7 @@ mod tests {
     use reify_test_support::mocks::MockConstraintChecker;
 
     use crate::Engine;
-    use crate::engine_compute::{ComputeFn, ComputeOutcome, RealizationReadHandle};
+    use crate::engine_compute::{ComputeFn, ComputeOutcome, RealizedContent, RealizationReadHandle};
     use crate::graph::CancellationHandle;
 
     /// A minimal identity trampoline: returns the first entry of `value_inputs`
@@ -770,9 +847,11 @@ mod tests {
         };
 
         // RealizationReadHandle construction
-        let _h = RealizationReadHandle {
-            node_id: RealizationNodeId::new("test", 0),
-        };
+        let _h = RealizationReadHandle::new(
+            RealizationNodeId::new("test", 0),
+            reify_core::ContentHash(0),
+            None,
+        );
     }
 
     // ── ζ / task 3425 step-5: cache as prior-warm-state source ─────────────
