@@ -1451,4 +1451,133 @@ mod tests {
             "a cycle that also refines Output (B : A, Output) must still conform"
         );
     }
+
+    // ── extract_output_export_spec (io-export δ step-3) ──────────────────────
+
+    /// Build a `Value::StructureInstance` named `type_name` with the given
+    /// fields. `type_id`/`version` are dummies — `extract_output_export_spec`
+    /// keys on the `format` *field value*, not the instance's type identity.
+    fn struct_instance(type_name: &str, fields: &[(&str, Value)]) -> Value {
+        let mut map: PersistentMap<String, Value> = PersistentMap::default();
+        for (k, v) in fields {
+            map.insert((*k).to_string(), v.clone());
+        }
+        Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+            type_id: reify_ir::StructureTypeId(0),
+            type_name: type_name.to_string(),
+            version: 0,
+            fields: map,
+        }))
+    }
+
+    /// An `OutputFormat::<variant>` enum value (the shape of an occurrence's
+    /// `format` field).
+    fn out_fmt(variant: &str) -> Value {
+        Value::Enum {
+            type_name: "OutputFormat".to_string(),
+            variant: variant.to_string(),
+        }
+    }
+
+    /// File-format occurrences map `format`→`OutputTarget::File`, read a String
+    /// `path`, and turn a `resolution` Length into `tess_tol` (SI metres).
+    #[test]
+    fn extract_output_export_spec_reads_file_formats_path_and_resolution() {
+        // STLOutput: STL + path + 0.2mm resolution.
+        let stl = struct_instance(
+            "STLOutput",
+            &[
+                ("format", out_fmt("STL")),
+                ("path", Value::String("o.stl".to_string())),
+                ("resolution", Value::length(2e-4)),
+            ],
+        );
+        assert_eq!(
+            extract_output_export_spec(&stl),
+            Some(OutputExportSpec {
+                format: OutputTarget::File(reify_ir::ExportFormat::Stl),
+                path: "o.stl".to_string(),
+                tess_tol: Some(2e-4),
+            }),
+            "STLOutput → File(Stl), path \"o.stl\", tess_tol 2e-4"
+        );
+
+        // STEPOutput: STEP + path, no resolution → tess_tol None.
+        let step = struct_instance(
+            "STEPOutput",
+            &[
+                ("format", out_fmt("STEP")),
+                ("path", Value::String("o2.step".to_string())),
+            ],
+        );
+        assert_eq!(
+            extract_output_export_spec(&step),
+            Some(OutputExportSpec {
+                format: OutputTarget::File(reify_ir::ExportFormat::Step),
+                path: "o2.step".to_string(),
+                tess_tol: None,
+            }),
+            "STEPOutput → File(Step), path \"o2.step\", tess_tol None"
+        );
+
+        // ThreeMFOutput: ThreeMF + path.
+        let mf = struct_instance(
+            "ThreeMFOutput",
+            &[
+                ("format", out_fmt("ThreeMF")),
+                ("path", Value::String("o.3mf".to_string())),
+            ],
+        );
+        let spec = extract_output_export_spec(&mf).expect("ThreeMF spec must be Some");
+        assert_eq!(
+            spec.format,
+            OutputTarget::File(reify_ir::ExportFormat::ThreeMF),
+            "ThreeMFOutput → File(ThreeMF)"
+        );
+        assert_eq!(spec.path, "o.3mf");
+    }
+
+    /// A `DisplayOutput` (format == Display, no `path` field) is recognized as a
+    /// deferred target — a `Some(DisplayDeferred)`, NOT a `None`.
+    #[test]
+    fn extract_output_export_spec_recognizes_display_as_deferred() {
+        let disp = struct_instance("DisplayOutput", &[("format", out_fmt("Display"))]);
+        let spec = extract_output_export_spec(&disp).expect("Display spec must be Some");
+        assert_eq!(
+            spec.format,
+            OutputTarget::DisplayDeferred,
+            "DisplayOutput → DisplayDeferred (recognized, file emission deferred)"
+        );
+    }
+
+    /// A file-format occurrence with a missing or non-String `path`, and any
+    /// non-`StructureInstance` value, yield `None`.
+    #[test]
+    fn extract_output_export_spec_rejects_missing_path_nonstring_path_and_non_instance() {
+        // File format with NO path field → None.
+        let no_path = struct_instance("STLOutput", &[("format", out_fmt("STL"))]);
+        assert_eq!(
+            extract_output_export_spec(&no_path),
+            None,
+            "a file Output with no path must not yield a spec"
+        );
+
+        // File format with a non-String path → None.
+        let bad_path = struct_instance(
+            "STLOutput",
+            &[("format", out_fmt("STL")), ("path", Value::Int(7))],
+        );
+        assert_eq!(
+            extract_output_export_spec(&bad_path),
+            None,
+            "a non-String path must not yield a spec"
+        );
+
+        // Non-StructureInstance value → None (pass-through posture).
+        assert_eq!(
+            extract_output_export_spec(&Value::Bool(true)),
+            None,
+            "a non-StructureInstance value must not yield a spec"
+        );
+    }
 }
