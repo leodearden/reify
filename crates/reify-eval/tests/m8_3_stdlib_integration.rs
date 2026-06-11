@@ -181,7 +181,7 @@ fn m8_materials_smoke() {
 /// `mass = volume(geometry) * material.density`, where
 ///   - `geometry = box(20mm, 20mm, 10mm)` → analytic volume 4e-6 m³
 ///   - `material.density ≈ 2700 kg/m³` (runtime-read from the `material` StructureInstance slot)
-///   → `mass ≈ 0.0108 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
+///     → `mass ≈ 0.0108 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
 ///
 /// Requires the real-OCCT `Engine::build()` path — `post_process_geometry_queries` runs
 /// only on the build path with a registered kernel. Skips cleanly when OCCT is unavailable.
