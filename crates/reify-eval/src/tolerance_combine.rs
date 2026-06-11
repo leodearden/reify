@@ -1299,4 +1299,94 @@ mod tests {
             "non-RepresentationWithin expr must return None (pass-through)"
         );
     }
+
+    // ── conforms_to_output (io-export δ step-1) ──────────────────────────────
+
+    /// Build a minimal `CompiledTrait` with the given name and refinement
+    /// (parent-trait) names. All other fields default to empty — only `name`
+    /// and `refinements` drive the transitive Output-conformance walk.
+    fn trait_def(name: &str, refinements: &[&str]) -> reify_compiler::CompiledTrait {
+        reify_compiler::CompiledTrait {
+            name: name.to_string(),
+            is_pub: true,
+            doc: None,
+            type_params: Vec::new(),
+            refinements: refinements.iter().map(|s| s.to_string()).collect(),
+            required_members: Vec::new(),
+            defaults: Vec::new(),
+            content_hash: ContentHash::of_str(name),
+            annotations: Vec::new(),
+            pragmas: Vec::new(),
+        }
+    }
+
+    /// Direct and transitive Output conformance is recognized; supertraits,
+    /// sibling traits, and empty bounds are rejected. Mirrors the stdlib io.ri
+    /// trait lattice: `Output : Sink`, `Input : Source`, with a synthetic
+    /// user-defined `MyExport : Output` for the transitive case.
+    #[test]
+    fn conforms_to_output_recognizes_direct_transitive_and_rejects_others() {
+        let trait_defs = vec![
+            trait_def("Source", &[]),
+            trait_def("Sink", &[]),
+            trait_def("Output", &["Sink"]),
+            trait_def("Input", &["Source"]),
+            trait_def("MyExport", &["Output"]),
+        ];
+
+        // Direct: a bound equal to "Output".
+        assert!(
+            conforms_to_output(&["Output".to_string()], &trait_defs),
+            "a direct [\"Output\"] bound must conform"
+        );
+
+        // Transitive: MyExport refines Output (user-defined Output occurrence).
+        assert!(
+            conforms_to_output(&["MyExport".to_string()], &trait_defs),
+            "a bound that transitively refines Output (MyExport : Output) must conform"
+        );
+
+        // Sink is a SUPERTRAIT of Output, not Output — must NOT conform.
+        assert!(
+            !conforms_to_output(&["Sink".to_string()], &trait_defs),
+            "Sink is a supertrait of Output, not Output itself — must not conform"
+        );
+
+        // Input refines Source, never reaches Output — must NOT conform.
+        assert!(
+            !conforms_to_output(&["Input".to_string()], &trait_defs),
+            "Input refines Source, never Output — must not conform"
+        );
+
+        // No bounds at all (a plain Structure) — must NOT conform.
+        assert!(
+            !conforms_to_output(&[], &trait_defs),
+            "empty trait_bounds must not conform"
+        );
+    }
+
+    /// A refinement cycle must terminate (no infinite loop) and yield the
+    /// correct answer: `false` when the cycle never reaches Output, `true`
+    /// when a node on the cycle also refines Output.
+    #[test]
+    fn conforms_to_output_handles_refinement_cycle_without_infinite_loop() {
+        // A → B → A cycle that never reaches Output → false (and terminates).
+        let cyclic = vec![trait_def("A", &["B"]), trait_def("B", &["A"])];
+        assert!(
+            !conforms_to_output(&["A".to_string()], &cyclic),
+            "an A⇄B cycle that never reaches Output must return false without looping"
+        );
+
+        // A → B → {A, Output}: the cycle co-exists with a path to Output → true.
+        let cyclic_with_output = vec![
+            trait_def("A", &["B"]),
+            trait_def("B", &["A", "Output"]),
+            trait_def("Output", &["Sink"]),
+            trait_def("Sink", &[]),
+        ];
+        assert!(
+            conforms_to_output(&["A".to_string()], &cyclic_with_output),
+            "a cycle that also refines Output (B : A, Output) must still conform"
+        );
+    }
 }
