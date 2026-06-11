@@ -369,7 +369,7 @@ _bc_rc=0
 _bc_out=$(run_canary 'echo 1' 2>&1) || _bc_rc=$?   # build ACTIVE
 
 assert "Block C: canary prints 'build active' skip message" \
-    bash -c "echo '$_bc_out' | grep -qi 'build active'"
+    bash -c 'grep -qi "build active" <<<"$1"' _ "$_bc_out"
 
 assert "Block C: canary exits 0 (skip is not an error)" \
     test "$_bc_rc" -eq 0

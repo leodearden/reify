@@ -68,6 +68,7 @@ for i in 1 2 3; do
 done
 
 s=$(tokens_sum)
+[ -z "$s" ] && s=-1  # guard: malformed/empty python output → treat as vanished
 if [ "$s" -lt 0 ]; then
     reseed "FIFO vanished mid-check"
 elif [ "$s" -lt "$SEEDED" ]; then
