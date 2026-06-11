@@ -3239,3 +3239,129 @@ fn max_principal_stresses_field_with_partial_nan_windows_skips_nan() {
         "max(PrincipalStresses field with partial NaN) should skip NaN and return 25e6 Pa"
     );
 }
+
+/// `argmax` / `argmin` over a PrincipalStresses-source 1-D field with LENGTH domain.
+///
+/// Same three diagonal windows as the value-extremum test:
+///   w0 at coord 0.0 m: diag(100e6, 20e6, 30e6) → max_entry=100e6, min_entry=20e6
+///   w1 at coord 1.0 m: diag(50e6,  40e6, 60e6) → max_entry=60e6,  min_entry=40e6
+///   w2 at coord 2.0 m: diag(10e6, -70e6,  5e6) → max_entry=10e6,  min_entry=-70e6
+///
+/// argmax → projected max entries = {100e6, 60e6, 10e6} → index 0 → coord 0.0 m.
+/// argmin → projected min entries = {20e6, 40e6, -70e6} → index 2 → coord 2.0 m.
+///
+/// Only the domain coord is surfaced (not the winning entry index) — mirrors
+/// the scalar argextremum path and all sibling derived kinds.
+///
+/// **RED before step-4**: PrincipalStresses arm in compute_argextremum returns Undef.
+#[test]
+fn argmax_argmin_principal_stresses_field_1d_returns_coord() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let list_pressure = Type::List(Box::new(pressure.clone()));
+
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            diagonal_window(100e6, 20e6, 30e6),
+            diagonal_window(50e6, 40e6, 60e6),
+            diagonal_window(10e6, -70e6, 5e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+    let (ps_field, ps_field_type) = make_field_with_source(
+        length.clone(),
+        list_pressure,
+        FieldSourceKind::PrincipalStresses,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → projected max-entries = {100e6, 60e6, 10e6} → index 0 → coord 0.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(ps_field.clone(), ps_field_type.clone())],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(PrincipalStresses 1-D field) should return coord 0.0 m (index 0, max entry=100e6)"
+    );
+
+    // argmin → projected min-entries = {20e6, 40e6, -70e6} → index 2 → coord 2.0 m
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(ps_field, ps_field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(PrincipalStresses 1-D field) should return coord 2.0 m (index 2, min entry=-70e6)"
+    );
+}
+
+/// Partial-NaN skip for argmax: windows [NaN×9, diag(15e6, 25e6, 8e6), NaN×9]
+/// over axis [0, 1, 2].  Only window at index 1 is finite; max_entry = eigs[2]
+/// = 25e6 → the only candidate → argmax coord = 1.0 m.
+///
+/// **RED before step-4**.
+#[test]
+fn argmax_principal_stresses_field_with_partial_nan_skips_nan() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let list_pressure = Type::List(Box::new(pressure.clone()));
+
+    let sf = make_sampled_tensor_1d(
+        "partial_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            [f64::NAN; 9],                     // out-of-solid sentinel
+            diagonal_window(15e6, 25e6, 8e6),  // finite: max_entry=25e6, min_entry=8e6
+            [f64::NAN; 9],                     // out-of-solid sentinel
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(sf, length.clone());
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        list_pressure,
+        FieldSourceKind::PrincipalStresses,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → only finite window at index 1 → coord 1.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(PrincipalStresses field with partial NaN) should skip NaN and return coord 1.0 m"
+    );
+}
