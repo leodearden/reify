@@ -2625,6 +2625,30 @@ impl Engine {
             );
         }
 
+        // Task 4357 δ: unified build-DAG cycle contract. When the active
+        // scheduler is UnifiedDag, run the pure structural planner
+        // (`run_unified_pass`) over α's forward dependency-trace graph and append
+        // its E_EVAL_CYCLE / E_EVAL_UNRESOLVED diagnostics to the build result.
+        //
+        // UNLIKE the β assert block above, this is deliberately NOT
+        // `#[cfg(debug_assertions)]`-gated: the driver emits real user-facing
+        // diagnostics that must surface in RELEASE builds too. On an acyclic
+        // module the driver's residue is empty and it emits zero diagnostics, so
+        // the BuildResult stays byte-identical to the LegacyMultiPass default.
+        // No-op when eval_state is None (empty module or compile-only build) or
+        // when the scheduler is LegacyMultiPass (the default). The driver is a
+        // pure planner — it executes no nodes; ε wires executors onto the
+        // schedule and retires the legacy loop.
+        if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag
+            && let Some(state) = self.eval_state.as_ref()
+        {
+            let pass = crate::engine_fixpoint::run_unified_pass(
+                &state.snapshot.graph,
+                &state.trace_map,
+            );
+            diagnostics.extend(pass.diagnostics);
+        }
+
         BuildResult {
             values,
             constraint_results: check_result.constraint_results,

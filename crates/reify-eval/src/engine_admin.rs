@@ -238,6 +238,11 @@ impl Engine {
             structure_registry,
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
+            // Task 4357 δ: scheduler selection read ONCE from the environment.
+            // `from_env` honours the `unified-dag` feature + REIFY_BUILD_SCHEDULER
+            // gate and defaults to LegacyMultiPass (byte-preserving). Tests
+            // override post-construction via `set_build_scheduler`.
+            build_scheduler: crate::engine_fixpoint::BuildScheduler::from_env(),
             demand: DemandRegistry::new(),
             next_snapshot_id: 0,
             next_version_id: 0,
@@ -1405,6 +1410,21 @@ impl Engine {
     #[cfg(any(test, feature = "test-instrumentation"))]
     pub fn last_dispatch_count(&self) -> usize {
         self.last_dispatch_count
+    }
+
+    /// **Test-instrumentation only — not a stable public surface.**
+    ///
+    /// Force the build-time [`crate::BuildScheduler`] selection, bypassing BOTH
+    /// [`crate::BuildScheduler::from_env`] AND the `unified-dag` Cargo feature
+    /// gate (which gates only the env/production activation path in `from_env`).
+    ///
+    /// Task 4357 δ: lets the `unified_dag_cycle_contract` integration test drive
+    /// the `UnifiedDag` `build()` path deterministically WITHOUT mutating process
+    /// env (which would race other parallel tests). Mirrors the `set_capture_*`
+    /// test-seam convention.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn set_build_scheduler(&mut self, scheduler: crate::engine_fixpoint::BuildScheduler) {
+        self.build_scheduler = scheduler;
     }
 
     /// GHR-δ §5: reset the geometry-handle revalidation slow-path counter to 0.
