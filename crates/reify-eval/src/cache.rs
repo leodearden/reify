@@ -27,6 +27,32 @@ pub enum NodeId {
     Compute(ComputeNodeId),
 }
 
+impl NodeId {
+    /// Human-readable, kind-naming description of this node (PRD §3.4).
+    ///
+    /// Produces `"<kind> <id-Display>"` for each variant, naming every kind
+    /// distinctly:
+    /// - `NodeId::Value`       → `"value cell Bracket.width"`
+    /// - `NodeId::Constraint`  → `"constraint Bracket#constraint[0]"`
+    /// - `NodeId::Realization` → `"realization E#realization[0]"`
+    /// - `NodeId::Resolution`  → `"resolution A#resolution[0]"`
+    /// - `NodeId::Compute`     → `"compute A#computation[0]"`
+    ///
+    /// Used by [`crate::engine_fixpoint::run_unified_pass`] to name graph
+    /// members in `E_EVAL_CYCLE` / `E_EVAL_UNRESOLVED` diagnostic messages,
+    /// mirroring the ordered-members `[a, b, c]` shape of the legacy
+    /// `detect_let_cycle` diagnostic.
+    pub fn describe(&self) -> String {
+        match self {
+            NodeId::Value(v) => format!("value cell {v}"),
+            NodeId::Constraint(c) => format!("constraint {c}"),
+            NodeId::Realization(r) => format!("realization {r}"),
+            NodeId::Resolution(s) => format!("resolution {s}"),
+            NodeId::Compute(c) => format!("compute {c}"),
+        }
+    }
+}
+
 impl From<ValueCellId> for NodeId {
     fn from(id: ValueCellId) -> Self {
         NodeId::Value(id)
