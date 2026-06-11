@@ -8,10 +8,14 @@
 //! and field_eval_tests.rs.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use reify_expr::{EvalContext, eval_expr};
 use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, ResolvedFunction, UnOp, Value, ValueMap};
+use reify_ir::{
+    BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, InterpolationKind, ResolvedFunction,
+    SampledField, SampledGridKind, UnOp, Value, ValueMap,
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -4500,6 +4504,263 @@ fn sample_imported_field_with_sampled_field_lambda_dispatches_to_interpolation()
          got {:?} (expected {:?})",
         result,
         expected
+    );
+}
+
+// ── ε integration acceptance (PRD §5): sampled eager-lower + stride-n sample ──
+
+/// Build a Regular1D `SampledField` with `n` nodes, spacing `h`,
+/// where `data[i] = f(x_i)` and `x_i = i as f64 * h`.
+fn make_sampled_1d(n: usize, h: f64, f: impl Fn(f64) -> f64) -> SampledField {
+    let axis: Vec<f64> = (0..n).map(|i| i as f64 * h).collect();
+    let data: Vec<f64> = axis.iter().map(|&x| f(x)).collect();
+    SampledField {
+        name: "test-1d".to_string(),
+        kind: SampledGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![(n - 1) as f64 * h],
+        spacing: vec![h],
+        axis_grids: vec![axis],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
+/// Build a Regular2D `SampledField` with `nx × ny` nodes, spacings `hx`/`hy`,
+/// where `data[i * ny + j] = f(x_i, y_j)`.
+fn make_sampled_2d(
+    nx: usize,
+    ny: usize,
+    hx: f64,
+    hy: f64,
+    f: impl Fn(f64, f64) -> f64,
+) -> SampledField {
+    let xs: Vec<f64> = (0..nx).map(|i| i as f64 * hx).collect();
+    let ys: Vec<f64> = (0..ny).map(|j| j as f64 * hy).collect();
+    let mut data = Vec::with_capacity(nx * ny);
+    for &x in &xs {
+        for &y in &ys {
+            data.push(f(x, y));
+        }
+    }
+    SampledField {
+        name: "test-2d".to_string(),
+        kind: SampledGridKind::Regular2D,
+        bounds_min: vec![0.0, 0.0],
+        bounds_max: vec![(nx - 1) as f64 * hx, (ny - 1) as f64 * hy],
+        spacing: vec![hx, hy],
+        axis_grids: vec![xs, ys],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
+/// Integration acceptance (PRD §5, task ε test (a)):
+/// `sample(gradient(F_2d_linear), node_point)` returns exact partial derivatives
+/// via gradient eager-lowering + stride-n sample.
+///
+/// `F_2d_linear(x, y) = 3x + 5y` on a 4×3 Regular2D grid (hx = hy = 0.5).
+/// Gradient of an affine function is algebraically exact on a uniform grid;
+/// sampling at grid node (0.5, 0.5) returns `Value::Vector([3.0, 5.0])`,
+/// each component <1e-12 from the expected partial.
+///
+/// Exercises the full pipeline: Sampled eager-lower in `compute_gradient` →
+/// stride-2 `sample_at_point` deinterleave → `sample()` builtin dispatch.
+#[test]
+fn sampled_gradient_2d_linear_sample_returns_exact_partials() {
+    // Build Regular2D SampledField: f(x, y) = 3x + 5y.
+    let sf = make_sampled_2d(4, 3, 0.5, 0.5, |x, y| 3.0 * x + 5.0 * y);
+
+    let domain_type = Type::point2(Type::Real);
+    let codomain_type = Type::Real;
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type,
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // gradient(field) → eager-lowered Sampled field, codomain = Vector{2, Real}.
+    let expected_grad_codomain = Type::vec2(Type::Real);
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(expected_grad_codomain.clone()),
+    };
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        grad_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "gradient of 2D Sampled scalar field should return Sampled Field, got {:?}",
+        grad_result
+    );
+
+    // sample(gradient_field, Point(0.5, 0.5)) — grid node (1, 1); exact for affine.
+    let point = Value::Point(vec![Value::Real(0.5), Value::Real(0.5)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        expected_grad_codomain,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_gradient_vector(
+        &sample_result,
+        &[3.0, 5.0],
+        1e-12,
+        "sample(gradient(3x+5y), node (0.5, 0.5))",
+    );
+}
+
+/// Integration acceptance (PRD §5, task ε test (b)):
+/// `sample(gradient(F_1d_linear), x)` returns the exact scalar slope via
+/// gradient eager-lowering (1D out_stride=1 → scalar path).
+///
+/// `F_1d_linear(x) = 2x + 3` on a 5-node Regular1D grid (h = 1.0).
+/// Gradient of an affine function is exact; sampling at node x = 1.0 returns
+/// `Value::Real(2.0)`, within <1e-12 of the exact slope.
+///
+/// Exercises: Sampled eager-lower in `compute_gradient` → stride-1 output (scalar
+/// path in `sample_at_point`, unchanged from scalar sampled fields).
+#[test]
+fn sampled_gradient_1d_linear_sample_returns_exact_slope() {
+    // Build Regular1D SampledField: f(x) = 2x + 3.
+    let sf = make_sampled_1d(5, 1.0, |x| 2.0 * x + 3.0);
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type.clone(),
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // gradient(field) → eager-lowered Sampled field, codomain = Real (1D scalar).
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        grad_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "gradient of 1D Sampled scalar field should return Sampled Field, got {:?}",
+        grad_result
+    );
+
+    // sample(gradient_field, Real(1.0)) — node 1 of 5; exact for affine.
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(Value::Real(1.0), domain_type),
+        ],
+        codomain_type,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "sample(gradient(2x+3), 1.0) should be numeric, got {:?}",
+            sample_result
+        )
+    });
+    assert!(
+        (val - 2.0).abs() < 1e-12,
+        "sample(gradient(2x+3), 1.0) should be exactly 2.0, got {} (error {})",
+        val,
+        (val - 2.0).abs()
+    );
+}
+
+/// Integration acceptance (PRD §5, task ε test (c)):
+/// `max(laplacian(F_1d_quadratic))` returns the exact constant second derivative
+/// via laplacian eager-lowering + scalar Sampled reduction.
+///
+/// `F_1d_quadratic(x) = 1.5x² + x + 2` on a 7-node Regular1D grid (h = 0.5).
+/// Laplacian of a quadratic is algebraically exact at every node including
+/// boundaries (one-sided 3-point second difference = 2a); `max` over the
+/// constant-3.0 Sampled laplacian field returns `Value::Real(3.0)`, <1e-12 from
+/// the exact value 2a = 3.0.
+///
+/// Exercises: Sampled eager-lower in `compute_laplacian` → stride-1 output
+/// (scalar Sampled field) → `reduce_sampled_extremum` in field_reductions.
+#[test]
+fn sampled_laplacian_1d_quadratic_max_returns_exact_second_deriv() {
+    // Build Regular1D SampledField: f(x) = 1.5*x^2 + x + 2.  2a = 3.0.
+    let sf = make_sampled_1d(7, 0.5, |x| 1.5 * x * x + x + 2.0);
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type.clone(),
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // laplacian(field) → eager-lowered Sampled field, codomain = Real.
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type.clone()),
+    };
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        lap_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "laplacian of 1D Sampled scalar field should return Sampled Field, got {:?}",
+        lap_result
+    );
+
+    // max(laplacian_field) → Value::Real(3.0) via reduce_sampled_extremum.
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(lap_result, lap_field_type)],
+        codomain_type,
+    );
+
+    let max_result = eval_expr(&max_expr, &EvalContext::simple(&values));
+
+    let val = max_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "max(laplacian(1.5x²+x+2)) should be numeric, got {:?}",
+            max_result
+        )
+    });
+    assert!(
+        (val - 3.0).abs() < 1e-12,
+        "max(laplacian(1.5x²+x+2)) should be exactly 3.0 (2a where a=1.5), \
+         got {} (error {})",
+        val,
+        (val - 3.0).abs()
     );
 }
 
