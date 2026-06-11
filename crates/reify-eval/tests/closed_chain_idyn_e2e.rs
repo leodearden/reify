@@ -489,7 +489,8 @@ fn closed_4bar_loop_closes_consistently() {
 //     q̇ consistent at the exact config; A is the FD Jacobian at the Newton-converged
 //     config (ε_N ≤ tol_pos_m=1e-6 m), so ‖A·q̇‖~O(ε_N·ω).
 //     A-priori: |λ|~O(m·α·r)~O(1 kg·π·0.12 m)~0.38 Nm; floor~2.4 µW.
-//     Empirical floor measured in B7 via power_0 (step-4 finalizes tol to ≥10×).
+//     Empirical floor measured in B7 via power_0: 5.8e−17 W (≈0).
+//     tol = 1e−12 W (1 picoW) = 2254× measured floor; bound in step-4; see B7.
 //     NOT the 2-prismatic 1 µW literal (different mechanism, different λ magnitude).
 
 /// B6 — §8 live constraint rank (KIN-OFFSET β2, task 4429):
@@ -609,13 +610,62 @@ fn closed_4bar_live_constraint_rank() {
     // The 2-prismatic e2e gets m_eff=0 because its closing prismatic absorbs the
     // sole non-zero residual row entirely.  This 4-bar's +Z revolute projects out
     // only ω_z, leaving the translational (v_x, v_y) rows as live constraints.
-    assert!(
-        m_eff >= 1,
-        "reduce_constraint_rank must return m_eff ≥ 1 at the assembled 4-bar config \
-         (expected m_eff=2: in-plane v_x,v_y active; ω_z absorbed by closing +Z revolute; \
-         ω_x,ω_y,v_z structurally zero for planar-XY). Got m_eff={m_eff}. \
-         Indicates a degenerate FD Jacobian at the assembled config — check \
+    // Using assert_eq rather than ≥1: a regression that drops one translational
+    // row (m_eff 2→1) would silently pass a ≥1 check.
+    assert_eq!(
+        m_eff, 2,
+        "reduce_constraint_rank must return m_eff=2 at the assembled 4-bar config \
+         (in-plane v_x,v_y active; ω_z absorbed by closing +Z revolute; \
+         ω_x,ω_y,v_z structurally zero for planar-XY). \
+         Indicates a degenerate or partially-degenerate FD Jacobian — check \
          closed_4bar_idyn.ri link lengths and pivot offsets (β1 §0 gap requirement)."
+    );
+
+    // ── Bridge tie-back: m_eff=2 implies non-trivial KKT correction in `forces` ──
+    //
+    // B6 reconstructs reduce_constraint_rank from public primitives; the test above
+    // passes as long as the two stdlib functions behave, regardless of how the bridge
+    // wires them together.  This tie-back reads the bridge's actual `forces` output
+    // and asserts the loaded-sample power is substantial (> 1 W), confirming that the
+    // bridge's KKT path (ordered_joints, closing-joint extraction, eps) was correctly
+    // wired and propagated the inertial load.  A mismatch in bridge wiring would
+    // produce near-zero or wrong forces here even if m_eff=2 above.
+    let cell = ValueCellId::new("ClosedFourBarIdyn", "forces");
+    let per_sample = match result.values.get(&cell) {
+        Some(Value::List(s)) if s.len() >= 2 => s,
+        other => panic!(
+            "B6 bridge tie-back: ClosedFourBarIdyn.forces must be List with ≥2 samples \
+             (two-sample trajectory: sample_0 accels=0, sample_1 accels=vels×α/ω), \
+             got {other:?}"
+        ),
+    };
+    let forces_1 = match &per_sample[1] {
+        Value::List(f) => f,
+        other => panic!("B6 bridge tie-back: forces[1] expected List<JointForce>, got {other:?}"),
+    };
+    // q̇ in bodies order (same as B7): [ω, −8π/3, 0, 0, −2π/3]
+    let q_dot_b6 = [
+        std::f64::consts::TAU,   // j_crank:       ω = 2π
+        -8.377580409572781_f64,  // j_coupler:     −8π/3
+        0.0_f64,                  // j_coupler_tip: 0
+        0.0_f64,                  // j_rocker:      0
+        -2.0943951023931953_f64,  // j_rocker_tip:  −2π/3
+    ];
+    let power_b6: f64 = forces_1
+        .iter()
+        .zip(q_dot_b6.iter())
+        .map(|(jf, &qd)| {
+            let value = field(jf, "JointForce", "value");
+            num(field(value, "ScalarTorque", "magnitude")) * qd
+        })
+        .sum();
+    assert!(
+        power_b6 > 1.0,
+        "B6 bridge tie-back: loaded-sample power = {power_b6:.4} W must be > 1 W \
+         (m_eff=2 ⇒ active KKT constraints ⇒ inertial torques carry ~2.573 W load). \
+         A near-zero value indicates bridge wiring is broken even though the standalone \
+         reduce_constraint_rank call returned m_eff=2 — wrong ordered_joints, wrong \
+         closing-joint extraction, or wrong eps silences the KKT correction."
     );
 }
 
@@ -633,10 +683,11 @@ fn closed_4bar_live_constraint_rank() {
 /// J_eff(45°) = I_cr + m_cp·a² + (I_cp+I_ct+I_rt)/9 ≈ 0.130356 kg·m² (prereq-1).
 /// α = π rad/s²; ω = 2π rad/s; dE_dt_analytic ≈ 2.573 W.
 ///
-/// Tolerance: step-4 finalizes tol to ≥10× the MEASURED power_0 floor (NOT the
-/// 2-prismatic 1 µW literal — capability-manifest β G6 DERIVE-AND-BIND mandate).
-///
-/// RED until step-4: β1's single-sample trajectory ⇒ forces shape 1×5, not 2×5.
+/// Tolerance: tol=1e−12 W (1 picoW) = 2254× measured power_0 floor (5.8e−17 W).
+/// NOT the 2-prismatic 1 µW literal — capability-manifest β G6 DERIVE-AND-BIND mandate.
+/// The 2254× factor is also the cross-platform FP safety budget: a near-tol failure
+/// on a new arch signals either a bridge regression (investigate first) or FP drift
+/// (re-derive from the measured floor on that arch, do not silently bump the literal).
 #[test]
 fn closed_4bar_virtual_work_identity() {
     let source = std::fs::read_to_string(FOUR_BAR_EXAMPLE_PATH)
@@ -659,8 +710,8 @@ fn closed_4bar_virtual_work_identity() {
         collect_errors(&result.diagnostics)
     );
 
-    // forces: List<List<JointForce>> with shape 2×5 (two trajectory samples × 5 tree joints).
-    // RED until step-4 updates closed_4bar_idyn.ri to two-sample trajectory.
+    // forces: List<List<JointForce>> with shape 2×5 (two trajectory samples × 5 tree joints;
+    // two-sample trajectory landed in step-4: sample_0 accels=0, sample_1 accels=vels×α/ω).
     let cell = ValueCellId::new("ClosedFourBarIdyn", "forces");
     let per_sample = match result.values.get(&cell) {
         Some(Value::List(s)) => s,
@@ -772,6 +823,12 @@ fn closed_4bar_virtual_work_identity() {
     //   literals as the .ri; the Newton solver converges well below tol_pos_m=1e-6.
     //   A tolerance of 1 µW (the 2-prismatic literal) would also pass but lacks the
     //   DERIVED provenance required by capability-manifest β G6 (esc-3821-44/esc-3453).
+    //
+    //   Cross-platform FP safety budget: the 2254× factor is also the headroom for
+    //   FMA-contraction / instruction-ordering differences across compilers and arches.
+    //   A near-tol failure on a new arch means: (a) check for a bridge regression
+    //   first; (b) if FP drift is confirmed, re-derive from the measured floor on
+    //   that arch — do NOT silently bump the literal without a provenance comment.
     let tol = 1e-12_f64; // 1 picoW; 2254× measured max_floor
 
     // Margin guard: dE/dt ≫ tol (test is non-vacuous; dE/dt≈2.573 W ≫ 1e-12 W).
