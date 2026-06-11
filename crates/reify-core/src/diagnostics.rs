@@ -2094,6 +2094,44 @@ pub struct DiagnosticRef {
 mod tests {
     use super::{Diagnostic, DiagnosticCode, SourceSpan};
 
+    /// Task 4357 δ (step-3): the two additive diagnostic codes emitted by
+    /// `engine_fixpoint::run_unified_pass` — `EvalCycle` (E_EVAL_CYCLE) and
+    /// `EvalUnresolved` (E_EVAL_UNRESOLVED) — must exist, be distinct, and be
+    /// attachable via `Diagnostic::error(..).with_code(..)` with the code
+    /// reading back.
+    ///
+    /// RED until step-4 adds the variants.
+    #[test]
+    fn eval_cycle_and_unresolved_codes_exist_and_attach() {
+        // Exist + distinct.
+        assert_ne!(DiagnosticCode::EvalCycle, DiagnosticCode::EvalUnresolved);
+
+        // Attachable via the builder; code reads back.
+        let cyc = Diagnostic::error("cycle").with_code(DiagnosticCode::EvalCycle);
+        assert_eq!(cyc.code, Some(DiagnosticCode::EvalCycle));
+        let unr = Diagnostic::error("unresolved").with_code(DiagnosticCode::EvalUnresolved);
+        assert_eq!(unr.code, Some(DiagnosticCode::EvalUnresolved));
+    }
+
+    /// Task 4357 δ (step-3): the additive codes serialize to their PascalCase
+    /// wire identifiers under the `serde` feature (matching the enum's
+    /// `rename_all = "PascalCase"`), so downstream tooling matches stable
+    /// strings rather than message substrings.
+    ///
+    /// RED until step-4 adds the variants.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn eval_codes_serialize_to_pascalcase_wire_strings() {
+        assert_eq!(
+            serde_json::to_value(DiagnosticCode::EvalCycle).unwrap(),
+            serde_json::Value::String("EvalCycle".to_owned())
+        );
+        assert_eq!(
+            serde_json::to_value(DiagnosticCode::EvalUnresolved).unwrap(),
+            serde_json::Value::String("EvalUnresolved".to_owned())
+        );
+    }
+
     #[test]
     fn prelude_sentinel_is_prelude() {
         assert!(
