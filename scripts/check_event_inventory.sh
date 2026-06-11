@@ -96,25 +96,13 @@ SRC_DIR="$REPO_ROOT/gui/src-tauri"
 # See esc-4357-20 (flake), task-4529 (fix).
 PRUNE_DIRS=(target gen node_modules dist)
 
-# Pre-build a find prune expression: \( -type d \( -name a -o -name b ... \) -prune \)
-# and a grep --exclude-dir arg list, both derived from PRUNE_DIRS.
-_find_prune_expr=()
+# Pre-build a grep --exclude-dir arg list from PRUNE_DIRS.
+# (The reverse pass still uses dir-name pruning; will be removed in step-4
+# once the reverse pass switches to the tracked _tracked_rs array.)
 _grep_exclude_args=()
 for _d in "${PRUNE_DIRS[@]}"; do
     _grep_exclude_args+=("--exclude-dir=$_d")
 done
-# Build the find -prune clause: ( -type d ( -name a -o -name b -o ... ) -prune )
-_find_prune_expr+=(\( -type d \()
-_first=1
-for _d in "${PRUNE_DIRS[@]}"; do
-    if [[ $_first -eq 1 ]]; then
-        _find_prune_expr+=(-name "$_d")
-        _first=0
-    else
-        _find_prune_expr+=(-o -name "$_d")
-    fi
-done
-_find_prune_expr+=(\) -prune \))
 
 if [[ ! -f "$INVENTORY" ]]; then
     echo "ERROR: inventory file not found: $INVENTORY" >&2
@@ -125,6 +113,18 @@ if [[ ! -d "$SRC_DIR" ]]; then
     echo "ERROR: source directory not found: $SRC_DIR" >&2
     exit 1
 fi
+
+# Build the absolute-path array of tracked .rs sources under gui/src-tauri/.
+# git ls-files -z lists only indexed (tracked) files — untracked/transient
+# build artifacts are excluded by construction regardless of which directory
+# they land in (esc-4357-20, esc-3798-78). Supersedes task-4529 PRUNE_DIRS.
+# Single-star pathspec: git * is NOT path-boundary-aware, so
+# 'gui/src-tauri/*.rs' recursively matches at every depth AND the top-level
+# build.rs (verified 37 files), reproducing the prior find -name '*.rs' set.
+_tracked_rs=()
+while IFS= read -r -d '' _f; do
+    _tracked_rs+=("$REPO_ROOT/$_f")
+done < <(git -C "$REPO_ROOT" ls-files -z -- 'gui/src-tauri/*.rs' 2>/dev/null)
 
 # Build the set of registered channel names using the published grep contract:
 # | `channel-name` | — matches every event-channel row in §1 / §2.
@@ -139,14 +139,10 @@ registered=$(grep -oP '\| `\K[a-z0-9-]+(?=` \|)' "$INVENTORY" | sort -u || true)
 #   app.emit(
 #       "evaluation-status",
 # Dynamic forms (.emit(&name, …) or .emit(event_name, …)) produce no match.
-emit_channels=$(
-    find "$SRC_DIR" \
-        "${_find_prune_expr[@]}" \
-        -o \( -type f -name "*.rs" -exec \
-            perl -0777 -ne 'print "$1\n" while /\.emit\(\s*"([a-z0-9-]+)"/gm' {} + \
-        \) \
-    2>/dev/null | sort -u || true
-)
+emit_channels=""
+if [[ ${#_tracked_rs[@]} -gt 0 ]]; then
+    emit_channels=$(perl -0777 -ne 'print "$1\n" while /\.emit\(\s*"([a-z0-9-]+)"/gm' "${_tracked_rs[@]}" 2>/dev/null | sort -u || true)
+fi
 
 # Compare: flag any emit-site literal not present in the registered set.
 orphan_count=0
@@ -155,7 +151,7 @@ while IFS= read -r channel; do
     if ! printf '%s\n' "$registered" | grep -qx "$channel"; then
         orphan_count=$((orphan_count + 1))
         echo "WARNING: orphan channel '$channel' (not in docs/gui-event-channels.md):" >&2
-        grep -rn --include="*.rs" "${_grep_exclude_args[@]}" "\"$channel\"" "$SRC_DIR" >&2 || true
+        grep -n -- "\"$channel\"" "${_tracked_rs[@]}" >&2 || true
     fi
 done <<< "$emit_channels"
 
