@@ -135,7 +135,12 @@ assert "(e) orchestrator.yaml has NO active CARGO_MAKEFLAGS: YAML key line" \
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- (f) task role + REIFY_JOBSERVER_TASK_FIFO unset → default path /tmp/reify-jobserver-task ---"
-_PLAN_F="$(DF_VERIFY_ROLE=task bash "$VERIFY" test --print-plan 2>/dev/null || true)"
+# env -u: this case asserts the DEFAULT-path contract, so the var must be
+# absent regardless of the ambient environment — the η acceptance campaign
+# (jobserver-acceptance.py) legitimately exports REIFY_JOBSERVER_TASK_FIFO
+# around its baseline verifies, and without isolation this case inherits it
+# and fails the whole infra step of any baseline campaign run.
+_PLAN_F="$(env -u REIFY_JOBSERVER_TASK_FIFO DF_VERIFY_ROLE=task bash "$VERIFY" test --print-plan 2>/dev/null || true)"
 export _PLAN_F
 
 assert "(f) default path: CARGO_MAKEFLAGS output line references /tmp/reify-jobserver-task" \
