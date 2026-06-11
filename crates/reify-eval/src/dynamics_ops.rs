@@ -418,9 +418,12 @@ pub fn try_eval_body_mass_props(
 /// sibling key on that body map — the original `solid` GeometryHandle is NOT
 /// replaced.
 ///
-/// Density is resolved via `resolve_density(None, body_material_density(body))`
-/// which returns the water default (1000 kg/m³) when no body-level material
-/// density is present (the current mechanism-body case). The
+/// Density defaults to the water default (1000 kg/m³) — mechanism bodies are
+/// `Value::Map` records (not `Value::StructureInstance`), so
+/// `body_material_density` — which only matches `StructureInstance` — always
+/// returns `None` here. `None` is passed to `resolve_density` explicitly so
+/// the two density paths (user-facing `body_mass_props` vs this build pass)
+/// cannot silently diverge if `body_material_density` is later extended. The
 /// `W_DynamicsDefaultDensity` warning is NOT emitted here — that warning belongs
 /// to the user-facing `body_mass_props()` call, not the internal build pass.
 ///
@@ -466,6 +469,18 @@ pub fn derive_mechanism_mass_props(
             }
         };
 
+        // Idempotency guard: skip bodies that already carry a valid
+        // derived_mass_props MassProperties from a prior pass. Avoids
+        // redundant kernel round-trips when the same mechanism flows through
+        // build / build_snapshot / tessellate_from_values more than once.
+        if matches!(
+            body_map.get(&Value::String("derived_mass_props".to_string())),
+            Some(Value::StructureInstance(d)) if d.type_name == "MassProperties"
+        ) {
+            patched_bodies.push(body_value.clone());
+            continue;
+        }
+
         let solid = body_map.get(&Value::String("solid".to_string()));
         let handle = match solid {
             Some(Value::GeometryHandle { kernel_handle, .. }) => *kernel_handle,
@@ -476,11 +491,25 @@ pub fn derive_mechanism_mass_props(
             }
         };
 
-        // Resolve density (water default when no material on body).
-        let material = body_material_density(body_value);
-        let (density, _source) = resolve_density(None, material);
+        // Resolve density. Mechanism bodies are Value::Map records (not
+        // StructureInstance), so body_material_density — which only matches
+        // StructureInstance — always returns None for body_value here. Pass None
+        // explicitly to make the unreachability clear and prevent silent divergence
+        // between this pass and the user-facing body_mass_props density ladder.
+        let (density, _source) = resolve_density(None, None);
 
         // Issue the three KGQ queries.
+        //
+        // NOTE: We call query_body_mass_props_from_kernel + assemble_mass_properties
+        // directly here rather than routing through eval_body_mass_props_core
+        // because the two functions have different error contracts:
+        // - eval_body_mass_props_core always returns a Value (on kernel failure it
+        //   inserts Value::Undef sentinel fields via the RefCell error-capture dance
+        //   in try_eval_body_mass_props).
+        // - This build pass wants to SKIP the body entirely on kernel failure (no
+        //   derived_mass_props inserted), not insert an Undef-carrying MassProperties.
+        // Routing through eval_body_mass_props_core would silently produce an
+        // Undef-carrying MassProperties instead of skipping the body.
         match query_body_mass_props_from_kernel(kernel, handle, density) {
             Ok((mass, com, inertia)) => {
                 let mp =
@@ -2226,6 +2255,221 @@ mod derive_mechanism_mass_props_tests {
         assert!(
             diags.iter().any(|d| d.severity == Severity::Warning),
             "emitted diagnostic must have Warning severity; got: {diags:?}"
+        );
+    }
+
+    // ── multi-body partial-success ────────────────────────────────────────────
+
+    /// A second handle id for the partial-failure two-body tests — distinct from
+    /// HANDLE_ID (42) so injected replies can target each handle independently.
+    const HANDLE_ID2: GeometryHandleId = GeometryHandleId(43);
+
+    /// Build a mechanism `Value::Map` containing TWO bodies (body[0] with
+    /// `solid=solid0`, body[1] with `solid=solid1`). Used to exercise the
+    /// multi-body partial-success path where some bodies are patched and some
+    /// are skipped.
+    fn two_body_mechanism(solid0: Value, solid1: Value) -> Value {
+        let mut body0 = BTreeMap::new();
+        body0.insert(Value::String("id".to_string()), Value::Int(0));
+        body0.insert(Value::String("solid".to_string()), solid0);
+
+        let mut body1 = BTreeMap::new();
+        body1.insert(Value::String("id".to_string()), Value::Int(1));
+        body1.insert(Value::String("solid".to_string()), solid1);
+
+        let mut mech = BTreeMap::new();
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        mech.insert(
+            Value::String("bodies".to_string()),
+            Value::List(vec![Value::Map(body0), Value::Map(body1)]),
+        );
+        Value::Map(mech)
+    }
+
+    /// Extract the body map at `index` from a patched mechanism, asserting the
+    /// structure along the way.
+    fn body_at(patched: &Value, index: usize) -> &std::collections::BTreeMap<Value, Value> {
+        let mech_map = match patched {
+            Value::Map(m) => m,
+            other => panic!("patched must be a Map, got {other:?}"),
+        };
+        let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            _ => panic!("patched mechanism missing bodies"),
+        };
+        match &bodies[index] {
+            Value::Map(b) => b,
+            other => panic!("body[{index}] must be a Map, got {other:?}"),
+        }
+    }
+
+    /// Two-body mechanism: body[0] has a working geometry handle (HANDLE_ID),
+    /// body[1] has a non-handle solid (String placeholder).
+    ///
+    /// Expected: Some(patched), body[0] gains derived_mass_props, body[1] does
+    /// NOT gain derived_mass_props, and body order (id fields) is preserved.
+    /// No Warning should be emitted for the non-handle body.
+    #[test]
+    fn derive_mechanism_mass_props_two_body_first_patched_second_non_handle() {
+        let mech = two_body_mechanism(
+            geometry_handle(),
+            Value::String("placeholder".to_string()),
+        );
+        let kernel = mock_kernel();
+        let mut diags = Vec::new();
+
+        let result = derive_mechanism_mass_props(&mech, &kernel, &mut diags);
+        let patched = result.expect("must return Some when at least one body is patched");
+
+        // Body order is preserved (2 bodies total).
+        let mech_map = match &patched {
+            Value::Map(m) => m,
+            other => panic!("patched must be a Map, got {other:?}"),
+        };
+        let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            _ => panic!("missing bodies"),
+        };
+        assert_eq!(bodies.len(), 2, "body order must be preserved (2 bodies)");
+
+        // body[0]: id=0 (order preserved) and carries derived_mass_props.
+        let b0 = body_at(&patched, 0);
+        assert_eq!(b0.get(&Value::String("id".to_string())), Some(&Value::Int(0)));
+        assert!(
+            b0.contains_key(&Value::String("derived_mass_props".to_string())),
+            "body[0] must carry derived_mass_props; keys: {:?}",
+            b0.keys().collect::<Vec<_>>()
+        );
+
+        // body[1]: id=1 (order preserved) and does NOT carry derived_mass_props.
+        let b1 = body_at(&patched, 1);
+        assert_eq!(b1.get(&Value::String("id".to_string())), Some(&Value::Int(1)));
+        assert!(
+            !b1.contains_key(&Value::String("derived_mass_props".to_string())),
+            "body[1] (non-handle) must not carry derived_mass_props"
+        );
+
+        // No diagnostic for the non-handle skip path.
+        assert!(
+            diags.is_empty(),
+            "non-handle skip must not emit diagnostics; got: {diags:?}"
+        );
+    }
+
+    /// Two-body mechanism: body[0] has a working geometry handle (HANDLE_ID,
+    /// replies injected), body[1] has a geometry handle (HANDLE_ID2, no replies
+    /// injected → kernel failure).
+    ///
+    /// Expected: Some(patched) because body[0] succeeded; body[0] gains
+    /// derived_mass_props; body[1] does NOT gain derived_mass_props; a Warning
+    /// is emitted for body[1]'s kernel failure; body order is preserved.
+    #[test]
+    fn derive_mechanism_mass_props_two_body_first_patched_second_kernel_failure() {
+        let handle0 = geometry_handle(); // HANDLE_ID=42, replies injected by mock_kernel()
+        let handle1 = Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Design", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: HANDLE_ID2, // no replies → kernel failure
+        };
+        let mech = two_body_mechanism(handle0, handle1);
+        // mock_kernel() has replies only for HANDLE_ID=42; HANDLE_ID2=43 has none.
+        let kernel = mock_kernel();
+        let mut diags = Vec::new();
+
+        let result = derive_mechanism_mass_props(&mech, &kernel, &mut diags);
+        let patched = result.expect("must return Some when body[0] succeeded");
+
+        // Body order preserved (2 bodies).
+        let mech_map = match &patched {
+            Value::Map(m) => m,
+            other => panic!("patched must be a Map, got {other:?}"),
+        };
+        let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            _ => panic!("missing bodies"),
+        };
+        assert_eq!(bodies.len(), 2, "body order must be preserved (2 bodies)");
+
+        // body[0]: patched.
+        let b0 = body_at(&patched, 0);
+        assert_eq!(b0.get(&Value::String("id".to_string())), Some(&Value::Int(0)));
+        assert!(
+            b0.contains_key(&Value::String("derived_mass_props".to_string())),
+            "body[0] must carry derived_mass_props"
+        );
+
+        // body[1]: skipped (kernel failure).
+        let b1 = body_at(&patched, 1);
+        assert_eq!(b1.get(&Value::String("id".to_string())), Some(&Value::Int(1)));
+        assert!(
+            !b1.contains_key(&Value::String("derived_mass_props".to_string())),
+            "body[1] (kernel failure) must not carry derived_mass_props"
+        );
+
+        // A Warning must be emitted for body[1]'s kernel failure.
+        assert!(
+            diags.iter().any(|d| d.severity == Severity::Warning),
+            "kernel failure on body[1] must emit a Warning; got: {diags:?}"
+        );
+    }
+
+    // ── idempotency guard ────────────────────────────────────────────────────
+
+    /// A mechanism body that already carries a `derived_mass_props` MassProperties
+    /// from a prior pass must be skipped without issuing any kernel queries.
+    /// When NO body needed re-derivation (all already derived), the function
+    /// returns None — no-change, no kernel round-trips.
+    #[test]
+    fn derive_mechanism_mass_props_skips_already_derived_body() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        // Build a body that already has derived_mass_props (MassProperties instance).
+        let existing_mp = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MassProperties".to_string(),
+            version: 1,
+            fields: [("mass".to_string(), Value::Real(6000.0))]
+                .into_iter()
+                .collect::<PersistentMap<_, _>>(),
+        }));
+        let mut body = BTreeMap::new();
+        body.insert(Value::String("id".to_string()), Value::Int(0));
+        body.insert(Value::String("solid".to_string()), geometry_handle());
+        body.insert(
+            Value::String("derived_mass_props".to_string()),
+            existing_mp,
+        );
+
+        let mut mech = BTreeMap::new();
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        mech.insert(
+            Value::String("bodies".to_string()),
+            Value::List(vec![Value::Map(body)]),
+        );
+        let mech_value = Value::Map(mech);
+
+        // The bare kernel has no injected replies; if the guard were absent, the
+        // kernel query would fail and a Warning would be emitted.
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        let result = derive_mechanism_mass_props(&mech_value, &kernel, &mut diags);
+
+        // All bodies were already derived → None (no-change, no kernel round-trip).
+        assert!(
+            result.is_none(),
+            "already-derived mechanism must return None (no re-query); got {result:?}"
+        );
+        // No Warning must be emitted — the guard skipped the kernel call entirely.
+        assert!(
+            diags.is_empty(),
+            "idempotency guard must not emit any diagnostics; got: {diags:?}"
         );
     }
 }
