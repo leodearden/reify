@@ -52,6 +52,11 @@ fn carries(diags: &[DiagTriple], code: DiagnosticCode) -> bool {
     diags.iter().any(|(c, _, _)| *c == Some(code))
 }
 
+/// Count diagnostics in `diags` carrying `code`.
+fn count_code(diags: &[DiagTriple], code: DiagnosticCode) -> usize {
+    diags.iter().filter(|(c, _, _)| *c == Some(code)).count()
+}
+
 /// PRIMARY (must-pass) — the Stage-1 residue==∅ gate, observed through `build()`.
 ///
 /// An acyclic, legacy-passing module — a Boolean union over two sub-realizations,
@@ -121,5 +126,43 @@ fn unified_dag_cyclic_module_surfaces_eval_cycle() {
     assert!(
         !carries(&legacy, DiagnosticCode::EvalCycle),
         "LegacyMultiPass must NOT carry DiagnosticCode::EvalCycle; got: {legacy:?}"
+    );
+}
+
+/// Amendment #2 — the driver surfaces EXACTLY ONE structured `EvalCycle` per
+/// user cycle under `UnifiedDag`, even though the legacy `detect_let_cycle`
+/// report for the SAME cycle coexists in the build result.
+///
+/// On a cyclic module the legacy path pushes its own UN-CODED "circular
+/// let-binding dependency" diagnostic; under `UnifiedDag` the driver ADDS its
+/// structured `DiagnosticCode::EvalCycle` alongside it (additive δ wiring — the
+/// duplication is intentional at δ, and de-duplicating/retiring the legacy
+/// emission is ε's job when it replaces the legacy build loop). This test makes
+/// the δ contract explicit: the *coded* cycle-diagnostic count is exactly ONE
+/// (the driver never double-reports a single SCC), and the legacy un-coded
+/// report is a separate, known-coexisting diagnostic — NOT a second `EvalCycle`.
+#[test]
+fn unified_dag_surfaces_exactly_one_coded_eval_cycle() {
+    let source = "structure S {\n    let a = b + 1.0\n    let b = a + 1.0\n}";
+
+    let unified = build_under(source, BuildScheduler::UnifiedDag);
+
+    // Exactly one structured EvalCycle: the driver emits one per cyclic SCC, and
+    // this single mutual `a ↔ b` cycle is one SCC. Pins that δ never
+    // double-reports a single cycle through its own coded diagnostic.
+    assert_eq!(
+        count_code(&unified, DiagnosticCode::EvalCycle),
+        1,
+        "UnifiedDag must surface exactly one coded EvalCycle for one cycle; got: {unified:?}"
+    );
+
+    // The legacy un-coded "circular let-binding dependency" diagnostic coexists
+    // (a separate, code-less report) — documenting that the known additive-δ
+    // duplication is the legacy emission, NOT a second coded EvalCycle, and is
+    // deduped/retired at ε.
+    assert!(
+        unified.iter().any(|(code, msg, _)| code.is_none()
+            && msg.contains("circular let-binding dependency")),
+        "the legacy un-coded cycle diagnostic is expected to coexist under δ; got: {unified:?}"
     );
 }

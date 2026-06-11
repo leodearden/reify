@@ -2639,6 +2639,18 @@ impl Engine {
         // when the scheduler is LegacyMultiPass (the default). The driver is a
         // pure planner — it executes no nodes; ε wires executors onto the
         // schedule and retires the legacy loop.
+        //
+        // KNOWN δ behaviour — cyclic modules carry TWO cycle reports. On a cyclic
+        // input the legacy `detect_let_cycle` (engine_eval.rs) has already pushed
+        // its own UN-CODED "circular let-binding dependency" diagnostic into this
+        // same Vec via check()/eval(), so under UnifiedDag the structured
+        // `DiagnosticCode::EvalCycle` is ADDITIVE alongside it — one user cycle
+        // surfaces both a legacy (code-less) and a unified (coded) report. This is
+        // intentional for δ's additive, byte-preserving-on-acyclic wiring: the
+        // driver itself emits exactly ONE EvalCycle per SCC (pinned by the
+        // integration test), and de-duplicating against / retiring the legacy
+        // emission belongs to ε, which replaces the legacy build loop wholesale.
+        // Acyclic inputs are unaffected (residue == ∅ ⇒ zero added diagnostics).
         if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag
             && let Some(state) = self.eval_state.as_ref()
         {
