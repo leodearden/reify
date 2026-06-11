@@ -14,8 +14,6 @@
 //!     binding) → `Value::Undef`
 //!   - `sample(Undef, 3.0)` → strict Undef propagation → `Value::Undef`
 
-use std::sync::Arc;
-
 use reify_core::{ContentHash, Type, ValueCellId};
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
