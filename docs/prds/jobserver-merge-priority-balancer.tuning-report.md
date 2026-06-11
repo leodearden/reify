@@ -56,7 +56,8 @@ Merge-favored: True
 
 ## Findings
 
-_No findings — all acceptance gates cleared._
+- **[WARNING] SYNTHETIC_TIMEOUT_NOT_AUTHORITATIVE**: task_timeout_secs=2s is derived from the harness's synthetic load and must NOT be wired into verify.sh; obtain authoritative timeouts by re-running --measure with a real cold-verify load_cmd
+- **[WARNING] SYNTHETIC_TIMEOUT_NOT_AUTHORITATIVE**: merge_timeout_secs=2s is derived from the harness's synthetic load and must NOT be wired into verify.sh; obtain authoritative timeouts by re-running --measure with a real cold-verify load_cmd
 
 Overall acceptance: **PASS**  
 (escape-valve findings are soft warnings; only hard-fail findings set acceptance to FAIL)
