@@ -247,7 +247,7 @@ fn assembly_has_50_plus_subs() {
 /// `mass = volume(geometry) * material.density`, where
 ///   - `geometry = box(150mm, 150mm, 3000mm)` → analytic volume 0.0675 m³
 ///   - `material.density ≈ 7850 kg/m³` (runtime-read from the `material` StructureInstance slot)
-///   → `mass ≈ 529.875 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
+///     → `mass ≈ 529.875 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
 ///
 /// Requires the real-OCCT `Engine::build()` path via `build_canonical_occt()`.
 /// Skips cleanly when OCCT is unavailable.
@@ -264,7 +264,7 @@ fn mass_propagation_steel_beam() {
 /// `mass = volume(geometry) * material.density`, where
 ///   - `geometry = box(500mm, 500mm, 4mm)` → analytic volume 0.001 m³
 ///   - `material.density ≈ 2700 kg/m³` (runtime-read from the `material` StructureInstance slot)
-///   → `mass = 2.7 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
+///     → `mass = 2.7 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
 ///
 /// Requires the real-OCCT `Engine::build()` path via `build_canonical_occt()`.
 /// Skips cleanly when OCCT is unavailable.
