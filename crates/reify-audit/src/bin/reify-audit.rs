@@ -8,7 +8,7 @@
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
 //! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
-//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
+//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
 //!
 //! ## Output
 //!
@@ -102,7 +102,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
@@ -259,9 +259,12 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                                 .to_string(),
                         );
                     }
-                    if !matches!(tok, "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER") {
+                    if !matches!(
+                        tok,
+                        "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER" | "PTODO"
+                    ) {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER",
+                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, or PTODO",
                             tok
                         ));
                     }
@@ -458,6 +461,15 @@ fn run_puntested(args: &Args) -> bool {
 /// comma-separated `--pattern` set (not part of the default all-detector sweep).
 fn run_player(args: &Args) -> bool {
     args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PLAYER"))
+}
+
+/// Opt-in dispatch predicate for PTODO: true only when `PTODO` is in the
+/// comma-separated `--pattern` set (not part of the default all-detector sweep;
+/// ε owns default-sweep membership). PTODO is the *structural* TODO-tracking
+/// lane — it reads the working tree via `ls_files` + fs and never contacts
+/// jcodemunch, so it is intentionally absent from `needs_jcodemunch`.
+fn run_ptodo(args: &Args) -> bool {
+    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PTODO"))
 }
 
 // -----------------------------------------------------------------------
@@ -783,6 +795,10 @@ mod tests {
             err.contains("PDEAD"),
             "error must list PDEAD as a valid pattern literal; got: {err}"
         );
+        assert!(
+            err.contains("PTODO"),
+            "error must list PTODO as a valid pattern literal; got: {err}"
+        );
     }
 
     #[test]
@@ -1018,7 +1034,7 @@ mod tests {
             "error must name the offending token 'BOGUS' (with surrounding quotes); got: {err}"
         );
         assert!(
-            err.contains("expected P1, P2, P5, PDEAD, PUNTESTED, or PLAYER"),
+            err.contains("expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, or PTODO"),
             "error must list all known tokens; got: {err}"
         );
         // NOTE: we do not assert !err.contains("P1,BOGUS") — a future message
