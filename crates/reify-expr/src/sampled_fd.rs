@@ -165,7 +165,7 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
             let ax_strides = compute_axis_strides(&dims);
             let mut mi = vec![0usize; n_axes];
             let mut data = vec![0.0f64; grid_count];
-            for g in 0..grid_count {
+            for (g, slot) in data.iter_mut().enumerate() {
                 let mut lap = 0.0;
                 for axis in 0..n_axes {
                     lap += second_diff_flat(
@@ -179,7 +179,7 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
                         0,
                     );
                 }
-                data[g] = lap;
+                *slot = lap;
                 increment_mi(&mut mi, &dims);
             }
             clone_geometry(sf, data)
@@ -195,7 +195,7 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
             let ax_strides = compute_axis_strides(&dims);
             let mut mi = vec![0usize; n_axes];
             let mut data = vec![0.0f64; grid_count];
-            for g in 0..grid_count {
+            for (g, slot) in data.iter_mut().enumerate() {
                 let mut div = 0.0;
                 for c in 0..n_axes {
                     div += first_diff_flat(
@@ -209,7 +209,7 @@ pub(crate) fn sampled_differential(sf: &SampledField, op: DifferentialOp) -> Sam
                         c,
                     );
                 }
-                data[g] = div;
+                *slot = div;
                 increment_mi(&mut mi, &dims);
             }
             clone_geometry(sf, data)
@@ -362,6 +362,7 @@ fn flat_index_with(mi: &[usize], dims: &[usize], axis: usize, new_val: usize) ->
 ///
 /// Returns 0.0 when `n < 2` (mirrors `medial::gradient_at_index` for
 /// singleton axes).
+#[allow(clippy::too_many_arguments)]
 fn first_diff_flat(
     data: &[f64],
     n: usize,
@@ -397,6 +398,7 @@ fn first_diff_flat(
 /// Boundary: one-sided 3-point form `(f[0] - 2·f[1] + f[2]) / h²` at the
 /// lower boundary and `(f[n-1] - 2·f[n-2] + f[n-3]) / h²` at the upper
 /// boundary, which equals `2a` for `f = ax²` (Laplacian exactness per PRD §6).
+#[allow(clippy::too_many_arguments)]
 fn second_diff_flat(
     data: &[f64],
     n: usize,
