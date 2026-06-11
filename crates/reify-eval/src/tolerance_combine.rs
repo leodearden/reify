@@ -403,6 +403,68 @@ pub fn extract_output_tolerance_bound(
     tightest
 }
 
+// ── Output-occurrence conformance (io-export δ) ───────────────────────────────
+
+/// Returns `true` iff any name in `trait_bounds` equals or transitively refines
+/// the `"Output"` trait, walking [`reify_compiler::CompiledTrait::refinements`]
+/// over a name→trait map built from `trait_defs`.
+///
+/// This is the io-export δ export-driver's trait-conformance gate: an occurrence
+/// template is a driver-eligible Output sink iff its `entity_kind == Occurrence`
+/// (checked by the caller) **and** `conforms_to_output(template.trait_bounds,
+/// module.trait_defs)`. Recognizing by *transitive trait-bound conformance* —
+/// not a `trait_bounds.contains("Output")` name match — means user-defined
+/// Output occurrences are driven too: `occurrence def Foo : MyExport` where
+/// `trait MyExport : Output` conforms even though `"Output"` never appears
+/// directly in `Foo`'s bounds.
+///
+/// # Why re-implemented here
+///
+/// reify-compiler's `satisfies_trait_bound` / `trait_satisfies` are
+/// `pub(crate)` and unreachable from reify-eval; making them `pub` would touch
+/// an out-of-scope crate. This small local closure keeps the change inside the
+/// three touched crates and is co-located with the other Output recognizers
+/// (`extract_output_tolerance_bound`, `match_representation_within_shape`) so
+/// the driver and the tolerance pipeline share one Output-recognition module.
+///
+/// # Cycle safety
+///
+/// A `visited` set bounds the refinement walk, so a malformed refinement cycle
+/// (`trait A : B`, `trait B : A`) terminates with `false` instead of looping
+/// forever. The `name == "Output"` check fires at pop time, before the visited
+/// guard, so a bound that *equals* `"Output"` is recognized even when `"Output"`
+/// also appears as an interior node of the lattice.
+pub fn conforms_to_output(
+    trait_bounds: &[String],
+    trait_defs: &[reify_compiler::CompiledTrait],
+) -> bool {
+    use std::collections::{HashMap, HashSet};
+
+    // name → refinement (parent-trait) names. Built once per call; a module's
+    // trait_defs is small (its declared traits), so the allocation is cheap.
+    let by_name: HashMap<&str, &[String]> = trait_defs
+        .iter()
+        .map(|t| (t.name.as_str(), t.refinements.as_slice()))
+        .collect();
+
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut stack: Vec<&str> = trait_bounds.iter().map(String::as_str).collect();
+
+    while let Some(name) = stack.pop() {
+        if name == "Output" {
+            return true;
+        }
+        // Cycle guard: skip a trait whose refinements were already enqueued.
+        if !visited.insert(name) {
+            continue;
+        }
+        if let Some(refinements) = by_name.get(name) {
+            stack.extend(refinements.iter().map(String::as_str));
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
