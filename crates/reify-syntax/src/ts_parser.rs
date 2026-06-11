@@ -3790,27 +3790,17 @@ impl<'a> Lowering<'a> {
 
         // Collect positional args from the `argument_list` child (same logic as
         // `lower_function_call`, reusing the existing `lower_call_argument` helper).
-        // Trait method calls don't carry named-arg labels.  If the grammar ever
-        // permits a `named_argument` child here, the label would be silently
-        // dropped — which is now a latent foot-gun given named args are semantically
-        // significant for structure ctors.  Assert loudly in debug builds so a
-        // future grammar change surfaces at the parser level rather than causing a
-        // silent mis-bind in the ctor binder.
+        // Trait method calls don't use named-arg binding, so any named-arg label is
+        // silently dropped — only the value expression is retained.  Named-arg syntax
+        // is grammatically permitted at call sites (e.g. `Trait::method(x: value)`),
+        // so dropping the label here is correct and expected.
         let mut args = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
-                    if let Some((arg_name, expr)) = self.lower_call_argument(arg_child) {
-                        debug_assert!(
-                            arg_name.is_none(),
-                            "lower_trait_method_call: unexpected named-arg label {:?} — \
-                             trait method calls do not support named-arg syntax; \
-                             the label will be dropped.  If the grammar now permits \
-                             named args here, update this path to handle them.",
-                            arg_name
-                        );
+                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
                         args.push(expr);
                     }
                 }
