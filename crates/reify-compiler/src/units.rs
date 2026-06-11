@@ -341,6 +341,32 @@ pub(crate) fn selector_composition_result_type(
 
     let first_kind = selector_kinds[0];
 
+    // Reject non-Selector operands mixed with Selector operands.  A call like
+    // `union(faces(b), box(…))` routes here (because faces(b) is_selector_expr),
+    // but `box(…)` has a non-Selector type — that is always a user error.  Without
+    // this check the function would return Some(Selector(Face)) from the K1 path
+    // below, compile silently, and only fail at eval when reconstruct_selector_value
+    // returns None and the cell is left at Undef.  Emit E_SELECTOR_KIND_MISMATCH at
+    // compile time instead.
+    let non_selector_count = compiled_args
+        .iter()
+        .filter(|arg| !matches!(&arg.result_type, Type::Selector(_)))
+        .count();
+    if non_selector_count > 0 {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "selector composition requires all operands to be selectors; \
+                 {non_selector_count} non-selector operand(s) found",
+            ))
+            .with_code(DiagnosticCode::SelectorKindMismatch)
+            .with_label(DiagnosticLabel::new(
+                call_span,
+                "non-selector operand in selector composition",
+            )),
+        );
+        return Some(Type::Selector(first_kind)); // anti-cascade
+    }
+
     // Check K1: all selector operands must share the same kind.
     if let Some(&mismatch_kind) = selector_kinds.iter().find(|&&k| k != first_kind) {
         // Emit exactly ONE E_SELECTOR_KIND_MISMATCH naming both kinds.

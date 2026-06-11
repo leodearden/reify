@@ -341,3 +341,122 @@ fn solid_body_named_ctor_types_as_body_selector() {
         sel_expr.result_type
     );
 }
+
+// ── (d) Anti-cascade contract on mismatch ────────────────────────────────────
+
+/// After a mixed-kind mismatch the `sel` binding must still infer
+/// `Type::Selector(first_kind)` — the anti-cascade contract prevents a cascade
+/// of downstream type errors on an already-diagnosed mismatch.
+#[test]
+fn union_mixed_kind_sel_still_types_as_selector_after_mismatch() {
+    let compiled = compile_source_with_stdlib(SOURCE_UNION_MIXED);
+    // Confirm the mismatch was emitted (guard against the diagnostic going missing).
+    let mismatches: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::SelectorKindMismatch))
+        .collect();
+    assert_eq!(mismatches.len(), 1, "prerequisite: expected 1 mismatch diagnostic");
+    // The cell must still have type Selector(Face) — the first-kind anti-cascade.
+    let sel_expr = cell_default_expr(&compiled, "sel");
+    assert_eq!(
+        sel_expr.result_type,
+        Type::Selector(SelectorKind::Face),
+        "anti-cascade: sel must infer Selector(Face) even after mismatch, got {:?}",
+        sel_expr.result_type
+    );
+}
+
+// ── (e) Variadic (3-operand) union ───────────────────────────────────────────
+
+const SOURCE_UNION_THREE: &str = r#"
+structure def UnionThree {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 20mm, 20mm)
+    let c = box(30mm, 30mm, 30mm)
+    let sel = union(faces(a), faces(b), faces(c))
+}
+"#;
+
+/// `union(faces(a), faces(b), faces(c))` — 3 operands, all Face — must compile
+/// without errors and type as `Type::Selector(Face)`.  Locks the variadic path.
+#[test]
+fn union_three_operands_same_kind_compiles_clean() {
+    let compiled = compile_source_with_stdlib(SOURCE_UNION_THREE);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "union(3 face selectors): must compile without errors; got: {errors:#?}"
+    );
+    let sel_expr = cell_default_expr(&compiled, "sel");
+    assert_eq!(
+        sel_expr.result_type,
+        Type::Selector(SelectorKind::Face),
+        "union(3 face selectors) must infer Type::Selector(Face), got {:?}",
+        sel_expr.result_type
+    );
+}
+
+// ── (f) Nested composition ────────────────────────────────────────────────────
+
+const SOURCE_NESTED_COMPOSITION: &str = r#"
+structure def NestedComp {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 20mm, 20mm)
+    let c = box(30mm, 30mm, 30mm)
+    let sel = union(union(faces(a), faces(b)), faces(c))
+}
+"#;
+
+/// `union(union(faces(a), faces(b)), faces(c))` — nested composition — must
+/// compile without errors and type as `Type::Selector(Face)`.  Locks the
+/// recursive selector-expr path in `is_selector_expr` and the type-ladder arm.
+#[test]
+fn nested_union_compiles_clean_with_face_selector_type() {
+    let compiled = compile_source_with_stdlib(SOURCE_NESTED_COMPOSITION);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "union(union(faces,faces), faces): must compile without errors; got: {errors:#?}"
+    );
+    let sel_expr = cell_default_expr(&compiled, "sel");
+    assert_eq!(
+        sel_expr.result_type,
+        Type::Selector(SelectorKind::Face),
+        "nested union must infer Type::Selector(Face), got {:?}",
+        sel_expr.result_type
+    );
+}
+
+// ── (g) Single-arg arity: compile-time behavior ───────────────────────────────
+
+const SOURCE_UNION_SINGLE_ARG: &str = r#"
+structure def UnionSingle {
+    let b = box(10mm, 10mm, 10mm)
+    let sel = union(faces(b))
+}
+"#;
+
+/// `union(faces(b))` — one operand, below the ≥2 arity floor — locks the
+/// compile-time behavior: no compile-time arity diagnostic (arity is enforced
+/// at eval by the `args.len() < 2` gate), so the binding types as
+/// `Type::Selector(Face)` and fails silently to Undef at eval.
+/// Documents current behavior so a future compile-time arity check is visible
+/// as a deliberate breaking change.
+#[test]
+fn union_single_arg_no_compile_time_arity_error() {
+    let compiled = compile_source_with_stdlib(SOURCE_UNION_SINGLE_ARG);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "union(single arg): no compile-time arity error expected (arity is eval-side); \
+         got: {errors:#?}"
+    );
+    let sel_expr = cell_default_expr(&compiled, "sel");
+    assert_eq!(
+        sel_expr.result_type,
+        Type::Selector(SelectorKind::Face),
+        "union(faces(b)) must still infer Type::Selector(Face), got {:?}",
+        sel_expr.result_type
+    );
+}

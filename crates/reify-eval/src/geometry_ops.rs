@@ -3105,6 +3105,62 @@ fn reconstruct_selector_value(
     }
 }
 
+/// Build a variadic selector composition (`union` or `intersect`) from a slice of
+/// compiled args by reconstructing each child `SelectorValue` then calling the
+/// provided constructor.  Parameterised by `constructor` so Union and Intersect
+/// share the same collect+construct+error path and only differ in the fn they pass.
+///
+/// Returns `None` if any child cannot be reconstructed (cell stays Undef).
+/// Returns `Some(Value::Undef)` + a Warning on `SelectorError` (defensive backstop
+/// — compile-time `E_SELECTOR_KIND_MISMATCH` should have fired first).
+fn eval_variadic_composition(
+    op_name: &str,
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+    constructor: fn(
+        Vec<reify_ir::value::SelectorValue>,
+    ) -> Result<reify_ir::value::SelectorValue, reify_ir::value::SelectorError>,
+) -> Option<reify_ir::Value> {
+    let children: Vec<reify_ir::value::SelectorValue> = args
+        .iter()
+        .map(|arg| reconstruct_selector_value(arg, named_steps, values, kernel, diagnostics))
+        .collect::<Option<Vec<_>>>()?;
+    match constructor(children) {
+        Ok(sv) => Some(reify_ir::Value::Selector(sv)),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{op_name}: selector kind-closure violation ({err:?}); cell left at Undef"
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// Build a named-leaf selector (`face`, `edge`, or `solid_body`) from two compiled
+/// args: `args[0]` is the geometry target (resolved via `resolve_selector_target`)
+/// and `args[1]` is the tag string (extracted via `resolve_string_literal_arg`).
+/// Parameterised by `kind` so all three ctors share the same resolution path.
+fn eval_named_leaf_selector_ctor(
+    kind: reify_core::ty::SelectorKind,
+    args: &[reify_ir::CompiledExpr],
+    values: &reify_ir::ValueMap,
+    function_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let target = resolve_selector_target(&args[0], values)?;
+    let name = resolve_string_literal_arg(&args[1])?.to_string();
+    build_leaf_selector(
+        kind,
+        target,
+        reify_ir::value::LeafQuery::Named(name),
+        function_name,
+        diagnostics,
+    )
+}
+
 /// Reconstruct the `Value::Selector` denoted by `selector_expr`, resolve it via
 /// `topology_selectors::resolve`, and wrap the canonical-order handle ids as a
 /// `Value::List` of `Value::GeometryHandle` sub-handles. Shared by the
@@ -3881,36 +3937,24 @@ pub(crate) fn try_eval_topology_selector(
         // E_SELECTOR_KIND_MISMATCH should have fired first) a Warning is emitted
         // and `Some(Value::Undef)` is returned, mirroring `build_leaf_selector`.
         // Zero kernel queries at construction time (K2/BT7).
-        TopologySelectorHelper::Union => {
-            let children: Vec<reify_ir::value::SelectorValue> = args
-                .iter()
-                .map(|arg| reconstruct_selector_value(arg, named_steps, values, kernel, diagnostics))
-                .collect::<Option<Vec<_>>>()?;
-            match reify_ir::value::SelectorValue::union(children) {
-                Ok(sv) => Some(reify_ir::Value::Selector(sv)),
-                Err(err) => {
-                    diagnostics.push(Diagnostic::warning(format!(
-                        "union: selector kind-closure violation ({err:?}); cell left at Undef"
-                    )));
-                    Some(reify_ir::Value::Undef)
-                }
-            }
-        }
-        TopologySelectorHelper::Intersect => {
-            let children: Vec<reify_ir::value::SelectorValue> = args
-                .iter()
-                .map(|arg| reconstruct_selector_value(arg, named_steps, values, kernel, diagnostics))
-                .collect::<Option<Vec<_>>>()?;
-            match reify_ir::value::SelectorValue::intersect(children) {
-                Ok(sv) => Some(reify_ir::Value::Selector(sv)),
-                Err(err) => {
-                    diagnostics.push(Diagnostic::warning(format!(
-                        "intersect: selector kind-closure violation ({err:?}); cell left at Undef"
-                    )));
-                    Some(reify_ir::Value::Undef)
-                }
-            }
-        }
+        TopologySelectorHelper::Union => eval_variadic_composition(
+            "union",
+            &args,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+            reify_ir::value::SelectorValue::union,
+        ),
+        TopologySelectorHelper::Intersect => eval_variadic_composition(
+            "intersect",
+            &args,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+            reify_ir::value::SelectorValue::intersect,
+        ),
         TopologySelectorHelper::Difference => {
             // args[0] and args[1] guaranteed by the == 2 arity gate.
             let a = reconstruct_selector_value(&args[0], named_steps, values, kernel, diagnostics)?;
@@ -3934,39 +3978,27 @@ pub(crate) fn try_eval_topology_selector(
         // falling through yields None (cell left at Undef — PRD invariant #2).
         // Zero kernel queries at construction time (K2/BT7); resolution is the
         // D8 interim (W_TOPOLOGY_TAG_STALE + [] until persistent-naming-v2).
-        TopologySelectorHelper::Face => {
-            let target = resolve_selector_target(&args[0], values)?;
-            let name = resolve_string_literal_arg(&args[1])?.to_string();
-            build_leaf_selector(
-                reify_core::ty::SelectorKind::Face,
-                target,
-                reify_ir::value::LeafQuery::Named(name),
-                &function.name,
-                diagnostics,
-            )
-        }
-        TopologySelectorHelper::Edge => {
-            let target = resolve_selector_target(&args[0], values)?;
-            let name = resolve_string_literal_arg(&args[1])?.to_string();
-            build_leaf_selector(
-                reify_core::ty::SelectorKind::Edge,
-                target,
-                reify_ir::value::LeafQuery::Named(name),
-                &function.name,
-                diagnostics,
-            )
-        }
-        TopologySelectorHelper::SolidBody => {
-            let target = resolve_selector_target(&args[0], values)?;
-            let name = resolve_string_literal_arg(&args[1])?.to_string();
-            build_leaf_selector(
-                reify_core::ty::SelectorKind::Body,
-                target,
-                reify_ir::value::LeafQuery::Named(name),
-                &function.name,
-                diagnostics,
-            )
-        }
+        TopologySelectorHelper::Face => eval_named_leaf_selector_ctor(
+            reify_core::ty::SelectorKind::Face,
+            &args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
+        TopologySelectorHelper::Edge => eval_named_leaf_selector_ctor(
+            reify_core::ty::SelectorKind::Edge,
+            &args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
+        TopologySelectorHelper::SolidBody => eval_named_leaf_selector_ctor(
+            reify_core::ty::SelectorKind::Body,
+            &args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
     }
 }
 

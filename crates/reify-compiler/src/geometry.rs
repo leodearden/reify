@@ -153,15 +153,23 @@ pub(crate) fn is_geometry_let(
             // still flow into compile_geometry_call's sweep arm and get
             // its strict "expects exactly 2 arguments" diagnostic.
             let is_kinematic_sweep = name == "sweep" && args.len() == 4;
-            // Task 4119 δ: disambiguate CSG `union`/`intersection`/`difference`
-            // (geometry boolean ops) from selector-composition `union`/`difference`
+            // Task 4119 δ: disambiguate CSG `union`/`difference` (geometry boolean
+            // ops) from selector-composition `union`/`intersect`/`difference`
             // (selector algebra combinators). When ANY operand is syntactically a
             // selector-producing expression the call routes to the value-typing path
             // where E_SELECTOR_KIND_MISMATCH is checked. Mirrors the sweep-arity
-            // guard above. `intersect` is never a geometry function so it never
-            // reaches this arm; the guard only fires for the three CSG names.
+            // guard above.
+            // NOTE: "intersect" (selector combinator) ≠ "intersection" (CSG); they
+            // are distinct names. "intersect" is never a geometry function so it
+            // cannot reach this arm — but including it in the guard keeps this list
+            // in sync with `units.rs`'s selector_composition_result_type (which
+            // handles "union"|"intersect"|"difference"). "intersection" is the CSG
+            // name and is intentionally absent: a call like `intersection(faces(b),…)`
+            // is a misuse of the CSG op, not a selector composition; routing it to
+            // is_geometry_function gives the user a geometry-type error rather than
+            // a silent Undef via the selector path.
             let is_selector_composition =
-                matches!(name.as_str(), "union" | "intersection" | "difference")
+                matches!(name.as_str(), "union" | "intersect" | "difference")
                     && args.iter().any(|a| is_selector_expr(a, functions));
             is_geometry_function(name)
                 && !functions.iter().any(|f| f.name == *name)
