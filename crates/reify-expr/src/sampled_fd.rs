@@ -652,4 +652,53 @@ mod tests {
             );
         }
     }
+
+    // ── step-7: curl of an affine 3D vector field is exact ───────────────────
+
+    /// Curl of F = (-y, x, 0) ⟹ curl F = (0, 0, 2) everywhere.
+    /// Central and one-sided first differences are both exact for affine inputs.
+    #[test]
+    fn curl_3d_affine_exact() {
+        let n = 4;
+        // F_x = -y, F_y = x, F_z = 0
+        let sf = make_3d_vector(n, n, n, 1.0, |x, y, _z| [-y, x, 0.0]);
+        let out = sampled_differential(&sf, DifferentialOp::Curl);
+
+        let grid_count = n * n * n;
+        // out_stride = 3
+        assert_eq!(out.data.len(), grid_count * 3);
+
+        // Grid geometry preserved
+        assert_eq!(out.kind, SampledGridKind::Regular3D);
+        assert_eq!(out.axis_grids, sf.axis_grids);
+        assert_eq!(out.spacing, sf.spacing);
+        assert_eq!(out.bounds_min, sf.bounds_min);
+        assert_eq!(out.bounds_max, sf.bounds_max);
+
+        for g in 0..grid_count {
+            let cx = out.data[g * 3];
+            let cy = out.data[g * 3 + 1];
+            let cz = out.data[g * 3 + 2];
+            assert!((cx - 0.0).abs() < 1e-12, "node {g}: curl_x = {cx}, expected 0");
+            assert!((cy - 0.0).abs() < 1e-12, "node {g}: curl_y = {cy}, expected 0");
+            assert!((cz - 2.0).abs() < 1e-12, "node {g}: curl_z = {cz}, expected 2");
+        }
+    }
+
+    /// Curl on a non-Regular3D input returns a defined degenerate field
+    /// (out_stride=3, all-zero data) rather than panicking.
+    #[test]
+    fn curl_degenerate_non_3d_returns_zero() {
+        // Use a 2D vector field — not Regular3D, so curl should return zeros
+        let sf = make_2d_vector(4, 3, 1.0, 1.0, |x, y| [x, y]);
+        // Pad data to stride-3 manually to avoid the in_stride != 3 guard
+        // Actually, for a 2D field with stride-2 data, the in_stride check fires.
+        // The non-Regular3D guard fires first (kind != Regular3D), so we get zeros.
+        let out = sampled_differential(&sf, DifferentialOp::Curl);
+
+        // Must return a SampledField (not panic), with out_stride=3, all zeros
+        let grid_count = 4 * 3;
+        assert_eq!(out.data.len(), grid_count * 3);
+        assert!(out.data.iter().all(|&v| v == 0.0), "degenerate curl should be all-zero");
+    }
 }
