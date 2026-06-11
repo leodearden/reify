@@ -11,6 +11,7 @@ mod field_reductions;
 pub mod interp;
 pub mod kleene;
 pub mod sampled;
+mod sampled_fd;
 mod sanitize;
 
 use std::cell::RefCell;
