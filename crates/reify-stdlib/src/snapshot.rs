@@ -3275,4 +3275,163 @@ mod tests {
              got ({rw:.6}, {rx:.6}, {ry:.6}, {rz:.6})"
         );
     }
+
+    // ── task-4472 step-3 RED: snapshot carry-through for derived_mass_props ──
+    //
+    // When a mechanism body carries a `derived_mass_props` key (baked by the
+    // build-time pass), the snapshot record for that body must carry the same
+    // key through. A body without the key must yield the exact 4-key
+    // {id, pose, solid, world_transform} snapshot record (no spurious field).
+    //
+    // RED today: walk_fk (snapshot.rs:726) calls make_snapshot_body_record with
+    // 4 fixed args and never reads derived_mass_props from the source body, so
+    // the field is silently dropped in the snapshot body record.
+
+    /// Build a `MassProperties`-like `Value::StructureInstance` for snapshot
+    /// carry-through tests. Uses a minimal field set (mass only) since the
+    /// test only checks key presence, not numeric content.
+    fn mass_props_value_for_carry_through() -> Value {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+        let fields: PersistentMap<String, Value> = [("mass".to_string(), Value::Real(1.0))]
+            .into_iter()
+            .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MassProperties".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build a single-body mechanism and inject `derived_mass_props = mp` into
+    /// the first body of its `bodies` list, returning the patched mechanism Map.
+    fn mechanism_with_derived_in_body(
+        solid: Value,
+        joint: Value,
+        mp: Value,
+    ) -> Value {
+        let m0 = eval_builtin("mechanism", &[]);
+        let mech = eval_builtin("body", &[m0, solid, joint]);
+        let m = match &mech {
+            Value::Map(m) => m.clone(),
+            other => panic!("body() must return a Map, got {other:?}"),
+        };
+        let bodies = match m.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b.clone(),
+            _ => panic!("mechanism missing bodies"),
+        };
+        let patched_bodies: Vec<Value> = bodies
+            .iter()
+            .map(|body| {
+                let bm: BTreeMap<Value, Value> = match body {
+                    Value::Map(bm) => bm.clone().into_iter().collect(),
+                    other => panic!("body must be a Map, got {other:?}"),
+                };
+                let mut b2 = bm;
+                b2.insert(
+                    Value::String("derived_mass_props".to_string()),
+                    mp.clone(),
+                );
+                Value::Map(b2)
+            })
+            .collect();
+        let mut m2: BTreeMap<Value, Value> = m.into_iter().collect();
+        m2.insert(
+            Value::String("bodies".to_string()),
+            Value::List(patched_bodies),
+        );
+        Value::Map(m2)
+    }
+
+    /// A body in the source mechanism carrying `derived_mass_props` must yield
+    /// a snapshot body record that also carries `derived_mass_props` (5-key map).
+    ///
+    /// RED today: `walk_fk` never reads `derived_mass_props` from the source
+    /// body, so the snapshot record drops the field and has only 4 keys.
+    #[test]
+    fn snapshot_body_record_carries_derived_mass_props_through() {
+        use crate::test_fixtures::{angle_range_0_to_pi, axis_z_unit};
+
+        let joint = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid = Value::String("some_geometry".to_string());
+        let mp = mass_props_value_for_carry_through();
+
+        let mech = mechanism_with_derived_in_body(solid, joint.clone(), mp.clone());
+
+        // Bind the joint at 0 so the FK walk succeeds.
+        let binding = eval_builtin("bind", &[joint, Value::angle(0.0)]);
+        let snap = eval_builtin("snapshot", &[mech, Value::List(vec![binding])]);
+        let snap_map = match snap {
+            Value::Map(m) => m,
+            other => panic!("snapshot() must yield a Map, got {other:?}"),
+        };
+        let bodies = match snap_map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            _ => panic!("snapshot missing bodies list"),
+        };
+        assert_eq!(bodies.len(), 1, "one body");
+
+        let body_rec = match &bodies[0] {
+            Value::Map(b) => b,
+            other => panic!("body record must be a Map, got {other:?}"),
+        };
+        // Must carry derived_mass_props through (5-key map).
+        assert!(
+            body_rec.contains_key(&Value::String("derived_mass_props".to_string())),
+            "snapshot body record must carry derived_mass_props; keys = {:?}",
+            body_rec.keys().collect::<Vec<_>>()
+        );
+        // The carried value must equal the injected mp.
+        assert_eq!(
+            body_rec.get(&Value::String("derived_mass_props".to_string())),
+            Some(&mp),
+            "carried derived_mass_props must equal the injected value"
+        );
+    }
+
+    /// A source body without `derived_mass_props` must yield an exact 4-key
+    /// snapshot record: {id, pose, solid, world_transform}.
+    ///
+    /// GREEN today and must stay GREEN after step-4 (pass None → no insertion).
+    #[test]
+    fn snapshot_body_record_without_derived_has_exact_4_keys() {
+        use crate::test_fixtures::{angle_range_0_to_pi, axis_z_unit};
+
+        let joint = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid = Value::String("some_geometry".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let mech = eval_builtin("body", &[m0, solid, joint.clone()]);
+
+        let binding = eval_builtin("bind", &[joint, Value::angle(0.0)]);
+        let snap = eval_builtin("snapshot", &[mech, Value::List(vec![binding])]);
+        let snap_map = match snap {
+            Value::Map(m) => m,
+            other => panic!("snapshot() must yield a Map, got {other:?}"),
+        };
+        let bodies = match snap_map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            _ => panic!("snapshot missing bodies list"),
+        };
+        let body_rec = match &bodies[0] {
+            Value::Map(b) => b,
+            other => panic!("body record must be a Map, got {other:?}"),
+        };
+        // Without derived_mass_props in the source, body record must have exactly
+        // 4 keys: id, pose, solid, world_transform.
+        assert_eq!(
+            body_rec.len(),
+            4,
+            "body record without derived_mass_props must have exactly 4 keys; \
+             keys = {:?}",
+            body_rec.keys().collect::<Vec<_>>()
+        );
+        let expected_keys = ["id", "pose", "solid", "world_transform"];
+        for key in &expected_keys {
+            assert!(
+                body_rec.contains_key(&Value::String(key.to_string())),
+                "body record must have key '{key}'"
+            );
+        }
+    }
 }
