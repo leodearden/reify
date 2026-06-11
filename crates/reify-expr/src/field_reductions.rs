@@ -797,6 +797,14 @@ fn project_safety_factor_sampled(lambda: &Value) -> Option<SampledField> {
     // Extract the yield scalar as f64.
     let yield_f64 = yield_val.as_f64()?;
 
+    // Reject non-positive yield strength: zero → 0/vM = 0 (a finite but
+    // meaningless safety factor); negative → physically impossible.  Both
+    // would silently pass the is_finite() gate and produce nonsensical
+    // extrema.  Treat as a malformed lambda (→ None → Value::Undef).
+    if yield_f64 <= 0.0 {
+        return None;
+    }
+
     // Project each window: yield / vM.  Hydrostatic (vM=0) yields +∞ and
     // is skipped by the is_finite() gate downstream.
     project_sampled_tensor_windows(field_val, move |w| {

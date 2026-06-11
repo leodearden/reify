@@ -3034,3 +3034,51 @@ fn bounded_reductions_on_derived_safetyfactor_field_return_undef() {
         );
     }
 }
+
+// ── Robustness: non-positive yield strength ──────────────────────────────────
+
+/// All four reductions return `Value::Undef` when the SafetyFactor yield
+/// strength is zero or negative (physically meaningless values).
+///
+/// Pins the `project_safety_factor_sampled` non-positive-yield guard:
+/// `yield_f64 <= 0.0 → None → Undef`.  Without this guard, `0.0 / vM = 0.0`
+/// and `negative / vM < 0` would silently produce finite extrema that are
+/// nonsensical as safety factors.
+///
+/// Uses a valid inner tensor field (uniaxial windows) so the projection
+/// path would yield finite results if the yield guard were absent.
+#[test]
+fn all_reductions_on_safety_factor_field_with_non_positive_yield_return_undef() {
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0],
+        vec![uniaxial_window(100e6), uniaxial_window(200e6)],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::Real);
+
+    // Case 1: zero yield — 0.0 / vM = 0.0 (finite but meaningless without guard).
+    let (field1, field_type1) = make_field_with_source(
+        Type::Real,
+        Type::Real,
+        FieldSourceKind::SafetyFactor,
+        Value::List(vec![inner_tensor_field.clone(), Value::Real(0.0)]),
+    );
+    assert_all_reductions_undef(
+        field1,
+        field_type1,
+        "SafetyFactor with zero yield (0.0 → non-positive guard → Undef)",
+    );
+
+    // Case 2: negative yield — physically impossible yield strength.
+    let (field2, field_type2) = make_field_with_source(
+        Type::Real,
+        Type::Real,
+        FieldSourceKind::SafetyFactor,
+        Value::List(vec![inner_tensor_field, Value::Real(-250e6)]),
+    );
+    assert_all_reductions_undef(
+        field2,
+        field_type2,
+        "SafetyFactor with negative yield (-250e6 → non-positive guard → Undef)",
+    );
+}
