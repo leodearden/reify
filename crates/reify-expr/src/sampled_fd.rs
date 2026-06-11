@@ -242,3 +242,183 @@ fn clone_geometry(sf: &SampledField, data: Vec<f64>) -> SampledField {
         oob_emitted: AtomicBool::new(false),
     }
 }
+
+// ─── tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
+
+    use super::{DifferentialOp, sampled_differential};
+
+    // ── fixture builders ─────────────────────────────────────────────────────
+    // Mirror the medial.rs:991/1041 fixture-builder style: construct SampledField
+    // literal with oob_emitted: AtomicBool::new(false).
+
+    /// Build a uniform Regular1D scalar field over `n` nodes with spacing `h`,
+    /// where `data[i] = f(x_i)` and `x_i = i as f64 * h`.
+    fn make_1d_scalar(n: usize, h: f64, f: impl Fn(f64) -> f64) -> SampledField {
+        let axis: Vec<f64> = (0..n).map(|i| i as f64 * h).collect();
+        let data: Vec<f64> = axis.iter().map(|&x| f(x)).collect();
+        SampledField {
+            name: "test-1d".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![(n - 1) as f64 * h],
+            spacing: vec![h],
+            axis_grids: vec![axis],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build a uniform Regular2D scalar field over `nx × ny` nodes with spacing
+    /// `hx` / `hy`, where `data[i*ny + j] = f(x_i, y_j)`.
+    fn make_2d_scalar(
+        nx: usize,
+        ny: usize,
+        hx: f64,
+        hy: f64,
+        f: impl Fn(f64, f64) -> f64,
+    ) -> SampledField {
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * hx).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * hy).collect();
+        let mut data = Vec::with_capacity(nx * ny);
+        for i in 0..nx {
+            for j in 0..ny {
+                data.push(f(xs[i], ys[j]));
+            }
+        }
+        SampledField {
+            name: "test-2d".to_string(),
+            kind: SampledGridKind::Regular2D,
+            bounds_min: vec![0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * hx, (ny - 1) as f64 * hy],
+            spacing: vec![hx, hy],
+            axis_grids: vec![xs, ys],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build a uniform Regular3D scalar field over `nx × ny × nz` nodes with
+    /// uniform spacing `h`, where `data[i*ny*nz + j*nz + k] = f(x,y,z)`.
+    fn make_3d_scalar(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        h: f64,
+        f: impl Fn(f64, f64, f64) -> f64,
+    ) -> SampledField {
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * h).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
+        let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
+        let mut data = Vec::with_capacity(nx * ny * nz);
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    data.push(f(xs[i], ys[j], zs[k]));
+                }
+            }
+        }
+        SampledField {
+            name: "test-3d".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * h, (ny - 1) as f64 * h, (nz - 1) as f64 * h],
+            spacing: vec![h, h, h],
+            axis_grids: vec![xs, ys, zs],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    // ── step-1: gradient of an affine scalar field is exact ──────────────────
+
+    /// 1D gradient: f(x) = 2x + 3 ⟹ ∂f/∂x = 2 everywhere.
+    /// Central and first-order one-sided first differences are both
+    /// algebraically exact for affine functions on a uniform grid.
+    #[test]
+    fn gradient_1d_affine_exact() {
+        let sf = make_1d_scalar(5, 1.0, |x| 2.0 * x + 3.0);
+        let out = sampled_differential(&sf, DifferentialOp::Gradient);
+
+        // Output shape: out_stride = 1 (axis count), data.len() == grid_count * 1
+        assert_eq!(out.data.len(), 5, "data.len() == grid_count * n_axes");
+
+        // Grid geometry preserved bit-for-bit
+        assert_eq!(out.kind, SampledGridKind::Regular1D);
+        assert_eq!(out.axis_grids, sf.axis_grids);
+        assert_eq!(out.spacing, sf.spacing);
+        assert_eq!(out.bounds_min, sf.bounds_min);
+        assert_eq!(out.bounds_max, sf.bounds_max);
+        assert_eq!(out.interpolation, sf.interpolation);
+
+        // Gradient exact at every node
+        for (g, &val) in out.data.iter().enumerate() {
+            assert!(
+                (val - 2.0).abs() < 1e-12,
+                "node {g}: gradient = {val}, expected 2.0"
+            );
+        }
+    }
+
+    /// 2D gradient: f(x,y) = 3x + 5y + 1 ⟹ ∇f = (3, 5) everywhere.
+    #[test]
+    fn gradient_2d_affine_exact() {
+        let nx = 4;
+        let ny = 3;
+        let sf = make_2d_scalar(nx, ny, 0.5, 0.5, |x, y| 3.0 * x + 5.0 * y + 1.0);
+        let out = sampled_differential(&sf, DifferentialOp::Gradient);
+
+        // out_stride = 2 (axis count)
+        let grid_count = nx * ny;
+        assert_eq!(out.data.len(), grid_count * 2);
+
+        // Geometry preserved
+        assert_eq!(out.kind, SampledGridKind::Regular2D);
+        assert_eq!(out.axis_grids, sf.axis_grids);
+        assert_eq!(out.spacing, sf.spacing);
+
+        for g in 0..grid_count {
+            let gx = out.data[g * 2];
+            let gy = out.data[g * 2 + 1];
+            assert!(
+                (gx - 3.0).abs() < 1e-12,
+                "node {g}: grad_x = {gx}, expected 3.0"
+            );
+            assert!(
+                (gy - 5.0).abs() < 1e-12,
+                "node {g}: grad_y = {gy}, expected 5.0"
+            );
+        }
+    }
+
+    /// 3D gradient: f(x,y,z) = 2x + 3y + 4z + 1 ⟹ ∇f = (2, 3, 4) everywhere.
+    #[test]
+    fn gradient_3d_affine_exact() {
+        let n = 4;
+        let sf = make_3d_scalar(n, n, n, 1.0, |x, y, z| 2.0 * x + 3.0 * y + 4.0 * z + 1.0);
+        let out = sampled_differential(&sf, DifferentialOp::Gradient);
+
+        let grid_count = n * n * n;
+        // out_stride = 3 (axis count)
+        assert_eq!(out.data.len(), grid_count * 3);
+        assert_eq!(out.kind, SampledGridKind::Regular3D);
+        assert_eq!(out.axis_grids, sf.axis_grids);
+
+        for g in 0..grid_count {
+            let gx = out.data[g * 3];
+            let gy = out.data[g * 3 + 1];
+            let gz = out.data[g * 3 + 2];
+            assert!((gx - 2.0).abs() < 1e-12, "node {g}: grad_x = {gx}");
+            assert!((gy - 3.0).abs() < 1e-12, "node {g}: grad_y = {gy}");
+            assert!((gz - 4.0).abs() < 1e-12, "node {g}: grad_z = {gz}");
+        }
+    }
+}
