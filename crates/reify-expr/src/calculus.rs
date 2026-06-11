@@ -2480,4 +2480,181 @@ mod tests {
         );
         assert_eq!(result, Value::Undef);
     }
+
+    // ─── ε step-1: gradient eager-lower RED tests ─────────────────────────────
+
+    /// Build a uniform Regular1D scalar SampledField (mirrors sampled_fd.rs make_1d_scalar).
+    fn make_sampled_1d_scalar(n: usize, h: f64, f: impl Fn(f64) -> f64) -> reify_ir::SampledField {
+        use std::sync::atomic::AtomicBool;
+        let axis: Vec<f64> = (0..n).map(|i| i as f64 * h).collect();
+        let data: Vec<f64> = axis.iter().map(|&x| f(x)).collect();
+        reify_ir::SampledField {
+            name: "test-1d".to_string(),
+            kind: reify_ir::SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![(n - 1) as f64 * h],
+            spacing: vec![h],
+            axis_grids: vec![axis],
+            interpolation: reify_ir::InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build a `Value::Field { source: Sampled, lambda: Arc::new(Value::SampledField(sf)) }`.
+    fn make_sampled_field_value(sf: reify_ir::SampledField, domain: Type, codomain: Type) -> Value {
+        Value::Field {
+            domain_type: domain,
+            codomain_type: codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(sf)),
+        }
+    }
+
+    /// compute_gradient on a well-formed 1D sampled scalar field (f = 2x+3) returns
+    /// a Sampled field whose data equals the exact gradient (2.0 everywhere, <1e-12)
+    /// and whose codomain_type is the 1D gradient quotient (Real for dimensionless).
+    ///
+    /// Currently RED: compute_gradient returns Value::Undef for any Sampled field.
+    /// Will be GREEN after step-2 implements the eager-lower branch.
+    #[test]
+    fn gradient_sampled_1d_affine_returns_sampled_field_with_exact_gradient() {
+        let sf = make_sampled_1d_scalar(5, 1.0, |x| 2.0 * x + 3.0);
+        let n_nodes = sf.axis_grids[0].len(); // 5
+        let field = make_sampled_field_value(sf, Type::Real, Type::Real);
+
+        let result = compute_gradient(&field);
+
+        // Must be a Value::Field with source=Sampled
+        let (out_sf, codomain) = match &result {
+            Value::Field {
+                source,
+                lambda,
+                codomain_type,
+                ..
+            } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "gradient of Sampled field must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => (sf, codomain_type),
+                    other => panic!("lambda slot must be SampledField, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        };
+
+        // 1D gradient: out_stride=1, data.len() == n_nodes
+        assert_eq!(out_sf.data.len(), n_nodes, "1D gradient output must have stride-1 data");
+
+        // Gradient of 2x+3 is 2.0 at every node
+        for (g, &val) in out_sf.data.iter().enumerate() {
+            assert!(
+                (val - 2.0).abs() < 1e-12,
+                "node {g}: gradient = {val}, expected 2.0"
+            );
+        }
+
+        // codomain_type for dimensionless 1D field is Real
+        assert_eq!(*codomain, Type::Real, "1D gradient codomain must be Real");
+    }
+
+    /// compute_gradient on a Sampled field whose lambda slot is a Value::Lambda (malformed)
+    /// still returns Value::Undef.  This is the existing contract that must remain unchanged
+    /// after step-2 adds the well-formed dispatch branch.
+    ///
+    /// (This is the same contract as gradient_tests.rs::gradient_sampled_field_returns_undef,
+    /// reproduced here as a unit-level pin for the calculus.rs change.)
+    #[test]
+    fn gradient_sampled_malformed_lambda_slot_returns_undef() {
+        // Sampled source but lambda slot is a Value::Lambda — not a SampledField.
+        let field = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(make_scalar_lambda("x")),
+        };
+        assert_eq!(
+            compute_gradient(&field),
+            Value::Undef,
+            "gradient of Sampled field with non-SampledField lambda must return Undef"
+        );
+    }
+
+    // ─── ε step-3: laplacian eager-lower RED tests ────────────────────────────
+
+    /// compute_laplacian on a well-formed 1D sampled scalar field (f = a*x² + b*x + c)
+    /// returns a Sampled field whose data equals the exact constant 2nd derivative (2a,
+    /// <1e-12 at every node incl. boundaries) and whose codomain_type is Real.
+    ///
+    /// Currently RED: compute_laplacian returns Value::Undef for any Sampled field.
+    /// Will be GREEN after step-4 implements the eager-lower branch.
+    #[test]
+    fn laplacian_sampled_1d_quadratic_returns_sampled_field_with_exact_laplacian() {
+        // f(x) = 3x² + 2x + 1  ⟹  ∇²f = 6 everywhere (2a = 2×3 = 6)
+        let a = 3.0_f64;
+        let sf = make_sampled_1d_scalar(5, 1.0, |x| a * x * x + 2.0 * x + 1.0);
+        let n_nodes = sf.axis_grids[0].len(); // 5
+        let field = make_sampled_field_value(sf, Type::Real, Type::Real);
+
+        let result = compute_laplacian(&field);
+
+        // Must be a Value::Field with source=Sampled
+        let (out_sf, codomain) = match &result {
+            Value::Field {
+                source,
+                lambda,
+                codomain_type,
+                ..
+            } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "laplacian of Sampled field must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => (sf, codomain_type),
+                    other => panic!("lambda slot must be SampledField, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        };
+
+        // 1D laplacian: out_stride=1, data.len() == n_nodes
+        assert_eq!(out_sf.data.len(), n_nodes, "laplacian output must have stride-1 data");
+
+        // Laplacian of a*x² is 2a = 6 at every node
+        let expected_lap = 2.0 * a;
+        for (g, &val) in out_sf.data.iter().enumerate() {
+            assert!(
+                (val - expected_lap).abs() < 1e-12,
+                "node {g}: laplacian = {val}, expected {expected_lap}"
+            );
+        }
+
+        // codomain_type for dimensionless 1D scalar field is Real
+        assert_eq!(*codomain, Type::Real, "1D laplacian codomain must be Real");
+    }
+
+    /// compute_laplacian on a Sampled field whose lambda slot is a Value::Lambda (malformed)
+    /// still returns Value::Undef.  The non-SampledField slot falls through to the unchanged
+    /// validate path, preserving the existing behaviour.
+    #[test]
+    fn laplacian_sampled_malformed_lambda_slot_returns_undef() {
+        let field = Value::Field {
+            domain_type: Type::Real,
+            codomain_type: Type::Real,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(make_scalar_lambda("x")),
+        };
+        assert_eq!(
+            compute_laplacian(&field),
+            Value::Undef,
+            "laplacian of Sampled field with non-SampledField lambda must return Undef"
+        );
+    }
 }
