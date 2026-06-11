@@ -704,6 +704,44 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.3 γ blocker-prose matching — has_blocker_prose
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn has_blocker_prose_positives() {
+        // "pending" — case-insensitive
+        assert!(has_blocker_prose("pending fillet binding"));
+        assert!(has_blocker_prose("Pending upstream fix"));
+        // "not yet" — case-insensitive
+        assert!(has_blocker_prose("not yet implemented"));
+        assert!(has_blocker_prose("Not Yet ready"));
+        // "RED:" — case-SENSITIVE (must stay uppercase)
+        assert!(has_blocker_prose("RED: awaiting impl"));
+        // "until " — case-insensitive (trailing space is part of needle)
+        assert!(has_blocker_prose("ignore until fillet lands"));
+        assert!(has_blocker_prose("Until some later date"));
+        // "once " — case-insensitive (trailing space is part of needle)
+        assert!(has_blocker_prose("run once manually"));
+        assert!(has_blocker_prose("Once fixed, remove this"));
+        // "blocked" — case-insensitive
+        assert!(has_blocker_prose("blocked on upstream"));
+        assert!(has_blocker_prose("Blocked by refactor"));
+    }
+
+    #[test]
+    fn has_blocker_prose_negatives() {
+        // Operational reasons — none of the needles present
+        assert!(!has_blocker_prose("requires OCCT"));
+        assert!(!has_blocker_prose("probe: run manually"));
+        assert!(!has_blocker_prose("timing/benchmark out of CI"));
+        // Case-sensitivity guard: "required:" contains "red:" in lowercase
+        // but must NOT match because RED: is matched case-sensitively.
+        assert!(!has_blocker_prose("required: rebuild"));
+        // Empty reason
+        assert!(!has_blocker_prose(""));
+    }
+
+    // -------------------------------------------------------------------
     // §8.1 marker recognition — ignore attributes (.rs)
     // -------------------------------------------------------------------
 
