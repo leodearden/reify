@@ -1,13 +1,28 @@
-//! PTODO — TODO-tracking-invariant detector (structural lane, task α).
+//! PTODO — TODO-tracking-invariant detector (structural lane α + liveness lane β).
 //!
-//! Scans the working tree for TODO-family markers that are not backed by a
-//! canonical `#NNNN` task citation, emitting Medium-severity findings. The
-//! grammar lives in pure `&str -> result` functions (mirroring P2's
-//! `line_matches_stub`/`scan_file_added_lines` split, no `regex` dependency
-//! per design §12); only file enumeration (`GitOps::ls_files`) and content
-//! reads (`std::fs::read_to_string`) touch IO, inside [`check`].
+//! Scans the working tree for TODO-family markers and classifies each through
+//! two lanes, all emitting Medium-severity findings:
 //!
-//! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar).
+//! - **Structural lane (α)** — markers not backed by a canonical `#NNNN` task
+//!   citation: `untracked` / `malformed-cite` / `phantom-tracking` /
+//!   `bare-ignore`. The grammar lives in pure `&str -> result` functions
+//!   (mirroring P2's `line_matches_stub`/`scan_file_added_lines` split, no
+//!   `regex` dependency per design §12).
+//! - **Liveness lane (β)** — every canonical `#NNNN` cite the structural lane
+//!   treats as "tracked" is resolved against `.taskmaster/tasks/tasks.db`
+//!   (opened read-only): a cite whose status is terminal (done / cancelled) →
+//!   `orphaned`; a cite absent from the DB → `unknown-id`. Per §8.2 one live
+//!   cite suffices to track a marker. The lane degrades fail-soft (§6.7): a
+//!   missing/unreadable DB is skipped with a single stderr breadcrumb while the
+//!   structural lane still runs in full.
+//!
+//! A single precedence-correct `scan_file` pass feeds both lanes so they
+//! never drift. Only file enumeration (`GitOps::ls_files`), content reads
+//! (`std::fs::read_to_string`), and the read-only task-DB open touch IO, inside
+//! [`check`].
+//!
+//! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
+//! §6.7 (liveness degradation contract).
 
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use rusqlite::OptionalExtension;
