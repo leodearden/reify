@@ -393,6 +393,36 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::TypeAlias(decl));
                     }
                 }
+                "default_declaration" => {
+                    // Defaults are not annotatable in v1. Emit a diagnostic for each
+                    // annotation/cfg that preceded this declaration so it is not
+                    // silently dropped — the author can see the annotation was ignored.
+                    let dropped_annotations = std::mem::take(&mut pending_annotations);
+                    let dropped_cfg = std::mem::take(&mut pending_cfg);
+                    for ann in &dropped_annotations {
+                        self.push_error(
+                            format!(
+                                "annotation '@{}' on a default declaration is not supported; \
+                                 defaults are not annotatable in v1",
+                                ann.name
+                            ),
+                            ann.span,
+                        );
+                    }
+                    for cfg in &dropped_cfg {
+                        self.push_error(
+                            format!(
+                                "'#[{}]' attribute on a default declaration is not supported; \
+                                 defaults are not annotatable in v1",
+                                cfg.name
+                            ),
+                            cfg.span,
+                        );
+                    }
+                    if let Some(decl) = self.lower_default_decl(child) {
+                        self.declarations.push(Declaration::Default(decl));
+                    }
+                }
                 "annotation" => {
                     if let Some(annotation) = self.lower_annotation(child) {
                         pending_annotations.push(annotation);
@@ -1185,7 +1215,7 @@ impl<'a> Lowering<'a> {
         let is_pub = self.has_pub_keyword(node);
         let type_params = self.lower_type_parameters(node);
         let params = self.lower_purpose_params(node);
-        let (members, pragmas) = self.lower_purpose_members(node);
+        let (members, pragmas, defaults) = self.lower_purpose_members(node);
 
         Some(PurposeDef {
             name,
@@ -1193,6 +1223,7 @@ impl<'a> Lowering<'a> {
             type_params,
             params,
             members,
+            defaults,
             span: self.span(node),
             content_hash: self.content_hash(node),
             pragmas,
@@ -1315,6 +1346,28 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             annotations: vec![],
+        })
+    }
+
+    /// Lower a `default_declaration` node: `default TypeName = expr`
+    ///
+    /// Note: unlike `lower_unit`, the `type` field here is a plain `type_expr`
+    /// (not a `dimensional_type_expr`), and the `value` is a full `_expression`
+    /// (not a binding value). Reads the `type` field via `lower_type_expr_node`
+    /// and the `value` field via `lower_expr`. Returns `None` only if either
+    /// field is absent (malformed/error-recovery CST).
+    fn lower_default_decl(&mut self, node: tree_sitter::Node) -> Option<DefaultDecl> {
+        let type_node = node.child_by_field_name("type")?;
+        let type_expr = self.lower_type_expr_node(type_node);
+
+        let value_node = node.child_by_field_name("value")?;
+        let value = self.lower_expr(value_node)?;
+
+        Some(DefaultDecl {
+            type_expr,
+            value,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
         })
     }
 
@@ -1500,17 +1553,26 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_purpose_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
+    fn lower_purpose_members(
+        &mut self,
+        node: tree_sitter::Node,
+    ) -> (Vec<MemberDecl>, Vec<Pragma>, Vec<DefaultDecl>) {
         let mut members = Vec::new();
         let mut pragmas = Vec::new();
+        let mut defaults = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "purpose_member" {
-                // purpose_member is a choice node wrapping the actual member or pragma
+                // purpose_member is a choice node wrapping the actual member, pragma,
+                // or default_declaration.
                 if let Some(inner) = child.named_child(0) {
                     if inner.kind() == "pragma" {
                         if let Some(pragma) = self.lower_pragma(inner) {
                             pragmas.push(pragma);
+                        }
+                    } else if inner.kind() == "default_declaration" {
+                        if let Some(decl) = self.lower_default_decl(inner) {
+                            defaults.push(decl);
                         }
                     } else if let Some(member) = self.lower_member(inner) {
                         members.push(member);
@@ -1518,7 +1580,7 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        (members, pragmas)
+        (members, pragmas, defaults)
     }
 
     fn lower_fn_param(&self, node: tree_sitter::Node) -> Option<FnParam> {

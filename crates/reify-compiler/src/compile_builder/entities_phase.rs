@@ -201,8 +201,14 @@ pub(crate) fn phase_entities(
             reify_ast::Declaration::Field(_) => {
                 // Already compiled by fields_phase::phase_fields.
             }
-            reify_ast::Declaration::Purpose(_) => {
+            reify_ast::Declaration::Purpose(p) => {
                 // Handled later by post_passes::phase_purposes.
+                // Emit W_DEFAULT_NOT_WIRED for any ambient-default declarations
+                // nested directly in this purpose body.
+                for d in &p.defaults {
+                    ctx.diagnostics
+                        .push(crate::diagnostics::default_not_yet_wired_warning(d));
+                }
             }
             reify_ast::Declaration::Constraint(_) => {
                 // Already compiled by defs_phase::phase_constraint_defs; annotation/pragma validation ran there too.
@@ -215,6 +221,12 @@ pub(crate) fn phase_entities(
             }
             reify_ast::Declaration::Module(_) => {
                 // No entity to build from a module declaration.
+            }
+            reify_ast::Declaration::Default(d) => {
+                // No entity to build from a default declaration (task A: accept and ignore).
+                // Emit W_DEFAULT_NOT_WIRED so `reify check` surfaces the unresolved decl.
+                ctx.diagnostics
+                    .push(crate::diagnostics::default_not_yet_wired_warning(d));
             }
         }
     }

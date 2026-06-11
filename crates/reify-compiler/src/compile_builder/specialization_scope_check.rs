@@ -119,7 +119,8 @@ where
             | Declaration::Unit(_)
             | Declaration::TypeAlias(_)
             | Declaration::Import(_)
-            | Declaration::Module(_) => continue,
+            | Declaration::Module(_)
+            | Declaration::Default(_) => continue,
         };
         find_specialization_scopes(members, visitor, 0);
     }
