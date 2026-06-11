@@ -723,7 +723,20 @@ fn walk_fk(
             return None;
         }
 
-        snapshot_bodies.push(make_snapshot_body_record(id, solid, pose, world_transform));
+        // Carry through `derived_mass_props` baked by the build-time mechanism-mass
+        // derivation pass (task 4472) so that snapshot consumers and sibling 4471
+        // snapshot-CoM can read it without re-querying the kernel.
+        let derived_mass_props = body_map
+            .get(&Value::String("derived_mass_props".to_string()))
+            .cloned();
+
+        snapshot_bodies.push(make_snapshot_body_record(
+            id,
+            solid,
+            pose,
+            world_transform,
+            derived_mass_props,
+        ));
     }
     Some(snapshot_bodies)
 }
@@ -825,16 +838,23 @@ fn make_snapshot(bodies: Vec<Value>, free_values: Vec<Value>) -> Value {
     Value::Map(m)
 }
 
-/// Build a snapshot body record `Value::Map` with the four-key layout
+/// Build a snapshot body record `Value::Map` with either a four-key layout
 /// `id`, `pose`, `solid`, `world_transform` (alphabetical, matching
-/// `BTreeMap` iteration). Mirrors `make_body_record` in mechanism.rs
-/// but adds the FK-derived `world_transform` and drops `at`/`parent`
-/// (those belong to the source mechanism, not the snapshot).
+/// `BTreeMap` iteration) or a five-key layout that also includes
+/// `derived_mass_props` when `Some` is provided. Mirrors `make_body_record`
+/// in mechanism.rs but adds the FK-derived `world_transform` and drops
+/// `at`/`parent` (those belong to the source mechanism, not the snapshot).
+///
+/// The optional `derived_mass_props` is the build-time-baked `MassProperties`
+/// StructureInstance written by the mechanism-mass derivation pass (task 4472).
+/// Pass `None` to produce the canonical 4-key record; pass `Some(v)` to carry
+/// the derived field through into the snapshot body record.
 fn make_snapshot_body_record(
     id: Value,
     solid: Value,
     pose: Value,
     world_transform: Value,
+    derived_mass_props: Option<Value>,
 ) -> Value {
     let mut b = BTreeMap::new();
     b.insert(Value::String("id".to_string()), id);
@@ -844,6 +864,9 @@ fn make_snapshot_body_record(
         Value::String("world_transform".to_string()),
         world_transform,
     );
+    if let Some(mp) = derived_mass_props {
+        b.insert(Value::String("derived_mass_props".to_string()), mp);
+    }
     Value::Map(b)
 }
 
