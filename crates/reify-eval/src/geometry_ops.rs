@@ -3066,6 +3066,45 @@ pub(crate) fn try_eval_resolve_selector(
     }
 }
 
+/// Reconstruct a `SelectorValue` from a single compiled arg expression.
+///
+/// PREFERRED path: inline reconstruction from a nested selector FunctionCall
+/// (no value-cell ordering dependency) via a recursive `try_eval_topology_selector`
+/// call.  Fallback: a `ValueRef` pointing to an already-patched `Value::Selector`
+/// cell in the `values` map.
+///
+/// Returns `None` for any other expr shape (the cell is not yet hydrated or does
+/// not represent a selector) — the composition arm then returns `None`, leaving
+/// the cell at `Value::Undef` for a subsequent pass.
+///
+/// Factored from the step-1 inline reconstruction in `resolve_selector_to_list`
+/// (task 4119 δ, step-6) so the composition arms in `try_eval_topology_selector`
+/// can reuse the same logic.
+fn reconstruct_selector_value(
+    arg: &reify_ir::CompiledExpr,
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::value::SelectorValue> {
+    match &arg.kind {
+        reify_ir::CompiledExprKind::FunctionCall { .. } => {
+            match try_eval_topology_selector(arg, named_steps, values, kernel, diagnostics)? {
+                reify_ir::Value::Selector(sv) => Some(sv),
+                // FunctionCall resolved to a non-selector (e.g. adjacent_faces
+                // → List, or Undef) — not ours to wrap.
+                _ => None,
+            }
+        }
+        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id) {
+            Some(reify_ir::Value::Selector(sv)) => Some(sv.clone()),
+            // Cell not yet patched to a selector / not a selector — skip.
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Reconstruct the `Value::Selector` denoted by `selector_expr`, resolve it via
 /// `topology_selectors::resolve`, and wrap the canonical-order handle ids as a
 /// `Value::List` of `Value::GeometryHandle` sub-handles. Shared by the
@@ -3089,31 +3128,8 @@ fn resolve_selector_to_list(
     kernel: &mut dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
-    // (1) Obtain the Value::Selector. PREFERRED: inline reconstruction from a
-    // nested selector FunctionCall (no value-cell ordering dependency). Else a
-    // ValueRef to an already-patched Value::Selector cell.
-    let sv = match &selector_expr.kind {
-        reify_ir::CompiledExprKind::FunctionCall { .. } => {
-            match try_eval_topology_selector(
-                selector_expr,
-                named_steps,
-                values,
-                kernel,
-                diagnostics,
-            )? {
-                reify_ir::Value::Selector(sv) => sv,
-                // FunctionCall resolved to a non-selector (a still-List selector
-                // like adjacent_faces, or Undef) — not ours to wrap.
-                _ => return None,
-            }
-        }
-        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id) {
-            Some(reify_ir::Value::Selector(sv)) => sv.clone(),
-            // Cell not yet patched to a selector / not a selector — skip.
-            _ => return None,
-        },
-        _ => return None,
-    };
+    // (1) Obtain the Value::Selector via the shared helper (task 4119 δ, step-6).
+    let sv = reconstruct_selector_value(selector_expr, named_steps, values, kernel, diagnostics)?;
 
     // (2) Parent identity for sub-handle hashing: the (first) leaf target.
     let target = first_leaf_target(&sv)?;
@@ -3229,15 +3245,29 @@ pub(crate) fn try_eval_topology_selector(
         "distance" => TopologySelectorHelper::Distance,
         "intersects" => TopologySelectorHelper::Intersects,
         "split" => TopologySelectorHelper::Split,
+        // task 4119 δ — selector-composition algebra
+        "union" => TopologySelectorHelper::Union,
+        "intersect" => TopologySelectorHelper::Intersect,
+        "difference" => TopologySelectorHelper::Difference,
         _ => return None,
     };
 
     // (3) Per-helper arity check. Each new selector in task 3560 carries its
     // own arity contract; the legacy 2-arg trio (closest_point, is_on,
     // angle_between_surfaces) shares the arity-2 branch.
-    let expected_arity = helper.expected_arity();
-    if args.len() != expected_arity {
-        return None;
+    // task 4119 δ: union/intersect are variadic (≥ 2); difference is binary (== 2).
+    match helper {
+        TopologySelectorHelper::Union | TopologySelectorHelper::Intersect => {
+            if args.len() < 2 {
+                return None;
+            }
+        }
+        _ => {
+            let expected_arity = helper.expected_arity();
+            if args.len() != expected_arity {
+                return None;
+            }
+        }
     }
 
     match helper {
@@ -3301,7 +3331,11 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Perimeter
                 | TopologySelectorHelper::Distance
                 | TopologySelectorHelper::Intersects
-                | TopologySelectorHelper::Split => {
+                | TopologySelectorHelper::Split
+                // task 4119 δ
+                | TopologySelectorHelper::Union
+                | TopologySelectorHelper::Intersect
+                | TopologySelectorHelper::Difference => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -3828,6 +3862,62 @@ pub(crate) fn try_eval_topology_selector(
             let (_, _, face_b) = resolve_parent_geometry_handle_arg(&args[1], values)?;
             dispatch_shared_edges(kernel, face_a, face_b, &function.name, diagnostics, values)
         }
+        // ── task 4119 δ: selector-composition algebra ────────────────────────
+        // union(a, b, …) / intersect(a, b, …) / difference(a, b) build a
+        // kernel-FREE composite `Value::Selector(kind)` whose tree is
+        // Union/Intersect/Difference of the child SelectorValues.  Child
+        // selectors are reconstructed via `reconstruct_selector_value` (either
+        // an inline nested selector FunctionCall or a ValueRef to an already-
+        // patched selector cell).  The K1 kind-closure check is delegated to
+        // the `SelectorValue::{union,intersect,difference}` constructors; on
+        // `SelectorError::KindMismatch` (defensive backstop — compile-time
+        // E_SELECTOR_KIND_MISMATCH should have fired first) a Warning is emitted
+        // and `Some(Value::Undef)` is returned, mirroring `build_leaf_selector`.
+        // Zero kernel queries at construction time (K2/BT7).
+        TopologySelectorHelper::Union => {
+            let children: Vec<reify_ir::value::SelectorValue> = args
+                .iter()
+                .map(|arg| reconstruct_selector_value(arg, named_steps, values, kernel, diagnostics))
+                .collect::<Option<Vec<_>>>()?;
+            match reify_ir::value::SelectorValue::union(children) {
+                Ok(sv) => Some(reify_ir::Value::Selector(sv)),
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "union: selector kind-closure violation ({err:?}); cell left at Undef"
+                    )));
+                    Some(reify_ir::Value::Undef)
+                }
+            }
+        }
+        TopologySelectorHelper::Intersect => {
+            let children: Vec<reify_ir::value::SelectorValue> = args
+                .iter()
+                .map(|arg| reconstruct_selector_value(arg, named_steps, values, kernel, diagnostics))
+                .collect::<Option<Vec<_>>>()?;
+            match reify_ir::value::SelectorValue::intersect(children) {
+                Ok(sv) => Some(reify_ir::Value::Selector(sv)),
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "intersect: selector kind-closure violation ({err:?}); cell left at Undef"
+                    )));
+                    Some(reify_ir::Value::Undef)
+                }
+            }
+        }
+        TopologySelectorHelper::Difference => {
+            // args[0] and args[1] guaranteed by the == 2 arity gate.
+            let a = reconstruct_selector_value(&args[0], named_steps, values, kernel, diagnostics)?;
+            let b = reconstruct_selector_value(&args[1], named_steps, values, kernel, diagnostics)?;
+            match reify_ir::value::SelectorValue::difference(a, b) {
+                Ok(sv) => Some(reify_ir::Value::Selector(sv)),
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "difference: selector kind-closure violation ({err:?}); cell left at Undef"
+                    )));
+                    Some(reify_ir::Value::Undef)
+                }
+            }
+        }
     }
 }
 
@@ -4263,6 +4353,22 @@ enum TopologySelectorHelper {
     /// diagnostic and returns `Some(Value::Undef)`.  Non-Plane args[1] or
     /// unhydrated args[0] fall through to `None`.
     Split,
+    /// `union(a, b, …) -> Selector(k)` — variadic same-kind selector union (task
+    /// 4119 δ).  All operands must already be `Value::Selector(k)` of the SAME
+    /// kind (K1); reconstructed via `reconstruct_selector_value` and combined via
+    /// `SelectorValue::union`.  Arity ≥ 2 (variadic; bypasses the fixed
+    /// `expected_arity` gate — see arity guard in `try_eval_topology_selector`).
+    /// On `SelectorError::KindMismatch` from the value-layer: Warning + Undef
+    /// (defensive backstop; compile-time E_SELECTOR_KIND_MISMATCH should have
+    /// already fired).
+    Union,
+    /// `intersect(a, b, …) -> Selector(k)` — variadic same-kind selector
+    /// intersection (task 4119 δ).  Mirrors `Union` in construction;
+    /// `SelectorValue::intersect` enforces K1. Arity ≥ 2.
+    Intersect,
+    /// `difference(a, b) -> Selector(k)` — binary same-kind selector difference
+    /// (task 4119 δ).  Arity exactly 2; `SelectorValue::difference` enforces K1.
+    Difference,
 }
 
 impl TopologySelectorHelper {
@@ -4287,7 +4393,15 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::Curvature
             | TopologySelectorHelper::Distance
             | TopologySelectorHelper::Intersects
-            | TopologySelectorHelper::Split => 2,
+            | TopologySelectorHelper::Split
+            // task 4119 δ: difference is binary; Union/Intersect are variadic
+            // (≥ 2) but list 2 here as their minimum arity. The arity gate in
+            // try_eval_topology_selector special-cases them to use a ≥2 check
+            // rather than the exact equality check, so this value is not used
+            // for the Union/Intersect path.
+            | TopologySelectorHelper::Difference
+            | TopologySelectorHelper::Union
+            | TopologySelectorHelper::Intersect => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
             | TopologySelectorHelper::Length
@@ -15666,6 +15780,334 @@ mod tests {
             resolved,
             vec![GeometryHandleId(10), GeometryHandleId(12)],
             "difference(faces(b), faces(c)) resolves to b \\ c = [GHId(10), GHId(12)]"
+        );
+    }
+
+    // ── step-9 (task 4119 δ): Named-leaf constructor eval tests ─────────────
+    //
+    // These tests pin `try_eval_topology_selector` for the three named-leaf
+    // constructors (face/edge/solid_body) and the BT8 resolve-to-empty path
+    // for an unresolvable name.  RED until step-10 adds the face/edge/solid_body
+    // arms to try_eval_topology_selector.
+    //
+    // BT8: resolving a face(b,"nope") Named leaf (no matching tag) returns []
+    // and pushes EXACTLY ONE DiagnosticCode::TopologyTagStale — exercising the
+    // already-landed resolve_leaf Named interim now reachable from the .ri surface.
+
+    /// Build a two-arg `face`/`edge`/`solid_body` FunctionCall: arg[0] is a
+    /// ValueRef to the parent geometry cell, arg[1] is a string Literal.
+    fn named_selector_call(
+        helper_name: &str,
+        entity: &str,
+        member: &str,
+        result_kind: reify_core::ty::SelectorKind,
+        name_str: &str,
+    ) -> reify_ir::CompiledExpr {
+        let arg_geom = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member),
+            reify_core::Type::Geometry,
+        );
+        let arg_name = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::String(name_str.to_string()),
+            reify_core::Type::String,
+        );
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name))
+            .combine(arg_geom.content_hash)
+            .combine(arg_name.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_geom, arg_name],
+            },
+            result_type: reify_core::Type::Selector(result_kind),
+            content_hash,
+        }
+    }
+
+    /// `face(b, "top")` evaluates to `Value::Selector(Face)` with a
+    /// `SelectorNode::Leaf { query: LeafQuery::Named("top") }`. Zero kernel
+    /// queries at construction time (K2/BT7). RED until step-10.
+    #[test]
+    fn face_named_ctor_yields_named_leaf_selector_of_face_kind() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("NamedFaceCtorTest", 0);
+        let hash_b: [u8; 32] = [0xAA; 32];
+
+        let named_steps = HashMap::new(); // no kernel queries at construction
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("NamedFaceCtorTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = named_selector_call(
+            "face",
+            "NamedFaceCtorTest",
+            "b",
+            reify_core::ty::SelectorKind::Face,
+            "top",
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "face(b, \"top\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "face() → Face kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                ..
+            } => {
+                assert_eq!(n, "top", "face(b, \"top\") → Named(\"top\") leaf");
+            }
+            other => panic!("expected Leaf{{ Named }}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `edge(b, "rim")` evaluates to `Value::Selector(Edge)` with
+    /// `LeafQuery::Named("rim")`. RED until step-10.
+    #[test]
+    fn edge_named_ctor_yields_named_leaf_selector_of_edge_kind() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("NamedEdgeCtorTest", 0);
+        let hash_b: [u8; 32] = [0xBB; 32];
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("NamedEdgeCtorTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = named_selector_call(
+            "edge",
+            "NamedEdgeCtorTest",
+            "b",
+            reify_core::ty::SelectorKind::Edge,
+            "rim",
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "edge(b, \"rim\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Edge,
+            "edge() → Edge kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                ..
+            } => {
+                assert_eq!(n, "rim", "edge(b, \"rim\") → Named(\"rim\") leaf");
+            }
+            other => panic!("expected Leaf{{ Named }}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `solid_body(b, "core")` evaluates to `Value::Selector(Body)` with
+    /// `LeafQuery::Named("core")`. RED until step-10.
+    #[test]
+    fn solid_body_named_ctor_yields_named_leaf_selector_of_body_kind() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("NamedBodyCtorTest", 0);
+        let hash_b: [u8; 32] = [0xCC; 32];
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("NamedBodyCtorTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = named_selector_call(
+            "solid_body",
+            "NamedBodyCtorTest",
+            "b",
+            reify_core::ty::SelectorKind::Body,
+            "core",
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "solid_body(b, \"core\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Body,
+            "solid_body() → Body kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                ..
+            } => {
+                assert_eq!(n, "core", "solid_body(b, \"core\") → Named(\"core\") leaf");
+            }
+            other => panic!("expected Leaf{{ Named }}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// BT8: resolving `face(b, "nope")` (unknown name) returns the empty list
+    /// and pushes exactly ONE `DiagnosticCode::TopologyTagStale` warning — the
+    /// already-landed resolve_leaf Named interim, now reachable from .ri surface.
+    /// RED until step-10 wires the face arm; the resolve assertion is only
+    /// reachable once construction succeeds.
+    #[test]
+    fn face_named_ctor_resolve_unknown_name_yields_empty_and_topology_tag_stale() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("NamedBT8Test", 0);
+        let hash_b: [u8; 32] = [0xDD; 32];
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("NamedBT8Test", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = named_selector_call(
+            "face",
+            "NamedBT8Test",
+            "b",
+            reify_core::ty::SelectorKind::Face,
+            "nope",
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+
+        // Step 1: construction produces Value::Selector with no diagnostics.
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "face(b, \"nope\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+
+        // Step 2: resolve the Named leaf — resolves to [] + exactly one TopologyTagStale.
+        let resolved = crate::topology_selectors::resolve(&sv, &mut kernel, &mut diagnostics)
+            .expect("resolve must not return QueryError for Named leaf");
+        assert_eq!(
+            resolved,
+            vec![],
+            "Named(\"nope\"): resolve must return empty list (D8 interim)"
+        );
+        let stale_count = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::TopologyTagStale))
+            .count();
+        assert_eq!(
+            stale_count,
+            1,
+            "resolve of Named leaf with no matching tag must emit exactly ONE \
+             W_TOPOLOGY_TAG_STALE; got {stale_count}: {:?}",
+            diagnostics
         );
     }
 
