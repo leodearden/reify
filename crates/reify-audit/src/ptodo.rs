@@ -724,6 +724,21 @@ mod tests {
         assert_eq!(classified, expected_structural);
     }
 
+    // -------------------------------------------------------------------
+    // §6.7 task-DB path resolution (β liveness lane) — `tasks_db_path`
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn tasks_db_path_defaults_under_project_root() {
+        // With REIFY_PTODO_TASKS_DB unset (the normal cargo-test env), the path
+        // resolves to <project_root>/.taskmaster/tasks/tasks.db. The env-override
+        // branch is covered end-to-end by the subprocess test (no unsafe set_var).
+        assert_eq!(
+            tasks_db_path(std::path::Path::new("/repo")),
+            std::path::PathBuf::from("/repo/.taskmaster/tasks/tasks.db"),
+        );
+    }
+
     #[test]
     fn classify_file_non_rust_skips_macro_and_ignore() {
         // is_rust=false: comment markers and phantom phrases still fire (all
