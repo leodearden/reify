@@ -428,7 +428,7 @@ fn nested_union_compiles_clean_with_face_selector_type() {
     );
 }
 
-// ── (g) Single-arg arity: compile-time behavior ───────────────────────────────
+// ── (g) Arity enforcement ─────────────────────────────────────────────────────
 
 const SOURCE_UNION_SINGLE_ARG: &str = r#"
 structure def UnionSingle {
@@ -457,6 +457,59 @@ fn union_single_arg_no_compile_time_arity_error() {
         sel_expr.result_type,
         Type::Selector(SelectorKind::Face),
         "union(faces(b)) must still infer Type::Selector(Face), got {:?}",
+        sel_expr.result_type
+    );
+}
+
+/// `difference` is binary (exactly 2 operands).  Passing 3 same-kind selector
+/// operands must emit EXACTLY ONE `E_SELECTOR_KIND_MISMATCH` error at compile
+/// time with a message referencing the arity constraint, so the user is not left
+/// with a silent `Value::Undef` at eval.
+///
+/// The binding must still type as `Type::Selector(Face)` (anti-cascade).
+const SOURCE_DIFFERENCE_THREE_ARGS: &str = r#"
+structure def DiffThree {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 20mm, 20mm)
+    let c = box(30mm, 30mm, 30mm)
+    let sel = difference(faces(a), faces(b), faces(c))
+}
+"#;
+
+#[test]
+fn difference_three_args_emits_compile_time_arity_error() {
+    let compiled = compile_source_with_stdlib(SOURCE_DIFFERENCE_THREE_ARGS);
+    let mismatches: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::SelectorKindMismatch))
+        .collect();
+
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "difference(3 args): expected exactly 1 E_SELECTOR_KIND_MISMATCH arity error, \
+         got {}: {:#?}",
+        mismatches.len(),
+        mismatches
+    );
+    let d = mismatches[0];
+    assert_eq!(d.severity, Severity::Error, "arity error must be Error severity");
+    // Message must mention the count / arity constraint.
+    let msg = d.message.to_lowercase();
+    assert!(
+        msg.contains("2") || msg.contains("exactly"),
+        "arity error message must reference the expected count (2) or 'exactly'; got: {:?}",
+        d.message
+    );
+    assert!(!d.labels.is_empty(), "arity error must carry a call-site label");
+
+    // Anti-cascade: the binding must still infer Selector(Face).
+    let sel_expr = cell_default_expr(&compiled, "sel");
+    assert_eq!(
+        sel_expr.result_type,
+        Type::Selector(SelectorKind::Face),
+        "anti-cascade: sel must still infer Selector(Face) even after arity error; got {:?}",
         sel_expr.result_type
     );
 }

@@ -91,6 +91,7 @@ use super::*;
 /// pre-pass (entity.rs:~531) and `register_guarded_names` (guards.rs:~183).
 /// Formerly also referenced via `is_solid_geometry_param` — that wrapper was
 /// retired in GHR-γ (task 3605).
+///
 /// Returns `true` if `expr` is syntactically a selector-producing expression:
 /// - A direct call to one of the 7 predicate/all selector constructors
 ///   (`faces`, `edges`, `faces_by_normal`, `faces_by_area`, `edges_by_length`,
@@ -103,6 +104,28 @@ use super::*;
 /// those produce `Type::List(Geometry)`, not a composable `Value::Selector`.
 /// Called by `is_geometry_let` to detect when `union`/`difference` operands
 /// are selector-valued and thus MUST NOT route to the CSG path.
+///
+/// # Known limitation — Ident operands are not recognised
+///
+/// This detector is **purely syntactic**: it only returns `true` for
+/// `ExprKind::FunctionCall` nodes.  For any other expr kind — including
+/// `ExprKind::Ident` — it returns `false`.
+///
+/// Consequence: a composition whose operands are all selector-typed *identifiers*
+/// (e.g. `let u = union(top, big)` where `top` and `big` are let-bound selector
+/// names) is NOT detected as a selector composition.  `is_geometry_let` therefore
+/// still returns `true` for it, and the call is misrouted to the CSG
+/// `compile_boolean_op` path, giving the user a confusing geometry-type error.
+///
+/// Fixing this would require threading a `known_selector_lets` accumulator
+/// through `entity.rs`'s multi-pass let registration — a change broader than
+/// this task's scope.  All task-4119-δ signals (BT1/BT2/BT3/BT8) work because
+/// at least one operand is a *direct* selector `FunctionCall`; only the
+/// all-ident-operand case is affected (task 4119 δ design decision "KNOWN
+/// LIMITATION", deferred follow-up).
+///
+/// The test `is_geometry_let_all_ident_operands_still_treated_as_csg` documents
+/// and pins this behaviour so any future fix is a visible, deliberate change.
 fn is_selector_expr(expr: &reify_ast::Expr, functions: &[CompiledFunction]) -> bool {
     let (name, args) = match &expr.kind {
         reify_ast::ExprKind::FunctionCall {
@@ -2946,6 +2969,56 @@ mod tests {
         assert!(
             is_geometry_let(&diff_csg, &functions, &known),
             "difference(box(…), cylinder(…)) must STILL be a geometry let — CSG path preserved"
+        );
+    }
+
+    // --- step-1 (task 4119 δ): Ident operand known-limitation pin ---
+
+    /// Documents the known limitation that `is_selector_expr` is purely
+    /// syntactic and does NOT recognise `Ident` operands.  When BOTH operands
+    /// of a `union`/`difference` are Ident expressions (e.g. `union(top, big)`
+    /// where `top` and `big` are selector-typed let bindings), `is_selector_expr`
+    /// returns `false` for each and `is_geometry_let` returns `true` — the call
+    /// is mis-routed to the CSG `compile_boolean_op` path.
+    ///
+    /// This test ASSERTS the current (limited) behaviour so that any future fix
+    /// — threading `known_selector_lets` through entity.rs — is a visible,
+    /// deliberate change rather than an accidental regression of the CSG path.
+    #[test]
+    fn is_geometry_let_all_ident_operands_still_treated_as_csg() {
+        let functions: Vec<CompiledFunction> = vec![];
+        // `known_geometry_lets` does NOT contain "top" or "big" (they are not
+        // geometry lets), so the Ident arms return false for them.  The selector
+        // let names ("top", "big") are not in this set.
+        let known: HashSet<&str> = HashSet::new();
+
+        // Build: union(top, big) where both operands are Idents.
+        let top = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident("top".to_string()),
+            span: reify_core::SourceSpan::new(0, 3),
+        };
+        let big = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident("big".to_string()),
+            span: reify_core::SourceSpan::new(4, 7),
+        };
+        let union_ident = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "union".to_string(),
+                arg_names: vec![None, None],
+                args: vec![top, big],
+            },
+            span: reify_core::SourceSpan::new(0, 12),
+        };
+
+        // KNOWN LIMITATION (task 4119 δ): both operands are Idents → is_selector_expr
+        // returns false for each → is_selector_composition is false → union(top, big)
+        // is still treated as a CSG geometry let.  A future fix that threads
+        // known_selector_lets would change this assertion to `false`.
+        assert!(
+            is_geometry_let(&union_ident, &functions, &known),
+            "KNOWN LIMITATION: union(top, big) with Ident operands is mis-classified \
+             as a geometry let (CSG path) because is_selector_expr only inspects \
+             FunctionCall nodes, not Ident nodes — see is_selector_expr rustdoc"
         );
     }
 

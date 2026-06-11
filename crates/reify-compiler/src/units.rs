@@ -307,8 +307,12 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
 ///   `union(box, box)` / `difference(box, box)` cases — caller falls through to
 ///   `is_geometry_function`)
 ///
-/// Arity enforcement (union/intersect ≥ 2, difference == 2) is the responsibility
-/// of the eval-side `expected_arity` gate; this function only classifies the type.
+/// **Arity** — `difference` is strictly binary (exactly 2 operands); passing the
+/// wrong arity emits an `E_SELECTOR_KIND_MISMATCH` error at compile time.
+/// `union` and `intersect` are variadic (≥ 2 operands); the ≥-2 floor is enforced
+/// at eval time by the `args.len() < 2` gate in `try_eval_topology_selector` (the
+/// compile-time path cannot see a sub-2-arity call that passes kind-checking, so
+/// no compile-time guard is needed for them).
 ///
 /// Inserted as a ladder arm **before** `is_geometry_function` in
 /// `crates/reify-compiler/src/expr.rs` so that selector compositions are given their
@@ -340,6 +344,26 @@ pub(crate) fn selector_composition_result_type(
     }
 
     let first_kind = selector_kinds[0];
+
+    // Arity gate for `difference`: it is strictly binary (exactly 2 operands).
+    // Emitting here (before the kind check) ensures the user sees an actionable
+    // error rather than a silent Undef at eval when the arity gate in
+    // `try_eval_topology_selector` returns None.  `union`/`intersect` are variadic
+    // (≥ 2) — their sub-2 floor is eval-gated and documented in the rustdoc above.
+    if name == "difference" && compiled_args.len() != 2 {
+        let n = compiled_args.len();
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "selector `difference` requires exactly 2 operands, got {n}"
+            ))
+            .with_code(DiagnosticCode::SelectorKindMismatch)
+            .with_label(DiagnosticLabel::new(
+                call_span,
+                format!("expected 2 operands, got {n}"),
+            )),
+        );
+        return Some(Type::Selector(first_kind)); // anti-cascade
+    }
 
     // Reject non-Selector operands mixed with Selector operands.  A call like
     // `union(faces(b), box(…))` routes here (because faces(b) is_selector_expr),

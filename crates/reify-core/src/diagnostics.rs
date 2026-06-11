@@ -444,20 +444,27 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_TAG_STALE`
     /// (see `docs/prds/topology-selectors.md` task 6).
     TopologyTagStale,
-    /// Origin: `crates/reify-compiler/src/expr.rs` (selector-composition result-type arm,
-    /// `selector_composition_result_type`).
+    /// Origin: `crates/reify-compiler/src/units.rs` (`selector_composition_result_type`),
+    /// called from `crates/reify-compiler/src/expr.rs` (selector-composition ladder arm).
     /// Emitted as an `Error` when a selector composition (`union`/`intersect`/`difference`)
-    /// receives operands of mixed `SelectorKind` (e.g. `Face` and `Edge`), violating the
-    /// K1 kind-closure invariant (all operands must share the same `SelectorKind`).
+    /// violates the K1 kind-closure invariant (all operands must share the same
+    /// `SelectorKind`).
     ///
-    /// Canonical message form:
-    ///   `"selector kind mismatch: cannot compose <KindA> and <KindB> selectors"`
-    ///   — both kinds are named in the message so the user can identify which operand to fix.
-    ///   Exactly one diagnostic is emitted per composition call site; the result type is
-    ///   inferred as `Type::Selector(first_kind)` for downstream anti-cascade.
+    /// Two message variants are emitted under this code (distinguished by message text):
     ///
-    /// One label accompanies the error: a primary label at the composition call site
-    /// (message `"selector kind mismatch: cannot compose <KindA> and <KindB> selectors"`).
+    /// 1. **Mixed-kind composition** — all operands are selectors but of different kinds
+    ///    (e.g. `Face` and `Edge`):
+    ///    `"selector composition kind mismatch: cannot compose <KindA> and <KindB>"`
+    ///    Label at the composition call site: `"mixed-kind selector composition"`.
+    ///
+    /// 2. **Non-selector operand mixed with selectors** — at least one operand is not a
+    ///    `Type::Selector` at all (e.g. `union(faces(b), box(…))`):
+    ///    `"selector composition requires all operands to be selectors; N non-selector \
+    ///     operand(s) found"`
+    ///    Label at the composition call site: `"non-selector operand in selector composition"`.
+    ///
+    /// Exactly one diagnostic is emitted per composition call site in both cases; the
+    /// result type is inferred as `Type::Selector(first_kind)` for downstream anti-cascade.
     ///
     /// The PRD-prose mnemonic for this code is `E_SELECTOR_KIND_MISMATCH`
     /// (see `docs/prds/topology-selector-value-type.md` §11.2).

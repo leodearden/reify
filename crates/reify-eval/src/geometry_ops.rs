@@ -15883,6 +15883,243 @@ mod tests {
         );
     }
 
+    // ── eval-side composition coverage (task 4119 δ amendment) ─────────────
+    //
+    // Tests added in the amendment pass to cover paths not exercised by the
+    // compile-time tests in selector_composition_tests.rs:
+    //   1. Variadic 3-arg union at eval level.
+    //   2. SelectorError::KindMismatch → Warning + Value::Undef backstop in
+    //      eval_variadic_composition (defensive path; compile-time
+    //      E_SELECTOR_KIND_MISMATCH should fire first in normal use).
+
+    /// `union(faces(b), faces(c), faces(d))` — 3 operands, all Face — evaluates
+    /// to `Value::Selector(Union([sv_b, sv_c, sv_d]))` of kind Face.
+    /// Covers the variadic path in `eval_variadic_composition`.
+    #[test]
+    fn union_three_operands_eval_produces_union_with_three_children() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let handle_c = GeometryHandleId(2);
+        let handle_d = GeometryHandleId(3);
+        let rr = RealizationNodeId::new("Union3Test", 0);
+        let hash_b: [u8; 32] = [0x11; 32];
+        let hash_c: [u8; 32] = [0x22; 32];
+        let hash_d: [u8; 32] = [0x33; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(handle_b, vec![GeometryHandleId(10)])
+            .with_extracted_faces(handle_c, vec![GeometryHandleId(11)])
+            .with_extracted_faces(handle_d, vec![GeometryHandleId(12)]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(handle_b));
+        named_steps.insert("c".to_string(), kh(handle_c));
+        named_steps.insert("d".to_string(), kh(handle_d));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Union3Test", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Union3Test", "c"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_c,
+                kernel_handle: handle_c,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Union3Test", "d"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_d,
+                kernel_handle: handle_d,
+            },
+        );
+
+        let faces_b = topology_selector_call_one_value_ref(
+            "faces",
+            "Union3Test",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_c = topology_selector_call_one_value_ref(
+            "faces",
+            "Union3Test",
+            "c",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_d = topology_selector_call_one_value_ref(
+            "faces",
+            "Union3Test",
+            "d",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+
+        // Build union(faces_b, faces_c, faces_d) — three-arg FunctionCall.
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("union"))
+            .combine(faces_b.content_hash)
+            .combine(faces_c.content_hash)
+            .combine(faces_d.content_hash);
+        let union3_expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "union".to_string(),
+                    qualified_name: "union".to_string(),
+                },
+                args: vec![faces_b, faces_c, faces_d],
+            },
+            result_type: Type::Selector(reify_core::ty::SelectorKind::Face),
+            content_hash,
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &union3_expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "union(faces(b), faces(c), faces(d)) must yield Some(Value::Selector(..)), \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face, "3-arg union → Face kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Union(children) => {
+                assert_eq!(children.len(), 3, "3-arg union → 3 children in Union node");
+            }
+            other => panic!("expected Union node with 3 children, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean 3-arg union must emit no diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // Resolve: union of 3 disjoint single-face sets = all three handles.
+        let resolved = crate::topology_selectors::resolve(&sv, &mut kernel, &mut diagnostics)
+            .expect("3-arg union resolve must not error");
+        assert_eq!(
+            resolved,
+            vec![GeometryHandleId(10), GeometryHandleId(11), GeometryHandleId(12)],
+            "3-arg union resolves to set-union of all three child face sets"
+        );
+    }
+
+    /// Defensive backstop: when `eval_variadic_composition` receives children of
+    /// mismatched `SelectorKind` (bypassing the compile-time
+    /// `E_SELECTOR_KIND_MISMATCH`), `SelectorValue::union` returns
+    /// `SelectorError::KindMismatch` and the result is `Some(Value::Undef)` with
+    /// exactly one Warning diagnostic.
+    ///
+    /// This path is not reachable from valid .ri source (the compiler catches it
+    /// first) but is reachable from hand-crafted IR, so we pin the defensive
+    /// behaviour here.
+    #[test]
+    fn eval_variadic_composition_kind_mismatch_yields_undef_with_warning() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let handle_c = GeometryHandleId(2);
+        let rr = RealizationNodeId::new("KindMismatchTest", 0);
+        let hash_b: [u8; 32] = [0xAA; 32];
+        let hash_c: [u8; 32] = [0xBB; 32];
+
+        // Kernel needs no mock data: `faces`/`edges` construction is kernel-free
+        // (LeafQuery::All build via build_leaf_selector, no extract_* calls).
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(handle_b));
+        named_steps.insert("c".to_string(), kh(handle_c));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("KindMismatchTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+        values.insert(
+            ValueCellId::new("KindMismatchTest", "c"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_c,
+                kernel_handle: handle_c,
+            },
+        );
+
+        // Build union(faces(b), edges(c)) at IR level — mixed kinds, bypasses
+        // the compiler's kind-mismatch check.  result_type is deliberately Face
+        // (as if the compiler did anti-cascade), so the FunctionCall arm in
+        // try_eval_topology_selector routes to the Union handler.
+        let faces_b = topology_selector_call_one_value_ref(
+            "faces",
+            "KindMismatchTest",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_c = topology_selector_call_one_value_ref(
+            "edges",
+            "KindMismatchTest",
+            "c",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        let union_mixed = topology_selector_composition_call("union", faces_b, edges_c);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &union_mixed,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // Defensive backstop: kind-mismatch at eval level → Some(Undef) + Warning.
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "kind-mismatch union at eval level must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kind-mismatch must emit exactly 1 Warning diagnostic; got {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "backstop diagnostic must be Warning severity"
+        );
+    }
+
     // ── step-9 (task 4119 δ): Named-leaf constructor eval tests ─────────────
     //
     // These tests pin `try_eval_topology_selector` for the three named-leaf
