@@ -20,16 +20,25 @@
 //!   This mirrors `reify_stdlib::fea::envelope_tensor_projection` (the
 //!   proven two-pass pattern in this codebase).
 //!
-//! All other source kinds (`Analytical`, `Composed`, `Imported`, and
-//! the derived wrappers `Gradient`/`Divergence`/`Curl`/`Laplacian`/
-//! `PrincipalStresses`/`MaxShear`/`SafetyFactor`) return
-//! `Value::Undef`.
+//! `FieldSourceKind::Analytical` and `FieldSourceKind::Composed` are
+//! supported via the **2-arg bounded form** `max|min|argmax|argmin(field, bounds)`:
 //!
-//! The deferred path for those kinds requires either numerical
-//! optimisation over an analytical lambda's bounded domain (Nelder-Mead /
-//! golden-section / coordinate descent) or sampled-subfield reduction —
-//! see `docs/prds/v0_3/structural-analysis-fea.md` task #6.  The PRD
-//! task description authorises this staging:
+//! - **Analytical / Composed (2-arg bounded)** — a fixed-density grid of
+//!   [`GRID_SAMPLES_PER_AXIS`]^n nodes is sampled over the bounding box.
+//!   The extremum is the grid-resolution optimum.  See `compute_bounded_extremum`
+//!   for the resolution/tolerance contract.
+//!
+//! All other source kinds (`Imported`, and the derived wrappers
+//! `Gradient`/`Divergence`/`Curl`/`Laplacian`/`PrincipalStresses`/
+//! `MaxShear`/`SafetyFactor`) return `Value::Undef` for the 1-arg form.
+//! The 1-arg `Analytical`/`Composed` form also returns `Value::Undef`
+//! (no bounds are supplied, so a global extremum is ill-posed for an
+//! unbounded analytical domain).
+//!
+//! The deferred path for `Imported`/derived 1-arg requires either
+//! numerical optimisation over an analytical lambda's bounded domain or
+//! sampled-subfield reduction — see `docs/prds/v0_3/structural-analysis-fea.md`
+//! task #6.  The PRD task description authorises this staging:
 //! "Implementation can be staged — `sampled` first (FEA produces
 //! sampled fields)."
 //!
@@ -156,6 +165,40 @@ pub(crate) fn compute_argmin_bounded(
     compute_bounded_argextremum(field, bounds, true, ctx)
 }
 
+/// Number of grid nodes per axis for the Analytical/Composed bounded grid-sampler.
+///
+/// # Resolution/tolerance contract
+///
+/// The grid spans `[lo, hi]` inclusive with `GRID_SAMPLES_PER_AXIS` evenly-spaced
+/// nodes (`GRID_SAMPLES_PER_AXIS - 1` equal subintervals):
+///
+/// ```text
+/// node_k = lo + k * (hi - lo) / (GRID_SAMPLES_PER_AXIS - 1),  k ∈ 0..GRID_SAMPLES_PER_AXIS
+/// ```
+///
+/// Exactness guarantees (ODD node count = 11):
+/// - **Box corners/edges** always land on grid nodes (k=0 → `lo`, k=10 → `hi`).
+/// - **Box center** is node 5 (`k = (GRID_SAMPLES_PER_AXIS - 1) / 2`), guaranteed
+///   exact because the count is ODD.
+/// - Otherwise approximate to grid resolution `h = (hi − lo) / 10`.
+///
+/// `11^3 = 1331` lambda evals for 3-D is acceptable.  Refinement
+/// (golden-section / Nelder-Mead) is DEFERRED (task 4561, design decision 2).
+const GRID_SAMPLES_PER_AXIS: usize = 11;
+
+/// Return the number of domain dimensions for a supported field domain type.
+///
+/// - `Type::Real` / `Type::Scalar { .. }` → `Some(1)` (1-D scalar domain)
+/// - `Type::Point { n, .. }` → `Some(n)` (n-D point domain)
+/// - Anything else → `None` (unsupported domain)
+fn domain_dim(domain_type: &Type) -> Option<usize> {
+    match domain_type {
+        Type::Real | Type::Scalar { .. } => Some(1),
+        Type::Point { n, .. } => Some(*n),
+        _ => None,
+    }
+}
+
 /// Shared body for `compute_max_bounded` / `compute_min_bounded`.
 ///
 /// # Sampled sub-region
@@ -167,8 +210,13 @@ pub(crate) fn compute_argmin_bounded(
 ///
 /// # Analytical / Composed
 ///
-/// Grid-sampler over the bounding box (task 4561 step-4, not yet
-/// implemented here).  Returns `Value::Undef` until step-4 lands.
+/// Samples a [`GRID_SAMPLES_PER_AXIS`]^n grid over the bounding box.  At each
+/// node the domain query value is built via [`wrap_coord_for_domain`] and the
+/// lambda is evaluated via [`crate::apply_lambda_with_point_unpacking`].  The
+/// extremum is the best finite `as_f64()` result across all nodes (first-wins on
+/// ties).  All-non-finite or all-None → `Value::Undef`.
+///
+/// Requires `domain_dim(domain_type) <= lo.len()`; else `Value::Undef`.
 ///
 /// # Other sources
 ///
@@ -177,10 +225,12 @@ fn compute_bounded_extremum(
     field: &Value,
     bounds: &Value,
     find_min: bool,
-    _ctx: &crate::EvalContext<'_>,
+    ctx: &crate::EvalContext<'_>,
 ) -> Value {
-    let (codomain_type, source, lambda) = match field {
-        Value::Field { codomain_type, source, lambda, .. } => (codomain_type, source, lambda),
+    let (domain_type, codomain_type, source, lambda) = match field {
+        Value::Field { domain_type, codomain_type, source, lambda, .. } => {
+            (domain_type, codomain_type, source, lambda)
+        }
         _ => return Value::Undef,
     };
 
@@ -196,19 +246,40 @@ fn compute_bounded_extremum(
             }
             _ => Value::Undef,
         },
-        // Analytical/Composed: grid-sampler deferred to step-4.
-        // 1-arg form remains honest-Undef (compute_extremum above).
-        FieldSourceKind::Analytical | FieldSourceKind::Composed => Value::Undef,
+        // Analytical/Composed: fixed-density grid-sampler over the bounding box.
+        // The 1-arg form stays honest-Undef (compute_extremum above) — no bounds,
+        // no well-posed global extremum for an unbounded analytical domain.
+        // Remaining deferred: Imported (no lambda data) and derived wrappers.
+        FieldSourceKind::Analytical | FieldSourceKind::Composed => {
+            let n = match domain_dim(domain_type) {
+                Some(n) if n > 0 && lo.len() >= n => n,
+                _ => return Value::Undef,
+            };
+            reduce_analytical_extremum_bounded(
+                lambda.as_ref(),
+                &lo[..n],
+                &hi[..n],
+                n,
+                domain_type,
+                codomain_type,
+                find_min,
+                ctx,
+            )
+        }
         _ => Value::Undef,
     }
 }
 
 /// Shared body for `compute_argmax_bounded` / `compute_argmin_bounded`.
+///
+/// See [`compute_bounded_extremum`] for the Sampled / Analytical / Composed
+/// dispatch logic; this variant returns the domain coord at the extremum
+/// (via [`wrap_coord_for_domain`]) rather than the codomain value.
 fn compute_bounded_argextremum(
     field: &Value,
     bounds: &Value,
     find_min: bool,
-    _ctx: &crate::EvalContext<'_>,
+    ctx: &crate::EvalContext<'_>,
 ) -> Value {
     let (domain_type, source, lambda) = match field {
         Value::Field { domain_type, source, lambda, .. } => (domain_type, source, lambda),
@@ -227,8 +298,21 @@ fn compute_bounded_argextremum(
             }
             _ => Value::Undef,
         },
-        // Analytical/Composed: deferred to step-4.
-        FieldSourceKind::Analytical | FieldSourceKind::Composed => Value::Undef,
+        FieldSourceKind::Analytical | FieldSourceKind::Composed => {
+            let n = match domain_dim(domain_type) {
+                Some(n) if n > 0 && lo.len() >= n => n,
+                _ => return Value::Undef,
+            };
+            reduce_analytical_argextremum_bounded(
+                lambda.as_ref(),
+                &lo[..n],
+                &hi[..n],
+                n,
+                domain_type,
+                find_min,
+                ctx,
+            )
+        }
         _ => Value::Undef,
     }
 }
@@ -359,6 +443,119 @@ fn reduce_sampled_argextremum_bounded(
     }
 }
 
+/// Grid-sample an Analytical/Composed lambda over `[lo, hi]` (per-axis,
+/// `n` axes) and return the extremum codomain value.
+///
+/// Evaluates `GRID_SAMPLES_PER_AXIS^n` nodes row-major.  At each node:
+/// 1. Build the per-axis SI coord: `coord_k = lo[k] + idx_k / 10 * (hi[k] - lo[k])`.
+/// 2. Build the domain query value via [`wrap_coord_for_domain`].
+/// 3. Evaluate the lambda via [`crate::apply_lambda_with_point_unpacking`].
+/// 4. Extract f64 via `as_f64()` and skip non-finite / None results.
+///
+/// Track the best (first-wins on ties via `total_cmp`) over all finite results.
+/// Returns `Value::Undef` when all nodes are skipped.
+fn reduce_analytical_extremum_bounded(
+    lambda: &Value,
+    lo: &[f64],
+    hi: &[f64],
+    n: usize,
+    domain_type: &reify_core::Type,
+    codomain_type: &reify_core::Type,
+    find_min: bool,
+    ctx: &crate::EvalContext<'_>,
+) -> Value {
+    let mut best: Option<f64> = None;
+    let total_nodes = GRID_SAMPLES_PER_AXIS.pow(n as u32);
+    let steps = GRID_SAMPLES_PER_AXIS - 1; // always 10
+
+    for flat in 0..total_nodes {
+        let mut coords_si = [0.0f64; MAX_AXES];
+        let mut rem = flat;
+        // Decompose row-major (axis-0 outermost): innermost axis varies fastest.
+        for k in (0..n).rev() {
+            let idx_k = rem % GRID_SAMPLES_PER_AXIS;
+            rem /= GRID_SAMPLES_PER_AXIS;
+            coords_si[k] = lo[k] + idx_k as f64 / steps as f64 * (hi[k] - lo[k]);
+        }
+
+        let query = wrap_coord_for_domain(&coords_si[..n], domain_type);
+        if matches!(query, Value::Undef) {
+            continue;
+        }
+        let result = crate::apply_lambda_with_point_unpacking(lambda, &query, ctx);
+        let v = match result.as_f64() {
+            Some(f) if f.is_finite() => f,
+            _ => continue,
+        };
+
+        best = Some(match best {
+            None => v,
+            Some(b) => {
+                let take = if find_min { v.total_cmp(&b).is_lt() } else { v.total_cmp(&b).is_gt() };
+                if take { v } else { b }
+            }
+        });
+    }
+
+    match best {
+        Some(v) => wrap_codomain(v, codomain_type),
+        None => Value::Undef,
+    }
+}
+
+/// Grid-sample an Analytical/Composed lambda over `[lo, hi]` and return
+/// the domain coord at the extremum.
+///
+/// Mirrors [`reduce_analytical_extremum_bounded`] but tracks the node
+/// `coords_si` alongside the best value and returns
+/// `wrap_coord_for_domain(best_node, domain_type)`.
+fn reduce_analytical_argextremum_bounded(
+    lambda: &Value,
+    lo: &[f64],
+    hi: &[f64],
+    n: usize,
+    domain_type: &reify_core::Type,
+    find_min: bool,
+    ctx: &crate::EvalContext<'_>,
+) -> Value {
+    let mut best: Option<(f64, [f64; MAX_AXES])> = None;
+    let total_nodes = GRID_SAMPLES_PER_AXIS.pow(n as u32);
+    let steps = GRID_SAMPLES_PER_AXIS - 1;
+
+    for flat in 0..total_nodes {
+        let mut coords_si = [0.0f64; MAX_AXES];
+        let mut rem = flat;
+        for k in (0..n).rev() {
+            let idx_k = rem % GRID_SAMPLES_PER_AXIS;
+            rem /= GRID_SAMPLES_PER_AXIS;
+            coords_si[k] = lo[k] + idx_k as f64 / steps as f64 * (hi[k] - lo[k]);
+        }
+
+        let query = wrap_coord_for_domain(&coords_si[..n], domain_type);
+        if matches!(query, Value::Undef) {
+            continue;
+        }
+        let result = crate::apply_lambda_with_point_unpacking(lambda, &query, ctx);
+        let v = match result.as_f64() {
+            Some(f) if f.is_finite() => f,
+            _ => continue,
+        };
+
+        best = Some(match best {
+            None => (v, coords_si),
+            Some((b, bc)) => {
+                let take = if find_min { v.total_cmp(&b).is_lt() } else { v.total_cmp(&b).is_gt() };
+                if take { (v, coords_si) } else { (b, bc) }
+            }
+        });
+    }
+
+    match best {
+        Some((_, best_coords)) => wrap_coord_for_domain(&best_coords[..n], domain_type),
+        None => Value::Undef,
+    }
+}
+
 /// Shared body for `compute_max` / `compute_min`. `find_min == true`
 /// selects the minimum, `false` selects the maximum.
 fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
@@ -389,14 +586,14 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
             Some(sf) => reduce_sampled_extremum(&sf, codomain_type, find_min),
             None => Value::Undef,
         },
-        // TODO(future): numerical optimisation over Analytical/Composed lambda
-        // domains (Nelder-Mead / golden-section / coordinate descent); sampled-
-        // subfield reduction for Gradient/Divergence/Curl/Laplacian/MaxShear/
-        // PrincipalStresses/SafetyFactor — see
-        // PRD docs/prds/v0_3/structural-analysis-fea.md task #6 and §13 line 238
-        // (deferred per task description's "Implementation can be staged —
-        // sampled first"). Imported fields carry Value::Undef in their lambda
-        // slot and cannot be reduced without a backing data buffer.
+        // Analytical/Composed 1-arg: stays honest-Undef — no bounds are
+        // supplied, so a global extremum is ill-posed for an unbounded analytical
+        // domain.  The 2-arg bounded form `max(field, bbox)` is implemented in
+        // `compute_bounded_extremum` / `reduce_analytical_extremum_bounded`
+        // (task 4561, step-4).  Remaining deferred: Imported (no lambda data)
+        // and derived wrappers (Gradient/Divergence/Curl/Laplacian/MaxShear/
+        // PrincipalStresses/SafetyFactor) — sampled-subfield reduction for
+        // those still requires PRD §13 line 238 scope.
         //
         // Pinned by the step-15 / S5 negative-path tests:
         // - all_reductions_on_analytical_field_return_undef
@@ -563,11 +760,11 @@ fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
             },
             None => Value::Undef,
         },
-        // TODO(future): see compute_extremum for the full deferred-path note.
-        // Same staging rationale applies — argmax/argmin over Analytical/
-        // Composed/Gradient/Divergence/Curl/Laplacian/MaxShear/
-        // PrincipalStresses/SafetyFactor sources requires numerical optimisation
-        // or sampled-subfield reduction, not yet in scope (PRD §13 line 238).
+        // Analytical/Composed 1-arg: stays honest-Undef (mirrors compute_extremum
+        // above).  The 2-arg bounded form is in `compute_bounded_argextremum` /
+        // `reduce_analytical_argextremum_bounded` (task 4561, step-4).
+        // Remaining deferred: Imported + derived wrappers — same rationale as
+        // in compute_extremum.
         // Pinned by the same step-15 / S5 negative-path tests as compute_extremum.
         _ => Value::Undef,
     }
