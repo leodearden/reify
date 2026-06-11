@@ -149,6 +149,75 @@ mod tests {
             );
         }
     }
+
+    /// End-to-end `check` with the task DB PRESENT at the default path: a
+    /// canonically-cited file (`#4444`, seeded `done`) and an untracked file
+    /// coexist — the liveness lane emits an `orphaned` finding for the cited
+    /// file (carrying `#4444` + `done`) while the structural lane emits the
+    /// `untracked` finding for the other. (RED until step-10 wires the lane.)
+    #[test]
+    fn check_runs_liveness_lane_alongside_structural() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(root, "cited.rs", "// TODO(#4444): x\n");
+        write_file(root, "untracked.rs", "// TODO: wire\n");
+
+        // Seed the DB at the DEFAULT resolved path (no env override needed).
+        crate::common::schema::seed_tasks_db_at(
+            &root.join(".taskmaster/tasks/tasks.db"),
+            &[("master", 4444, "done")],
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec!["cited.rs".to_string(), "untracked.rs".to_string()]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        let find_for = |path: &str| -> Option<&Finding> {
+            findings.iter().find(|f| {
+                f.evidence
+                    .iter()
+                    .any(|e| matches!(e, EvidenceRef::File { path: p } if p == path))
+            })
+        };
+
+        // The structural lane still flags the untracked marker.
+        let untracked = find_for("untracked.rs")
+            .unwrap_or_else(|| panic!("expected untracked finding; findings={findings:?}"));
+        assert!(
+            untracked.summary.starts_with("untracked:"),
+            "summary: {}",
+            untracked.summary
+        );
+
+        // The liveness lane flags the orphaned cite (terminal `done` status).
+        let orphaned = find_for("cited.rs")
+            .unwrap_or_else(|| panic!("expected orphaned finding; findings={findings:?}"));
+        assert_eq!(orphaned.pattern, Pattern::PTodo);
+        assert_eq!(orphaned.severity, Severity::Medium);
+        assert!(
+            orphaned.summary.starts_with("orphaned:"),
+            "summary: {}",
+            orphaned.summary
+        );
+        assert!(orphaned.summary.contains("#4444"), "summary: {}", orphaned.summary);
+        assert!(orphaned.summary.contains("done"), "summary: {}", orphaned.summary);
+    }
 }
 
 }
