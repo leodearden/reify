@@ -78,10 +78,9 @@ concurrent_verify: false
 verify_env:
   RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
-  # Global jobserver: all concurrent cargo processes share 32 rustc tokens.
-  # A solo task gets all 32 CPUs; N concurrent tasks split them ~32/N each.
-  # The FIFO is managed by reify-jobserver.service (systemd --user).
-  CARGO_MAKEFLAGS: "--jobserver-auth=fifo:/tmp/reify-jobserver"
+  # CARGO_MAKEFLAGS is owned solely by scripts/verify.sh apply_env() (single source,
+  # contract C3 / task 4518 δ). It is NOT injected here; apply_env selects the role
+  # FIFO at runtime (merge→/tmp/reify-jobserver-merge, task→/tmp/reify-jobserver-task).
   # Test-run semaphore knobs (REIFY_TEST_SEMAPHORE_*) are intentionally absent
   # here — they use safe defaults (N=1, WAIT=1800s; scripts/lib_test_semaphore.sh
   # L17-22). Add entries here only to tune; see docs/prds/test-run-concurrency-
@@ -93,6 +92,7 @@ verify_env:
 # the serial-queue backlog. Correctness is the same gate as single merges (the train tip
 # is verified by verify.sh --scope all before advance). df tasks 1704-1708 landed the code.
 merge_train_former_enabled: true
+merge_train_coalesce_enabled: true  # dark_factory:1722; user-authorized 2026-06-10
 merge_train_max_members: 3  # already the default; explicit per GO-N3
 
 # Per-role turn budgets. Raising the architect budget is a direct response to

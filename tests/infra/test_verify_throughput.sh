@@ -63,9 +63,13 @@ make_branch_fixture() {
                  "in make_branch_fixture." >&2
             exit 1
         }
-    # Anchor 'source' to line-start (after optional indent) so prose/comments
-    # that merely mention the token `source "$SCRIPT_DIR/...` (e.g. the design
-    # note at verify.sh:545) are not mistaken for real source statements.
+    # Anchor to start-of-line (optionally indented) so this matches real
+    # `source "$SCRIPT_DIR/lib.sh"` STATEMENTS only — not comment lines that
+    # merely mention the token (e.g. verify.sh's task-4523 selective-infra note
+    # "`source "$SCRIPT_DIR/' never appears here."). Without the ^[[:space:]]*
+    # anchor, such a comment is matched, the sed (which needs a closing quote)
+    # leaves the line untouched, and the whole comment is treated as a missing
+    # lib path — a false preflight failure.
     done < <(grep -E '^[[:space:]]*source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
                  | sed 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|' || true)
     git -C "$dir" init -q

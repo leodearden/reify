@@ -471,11 +471,16 @@ describe('combined session — all five affordances', () => {
 
     // 3. Folding: Ctrl+Shift+[ via keymap-facet fallback (risk R1 confirmed).
     view.dispatch({ selection: { anchor: 0 } });
-    const { foldedRanges } = await import('@codemirror/language');
+    const { foldedRanges, forceParsing } = await import('@codemirror/language');
     const { keymap } = await import('@codemirror/view');
     const allBindings = view.state.facet(keymap).flat();
     const foldBinding = allBindings.find((b) => b.key === 'Ctrl-Shift-[');
     expect(foldBinding).toBeDefined();
+    // The Lezer tree is parsed incrementally in jsdom; after the rename +
+    // find-refs steps mutate the doc, the tree may not be fully parsed when
+    // foldCode runs, so syntaxFolding() returns null and nothing folds. Force
+    // a synchronous parse of the whole doc before folding to remove the race.
+    forceParsing(view, view.state.doc.length, 2000);
     foldBinding!.run!(view);
     await flushMacrotasks(0);
     let foldCount = 0;

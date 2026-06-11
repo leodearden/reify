@@ -518,4 +518,624 @@ assert "uncommented 'disable --now reify-jobserver-canary.timer' line present" \
 assert "reify-jobserver.service still in 'enable --now' (daemon remains enabled)" \
     bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'enable --now' | grep -qF 'reify-jobserver.service'"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 7: _transfer_burst unit-tests via importlib heredoc (test-7)
+#   Loads jobserver-balancer.py (hyphenated → not importable by name) via
+#   importlib.util.spec_from_file_location.  exec_module runs only module-level
+#   config (safe defaults), not main().
+#
+#   Hermetic mktemp FIFOs opened O_RDWR, pre-seeded with known token counts.
+#   Each sub-test checks:
+#     (a) max_count >= available → all tokens moved, donor empty (stops at EAGAIN)
+#     (b) max_count < available  → exactly max_count tokens moved
+#     (c) C1 conservation: donor_after + recipient_after == donor_before + recipient_before
+#
+#   RED before impl: _transfer_burst does not exist → AttributeError → exit 1.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 7: _transfer_burst unit-test ---"
+
+_b7_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys, struct, fcntl, termios, tempfile
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)   # runs module-level config only, not main()
+
+def fionread(fd):
+    buf = struct.pack('i', 0)
+    return struct.unpack('i', fcntl.ioctl(fd, termios.FIONREAD, buf))[0]
+
+def open_pair():
+    """Return (donor_fd, recv_fd, path_a, path_b) using hermetic mktemp FIFOs."""
+    pa = tempfile.mktemp(prefix="/tmp/test-burst-a-")
+    pb = tempfile.mktemp(prefix="/tmp/test-burst-b-")
+    os.mkfifo(pa); os.mkfifo(pb)
+    fda = os.open(pa, os.O_RDWR | os.O_NONBLOCK)
+    fdb = os.open(pb, os.O_RDWR | os.O_NONBLOCK)
+    return fda, fdb, pa, pb
+
+def close_pair(fda, fdb, pa, pb):
+    os.close(fda); os.close(fdb)
+    os.unlink(pa); os.unlink(pb)
+
+errors = []
+
+# ── (a) max_count >= available: all tokens moved, donor empty ──────────────
+fda, fdb, pa, pb = open_pair()
+AVAIL_A = 5
+os.write(fda, b'+' * AVAIL_A)
+before_d = fionread(fda); before_r = fionread(fdb)
+moved_a = mod._transfer_burst(fda, fdb, AVAIL_A + 4)  # max_count > available
+after_d = fionread(fda);  after_r  = fionread(fdb)
+if moved_a != AVAIL_A:
+    errors.append(f"(a) moved={moved_a}, want {AVAIL_A}")
+if after_d != 0:
+    errors.append(f"(a) donor not empty: {after_d}")
+if after_r != AVAIL_A:
+    errors.append(f"(a) recipient has {after_r}, want {AVAIL_A}")
+if before_d + before_r != after_d + after_r:
+    errors.append(f"(a) C1: {before_d}+{before_r} != {after_d}+{after_r}")
+close_pair(fda, fdb, pa, pb)
+
+# ── (b) max_count < available: exactly max_count tokens moved ─────────────
+fda, fdb, pa, pb = open_pair()
+AVAIL_B = 6; MAX_B = 3
+os.write(fda, b'+' * AVAIL_B)
+before_d = fionread(fda); before_r = fionread(fdb)
+moved_b = mod._transfer_burst(fda, fdb, MAX_B)
+after_d = fionread(fda);  after_r  = fionread(fdb)
+if moved_b != MAX_B:
+    errors.append(f"(b) moved={moved_b}, want {MAX_B}")
+if after_d != AVAIL_B - MAX_B:
+    errors.append(f"(b) donor has {after_d}, want {AVAIL_B - MAX_B}")
+if after_r != MAX_B:
+    errors.append(f"(b) recipient has {after_r}, want {MAX_B}")
+if before_d + before_r != after_d + after_r:
+    errors.append(f"(b) C1: {before_d}+{before_r} != {after_d}+{after_r}")
+close_pair(fda, fdb, pa, pb)
+
+# ── (c) C1 across two successive bursts ──────────────────────────────────
+fda, fdb, pa, pb = open_pair()
+AVAIL_C = 4
+os.write(fda, b'+' * AVAIL_C)
+moved_c1 = mod._transfer_burst(fda, fdb, 2)
+moved_c2 = mod._transfer_burst(fda, fdb, 2)
+final_d  = fionread(fda); final_r = fionread(fdb)
+if final_d + final_r != AVAIL_C:
+    errors.append(f"(c) C1 across two bursts: {final_d}+{final_r} != {AVAIL_C}")
+if moved_c1 + moved_c2 != AVAIL_C:
+    errors.append(f"(c) total moved {moved_c1+moved_c2}, want {AVAIL_C}")
+close_pair(fda, fdb, pa, pb)
+
+if errors:
+    sys.stderr.write("FAIL _transfer_burst:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: _transfer_burst")
+PY
+} || _b7_exit=$?
+assert "_transfer_burst: (a) full burst moves all tokens, donor empty" \
+    test "$_b7_exit" -eq 0
+assert "_transfer_burst: (b) capped burst moves exactly max_count" \
+    test "$_b7_exit" -eq 0
+assert "_transfer_burst: (c) C1 conservation holds across all cases" \
+    test "$_b7_exit" -eq 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 8: decide() merge-demanded branch + monotonicity invariant (test-8)
+#   Loads jobserver-balancer.py via importlib heredoc.
+#
+#   (a) For each free_task k in 1..tokens-1, with free_merge==0 (merge demanded),
+#       decide() must return ("t2m", k) — all task spare moves to merge.
+#   (b) MONOTONICITY sweep: for ALL (free_merge=0, free_task=0..tokens),
+#       both idle_ticks < threshold AND idle_ticks >= threshold, decide() must
+#       NEVER return action "m2t" (merge never donates back while 0-free).
+#
+#   RED: decide() does not exist yet.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 8: decide() merge-demanded branch + monotonicity ---"
+
+_b8_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+TOKENS = 8
+baseline_task  = max(1, TOKENS // 4)   # 2
+baseline_merge = TOKENS - baseline_task  # 6
+epsilon        = 1
+threshold      = 5
+
+errors = []
+
+# ── (a) merge-demanded branch: free_merge==0, free_task=k ─────────────────
+for k in range(1, TOKENS):
+    action, count = mod.decide(
+        free_merge=0, free_task=k,
+        tokens=TOKENS, baseline_merge=baseline_merge,
+        baseline_task=baseline_task, epsilon=epsilon,
+        idle_ticks=0, idle_threshold=threshold,
+    )
+    if action != "t2m" or count != k:
+        errors.append(
+            f"(a) free_task={k}: got ({action!r},{count}), want ('t2m',{k})"
+        )
+
+# ── (b) MONOTONICITY: free_merge==0 → decide never returns "m2t" ──────────
+for free_task in range(0, TOKENS + 1):
+    for idle_ticks in [0, threshold - 1, threshold, threshold + 2]:
+        action, count = mod.decide(
+            free_merge=0, free_task=free_task,
+            tokens=TOKENS, baseline_merge=baseline_merge,
+            baseline_task=baseline_task, epsilon=epsilon,
+            idle_ticks=idle_ticks, idle_threshold=threshold,
+        )
+        if action == "m2t":
+            errors.append(
+                f"(b) monotonicity broken: free_merge=0, free_task={free_task}, "
+                f"idle_ticks={idle_ticks} → ({action!r},{count})"
+            )
+
+if errors:
+    sys.stderr.write("FAIL decide() merge-demanded/monotonicity:\n"
+                     + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: decide() merge-demanded + monotonicity")
+PY
+} || _b8_exit=$?
+assert "decide(): merge-demanded branch returns (t2m, free_task) for all k in 1..tokens-1" \
+    test "$_b8_exit" -eq 0
+assert "decide(): monotonicity — free_merge==0 never returns action 'm2t'" \
+    test "$_b8_exit" -eq 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 9: decide() task-demanded give-back-with-ε branch (test-9)
+#   Uses tokens strictly > free_merge so sum < tokens (non-idle state).
+#
+#   (a) free_task==0, free_merge > epsilon → ("m2t", free_merge - epsilon)
+#   (b) free_task==0, free_merge == epsilon → ("none", 0)  [at buffer, no give-back]
+#   (c) free_task==0, free_merge == 0 → ("none", 0)        [contention, no give-back]
+#   (d) module exposes int EPSILON >= 1
+#
+#   RED: give-back branch not active; EPSILON constant does not exist.
+#   (decide() currently returns ("none",0) for give-back states — step-4 stub.)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 9: decide() give-back-with-ε branch + EPSILON constant ---"
+
+_b9_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+# Check EPSILON constant
+errors = []
+
+# ── (d) module exposes int EPSILON >= 1 ───────────────────────────────────
+if not hasattr(mod, 'EPSILON'):
+    errors.append("(d) EPSILON constant not found in module")
+    sys.stderr.write("FAIL decide() give-back:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+EPS = mod.EPSILON
+if not isinstance(EPS, int):
+    errors.append(f"(d) EPSILON is not int: {type(EPS)}")
+if EPS < 1:
+    errors.append(f"(d) EPSILON < 1: {EPS}")
+
+TOKENS = 8
+baseline_task  = max(1, TOKENS // 4)   # 2
+baseline_merge = TOKENS - baseline_task  # 6
+threshold      = 5
+# Use TOKENS=8, consumer holds some tokens so sum < TOKENS (non-idle).
+# free_task=0 means task pool is fully drained/held.
+# free_merge values chosen so free_task+free_merge < TOKENS (tokens held).
+HELD = 2  # simulated tokens held by a task consumer
+
+# ── (a) give-back: free_merge > epsilon ──────────────────────────────────
+for m in range(EPS + 1, TOKENS - HELD):
+    action, count = mod.decide(
+        free_merge=m, free_task=0,
+        tokens=TOKENS, baseline_merge=baseline_merge,
+        baseline_task=baseline_task, epsilon=EPS,
+        idle_ticks=0, idle_threshold=threshold,
+    )
+    if action != "m2t" or count != m - EPS:
+        errors.append(
+            f"(a) free_merge={m}: got ({action!r},{count}), want ('m2t',{m - EPS})"
+        )
+
+# ── (b) at epsilon: no give-back ─────────────────────────────────────────
+action, count = mod.decide(
+    free_merge=EPS, free_task=0,
+    tokens=TOKENS, baseline_merge=baseline_merge,
+    baseline_task=baseline_task, epsilon=EPS,
+    idle_ticks=0, idle_threshold=threshold,
+)
+if action != "none" or count != 0:
+    errors.append(f"(b) free_merge=epsilon: got ({action!r},{count}), want ('none',0)")
+
+# ── (c) at zero: no give-back (contention) ────────────────────────────────
+action, count = mod.decide(
+    free_merge=0, free_task=0,
+    tokens=TOKENS, baseline_merge=baseline_merge,
+    baseline_task=baseline_task, epsilon=EPS,
+    idle_ticks=0, idle_threshold=threshold,
+)
+if action != "none" or count != 0:
+    errors.append(f"(c) free_merge=0,free_task=0: got ({action!r},{count}), want ('none',0)")
+
+if errors:
+    sys.stderr.write("FAIL decide() give-back:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: decide() give-back-with-epsilon")
+PY
+} || _b9_exit=$?
+assert "decide(): give-back (a) free_merge>ε → (m2t, free_merge-ε)" \
+    test "$_b9_exit" -eq 0
+assert "decide(): give-back (b) free_merge==ε → (none,0) — buffer preserved" \
+    test "$_b9_exit" -eq 0
+assert "decide(): give-back (c) free_merge==0,free_task==0 → (none,0) — contention" \
+    test "$_b9_exit" -eq 0
+assert "module exposes int EPSILON >= 1" \
+    test "$_b9_exit" -eq 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 10: decide() IDLE + reset + contention branches + IDLE_RESET_TICKS (test-10)
+#   tokens=8, baseline_merge=6, baseline_task=2, epsilon=1
+#
+#   (a) idle + window NOT elapsed: decide(free_merge=6,free_task=2,idle_ticks<threshold) == ("none",0)
+#   (b) idle + elapsed + merge-heavy skew: decide(free_merge=8,free_task=0,...>=threshold) == ("m2t",2)
+#   (c) idle + elapsed + task-heavy skew:  decide(free_merge=2,free_task=6,...>=threshold) == ("t2m",4)
+#   (d) idle + elapsed + already at baseline: decide(free_merge=6,free_task=2,...>=threshold) == ("none",0)
+#   (e) contention: decide(free_merge=0,free_task=0,...) == ("none",0)
+#   (f) module exposes int IDLE_RESET_TICKS >= 1
+#
+#   RED: IDLE_RESET_TICKS does not exist; idle/baseline-reset not implemented.
+#   (decide() currently falls through to branch 4 for sum==tokens cases that
+#    don't match merge-demanded / give-back, so (a)+(d) may pass by accident,
+#    but (b)+(c) fail since merge-heavy/task-heavy idle states give wrong action.)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 10: decide() IDLE-reset + contention branches + IDLE_RESET_TICKS ---"
+
+_b10_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# ── (f) module exposes int IDLE_RESET_TICKS >= 1 ─────────────────────────
+if not hasattr(mod, 'IDLE_RESET_TICKS'):
+    errors.append("(f) IDLE_RESET_TICKS constant not found in module")
+    sys.stderr.write("FAIL decide() idle:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+THRESH = mod.IDLE_RESET_TICKS
+if not isinstance(THRESH, int):
+    errors.append(f"(f) IDLE_RESET_TICKS is not int: {type(THRESH)}")
+if THRESH < 1:
+    errors.append(f"(f) IDLE_RESET_TICKS < 1: {THRESH}")
+
+TOKENS = 8
+baseline_task  = max(1, TOKENS // 4)   # 2
+baseline_merge = TOKENS - baseline_task  # 6
+EPS    = 1
+
+def d(fm, ft, it):
+    return mod.decide(
+        free_merge=fm, free_task=ft,
+        tokens=TOKENS, baseline_merge=baseline_merge,
+        baseline_task=baseline_task, epsilon=EPS,
+        idle_ticks=it, idle_threshold=THRESH,
+    )
+
+# ── (a) idle + window NOT elapsed → ("none", 0) ──────────────────────────
+action, count = d(baseline_merge, baseline_task, THRESH - 1)
+if action != "none" or count != 0:
+    errors.append(f"(a) idle+not-elapsed: got ({action!r},{count}), want ('none',0)")
+
+# ── (b) idle + elapsed + merge-heavy skew → ("m2t", 2) ──────────────────
+# free_merge=8 > baseline_merge=6 (merge-heavy); free_task=0 (task absent)
+# sum = 8+0=8 == TOKENS → IDLE branch
+action, count = d(8, 0, THRESH)
+if action != "m2t" or count != 8 - baseline_merge:
+    errors.append(f"(b) merge-heavy idle reset: got ({action!r},{count}), want ('m2t',{8 - baseline_merge})")
+
+# ── (c) idle + elapsed + task-heavy skew → ("t2m", 4) ───────────────────
+# free_merge=2 < baseline_merge=6; free_task=6 > baseline_task=2
+# sum = 2+6=8 == TOKENS → IDLE branch
+action, count = d(2, 6, THRESH)
+if action != "t2m" or count != 6 - baseline_task:
+    errors.append(f"(c) task-heavy idle reset: got ({action!r},{count}), want ('t2m',{6 - baseline_task})")
+
+# ── (d) idle + elapsed + already at baseline → ("none", 0) ───────────────
+action, count = d(baseline_merge, baseline_task, THRESH)
+if action != "none" or count != 0:
+    errors.append(f"(d) idle+at-baseline: got ({action!r},{count}), want ('none',0)")
+
+# ── (e) contention (both-0, sum < TOKENS) → ("none", 0) ─────────────────
+action, count = d(0, 0, 0)
+if action != "none" or count != 0:
+    errors.append(f"(e) contention: got ({action!r},{count}), want ('none',0)")
+
+if errors:
+    sys.stderr.write("FAIL decide() idle/contention:\n"
+                     + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: decide() idle/contention branches")
+PY
+} || _b10_exit=$?
+assert "decide(): (a) idle+not-elapsed → (none,0)" \
+    test "$_b10_exit" -eq 0
+assert "decide(): (b) idle+elapsed+merge-heavy → (m2t, merge-baseline_merge)" \
+    test "$_b10_exit" -eq 0
+assert "decide(): (c) idle+elapsed+task-heavy → (t2m, task-baseline_task)" \
+    test "$_b10_exit" -eq 0
+assert "decide(): (d) idle+elapsed+at-baseline → (none,0)" \
+    test "$_b10_exit" -eq 0
+assert "decide(): (e) contention both-0 → (none,0)" \
+    test "$_b10_exit" -eq 0
+assert "module exposes int IDLE_RESET_TICKS >= 1" \
+    test "$_b10_exit" -eq 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 11: behavioral tests — β-distinguishing live-daemon scenarios (test-11)
+#   Reuses start_balancer/wait_for_seed/fionread/fionread_pair/_cleanup_balancer.
+#
+#   Scenario A — just-task ε-buffer:
+#     Consumer drains+holds task pool (0-free demand).  Under C4 give-back,
+#     merge settles at EPSILON (not 0).  Under α, merge transfers ONE token
+#     then stops at merge=5 (single-shot donate-idle), leaving merge >> EPSILON.
+#     → RED under α (merge ≠ EPSILON), GREEN under C4.
+#
+#   Scenario B — idle baseline-reset:
+#     Pools skewed to merge=2, task=6 (task-heavy, sum==TOKENS → idle).
+#     Under C4 (small IDLE_RESET_TICKS override) the idle branch resets back
+#     to merge-favored baseline (merge=6).  Under α both pools > 0 so neither
+#     branch fires — skew persists forever.
+#     → RED under α (merge stays 2), GREEN under C4.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 11: behavioral — just-task ε-buffer + idle baseline-reset ---"
+
+# Read EPSILON from the module (default 1; respects env override if set).
+_b11_EPSILON=$(python3 - "$BALANCER" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.EPSILON)
+PY
+)
+
+# ── Scenario A: just-task ε-buffer ───────────────────────────────────────
+echo ""
+echo "  Scenario A: just-task ε-buffer settle"
+
+_cleanup_balancer
+start_balancer 8 0.05
+wait_for_seed 10 || true
+
+# Consumer drains+holds the task pool (simulates rustc holding all task tokens).
+# The consumer reads to EAGAIN, writes held count to a file, then sleeps 30s.
+_b11a_held_file=$(mktemp)
+python3 - "$_TASK_FIFO" "$_b11a_held_file" <<'PY' &
+import os, time, sys
+path, count_file = sys.argv[1], sys.argv[2]
+held = 0
+fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+deadline = time.monotonic() + 5.0
+while time.monotonic() < deadline:
+    try:
+        data = os.read(fd, 64)
+        held += len(data)
+    except BlockingIOError:
+        if held > 0:
+            break
+        time.sleep(0.01)
+os.close(fd)
+with open(count_file, 'w') as f:
+    f.write(str(held))
+time.sleep(30)  # hold tokens indefinitely
+PY
+_b11a_consumer_pid=$!
+
+# Wait for consumer to establish demand (held > 0, task pool drained).
+_b11a_drained=0
+_b11a_t0=$(date +%s)
+while true; do
+    if [ -s "$_b11a_held_file" ]; then
+        _b11a_held_now=$(cat "$_b11a_held_file" 2>/dev/null || echo 0)
+        if [ "$_b11a_held_now" -gt 0 ]; then
+            _b11a_drained=1; break
+        fi
+    fi
+    [ $(( $(date +%s) - _b11a_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+
+assert "Scenario A: consumer drained task pool (demand established)" \
+    test "$_b11a_drained" -eq 1
+
+# Poll until FIONREAD(merge) == EPSILON (C4 give-back settles the pool).
+# Under C4: free_task=0, free_merge>EPSILON → ("m2t", free_merge-EPSILON) burst.
+# Under α:  one-token donate-idle fires once (merge=5→task=1), then stops.
+_b11a_settled=0
+_b11a_t0=$(date +%s)
+while true; do
+    _b11a_m=$(fionread "$_MERGE_FIFO" 2>/dev/null || echo -1)
+    if [ "$_b11a_m" -eq "$_b11_EPSILON" ]; then
+        # Confirm stability: no further transfers should fire (branch 3 requires
+        # free_merge > EPSILON, which is false once free_merge == EPSILON).
+        sleep 0.15
+        _b11a_m2=$(fionread "$_MERGE_FIFO" 2>/dev/null || echo -1)
+        if [ "$_b11a_m2" -eq "$_b11_EPSILON" ]; then
+            _b11a_settled=1; break
+        fi
+    fi
+    [ $(( $(date +%s) - _b11a_t0 )) -ge 10 ] && break
+    sleep 0.1
+done
+
+assert "Scenario A: FIONREAD(merge) == EPSILON (ε-buffer retained by C4 give-back)" \
+    test "$_b11a_settled" -eq 1
+
+# Assert C1 and task reaching TOKENS - EPSILON (three-way conservation).
+_b11a_c1_ok=0
+_b11a_task_ok=0
+for _b11a_retry in 1 2 3; do
+    _b11a_pair=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+    _b11a_m_f=$(echo "$_b11a_pair" | awk '{print $1}')
+    _b11a_t_f=$(echo "$_b11a_pair" | awk '{print $2}')
+    _b11a_held_f=$(cat "$_b11a_held_file" 2>/dev/null || echo 0)
+    _b11a_sum=$(( _b11a_held_f + _b11a_m_f + _b11a_t_f ))
+    _b11a_task_sum=$(( _b11a_held_f + _b11a_t_f ))
+    if [ "$_b11a_sum" -eq 8 ]; then
+        _b11a_c1_ok=1
+    fi
+    if [ "$_b11a_task_sum" -eq $(( 8 - _b11_EPSILON )) ]; then
+        _b11a_task_ok=1
+    fi
+    [ "$_b11a_c1_ok" -eq 1 ] && [ "$_b11a_task_ok" -eq 1 ] && break
+    sleep 0.01
+done
+
+assert "Scenario A: C1 — consumer_held + FIONREAD(merge) + FIONREAD(task) == TOKENS" \
+    test "$_b11a_c1_ok" -eq 1
+assert "Scenario A: consumer_held + FIONREAD(task) == TOKENS - EPSILON" \
+    test "$_b11a_task_ok" -eq 1
+
+kill "$_b11a_consumer_pid" 2>/dev/null || true
+wait "$_b11a_consumer_pid" 2>/dev/null || true
+rm -f "$_b11a_held_file"
+_cleanup_balancer
+
+# ── Scenario B: idle baseline-reset ──────────────────────────────────────
+echo ""
+echo "  Scenario B: idle baseline-reset"
+
+_cleanup_balancer
+
+# Export small IDLE_RESET_TICKS so the reset fires quickly (3 * 0.05s = 0.15s).
+export REIFY_JOBSERVER_IDLE_RESET_TICKS=3
+start_balancer 8 0.05
+# Unset immediately — the background python3 process already has the value.
+unset REIFY_JOBSERVER_IDLE_RESET_TICKS
+wait_for_seed 10 || true
+
+# Verify initial seeded baseline: merge=6, task=2 (TOKENS=8, task=max(1,8//4)=2).
+_b11b_pair0=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+_b11b_m0=$(echo "$_b11b_pair0" | awk '{print $1}')
+_b11b_t0_v=$(echo "$_b11b_pair0" | awk '{print $2}')
+
+assert "Scenario B: initial seed is merge-favored (merge > task)" \
+    test "$_b11b_m0" -gt "$_b11b_t0_v"
+
+# Skew: read 4 tokens from merge FIFO, write 4 tokens to task FIFO.
+# Both pools sum to TOKENS=8 throughout (sum preserved → idle state maintained).
+# Result: merge=2, task=6 (task-heavy skew).
+_b11b_skew_exit=0
+{
+python3 - "$_MERGE_FIFO" "$_TASK_FIFO" <<'PY'
+import os, sys, time
+merge_path, task_path = sys.argv[1], sys.argv[2]
+SKEW = 4
+mfd = os.open(merge_path, os.O_RDWR | os.O_NONBLOCK)
+tfd = os.open(task_path,  os.O_RDWR | os.O_NONBLOCK)
+moved = 0
+deadline = time.monotonic() + 3.0
+while moved < SKEW and time.monotonic() < deadline:
+    try:
+        n = min(SKEW - moved, 8)
+        data = os.read(mfd, n)
+        if data:
+            # Write immediately to preserve sum invariant
+            written = 0
+            while written < len(data):
+                written += os.write(tfd, data[written:])
+            moved += len(data)
+    except BlockingIOError:
+        time.sleep(0.005)
+os.close(mfd); os.close(tfd)
+if moved != SKEW:
+    import sys as _sys
+    _sys.stderr.write(f"skew helper: only moved {moved}/{SKEW} tokens\n")
+    _sys.exit(1)
+PY
+} || _b11b_skew_exit=$?
+
+assert "Scenario B: skew helper moved 4 tokens merge→task" \
+    test "$_b11b_skew_exit" -eq 0
+
+# Poll until pools reset to merge-favored baseline (merge==6, merge > task).
+# Under C4: idle_ticks reaches IDLE_RESET_TICKS=3 → ("t2m", 4) burst resets.
+# Under α:  both pools > 0 → neither donate-idle branch fires → skew persists.
+_b11b_reset=0
+_b11b_t0=$(date +%s)
+while true; do
+    _b11b_pair=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+    _b11b_m=$(echo "$_b11b_pair" | awk '{print $1}')
+    _b11b_t=$(echo "$_b11b_pair" | awk '{print $2}')
+    if [ "$_b11b_m" -eq 6 ] && [ "$_b11b_m" -gt "$_b11b_t" ]; then
+        _b11b_reset=1; break
+    fi
+    [ $(( $(date +%s) - _b11b_t0 )) -ge 15 ] && break
+    sleep 0.1
+done
+
+assert "Scenario B: idle-reset drives pools back to merge-favored baseline (merge==6)" \
+    test "$_b11b_reset" -eq 1
+
+_cleanup_balancer
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 12: env-var validation — EPSILON and IDLE_RESET_TICKS error paths (test-12)
+#   Spawns python3 with invalid env values; asserts exit code 1.
+#   Module-level guards run before main(), so the process exits immediately
+#   without creating or touching any FIFOs (hermetic by construction).
+#   Mirrors the TOKENS/POLL_INTERVAL validation discipline (α pattern).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 12: env-var validation — bad EPSILON + bad IDLE_RESET_TICKS ---"
+
+# REIFY_JOBSERVER_EPSILON=0 → below minimum (< 1), must exit 1
+_b12_eps0=0
+REIFY_JOBSERVER_EPSILON=0 python3 "$BALANCER" 2>/dev/null || _b12_eps0=$?
+assert "REIFY_JOBSERVER_EPSILON=0 exits 1 (below minimum)" \
+    test "$_b12_eps0" -eq 1
+
+# REIFY_JOBSERVER_EPSILON=abc → non-integer, must exit 1
+_b12_epsabc=0
+REIFY_JOBSERVER_EPSILON=abc python3 "$BALANCER" 2>/dev/null || _b12_epsabc=$?
+assert "REIFY_JOBSERVER_EPSILON=abc exits 1 (not an integer)" \
+    test "$_b12_epsabc" -eq 1
+
+# REIFY_JOBSERVER_IDLE_RESET_TICKS=0 → below minimum (< 1), must exit 1
+# (EPSILON defaults to 1, so validation reaches the IDLE_RESET_TICKS guard)
+_b12_irt0=0
+REIFY_JOBSERVER_IDLE_RESET_TICKS=0 python3 "$BALANCER" 2>/dev/null || _b12_irt0=$?
+assert "REIFY_JOBSERVER_IDLE_RESET_TICKS=0 exits 1 (below minimum)" \
+    test "$_b12_irt0" -eq 1
+
+# REIFY_JOBSERVER_IDLE_RESET_TICKS=abc → non-integer, must exit 1
+_b12_irtabc=0
+REIFY_JOBSERVER_IDLE_RESET_TICKS=abc python3 "$BALANCER" 2>/dev/null || _b12_irtabc=$?
+assert "REIFY_JOBSERVER_IDLE_RESET_TICKS=abc exits 1 (not an integer)" \
+    test "$_b12_irtabc" -eq 1
+
 test_summary
