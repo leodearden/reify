@@ -170,6 +170,56 @@ mod tests {
     use crate::CompiledModule;
     use super::compile_modules_topo;
 
+    /// SIGNAL #2 + stability: the real stdlib compiles clean through the topo path
+    /// and output order equals input order (no imports → stable sort is identity).
+    ///
+    /// RED until step-6 extracts `stdlib_sources()` from `load_stdlib`.
+    #[test]
+    fn signal_2_real_stdlib_compiles_clean_and_order_is_stable() {
+        use crate::stdlib_loader::stdlib_sources;
+        use reify_core::Severity;
+
+        let owned = stdlib_sources();
+        // Build borrowed slice view for compile_modules_topo
+        let set: Vec<(&str, &str)> = owned.iter().map(|(n, s)| (*n, s.as_str())).collect();
+
+        let modules = compile_modules_topo(&set)
+            .expect("compile_modules_topo must return Ok for the real stdlib (no cycles)");
+
+        // (a) Signal #2: no Error-severity diagnostics across all modules
+        for module in &modules {
+            let errors: Vec<_> = module
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "stdlib module '{}' has Error-severity diagnostics via topo path: {:?}",
+                module.path,
+                errors
+            );
+        }
+
+        // (b) Stability: output order equals input order (identity permutation because
+        //     no production module declares `import`)
+        let input_names: Vec<&str> = set.iter().map(|(n, _)| *n).collect();
+        let output_names: Vec<String> =
+            modules.iter().map(|m| format!("{}", m.path).replace('/', ".")).collect();
+        assert_eq!(
+            output_names.len(),
+            input_names.len(),
+            "topo output count must equal input count"
+        );
+        for (i, (input, output)) in input_names.iter().zip(output_names.iter()).enumerate() {
+            assert_eq!(
+                output, input,
+                "stdlib module at position {} changed order: expected '{}', got '{}'",
+                i, input, output
+            );
+        }
+    }
+
     /// SIGNAL #3: a cyclic import pair is rejected with a "circular dependency" error.
     ///
     /// RED until step-4 adds gray/black cycle detection to the topo sort.
