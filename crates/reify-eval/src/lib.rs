@@ -50,6 +50,7 @@ pub use engine_eval::is_representable_cell_type;
 pub use compute_targets::elastic_static::PROGRESS_STRIDE;
 mod engine_purposes;
 mod engine_tolerance;
+pub(crate) mod arg_acceptance;
 mod geometry_ops;
 pub mod trajectory_ops;
 pub mod graph;
