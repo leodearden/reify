@@ -464,7 +464,7 @@ fn modal_result_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("part", Type::String),
+        ("part", Type::StructureRef("Part".to_string())),
         (
             "modes",
             Type::List(Box::new(Type::StructureRef("Mode".to_string()))),
@@ -1530,7 +1530,7 @@ fn forcing_time_history_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("part", Type::String),
+        ("part", Type::StructureRef("Part".to_string())),
         (
             "sources",
             Type::List(Box::new(Type::TraitObject("ForcingFunction".to_string()))),
@@ -1811,6 +1811,119 @@ structure PartBoundarySmoke {
         "expected zero Error-severity diagnostics for ForcingTimeHistory(part: Part(), ...); \
          RED until `structure def Part {{ }}` lands in std/modal/analysis (step-2). \
          Got {}: {:#?}",
+        errors.len(),
+        errors
+    );
+}
+
+// ─── task-4578: Part param shape (step-3 RED) ────────────────────────────────
+
+/// `DisplacementTimeHistory` (PRD §5.2) must declare exactly 4 params in order:
+///   - `part         : Part`              (StructureRef — task 4578)
+///   - `modal_result : ModalResult`       (StructureRef)
+///   - `t_samples    : List<Time>`        (List<Scalar<Time>>)
+///   - `mode_coords  : List<List<Real>>`  (List<List<dimensionless>>)
+///
+/// No existing compiler test pinned DisplacementTimeHistory's param shape;
+/// this test adds the missing coverage (per plan design decision).
+///
+/// RED before step-4 (DisplacementTimeHistory.part is still `: String` in .ri).
+/// GREEN once step-4 replaces `param part : String` with `param part : Part`.
+#[test]
+fn displacement_time_history_part_is_part_type() {
+    let template = find_structure("DisplacementTimeHistory");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) tight count — exactly 4 params
+    assert_eq!(
+        params.len(),
+        4,
+        "DisplacementTimeHistory should have exactly 4 params \
+         (part, modal_result, t_samples, mode_coords), got: {:?}",
+        names
+    );
+
+    // (b) param names + types in declaration order
+    let expected: &[(&str, Type)] = &[
+        ("part", Type::StructureRef("Part".to_string())),
+        ("modal_result", Type::StructureRef("ModalResult".to_string())),
+        (
+            "t_samples",
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::TIME,
+            })),
+        ),
+        (
+            "mode_coords",
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
+        ),
+    ];
+
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "DisplacementTimeHistory params must be in canonical order \
+         (part, modal_result, t_samples, mode_coords); got: {:?}",
+        names
+    );
+
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "DisplacementTimeHistory.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+
+    // (c) no defaults — solver-populated output container
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "DisplacementTimeHistory.{} should have no default_expr \
+             (solver-only-produced output container), but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+}
+
+/// LENIENCY pin-down: a string arg to `part : Part` must silently compile
+/// with zero Error-severity diagnostics (no nominal type-arg rejection for
+/// StructureRef params — verified in check_expr_struct_ctor_args and
+/// walk_param_against_arg_type).
+///
+/// Green-from-add characterization (the leniency holds BEFORE and AFTER the
+/// type switch; it cannot be made RED→GREEN by this task).
+///
+/// IMPORTANT: update this test intentionally when task 4584 (which
+/// depends_on task 4578) lands nominal StructureRef arg-rejection. That task
+/// is the deliberate owner of "string rejected for Part param" behaviour.
+#[test]
+fn string_arg_to_part_param_silently_accepted() {
+    let source = r#"
+structure PartLeniencySmoke {
+    let step = StepForce(
+        at: "tip",
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+    let forcing = ForcingTimeHistory(part: "beam", sources: [step])
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    // pin-down: the compiler currently does NOT reject a string arg at a
+    // StructureRef-typed param slot. If task 4584 adds that rejection,
+    // update this assertion intentionally to reflect the new behaviour.
+    assert!(
+        errors.is_empty(),
+        "pin-down: expected zero Error-severity diagnostics for \
+         ForcingTimeHistory(part: \"beam\", ...) — string-arg leniency must hold. \
+         If errors appear, task 4584 likely landed nominal arg-rejection; \
+         update this test intentionally. Got {}: {:#?}",
         errors.len(),
         errors
     );
