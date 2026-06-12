@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use reify_core::{ContentHash, Diagnostic, RealizationNodeId};
-use reify_ir::{GeometryKernel, ReprKind};
+use reify_ir::ReprKind;
 
 use crate::engine_compute::{RealizedContent, RealizationReadHandle};
 use crate::graph::EvaluationGraph;
